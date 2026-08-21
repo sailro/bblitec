@@ -21,7 +21,12 @@ import {
     spriteFragmentWgsl,
     spriteVertexWgsl,
 } from "./shader-builtins-sprite.js";
+import {
+    splatFragmentWgsl,
+    splatVertexWgsl,
+} from "./shader-builtins-splat.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
+import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
@@ -300,6 +305,52 @@ export interface UpstreamEmitOptions {
     specularGlossiness: boolean;
     dispersion: boolean;
     occlusionUv2: boolean;
+}
+
+/**
+ * What each composed-shader family names its stages, and whether its groups
+ * and bindings are the pin's own.
+ *
+ * The generator knows both facts; a file name does not. `composition.json`
+ * carries them so `tools/compile-shaders.ps1` reads a declaration instead of
+ * inferring from a filename prefix -- the ladder that grew a rung per family.
+ */
+const SHADER_FAMILIES = {
+    /** Babylon Lite's own composed material variants name both stages main. */
+    variant: { vertex: "main", fragment: "main", pinnedBindings: true },
+    /** One module per pass, both stages in it, each naming itself. */
+    postProcess: {
+        vertex: "postProcessVertex",
+        fragment: "postProcessFragment",
+        pinnedBindings: true,
+    },
+    /** A node graph, likewise one module carrying both stages. */
+    node: { vertex: "vs_main", fragment: "fs_main", pinnedBindings: true },
+    /** The pin's Gaussian-splat module. */
+    splat: { vertex: "vs", fragment: "fs", pinnedBindings: true },
+    /**
+     * Everything this repository authors or specializes: the sprite and
+     * billboard stages, and the Dawn utility passes.
+     */
+    owned: {
+        vertex: "mainVertex",
+        fragment: "mainFragment",
+        pinnedBindings: false,
+    },
+} as const;
+
+type ShaderFamily = keyof typeof SHADER_FAMILIES;
+
+/** The declaration one emitted module carries into `composition.json`. */
+function shaderDeclaration(
+    output: string,
+    family: ShaderFamily,
+): { entryPoint: string; pinnedBindings: boolean } {
+    const entry = SHADER_FAMILIES[family];
+    return {
+        entryPoint: output.includes(".vert.") ? entry.vertex : entry.fragment,
+        pinnedBindings: entry.pinnedBindings,
+    };
 }
 
 class GeneratedSourceWriter {
@@ -647,7 +698,58 @@ class GeneratedSourceWriter {
         const composedShaders: Array<{
             output: string;
             data: string;
+            /**
+             * Which composed family this module belongs to, which decides
+             * the stage entry-point names and whether the groups and
+             * bindings are the pin's own. Defaults to `owned` — the stages
+             * this repository authors or specializes.
+             */
+            family?: ShaderFamily;
         }> = [];
+        if (features.includes("loader:splat")) {
+            const splats = new SplatLowerer(context);
+            this.writeSource(
+                "upstream/src/splat_geometry.cpp",
+                splats.lowerGeometry(),
+                generated,
+                "upstream/include/bblite/upstream/splat_geometry.hpp",
+            );
+            this.writeSource(
+                "upstream/src/splat_sort.cpp",
+                splats.lowerSort(),
+                generated,
+                "upstream/include/bblite/upstream/splat_sort.hpp",
+            );
+            this.writeSource(
+                "upstream/src/splat_loader.cpp",
+                splats.lowerLoader(),
+                generated,
+            );
+            // The pin's own module, split at its two entry points. Its
+            // provenance names the pipeline that ships the WGSL, not a
+            // composer -- nothing here composes.
+            const provenance = context.provenance(
+                "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
+                "WGSL",
+            );
+            composedShaders.push(
+                {
+                    output: "upstream/shaders/splat.vert.native.wgsl",
+                    data: splatVertexWgsl(provenance),
+                    family: "splat",
+                },
+                {
+                    output: "upstream/shaders/splat.frag.native.wgsl",
+                    data: splatFragmentWgsl(provenance),
+                    family: "splat",
+                },
+            );
+            generated.push({
+                modulePath:
+                    "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
+                symbolName: "WGSL",
+            });
+        }
         if (features.includes("sprite:2d")) {
             const sprites = new SpriteLowerer(context);
             const custom = options.spriteCustomShaders.find(
@@ -917,6 +1019,10 @@ class GeneratedSourceWriter {
                 iridescence: options.iridescence,
                 dispersion: options.dispersion,
             });
+            // Every module `lowerShaders` returns is one this repository
+            // authors or specializes -- the PBR vertex stage, the grid, the
+            // blit -- so they take the default family. The pin's own
+            // composed variants are pushed from their own sites below.
             composedShaders.push(...shaders);
             // The Dawn backend's utility passes, deployed like every other
             // pinned shader instead of living as C++ strings invisible to
@@ -1099,6 +1205,7 @@ class GeneratedSourceWriter {
                         output: `upstream/shaders/postprocess-${index}.${stage}.native.wgsl`,
                         data: `// ${postProcessProvenance}
 ${composed.wgsl}`,
+                        family: "postProcess",
                     });
                 }
             }
@@ -1253,10 +1360,12 @@ ${composed.wgsl}`,
             composedShaders.push({
                 output: `upstream/shaders/variant-${variant.vertex.replace(".wgsl", ".native.wgsl")}`,
                 data: variant.vertexWgsl,
+                family: "variant",
             });
             composedShaders.push({
                 output: `upstream/shaders/variant-${variant.fragment.replace(".wgsl", ".native.wgsl")}`,
                 data: variant.fragmentWgsl,
+                family: "variant",
             });
         }
         // The Standard family's pinned variants, mirroring the PBR flow
@@ -1320,12 +1429,14 @@ ${composed.wgsl}`,
                         variant.vertex.replace(".wgsl", ".native.wgsl")
                     }`,
                     data: variant.vertexWgsl,
+                    family: "variant",
                 });
                 composedShaders.push({
                     output: `upstream/shaders/variant-std-${
                         variant.fragment.replace(".wgsl", ".native.wgsl")
                     }`,
                     data: variant.fragmentWgsl,
+                    family: "variant",
                 });
             }
         }
@@ -1364,6 +1475,7 @@ ${composed.wgsl}`,
                     composedShaders.push({
                         output: `upstream/shaders/${stem}.native.wgsl`,
                         data: variant.composed.wgsl,
+                        family: "node",
                     });
                 }
             }
@@ -1379,11 +1491,15 @@ ${composed.wgsl}`,
                         modules: composedShaders
                             .filter(({ output }) =>
                                 output.endsWith(".wgsl"))
-                            .map(({ output, data }) => ({
+                            .map(({ output, data, family }) => ({
                                 output,
                                 sha256: createHash("sha256")
                                     .update(data)
                                     .digest("hex"),
+                                ...shaderDeclaration(
+                                    output,
+                                    family ?? "owned",
+                                ),
                             })),
                     },
                     null,

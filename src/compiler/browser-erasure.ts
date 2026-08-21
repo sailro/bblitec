@@ -341,6 +341,68 @@ export class BrowserErasure {
         }
     }
 
+    /**
+     * `await new Promise<void>((r) => requestAnimationFrame(() => r()))` --
+     * the single-frame yield a pinned scene uses to let one more frame draw
+     * before it flags the canvas ready.
+     *
+     * `requestAnimationFrame` is a browser API with no native counterpart,
+     * and what the wait buys in the browser is that the work scheduled
+     * before it has landed by the time the capture happens. This runtime
+     * has no queue to drain: the frame's own thread does that work before
+     * the draw that reads it. So the yield is erased -- but only in exactly
+     * this shape, matched structurally rather than by counting `new
+     * Promise`, because a multi-frame wait or one that resolves on some
+     * other condition is NOT this and must keep refusing.
+     */
+    public isFrameYield(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            !ts.isNewExpression(unwrapped) ||
+            !ts.isIdentifier(unwrapped.expression) ||
+            unwrapped.expression.text !== "Promise" ||
+            unwrapped.arguments?.length !== 1
+        ) {
+            return false;
+        }
+        const executor = unwrapped.arguments[0]!;
+        if (
+            !ts.isArrowFunction(executor) ||
+            executor.parameters.length !== 1 ||
+            !ts.isIdentifier(executor.parameters[0]!.name)
+        ) {
+            return false;
+        }
+        const resolveName = executor.parameters[0]!.name.text;
+        const raf = this.context.unwrap(
+            executor.body as ts.Expression,
+        );
+        if (
+            !ts.isCallExpression(raf) ||
+            !ts.isIdentifier(raf.expression) ||
+            raf.expression.text !== "requestAnimationFrame" ||
+            raf.arguments.length !== 1
+        ) {
+            return false;
+        }
+        const callback = raf.arguments[0]!;
+        if (
+            !ts.isArrowFunction(callback) ||
+            callback.parameters.length !== 0
+        ) {
+            return false;
+        }
+        const resolveCall = this.context.unwrap(
+            callback.body as ts.Expression,
+        );
+        return (
+            ts.isCallExpression(resolveCall) &&
+            ts.isIdentifier(resolveCall.expression) &&
+            resolveCall.expression.text === resolveName &&
+            resolveCall.arguments.length === 0
+        );
+    }
+
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
         const objectAssign =
             ts.isPropertyAccessExpression(call.expression) &&

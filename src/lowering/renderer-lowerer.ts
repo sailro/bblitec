@@ -1072,6 +1072,10 @@ std::uint32_t preferred_sample_count();
 // The aspect ratio is a JavaScript number in
 // src/camera/camera.ts getEffectiveAspectRatio, and the pinned
 // projection writer divides by it before its single float32 store.
+/** The projection alone, which the splat stage reads beside the view. */
+std::array<float, 16> build_projection(
+    const CameraRecord& camera,
+    double aspect);
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,
     double aspect);
@@ -1560,8 +1564,6 @@ std::uint32_t preferred_sample_count() {
     return ${sampleCount}u;
 }
 
-namespace {
-
 // src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in the
 // same double-then-store-once shape as the rest of the chain. The pin maps
 // near -> 1 and far -> 0 and compares greater-equal
@@ -1582,8 +1584,6 @@ std::array<float, 16> build_projection(
         (camera.far_plane * camera.near_plane) / range);
     return projection;
 }
-
-} // namespace
 
 std::array<float, 16> build_view_projection(
     const CameraRecord& camera,

@@ -191,6 +191,7 @@ const featureSources: Record<Feature, string[]> = {
     "loader:babylon": [],
     "loader:gltf": [],
     "loader:gltf-variants": [],
+    "loader:splat": [],
     "material:pbr": [],
     "material:clearcoat": [],
     "material:sheen": [],
@@ -2396,6 +2397,10 @@ class Compiler
         return this.browserErasure.isBrowserInstrumentationCall(
             call,
         );
+    }
+
+    public isFrameYield(expression: ts.Expression): boolean {
+        return this.browserErasure.isFrameYield(expression);
     }
 
     public lookupOptional(

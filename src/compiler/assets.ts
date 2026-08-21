@@ -69,6 +69,11 @@ export function registerAsset(
             // the executable is the raw RGBA buffer it built.
             : kind === "pixels"
                 ? `${basenameWithoutExtension(sourceName)}.rgba`
+            // Every splat container packages to the one row layout, so the
+            // extension names what lands beside the executable, not what the
+            // scene fetched.
+            : kind === "splat"
+                ? `${basenameWithoutExtension(sourceName)}.splat`
             : sourceName;
     const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
     const output =

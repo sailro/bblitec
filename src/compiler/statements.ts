@@ -94,6 +94,7 @@ export interface StatementLoweringContext {
         name: string,
     ): ts.Expression | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
+    isFrameYield(expression: ts.Expression): boolean;
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
@@ -113,6 +114,34 @@ export interface StatementLoweringContext {
     popScope(): void;
     allocateBlockPrefix(): string;
     fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * Whether a frame yield sits inside a loop, walking out to the enclosing
+ * function.
+ *
+ * One yield means "the work queued before this has landed", which this
+ * runtime satisfies by construction. N of them in a loop mean "let N frames
+ * elapse", which it does not — so the shape has to be told apart from the
+ * single one rather than erased per iteration.
+ */
+function frameYieldInsideLoop(node: ts.Node): boolean {
+    for (
+        let parent: ts.Node | undefined = node.parent;
+        parent && !ts.isFunctionLike(parent);
+        parent = parent.parent
+    ) {
+        if (
+            ts.isForStatement(parent) ||
+            ts.isWhileStatement(parent) ||
+            ts.isForOfStatement(parent) ||
+            ts.isForInStatement(parent) ||
+            ts.isDoStatement(parent)
+        ) {
+            return true;
+        }
+    }
+    return false;
 }
 
 export class StatementLowerer {
@@ -1080,6 +1109,31 @@ export class StatementLowerer {
                 context.emit(`${value.cpp};`);
             }
             return;
+        }
+        if (context.isFrameYield(unwrapped)) {
+            // One frame's work has already happened by the time this
+            // runtime reaches the statement after it. A LOOP of these is a
+            // different claim -- "let N frames elapse" -- and erasing each
+            // iteration would silently turn it into none, so it refuses.
+            if (frameYieldInsideLoop(unwrapped)) {
+                context.fail(
+                    unwrapped,
+                    "A frame yield inside a loop is a multi-frame wait, " +
+                        "which this runtime does not lower; it renders the " +
+                        "frame the scene asks for, not a count of them.",
+                );
+            }
+            return;
+        }
+        // `await <barrier property>` -- a read whose only meaning is the
+        // wait, which this runtime satisfies by construction. Compiled
+        // rather than skipped so the property still has to exist and the
+        // owner still has to be the right kind.
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const value = context.compileValue(unwrapped);
+            if (value.kind === "void" && value.cpp.length === 0) {
+                return;
+            }
         }
         context.fail(
             unwrapped,

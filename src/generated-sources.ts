@@ -146,6 +146,18 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["material:no-color-view"],
     },
     {
+        source: "upstream/src/splat_geometry.cpp",
+        features: ["loader:splat"],
+    },
+    {
+        source: "upstream/src/splat_sort.cpp",
+        features: ["loader:splat"],
+    },
+    {
+        source: "upstream/src/splat_loader.cpp",
+        features: ["loader:splat"],
+    },
+    {
         source: "upstream/src/material_render_textures.cpp",
         features: [
             "material:standard-diffuse-render-texture",

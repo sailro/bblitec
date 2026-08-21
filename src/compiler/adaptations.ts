@@ -54,6 +54,59 @@ export function compileAdaptations(
             validation: ["compiler browser-erasure tests", "generated main.cpp inspection"],
         });
     }
+    if (features.includes("loader:splat")) {
+        adaptations.push({
+            id: "splat-parse-at-generation",
+            category: "asset-materialization",
+            sourceSemantics:
+                "loadSplat fetches a .ply and parses it on the main thread " +
+                "into the 32-byte-per-splat row buffer.",
+            nativeSemantics:
+                "The pin's own parser runs at generation and the row buffer " +
+                "is packaged, because a PLY header is a per-exporter " +
+                "property list whose parsed VALUE is what must not drift. " +
+                "The geometry build over that buffer stays a fold.",
+            risk: "low",
+            validation: [
+                "packaged rows are byte-identical to the pin's own .splat",
+                "lowered build_splat_geometry checksums match the pinned JS",
+            ],
+        });
+        adaptations.push({
+            id: "splat-synchronous-sort",
+            category: "async",
+            sourceSemantics:
+                "The splat depth sort runs in a worker; a frame draws " +
+                "whichever order has arrived, and mesh.firstSortReady " +
+                "resolves once the first one has.",
+            nativeSemantics:
+                "The sort runs on the frame's own thread before the draw " +
+                "that reads it, so every frame is already the state that " +
+                "promise waits for. The pinned kernel and its re-sort " +
+                "epsilon are unchanged.",
+            risk: "low",
+            validation: [
+                "scene 120 parity against the browser golden",
+                "lowered sort_splats_back_to_front from the pinned AST",
+            ],
+        });
+        adaptations.push({
+            id: "splat-hypot-approximation",
+            category: "determinism",
+            sourceSemantics:
+                "The quaternion normalisation divides by Math.hypot, which " +
+                "ECMAScript specifies as implementation-approximated.",
+            nativeSemantics:
+                "The root of the sum of squares, since no port can match an " +
+                "unspecified approximation by construction. Measured over " +
+                "scene 120's 345,217 splats: 10 of 2,785,280 emitted floats " +
+                "differ, every one a covariance entry below 1e-19.",
+            risk: "low",
+            validation: [
+                "measured against the pinned builder on the packaged asset",
+            ],
+        });
+    }
     if (context.unwrappedAwaitExpressions.size > 0) {
         adaptations.push({
             id: "synchronous-aot-await",

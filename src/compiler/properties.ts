@@ -42,12 +42,16 @@ interface PropertyRead {
      *   `field`  -- a member of the owner's own expression;
      *   `helper` -- a native function that takes the owner expression;
      *   `retag`  -- the same handle under a different kind, reading
-     *               nothing.
+     *               nothing;
+     *   `barrier`-- reads nothing and produces nothing: a property whose
+     *               only meaning is "wait until this has happened", and
+     *               which this runtime satisfies by construction.
      */
     record?: readonly [collection: string, field: string];
     field?: string;
     helper?: string;
     retag?: true;
+    barrier?: true;
     /**
      * Carries the owner's scene-material identity onto the value read.
      * The native read is a record field either way; this is the pin's
@@ -299,6 +303,19 @@ const propertyRules: readonly PropertyRule[] = [
         field: "rt",
     },
     {
+        // `loadSplat`'s promise that the sort worker has produced its first
+        // depth order. This runtime has no worker: the sort runs on the
+        // frame's own thread before the draw that reads it
+        // (`postSplatSortIfDirty` + `uploadPendingSplatOrder`, both in the
+        // renderable's update hook), so every frame is already the state
+        // this await is waiting for. Reached rather than ignored, so a
+        // scene that never waits is not silently given the same guarantee.
+        owner: "splat-mesh",
+        property: "firstSortReady",
+        value: "void",
+        barrier: true,
+    },
+    {
         // Which attachment `rtt.ts` hands back is the target's own fact,
         // decided by the format it declared; the texture read off it is
         // that attachment, so it inherits the answer rather than being
@@ -415,6 +432,9 @@ export function readProperty(
     }
     if (rule.helper) {
         return read(`${rule.helper}(${owner.cpp})`);
+    }
+    if (rule.barrier) {
+        return read("");
     }
     return read(owner.cpp);
 }

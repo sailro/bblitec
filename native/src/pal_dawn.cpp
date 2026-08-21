@@ -35,6 +35,9 @@
 #if BBLITE_HAS_BILLBOARDS
 #include "pal_dawn_billboard.hpp"
 #endif
+#if BBLITE_HAS_SPLATS
+#include "pal_dawn_splat.hpp"
+#endif
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
 
@@ -404,6 +407,9 @@ struct DawnState : DawnDevice {
     std::uint32_t sample_count = 4;
 #if BBLITE_HAS_BILLBOARDS
     std::vector<DawnBillboardPass> billboard_passes;
+#endif
+#if BBLITE_HAS_SPLATS
+    std::vector<DawnSplatPass> splat_passes;
 #endif
     [[nodiscard]] bool multisampled() const {
         return sample_count > 1;
@@ -1113,6 +1119,12 @@ struct DawnState : DawnDevice {
         if (grid_vertex_module) {
             wgpuShaderModuleRelease(grid_vertex_module);
         }
+#if BBLITE_HAS_SPLATS
+        for (DawnSplatPass& splat : splat_passes) {
+            release_dawn_splat_pass(splat);
+        }
+        splat_passes.clear();
+#endif
 #if BBLITE_HAS_BILLBOARDS
         for (DawnBillboardPass& billboard : billboard_passes) {
             release_dawn_billboard_pass(billboard);
@@ -7309,6 +7321,41 @@ bool run_dawn_engine(Engine& engine) {
             static_cast<double>(height);
         const std::array<float, 16> matrix =
             upstream::build_view_projection(camera, aspect);
+#if BBLITE_HAS_SPLATS
+        {
+            // Lazily built for the same reason the billboard passes are:
+            // the clouds are known only once the scene has run. The sort
+            // then follows the camera, which `upload_dawn_splat_pass`
+            // decides with the pin's own epsilon.
+            const std::array<float, 16> splat_view =
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(camera));
+            const std::array<float, 16> splat_projection =
+                upstream::build_projection(camera, aspect);
+            if (state.splat_passes.empty()) {
+                for (const SplatMeshHandle splat : scene.splat_meshes) {
+                    state.splat_passes.push_back(create_dawn_splat_pass(
+                        state.device,
+                        state.queue,
+                        state.frame_color_format,
+                        WGPUTextureFormat_Depth24PlusStencil8,
+                        state.sample_count,
+                        engine,
+                        splat));
+                }
+            }
+            for (DawnSplatPass& splat : state.splat_passes) {
+                upload_dawn_splat_pass(
+                    state.queue,
+                    engine,
+                    splat,
+                    splat_view,
+                    splat_projection,
+                    static_cast<float>(width),
+                    static_cast<float>(height));
+            }
+        }
+#endif
 #if BBLITE_HAS_BILLBOARDS
         {
             // Lazily built, because the systems are known only once the
@@ -8362,6 +8409,21 @@ bool run_dawn_engine(Engine& engine) {
                 case upstream::RenderStage::transparent:
                     draw_render_list(
                         render_plan.draw_lists.transparent);
+#if BBLITE_HAS_SPLATS
+                    // `isTransparent: true` on the pinned renderable, so a
+                    // cloud belongs to this bucket rather than after it.
+                    // `27-render-pipeline.md` states the bucket's rule:
+                    // "Transparent bindings must remain camera-space-depth
+                    // sorted and are not pipeline-sorted." A cloud carries
+                    // no single depth to sort by -- it sorts its own splats
+                    // -- and no reached scene puts another transparent
+                    // renderable beside one, so it draws at the end of the
+                    // bucket and a scene that mixed the two would need the
+                    // pin's own `_sortDistance` before this is right.
+                    for (const DawnSplatPass& splat : state.splat_passes) {
+                        record_dawn_splat_pass(pass, splat);
+                    }
+#endif
                     break;
                 case upstream::RenderStage::ground:
                     draw_ground();

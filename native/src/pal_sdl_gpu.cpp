@@ -36,6 +36,9 @@
 #if BBLITE_HAS_BILLBOARDS
 #include "pal_sdl_gpu_billboard.hpp"
 #endif
+#if BBLITE_HAS_SPLATS
+#include "pal_sdl_gpu_splat.hpp"
+#endif
 #include "pal_render_capture.hpp"
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
@@ -564,6 +567,9 @@ struct GpuState {
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
 #if BBLITE_HAS_BILLBOARDS
     std::vector<BillboardPass> billboard_passes;
+#endif
+#if BBLITE_HAS_SPLATS
+    std::vector<SplatPass> splat_passes;
 #endif
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
@@ -2942,6 +2948,12 @@ void release(GpuState& state) {
     }
     state.billboard_passes.clear();
 #endif
+#if BBLITE_HAS_SPLATS
+    for (SplatPass& splat : state.splat_passes) {
+        release_splat_pass(state.device, splat);
+    }
+    state.splat_passes.clear();
+#endif
     for (GpuMesh& mesh : state.meshes) {
         release_gpu_mesh(state, mesh);
     }
@@ -3893,6 +3905,19 @@ bool run_gpu_engine(Engine& engine) {
         // The pinned pipelines are built lazily on first use, long after this
         // point, and they target the same attachment as the transcribed ones.
         state.pinned_color_format = color_target.format;
+#endif
+#if BBLITE_HAS_SPLATS
+        // One pass per cloud the scene registered, against the same
+        // attachment and depth the scene's own draws use.
+        for (const SplatMeshHandle splat : scene.splat_meshes) {
+            state.splat_passes.push_back(create_splat_pass(
+                state.device,
+                engine,
+                splat,
+                color_target.format,
+                state.depth_format,
+                state.sample_count));
+        }
 #endif
 #if BBLITE_HAS_BILLBOARDS
         // One pass per system the scene registered, targeting the same
@@ -5216,6 +5241,15 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::build_skybox_view_projection(
                     camera,
                     aspect);
+#if BBLITE_HAS_SPLATS
+            // The splat stage reads the view and the projection separately,
+            // because the pin's own UBO stores them separately.
+            const std::array<float, 16> splat_view =
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(camera));
+            const std::array<float, 16> splat_projection =
+                upstream::build_projection(camera, aspect);
+#endif
 #if BBLITE_HAS_BILLBOARDS
             // The sorted order depends on the camera alone, so it is built
             // once for the frame here -- before the frame's command buffer is
@@ -5231,6 +5265,16 @@ bool run_gpu_engine(Engine& engine) {
                     billboard,
                     billboard_view,
                     delta_ms);
+            }
+#endif
+#if BBLITE_HAS_SPLATS
+            // The sort runs on this thread before the draw that reads it,
+            // which is the state `firstSortReady` waits for. The view and
+            // projection are built once for the frame here and the draw
+            // below reads the same matrices, as the billboard pass does.
+            for (SplatPass& splat : state.splat_passes) {
+                upload_splat_pass(
+                    state.device, engine, splat, splat_view);
             }
 #endif
             // The render capture describes CPU state alone, so it is
@@ -7117,6 +7161,22 @@ bool run_gpu_engine(Engine& engine) {
                         break;
                     case upstream::RenderStage::transparent:
                         draw_render_list(render_plan.draw_lists.transparent);
+#if BBLITE_HAS_SPLATS
+                        // `isTransparent: true` on the pinned renderable, so
+                        // a cloud belongs to this bucket. The Dawn sibling
+                        // states the ordering caveat.
+                        for (const SplatPass& splat : state.splat_passes) {
+                            record_splat_pass(
+                                command,
+                                pass,
+                                engine,
+                                splat,
+                                splat_view,
+                                splat_projection,
+                                static_cast<double>(width),
+                                static_cast<double>(height));
+                        }
+#endif
                         break;
                     case upstream::RenderStage::ground:
                         draw_ground();

@@ -843,6 +843,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene120",
+        name: "Scene 120 - Gaussian Splatting",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene120.ts",
+        title: "Babylon Lite Native - Gaussian Splatting",
+        // Dawn measures 0.001/0.003. SDL_GPU measures 0.024/0.071, and its
+        // whole excess is the backend differential (SDL-vs-Dawn 0.024,
+        // max 3) -- see TODO for what has been eliminated. The threshold
+        // carries the SDL number because one pair covers both backends.
+        parity: {
+            maxFullMad: 0.03,
+            maxForegroundMad: 0.08,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",

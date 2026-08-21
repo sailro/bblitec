@@ -160,6 +160,12 @@ inline void array_truncate(Array<T>& values, double count) {
     return std::fmod(left, right);
 }
 
+// JavaScript Math.round: a half rounds toward +Infinity, where std::round
+// rounds it away from zero. The two disagree at -0.5, -1.5, ...
+[[nodiscard]] inline double round_number(double value) {
+    return std::floor(value + 0.5);
+}
+
 // Numeric `a || b`: 0 and NaN fall through to the fallback.
 [[nodiscard]] inline double or_number(double value, double fallback) {
     return (value != 0.0 && !std::isnan(value)) ? value : fallback;

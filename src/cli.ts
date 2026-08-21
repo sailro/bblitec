@@ -35,6 +35,7 @@ import { decompressGeometry } from "./compressed-geometry.js";
 import { glbJsonText } from "./gltf-document.js";
 import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
+import { packageSplat } from "./splat-packager.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
     buildStampHeader,
@@ -201,6 +202,14 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
                 await packageGltf(source, dirname(inputPath)),
                 source,
             ),
+        );
+        return;
+    }
+
+    if (asset.kind === "splat") {
+        writeFileSync(
+            destination,
+            packageSplat(await assetBytes(source, inputPath)).rows,
         );
         return;
     }

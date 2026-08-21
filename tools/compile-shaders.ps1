@@ -341,33 +341,34 @@ function Write-StageSlots {
     Set-Content $slotPath ($slots -join [Environment]::NewLine)
 }
 
-function Get-ShaderEntryPoint {
+function Get-ShaderComposition {
     <#
     .SYNOPSIS
-    The entry point a stage is compiled at, from its file name.
+    What the generator DECLARED about the modules in one shader directory.
 
     .DESCRIPTION
-    Three conventions meet here. Babylon Lite's own composed material variants
-    name both entry points `main`. A post-process pass and a node graph are
-    composed too, but the pin puts both of their stages in one module, so each
-    names itself. Everything else is a shader this repository authors or
-    specializes, and those carry the mainVertex/mainFragment convention.
-    #>
-    param(
-        [string]$Name,
-        [bool]$Vertex
-    )
+    `composition.json` names every module generation emitted, and a module may
+    declare its own `entryPoint` and whether it carries the pin's own binding
+    scheme. Both are facts about how the module was produced, which the
+    generator knows and a file name does not — the inference below is a ladder
+    of filename prefixes that grew a rung per family. A declaring module is out
+    of the ladder's hands; the rest keep using it until they are moved too.
 
-    if ($Name.StartsWith("postprocess-")) {
-        return $(if ($Vertex) { "postProcessVertex" } else { "postProcessFragment" })
+    Returns a hashtable keyed by module file name.
+    #>
+    param([string]$Directory)
+
+    $declared = @{}
+    $manifest = Join-Path $Directory "composition.json"
+    if (-not (Test-Path $manifest)) {
+        return $declared
     }
-    if ($Name.StartsWith("node-")) {
-        return $(if ($Vertex) { "vs_main" } else { "fs_main" })
+    $parsed = Get-Content $manifest -Raw | ConvertFrom-Json
+    foreach ($module in $parsed.modules) {
+        $name = [System.IO.Path]::GetFileName($module.output)
+        $declared[$name] = $module
     }
-    if ($Name.StartsWith("variant-")) {
-        return "main"
-    }
-    return $(if ($Vertex) { "mainVertex" } else { "mainFragment" })
+    return $declared
 }
 
 function Get-HlslUniformBufferCount {
@@ -551,6 +552,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
     $directoryNativeWgsl = @(
         Get-ChildItem $shaderDirectory -Filter "*.native.wgsl"
     )
+    $declaredModules = Get-ShaderComposition $shaderDirectory
     if ($directoryNativeWgsl.Count -gt 0) {
         $usedTint = $true
         foreach ($source in $directoryNativeWgsl) {
@@ -562,15 +564,18 @@ foreach ($shaderDirectory in $shaderDirectories) {
             # and bindings are the pin's own, which decides both the register
             # remap below and the binding cross-check that would otherwise
             # read this repository's specialization back out of Tint.
+            $declared = $declaredModules[$source.Name]
+            if ($null -eq $declared) {
+                throw (
+                    "$($source.FullName) is not declared in composition.json; " +
+                    "generation must name every module's family."
+                )
+            }
+            # Only the material variants can overflow the uniform cap, and
+            # they are the only family that needs the gp demotion below.
             $isPinnedVariant = $source.Name.StartsWith("variant-")
-            $isPinnedComposed = (
-                $isPinnedVariant -or
-                $source.Name.StartsWith("postprocess-") -or
-                $source.Name.StartsWith("node-")
-            )
-            $entryPoint = Get-ShaderEntryPoint `
-                $source.Name `
-                ($outputBase.EndsWith(".vert"))
+            $isPinnedComposed = [bool]$declared.pinnedBindings
+            $entryPoint = [string]$declared.entryPoint
             $pendingHlsl = "$outputBase.pending-hlsl"
             $reflection = & $Tint $source.FullName `
                 --entry-point $entryPoint `
@@ -687,8 +692,14 @@ foreach ($shaderDirectory in $shaderDirectories) {
         # Lite's own text carried verbatim, so it keeps `main` like a composed
         # variant does; everything else answers to the same convention as the
         # Tint path above.
-        $entryPoint = if (Test-Path $nativeWgsl) {
-            Get-ShaderEntryPoint $source.Name ($profile -eq "vs_6_0")
+        $declared = $declaredModules[
+            [System.IO.Path]::GetFileName($nativeWgsl)
+        ]
+        # A hand-authored .hlsl with no native WGSL beside it is Babylon
+        # Lite's own text carried verbatim, so it keeps `main`; everything
+        # else was declared by generation.
+        $entryPoint = if ($null -ne $declared) {
+            [string]$declared.entryPoint
         } else {
             "main"
         }
