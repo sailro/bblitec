@@ -10,6 +10,7 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import type { CompiledRenderTargetOptions } from "./engine-options.js";
 
 interface CompiledGeometryTask {
     cpp: string;
@@ -42,7 +43,7 @@ export interface EngineIntrinsicContext
     ): Value;
     compileRenderTargetOptions(
         expression: ts.Expression,
-    ): string;
+    ): CompiledRenderTargetOptions;
     compileRenderTaskOptions(
         expression: ts.Expression,
     ): string;
@@ -138,7 +139,7 @@ export function compileEngineIntrinsic(
             reachRenderer(context, call);
             return {
                 kind: "render-target",
-                cpp: `bbl::create_render_target(${engine}, ${options})`,
+                cpp: `bbl::create_render_target(${engine}, ${options.cpp})`,
                 engineCpp: engine,
             };
         }
@@ -161,7 +162,13 @@ export function compileEngineIntrinsic(
                 kind: "render-target-texture",
                 cpp:
                     `bbl::create_render_target_texture(` +
-                    `${engine.cpp}, ${options})`,
+                    `${engine.cpp}, ${options.cpp})`,
+                renderTextureSource: "render-target",
+                // `rtt.ts` hands back the colour attachment when the
+                // descriptor declared one and the depth attachment
+                // otherwise, so a colourless target's texture samples
+                // depth. The `.texture` read carries this through.
+                ...(options.hasColor ? {} : { isDepthTexture: true as const }),
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
             };

@@ -57,10 +57,22 @@ export interface EngineOptionContext
     cppString(value: string): string;
 }
 
+/**
+ * A compiled render-target descriptor, and the one fact about it a caller
+ * needs back: whether it declared a colour attachment. `rtt.ts` forks on
+ * exactly that -- `if (!rt._colorTexture || !rt._colorView)` -- so the
+ * texture the target hands a sampler is a colour one when it did and a
+ * depth one when it did not. Reported rather than re-derived downstream.
+ */
+export interface CompiledRenderTargetOptions {
+    cpp: string;
+    hasColor: boolean;
+}
+
 export function compileRenderTargetOptions(
     context: EngineOptionContext,
     expression: ts.Expression,
-): string {
+): CompiledRenderTargetOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -98,7 +110,10 @@ export function compileRenderTargetOptions(
             context.expectKind(surface, "engine", unwrappedSize);
         }
     }
-    return `bbl::RenderTargetOptions{${samples ? compilePositiveInteger(context, samples) : "1u"}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`;
+    return {
+        cpp: `bbl::RenderTargetOptions{${samples ? compilePositiveInteger(context, samples) : "1u"}, ${colorFormat ? "true" : "false"}, ${depthFormat ? "true" : "false"}, false, ${width}, ${height}}`,
+        hasColor: colorFormat !== undefined,
+    };
 }
 
 export function compileRenderTaskOptions(
@@ -140,21 +155,23 @@ export function compileRenderTaskOptions(
     const autoMirror = context.objectProperty(object, "autoMirror");
     // An external depth attachment: the pin binds that target's depth view
     // instead of the task target's own, and loads it because a geometry
-    // task's output is eager.
+    // task's output is eager. Which attachment a target hands a SAMPLER is
+    // a separate question, answered by the format it declared -- see
+    // `CompiledRenderTargetOptions`.
     const depthExpression = context.objectProperty(object, "depth");
     let depth = "bbl::RenderTextureRef{}";
     if (depthExpression) {
-        const value = context.compileValue(depthExpression);
-        // Only a geometry task's own depth is a depth attachment; every
-        // other render texture is a colour one, and the record says which by
-        // its source rather than by a flag beside it.
-        if (value.kind !== "render-texture" || !value.isDepthTexture) {
-            context.fail(
-                depthExpression,
-                "Render task depth must be a geometry task's geometryDepthTexture.",
-            );
-        }
-        depth = value.cpp;
+        // The SOURCE decides, not the aspect: a render target that declared
+        // no colour format also samples as depth, but the pin's eager
+        // wrapper is what this binds and loads, so only a geometry task's
+        // own depth may fill it.
+        depth = compileRenderTextureValue(
+            context,
+            depthExpression,
+            context.compileValue(depthExpression),
+            "Render task depth",
+            { sources: ["geometry-depth"] },
+        );
     }
     return `bbl::RenderTaskOptions{${context.cppString(
         nameExpression ? context.compileStringLiteral(nameExpression) : "render-task",
@@ -440,23 +457,67 @@ export function compileTextureReference(
     if (!expression) {
         context.fail(object, `Frame-graph task requires ${property}.`);
     }
-    const value: Value = context.compileValue(expression);
+    return compileRenderTextureValue(
+        context,
+        expression,
+        context.compileValue(expression),
+        `Frame-graph ${property}`,
+        { sampling },
+    );
+}
+
+/** All `compileRenderTextureValue` needs: somewhere to refuse. */
+export interface RenderTextureSlotContext {
+    fail(expression: ts.Node, message: string): never;
+}
+
+/**
+ * The one place a slot says which render textures may fill it.
+ *
+ * Two axes decide, and both are compile-time constants: the ASPECT
+ * (`sampling`) is what a bound view gives the shader, and the SOURCE
+ * (`sources`) is who owns the texture -- a `render_target` the scene made,
+ * a geometry task's MRT attachment, its packed output, or its own depth.
+ * A slot naming its accepted set gets a refusal with a source location;
+ * leaving it out lets a backend fail a binding at run time instead, which
+ * is a PAL adjudicating what Babylon a slot accepts.
+ */
+export function compileRenderTextureValue(
+    context: RenderTextureSlotContext,
+    expression: ts.Expression,
+    value: Value,
+    describe: string,
+    options: {
+        sampling?: "color" | "any";
+        sources?: readonly NonNullable<Value["renderTextureSource"]>[];
+    } = {},
+): string {
+    const sampling = options.sampling ?? "any";
     if (value.kind === "render-target") {
         return `bbl::render_target_texture(${value.cpp})`;
     }
-    if (value.kind === "render-texture") {
-        if (sampling === "color" && value.isDepthTexture) {
-            context.fail(
-                expression,
-                `Frame-graph ${property} is sampled as colour, so it cannot be a depth attachment.`,
-            );
-        }
-        return value.cpp;
+    if (value.kind !== "render-texture") {
+        return context.fail(
+            expression,
+            `${describe} must be a render texture, received ${value.kind}.`,
+        );
     }
-    return context.fail(
-        expression,
-        `Frame-graph ${property} must be a render texture, received ${value.kind}.`,
-    );
+    if (sampling === "color" && value.isDepthTexture) {
+        context.fail(
+            expression,
+            `${describe} is sampled as colour, so it cannot be a depth attachment.`,
+        );
+    }
+    if (options.sources && !options.sources.includes(
+        value.renderTextureSource ?? "render-target",
+    )) {
+        context.fail(
+            expression,
+            `${describe} accepts ${options.sources.join(" or ")} textures, ` +
+                `received a ${value.renderTextureSource ?? "render-target"} one.`,
+        );
+    }
+    return value.cpp;
 }
 
 export function compileSceneDefaultRenderTask(

@@ -143,6 +143,44 @@ static_assert(
     "This backend's slot constants must match the generated material "
     "texture-slot table.");
 
+/**
+ * One draw's own group-1 blocks and bind group.
+ *
+ * Every family's per-draw state is this shape, so all of it is created,
+ * held and released alike. A main-pass map is keyed by MATERIAL and a
+ * geometry-arm map by variant; `group_key` records what the held group was
+ * built for, so a draw arriving with another answer rebuilds.
+ */
+struct DawnDrawState {
+    WGPUBuffer mesh_uniforms = nullptr;
+    WGPUBuffer material_uniforms = nullptr;
+    WGPUBuffer uv_uniforms = nullptr;
+    WGPUBindGroup group = nullptr;
+    /** The variant, times two plus the Standard unfilterable-emissive bit. */
+    std::size_t group_key = std::numeric_limits<std::size_t>::max();
+    /** The pinned arm's vertex choice; `pinned_draw_conventions` states it. */
+    bool mirrored_vertices = false;
+};
+
+/** Releases what one map of draw states owns, and empties it. */
+template <typename Key>
+inline void release_dawn_draw_states(
+    std::map<Key, DawnDrawState>& states) {
+    for (auto& [key, draw_state] : states) {
+        if (draw_state.group) wgpuBindGroupRelease(draw_state.group);
+        if (draw_state.uv_uniforms) {
+            wgpuBufferRelease(draw_state.uv_uniforms);
+        }
+        if (draw_state.material_uniforms) {
+            wgpuBufferRelease(draw_state.material_uniforms);
+        }
+        if (draw_state.mesh_uniforms) {
+            wgpuBufferRelease(draw_state.mesh_uniforms);
+        }
+    }
+    states.clear();
+}
+
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
@@ -150,13 +188,14 @@ struct DawnMesh {
     WGPUBuffer material_uniforms = nullptr;
     std::uint64_t material_uniform_size = 0;
 #if BBLITE_PBR_VARIANTS > 0
-    // The pin's own per-draw blocks and the group-1 bind group for the variant
-    // this mesh composes. The material buffer is sized by that variant, which is
-    // what makes it carry only the fields its own extensions contribute.
-    WGPUBuffer pinned_mesh_uniforms = nullptr;
-    WGPUBuffer pinned_material_uniforms = nullptr;
-    WGPUBindGroup pinned_group = nullptr;
-    std::size_t pinned_variant = std::numeric_limits<std::size_t>::max();
+    // The pin's own per-draw blocks and group-1 bind group, keyed by
+    // MATERIAL for the reason `standard_states` is: a render task drawing
+    // this mesh through a material of its own arrives as the same
+    // `DawnMesh`, and one buffer set per mesh would let the last queue
+    // write poison the other pass. The material buffer is sized by the
+    // draw's variant, which is what makes it carry only the fields that
+    // variant's own extensions contribute.
+    std::map<std::uint32_t, DawnDrawState> pinned_states;
     // `create-skeleton.ts`: rgba32float, four texels per bone, one mat4 column
     // each. The pin reads the palette with textureLoad rather than from a UBO,
     // so a skinned variant needs the texture and not the DeformationUniforms
@@ -179,34 +218,33 @@ struct DawnMesh {
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
 #endif
+
 #if BBLITE_STANDARD_VARIANTS > 0
-    // The Standard family's per-draw blocks and group-1 bind group, keyed
-    // by (variant, unfilterable-emissive) exactly like the layout.
-    WGPUBuffer standard_mesh_uniforms = nullptr;
-    WGPUBuffer standard_material_uniforms = nullptr;
-    WGPUBuffer standard_uv_uniforms = nullptr;
-    WGPUBindGroup standard_group = nullptr;
-    std::size_t standard_group_key =
-        std::numeric_limits<std::size_t>::max();
-    struct StandardGeometryDrawState {
-        WGPUBuffer mesh_uniforms = nullptr;
-        WGPUBuffer material_uniforms = nullptr;
-        WGPUBuffer uv_uniforms = nullptr;
-        WGPUBindGroup group = nullptr;
-    };
-    std::map<std::size_t, StandardGeometryDrawState>
-        standard_geometry_states;
+    // The Standard family's per-draw blocks and group-1 bind group.
+    //
+    // Keyed by MATERIAL, not by this mesh alone: a render task may draw the
+    // mesh through a material of its own (`addMesh(mesh, { material })`),
+    // and the pin's plan gives that draw the mesh's own item index, so both
+    // draws arrive here as the same `DawnMesh`. One buffer set per mesh
+    // would let whichever block is written last poison the other pass --
+    // every queue write lands before the frame submits. The SDL backend is
+    // immune because it pushes the material block per draw.
+    std::map<std::uint32_t, DawnDrawState> standard_states;
+    // The geometry arms keyed by variant beside it: a LOCAL_POSITION
+    // variant's mesh block carries the node world where the colour pass's
+    // carries the identity, so each owns its mesh block. Its material and
+    // uv blocks stay the colour state's -- a geometry task carries no
+    // material override, `build_render_task_draw_lists` ignoring
+    // `render_meshes` for one.
+    std::map<std::size_t, DawnDrawState> standard_geometry_states;
 #endif
 #if BBLITE_NODE_VARIANTS > 0
     // A node graph's per-draw blocks: the pin's own mesh block, and the
-    // graph's uniform block when it declares one. Both are written once —
-    // the mesh block follows the mesh's transform, and the uniform block is
-    // the graph's own constants.
-    WGPUBuffer node_mesh_uniforms = nullptr;
-    WGPUBuffer node_uniforms = nullptr;
-    WGPUBindGroup node_group = nullptr;
-    std::size_t node_group_variant =
-        std::numeric_limits<std::size_t>::max();
+    // graph's uniform block when it declares one. The uniform block is
+    // written once -- it is the graph's own constants -- and the mesh block
+    // follows the mesh's transform. Keyed by material beside the two
+    // sibling families, for the same override reason.
+    std::map<std::uint32_t, DawnDrawState> node_states;
 #endif
     std::array<WGPUTexture, mesh_texture_slots> owned_textures{};
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
@@ -222,9 +260,6 @@ struct DawnMesh {
     WGPUTextureView reflection = nullptr;
     // Alpha-card shader vertex uniforms (center/angle/depth).
     WGPUBuffer shader_vertex_uniforms = nullptr;
-    // Frame-graph source texture bound in the standard-emissive slot
-    // (non-owning; resolved once frame-graph textures exist).
-    WGPUTextureView emissive_render_view = nullptr;
     std::uint64_t transform_version = 0;
 #if BBLITE_GPU_DEFORMATION
     WGPUBuffer deformation_uniforms = nullptr;
@@ -238,13 +273,8 @@ struct DawnMesh {
 #if BBLITE_PBR_VARIANTS > 0
     // The geometry-output MRT arms' per-variant draw state: a mesh drawn in
     // the main pass and in two geometry tasks holds three live bind groups
-    // at encode time, so these are keyed by variant beside `pinned_group`.
-    struct PinnedGeometryDrawState {
-        WGPUBindGroup group = nullptr;
-        WGPUBuffer mesh_uniforms = nullptr;
-        WGPUBuffer material_uniforms = nullptr;
-    };
-    std::map<std::size_t, PinnedGeometryDrawState> pinned_geometry_states;
+    // at encode time, so these are keyed by variant beside `pinned_states`.
+    std::map<std::size_t, DawnDrawState> pinned_geometry_states;
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
     // Owned when the mesh has storage morphs; otherwise these alias
@@ -789,41 +819,15 @@ struct DawnState : DawnDevice {
             }
             mesh.pinned_bone_view = nullptr;
             mesh.pinned_bone_texture = nullptr;
-            if (mesh.pinned_group) wgpuBindGroupRelease(mesh.pinned_group);
-            if (mesh.pinned_mesh_uniforms) {
-                wgpuBufferRelease(mesh.pinned_mesh_uniforms);
-            }
-            if (mesh.pinned_material_uniforms) {
-                wgpuBufferRelease(mesh.pinned_material_uniforms);
-            }
-            mesh.pinned_group = nullptr;
-            mesh.pinned_mesh_uniforms = nullptr;
-            mesh.pinned_material_uniforms = nullptr;
-            for (auto& [variant, draw_state] :
-                 mesh.pinned_geometry_states) {
-                if (draw_state.group) {
-                    wgpuBindGroupRelease(draw_state.group);
-                }
-                if (draw_state.mesh_uniforms) {
-                    wgpuBufferRelease(draw_state.mesh_uniforms);
-                }
-                if (draw_state.material_uniforms) {
-                    wgpuBufferRelease(draw_state.material_uniforms);
-                }
-            }
-            mesh.pinned_geometry_states.clear();
+            release_dawn_draw_states(mesh.pinned_geometry_states);
+            release_dawn_draw_states(mesh.pinned_states);
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
-            for (auto& [variant, draw_state] :
-                 mesh.standard_geometry_states) {
-                if (draw_state.group) {
-                    wgpuBindGroupRelease(draw_state.group);
-                }
-                if (draw_state.mesh_uniforms) {
-                    wgpuBufferRelease(draw_state.mesh_uniforms);
-                }
-            }
-            mesh.standard_geometry_states.clear();
+            release_dawn_draw_states(mesh.standard_geometry_states);
+            release_dawn_draw_states(mesh.standard_states);
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+            release_dawn_draw_states(mesh.node_states);
 #endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
@@ -2563,14 +2567,18 @@ WGPUBindGroup build_pinned_draw_group(
     return group;
 }
 
-/** The per-draw buffers and group-1 bind group for a mesh's own variant. */
-void ensure_pinned_draw_bindings(
+/** The per-draw buffers and group-1 bind group for one material's variant. */
+DawnDrawState& ensure_pinned_draw_bindings(
     DawnState& state,
     DawnMesh& mesh,
+    std::uint32_t material,
     std::size_t variant) {
-    if (mesh.pinned_group && mesh.pinned_variant == variant) return;
-    if (mesh.pinned_group) wgpuBindGroupRelease(mesh.pinned_group);
-    mesh.pinned_group = nullptr;
+    DawnDrawState& draw_state = mesh.pinned_states[material];
+    if (draw_state.group && draw_state.group_key == variant) {
+        return draw_state;
+    }
+    if (draw_state.group) wgpuBindGroupRelease(draw_state.group);
+    draw_state.group = nullptr;
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -2580,33 +2588,34 @@ void ensure_pinned_draw_bindings(
         if (!buffer) dawn_error("pinned draw buffer creation failed.");
         return buffer;
     };
-    if (!mesh.pinned_mesh_uniforms) {
-        mesh.pinned_mesh_uniforms =
+    if (!draw_state.mesh_uniforms) {
+        draw_state.mesh_uniforms =
             uniform_buffer(sizeof(upstream::MeshUniforms));
     }
     // Sized by the variant, so a swap to one with more fields reallocates.
-    if (mesh.pinned_material_uniforms) {
-        wgpuBufferRelease(mesh.pinned_material_uniforms);
+    if (draw_state.material_uniforms) {
+        wgpuBufferRelease(draw_state.material_uniforms);
     }
-    mesh.pinned_material_uniforms =
+    draw_state.material_uniforms =
         uniform_buffer(entry.material_ubo_bytes);
-    mesh.pinned_group = build_pinned_draw_group(
+    draw_state.group = build_pinned_draw_group(
         state,
         mesh,
         variant,
-        mesh.pinned_mesh_uniforms,
-        mesh.pinned_material_uniforms,
+        draw_state.mesh_uniforms,
+        draw_state.material_uniforms,
         nullptr);
-    mesh.pinned_variant = variant;
+    draw_state.group_key = variant;
+    return draw_state;
 }
 
 /**
  * The per-draw buffers and group-1 bind group for one geometry-output MRT
- * variant of a mesh, keyed by variant beside the main `pinned_group`: the
+ * variant of a mesh, keyed by variant beside `pinned_states`: the
  * encoder references the main group and every geometry group of a mesh in
  * the same frame, so none can replace another.
  */
-DawnMesh::PinnedGeometryDrawState& ensure_pinned_geometry_bindings(
+DawnDrawState& ensure_pinned_geometry_bindings(
     DawnState& state,
     DawnMesh& mesh,
     std::size_t variant,
@@ -2615,7 +2624,7 @@ DawnMesh::PinnedGeometryDrawState& ensure_pinned_geometry_bindings(
     if (existing != mesh.pinned_geometry_states.end()) {
         return existing->second;
     }
-    DawnMesh::PinnedGeometryDrawState draw_state{};
+    DawnDrawState draw_state{};
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -2745,7 +2754,7 @@ void write_pinned_geometry_task(
                         .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
-            DawnMesh::PinnedGeometryDrawState& draw_state =
+            DawnDrawState& draw_state =
                 ensure_pinned_geometry_bindings(
                     state,
                     mesh,
@@ -2857,6 +2866,34 @@ void encode_variant_draw(
         0);
 }
 #endif
+
+/**
+ * The texture and view a render target hands a sampler.
+ *
+ * `rtt.ts` returns the colour attachment when the target has one and the
+ * depth attachment otherwise, so the fork belongs to `has_color` -- the
+ * record's own field, which the SDL backend reads for the same question.
+ * Deriving it from whether a depth copy happens to exist would part from
+ * that for a target carrying both.
+ */
+std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(
+    DawnState& state,
+    const Engine& engine,
+    RenderTargetHandle target_handle) {
+    if (target_handle.value >= state.render_targets.size()) {
+        dawn_error("Frame graph render target handle is invalid.");
+    }
+    const RenderTargetRecord& record =
+        engine.render_targets[target_handle.value];
+    DawnRenderTarget& target = state.render_targets[target_handle.value];
+    if (pal::render_target_samples_depth(record)) {
+        if (record.has_depth && target.depth_copy) {
+            return {target.depth_copy, target.depth_copy_view};
+        }
+        pal::fail_render_target_has_no_texture();
+    }
+    return {target.sampled_color, target.sampled_color_view};
+}
 
 #if BBLITE_STANDARD_VARIANTS > 0
 /**
@@ -3006,6 +3043,21 @@ WGPUPipelineLayout standard_pipeline_layout_for(
     return state.standard_pipeline_layouts[key];
 }
 
+/**
+ * The frame-graph attachments a Standard draw's own material samples.
+ *
+ * Both are resolved from the DRAW's material, at the encode, for the two
+ * reasons that decide everything else about Standard draw state: an
+ * override draw carries a material the mesh's own render item never names,
+ * and the depth-copy views a target may hand back exist only once the
+ * frame graph has built. Neither is read off the mesh, so a pass that
+ * binds one states that it does.
+ */
+struct StandardRenderViews {
+    WGPUTextureView emissive = nullptr;
+    WGPUTextureView diffuse = nullptr;
+};
+
 /** The group-1 bind group for one Standard variant of a mesh. */
 WGPUBindGroup build_standard_draw_group(
     DawnState& state,
@@ -3016,7 +3068,9 @@ WGPUBindGroup build_standard_draw_group(
     WGPUBuffer material_uniforms,
     WGPUBuffer uv_uniforms,
     WGPUBuffer geometry_params,
-    WGPUTextureView emissive_render_view) {
+    StandardRenderViews render_views) {
+    const WGPUTextureView emissive_render_view = render_views.emissive;
+    const WGPUTextureView diffuse_render_view = render_views.diffuse;
     const bool unfilterable_emissive = emissive_render_view != nullptr;
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
@@ -3123,6 +3177,19 @@ WGPUBindGroup build_standard_draw_group(
                 material->has_emissive_render_texture) {
                 view = emissive_render_view;
                 sampler = state.nearest_sampler;
+            } else if (
+                row.source ==
+                    upstream::MaterialTextureSource::base_color &&
+                material != nullptr &&
+                material->has_diffuse_render_texture) {
+                // `material.diffuseTexture = <render target>`: a colour
+                // attachment, which rtt.ts hands the pin's bilinear
+                // sampler (`getBilinearSampler`: linear mag/min over
+                // WebGPU's clamp default). This backend's clamp sampler
+                // differs only in its mip filter, and buildRenderTarget
+                // allocates one level, so nothing samples past mip 0.
+                view = diffuse_render_view;
+                sampler = state.clamp_sampler;
             } else {
                 // By source, not by name: the row names are the pin's own
                 // std bindings (dT/oT/rT...), the slot table's names are
@@ -3175,7 +3242,12 @@ WGPUBindGroup build_standard_draw_group(
 }
 
 /** The per-draw uniform buffers for a mesh's Standard draws. */
-void ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh) {
+DawnDrawState& ensure_standard_draw_buffers(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::uint32_t material) {
+    DawnDrawState& draw_state =
+        mesh.standard_states[material];
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
@@ -3184,18 +3256,52 @@ void ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh) {
         if (!buffer) dawn_error("standard draw buffer creation failed.");
         return buffer;
     };
-    if (!mesh.standard_mesh_uniforms) {
-        mesh.standard_mesh_uniforms =
+    if (!draw_state.mesh_uniforms) {
+        draw_state.mesh_uniforms =
             uniform_buffer(sizeof(upstream::MeshUniforms));
     }
-    if (!mesh.standard_material_uniforms) {
-        mesh.standard_material_uniforms =
+    if (!draw_state.material_uniforms) {
+        draw_state.material_uniforms =
             uniform_buffer(upstream::standard_material_ubo_bytes);
     }
-    if (!mesh.standard_uv_uniforms) {
-        mesh.standard_uv_uniforms =
+    if (!draw_state.uv_uniforms) {
+        draw_state.uv_uniforms =
             uniform_buffer(sizeof(upstream::StandardUvTransformUniforms));
     }
+    return draw_state;
+}
+
+/**
+ * The attachments one material hands its Standard render-texture slots.
+ *
+ * Both reached writes -- `setStandardEmissiveTexture` and
+ * `material.diffuseTexture` -- name a `createRenderTargetTexture` output,
+ * and generation refuses any other source by name, so a reference reaching
+ * here that is not a render target is a compiler contract broken rather
+ * than a scene mistake.
+ */
+StandardRenderViews standard_render_views(
+    DawnState& state,
+    const Engine& engine,
+    const MaterialRecord* material) {
+    if (!material) return {};
+    const auto view = [&](const RenderTextureRef& reference) {
+        if (reference.source != RenderTextureSource::render_target) {
+            dawn_error(
+                "a material render texture must name a render target "
+                "built by createRenderTargetTexture.");
+        }
+        return dawn_render_target_texture(state, engine, reference.target)
+            .second;
+    };
+    return StandardRenderViews{
+        material->has_emissive_render_texture
+            ? view(material->emissive_render_texture)
+            : nullptr,
+        material->has_diffuse_render_texture
+            ? view(material->diffuse_render_texture)
+            : nullptr,
+    };
 }
 
 /** Writes one Standard draw's pinned blocks for the frame. */
@@ -3313,8 +3419,12 @@ void write_standard_geometry_task(
                 draw.item.material.value < engine.materials.size()
                     ? &engine.materials[draw.item.material.value]
                     : nullptr;
-            ensure_standard_draw_buffers(state, mesh);
-            DawnMesh::StandardGeometryDrawState& draw_state =
+            DawnDrawState& colour_state =
+                ensure_standard_draw_buffers(
+                    state,
+                    mesh,
+                    draw.item.material.value);
+            DawnDrawState& draw_state =
                 mesh.standard_geometry_states[variant];
             // A LOCAL_POSITION variant's mesh block carries the node world
             // where the colour pass's carries the identity over baked
@@ -3344,8 +3454,8 @@ void write_standard_geometry_task(
                 draw,
                 variant,
                 draw_state.mesh_uniforms,
-                mesh.standard_material_uniforms,
-                mesh.standard_uv_uniforms);
+                colour_state.material_uniforms,
+                colour_state.uv_uniforms);
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state,
@@ -3353,10 +3463,13 @@ void write_standard_geometry_task(
                     material,
                     variant,
                     draw_state.mesh_uniforms,
-                    mesh.standard_material_uniforms,
-                    mesh.standard_uv_uniforms,
+                    colour_state.material_uniforms,
+                    colour_state.uv_uniforms,
                     geometry.pinned_geometry_params,
-                    nullptr);
+                    // A geometry task writes the MRT attachments and
+                    // samples neither slot, and its layout arm is the
+                    // filterable one, so it binds neither view.
+                    StandardRenderViews{});
             }
         }
     }
@@ -4189,10 +4302,12 @@ WGPURenderPipeline node_variant_pipeline(
 }
 
 /** The per-draw buffers a node graph needs, created once per mesh. */
-void ensure_node_draw_buffers(
+DawnDrawState& ensure_node_draw_buffers(
     DawnState& state,
     DawnMesh& mesh,
+    std::uint32_t material,
     const upstream::NodeVariantEntry& entry) {
+    DawnDrawState& draw_state = mesh.node_states[material];
     const auto uniform_buffer = [&](std::uint64_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = size;
@@ -4203,42 +4318,44 @@ void ensure_node_draw_buffers(
         if (!buffer) dawn_error("node uniform buffer creation failed.");
         return buffer;
     };
-    if (!mesh.node_mesh_uniforms) {
-        mesh.node_mesh_uniforms =
+    if (!draw_state.mesh_uniforms) {
+        draw_state.mesh_uniforms =
             uniform_buffer(sizeof(upstream::NodeMeshUniforms));
     }
-    if (!mesh.node_uniforms && upstream::has_node_ubo(entry)) {
-        mesh.node_uniforms =
+    if (!draw_state.material_uniforms && upstream::has_node_ubo(entry)) {
+        draw_state.material_uniforms =
             uniform_buffer(static_cast<std::uint64_t>(entry.ubo_bytes));
         // The constants the graph declared, written with the buffer that
         // holds them: nothing a reached scene does changes them.
         wgpuQueueWriteBuffer(
             state.queue,
-            mesh.node_uniforms,
+            draw_state.material_uniforms,
             0,
             &upstream::node_variant_uniform_floats[
                 entry.first_uniform_float],
             entry.ubo_bytes);
     }
+    return draw_state;
 }
 
 WGPUBindGroup build_node_draw_group(
     DawnState& state,
     DawnMesh& mesh,
+    const DawnDrawState& draw_state,
     std::size_t variant) {
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
     std::vector<WGPUBindGroupEntry> entries;
     WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     mesh_entry.binding = 0;
-    mesh_entry.buffer = mesh.node_mesh_uniforms;
+    mesh_entry.buffer = draw_state.mesh_uniforms;
     mesh_entry.size = sizeof(upstream::NodeMeshUniforms);
     entries.push_back(mesh_entry);
     if (upstream::has_node_ubo(entry)) {
         WGPUBindGroupEntry node_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         node_entry.binding =
             static_cast<std::uint32_t>(entry.ubo_binding);
-        node_entry.buffer = mesh.node_uniforms;
+        node_entry.buffer = draw_state.material_uniforms;
         node_entry.size = static_cast<std::uint64_t>(entry.ubo_bytes);
         entries.push_back(node_entry);
     }
@@ -4298,12 +4415,12 @@ void write_node_mesh_block(
     const Scene& scene,
     const Engine& engine,
     const upstream::RenderDrawCommand& draw,
-    DawnMesh& mesh) {
+    const DawnDrawState& draw_state) {
     const upstream::NodeMeshUniforms block =
         node_mesh_block(scene, engine, draw.item.mesh.value);
     wgpuQueueWriteBuffer(
         state.queue,
-        mesh.node_mesh_uniforms,
+        draw_state.mesh_uniforms,
         0,
         &block,
         sizeof(block));
@@ -4790,11 +4907,12 @@ DawnMeshBindings& bindings_for(
         binding_traits.standard
             ? (mesh.reflection ? mesh.reflection : state.black_cube_view)
             : state.environment_cube_view,
-        binding_traits.standard
-            ? (mesh.emissive_render_view
-                   ? mesh.emissive_render_view
-                   : mesh.views[4])
-            : state.brdf_view,
+        // No render-texture arm here: a Standard draw in a build with a
+        // composed variant table never reaches this superset layout (the
+        // encode's own arm handles it, and the write phase errors when it
+        // resolves none), and a build without one cannot reach the
+        // features that write these slots.
+        binding_traits.standard ? mesh.views[4] : state.brdf_view,
     };
     std::array<WGPUSampler, max_texture_pairs> samplers{
         mesh.samplers[0],
@@ -4802,11 +4920,7 @@ DawnMeshBindings& bindings_for(
         mesh.samplers[2],
         mesh.samplers[3],
         state.default_sampler,
-        binding_traits.standard
-            ? (mesh.emissive_render_view
-                   ? state.nearest_sampler
-                   : mesh.samplers[4])
-            : state.clamp_sampler,
+        binding_traits.standard ? mesh.samplers[4] : state.clamp_sampler,
     };
     // The transmission trio and material-extension pairs append after
     // the base six. The superset layout requires every pair for every
@@ -7307,11 +7421,15 @@ bool run_dawn_engine(Engine& engine) {
                                 ? &engine.materials[
                                       draw.item.material.value]
                                 : nullptr;
-                        ensure_standard_draw_buffers(state, draw_mesh);
+                        DawnDrawState& standard_state =
+                            ensure_standard_draw_buffers(
+                                state,
+                                draw_mesh,
+                                draw.item.material.value);
                         // The bind group builds at encode: a depth-sampled
                         // emissive render texture's view resolves only
                         // after the frame-graph textures exist.
-                        draw_mesh.standard_group_key = variant * 2 +
+                        standard_state.group_key = variant * 2 +
                             ((standard_material &&
                               standard_material
                                   ->has_emissive_render_texture)
@@ -7323,9 +7441,9 @@ bool run_dawn_engine(Engine& engine) {
                             engine,
                             draw,
                             variant,
-                            draw_mesh.standard_mesh_uniforms,
-                            draw_mesh.standard_material_uniforms,
-                            draw_mesh.standard_uv_uniforms);
+                            standard_state.mesh_uniforms,
+                            standard_state.material_uniforms,
+                            standard_state.uv_uniforms);
 #else
                         dawn_error(
                             "Standard draw in a build with no composed "
@@ -7338,25 +7456,31 @@ bool run_dawn_engine(Engine& engine) {
                         upstream::RenderMaterialKind::node) {
                         const std::size_t variant =
                             draw.item.shader_variant;
-                        ensure_node_draw_buffers(
-                            state,
-                            draw_mesh,
-                            upstream::node_variants.at(variant));
+                        DawnDrawState& node_state =
+                            ensure_node_draw_buffers(
+                                state,
+                                draw_mesh,
+                                draw.item.material.value,
+                                upstream::node_variants.at(variant));
                         write_node_mesh_block(
                             state,
                             scene,
                             engine,
                             draw,
-                            draw_mesh);
-                        // Keyed like the two sibling families: a mesh moved
-                        // to another graph rebuilds rather than keeping a
-                        // group over the first graph's buffers.
-                        if (draw_mesh.node_group_variant != variant) {
-                            draw_mesh.node_group = build_node_draw_group(
+                            node_state);
+                        // A material moved to another graph rebuilds rather
+                        // than keeping a group over the first graph's
+                        // buffers.
+                        if (node_state.group_key != variant) {
+                            if (node_state.group) {
+                                wgpuBindGroupRelease(node_state.group);
+                            }
+                            node_state.group = build_node_draw_group(
                                 state,
                                 draw_mesh,
+                                node_state,
                                 variant);
-                            draw_mesh.node_group_variant = variant;
+                            node_state.group_key = variant;
                         }
 #endif
                     } else if (grid_draw) {
@@ -7449,8 +7573,6 @@ bool run_dawn_engine(Engine& engine) {
                                     .c_str());
                         }
                         {
-                            DawnMesh& variant_mesh =
-                                state.meshes[draw.item_index];
                             const MeshRecord& variant_record =
                                 engine.meshes[draw.item.mesh.value];
                             // `pinned_draw_conventions` states the
@@ -7463,14 +7585,16 @@ bool run_dawn_engine(Engine& engine) {
                             if (conventions.skeleton_draw) {
                                 write_pinned_bone_texture(
                                     state,
-                                    variant_mesh,
+                                    draw_mesh,
                                     variant_record);
                             }
-                            ensure_pinned_draw_bindings(
-                                state,
-                                variant_mesh,
-                                variant);
-                            variant_mesh.pinned_mirrored_vertices =
+                            DawnDrawState& pinned_state =
+                                ensure_pinned_draw_bindings(
+                                    state,
+                                    draw_mesh,
+                                    draw.item.material.value,
+                                    variant);
+                            pinned_state.mirrored_vertices =
                                 conventions.mirrored_vertices;
                             write_pinned_draw_blocks(
                                 state,
@@ -7480,8 +7604,8 @@ bool run_dawn_engine(Engine& engine) {
                                 variant,
                                 conventions.skeleton_draw,
                                 conventions.world_from_palette,
-                                variant_mesh.pinned_mesh_uniforms,
-                                variant_mesh.pinned_material_uniforms);
+                                pinned_state.mesh_uniforms,
+                                pinned_state.material_uniforms);
                         }
 #else
                         dawn_error(
@@ -7573,42 +7697,6 @@ bool run_dawn_engine(Engine& engine) {
 #endif
         if (!scene.tasks.empty()) {
             create_frame_graph_textures(state, engine, width, height);
-            // Resolve frame-graph source textures bound in standard
-            // emissive slots (the depth-copy views exist only now).
-            for (
-                std::size_t item_index = 0;
-                item_index < render_plan.items.size() &&
-                item_index < state.meshes.size();
-                ++item_index) {
-                const upstream::RenderItem& item =
-                    render_plan.items[item_index];
-                if (
-                    item.material_kind !=
-                        upstream::RenderMaterialKind::standard ||
-                    item.material.value >= engine.materials.size()) {
-                    continue;
-                }
-                const MaterialRecord& material =
-                    engine.materials[item.material.value];
-                if (!material.has_emissive_render_texture) continue;
-                const RenderTextureRef& reference =
-                    material.emissive_render_texture;
-                if (
-                    reference.source !=
-                        RenderTextureSource::render_target ||
-                    reference.target.value >=
-                        state.render_targets.size()) {
-                    dawn_error(
-                        "emissive render texture source is not "
-                        "implemented yet.");
-                }
-                const DawnRenderTarget& source_target =
-                    state.render_targets[reference.target.value];
-                state.meshes[item_index].emissive_render_view =
-                    source_target.depth_copy_view
-                        ? source_target.depth_copy_view
-                        : source_target.sampled_color_view;
-            }
             for (const TaskHandle handle : scene.tasks) {
                 const FrameTaskRecord& task =
                     engine.frame_tasks[handle.value];
@@ -7696,10 +7784,16 @@ bool run_dawn_engine(Engine& engine) {
                         sizeof(task_scene_block));
                 }
 #endif
+                // A colour task's own draws, prepared under its own
+                // camera. Both halves are skipped for a depth-only task
+                // and each for its own reason, so neither is riding the
+                // other's test: it encodes through
+                // `depth_only_pipeline_for`, which reads none of the
+                // blocks or groups these writes build; and its draws write
+                // depth without blending, so back-to-front order changes
+                // nothing to sort for. The SDL backend sorts in exactly
+                // its colour and geometry task arms for the same reasons.
                 if (target_record.has_color) {
-                    // Depth-only tasks never read fragment uniforms;
-                    // skipping them keeps the no-color override
-                    // materials from rewriting the shared buffers.
                     upstream::sort_transparent_draws(
                         render_task.draw_lists.transparent,
                         engine,
@@ -7746,13 +7840,38 @@ bool run_dawn_engine(Engine& engine) {
                 if (draw.item_index >= state.meshes.size()) continue;
                 DawnMesh& mesh = state.meshes[draw.item_index];
 #if BBLITE_PBR_VARIANTS > 0
-                // Babylon's own composed stages for this draw, when the scene
-                // resolves a variant for it. Everything else — the Standard
-                // path, the shader materials, a scene whose material handles do
-                // not correspond to the composed asset — takes the transcribed
-                // pipeline below.
-                if (mesh.pinned_group) {
-                    const std::size_t variant = mesh.pinned_variant;
+                // Babylon's own composed stages for this draw. Everything
+                // else -- the Standard path, the shader materials, the node
+                // graphs -- takes the transcribed pipeline below. Tested by
+                // KIND, not by whether a group happens to exist: a mesh
+                // drawn once through a PBR material would otherwise keep
+                // taking this arm after moving to another family.
+                if (
+                    draw.item.material_kind ==
+                    upstream::RenderMaterialKind::pbr) {
+                    // The write phase resolves and binds every PBR draw or
+                    // errors, so a missing state here means its pinned
+                    // bindings were never built for this frame.
+                    const auto pinned_entry =
+                        mesh.pinned_states.find(draw.item.material.value);
+                    if (
+                        pinned_entry == mesh.pinned_states.end() ||
+                        !pinned_entry->second.group) {
+                        dawn_error(
+                            ("PBR draw for mesh " +
+                             std::to_string(draw.item.mesh.value) +
+                             ", material " +
+                             std::to_string(draw.item.material.value) +
+                             ", pipeline kind " +
+                             std::to_string(
+                                 static_cast<int>(draw.pipeline)) +
+                             " reached the encode with no pinned "
+                             "bindings.")
+                                .c_str());
+                    }
+                    const DawnDrawState& pinned_state =
+                        pinned_entry->second;
+                    const std::size_t variant = pinned_state.group_key;
                     // The thin-instance arm's second stream and the instance
                     // count; a non-instanced variant binds neither and draws
                     // once.
@@ -7777,12 +7896,12 @@ bool run_dawn_engine(Engine& engine) {
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),
-                        mesh.pinned_group,
+                        pinned_state.group,
                         // Skinned and palette-world draws read the mirrored
                         // buffer; the palette carries the mirror on both
                         // sides, so unmirrored vertices would apply it three
                         // times.
-                        mesh.pinned_mirrored_vertices
+                        pinned_state.mirrored_vertices
                             ? mesh.vertices
                             : mesh.pinned_vertices,
                         pinned_instance_buffer,
@@ -7795,29 +7914,48 @@ bool run_dawn_engine(Engine& engine) {
 #if BBLITE_STANDARD_VARIANTS > 0
                 if (
                     draw.item.material_kind ==
-                    upstream::RenderMaterialKind::standard &&
-                    mesh.standard_group_key !=
-                        std::numeric_limits<std::size_t>::max()) {
-                    const std::size_t variant = mesh.standard_group_key / 2;
-                    if (!mesh.standard_group) {
+                    upstream::RenderMaterialKind::standard) {
+                    // Looked up inside the kind test: every other family's
+                    // draws would otherwise pay this descent per frame for
+                    // an answer their branch cannot use.
+                    const auto standard_entry =
+                        mesh.standard_states.find(
+                            draw.item.material.value);
+                    if (
+                        standard_entry == mesh.standard_states.end() ||
+                        standard_entry->second.group_key ==
+                            std::numeric_limits<std::size_t>::max()) {
+                        dawn_error(
+                            ("Standard draw for mesh " +
+                             std::to_string(draw.item.mesh.value) +
+                             " reached the encode with no resolved "
+                             "variant.")
+                                .c_str());
+                    }
+                    DawnDrawState& standard_state =
+                        standard_entry->second;
+                    const std::size_t variant =
+                        standard_state.group_key / 2;
+                    if (!standard_state.group) {
                         const MaterialRecord* standard_material =
                             draw.item.material.value <
                                     engine.materials.size()
                                 ? &engine.materials[
                                       draw.item.material.value]
                                 : nullptr;
-                        mesh.standard_group = build_standard_draw_group(
+                        standard_state.group = build_standard_draw_group(
                             state,
                             mesh,
                             standard_material,
                             variant,
-                            mesh.standard_mesh_uniforms,
-                            mesh.standard_material_uniforms,
-                            mesh.standard_uv_uniforms,
+                            standard_state.mesh_uniforms,
+                            standard_state.material_uniforms,
+                            standard_state.uv_uniforms,
                             nullptr,
-                            (mesh.standard_group_key & 1) != 0
-                                ? mesh.emissive_render_view
-                                : nullptr);
+                            standard_render_views(
+                                state,
+                                engine,
+                                standard_material));
                     }
                     WGPUBuffer standard_instance_buffer = nullptr;
                     std::uint32_t standard_instances = 1;
@@ -7837,11 +7975,11 @@ bool run_dawn_engine(Engine& engine) {
                             draw.pipeline,
                             samples,
                             pass_has_depth,
-                            (mesh.standard_group_key & 1) != 0),
+                            (standard_state.group_key & 1) != 0),
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),
-                        mesh.standard_group,
+                        standard_state.group,
                         // The Standard families carry no glTF X-mirror: the
                         // baked buffer is the pin's own convention already.
                         mesh.vertices,
@@ -7851,21 +7989,16 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.index_count);
                     continue;
                 }
-                if (
-                    draw.item.material_kind ==
-                    upstream::RenderMaterialKind::standard) {
-                    dawn_error(
-                        ("Standard draw for mesh " +
-                         std::to_string(draw.item.mesh.value) +
-                         " reached the encode with no resolved variant.")
-                            .c_str());
-                }
 #endif
 #if BBLITE_NODE_VARIANTS > 0
                 if (
                     draw.item.material_kind ==
                     upstream::RenderMaterialKind::node) {
-                    if (!mesh.node_group) {
+                    const auto node_entry =
+                        mesh.node_states.find(draw.item.material.value);
+                    if (
+                        node_entry == mesh.node_states.end() ||
+                        !node_entry->second.group) {
                         dawn_error(
                             ("node draw for mesh " +
                              std::to_string(draw.item.mesh.value) +
@@ -7883,7 +8016,7 @@ bool run_dawn_engine(Engine& engine) {
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),
-                        mesh.node_group,
+                        node_entry->second.group,
                         // A node graph reads the baked vertices under the
                         // identity world, like the Standard family.
                         mesh.vertices,
@@ -7892,26 +8025,6 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.indices,
                         mesh.index_count);
                     continue;
-                }
-#endif
-#if BBLITE_PBR_VARIANTS > 0
-                // The write phase resolves and binds every PBR draw or
-                // errors; reaching here with one means its pinned bindings
-                // were never built for this frame.
-                if (
-                    draw.item.material_kind ==
-                    upstream::RenderMaterialKind::pbr) {
-                    dawn_error(
-                        ("PBR draw for mesh " +
-                         std::to_string(draw.item.mesh.value) +
-                         ", material " +
-                         std::to_string(draw.item.material.value) +
-                         ", pipeline kind " +
-                         std::to_string(
-                             static_cast<int>(draw.pipeline)) +
-                         " reached the transcribed dispatch with no "
-                         "pinned bindings.")
-                            .c_str());
                 }
 #endif
                 DawnPipeline& pipeline = pipeline_for(
@@ -8273,24 +8386,8 @@ bool run_dawn_engine(Engine& engine) {
         // Frame-graph execution replaces the main pass entirely,
         // mirroring the SDL task loop.
         const auto render_target_texture =
-            [&](RenderTargetHandle target_handle)
-            -> std::pair<WGPUTexture, WGPUTextureView> {
-            if (target_handle.value >= state.render_targets.size()) {
-                throw std::runtime_error(
-                    "Frame graph render target handle is invalid.");
-            }
-            const RenderTargetRecord& record =
-                engine.render_targets[target_handle.value];
-            DawnRenderTarget& target =
-                state.render_targets[target_handle.value];
-            if (!record.has_color) {
-                if (record.has_depth && target.depth_copy) {
-                    return {target.depth_copy, target.depth_copy_view};
-                }
-                throw std::runtime_error(
-                    "Depth-only render target has no color texture.");
-            }
-            return {target.sampled_color, target.sampled_color_view};
+            [&](RenderTargetHandle target_handle) {
+            return dawn_render_target_texture(state, engine, target_handle);
         };
         /** The depth view a reference names, or null when it names none. */
         const auto task_depth_view =

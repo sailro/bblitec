@@ -146,6 +146,13 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["material:no-color-view"],
     },
     {
+        source: "upstream/src/material_render_textures.cpp",
+        features: [
+            "material:standard-diffuse-render-texture",
+            "material:standard-emissive-render-texture",
+        ],
+    },
+    {
         source: "upstream/src/material_grid.cpp",
         features: ["material:grid"],
     },

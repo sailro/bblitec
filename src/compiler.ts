@@ -36,6 +36,7 @@ import {
 } from "./compiler/intrinsics/post-process-options.js";
 import {
     compileRenderTargetOptions,
+    type CompiledRenderTargetOptions,
     compileRenderTaskOptions,
     compileGeometryTaskOptions,
     compileCopyTaskOptions,
@@ -202,6 +203,8 @@ const featureSources: Record<Feature, string[]> = {
     "material:node": [],
     "material:shader": [],
     "material:standard": [],
+    "material:standard-diffuse-render-texture": [],
+    "material:standard-emissive-render-texture": [],
     "material:standard-vertex-colors": [],
     "mesh:box": [],
     "mesh:from-data": [],
@@ -1194,7 +1197,9 @@ class Compiler
         return compileBoxOptions(this, expression);
     }
 
-    public compileRenderTargetOptions(expression: ts.Expression): string {
+    public compileRenderTargetOptions(
+        expression: ts.Expression,
+    ): CompiledRenderTargetOptions {
         return compileRenderTargetOptions(this, expression);
     }
 
@@ -2626,6 +2631,7 @@ class Compiler
             return {
                 kind: "render-texture",
                 cpp: `bbl::geometry_task_output_texture(${owner.cpp})`,
+                renderTextureSource: "geometry-output",
                 ...engineCpp,
             };
         }
@@ -2636,6 +2642,7 @@ class Compiler
                 kind: "render-texture",
                 cpp: `bbl::geometry_task_depth_texture(${owner.cpp})`,
                 isDepthTexture: true,
+                renderTextureSource: "geometry-depth",
                 ...engineCpp,
             };
         }
@@ -2670,6 +2677,7 @@ class Compiler
         return {
             kind: "render-texture",
             cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${geometryEnumMember(type)})`,
+            renderTextureSource: "geometry",
             ...engineCpp,
         };
     }

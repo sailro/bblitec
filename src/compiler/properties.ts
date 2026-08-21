@@ -55,6 +55,11 @@ interface PropertyRead {
      */
     carriesScenePbrMaterial?: true;
     /**
+     * Carries the owner's `isDepthTexture` and `renderTextureSource` onto
+     * the value read, for a read that names the owner's own attachment.
+     */
+    carriesRenderTextureAspect?: true;
+    /**
      * The plain-data type this read produces, when it produces data rather
      * than a handle or a scalar the compiler models itself. Set it and the
      * value arrives as `kind: "data"`, which is what the comparison, sink
@@ -294,10 +299,15 @@ const propertyRules: readonly PropertyRule[] = [
         field: "rt",
     },
     {
+        // Which attachment `rtt.ts` hands back is the target's own fact,
+        // decided by the format it declared; the texture read off it is
+        // that attachment, so it inherits the answer rather than being
+        // asked again downstream.
         owner: "render-target-texture",
         property: "texture",
         value: "render-texture",
         field: "texture",
+        carriesRenderTextureAspect: true,
     },
 ];
 
@@ -376,6 +386,19 @@ export function readProperty(
             ? {
                   scenePbrMaterialIndex:
                       owner.scenePbrMaterialIndex,
+              }
+            : {}),
+        ...(rule.carriesRenderTextureAspect
+            ? {
+                  ...(owner.isDepthTexture
+                      ? { isDepthTexture: owner.isDepthTexture }
+                      : {}),
+                  ...(owner.renderTextureSource
+                      ? {
+                            renderTextureSource:
+                                owner.renderTextureSource,
+                        }
+                      : {}),
               }
             : {}),
     });

@@ -668,8 +668,13 @@ function pinnedNumericConstant(
 const standardFeatureRecordSources: Readonly<
     Record<string, string | null>
 > = {
-    // babylon-loader-cpp.ts fills base_color_texture from diffuseTexture.
-    diffuseTexture: "!material.base_color_texture.bytes.empty()",
+    // babylon-loader-cpp.ts fills base_color_texture from diffuseTexture,
+    // and a scene-code `material.diffuseTexture = <render target>` write
+    // fills the render-texture pair instead: an image and an attachment
+    // both light HAS_DIFFUSE_TEXTURE.
+    diffuseTexture:
+        "!material.base_color_texture.bytes.empty() || " +
+        "material.has_diffuse_render_texture",
     diffuseCoordIndex: "material.diffuse_coord_index",
     // `setStandardEmissiveTexture` is the only native source of a Standard
     // emissive texture (the .babylon loader loads none), and it is always the
@@ -1077,9 +1082,12 @@ export interface StandardSceneCompositionInput {
     /** `material:no-color-view` reached: depth-only views over the
      *  scene-code materials. */
     noColorViews: boolean;
-    /** Whether the compiled surface can hand a render texture to
-     *  `material.emissiveTexture` (any scene with frame tasks can). */
+    /** `material:standard-emissive-render-texture` reached: scene code
+     *  hands a depth attachment to `setStandardEmissiveTexture`. */
     emissiveRenderTexture: boolean;
+    /** `material:standard-diffuse-render-texture` reached: scene code hands
+     *  a colour attachment to `material.diffuseTexture`. */
+    diffuseRenderTexture: boolean;
     /** `mesh:thin-instances*` reached: pools can attach to scene meshes. */
     thinInstances: boolean;
     /** Morph storage/deformation reached for scene meshes. */
@@ -1213,31 +1221,47 @@ function babylonMaterialInput(
  * heuristic.
  */
 function sceneCodeMaterialInputs(
-    options: { emissiveRenderTexture: boolean },
+    options: {
+        emissiveRenderTexture: boolean;
+        diffuseRenderTexture: boolean;
+    },
 ): PinnedStandardMaterialInput[] {
     const inputs: PinnedStandardMaterialInput[] = [];
+    // An axis a scene does not reach contributes one arm, not two, so a
+    // scene writing neither render texture sweeps the same eight inputs it
+    // always did.
+    const emissiveArms = options.emissiveRenderTexture
+        ? [false, true]
+        : [false];
+    const diffuseArms = options.diffuseRenderTexture
+        ? [false, true]
+        : [false];
     for (const disableLighting of [false, true]) {
         for (const doubleSided of [false, true]) {
             for (const alphaBlend of [false, true]) {
-                for (
-                    const emissive of options.emissiveRenderTexture
-                        ? [false, true]
-                        : [false]
-                ) {
-                    inputs.push({
-                        ...(disableLighting
-                            ? { disableLighting: true }
-                            : {}),
-                        backFaceCulling: !doubleSided,
-                        alpha: alphaBlend ? 0.5 : 1,
-                        ...(emissive
-                            ? {
-                                emissiveTexture: {
-                                    _sampleType: "depth",
-                                },
-                            }
-                            : {}),
-                    });
+                for (const emissive of emissiveArms) {
+                    for (const diffuse of diffuseArms) {
+                        inputs.push({
+                            ...(disableLighting
+                                ? { disableLighting: true }
+                                : {}),
+                            backFaceCulling: !doubleSided,
+                            alpha: alphaBlend ? 0.5 : 1,
+                            ...(emissive
+                                ? {
+                                    emissiveTexture: {
+                                        _sampleType: "depth",
+                                    },
+                                }
+                                : {}),
+                            // A colour attachment reaches the pin's
+                            // condition as a plain truthy texture at
+                            // coordinate index 0; what makes it a render
+                            // texture is invertY, which the UV block reads
+                            // rather than the feature word.
+                            ...(diffuse ? { diffuseTexture: {} } : {}),
+                        });
+                    }
                 }
             }
         }
@@ -1268,6 +1292,7 @@ export async function composeSceneStandardVariants(
         materialInputs.push(
             ...sceneCodeMaterialInputs({
                 emissiveRenderTexture: input.emissiveRenderTexture,
+                diffuseRenderTexture: input.diffuseRenderTexture,
             }),
         );
     }

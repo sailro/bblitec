@@ -310,7 +310,22 @@ that does to the deferred lane by default.
   static record property — 226 `container._gaussianSplats ?? []`, 251
   `xbot.animationGroups ?? []`. Splats, animation groups and the Recast lane sit
   behind them.
-- [ ] Scenes 18, 25: support Standard ground diffuse textures.
+- [ ] Extend `material.diffuseTexture` past the colour render target scene
+  110 measures. Three sources refuse by name: an image texture, a
+  depth-only `createRenderTargetTexture` output, and a geometry task's
+  attachment. `rtt.ts` forks on the attachment, giving a colour view
+  `invertY: true` plus the bilinear sampler and a depth view
+  `invertY: false` plus the nearest one, and the setter folds the colour
+  arm; a geometry attachment is refused on ownership rather than aspect.
+  The record and the loader already carry the
+  image half (`base_color_texture`, filled by the `.babylon` loader), so a
+  scene-code write adds that write plus the right `uv_invert_y`: false for
+  `loadTexture2D`, true for the KTX2/Basis and texture-array uploads
+  `pinned-standard-variants.ts` already names. Scenes 18, 25, 90 and 272
+  sit behind it and each wants more besides: 18 the shadow family and
+  `loadTexture2D`, 25 `loadKtxTexture2D` and `uvScale`, 90 `alphaCutOff`
+  plus a static-array loop and a canvas2D data URL built in the entry file,
+  272 `cloneTransformNode` and `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
 - [ ] Scenes 26, 87: support image-processing `toneMapping`.
 - [ ] Scene 36: support `loadBasisTexture2D`.
@@ -407,7 +422,6 @@ that does to the deferred lane by default.
 - [ ] Scene 86: support `setClipPlane`.
 - [ ] Scene 91: support `initializeCsg2Async`.
 - [ ] Scene 99: support `enableBoneControl`.
-- [ ] Scenes 90, 110: support Standard material diffuse textures.
 - [ ] Scene 111: support mesh IDs.
 - [ ] Scene 112: resolve and lower `addDdsEnvironmentBackground`.
 - [ ] Scenes 113, 129: support mesh names.

@@ -831,6 +831,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene110",
+        name: "Scene 110 - Render Target Diffuse Texture",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene110.ts",
+        title: "Babylon Lite Native - Render Target Diffuse Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",

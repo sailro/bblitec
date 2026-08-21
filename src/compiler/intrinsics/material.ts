@@ -374,6 +374,10 @@ export function compileMaterialIntrinsic(
                 call.arguments[1]!,
             );
             context.expectSameEngine(material, texture, call);
+            context.reachFeature(
+                "material:standard-emissive-render-texture",
+                call,
+            );
             return {
                 kind: "void",
                 cpp:

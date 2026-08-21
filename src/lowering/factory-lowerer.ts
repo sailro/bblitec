@@ -2976,6 +2976,87 @@ MaterialHandle create_grid_material(
         };
     }
 
+    /**
+     * The two Standard texture slots a frame-graph attachment can fill.
+     *
+     * They are one lowering because they are one shape: store the
+     * reference, raise the flag. Each is gated on the feature named after
+     * it, so a scene reaching neither compiles neither -- which is what
+     * kept them apart before, in the Standard factory and the no-colour
+     * view TU, neither of which is named for them.
+     */
+    public lowerStandardTextureSetters(
+        diffuse: boolean,
+        emissive: boolean,
+    ): LoweredSource {
+        const rttModule = "src/texture/rtt.ts";
+        return {
+            modulePath: rttModule,
+            symbolName: [
+                ...(diffuse ? ["material.diffuseTexture"] : []),
+                ...(emissive ? ["setStandardEmissiveTexture"] : []),
+            ].join(","),
+            header: "",
+            source: `// ${this.context.provenance(
+                rttModule,
+                "createRenderTargetTexture",
+                "src/material/standard/standard-material.ts#diffuseTexture and src/material/standard/set-std-emissive.ts#setStandardEmissiveTexture",
+            )}
+#include <bblite/runtime.hpp>
+
+#include <stdexcept>
+
+namespace bbl {
+
+namespace {
+
+MaterialRecord& render_texture_material(
+    Engine& engine,
+    MaterialHandle material) {
+    if (material.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid material handle.");
+    }
+    return engine.materials[material.value];
+}
+
+} // namespace
+${diffuse ? `
+// The plain material.diffuseTexture write, for the one source the reached
+// slice gives it: a colour render target.
+//
+// rtt.ts hands that attachment back as a Texture2D carrying invertY: true,
+// and isStandardUvInverted reads exactly that property off the diffuse
+// texture, so the material's UV block flips V. A loaded image carries no
+// such property -- loadTexture2D flips at upload instead -- which is why
+// the record's uv_invert_y and invert_y are separate fields.
+void set_standard_diffuse_render_texture(
+    Engine& engine,
+    MaterialHandle material,
+    RenderTextureRef texture) {
+    MaterialRecord& record = render_texture_material(engine, material);
+    record.diffuse_render_texture = texture;
+    record.has_diffuse_render_texture = true;
+    record.base_color_texture.uv_invert_y = true;
+}
+` : ""}${emissive ? `
+// The pinned setter stores the texture and registers the emissive
+// extension; registration is a bundling concern with no native
+// counterpart, because generation composes against every Standard
+// extension the pin ships.
+void set_standard_emissive_texture(
+    Engine& engine,
+    MaterialHandle material,
+    RenderTextureRef texture) {
+    MaterialRecord& record = render_texture_material(engine, material);
+    record.emissive_render_texture = texture;
+    record.has_emissive_render_texture = true;
+}
+` : ""}
+} // namespace bbl
+`,
+        };
+    }
+
     public lowerStandardMaterialFactory(): LoweredSource {
         const modulePath = "src/material/standard/create-standard-material.ts";
         const symbolName = "createStandardMaterial";
@@ -3174,20 +3255,6 @@ void mark_material_ubo_dirty(
     if (material.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid material handle.");
     }
-}
-
-// The pinned setter stores the texture and registers the emissive extension;
-// registration is a bundling concern with no native counterpart, because
-// generation composes against every Standard extension the pin ships.
-void set_standard_emissive_texture(
-    Engine& engine,
-    MaterialHandle material,
-    RenderTextureRef texture) {
-    if (material.value >= engine.materials.size()) {
-        throw std::runtime_error("Invalid material handle.");
-    }
-    engine.materials[material.value].emissive_render_texture = texture;
-    engine.materials[material.value].has_emissive_render_texture = true;
 }
 
 } // namespace bbl

@@ -289,7 +289,14 @@ Only the GPU API layer differs:
   plan's items — the same walk and skip logic as the SDL_GPU loop —
   and the per-draw mesh and material blocks are written with their
   draws before submission, each draw owning buffers sized to its
-  blocks.
+  blocks. A Standard draw's blocks and bind group are keyed by
+  *material*, not by mesh: the pin's own plan gives a per-pass material
+  override (`addMesh(mesh, { material })`) the mesh's existing item, so
+  both draws arrive as one mesh, and — because every queue write lands
+  before the frame submits — one buffer per mesh would let the override
+  poison the main pass. SDL_GPU pushes the block per draw and needs no
+  such key. Scene 110 measures both. The PBR and node families still key
+  theirs by mesh; no reached scene overrides one in a colour pass.
 - **Deformation/instancing/storage morph**: the shared `GpuVertex`
   deformation layout (16 attributes/200 bytes; the composed variants
   append an integer joint-index lane — 216 bytes) feeds locations

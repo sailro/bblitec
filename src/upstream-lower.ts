@@ -1161,6 +1161,24 @@ ${composed.wgsl}`,
                 generated,
             );
         }
+        {
+            const diffuse = features.includes(
+                "material:standard-diffuse-render-texture",
+            );
+            const emissive = features.includes(
+                "material:standard-emissive-render-texture",
+            );
+            if (diffuse || emissive) {
+                this.writeSource(
+                    "upstream/src/material_render_textures.cpp",
+                    factories.lowerStandardTextureSetters(
+                        diffuse,
+                        emissive,
+                    ),
+                    generated,
+                );
+            }
+        }
         if (features.includes("material:no-color-view")) {
             this.writeSource(
                 "upstream/src/material_views.cpp",

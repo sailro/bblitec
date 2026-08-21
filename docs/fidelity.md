@@ -477,6 +477,17 @@ world matrix (`local_matrix_from_direction`): the spot exponent lands in
 light's ground colour reuses `vLightDirection`, exactly where the pin puts
 them. Scene 15 is the spot parity gate, byte-identical across both backends.
 
+**A render target sampled as a Standard diffuse texture flips V in the UV
+block, not at upload.** `createRenderTargetTexture` returns its colour
+attachment as a `Texture2D` carrying `invertY: true`, and
+`isStandardUvInverted` reads that property off the diffuse texture to decide
+the sign `writeStandardUvTransformData` gives the material's UV scale. A
+loaded image never carries it — `loadTexture2D`'s own `invertY` option
+drives the flipped upload copy and nothing else — which is why the native
+record keeps `uv_invert_y` and `invert_y` as separate fields, and why
+reading the upload flag here would flip every textured Standard sample.
+Scene 110 gates the render-target arm and scenes 9 and 24 the absence.
+
 **The emissive texture is sampled at the raw UV, never through its own
 transform.** Every other slot samples through the UV its
 `KHR_texture_transform` builds, and the emissive slot's transform is parsed,

@@ -956,6 +956,10 @@ struct MaterialRecord {
     bool no_color = false;
     bool disable_lighting = false;
     bool has_emissive_render_texture = false;
+    // `material.diffuseTexture = <createRenderTargetTexture output>`: the
+    // Standard diffuse slot fed by another pass's colour attachment rather
+    // than by decoded image bytes.
+    bool has_diffuse_render_texture = false;
     bool double_sided = false;
     // The pin's opacityFromRGB (createStandardMaterial default false; the
     // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
@@ -1042,6 +1046,7 @@ struct MaterialRecord {
     // multiplies the uniform against this texel, so a baked zero stays zero.
     std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
     RenderTextureRef emissive_render_texture{};
+    RenderTextureRef diffuse_render_texture{};
     // A shader material's own sampler slots, in the order its `samplers`
     // option declared them (`_textureSlots` upstream). Empty for every other
     // family, and for a shader material whose WGSL samples nothing.
@@ -1422,6 +1427,10 @@ void set_shader_texture(
     MaterialHandle material,
     std::uint32_t slot,
     FileTexture texture);
+void set_standard_diffuse_render_texture(
+    Engine& engine,
+    MaterialHandle material,
+    RenderTextureRef texture);
 void set_alpha_to_coverage(
     Engine& engine,
     MaterialHandle material,

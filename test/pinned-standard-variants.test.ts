@@ -465,6 +465,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             vertexColors: false,
             noColorViews: false,
             emissiveRenderTexture: false,
+            diffuseRenderTexture: false,
             thinInstances: true,
             morphTargets: false,
             sceneMaterials: true,
@@ -522,6 +523,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             vertexColors: false,
             noColorViews: false,
             emissiveRenderTexture: false,
+            diffuseRenderTexture: false,
             thinInstances: true,
             morphTargets: false,
             sceneMaterials: true,
@@ -605,6 +607,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             vertexColors: false,
             noColorViews: false,
             emissiveRenderTexture: false,
+            diffuseRenderTexture: false,
             thinInstances: false,
             morphTargets: false,
             sceneMaterials: false,
@@ -691,7 +694,10 @@ test("the native-support block flows from the pin's own declarations", async () 
     // presence guard, the alpha-blend comparison, the disable-lighting flag
     // -- and none of the branches the loader cannot feed (no lightmap).
     assert.ok(
-        block.includes("if (!material.base_color_texture.bytes.empty()) {"),
+        block.includes(
+            "if (!material.base_color_texture.bytes.empty() || " +
+                "material.has_diffuse_render_texture) {",
+        ),
     );
     assert.ok(
         block.includes(

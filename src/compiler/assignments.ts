@@ -793,6 +793,58 @@ export function emitPropertyAssignment(
             return;
         }
 
+        if (
+            target.kind === "material" &&
+            property === "diffuseTexture"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "material diffuseTexture",
+            );
+            const texture = context.compileValue(
+                expression.right,
+            );
+            // An image texture is the other half of this slot and is not
+            // lowered: the `.babylon` loader already fills the record's
+            // bytes, but no reached scene assigns one from scene code, so
+            // the path would ship unmeasured.
+            if (texture.kind === "texture") {
+                context.fail(
+                    expression.right,
+                    "Reached Standard diffuse textures come from createRenderTargetTexture; an image texture is not lowered.",
+                );
+            }
+            // What this slot accepts, said the way every frame-graph slot
+            // says it. `sampling: "color"` is the aspect the setter folds
+            // -- `rtt.ts` gives a colour view `invertY: true` and the
+            // bilinear sampler, a depth one `invertY: false` and the
+            // nearest -- and `sources` is the ownership: only a target the
+            // scene made, never a geometry task's attachment.
+            const textureCpp = compileRenderTextureValue(
+                context,
+                expression.right,
+                texture,
+                "Reached Standard diffuseTexture",
+                { sampling: "color", sources: ["render-target"] },
+            );
+            context.expectSameEngine(
+                target,
+                texture,
+                expression,
+            );
+            context.reachFeature(
+                "material:standard-diffuse-render-texture",
+                expression,
+            );
+            context.emit(
+                `bbl::set_standard_diffuse_render_texture(` +
+                    `${context.requireEngine(target, expression)}, ` +
+                    `${target.cpp}, ${textureCpp});`,
+            );
+            return;
+        }
+
         const recordField = recordFieldAssignments.find(
             (candidate) =>
                 candidate.kind === target.kind &&
@@ -966,6 +1018,7 @@ function requireSimpleAssignment(
 }
 import ts from "typescript";
 import { cameraRecordField } from "./properties.js";
+import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import type {
     Feature,
