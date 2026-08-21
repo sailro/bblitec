@@ -91,7 +91,11 @@ inline WGPUStringView string_view(const char* text) {
  * Upload RGBA8 texels as a sampled 2D texture.
  *
  * Shared because a sprite atlas and a custom shader's extra texture are the
- * same upload: tightly packed rows, no mip chain, no sRGB view.
+ * same upload: tightly packed rows and no sRGB view. `mip_levels` is the
+ * chain the pinned loader built -- one for `loadSpriteAtlas`, the full
+ * chain for the `loadTexture2D` a particle graph's texture block reaches --
+ * and the caller generates the levels, because the blit that fills them is
+ * the frame state's.
  */
 inline WGPUTexture upload_dawn_rgba_texture(
     WGPUDevice device,
@@ -99,12 +103,16 @@ inline WGPUTexture upload_dawn_rgba_texture(
     const std::uint8_t* rgba,
     std::size_t bytes,
     std::uint32_t width,
-    std::uint32_t height) {
+    std::uint32_t height,
+    std::uint32_t mip_levels = 1) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.dimension = WGPUTextureDimension_2D;
     descriptor.format = WGPUTextureFormat_RGBA8Unorm;
-    descriptor.usage =
-        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.usage = mip_levels > 1
+        ? (WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst |
+           WGPUTextureUsage_RenderAttachment)
+        : (WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst);
+    descriptor.mipLevelCount = mip_levels;
     descriptor.size = WGPUExtent3D{width, height, 1};
     WGPUTexture texture = wgpuDeviceCreateTexture(device, &descriptor);
     if (!texture) dawn_error("wgpuDeviceCreateTexture rgba texture");

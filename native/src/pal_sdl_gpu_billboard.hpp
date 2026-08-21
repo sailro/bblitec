@@ -234,7 +234,8 @@ inline BillboardPass create_billboard_pass(
             atlas.width,
             atlas.height,
             SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "billboard atlas"),
+            "billboard atlas",
+            atlas_mip_levels(atlas)),
         create_texture_sampler(device, atlas.sampler),
         system.custom_textures,
         "billboard custom texture");

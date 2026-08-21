@@ -76,6 +76,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
+| [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard that draws it is folded |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
 | [Fullscreen effects](#fullscreen-effects) | Compile → Run | the caller's WGSL wrapped in the pin's own vertex stage at generation; the swapchain renderer or the frame-graph task at run time |
@@ -250,6 +251,52 @@ by parity measurement, and the scenes measure byte-identical.
 
 Both share the HDR prefilter's tradeoff: the baked bytes depend on the Chrome
 that compiled them.
+
+### Node particles
+
+A Node Particle Editor graph is a CPU simulation, and a corpus scene runs it
+to a fixed frame before the first render: it seeds `Math.random` itself,
+steps `animateParticleSystem` a couple of hundred times, and synchronizes the
+result into a camera-facing billboard system. What ships is that frozen
+state.
+
+**Why the simulation is compile time**, and it is the strongest case of the
+executed kind in this repository:
+
+- **The graph build is closures.** `npe-build.ts` walks the document and
+  dynamically imports one evaluator per block class, each installing getters
+  and update steps onto the system as JavaScript functions. There is no shape
+  to fold — the "shader" of a particle graph is a call tree assembled at load
+  — and this compiler lowers no closures.
+- **The value is fragile past any rounding argument.** The seed each scene
+  installs draws through `Math.sin`, which is not bit-portable between V8 and
+  a native maths library, and the graph consumes that sequence in an order
+  the block walk decides. A lowered simulation would diverge into a
+  *different set of particles* within a few hundred draws, not a slightly
+  different one.
+
+So generation runs the pin's own parser, builder and simulation in headless
+Chromium and bakes the particle buffer. Recorded per scene as
+`executed-node-particle-simulation`; the baked state depends on the Chrome
+that ran it, exactly as the drawn atlas and the pinned GGX prefilter do.
+
+**What stays folded is everything downstream.** `createParticleBillboard` and
+`syncParticleBillboard` are lowered from their own pinned declarations — the
+grid atlas over the graph's texture, the blend its numeric mode selects, the
+five props the sync writes per particle — so the generated scene builds the
+billboard system the pin would have built and writes the sprites the pin
+would have written. From there it is an ordinary facing-billboard scene.
+
+The driver holds the scene state the pin reads while it builds. That is the
+graph, the emitter and the texture base URL — and the **camera**, because
+`UpdateFlowMapBlock` derives a view-projection during the build and a build
+with no camera leaves the flow update a silent no-op.
+
+What refuses at generation, by name: a snippet id (a network read at page
+load), a set registered on the scene (its `_beforeRender` hook animates every
+frame, which one frozen state cannot answer), the blend-mode and Sprite2D
+bridge builders, a system stepped or synced twice, and a flow-map build whose
+scene camera is not a static arc-rotate construction.
 
 ### Shader pipeline
 
@@ -801,6 +848,7 @@ before it trusts a measurement.
 | Environments | HDR and DDS packaged (GGX prefilter, SH projection); BRDF LUT integrated | `.env` parsed, RGBD decoded, cubes uploaded and sampled |
 | Shaders | composition, specialization and reflection for both backends, plus DXIL/SPIR-V/MSL for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
 | Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass, the billboard sort |
+| Node particles | the graph parsed, built and simulated by the pin, its particle state baked | nothing of the simulation; the billboard it folds to draws like any other |
 | Animation | property clips and groups lowered to typed records | glTF channel data read from the asset; all evaluation and seeking |
 | Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, CPU fallbacks |
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |

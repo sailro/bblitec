@@ -663,6 +663,52 @@ ECMAScript engines cannot disagree about it, so there is no adaptation to
 record — and a module reaching past plain data fails at its own import rather
 than being executed against a shim.
 
+**A node-particle simulation is executed and its state baked; everything
+that draws that state is folded.** `particle/node/npe-build.ts` walks a graph
+and dynamically imports one evaluator per block class, each installing
+getters and update steps onto the system as JavaScript closures — so there is
+no shape to fold, and this compiler lowers no closures. The value is fragile
+past any rounding argument as well: every corpus scene installs its own
+deterministic `Math.random` seeded through `Math.sin`, which is not
+bit-portable between V8 and a native maths library, and the graph consumes
+that sequence in an order the block walk decides. A native simulation would
+draw a different sequence within a few hundred calls and diverge into a
+different set of particles, not a slightly different one. Generation runs the
+pin's own parser, builder and simulation in headless Chromium and bakes the
+particle buffer; the tradeoff is the drawn atlas's, recorded per scene as
+`executed-node-particle-simulation`.
+
+What is *not* executed is the bridge. `createParticleBillboard` and
+`syncParticleBillboard` are lowered from their own declarations, each rule
+asserted: the grid atlas takes the sprite sheet's cell size when it has one
+and the texture's own otherwise, the system is built at `buffer.capacity` on
+`blendForMode(system.blendMode)`, and the sync writes exactly five props per
+live particle (`position`, `sizeWorld` as `size * scale`, `color`, `rotation`
+and the sheet's `cellIndex`). The pin's own `clearBillboardSprites` is the
+identity where the generated sync runs — the billboard the generated builder
+just made carries no sprites — so a second sync is refused at generation
+rather than doubling every particle.
+
+**A particle graph's texture is a `loadTexture2D`, not a `loadSpriteAtlas`.**
+`ParticleTextureSourceBlock` loads through `loadTexture2D` with `invertY`
+alone, so its atlas keeps that loader's sampler: repeat addressing, a full
+mip chain, and the pinned `maxAnisotropy: allLinear ? 4 : 1` rule resolving
+to 4. `loadSpriteAtlas` pins the opposite — clamp, no chain, anisotropy 1 —
+and the difference is not rounding: with the chain absent scene 262 measures
+0.006 full MAD, edge-weighted at 0.266, and 0.000 with it. Both backends read
+the chain off the record's own mip filter, which is the pin's
+`mipMaps ? "linear" : "nearest"` and therefore says whether the loader built
+one.
+
+**The scene's camera is an input to a flow-map build.**
+`UpdateFlowMapBlock` derives the view-projection from `scene.camera` while
+the graph is built, and the pin leaves the prepared matrix unavailable — so
+the update silently does nothing — when the scene has no camera. Generation's
+driver therefore replays the scene's own camera construction, and a flow-map
+build whose camera is not a static arc-rotate construction refuses rather
+than simulating with the update disabled. Scene 280 measures 1.555 full MAD
+without the camera and 0.000 with it.
+
 **A sprite atlas that is drawn rather than fetched is executed, not
 reimplemented.** `lab/lite/src/_shared/sprite-atlas-image.ts` builds its
 256x128 atlas with canvas2D — rotated wedges, `arc`, `hsl` — and returns a

@@ -185,6 +185,21 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("particle:node")) {
+        adaptations.push({
+            id: "executed-node-particle-simulation",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene builds a node-particle graph and steps its CPU simulation a fixed number of times before the first frame, drawing from the deterministic Math.random it installs.",
+            nativeSemantics:
+                "Generation runs the pin's own parser, graph builder and simulation in headless Chromium and bakes the particle state they produced; the native runtime draws that state and never simulates. The graph build is closures the compiler does not lower, and the value is fragile beyond a rounding step: the seed is drawn through Math.sin, which is not bit-portable off V8, so a native simulation would diverge into a different set of particles rather than a slightly different one. Everything downstream of the state -- the atlas, the blend and the per-particle write -- stays folded from the pinned declarations. The baked state depends on the Chrome that ran it, as the drawn atlas and the pinned GGX prefilter already do.",
+            risk: "medium",
+            validation: [
+                "scenes 262, 263, 264, 276, 277, 280 and 281 parity against the browser golden, which runs the same simulation at load",
+                "byte-stable across repeated compilations",
+            ],
+        });
+    }
     if (features.includes("backend:sdl")) {
         adaptations.push({
             id: "sdl-platform-boundary",

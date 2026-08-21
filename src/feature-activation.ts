@@ -420,6 +420,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/sprite/billboard-sprite.ts + src/sprite/billboard-scene.ts",
         consumers: CMAKE,
     },
+    "particle:node": {
+        provenance:
+            "src/particle/node/npe-build.ts + src/particle/particle-system.ts " +
+            "+ src/particle/particle-billboard.ts",
+        consumers: CMAKE,
+    },
     "sprite:billboard-custom-shader": {
         provenance:
             "src/sprite/billboard-custom-shader.ts + src/sprite/custom-shader-core.ts",

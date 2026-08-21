@@ -40,6 +40,8 @@ export interface PositiveIntegerContext {
         expression: ts.Expression,
     ): ts.Expression;
     lookup(identifier: ts.Identifier): Value;
+    /** The binding, or undefined where this scope has none. */
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -96,44 +98,200 @@ export function compileOptionalStaticBoolean(
  * Most options lower to a native expression, but some have to be *known* at
  * generation: a shader the pin composes from an option's value, and the
  * effect parameter table a post-process record carries, are both settled
- * before any native code exists. Anything that does not resolve to a literal
- * here is refused rather than defaulted.
+ * before any native code exists. Anything `staticNumberValue` cannot fold is
+ * refused rather than defaulted.
  */
 export function compileStaticNumber(
     context: PositiveIntegerContext,
     expression: ts.Expression,
     label: string,
 ): number {
-    const unwrapped = context.resolveStaticExpression(expression);
-    if (ts.isNumericLiteral(unwrapped)) {
-        const value = Number(unwrapped.text);
-        if (!Number.isFinite(value)) {
-            context.fail(unwrapped, `Invalid numeric literal in ${label}.`);
+    const value = staticNumberValue(context, expression);
+    if (value === undefined) {
+        context.fail(
+            context.resolveStaticExpression(expression),
+            `${label} must be a static number.`,
+        );
+    }
+    return value;
+}
+
+/**
+ * "Not a JSON literal", distinct from every value one can hold.
+ *
+ * `null` is a value the graphs carry (`tags: null`), so it cannot double as
+ * the miss signal — and a signal the caller has to re-test for `object`,
+ * `null` and `Array` is a signal that leaks.
+ */
+export const notJson = Symbol("not a JSON literal");
+
+/** What reading a JSON literal out of the source needs. */
+export interface StaticJsonContext {
+    resolveStaticExpression(
+        expression: ts.Expression,
+    ): ts.Expression;
+}
+
+/**
+ * One JSON value out of the source, or `notJson`.
+ *
+ * Two families read a document straight out of the scene's own text — a node
+ * material's graph and a node particle's — and both draw the same line: a
+ * literal is data and cannot drift, so it is folded, while anything the
+ * source computes is a module generation runs instead.
+ */
+export function staticJsonValue(
+    context: StaticJsonContext,
+    expression: ts.Expression,
+): unknown {
+    const node = context.resolveStaticExpression(expression);
+    if (ts.isObjectLiteralExpression(node)) {
+        const value: Record<string, unknown> = {};
+        for (const property of node.properties) {
+            if (!ts.isPropertyAssignment(property)) return notJson;
+            const name = ts.isIdentifier(property.name) ||
+                    ts.isStringLiteral(property.name) ||
+                    ts.isNumericLiteral(property.name)
+                ? property.name.text
+                : undefined;
+            if (name === undefined) return notJson;
+            const member = staticJsonValue(context, property.initializer);
+            if (member === notJson) return notJson;
+            value[name] = member;
         }
         return value;
     }
-    if (
-        ts.isPrefixUnaryExpression(unwrapped) &&
-        (unwrapped.operator === ts.SyntaxKind.MinusToken ||
-            unwrapped.operator === ts.SyntaxKind.PlusToken)
-    ) {
-        const operand = compileStaticNumber(
-            context,
-            unwrapped.operand,
-            label,
-        );
-        return unwrapped.operator === ts.SyntaxKind.MinusToken
-            ? -operand
-            : operand;
+    if (ts.isArrayLiteralExpression(node)) {
+        const values: unknown[] = [];
+        for (const element of node.elements) {
+            if (
+                ts.isSpreadElement(element) ||
+                ts.isOmittedExpression(element)
+            ) {
+                return notJson;
+            }
+            const member = staticJsonValue(context, element);
+            if (member === notJson) return notJson;
+            values.push(member);
+        }
+        return values;
     }
-    if (ts.isIdentifier(unwrapped)) {
-        const value = context.lookup(unwrapped);
-        if (value.staticNumber !== undefined) {
-            return value.staticNumber;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        return node.text;
+    }
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (
+        ts.isPrefixUnaryExpression(node) &&
+        node.operator === ts.SyntaxKind.MinusToken &&
+        ts.isNumericLiteral(node.operand)
+    ) {
+        return -Number(node.operand.text);
+    }
+    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
+    if (node.kind === ts.SyntaxKind.NullKeyword) return null;
+    return notJson;
+}
+
+/**
+ * A number the source computes from constants, evaluated here.
+ *
+ * `compileStaticNumber` folds a literal and a named constant; this folds the
+ * arithmetic between them, which is how the corpus writes a camera angle
+ * (`-Math.PI / 2`). The evaluation is JavaScript's own on doubles, so a
+ * value that travels back out as a literal is the value the source had.
+ * Returns undefined for anything that is not constant, so a caller can
+ * refuse by name rather than substituting.
+ */
+export function staticNumberValue(
+    context: PositiveIntegerContext,
+    expression: ts.Expression,
+): number | undefined {
+    const node = context.resolveStaticExpression(expression);
+    if (ts.isNumericLiteral(node)) {
+        const value = Number(node.text);
+        return Number.isFinite(value) ? value : undefined;
+    }
+    if (ts.isParenthesizedExpression(node)) {
+        return staticNumberValue(context, node.expression);
+    }
+    if (ts.isPrefixUnaryExpression(node)) {
+        const operand = staticNumberValue(context, node.operand);
+        if (operand === undefined) return undefined;
+        if (node.operator === ts.SyntaxKind.MinusToken) return -operand;
+        if (node.operator === ts.SyntaxKind.PlusToken) return operand;
+        return undefined;
+    }
+    if (ts.isBinaryExpression(node)) {
+        const left = staticNumberValue(context, node.left);
+        const right = staticNumberValue(context, node.right);
+        if (left === undefined || right === undefined) return undefined;
+        switch (node.operatorToken.kind) {
+            case ts.SyntaxKind.PlusToken:
+                return left + right;
+            case ts.SyntaxKind.MinusToken:
+                return left - right;
+            case ts.SyntaxKind.AsteriskToken:
+                return left * right;
+            case ts.SyntaxKind.SlashToken:
+                return left / right;
+            case ts.SyntaxKind.PercentToken:
+                return left % right;
+            default:
+                return undefined;
         }
     }
-    context.fail(
-        unwrapped,
-        `${label} must be a static number.`,
-    );
+    if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "Math"
+    ) {
+        // The constants `StaticEvaluator.compileNumber` folds when it emits
+        // one of these as text; a Math function is a call and does not reach
+        // here.
+        if (node.name.text === "PI") return Math.PI;
+        if (node.name.text === "E") return Math.E;
+        if (node.name.text === "SQRT1_2") return Math.SQRT1_2;
+        return undefined;
+    }
+    if (ts.isIdentifier(node)) {
+        // A miss, not a failure: one caller is an optional probe, and an
+        // identifier this scope has no binding for is simply not a constant.
+        return context.lookupOptional(node)?.staticNumber;
+    }
+    return undefined;
+}
+
+/**
+ * A static `{ x, y, z }` record, or undefined when any component is not a
+ * constant.
+ *
+ * Two compile-time records read a vector this way -- a camera's target and a
+ * node-particle emitter -- and both need the VALUE rather than the native
+ * expression `compileVec3` emits.
+ */
+export function staticVec3Value(
+    context: PositiveIntegerContext,
+    expression: ts.Expression,
+): readonly [number, number, number] | undefined {
+    const node = context.resolveStaticExpression(expression);
+    if (!ts.isObjectLiteralExpression(node)) return undefined;
+    const axis = (name: "x" | "y" | "z"): number | undefined => {
+        const property = node.properties.find(
+            (candidate) =>
+                candidate.name !== undefined &&
+                (ts.isIdentifier(candidate.name) ||
+                    ts.isStringLiteral(candidate.name)) &&
+                candidate.name.text === name,
+        );
+        if (!property) return 0;
+        if (!ts.isPropertyAssignment(property)) return undefined;
+        return staticNumberValue(context, property.initializer);
+    };
+    const x = axis("x");
+    const y = axis("y");
+    const z = axis("z");
+    return x === undefined || y === undefined || z === undefined
+        ? undefined
+        : [x, y, z];
 }

@@ -74,8 +74,9 @@ parity's, and it takes `--backend` and `--seek` (the latter with
 `--recapture-reference`) under the same rules.
 
 HDR scene compilation launches headless Chromium to run the pinned
-1024-sample GGX compute shader. Set `CHROME_PATH` when Chrome/Edge is not in a
-standard location.
+1024-sample GGX compute shader, and a node-particle scene launches it to run
+the pin's own simulation to the frame the scene freezes. Set `CHROME_PATH`
+when Chrome/Edge is not in a standard location.
 
 Aggregate registered-scene workflows are registry-driven through
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.

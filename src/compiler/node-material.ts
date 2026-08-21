@@ -16,7 +16,7 @@
 // from here.
 import ts from "typescript";
 import {
-    executedModuleReference,
+    staticGraphDocument,
     type ExecutedModuleReferenceContext,
 } from "./assets.js";
 import {
@@ -61,69 +61,6 @@ export interface CompiledNodeMaterialCall {
     index: number;
     /** The textures the call named, in the source's own order. */
     textures: readonly NodeMaterialTexture[];
-}
-
-/**
- * "Not a JSON literal", distinct from every value one can hold.
- *
- * `null` is a value the graphs carry (`tags: null`), so it cannot double as
- * the miss signal — and a signal the caller has to re-test for `object`,
- * `null` and `Array` is a signal that leaks.
- */
-const notJson = Symbol("not a JSON literal");
-
-/** One JSON value out of the source, or `notJson`. */
-function staticJson(
-    context: NodeMaterialContext,
-    expression: ts.Expression,
-): unknown {
-    const node = context.resolveStaticExpression(expression);
-    if (ts.isObjectLiteralExpression(node)) {
-        const value: Record<string, unknown> = {};
-        for (const property of node.properties) {
-            if (!ts.isPropertyAssignment(property)) return notJson;
-            const name = ts.isIdentifier(property.name) ||
-                    ts.isStringLiteral(property.name) ||
-                    ts.isNumericLiteral(property.name)
-                ? property.name.text
-                : undefined;
-            if (name === undefined) return notJson;
-            const member = staticJson(context, property.initializer);
-            if (member === notJson) return notJson;
-            value[name] = member;
-        }
-        return value;
-    }
-    if (ts.isArrayLiteralExpression(node)) {
-        const values: unknown[] = [];
-        for (const element of node.elements) {
-            if (
-                ts.isSpreadElement(element) ||
-                ts.isOmittedExpression(element)
-            ) {
-                return notJson;
-            }
-            const member = staticJson(context, element);
-            if (member === notJson) return notJson;
-            values.push(member);
-        }
-        return values;
-    }
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-        return node.text;
-    }
-    if (ts.isNumericLiteral(node)) return Number(node.text);
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken &&
-        ts.isNumericLiteral(node.operand)
-    ) {
-        return -Number(node.operand.text);
-    }
-    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
-    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-    if (node.kind === ts.SyntaxKind.NullKeyword) return null;
-    return notJson;
 }
 
 /** How a recorded graph is compared, so two reaches of one share an index. */
@@ -177,36 +114,24 @@ export function compileNodeMaterialOptions(
         context,
         context.objectProperty(object, "textures"),
     );
-    const literal = staticJson(context, jsonExpression);
-    let material: CompiledNodeMaterial;
     const textureNames = textures.map((entry) => entry.name);
-    if (literal !== notJson) {
-        if (
-            typeof literal !== "object" ||
-            literal === null ||
-            Array.isArray(literal)
-        ) {
-            context.fail(
-                jsonExpression,
-                "A node material graph is a JSON object.",
-            );
-        }
-        material = {
-            kind: "literal",
-            graph: literal as Record<string, unknown>,
-            textureNames,
-        };
-    } else {
-        const source = executedModuleReference(context, jsonExpression);
-        if (!source) {
-            context.fail(
-                jsonExpression,
-                "A node material graph must be a static JSON literal or a " +
-                    "module export this compiler can run at generation.",
-            );
-        }
-        material = { kind: "module", ...source, textureNames };
-    }
+    const document = staticGraphDocument(
+        context,
+        jsonExpression,
+        "node material",
+        // A module that COMPUTES the document would need the pin's own
+        // graph loader to run, which is the boundary this family keeps.
+        "export-only",
+    );
+    const material: CompiledNodeMaterial =
+        document.kind === "literal"
+            ? { kind: "literal", graph: document.graph, textureNames }
+            : {
+                  kind: "module",
+                  module: document.module,
+                  exportName: document.exportName,
+                  textureNames,
+              };
     // Two calls naming the same document compose one module and one variant,
     // so a repeat reach returns the first index. Linear over the reached
     // list, which no scene grows past a handful — a keyed map would have to

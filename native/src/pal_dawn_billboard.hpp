@@ -33,6 +33,13 @@ namespace bbl::pal {
 
 /** One billboard system, as Dawn resources. */
 struct DawnBillboardPass {
+    /**
+     * The mip levels the atlas texture was created with, for the caller to
+     * fill. The blit that fills them belongs to the frame state, which this
+     * header cannot see -- so the pass reports what it allocated and the
+     * caller, which holds that state, generates them.
+     */
+    std::uint32_t atlas_mip_levels = 1u;
     WGPURenderPipeline pipeline = nullptr;
     WGPUShaderModule vertex_module = nullptr;
     WGPUShaderModule fragment_module = nullptr;
@@ -344,13 +351,16 @@ inline DawnBillboardPass create_dawn_billboard_pass(
 
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels reach
     // the blend stage as the bytes on disk.
+    const std::uint32_t mip_levels = atlas_mip_levels(atlas);
     pass.atlas = upload_dawn_rgba_texture(
         device,
         queue,
         atlas.rgba.data(),
         atlas.rgba.size(),
         atlas.width,
-        atlas.height);
+        atlas.height,
+        mip_levels);
+    pass.atlas_mip_levels = mip_levels;
     pass.atlas_view = wgpuTextureCreateView(pass.atlas, nullptr);
     pass.sampler = create_texture_sampler(device, atlas.sampler);
 

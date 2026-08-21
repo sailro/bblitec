@@ -1790,6 +1790,111 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene262",
+        name: "Scene 262 - NPE Particle Size",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene262.ts",
+        title: "Babylon Lite Native - Particle Size",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene263",
+        name: "Scene 263 - NPE Particle Gravity",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene263.ts",
+        title: "Babylon Lite Native - Particle Gravity",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene264",
+        name: "Scene 264 - NPE Particle Sphere Emitter",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene264.ts",
+        title: "Babylon Lite Native - Particle Sphere Emitter",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene276",
+        name: "Scene 276 - NPE Sprite Sheet Particles",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene276.ts",
+        title: "Babylon Lite Native - Particle Sprite Sheet",
+        parity: {
+            maxFullMad: 0.001,
+            // One LSB on 0.31% of the sprite pixels, and only on SDL_GPU:
+            // the offline DXC compile rounds where the browser's own
+            // compiler does not. Dawn, which runs that compiler, is exact.
+            maxForegroundMad: 0.003,
+            dawnThresholds: {
+                maxFullMad: 0.001,
+                maxForegroundMad: 0.001,
+            },
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene277",
+        name: "Scene 277 - NPE Attractor Update",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene277.ts",
+        title: "Babylon Lite Native - Particle Attractor",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene280",
+        name: "Scene 280 - NPE Flow Map Update",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene280.ts",
+        title: "Babylon Lite Native - Particle Flow Map",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene281",
+        name: "Scene 281 - NPE Noise Update",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene281.ts",
+        title: "Babylon Lite Native - Particle Noise",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The particle field is drawn over a black clear; every lit
+            // pixel is a billboard.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

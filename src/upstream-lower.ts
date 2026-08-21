@@ -12,6 +12,10 @@ import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
+import {
+    NodeParticleLowerer,
+    type NodeParticleSystemEmit,
+} from "./lowering/node-particle-lowerer.js";
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
 import {
     billboardFragmentWgsl,
@@ -40,7 +44,10 @@ import {
 } from "./lowering/effect-lowerer.js";
 import { pinnedEffectVariantsHeader } from "./pinned-effect-cpp.js";
 import { GeneratedTree } from "./generated-tree.js";
-import { reachedGeneratedSources } from "./generated-sources.js";
+import {
+    reachedGeneratedSources,
+    reachesSharedSpriteAtlasHeader,
+} from "./generated-sources.js";
 import {
     materialTextureSlotsHeader,
     meshUniformsBlock,
@@ -303,6 +310,11 @@ export interface UpstreamEmitOptions {
      * the scene reaches no node material.
      */
     nodeVariants?: readonly NodeVariantManifestEntry[];
+    /**
+     * The frozen node-particle systems generation baked, each with the asset
+     * its texture packaged under. Present only when the scene reached one.
+     */
+    nodeParticles?: readonly NodeParticleSystemEmit[];
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
@@ -798,6 +810,20 @@ ${wgsl}`,
                 symbolName: "WGSL",
             });
         }
+        if (
+            !features.includes("sprite:2d") &&
+            reachesSharedSpriteAtlasHeader(features)
+        ) {
+            // The shared atlas header without the 2D layer's own
+            // translation unit: a scene reaching billboards or node
+            // particles resolves a frame through it and compiles no sprite
+            // layer. `sprite:2d` writes the pair through `writeSource`
+            // below, so this arm covers only the header-alone case.
+            this.tree.write(
+                "upstream/include/bblite/upstream/sprite_layer.hpp",
+                new SpriteLowerer(context).lowerCore().header,
+            );
+        }
         if (features.includes("sprite:2d")) {
             const sprites = new SpriteLowerer(context);
             const custom = options.spriteCustomShaders.find(
@@ -888,6 +914,17 @@ ${wgsl}`,
                         "makeSpritePrologueWgsl,makeSpriteWgsl,buildSpriteLayerUbo",
                 });
             }
+        }
+        const nodeParticles = options.nodeParticles ?? [];
+        if (nodeParticles.length > 0) {
+            // The frozen bake and the two pinned functions that turn it into
+            // the billboard family's own calls.
+            this.writeSource(
+                "upstream/src/node_particles.cpp",
+                new NodeParticleLowerer(context).lower(nodeParticles),
+                generated,
+                "upstream/include/bblite/upstream/node_particles.hpp",
+            );
         }
         if (features.includes("sprite:billboard")) {
             // The billboard vertex stage reads the scene block, so it takes

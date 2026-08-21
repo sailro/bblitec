@@ -1,9 +1,14 @@
 import ts from "typescript";
+import {
+    staticNumberValue,
+    staticVec3Value,
+    type PositiveIntegerContext,
+} from "../option-helpers.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface CameraIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext, PositiveIntegerContext {
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -24,6 +29,76 @@ export interface CameraIntrinsicContext
     fail(node: ts.Node, message: string): never;
 }
 
+/**
+ * The camera's construction as static numbers, when every argument is one.
+ *
+ * Only one consumer reads it -- the node-particle driver, whose flow-map
+ * build derives a view-projection from the scene's camera -- and a camera
+ * whose arguments are not literals simply carries no program, which that
+ * consumer refuses by name.
+ */
+function arcRotateProgram(
+    context: CameraIntrinsicContext,
+    call: ts.CallExpression,
+): Value["cameraProgram"] | undefined {
+    // Folded rather than read as a literal: the corpus writes
+    // `-Math.PI / 2`, which is a constant expression. Both halves of the
+    // program -- these arguments and the property writes that follow -- go
+    // through the same folder, so one cannot accept what the other drops.
+    const scalar = (index: number): number | undefined =>
+        staticNumberValue(context, call.arguments[index]!);
+    const alpha = scalar(0);
+    const beta = scalar(1);
+    const radius = scalar(2);
+    const target = staticVec3Value(context, call.arguments[3]!);
+    if (
+        alpha === undefined ||
+        beta === undefined ||
+        radius === undefined ||
+        !target
+    ) {
+        return undefined;
+    }
+    return {
+        kind: "arc-rotate",
+        alpha,
+        beta,
+        radius,
+        target,
+        properties: [],
+    };
+}
+
+/**
+ * Record a write to a camera record on that camera's replayable program, or
+ * drop the program when the write cannot be replayed.
+ *
+ * The polarity is deliberate. A recorded program is only worth anything if
+ * it describes the camera the scene actually built, and there are several
+ * places that write `engine.cameras[...]` -- through the camera handle,
+ * through `scene.camera`, and through the vector setters. An unrecognised
+ * write therefore has to *invalidate*, so a site that forgets to call this
+ * leaves the program stale only if it also forgets the write is a write.
+ * Its one consumer -- the node-particle flow-map build, which replays the
+ * camera at generation -- then refuses by name instead of baking against a
+ * view-projection the scene never had.
+ */
+export function noteCameraRecordWrite(
+    context: PositiveIntegerContext,
+    camera: Value | undefined,
+    property: string,
+    value: ts.Expression | undefined,
+    simple: boolean,
+): void {
+    if (!camera?.cameraProgram) return;
+    const written = value ? staticNumberValue(context, value) : undefined;
+    if (!simple || written === undefined) {
+        delete camera.cameraProgram;
+        return;
+    }
+    camera.cameraProgram.properties.push([property, written]);
+}
+
 export function compileCameraIntrinsic(
     context: CameraIntrinsicContext,
     importedName: string,
@@ -34,7 +109,9 @@ export function compileCameraIntrinsic(
             context.expectArgumentCount(call, 4, 4);
             const engine = context.requireDefaultEngine(call);
             context.reachFeature("camera:arc-rotate", call);
+            const program = arcRotateProgram(context, call);
             return {
+                ...(program ? { cameraProgram: program } : {}),
                 kind: "camera",
                 cpp:
                     // The four arguments are JavaScript numbers upstream

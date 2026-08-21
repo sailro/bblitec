@@ -173,10 +173,7 @@ export async function waitForSceneReady(
     origin: string,
     awaitFrozenPose: boolean,
 ): Promise<void> {
-    await page.goto(`${origin}/scene.html`, {
-        waitUntil: "domcontentloaded",
-        timeout: 120_000,
-    });
+    await gotoScenePage(page, origin);
     await page.waitForFunction(
         () =>
             document.getElementById("renderCanvas")?.dataset.ready ===
@@ -194,6 +191,24 @@ export async function waitForSceneReady(
         );
     }
     await page.waitForTimeout(3000);
+}
+
+/**
+ * Navigate to the page the suite scene server serves.
+ *
+ * Split out of `waitForSceneReady` because one harness loads that page and
+ * then waits for a handshake of its own rather than the scene's: the
+ * node-particle bake waits for the driver it was handed, not for a canvas
+ * that will never be drawn.
+ */
+export async function gotoScenePage(
+    page: Page,
+    origin: string,
+): Promise<void> {
+    await page.goto(`${origin}/scene.html`, {
+        waitUntil: "domcontentloaded",
+        timeout: 120_000,
+    });
 }
 
 /**
