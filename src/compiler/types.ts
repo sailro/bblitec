@@ -30,8 +30,16 @@ export interface CompileManifest {
     customShaderPrograms: CompiledShaderProgram[];
     /** Every node-material graph the scene parsed, in reach order. */
     nodeMaterials: CompiledNodeMaterial[];
+    /**
+     * The pinned tone-mapping export the scene assigned, when it assigned one.
+     * Absent means the pin's own default, which is what `pbr-renderable.ts`
+     * resolves an unset `imageProcessing.toneMapping` to.
+     */
+    toneMapping?: string;
     /** The sprite-family custom fragment shaders scene code built. */
     spriteCustomShaders: SpriteCustomShaderManifest[];
+    /** Every `createEffectWrapper` the scene built, in reach order. */
+    effects: EffectManifest[];
     /**
      * Whether any layer or system draws with the stock program. A scene whose
      * every one opts into a custom shader never loads it, so it is not
@@ -56,6 +64,45 @@ export interface CompileManifest {
  * rather than being read back out of the pin: what the pin owns is the
  * composition around it, which the lowerer folds from the pin's own builder.
  */
+/**
+ * One bind-group entry an `EffectWrapper` declares.
+ *
+ * Upstream takes the layout explicitly rather than reflecting it out of the
+ * WGSL (`EffectBindingLayout[]`), so the descriptor is the authority on what
+ * group 0 holds and this manifest is that descriptor, read once.
+ */
+export interface EffectBindingManifest {
+    /** The descriptor's own `name`, or "" when it declared none. */
+    name: string;
+    binding: number;
+    kind: "uniform" | "texture" | "sampler";
+    /** `uniformByteLength` after the pin's align4; 0 for the other kinds. */
+    uniformBytes: number;
+    /**
+     * For a sampler: which texture slot it samples through, as a position in
+     * the declared texture list rather than as a binding number. The pin
+     * resolves `textureBinding` against its slots and falls back to the first
+     * one, so both the lookup and the fallback happen here and each backend
+     * indexes its uploaded textures directly. -1 on the other kinds.
+     */
+    texture: number;
+}
+
+/**
+ * One `createEffectWrapper` descriptor: the caller's fullscreen fragment and
+ * the bind-group layout it declares.
+ *
+ * The WGSL is scene data, so it travels to generation the way a sprite custom
+ * shader's body does; what the pin owns is the vertex stage it concatenates
+ * ahead of it, which generation lifts from the pinned module rather than
+ * restating.
+ */
+export interface EffectManifest {
+    name: string;
+    fragment: string;
+    bindings: EffectBindingManifest[];
+}
+
 export interface SpriteCustomShaderManifest {
     family: "sprite" | "billboard";
     fragment: string;
@@ -228,14 +275,27 @@ export interface CompiledShaderUniformDefault {
  * atlas and a computed pixel buffer are.
  */
 export type CompiledNodeMaterial =
-    | { kind: "literal"; graph: Record<string, unknown> }
-    | {
-        kind: "module";
-        /** Repository-relative path of the module that builds the graph. */
-        module: string;
-        /** The exported binding whose value is the graph. */
-        exportName: string;
-    };
+    & {
+        /**
+         * The binding names the scene supplied textures for.
+         *
+         * The names are the graph's own, so they belong to the graph rather
+         * than to the call: composition checks this set against the bindings
+         * the pin's own compiler declared, which is the check upstream makes
+         * at the first render instead.
+         */
+        textureNames: readonly string[];
+    }
+    & (
+        | { kind: "literal"; graph: Record<string, unknown> }
+        | {
+            kind: "module";
+            /** Repository-relative path of the module that builds the graph. */
+            module: string;
+            /** The exported binding whose value is the graph. */
+            exportName: string;
+        }
+    );
 
 export interface CompileAsset {
     source: string;
@@ -382,6 +442,9 @@ export type ValueKind =
     | "sprite-atlas"
     | "sprite-layer"
     | "sprite-blend"
+    | "tone-mapping"
+    | "effect-wrapper"
+    | "effect-renderer"
     | "sprite-custom-shader"
     | "billboard-custom-shader"
     | "billboard-system"
@@ -585,6 +648,9 @@ export type Feature =
     | "sprite:billboard-cutout"
     | "sprite:billboard-custom-shader"
     | "renderer:sprite"
+    | "renderer:effect"
+    | "effect:wrapper"
+    | "effect:task"
     | "renderer:pbr"
     | "renderer:transmission"
     | "renderer:fog"

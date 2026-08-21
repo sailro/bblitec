@@ -9,17 +9,25 @@
  * was a command, so the comparison kept being retyped as a throwaway script,
  * and a throwaway script does not know which movement is already understood.
  *
- * This one does. Scenes 9 and 37 are not bit-stable on Dawn from run to run
- * (see the TODO entry: SDL_GPU and single-sampled Dawn both are, only 4x Dawn
- * is not), so their Dawn cells are reported as expected wobble rather than as
- * movement, and the exit status ignores them. Every other moved cell is a
- * finding.
+ * This one does. Scenes 9, 37 and 120 are not bit-stable on Dawn from run to
+ * run (SDL_GPU and single-sampled Dawn both are, only 4x Dawn is not), so
+ * their Dawn cells are reported as expected wobble rather than as movement,
+ * and the exit status ignores them. Every other moved cell is a finding.
+ *
+ * A scene earns a place here by measurement, never by one surprising
+ * neutrality run: `scene -- stability <id> --backend dawn` has to show the
+ * re-runs differing, and `--single-sample` has to show them stop. Scene 120
+ * was added on exactly that pair -- 2 of 2 re-runs differ at 4x, every run
+ * byte-identical at one sample and on SDL_GPU. What the entry costs is real:
+ * it excuses that scene's Dawn cells permanently, and scene 120's Dawn
+ * foreground sits at 0.004 with the wobble spanning 0.002, so a Dawn
+ * regression smaller than that would hide here.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 /** Scenes whose Dawn cells move between runs with no code change at all. */
-export const dawnWobbleScenes = new Set(["scene9", "scene37"]);
+export const dawnWobbleScenes = new Set(["scene9", "scene37", "scene120"]);
 
 /** A cell that names a Dawn measurement, which is the wobbling half. */
 export const isDawnCell = (path: string): boolean => /dawn/i.test(path);
@@ -110,8 +118,8 @@ export function runNeutralityReport(baselineDirectory: string): void {
     );
     if (wobbled.length > 0) {
         console.log(
-            "\nExpected Dawn wobble (not a regression — scenes 9 and 37 are " +
-                "not bit-stable on Dawn between runs):",
+            "\nExpected Dawn wobble (not a regression — scenes 9, 37 and " +
+                "120 are not bit-stable on Dawn between runs):",
         );
         for (const line of wobbled) console.log(line);
     }

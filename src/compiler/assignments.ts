@@ -308,6 +308,13 @@ export function lightVectorSetter(
 }
 
 export interface AssignmentContext {
+    /**
+     * Records the tone-mapping curve the scene selected, refusing a second
+     * differing selection: the composed arms are closed at generation, so a
+     * scene reaching two curves would need a variant table this port does not
+     * key by them.
+     */
+    selectToneMapping(name: string, node: ts.Node): void;
     lookup(identifier: ts.Identifier): Value;
     compileValue(expression: ts.Expression): Value;
     compileNumber(
@@ -536,6 +543,7 @@ export function emitPropertyAssignment(
             ![
                 "exposure",
                 "contrast",
+                "toneMapping",
                 "toneMappingEnabled",
             ].includes(property)
         ) {
@@ -543,6 +551,30 @@ export function emitPropertyAssignment(
                 left.name,
                 `Unsupported image-processing property '${property}'.`,
             );
+        }
+        if (property === "toneMapping") {
+            // The curve is one of the pin's own `ToneMapping` records, whose
+            // WGSL the composer splices into the PBR fragment. Nothing about
+            // it survives to run time, so the assignment emits no statement
+            // and records which record composition should read.
+            requireSimpleAssignment(
+                context,
+                expression,
+                `image-processing property '${property}'`,
+            );
+            const value = context.compileValue(expression.right);
+            if (
+                value.kind !== "tone-mapping" ||
+                value.staticString === undefined
+            ) {
+                context.fail(
+                    expression.right,
+                    "A scene's tone mapping is one of the pinned records: " +
+                        `${toneMappingExportNames().join(", ")}.`,
+                );
+            }
+            context.selectToneMapping(value.staticString, expression.right);
+            return;
         }
         if (property === "toneMappingEnabled") {
             requireSimpleAssignment(
@@ -1020,6 +1052,7 @@ import ts from "typescript";
 import { cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
+import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import type {
     Feature,
     LightKind,

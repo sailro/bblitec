@@ -30,7 +30,15 @@ import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { UpstreamSourceStore } from "./upstream-source.js";
-import type { SpriteCustomShaderManifest } from "./compiler/types.js";
+import type {
+    EffectManifest,
+    SpriteCustomShaderManifest,
+} from "./compiler/types.js";
+import {
+    EffectLowerer,
+    effectStageStems,
+} from "./lowering/effect-lowerer.js";
+import { pinnedEffectVariantsHeader } from "./pinned-effect-cpp.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
@@ -235,6 +243,8 @@ export interface UpstreamEmitOptions {
      * read out of the pin.
      */
     spriteCustomShaders: readonly SpriteCustomShaderManifest[];
+    /** Every `createEffectWrapper` descriptor, in reach order. */
+    effects: readonly EffectManifest[];
     /**
      * Whether a layer or system draws with the stock program. A scene whose
      * every one opts into a custom shader never loads it, so it is not
@@ -328,6 +338,15 @@ const SHADER_FAMILIES = {
     node: { vertex: "vs_main", fragment: "fs_main", pinnedBindings: true },
     /** The pin's Gaussian-splat module. */
     splat: { vertex: "vs", fragment: "fs", pinnedBindings: true },
+    /**
+     * A fullscreen effect: the pin's own vertex stage concatenated with the
+     * caller's fragment, in one module carrying both entry points.
+     */
+    effect: {
+        vertex: "effectFullscreenVertex",
+        fragment: "effectFragment",
+        pinnedBindings: true,
+    },
     /**
      * Everything this repository authors or specializes: the sprite and
      * billboard stages, and the Dawn utility passes.
@@ -706,6 +725,35 @@ class GeneratedSourceWriter {
              */
             family?: ShaderFamily;
         }> = [];
+        if (features.includes("effect:wrapper")) {
+            // One module per descriptor, deployed twice because both entry
+            // points live in it -- the same shape the post-process passes
+            // take, and for the same reason: the pin builds one shader module
+            // and names a stage in each half of the pipeline descriptor.
+            const effects = new EffectLowerer(context);
+            const provenance = effects.provenance();
+            for (const [index, effect] of options.effects.entries()) {
+                const wgsl = effects.composeModule(effect.fragment);
+                const stems = effectStageStems(index);
+                for (const stem of [stems.vertexStem, stems.fragmentStem]) {
+                    composedShaders.push({
+                        output: `upstream/shaders/${stem}.native.wgsl`,
+                        data: `// ${provenance}
+${wgsl}`,
+                        family: "effect",
+                    });
+                }
+            }
+            this.tree.write(
+                "upstream/include/bblite/upstream/effect_variants.hpp",
+                pinnedEffectVariantsHeader(provenance, options.effects),
+            );
+            this.writeSource(
+                "upstream/src/effect_renderer.cpp",
+                effects.lowerFactory(),
+                generated,
+            );
+        }
         if (features.includes("loader:splat")) {
             const splats = new SplatLowerer(context);
             this.writeSource(
@@ -1854,6 +1902,7 @@ export function emitUpstreamGenerated(
         idDiagnostics: false,
         shaderPrograms: [],
         spriteCustomShaders: [],
+        effects: [],
         plainSpriteLayer: true,
         plainBillboardSystem: true,
         geometryOutputTasks: [],

@@ -533,6 +533,50 @@ inline void release_dawn_extra_textures(
     extras.clear();
 }
 
+/**
+ * The frame's surface texture, read back and written as a PNG.
+ *
+ * A capture is what a measured run *produces*, so like everything else that
+ * decides what a measured run does it is stated once and every driver calls
+ * it: the scene renderer, the sprite driver and the effect driver each have
+ * exactly one screenshot to take and no reason to spell the readback three
+ * ways. The copy is recorded into the caller's encoder, so this is two
+ * halves either side of the submit -- {@link begin_dawn_surface_capture}
+ * before it, {@link finish_dawn_surface_capture} after.
+ */
+struct DawnSurfaceCapture {
+    WGPUBuffer readback = nullptr;
+    std::uint32_t bytes_per_row = 0;
+};
+
+inline DawnSurfaceCapture begin_dawn_surface_capture(
+    WGPUDevice device,
+    WGPUCommandEncoder encoder,
+    WGPUTexture surface,
+    std::uint32_t width,
+    std::uint32_t height) {
+    DawnSurfaceCapture capture;
+    capture.bytes_per_row = (width * 4 + 255) & ~255u;
+    WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+    descriptor.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
+    descriptor.size =
+        static_cast<std::uint64_t>(capture.bytes_per_row) * height;
+    capture.readback = wgpuDeviceCreateBuffer(device, &descriptor);
+    WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    source.texture = surface;
+    WGPUTexelCopyBufferInfo destination = WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+    destination.layout.bytesPerRow = capture.bytes_per_row;
+    destination.layout.rowsPerImage = height;
+    destination.buffer = capture.readback;
+    const WGPUExtent3D extent{width, height, 1};
+    wgpuCommandEncoderCopyTextureToBuffer(
+        encoder,
+        &source,
+        &destination,
+        &extent);
+    return capture;
+}
+
 inline void save_capture_png(
     const std::vector<std::uint8_t>& pixels,
     std::uint32_t width,
@@ -560,6 +604,59 @@ inline void save_capture_png(
     if (!saved) {
         dawn_error(std::string("IMG_SavePNG: ") + SDL_GetError());
     }
+}
+
+/**
+ * The second half of {@link begin_dawn_surface_capture}: map the readback
+ * the frame's submit filled, write the PNG, and free it.
+ *
+ * The map failure lands in `state.uncaptured_error` rather than throwing from
+ * the callback, which is how every Dawn wait in this backend reports one.
+ */
+inline void finish_dawn_surface_capture(
+    DawnDevice& state,
+    const DawnSurfaceCapture& capture,
+    std::uint32_t width,
+    std::uint32_t height,
+    const std::string& path) {
+    const std::size_t size =
+        static_cast<std::size_t>(capture.bytes_per_row) * height;
+    WGPUBufferMapCallbackInfo map_callback =
+        WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+    map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
+    map_callback.callback = [](
+                                WGPUMapAsyncStatus status,
+                                WGPUStringView message,
+                                void* userdata1,
+                                void*) {
+        if (status != WGPUMapAsyncStatus_Success) {
+            auto* error = static_cast<std::string*>(userdata1);
+            if (error->empty()) *error = view_text(message);
+        }
+    };
+    map_callback.userdata1 = &state.uncaptured_error;
+    wait_for(
+        state.instance,
+        wgpuBufferMapAsync(
+            capture.readback,
+            WGPUMapMode_Read,
+            0,
+            size,
+            map_callback));
+    const void* mapped =
+        wgpuBufferGetConstMappedRange(capture.readback, 0, size);
+    if (!mapped) dawn_error("buffer map returned no data.");
+    const std::vector<std::uint8_t> pixels(
+        static_cast<const std::uint8_t*>(mapped),
+        static_cast<const std::uint8_t*>(mapped) + size);
+    wgpuBufferUnmap(capture.readback);
+    save_capture_png(
+        pixels,
+        width,
+        height,
+        capture.bytes_per_row,
+        state.surface_format == WGPUTextureFormat_BGRA8Unorm,
+        path);
 }
 
 } // namespace bbl::pal

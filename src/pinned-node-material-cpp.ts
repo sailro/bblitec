@@ -141,6 +141,7 @@ export function pinnedNodeVariantsHeader(
         }
     }
     const attributeRows: string[] = [];
+    const textureRows: string[] = [];
     const uniformFloats: number[] = [];
     const entries: string[] = [];
     const envResources = new Map<string, EnvResource>();
@@ -149,6 +150,13 @@ export function pinnedNodeVariantsHeader(
         for (const attribute of variant.composed.attributes) {
             attributeRows.push(
                 `    {${attribute.location}, ${stringLiteral(attribute.name)}},`,
+            );
+        }
+        const firstTexture = textureRows.length;
+        for (const texture of variant.composed.textures) {
+            textureRows.push(
+                `    {${stringLiteral(texture.name)}, ` +
+                    `${texture.texture}, ${texture.sampler}},`,
             );
         }
         const firstFloat = uniformFloats.length;
@@ -163,6 +171,7 @@ export function pinnedNodeVariantsHeader(
                 `${stringLiteral(variant.fragmentStem)}, ` +
                 `${variant.composed.backFaceCulling}, ` +
                 `${firstAttribute}, ${variant.composed.attributes.length}, ` +
+                `${firstTexture}, ${variant.composed.textures.length}, ` +
                 `${
                     variant.composed.uboBinding === null
                         ? "node_no_ubo"
@@ -204,6 +213,27 @@ inline constexpr std::array<
     NodeVariantAttribute,
     ${attributeRows.length}> node_variant_attributes{{
 ${attributeRows.join("\n")}
+}};
+
+/**
+ * One texture pair a graph samples, at the bindings the pin's own pipeline
+ * builder allocated for it.
+ *
+ * The name is the sanitized block name \`TextureBlock\` and
+ * \`ImageSourceBlock\` bind under, which is also the key the scene's own
+ * \`textures\` record is read by — so it is the join between a declared
+ * binding and the image the scene supplied, exactly as it is upstream.
+ */
+struct NodeVariantTexture {
+    std::string_view name;
+    std::uint32_t texture;
+    std::uint32_t sampler;
+};
+
+inline constexpr std::array<
+    NodeVariantTexture,
+    ${textureRows.length}> node_variant_textures{{
+${textureRows.join("\n") || "    // No reached graph samples one."}
 }};
 
 /** A graph whose named inputs produced no uniform block. */
@@ -256,6 +286,9 @@ struct NodeVariantEntry {
     /** Half-open range into the attribute table above. */
     std::size_t first_attribute;
     std::size_t attribute_count;
+    /** Half-open range into the texture table above. */
+    std::size_t first_texture;
+    std::size_t texture_count;
     /** The node UBO's group-1 binding, or \`node_no_ubo\`. */
     std::size_t ubo_binding;
     std::size_t ubo_bytes;

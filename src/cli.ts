@@ -36,6 +36,7 @@ import { glbJsonText } from "./gltf-document.js";
 import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { packageSplat } from "./splat-packager.js";
+import { parseDataUrl } from "./data-url.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
     buildStampHeader,
@@ -148,6 +149,10 @@ async function assetBytes(
     source: string,
     inputPath: string,
 ): Promise<Uint8Array> {
+    // A data URL carries its own bytes, so there is nothing to fetch and
+    // nothing to read: materializing one is a decode.
+    const inline = parseDataUrl(source);
+    if (inline) return inline.bytes;
     if (!/^https?:\/\//i.test(source)) {
         return new Uint8Array(
             readFileSync(resolve(dirname(inputPath), source)),
@@ -233,21 +238,14 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         return;
     }
 
-    if (/^https?:\/\//i.test(source)) {
-        writeFileSync(
-            destination,
-            await decompressGeometry(
-                await downloadCached(source),
-                source,
-            ),
-        );
-        return;
-    }
-
+    // One branch, because `assetBytes` already answers "the bytes this source
+    // names" for all three kinds. Spelling the local case as the complement of
+    // a scheme test is what made a data URL have to be taught to two
+    // predicates in this file rather than one.
     writeFileSync(
         destination,
         await decompressGeometry(
-            new Uint8Array(readFileSync(resolve(dirname(inputPath), source))),
+            await assetBytes(source, inputPath),
             source,
         ),
     );
@@ -620,6 +618,7 @@ async function main(): Promise<void> {
             specializationFeatures.nonTrianglePrimitives,
         nodeVisibility: specializationFeatures.nodeVisibility,
         spriteCustomShaders: result.manifest.spriteCustomShaders,
+        effects: result.manifest.effects,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
         standardLights: reachedStandardLights(reachedBabylonLights),

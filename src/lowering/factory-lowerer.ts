@@ -2023,6 +2023,11 @@ void flush_thin_instances(Engine& engine, MeshHandle mesh) {
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/node_variants.hpp>
 
+#include <algorithm>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
 namespace bbl {
 
 // The graph was compiled at generation by the pin's own emitter and
@@ -2030,14 +2035,37 @@ namespace bbl {
 // draw uses, and the fixed-function state that program was built with.
 MaterialHandle create_node_material(
     Engine& engine,
-    std::uint32_t variant) {
+    std::uint32_t variant,
+    std::vector<NodeMaterialTexture> textures) {
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants.at(variant);
     MaterialRecord material;
     material.node_material = true;
     material.shader_variant = variant;
     material.double_sided = !entry.back_face_culling;
-    engine.materials.push_back(material);
+    // The graph's declared bindings, in the pin's own allocation order,
+    // resolved by name against what the scene supplied -- the join
+    // parseNodeMaterialFromSnippet performs when it fills _textureSlots.
+    // A binding the record omits is the pin's own render-time error, raised
+    // here at material creation instead.
+    for (std::size_t index = 0; index < entry.texture_count; ++index) {
+        const upstream::NodeVariantTexture& binding =
+            upstream::node_variant_textures.at(entry.first_texture + index);
+        const auto supplied = std::find_if(
+            textures.begin(),
+            textures.end(),
+            [&](const NodeMaterialTexture& candidate) {
+                return candidate.name == binding.name;
+            });
+        if (supplied == textures.end()) {
+            throw std::runtime_error(
+                "NodeMaterial: texture binding '" +
+                std::string(binding.name) +
+                "' not set. Provide it via options.textures.");
+        }
+        material.shader_textures.push_back(std::move(supplied->texture));
+    }
+    engine.materials.push_back(std::move(material));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }
@@ -2477,9 +2505,39 @@ PixelsTexture create_texture_2d_from_pixels(
                 "Expected rgba8unorm solid textures.",
             );
         }
-        this.context.functionDeclaration(
+        this.context.functionDeclaration(textureModule, "loadTexture2D");
+        // `loadTexture2D` is the memoizing wrapper; the upload and the
+        // sampler it builds live in the impl it defers to.
+        const loadTexture = this.context.functionDeclaration(
             textureModule,
-            "loadTexture2D",
+            "loadTexture2DImpl",
+        ).declaration;
+        // The sampler's anisotropy is the one pinned default that is a rule
+        // rather than a constant: the intrinsic restates it beside the other
+        // defaults, so the shape it restates is asserted here. A pin that
+        // changes either arm, or the condition it forks on, refuses
+        // generation instead of shading through a different filter.
+        const anisotropy = this.context.findNodes(
+            loadTexture,
+            (node): node is ts.PropertyAssignment =>
+                ts.isPropertyAssignment(node) &&
+                this.context.propertyName(node.name) === "maxAnisotropy",
+        )[0];
+        if (!anisotropy) {
+            this.context.contractError(
+                loadTexture,
+                "Pinned loadTexture2DImpl no longer sets maxAnisotropy.",
+            );
+        }
+        this.context.assertExpressionShape(
+            anisotropy.initializer,
+            "allLinear ? 4 : 1",
+            "loadTexture2D sampler anisotropy",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(loadTexture, "allLinear"),
+            'minF === "linear" && magF === "linear" && mipF === "linear"',
+            "loadTexture2D all-linear test",
         );
         return {
             modulePath: textureModule,
@@ -2522,16 +2580,23 @@ SolidTexture create_solid_texture(
     float g,
     float b,
     float a) {
+    // The pin's own rounding, performed once. The texel is what reaches the
+    // GPU; the float view is that same byte over 255, because a slot that
+    // bakes the texture into a fallback and a slot that uploads it must not
+    // disagree about the value.
     const auto quantize = [](float value) {
-        return static_cast<float>(
-            std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f)) / 255.0f;
+        return static_cast<std::uint8_t>(
+            std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
     };
-    return SolidTexture{Color4{
-        quantize(r),
-        quantize(g),
-        quantize(b),
-        quantize(a),
-    }};
+    SolidTexture texture;
+    texture.texel = {quantize(r), quantize(g), quantize(b), quantize(a)};
+    texture.color = Color4{
+        static_cast<float>(texture.texel[0]) / 255.0f,
+        static_cast<float>(texture.texel[1]) / 255.0f,
+        static_cast<float>(texture.texel[2]) / 255.0f,
+        static_cast<float>(texture.texel[3]) / 255.0f,
+    };
+    return texture;
 }
 
 } // namespace bbl
@@ -2755,23 +2820,9 @@ MaterialHandle create_pbr_material(
     // values. The texels ride the slots' fallback bytes; folding them into
     // the factors would double-apply against the composed fragment, which
     // samples the slot and declares no factor field for them.
-    const auto solid_byte = [](float value) {
-        return static_cast<std::uint8_t>(
-            std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
-    };
-    material.base_color_fallback = {
-        solid_byte(options.base_color.color.r),
-        solid_byte(options.base_color.color.g),
-        solid_byte(options.base_color.color.b),
-        solid_byte(options.base_color.color.a),
-    };
+    material.base_color_fallback = options.base_color.texel;
     material.base_color_fallback_srgb = false;
-    material.orm_fallback = {
-        solid_byte(options.orm.color.r),
-        solid_byte(options.orm.color.g),
-        solid_byte(options.orm.color.b),
-        solid_byte(options.orm.color.a),
-    };
+    material.orm_fallback = options.orm.texel;
     material.base_color_factor = {1.0f, 1.0f, 1.0f, 1.0f};
     material.roughness_factor = options.roughness_factor;
     material.metallic_factor = options.metallic_factor;

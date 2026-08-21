@@ -168,7 +168,12 @@ export class StaticEvaluator {
     }
 
     public compileColor3(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        // Through the static resolver first, so a module-level constant
+        // holding the colour reads as the literal it initializes to -- the
+        // same step the Vec3 compiler beside this one already takes.
+        const unwrapped = this.unwrap(
+            this.resolveStaticExpression(expression),
+        );
         const tuple = this.tupleElements(unwrapped, 3);
         if (tuple) {
             return `bbl::Color3{${tuple
@@ -208,7 +213,12 @@ export class StaticEvaluator {
     }
 
     public compileColor4(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
+        // Through the static resolver first, so a module-level constant
+        // holding the colour reads as the literal it initializes to -- the
+        // same step the Vec3 compiler beside this one already takes.
+        const unwrapped = this.unwrap(
+            this.resolveStaticExpression(expression),
+        );
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
             if (value?.kind === "color4") {

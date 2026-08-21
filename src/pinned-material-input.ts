@@ -33,6 +33,7 @@
  * merge loop, and the slot-shaped texture fields of the output, which stand
  * in for the pin's GPU texture records.
  */
+import { javascriptModuleUrl } from "./data-url.js";
 import {
     asNumbers,
     asObject,
@@ -406,9 +407,7 @@ async function importPinnedModuleUnasynced(
             ? [`export { ${extraExports.join(", ")} };`]
             : []),
     ].join("\n");
-    const url = `data:text/javascript;base64,${
-        Buffer.from(augmented, "utf8").toString("base64")
-    }`;
+    const url = javascriptModuleUrl(augmented);
     return (await import(url)) as Record<string, unknown>;
 }
 
@@ -534,14 +533,11 @@ const pin = await (async (): Promise<PinnedLoaderExecution> => {
     // missing `_hasTx`/`_texCoord` markers and its truthiness, and an empty
     // record carries both. `needsGltfEmissive` above stays on the real
     // module.
-    const uploadStubs = `data:text/javascript;base64,${
-        Buffer.from(
-            "export const uploadBaseColorFactorTexture = () => ({});\n" +
-                "export const uploadOrmFactorTexture = () => ({});\n" +
-                "export const uploadTex = () => ({});\n",
-            "utf8",
-        ).toString("base64")
-    }`;
+    const uploadStubs = javascriptModuleUrl(
+        "export const uploadBaseColorFactorTexture = () => ({});\n" +
+            "export const uploadOrmFactorTexture = () => ({});\n" +
+            "export const uploadTex = () => ({});\n",
+    );
     const builderExt = await importPinnedModuleUnasynced(
         "loader-gltf/gltf-pbr-builder-ext.js",
         ["needsGltfUvTransform"],

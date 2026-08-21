@@ -448,8 +448,17 @@ export class LoweringContext {
         }
     }
 
+    /**
+     * The first call to `calleeName`, whether the pin writes it as a bare
+     * function or as a method on something.
+     *
+     * Both spellings are the same fact to a caller asserting a contract --
+     * `device.createRenderPipeline({...})` and `align4(x)` are each "the pin
+     * calls this" -- and `hasCall` already answers the question that way, so
+     * the two would otherwise disagree about what a call is.
+     */
     public callExpression(
-        declaration: ts.FunctionDeclaration,
+        declaration: ts.Node,
         calleeName: string,
     ): ts.CallExpression {
         let result: ts.CallExpression | undefined;
@@ -457,8 +466,10 @@ export class LoweringContext {
             if (
                 !result &&
                 ts.isCallExpression(node) &&
-                ts.isIdentifier(node.expression) &&
-                node.expression.text === calleeName
+                ((ts.isIdentifier(node.expression) &&
+                    node.expression.text === calleeName) ||
+                    (ts.isPropertyAccessExpression(node.expression) &&
+                        node.expression.name.text === calleeName))
             ) {
                 result = node;
             }
@@ -475,7 +486,7 @@ export class LoweringContext {
     }
 
     public callObjectArgument(
-        declaration: ts.FunctionDeclaration,
+        declaration: ts.Node,
         calleeName: string,
         argumentIndex = 0,
     ): ts.ObjectLiteralExpression {

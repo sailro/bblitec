@@ -122,6 +122,14 @@ struct BillboardSystemHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct EffectWrapperHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct EffectRendererHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 struct SplatMeshHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -411,11 +419,29 @@ struct PostProcessCompositeInputs {
     CameraHandle camera{};
 };
 
+/**
+ * An `EffectRenderTask`: the same draw, into a target the caller owns.
+ *
+ * The clear state carries no default here, and neither do its two siblings
+ * below: the pin's `clear !== false` and `clearColor ?? opaque black` are
+ * asserted at generation and emitted explicitly at every call site, so a
+ * default in this file would be a fourth statement of a pinned value that
+ * nothing exercises and nothing checks.
+ */
+struct EffectTaskOptions {
+    std::string name;
+    EffectWrapperHandle effect{};
+    RenderTargetHandle target{};
+    bool clear = false;
+    Color4 clear_color{};
+};
+
 enum class FrameTaskKind {
     render,
     geometry,
     copy,
     post_process,
+    effect,
 };
 
 struct RenderTargetRecord {
@@ -441,6 +467,7 @@ struct FrameTaskRecord {
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
     PostProcessTaskOptions post_process;
+    EffectTaskOptions effect;
 };
 
 struct RenderTargetTexture {
@@ -448,8 +475,19 @@ struct RenderTargetTexture {
     RenderTextureRef texture{};
 };
 
+/**
+ * A 1x1 texture `createSolidTexture2D` built.
+ *
+ * The pin writes `Math.round(channel * 255)` into an `rgba8unorm` texel
+ * (`solid-texture.ts`), so the byte IS the texture and the float is only how
+ * the caller spelled it. `create_solid_texture` performs that rounding once,
+ * under the contract `factory-lowerer.ts` asserts against the pinned call,
+ * and everything downstream reads the result: no consumer re-derives the
+ * formula, which is what kept three spellings of it in the tree.
+ */
 struct SolidTexture {
     Color4 color{};
+    std::array<std::uint8_t, 4> texel{};
 };
 
 struct PbrMaterialOptions {
@@ -844,6 +882,58 @@ struct SpriteRendererRecord {
     bool clear = true;
 };
 
+/**
+ * A texture an effect samples, under the binding name it was set by.
+ *
+ * `setEffectTexture` stores the handle on the slot the name owns
+ * (`effect-renderer.ts` `findTextureSlot`), so the name travels here for the
+ * same reason it does for a node material: which binding a name lands on is
+ * the descriptor's answer, and the two are joined where the pin joins them.
+ * The reached slice binds a `createSolidTexture2D` 1x1 texel, which is why
+ * the slot holds a colour rather than image bytes.
+ */
+struct EffectTextureSlot {
+    std::string name;
+    SolidTexture texture{};
+    bool set = false;
+};
+
+/**
+ * One `EffectWrapper`: which composed module it draws and what fills the
+ * bind group the descriptor declared.
+ *
+ * The module, the layout and the pipeline state were settled at generation
+ * (`upstream::effect_variants`), so what a record carries is only the two
+ * things a scene writes after creation -- the uniform bytes and the bound
+ * textures.
+ */
+struct EffectWrapperRecord {
+    std::uint32_t variant = 0;
+    /** The bytes `setEffectUniforms` wrote into the first uniform slot. */
+    std::vector<float> uniform_values;
+    /**
+     * Set by `setEffectUniforms`, cleared once a backend that owns a uniform
+     * buffer has written it -- the same split the post-process passes use
+     * between mutating a parameter and uploading the block. SDL_GPU pushes
+     * per command buffer and cannot skip; Dawn can.
+     */
+    bool uniforms_dirty = false;
+    std::vector<EffectTextureSlot> textures;
+};
+
+/** An `EffectRenderer`: one wrapper drawn to the swapchain each frame. */
+struct EffectRendererRecord {
+    EffectWrapperHandle effect{};
+    bool clear = false;
+    Color4 clear_color{};
+};
+
+/** The options `createEffectRenderer` takes past the wrapper itself. */
+struct EffectRendererOptions {
+    bool clear = false;
+    Color4 clear_color{};
+};
+
 struct PropertyAnimationKey {
     float time = 0.0f;
     std::array<float, 4> value{};
@@ -1085,9 +1175,11 @@ struct MaterialRecord {
     std::array<std::uint8_t, 4> orm_fallback{255, 255, 255, 255};
     RenderTextureRef emissive_render_texture{};
     RenderTextureRef diffuse_render_texture{};
-    // A shader material's own sampler slots, in the order its `samplers`
-    // option declared them (`_textureSlots` upstream). Empty for every other
-    // family, and for a shader material whose WGSL samples nothing.
+    // The material's own texture slots, in the order the family's variant
+    // table declares them: a shader material's `samplers` (`_textureSlots`
+    // upstream), or a node graph's `TextureBlock`/`ImageSourceBlock`
+    // bindings resolved against the scene's `textures` record. Empty for
+    // every other family, and for a program that samples nothing.
     std::vector<FileTexture> shader_textures;
     std::uint32_t reflection_cube = invalid_handle;
     float reflection_level = 1.0f;
@@ -1223,9 +1315,14 @@ struct Engine {
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SplatMeshRecord> splat_meshes;
+    std::vector<EffectWrapperRecord> effect_wrappers;
+    std::vector<EffectRendererRecord> effect_renderers;
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
+    // The same list for the effect half; an effect renderer is its own
+    // rendering context on the engine exactly as a sprite renderer is.
+    std::vector<EffectRendererHandle> registered_effect_renderers;
 };
 
 struct EnvironmentState {
@@ -1429,9 +1526,24 @@ MaterialHandle create_grid_material(
 MaterialHandle create_shader_material(
     Engine& engine,
     std::uint32_t variant);
+/**
+ * One texture a scene handed `parseNodeMaterialFromSnippet` through its
+ * `textures` record, under the binding name it keyed it by.
+ *
+ * The name travels rather than a slot index because the pin's own join is by
+ * name (`options.textures?.[tb._name]`), and which pair a name landed on is
+ * the composed graph's answer -- `create_node_material` resolves the two
+ * against each other exactly where upstream does.
+ */
+struct NodeMaterialTexture {
+    std::string name;
+    FileTexture texture;
+};
+
 MaterialHandle create_node_material(
     Engine& engine,
-    std::uint32_t variant);
+    std::uint32_t variant,
+    std::vector<NodeMaterialTexture> textures = {});
 void set_shader_uniform_values(
     Engine& engine,
     MaterialHandle material,
@@ -1774,6 +1886,29 @@ double add_sprite_2d_index(
     Engine& engine,
     Sprite2DLayerHandle layer,
     Sprite2DProps props);
+EffectWrapperHandle create_effect_wrapper(
+    Engine& engine,
+    std::uint32_t variant);
+void set_effect_uniforms(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const std::vector<float>& values);
+void set_effect_texture(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    const std::string& name,
+    SolidTexture texture);
+EffectRendererHandle create_effect_renderer(
+    Engine& engine,
+    EffectWrapperHandle effect,
+    EffectRendererOptions options = {});
+void register_effect_renderer(
+    Engine& engine,
+    EffectRendererHandle renderer);
+TaskHandle create_effect_render_task(
+    Engine& engine,
+    Scene& scene,
+    EffectTaskOptions options);
 SpriteRendererHandle create_sprite_renderer(
     Engine& engine,
     SpriteRendererOptions options);

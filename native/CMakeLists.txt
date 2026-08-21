@@ -113,6 +113,7 @@ if(NOT BBLITE_BACKEND_SDL_GPU)
         BBLITE_RUNTIME_SOURCES
         "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp"
         "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_sprite.cpp"
+        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_effect.cpp"
     )
 endif()
 
@@ -292,6 +293,12 @@ if(BBLITE_BACKEND_DAWN)
             PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_sprite.cpp"
         )
     endif()
+    if("renderer:effect" IN_LIST BBLITE_RUNTIME_FEATURES)
+        target_sources(
+            bblite_native
+            PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_effect.cpp"
+        )
+    endif()
     target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
@@ -363,6 +370,53 @@ else()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_SPRITE_RENDERER=0
+    )
+endif()
+
+if("renderer:effect" IN_LIST BBLITE_RUNTIME_FEATURES)
+    # A scene-less effect renderer still saves its screenshot as a PNG, so
+    # this path needs the image encoder even when no PBR renderer or sprite
+    # atlas is compiled.
+    if(SDL3_FOUND)
+        find_package(SDL3_image CONFIG REQUIRED)
+        target_link_libraries(
+            bblite_native
+            PRIVATE
+            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
+        )
+    endif()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_EFFECT_RENDERER=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_EFFECT_RENDERER=0
+    )
+endif()
+
+if("effect:wrapper" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_EFFECT_WRAPPER=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_EFFECT_WRAPPER=0
+    )
+endif()
+
+if("effect:task" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_EFFECT_TASK=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_EFFECT_TASK=0
     )
 endif()
 

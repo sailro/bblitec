@@ -39,6 +39,9 @@
 #if BBLITE_HAS_SPLATS
 #include "pal_sdl_gpu_splat.hpp"
 #endif
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+#include "pal_sdl_gpu_effect.hpp"
+#endif
 #include "pal_render_capture.hpp"
 
 #if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
@@ -499,6 +502,12 @@ struct GpuState {
     // generation derived from it -- is the authority on its registers.
     std::vector<PinnedStageSlots> shader_vertex_slots;
     std::vector<PinnedStageSlots> shader_fragment_slots;
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+    // One built pass per effect render task, keyed by task index and built
+    // lazily against the target's own format and sample count -- the pin
+    // keys its own pipeline cache by exactly that pair.
+    std::vector<EffectPass> effect_tasks;
+#endif
     SDL_GPUGraphicsPipeline* background_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* skybox_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* id_pipeline = nullptr;
@@ -1439,28 +1448,64 @@ void draw_node_variant(
         true,
         "node variant",
         resolve);
-    // The graph's own names carry no slot the table knows, so they join it
-    // through the source `node_binding_resources` declares -- and the pair
-    // that source names is the one every other family already resolves.
+    // Two kinds of name reach a node stage's sampler slots. The graph's own
+    // `TextureBlock` bindings are declared `nodeTex_<name>` / `nodeSamp_<name>`
+    // around the sanitized block name, so they resolve against the images the
+    // scene supplied -- in the variant table's order, which is the order
+    // `create_node_material` filled the material's slots in. Every other name
+    // is one of the pin's environment resources and carries no slot this
+    // table knows, so it joins through the source `node_binding_resources`
+    // declares, the pair every other family already resolves.
+    const auto resolve_texture =
+        [&](const std::string& name) -> SDL_GPUTextureSamplerBinding {
+        // The prefix is stripped once rather than re-concatenated onto every
+        // candidate: this runs per declared name, per stage, per draw, per
+        // frame, and building the comparison strings there allocated three
+        // times a binding.
+        std::string_view declared(name);
+        const bool prefixed = declared.starts_with("nodeTex_")
+            ? (declared.remove_prefix(8), true)
+            : declared.starts_with("nodeSamp_")
+                ? (declared.remove_prefix(9), true)
+                : false;
+        if (prefixed) {
+            for (std::size_t index = 0; index < entry.texture_count; ++index) {
+                const upstream::NodeVariantTexture& binding =
+                    upstream::node_variant_textures[
+                        entry.first_texture + index];
+                if (binding.name != declared) continue;
+                if (index >= mesh.shader_textures.size()) {
+                    gpu_error(
+                        "a node graph declares more textures than its "
+                        "material carries.");
+                }
+                return mesh.shader_textures[index];
+            }
+        }
+        const PinnedResource resource = state_resource_for(
+            state,
+            upstream::node_binding_source(name));
+        if (resource.texture == nullptr) {
+            gpu_error(
+                ("node variant declares an unmapped resource '" + name +
+                 "'.")
+                    .c_str());
+        }
+        return SDL_GPUTextureSamplerBinding{
+            resource.texture,
+            resource.sampler,
+        };
+    };
+    bind_stage_textures(
+        pass,
+        state.node_vertex_slots[variant],
+        false,
+        resolve_texture);
     bind_stage_textures(
         pass,
         state.node_fragment_slots[variant],
         true,
-        [&](const std::string& name) {
-            const PinnedResource resource = state_resource_for(
-                state,
-                upstream::node_binding_source(name));
-            if (resource.texture == nullptr) {
-                gpu_error(
-                    ("node variant declares an unmapped resource '" + name +
-                     "'.")
-                        .c_str());
-            }
-            return SDL_GPUTextureSamplerBinding{
-                resource.texture,
-                resource.sampler,
-            };
-        });
+        resolve_texture);
     const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
@@ -2588,6 +2633,15 @@ void release_frame_graph_textures(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, state.post_process_present);
         state.post_process_present = nullptr;
     }
+#endif
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+    // An effect pass outlives no build either: its pipeline was built
+    // against the target's format and sample count, and a rebuilt graph may
+    // change both.
+    for (EffectPass& pass : state.effect_tasks) {
+        release_effect_pass(state.device, pass);
+    }
+    state.effect_tasks.clear();
 #endif
     state.frame_graph_width = 0;
     state.frame_graph_height = 0;
@@ -4851,6 +4905,34 @@ bool run_gpu_engine(Engine& engine) {
             // resource resolution the composed Standard variants use. A
             // register naming something the material never declared is a
             // generation bug, not a draw to skip.
+            // The caller's own texture slots -- a shader material's declared
+            // samplers and a node graph's `TextureBlock` bindings alike --
+            // upload the same way: the image's own bytes, the material's own
+            // sampler, and the white fallback every slot takes.
+            const auto upload_material_slot_texture =
+                [&](const FileTexture& texture) {
+                    return SDL_GPUTextureSamplerBinding{
+                        upload_texture(
+                            state.device,
+                            texture.data,
+                            texture.srgb,
+                            {255, 255, 255, 255}),
+                        create_texture_sampler(
+                            state.device,
+                            texture.data.sampler)};
+                };
+            // A node graph's own textures upload in the order the variant
+            // table declares them, because that is the order the draw
+            // resolves a declared binding by -- the compaction that reorders
+            // a shader material's slots does not reach them, since a node
+            // stage names its bindings `nodeTex_<name>` and the draw matches
+            // on the name rather than on a register.
+            if (material && material->node_material) {
+                for (const FileTexture& texture : material->shader_textures) {
+                    gpu_mesh.shader_textures.push_back(
+                        upload_material_slot_texture(texture));
+                }
+            }
             if (material && material->shader_material) {
                 const upstream::ShaderVariantInfo& shader_info =
                     upstream::shader_variant_info(
@@ -4881,18 +4963,9 @@ bool run_gpu_engine(Engine& engine) {
                                 material->shader_textures.size())
                                 .c_str());
                     }
-                    const FileTexture& texture =
-                        material->shader_textures[slot];
                     gpu_mesh.shader_textures.push_back(
-                        SDL_GPUTextureSamplerBinding{
-                            upload_texture(
-                                state.device,
-                                texture.data,
-                                texture.srgb,
-                                {255, 255, 255, 255}),
-                            create_texture_sampler(
-                                state.device,
-                                texture.data.sampler)});
+                        upload_material_slot_texture(
+                            material->shader_textures[slot]));
                 }
             }
             return gpu_mesh;
@@ -6151,6 +6224,64 @@ bool run_gpu_engine(Engine& engine) {
                         continue;
                     }
 
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+                    if (task.kind == FrameTaskKind::effect) {
+                        // The same two halves the swapchain renderer draws
+                        // through, recorded into the frame graph's command
+                        // buffer instead: the pin ships two entry points
+                        // over one pass, not two passes.
+                        if (
+                            state.effect_tasks.size() <
+                            engine.frame_tasks.size()) {
+                            state.effect_tasks.resize(
+                                engine.frame_tasks.size());
+                        }
+                        EffectPass& pass = state.effect_tasks[handle.value];
+                        const RenderTargetRecord& target_record =
+                            engine.render_targets[task.effect.target.value];
+                        if (!pass.pipeline) {
+                            pass = create_effect_pass(
+                                state.device,
+                                engine,
+                                task.effect.effect,
+                                target_record.swapchain
+                                    ? swapchain_format
+                                    : state
+                                          .render_targets[
+                                              task.effect.target.value]
+                                          .color_format,
+                                target_record.swapchain
+                                    ? 1u
+                                    : target_record.samples);
+                        }
+                        SDL_GPUColorTargetInfo effect_target{};
+                        effect_target.texture =
+                            target_texture(task.effect.target, false);
+                        effect_target.load_op = task.effect.clear
+                            ? SDL_GPU_LOADOP_CLEAR
+                            : SDL_GPU_LOADOP_LOAD;
+                        effect_target.clear_color = SDL_FColor{
+                            task.effect.clear_color.r,
+                            task.effect.clear_color.g,
+                            task.effect.clear_color.b,
+                            task.effect.clear_color.a};
+                        effect_target.store_op = SDL_GPU_STOREOP_STORE;
+                        SDL_GPURenderPass* effect_pass =
+                            SDL_BeginGPURenderPass(
+                                command,
+                                &effect_target,
+                                1,
+                                nullptr);
+                        record_effect_pass(
+                            command,
+                            effect_pass,
+                            engine,
+                            pass,
+                            task.effect.effect);
+                        SDL_EndGPURenderPass(effect_pass);
+                        continue;
+                    }
+#endif
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
                     if (task.kind == FrameTaskKind::post_process) {
                         // A composite records the chain its own factory

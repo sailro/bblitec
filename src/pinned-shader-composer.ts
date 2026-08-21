@@ -17,6 +17,7 @@
  * the pinned imports and extraction helpers they and the lifted builtins
  * share.
  */
+import { javascriptModuleUrl } from "./data-url.js";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -268,7 +269,7 @@ export async function importPinnedModuleWithExports<T>(
     const modulePath = join(pinnedLibraryRoot(), relativePath);
     const anchored = anchorPinnedSpecifiers(modulePath);
     const loading = import(
-        dataModule(`${anchored}\nexport { ${extraExports.join(", ")} };\n`)
+        javascriptModuleUrl(`${anchored}\nexport { ${extraExports.join(", ")} };\n`)
     );
     augmentedModules.set(key, loading);
     return (await loading) as T;
@@ -327,10 +328,10 @@ export async function importPinnedModuleObserving<T>(
                 "}",
             );
         }
-        shims.set(specifier, dataModule(lines.join("\n")));
+        shims.set(specifier, javascriptModuleUrl(lines.join("\n")));
     }
     return (await import(
-        dataModule(anchorPinnedSpecifiers(modulePath, shims))
+        javascriptModuleUrl(anchorPinnedSpecifiers(modulePath, shims))
     )) as T;
 }
 
@@ -347,13 +348,6 @@ function anchorPinnedSpecifiers(
                 pathToFileURL(resolve(dirname(modulePath), specifier)).href
             }${quote}`,
     );
-}
-
-/** Module text as an importable URL. */
-function dataModule(text: string): string {
-    return `data:text/javascript;base64,${Buffer.from(text, "utf8").toString(
-        "base64",
-    )}`;
 }
 
 async function pinnedComposer(): Promise<PinnedComposerModules> {

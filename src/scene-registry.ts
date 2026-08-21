@@ -1716,6 +1716,80 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene62",
+        name: "Scene 62 - NME Diffuse Texture",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene62.ts",
+        title: "Babylon Lite Native - NME Diffuse Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene81",
+        name: "Scene 81 - NME UV Projection",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene81.ts",
+        title: "Babylon Lite Native - NME UV Projection",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene87",
+        name: "Scene 87 - NME Iridescence and Image Processing",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene87.ts",
+        title: "Babylon Lite Native - NME Iridescence",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [4, 4, 6],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene74",
+        name: "Scene 74 - Effect Renderer",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene74.ts",
+        title: "Babylon Lite Native - Effect Renderer",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The effect covers the frame, so the renderer's own clear
+            // colour reaches no pixel and the whole image is foreground.
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene75",
+        name: "Scene 75 - Effect Render Target",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene75.ts",
+        title: "Babylon Lite Native - Effect Render Target",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene76",
+        name: "Scene 76 - Effect Texture",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene76.ts",
+        title: "Babylon Lite Native - Effect Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

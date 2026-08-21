@@ -47,4 +47,26 @@ inline bool run_sprite_dawn_engine(Engine&) {
 }
 #endif
 
+// The pure fullscreen-effect path. An EffectRenderer is its own rendering
+// context on the engine rather than part of a scene, exactly as a
+// SpriteRenderer is, so a scene registering one and no SceneContext draws
+// from here and compiles no scene renderer at all.
+#if defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER && \
+    defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
+bool run_effect_gpu_engine(Engine& engine);
+#else
+inline bool run_effect_gpu_engine(Engine&) {
+    return false;
+}
+#endif
+
+#if defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER && \
+    defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
+bool run_effect_dawn_engine(Engine& engine);
+#else
+inline bool run_effect_dawn_engine(Engine&) {
+    return false;
+}
+#endif
+
 } // namespace bbl::pal

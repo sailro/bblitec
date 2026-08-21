@@ -477,6 +477,86 @@ world matrix (`local_matrix_from_direction`): the spot exponent lands in
 light's ground colour reuses `vLightDirection`, exactly where the pin puts
 them. Scene 15 is the spot parity gate, byte-identical across both backends.
 
+**An image texture asks for anisotropic filtering only when nothing in its
+chain is nearest.** `loadTexture2D` builds its sampler with
+`maxAnisotropy: allLinear ? 4 : 1`, where `allLinear` folds in the mip filter
+it derives as `mipMaps ? "linear" : "nearest"` — so turning mips off turns
+anisotropy off with them. The upstream module page states a flat
+`maxAnisotropy: 4`; the pinned source is the fork, and the port lowers from
+the source. The magnitude is not rounding: scene 62's crate on a UV sphere
+measures 0.031 full MAD with anisotropy 1 against 0.000 with the pin's rule,
+all of it at the poles and the silhouette where the UV compression is
+extreme. The glTF sampler path already carries the same rule
+([backends](backends.md#ported-pinned-contracts)); this is the scene-code
+loader's own copy of it, and a contract assertion on the pinned expression
+fails generation if either arm moves. Scenes 62 and 81 gate it, and scenes
+160 and 162 gate its absence — both pass `mipMaps: false`, which is the arm
+that keeps anisotropy at one. Scene 21 reaches it too, through the
+`loadTexture2D` its `Promise.all` awaits, and is the one place where following
+the pin moved a published number the wrong way: its full MAD went from 0.32951
+to 0.32956, five parts in a hundred thousand of a residual that belongs to
+something else entirely. The two backends agree slightly better than they did,
+which is what a corrected CPU-side input looks like.
+
+**A node graph's texture bindings are the pin's allocation, and the scene
+supplies the images by name.** `compileNodePipeline` draws each
+`TextureBlock`/`ImageSourceBlock` pair out of the same running binding counter
+the node UBO and the environment take, so the numbers belong to the
+composition; `parseNodeMaterialFromSnippet` then looks each declared binding
+up in `options.textures` by the sanitized block name. Both halves are kept:
+the generated variant table carries the pair and the name, and
+`create_node_material` performs the same name join the pin performs when it
+fills `_textureSlots`. Generation additionally refuses a binding the record
+omits and a name the graph declares no binding for, which upstream raises at
+the first render instead. Two calls sharing one graph must name the same
+bindings, because the composed variant declares one set.
+
+**A tone mapping is a value, not a flag.** `material/pbr/tone-mapping.ts`
+declares `{ id, helpersWGSL, callWGSL }` and each algorithm is one exported
+record in its own module, so a bundle carries only the curve it references and
+`pbr-renderable.ts` composes
+`scene.imageProcessing.toneMapping ?? StandardToneMapping` into the fragment.
+This port reads the same records rather than restating one: a scene assigning
+`imageProcessing.toneMapping` selects which export's WGSL reaches the composer,
+and an unset selection reaches the pin's own default by the same `??`. The
+composed arm set is closed at generation, so a scene selecting two different
+curves refuses. A node graph's `ImageProcessingBlock` is untouched by the
+selection — it reads `sceneU.vImageInfos.w` and carries the standard
+exponential curve inline — which is why scene 87 composes identically either
+way and the selection is a PBR-family contract.
+
+**A solid texture is rounded once, where the pin rounds it.**
+`createSolidTexture2D` writes `Math.round(channel * 255)` into a 1x1
+`rgba8unorm` sampled without decode, so the byte *is* the texture and the
+float is only how the caller spelled it. The lowered `create_solid_texture`
+performs that rounding under a contract asserting the pin's four rounded
+channels, and `SolidTexture` carries the resulting texel beside the float —
+so a slot that bakes the texture into a fallback and a slot that uploads it
+read the same bytes, and neither PAL knows the formula. Scenes 6, 21 and 76
+reach it through three different consumers.
+
+**A fullscreen effect is the pin's own vertex stage around the caller's
+fragment, and the pass state is checked rather than restated.**
+`createEffectWrapper` builds one shader module as the default vertex stage,
+one newline, then the caller's fragment, so generation lifts that constant
+out of the pinned module and performs the same concatenation;
+the fullscreen triangle, its `uv` varying and both entry-point names are the
+pin's text, not a transcription. Everything else the pin decides about the
+pass is fixed-function, or a default the frontend restates beside the
+descriptor it reads — invisible to a text diff either way, so all of it is
+asserted at generation instead: the `triangle-list` topology, the sample count
+taken from the *output target's* signature, the two entry points, the single
+three-vertex draw in each of the pin's own recorders, the `
+` template
+joining the two stages, `align4` and the sixteen-byte uniform default, both
+arms of `matchesBinding`, the wrapper's own name default, and the clear flag
+and colour on both the renderer and the task. The
+`EffectBindingLayout` array is the authority on group 0 — the pin reflects
+nothing out of the WGSL — so it travels whole into the generated table, with a
+sampler's `textureBinding` fallback ("the texture it names, or the first
+texture slot") resolved once at generation. Scenes 74, 75 and 76 measure the
+three shapes byte-exact on both backends.
+
 **A render target sampled as a Standard diffuse texture flips V in the UV
 block, not at upload.** `createRenderTargetTexture` returns its colour
 attachment as a `Texture2D` carrying `invertY: true`, and

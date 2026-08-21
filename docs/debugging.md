@@ -77,13 +77,15 @@ to one LSB puts the cause on the CPU side — this port's values, plan and
 loader. Disagreement puts it on the GPU side — a pipeline state, a shader
 translation, a format. One command separates the two.
 
-Scenes 9 and 37 are not bit-stable on Dawn from run to run, so a moved Dawn
-cell for those two means nothing on its own — `scene -- neutrality` knows that
-and reports them as expected wobble. The scope is measured rather than
-assumed: SDL_GPU is bit-identical across runs and so is Dawn under
-`BBLITE_MSAA=1`, and only 4x Dawn moves, by a few dozen pixels of 921600, all
-of them by exactly one. The wobble is the multisampled path; nothing else
-about those two scenes is in question.
+Scenes 9, 37 and 120 are not bit-stable on Dawn from run to run, so a moved
+Dawn cell for those three means nothing on its own — `scene -- neutrality`
+knows that and reports them as expected wobble. The scope is measured rather
+than assumed: SDL_GPU is bit-identical across runs and so is Dawn under
+`BBLITE_MSAA=1`, and only 4x Dawn moves. The wobble is the multisampled path;
+nothing else about those scenes is in question. That pair of `stability` runs
+is the entry fee, because a whitelist row excuses a scene's Dawn cells
+permanently: scene 120's wobble spans 0.002 against a 0.004 Dawn foreground,
+so a Dawn regression smaller than that would hide behind it.
 
 That check is a command for any scene:
 

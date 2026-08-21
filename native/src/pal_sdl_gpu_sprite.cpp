@@ -43,10 +43,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
         throw std::runtime_error(
             "Sprite renderer requires a registered SpriteRenderer.");
     }
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
-
-    SDL_Window* window = nullptr;
-    SDL_GPUDevice* device = nullptr;
+    SdlGpuDevice gpu{};
+    SDL_Window*& window = gpu.window;
+    SDL_GPUDevice*& device = gpu.device;
     SDL_GPUTexture* color = nullptr;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
@@ -63,41 +62,13 @@ bool run_sprite_gpu_engine(Engine& engine) {
     };
 
     try {
-        const bool hidden_test_pass = frame_options.test_pass;
-        window = SDL_CreateWindow(
-            engine.options.title.c_str(),
-            engine.options.width,
-            engine.options.height,
-            hidden_test_pass
-                ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
-                : SDL_WINDOW_RESIZABLE);
-        if (!window) gpu_error("SDL_CreateWindow");
-        device = SDL_CreateGPUDevice(
-            SDL_GPU_SHADERFORMAT_DXIL |
-                SDL_GPU_SHADERFORMAT_SPIRV |
-                SDL_GPU_SHADERFORMAT_MSL,
-            frame_options.gpu_debug,
-            nullptr);
-        if (!device) gpu_error("SDL_CreateGPUDevice");
-        if (!SDL_ClaimWindowForGPUDevice(device, window)) {
-            gpu_error("SDL_ClaimWindowForGPUDevice");
-        }
-        const SDL_GPUTextureFormat swapchain_format =
-            SDL_GetGPUSwapchainTextureFormat(device, window);
-        if (frame_options.benchmark_requested &&
-            SDL_WindowSupportsGPUPresentMode(
-                device, window, SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-            if (!SDL_SetGPUSwapchainParameters(
-                    device,
-                    window,
-                    SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
-                    SDL_GPU_PRESENTMODE_IMMEDIATE)) {
-                gpu_error("SDL_SetGPUSwapchainParameters");
-            }
-        }
-        if (!SDL_SetGPUAllowedFramesInFlight(device, 3)) {
-            gpu_error("SDL_SetGPUAllowedFramesInFlight");
-        }
+        SdlGpuDeviceOptions device_options;
+        device_options.hidden_test_pass = frame_options.test_pass;
+        device_options.immediate_present =
+            frame_options.benchmark_requested;
+        device_options.gpu_debug = frame_options.gpu_debug;
+        create_sdl_gpu_device(engine.options, device_options, gpu);
+        const SDL_GPUTextureFormat swapchain_format = gpu.swapchain_format;
 
         // Registration order is draw order across renderers, as it is in
         // the pinned `engine._renderingContexts`.

@@ -102,6 +102,9 @@ export async function composeScenePipeline({
         multiLight: lightKinds.length > 0,
         noLight: true,
         toneMapping: hasEnvironment ? [false, true] : [false],
+        ...(result.manifest.toneMapping
+            ? { toneMappingName: result.manifest.toneMapping }
+            : {}),
         environment: hasEnvironment,
         fog: result.manifest.features.includes("renderer:fog"),
     });
@@ -353,15 +356,36 @@ export async function composeScenePipeline({
                 modulePath: resolve(repositoryRoot, material.module),
                 exportName: material.exportName,
             });
+        const label = material.kind === "literal"
+            ? `${index}`
+            : `${material.module}#${material.exportName}`;
+        const composed = await composeNodeMaterial(graph, label);
+        // The graph decides which bindings exist and the scene decides which
+        // it supplies; only here are both known. Upstream raises the mismatch
+        // at the first render, so raising it at generation is the same
+        // contract moved to the moment that can carry a source-free message
+        // naming the binding.
+        for (const binding of composed.textures) {
+            if (material.textureNames.includes(binding.name)) continue;
+            throw new Error(
+                `Node material '${label}' samples the texture binding ` +
+                    `'${binding.name}', which the scene's 'textures' record ` +
+                    "does not supply.",
+            );
+        }
+        for (const name of material.textureNames) {
+            if (composed.textures.some((binding) => binding.name === name)) {
+                continue;
+            }
+            throw new Error(
+                `Node material '${label}' is given a texture named ` +
+                    `'${name}', which its graph declares no binding for.`,
+            );
+        }
         nodeVariants.push({
             index,
             ...nodeVariantStageStems(index),
-            composed: await composeNodeMaterial(
-                graph,
-                material.kind === "literal"
-                    ? `${index}`
-                    : `${material.module}#${material.exportName}`,
-            ),
+            composed,
         });
     }
     return {
