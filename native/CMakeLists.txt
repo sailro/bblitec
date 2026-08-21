@@ -388,6 +388,20 @@ else()
     )
 endif()
 
+# A Gaussian splat cloud draws inside the scene's pass like a billboard, so
+# it needs no renderer of its own -- only its pipeline and its data textures.
+if("loader:splat" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_SPLATS=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_SPLATS=0
+    )
+endif()
+
 if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
         bblite_native

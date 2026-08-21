@@ -364,6 +364,31 @@ compiled away:
   `getVariantNames` and `resetVariant` all refuse at generation
   ([fidelity](fidelity.md#semantic-contract)).
 
+`loadSplat` loads a Gaussian-splat cloud, split across the two halves of the
+pipeline the way each half is best at:
+
+- The **container parse runs at generation**. A `.ply` header is a
+  per-exporter property list, so what must not drift is the parsed value
+  rather than the parser's shape, and only the pin's own parser can promise
+  that. What is packaged is the 32-byte-per-splat row buffer — upstream's own
+  `.splat` files are that buffer written to disk, so a `.ply` scene and a
+  `.splat` scene package to the same bytes and the runtime reads one layout.
+- The **geometry build and the depth sort are folded** from their pinned
+  declarations: the rotate-then-scale covariance whose six unique entries
+  become two RGB triples, and the uniform-key counting sort that puts splats
+  in back-to-front order for the alpha-combine blend. Both are fixed math over
+  a fixed layout, where the shape is the contract.
+- The **projection is the pin's own WGSL**, extracted from the bundle rather
+  than transcribed, and split into a stage per file. The four data textures
+  are sampled in the vertex stage; the fragment stage reads only varyings.
+
+The reached slice is the plain `.ply` and `.splat` row layout. A compressed or
+spherical-harmonic PLY refuses at generation, because it needs the pin's second
+parser and its own SH pipeline; `.sog` and `.spz` need a ZIP and a gzip decoder
+first. The sort runs on the frame's own thread before the draw that reads it
+rather than in a worker, which is the state `mesh.firstSortReady` waits for
+([fidelity](fidelity.md#semantic-contract)).
+
 ### Geometry and meshes
 
 Box, sphere, subdivided ground, plane, and torus primitives;

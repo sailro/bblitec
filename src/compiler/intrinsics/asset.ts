@@ -60,6 +60,7 @@ export interface AssetIntrinsicContext
         name: string,
     ): ts.Expression | undefined;
     compileBoolean(expression: ts.Expression): string;
+    requireEngine(value: Value, node: ts.Node): string;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -96,6 +97,39 @@ export function compileAssetIntrinsic(
                     `${context.cppString(asset.output)}))`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                asset,
+            };
+        }
+
+        case "loadSplat": {
+            // `loadSplat(scene, url)` -- the third parameter is the shader
+            // fragment list, which splices plugin WGSL into the pin's own
+            // stage and belongs with the scenes that reach it.
+            context.expectArgumentCount(call, 2, 2);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            const source = context.compileStringLiteral(
+                call.arguments[1]!,
+            );
+            const asset = context.registerAsset(source, "splat");
+            context.reachFeature("loader:splat", call);
+            // A splat cloud is a scene renderable -- upstream pushes it onto
+            // the SceneContext's own `_renderables` -- so it reaches the
+            // scene renderer the way a loaded glTF does. Nothing here needs
+            // the PBR material family; that feature is what names the scene
+            // render loop in this port.
+            context.reachFeature("renderer:pbr", call);
+            return {
+                kind: "splat-mesh",
+                cpp:
+                    `bbl::load_splat(${scene.cpp}, ` +
+                    `bbl::asset_path(` +
+                    `${context.cppString(asset.output)}))`,
+                engineCpp: context.requireEngine(scene, call.arguments[0]!),
                 asset,
             };
         }

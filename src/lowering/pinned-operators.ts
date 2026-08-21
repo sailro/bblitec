@@ -53,6 +53,9 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     sin: "std::sin",
     sqrt: "std::sqrt",
     abs: "std::abs",
+    log2: "std::log2",
+    ceil: "std::ceil",
+    floor: "std::floor",
 };
 
 /**

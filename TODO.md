@@ -310,6 +310,35 @@ that does to the deferred lane by default.
   static record property — 226 `container._gaussianSplats ?? []`, 251
   `xbot.animationGroups ?? []`. Splats, animation groups and the Recast lane sit
   behind them.
+- [ ] Scene 120's SDL_GPU residual: 0.024 full / 0.071 region, all of it the
+  backend differential (SDL_GPU-vs-Dawn 0.024, max 2, within1 99.97%), where
+  Dawn measures 0.001/0.004 against the same golden. Eliminated by
+  measurement: the lowered `build_splat_geometry` is bit-identical to the
+  pinned JS on the packaged asset (all five payloads and both bounds, checked
+  by checksum); the browser's own 224-byte splat UBO matches ours field for
+  field (`scene -- uniforms scene120 --size 224`); and recompiling the vertex
+  stage with DXC `-Gis` moves it by 0.0002, so it is not fast-math
+  reassociation. The residual is edge-weighted (edges 0.142, interior 0.028,
+  background 0.000), which points at the projected footprint rather than blend
+  accumulation. Not a floor until a pinned line explains it.
+- [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
+  reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
+  spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
+  and its 1..5 rgba32uint SH textures), 125 (`bakeCurrentTransformIntoVertices`)
+  and 126 (a `GsShaderFragment` plugin spliced into the pin's own stage, which
+  `applyGsFragments` mangles field names for). `loadSOG` (122) needs a ZIP and
+  a WebP decoder; `loadSPZ` (123) needs gzip. 127/128 add
+  `createLinearDepthMaterial`, 129 adds `.name`.
+- [ ] The native render capture records no splat draw, so `scene -- diff` on a
+  splat scene reports "0 draws" and its shader/uniform comparison is empty
+  even though the render is correct. The draw list the capture walks is the
+  render plan's; a splat is a scene renderable outside it.
+- [ ] `renderer:pbr` is the feature that names the SCENE RENDER LOOP, not the
+  PBR material family: `featureSources` maps it to `src/pal_sdl_gpu.cpp`, and
+  `addBillboardSystem` and `loadSplat` both reach it for scenes with no PBR
+  material at all. The reach is right and the name is not; renaming it to
+  something like `renderer:scene` touches every manifest and every feature
+  table, so it is filed rather than done inside a scene integration.
 - [ ] Extend `material.diffuseTexture` past the colour render target scene
   110 measures. Three sources refuse by name: an image texture, a
   depth-only `createRenderTargetTexture` output, and a geometry task's

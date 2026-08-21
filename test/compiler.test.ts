@@ -3276,3 +3276,90 @@ test("refuses a geometry attachment in the Standard diffuse slot", () => {
         /diffuseTexture accepts render-target textures, received a geometry one/,
     );
 });
+
+// The single-frame yield, and the three shapes that must keep refusing.
+// `isFrameYield` erases "one more frame has drawn", which this runtime
+// satisfies by construction. A count of frames is a different claim, and the
+// corpus writes it as a LOOP over the very shape that is erased — so the
+// loop, not the expression, is what tells them apart.
+const frameYieldScene = (body: string): string => `import {
+    createArcRotateCamera,
+    createBox,
+    createEngine,
+    createSceneContext,
+    registerScene,
+    startEngine,
+} from "babylon-lite";
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(0, 1, 8, { x: 0, y: 0, z: 0 });
+    createBox(engine, 2);
+    await registerScene(scene);
+    await startEngine(engine);
+${body}
+}
+main().catch(console.error);
+`;
+
+const frameYieldFile = {
+    fileName: "corpus/babylon-lite/lab/lite/src/lite/frame-yield.ts",
+};
+
+test("erases a single-frame yield", () => {
+    const result = compileSource(
+        frameYieldScene(
+            "    await new Promise<void>((r) => requestAnimationFrame(() => r()));",
+        ),
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
+});
+
+test("refuses a frame yield inside a loop as the multi-frame wait it is", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    `    for (let i = 0; i < 5; i++) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }`,
+                ),
+                frameYieldFile,
+            ),
+        /frame yield inside a loop is a multi-frame wait/,
+    );
+});
+
+test("refuses a promise that resolves on a frame count rather than the next frame", () => {
+    // Scenes 269 and 270 verbatim: the executor's body is a block that
+    // re-arms `requestAnimationFrame` until a counter passes.
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    `    let frame = 0;
+    await new Promise<void>((resolve) => {
+        const wait = (): void => (frame > 4 ? resolve() : requestAnimationFrame(wait));
+        wait();
+    });`,
+                ),
+                frameYieldFile,
+            ),
+        /Unsupported expression statement: NewExpression/,
+    );
+});
+
+test("refuses a nested frame yield, which waits two frames", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    "    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));",
+                ),
+                frameYieldFile,
+            ),
+        /Unsupported expression statement: NewExpression/,
+    );
+});

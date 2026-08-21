@@ -276,6 +276,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-gltf/gltf-feature-variants.ts",
         consumers: ["features.cmake", "variant table", "loader flag"],
     },
+    "loader:splat": {
+        provenance:
+            "src/loader-splat/load-splat.ts#loadSplat + " +
+            "src/loader-splat/splat-data.ts#buildSplatGeometry + " +
+            "src/loader-splat/splat-sort-core.ts + " +
+            "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
+        consumers: ["features.cmake", "deployed shaders"],
+    },
     "material:pbr": {
         provenance: "src/material/pbr/pbr-material.ts",
         consumers: CMAKE,

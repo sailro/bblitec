@@ -252,6 +252,9 @@ export interface CompileAsset {
         // module computes a texture's bytes outright.
         | "sprite-atlas"
         | "pixels"
+        // A Gaussian-splat container, packaged into the interchange row
+        // buffer the pin's own `.splat` files already are.
+        | "splat"
         | "texture";
     faceSize?: number;
     /**
@@ -383,6 +386,7 @@ export type ValueKind =
     | "billboard-custom-shader"
     | "billboard-system"
     | "sprite-renderer"
+    | "splat-mesh"
     | "string"
     | "task"
     | "texture"
@@ -545,6 +549,7 @@ export type Feature =
     | "loader:babylon"
     | "loader:gltf"
     | "loader:gltf-variants"
+    | "loader:splat"
     | "material:pbr"
     | "material:clearcoat"
     | "material:sheen"

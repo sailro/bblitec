@@ -122,6 +122,10 @@ struct BillboardSystemHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct SplatMeshHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 enum class PrimitiveKind {
     babylon,
     box,
@@ -728,6 +732,40 @@ struct Sprite2DView {
     float rotation = 0.0f;
 };
 
+/**
+ * A Gaussian-splat cloud, as `loadSplat` leaves it.
+ *
+ * The four RGBA32F payloads and the centres are what
+ * `upstream::build_splat_geometry` produced from the packaged row buffer;
+ * the backends upload the payloads once and re-run the sort whenever the
+ * view-depth transform drifts, which is `postSplatSortIfDirty`'s rule.
+ *
+ * The pin's own transform state rides here too: a splat mesh is a scene node
+ * with position/rotation/scaling, and the world matrix multiplies into the
+ * depth transform. No reached scene moves one, so the world stays identity
+ * and the field exists to keep the depth kernel written the way the pin
+ * writes it rather than folded away.
+ */
+struct SplatMeshRecord {
+    std::uint32_t vertex_count = 0;
+    std::uint32_t texture_width = 0;
+    std::uint32_t texture_height = 0;
+    std::array<float, 3> bound_min{};
+    std::array<float, 3> bound_max{};
+    /** Splat centres, flat XYZ — the sort's only geometry input. */
+    std::vector<float> positions;
+    std::vector<float> centers_rgba;
+    std::vector<float> cov_a_rgba;
+    std::vector<float> cov_b_rgba;
+    std::vector<float> colors_rgba;
+    /** Identity for every reached scene; see the note above. */
+    std::array<float, 16> world{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f};
+};
+
 struct Sprite2DLayerRecord {
     SpriteAtlasHandle atlas{};
     SpriteBlendDescriptor blend{};
@@ -1184,6 +1222,7 @@ struct Engine {
     std::vector<Sprite2DLayerRecord> sprite_layers;
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
+    std::vector<SplatMeshRecord> splat_meshes;
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
@@ -1242,6 +1281,9 @@ struct Scene {
     std::vector<TaskHandle> tasks;
     std::vector<AnimationGroupHandle> animation_groups;
     std::vector<BillboardSystemHandle> billboard_systems;
+    // `loadSplat` registers the renderable on the scene it is handed, the
+    // way `attachGaussianSplattingMesh` pushes into `_renderables`.
+    std::vector<SplatMeshHandle> splat_meshes;
     std::vector<std::function<void(float)>> before_render;
     std::vector<std::function<void(float)>> animation_seekers;
     std::vector<std::function<void()>> deferred_builders;
@@ -1676,6 +1718,7 @@ struct SpriteRendererOptions {
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
+SplatMeshHandle load_splat(Scene& scene, const std::string& path);
 SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
     const std::string& path,
