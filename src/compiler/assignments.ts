@@ -309,6 +309,8 @@ export function lightVectorSetter(
 
 export interface AssignmentContext extends DeterministicRandomContext {
     readonly checker: ts.TypeChecker;
+    /** The scene's node-particle program; a texture write lands on it. */
+    readonly reachedNodeParticles: CompiledNodeParticles;
     resolveStaticExpression(
         expression: ts.Expression,
     ): ts.Expression;
@@ -410,6 +412,139 @@ function emitSceneLightListClear(
 }
 
 /**
+ * The scalars a scene writes on a particle system between simulation steps.
+ *
+ * All three are inputs to `animateParticleSystem` rather than properties of
+ * the state it produces, so a write travels to the bake as one more step in
+ * the sequence. `blendMode` and `texture` are deliberately not here: the
+ * first would move a composed variant after the set is closed, and the
+ * second is a resource rather than a scalar.
+ */
+const particleScalars = [
+    "emitRate",
+    "updateSpeed",
+    "targetStopDuration",
+];
+
+/**
+ * One such write, recorded where the scene made it.
+ *
+ * The bake replays the whole sequence, so the position of this write among
+ * the start/animate calls is what it means -- `updateSpeed = 0` after the
+ * last step is what freezes the system a scene then registers.
+ */
+function emitNodeParticleScalarAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+    target: Value,
+    property: string,
+): void {
+    requireSimpleAssignment(
+        context,
+        expression,
+        `node-particle system ${property}`,
+    );
+    const set = target.nodeParticleSetIndex;
+    const system = target.nodeParticleSystemIndex;
+    if (set === undefined || system === undefined) {
+        context.fail(
+            left,
+            "This particle system did not come from a built " +
+                "node-particle set.",
+        );
+    }
+    const value = staticNumberValue(context, expression.right);
+    if (value === undefined) {
+        context.fail(
+            expression.right,
+            `A node-particle system's ${property} is a static number: the ` +
+                "simulation runs at generation.",
+        );
+    }
+    context.reachedNodeParticles.steps.push({
+        op: "scalar",
+        set,
+        system,
+        name: property as "emitRate" | "updateSpeed" | "targetStopDuration",
+        value,
+    });
+}
+
+/**
+ * `system.texture = <texture>`: the image a particle system renders with.
+ *
+ * A graph whose `ParticleTextureSourceBlock` carries no URL leaves the
+ * system untextured, and `createParticleBillboard` throws there — so the
+ * corpus assigns the texture itself, and the assignment is part of the
+ * program the bake replays. It is folded rather than emitted: the write is
+ * a static fact about this system, and what reads it is the atlas the
+ * generated billboard builder makes. A write AFTER that builder ran would
+ * be a second state, so it refuses.
+ */
+function emitNodeParticleTextureAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    left: ts.PropertyAccessExpression,
+    target: Value,
+): void {
+    requireSimpleAssignment(
+        context,
+        expression,
+        "node-particle system texture",
+    );
+    const texture = context.compileValue(expression.right);
+    context.expectKind(texture, "texture", expression.right);
+    if (!texture.pixelsTexture) {
+        context.fail(
+            expression.right,
+            "A node-particle system's texture comes from " +
+                "createTexture2DFromPixels with a static size: the bake " +
+                "partitions its atlas by that size, and the graph's own " +
+                "texture block loads every other kind.",
+        );
+    }
+    const set = target.nodeParticleSetIndex;
+    const system = target.nodeParticleSystemIndex;
+    if (set === undefined || system === undefined) {
+        context.fail(
+            left,
+            "This particle system did not come from a built " +
+                "node-particle set.",
+        );
+    }
+    const program = context.reachedNodeParticles;
+    if (
+        program.billboards.some(
+            (frozen) => frozen.set === set && frozen.system === system,
+        ) ||
+        program.registrations.some((entry) => entry.set === set)
+    ) {
+        context.fail(
+            left,
+            "This particle system's billboard was already built; its " +
+                "texture is read there.",
+        );
+    }
+    if (
+        program.textures.some(
+            (entry) => entry.set === set && entry.system === system,
+        )
+    ) {
+        context.fail(
+            left,
+            "This particle system's texture is already assigned; the " +
+                "bake carries one.",
+        );
+    }
+    program.textures.push({
+        set,
+        system,
+        ...texture.pixelsTexture,
+    });
+}
+
+/**
  * A post-process effect's own settable option.
  *
  * The pin gives each one a `defineProperty` pair over the factory's `params`
@@ -474,6 +609,12 @@ export function emitPropertyAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
 ): void {
+    // A particle column write edits the state the bake reads, so it is
+    // recorded as a step rather than emitted -- and it is an ELEMENT
+    // access, which the property gate below would refuse first.
+    if (emitParticleBufferWrite(context, expression)) {
+        return;
+    }
     if (!ts.isPropertyAccessExpression(expression.left)) {
         context.fail(
             expression.left,
@@ -706,6 +847,44 @@ export function emitPropertyAssignment(
     if (ts.isIdentifier(targetExpression)) {
         const target = context.lookup(targetExpression);
         const property = left.name.text;
+
+        if (
+            target.kind === "node-particle-system" &&
+            property === "buffer"
+        ) {
+            context.fail(
+                left,
+                "A particle buffer is generation-time state; only one of " +
+                    "its columns may be written, by index.",
+            );
+        }
+
+        if (
+            target.kind === "node-particle-system" &&
+            particleScalars.includes(property)
+        ) {
+            emitNodeParticleScalarAssignment(
+                context,
+                expression,
+                left,
+                target,
+                property,
+            );
+            return;
+        }
+
+        if (
+            target.kind === "node-particle-system" &&
+            property === "texture"
+        ) {
+            emitNodeParticleTextureAssignment(
+                context,
+                expression,
+                left,
+                target,
+            );
+            return;
+        }
 
         if (
             target.kind === "scene" &&
@@ -1093,6 +1272,8 @@ function requireSimpleAssignment(
     }
 }
 import ts from "typescript";
+import { emitParticleBufferWrite } from "./particle-buffer.js";
+import { staticNumberValue } from "./option-helpers.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,
@@ -1103,6 +1284,7 @@ import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import type {
+    CompiledNodeParticles,
     Feature,
     LightKind,
     Value,

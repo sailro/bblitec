@@ -71,20 +71,13 @@ export function compileEnvironmentOptions(
     // deferred builder pushes a background renderable at all, so they are
     // read rather than tolerated: the solid-colour skybox is what a scene
     // gets when it sets neither.
-    const skipFlag = (name: "skipSkybox" | "skipGround"): boolean => {
-        const property = context.objectProperty(object, name);
-        if (!property) {
-            return false;
-        }
-        const compiled = context.compileBoolean(property);
-        if (compiled !== "true" && compiled !== "false") {
-            context.fail(
-                property,
-                `${name} must be a static boolean.`,
-            );
-        }
-        return compiled === "true";
-    };
+    const skipFlag = (name: "skipSkybox" | "skipGround"): boolean =>
+        compileOptionalStaticBoolean(
+            context,
+            context.objectProperty(object, name),
+            false,
+            name,
+        );
     return {
         groundTextureUrl: groundTextureUrl ? context.compileStringLiteral(groundTextureUrl) : "",
         skyboxUrl: skyboxUrl ? context.compileStringLiteral(skyboxUrl) : "",

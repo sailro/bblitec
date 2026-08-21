@@ -27,6 +27,7 @@ import {
     type ExecutedModuleReferenceContext,
 } from "../assets.js";
 import {
+    compileOptionalStaticBoolean,
     compileStaticNumber,
     notJson,
     staticJsonValue,
@@ -34,6 +35,7 @@ import {
     validateObjectProperties,
     type ObjectValidationContext,
     type PositiveIntegerContext,
+    type StaticBooleanContext,
 } from "../option-helpers.js";
 import type {
     CompiledNodeParticles,
@@ -51,13 +53,12 @@ export interface ParticleIntrinsicContext
         IntrinsicCallContext,
         ExecutedModuleReferenceContext,
         ObjectValidationContext,
-        PositiveIntegerContext {
+        PositiveIntegerContext,
+        StaticBooleanContext {
     /** The scene's node-particle program; this module appends to it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
     requireDefaultEngine(node: ts.Node): string;
     compileStaticString(expression: ts.Expression): string;
-    /** One system built with the stock program, as the pin's own is. */
-    recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -68,9 +69,11 @@ export interface ParticleIntrinsicContext
     emit(line: string): void;
 }
 
-/** The three builders the corpus reaches, by their own export names. */
+/** The four builders the corpus reaches, by their own export names. */
 const builders: Readonly<Record<string, NodeParticleBuilder>> = {
     buildNodeParticleSet: "buildNodeParticleSet",
+    buildNodeParticleSetWithBlendModes:
+        "buildNodeParticleSetWithBlendModes",
     buildNodeParticleSetWithFlowMaps: "buildNodeParticleSetWithFlowMaps",
     buildNodeParticleSetWithNoiseTextures:
         "buildNodeParticleSetWithNoiseTextures",
@@ -200,6 +203,124 @@ function staticArgumentJson(
     );
 }
 
+/**
+ * `RegisterNodeParticleSet2DOptions`, as the static record it is.
+ *
+ * Every field is a mapping constant the bridge reads per particle, so each
+ * is resolved here and each default is the pin's own. `view` is refused: no
+ * reached call names one, and a layer view moves every sprite.
+ */
+function sprite2dOptions(
+    context: ParticleIntrinsicContext,
+    expression: ts.Expression | undefined,
+): {
+    autoStart: boolean;
+    pixelsPerUnit: number;
+    originPx: readonly [number, number];
+    invertY: boolean;
+    opacity?: number;
+    visible?: boolean;
+    order?: number;
+} {
+    const resolved = {
+        autoStart: true,
+        pixelsPerUnit: 1,
+        originPx: [0, 0] as readonly [number, number],
+        invertY: true,
+    };
+    if (!expression) return resolved;
+    const options = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        options,
+        ["autoStart", "pixelsPerUnit", "originPx", "invertY", "layer"],
+        "A pure-2D node-particle binding takes autoStart, pixelsPerUnit, " +
+            "originPx, invertY and layer.",
+    );
+    const flag = (name: "autoStart" | "invertY"): void => {
+        resolved[name] = compileOptionalStaticBoolean(
+            context,
+            context.objectProperty(options, name),
+            resolved[name],
+            `A pure-2D node-particle binding's ${name}`,
+        );
+    };
+    flag("autoStart");
+    flag("invertY");
+    const scale = context.objectProperty(options, "pixelsPerUnit");
+    if (scale) {
+        resolved.pixelsPerUnit = compileStaticNumber(
+            context,
+            scale,
+            "pixelsPerUnit",
+        );
+    }
+    const origin = context.objectProperty(options, "originPx");
+    if (origin) {
+        const unwrapped = context.unwrap(origin);
+        if (
+            !ts.isArrayLiteralExpression(unwrapped) ||
+            unwrapped.elements.length !== 2
+        ) {
+            context.fail(
+                origin,
+                "originPx is a two-element array literal.",
+            );
+        }
+        resolved.originPx = [
+            compileStaticNumber(
+                context,
+                unwrapped.elements[0]!,
+                "originPx x",
+            ),
+            compileStaticNumber(
+                context,
+                unwrapped.elements[1]!,
+                "originPx y",
+            ),
+        ];
+    }
+    const layer = context.objectProperty(options, "layer");
+    if (!layer) return resolved;
+    const layerOptions = context.expectObjectLiteral(layer);
+    validateObjectProperties(
+        context,
+        layerOptions,
+        ["opacity", "visible", "order"],
+        "A bridge-owned layer takes opacity, visible and order; its " +
+            "view is not lowered.",
+    );
+    const numeric = (name: "opacity" | "order"): number | undefined => {
+        const named = context.objectProperty(layerOptions, name);
+        return named
+            ? compileStaticNumber(context, named, `layer ${name}`)
+            : undefined;
+    };
+    const visibleNamed = context.objectProperty(
+        layerOptions,
+        "visible",
+    );
+    let visible: boolean | undefined;
+    if (visibleNamed) {
+        const value = context.compileValue(visibleNamed);
+        if (value.cpp !== "true" && value.cpp !== "false") {
+            context.fail(
+                visibleNamed,
+                "A bridge-owned layer's visible must be a static boolean.",
+            );
+        }
+        visible = value.cpp === "true";
+    }
+    const opacity = numeric("opacity");
+    const order = numeric("order");
+    return {
+        ...resolved,
+        ...(opacity === undefined ? {} : { opacity }),
+        ...(visible === undefined ? {} : { visible }),
+        ...(order === undefined ? {} : { order }),
+    };
+}
+
 /** `{ x, y, z }` as the three static numbers the pin's own option is. */
 function emitterVector(
     context: ParticleIntrinsicContext,
@@ -297,6 +418,7 @@ export function compileParticleIntrinsic(
         }
 
         case "buildNodeParticleSet":
+        case "buildNodeParticleSetWithBlendModes":
         case "buildNodeParticleSetWithFlowMaps":
         case "buildNodeParticleSetWithNoiseTextures": {
             context.expectArgumentCount(call, 3, 4);
@@ -410,9 +532,11 @@ export function compileParticleIntrinsic(
                 value.engineCpp ?? context.requireDefaultEngine(call);
             context.reachFeature("sprite:billboard", call);
             context.reachFeature("particle:node", call);
-            // createParticleBillboard builds a stock facing system: the
-            // pin's own particle path installs no custom shader.
-            context.recordPlainSpriteProgram("billboard");
+            // Which program this system draws is the BAKE's answer: the
+            // blend mode lives in the graph's own SystemBlock, and the exact
+            // chain turns modes 3 and 4 into the pin's private Multiply
+            // module. `cli.ts` records the plain and multiply programs from
+            // the baked mode rather than from this call site.
             return {
                 kind: "billboard-system",
                 cpp:
@@ -473,12 +597,140 @@ export function compileParticleIntrinsic(
             break;
         }
 
-        case "registerNodeParticleSet":
+        case "enableNodeParticleBlendModes": {
+            // The pin's own enabler installs one `_registerBillboard` per
+            // system and returns the same set, so the value passes straight
+            // through and what is recorded is that the chain ran.
+            context.expectArgumentCount(call, 1, 1);
+            const set = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                set,
+                "node-particle-set",
+                call.arguments[0]!,
+            );
+            const request =
+                context.reachedNodeParticles.sets[
+                    set.nodeParticleSetIndex!
+                ]!;
+            request.enableBlendModes = true;
+            return set;
+        }
+
+        case "registerNodeParticleSet": {
+            context.expectArgumentCount(call, 2, 3);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            const set = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                set,
+                "node-particle-set",
+                call.arguments[1]!,
+            );
+            let autoStart = true;
+            const optionsArgument = call.arguments[2];
+            if (optionsArgument) {
+                const options =
+                    context.expectObjectLiteral(optionsArgument);
+                validateObjectProperties(
+                    context,
+                    options,
+                    ["autoStart"],
+                    "registerNodeParticleSet takes 'autoStart'.",
+                );
+                autoStart = compileOptionalStaticBoolean(
+                    context,
+                    context.objectProperty(options, "autoStart"),
+                    autoStart,
+                    "registerNodeParticleSet's autoStart",
+                );
+            }
+            const index = set.nodeParticleSetIndex!;
+            if (
+                context.reachedNodeParticles.registrations.some(
+                    (entry) => entry.set === index,
+                )
+            ) {
+                context.fail(
+                    call,
+                    "This node-particle set is already registered; the " +
+                        "bake carries one state per system.",
+                );
+            }
+            context.reachedNodeParticles.registrations.push({
+                set: index,
+                autoStart,
+            });
+            const engineCpp =
+                set.engineCpp ?? context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            context.reachFeature("particle:node", call);
+            // A billboard system is a scene renderable, so a scene of
+            // nothing but particles still compiles the scene renderer.
+            context.reachFeature("renderer:pbr", call);
+            // The call is named by its own request index, not by the
+            // set's: which systems it walks is what the bake observed.
+            context.emit(
+                "bbl::upstream::register_node_particle_set(" +
+                    `${engineCpp}, ${scene.cpp}, ` +
+                    `${context.reachedNodeParticles.registrations.length - 1});`,
+            );
+            return { kind: "void", cpp: "" };
+        }
+
         case "registerNodeParticleSet2D":
-        case "registerNodeParticleSet2DWithBlendModes":
-        case "buildNodeParticleSetWithBlendModes":
+        case "registerNodeParticleSet2DWithBlendModes": {
+            context.expectArgumentCount(call, 2, 3);
+            const renderer = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                renderer,
+                "sprite-renderer",
+                call.arguments[0]!,
+            );
+            const set = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                set,
+                "node-particle-set",
+                call.arguments[1]!,
+            );
+            const index = set.nodeParticleSetIndex!;
+            if (
+                context.reachedNodeParticles.sprite2d.some(
+                    (entry) => entry.set === index,
+                )
+            ) {
+                context.fail(
+                    call,
+                    "This node-particle set already has a pure-2D " +
+                        "binding; the bake carries one state per system.",
+                );
+            }
+            context.reachedNodeParticles.sprite2d.push({
+                set: index,
+                exact:
+                    importedName ===
+                    "registerNodeParticleSet2DWithBlendModes",
+                ...sprite2dOptions(context, call.arguments[2]),
+            });
+            context.reachFeature("sprite:2d", call);
+            context.reachFeature("particle:node", call);
+            context.emit(
+                "bbl::upstream::register_node_particle_set_2d(" +
+                    `${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ` +
+                    `${renderer.cpp}, ` +
+                    `${context.reachedNodeParticles.sprite2d.length - 1});`,
+            );
+            // The binding upstream owns the hook and the layers it attached,
+            // and every operation on it -- disposal above all -- refuses at
+            // its own intrinsic. What the corpus does with it is report its
+            // state through the canvas dataset, so it binds as a value the
+            // erasure carries: a read that reaches instrumentation
+            // disappears with it, and a read that reaches anything else
+            // fails as an undeterminable browser value rather than
+            // compiling to something this port does not have.
+            return { kind: "node-particle-2d-binding", cpp: "" };
+        }
+
         case "buildNodeParticleSetWithTextureUpdates":
-        case "enableNodeParticleBlendModes":
         case "createParticleSprite2DBridge":
         case "createParticleSprite2DBridgeWithBlendModes":
         case "syncParticleSprite2DBridge":

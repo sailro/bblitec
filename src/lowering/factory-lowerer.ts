@@ -2317,8 +2317,10 @@ void set_alpha_to_coverage(
      * `pixels-texture.ts`: a texture the caller hands its own RGBA bytes.
      *
      * The bytes are baked, so what is lowered is the rest of the pin's
-     * factory — the two size checks and the sampler it settles when the
-     * caller overrides nothing, which is every reached call.
+     * factory — the two size checks and the sampler, whose four fields the
+     * caller may override and whose defaults are read off the pin's own
+     * `?? "…"` rather than restated. A call naming none of them emits the
+     * same text it always did, because the defaults ride the signature.
      */
     public lowerPixelsTextureFactory(): LoweredSource {
         const module = "src/texture/pixels-texture.ts";
@@ -2408,7 +2410,8 @@ PixelsTexture create_texture_2d_from_pixels(
     Engine&,
     const std::string& path,
     double width,
-    double height) {
+    double height,
+    PixelsTextureOptions options) {
     if (width < 1.0 || height < 1.0) {
         throw std::runtime_error(
             "createTexture2DFromPixels: width/height must be >= 1");
@@ -2426,13 +2429,19 @@ PixelsTexture create_texture_2d_from_pixels(
             std::to_string(texture.width) + "x" +
             std::to_string(texture.height) + " RGBA");
     }
-    // The pin's own defaults, read above rather than restated. It creates
-    // no mip chain, so mip sampling clamps to the base level.
-    texture.sampler.min_filter = ${minFilter};
-    texture.sampler.mag_filter = ${magFilter};
+    // The pin resolves each override against its own default here, in the
+    // factory, which is why the defaults are read above rather than restated
+    // and why the caller passes only what it named. It creates no mip chain,
+    // so mip sampling clamps to the base level.
+    texture.sampler.min_filter =
+        options.has_min_filter ? options.min_filter : ${minFilter};
+    texture.sampler.mag_filter =
+        options.has_mag_filter ? options.mag_filter : ${magFilter};
     texture.sampler.mipmap_mode = TextureMipmapMode::nearest;
-    texture.sampler.address_u = ${addressU};
-    texture.sampler.address_v = ${addressV};
+    texture.sampler.address_u =
+        options.has_address_u ? options.address_u : ${addressU};
+    texture.sampler.address_v =
+        options.has_address_v ? options.address_v : ${addressV};
     texture.sampler.max_anisotropy = 1.0f;
     texture.sampler.max_lod = 0.0f;
     return texture;

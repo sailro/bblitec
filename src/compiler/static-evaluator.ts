@@ -280,6 +280,14 @@ export class StaticEvaluator {
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
+            if (value.kind === "node-particle-system") {
+                // `set.systems[i]` is typed optional upstream, so the corpus
+                // guards it. This compiler has already resolved the index:
+                // the element access refuses a non-static one and the bake
+                // refuses an index the graph built no system for, so by the
+                // time generation succeeds the guard is settled.
+                return "true";
+            }
             if (value.kind !== "boolean") {
                 this.fail(
                     unwrapped,

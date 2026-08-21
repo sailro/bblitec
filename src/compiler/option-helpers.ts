@@ -9,6 +9,26 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
 
+/**
+ * The one-argument `Math` functions that fold at generation.
+ *
+ * All five are integer-valued, so the folded result and the emitted call
+ * agree exactly. The transcendental ones are deliberately absent: V8 and a
+ * native maths library need not agree on them, and a value folded here can
+ * end up in generation-time state a native call could not reproduce.
+ * `round` is JavaScript's own rule, which ties toward +Infinity where C
+ * ties away from zero.
+ */
+export const foldableMathUnary: Readonly<
+    Record<string, (value: number) => number>
+> = {
+    abs: Math.abs,
+    ceil: Math.ceil,
+    floor: Math.floor,
+    round: Math.round,
+    trunc: Math.trunc,
+};
+
 export interface ObjectValidationContext {
     propertyName(
         name: ts.PropertyName,
@@ -39,6 +59,12 @@ export interface PositiveIntegerContext {
     resolveStaticExpression(
         expression: ts.Expression,
     ): ts.Expression;
+    /**
+     * `canvas.width` / `canvas.height` as the number generation
+     * configured, or undefined for anything else. Read only by
+     * `staticNumberValue`; see the note there.
+     */
+    staticCanvasSize?(expression: ts.Expression): number | undefined;
     lookup(identifier: ts.Identifier): Value;
     /** The binding, or undefined where this scope has none. */
     lookupOptional(identifier: ts.Identifier): Value | undefined;
@@ -80,16 +106,35 @@ export interface StaticBooleanContext {
         expression: ts.Expression,
     ): ts.Expression;
     compileBoolean(expression: ts.Expression): string;
+    fail(node: ts.Node, message: string): never;
 }
 
+/**
+ * A boolean option as the value it settles to, or the fallback when unset.
+ *
+ * Every caller spends this on a generation-time decision -- which fragment
+ * the pin composes, which arm the generated loader carries, whether a
+ * registrar starts its systems -- so an expression that does not settle is
+ * refused. Reading it as `false` would compile a scene to a picture nobody
+ * asked for, which is the failure this is here to prevent.
+ */
 export function compileOptionalStaticBoolean(
     context: StaticBooleanContext,
     expression: ts.Expression | undefined,
     fallback: boolean,
+    what = "This option",
 ): boolean {
     if (!expression) return fallback;
-    return context.compileBoolean(context.resolveStaticExpression(expression)) ===
-        "true";
+    const compiled = context.compileBoolean(
+        context.resolveStaticExpression(expression),
+    );
+    if (compiled !== "true" && compiled !== "false") {
+        context.fail(
+            expression,
+            `${what} must be a static boolean: generation decides on it.`,
+        );
+    }
+    return compiled === "true";
 }
 
 /**
@@ -241,18 +286,55 @@ export function staticNumberValue(
                 return undefined;
         }
     }
+    // A canvas size is a compile-time constant to every caller of THIS
+    // helper, and only to them: `staticNumberValue` never emits, so a
+    // consumer that reaches it has already decided it needs the number at
+    // generation. The live read stays `Compiler.canvasSizeValue`, which
+    // emits `engine.options.width` and carries no static value at all, so a
+    // scene that resizes still sees the new size everywhere it is drawn.
+    const canvas = context.staticCanvasSize?.(node);
+    if (canvas !== undefined) return canvas;
+    if (ts.isElementAccessExpression(node)) {
+        // A constant tuple indexed by a constant -- the corpus writes its
+        // colours that way (`PARTICLE_TINT[0]`).
+        const target = context.resolveStaticExpression(node.expression);
+        const index = staticNumberValue(
+            context,
+            node.argumentExpression,
+        );
+        if (
+            !ts.isArrayLiteralExpression(target) ||
+            index === undefined ||
+            !Number.isInteger(index)
+        ) {
+            return undefined;
+        }
+        const element = target.elements[index];
+        return element ? staticNumberValue(context, element) : undefined;
+    }
     if (
         ts.isPropertyAccessExpression(node) &&
         ts.isIdentifier(node.expression) &&
         node.expression.text === "Math"
     ) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
-        // one of these as text; a Math function is a call and does not reach
-        // here.
+        // one of these as text; a Math CALL is folded by the arm above.
         if (node.name.text === "PI") return Math.PI;
         if (node.name.text === "E") return Math.E;
         if (node.name.text === "SQRT1_2") return Math.SQRT1_2;
         return undefined;
+    }
+    if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "Math" &&
+        node.arguments.length === 1
+    ) {
+        const fold = foldableMathUnary[node.expression.name.text];
+        if (!fold) return undefined;
+        const argument = staticNumberValue(context, node.arguments[0]!);
+        return argument === undefined ? undefined : fold(argument);
     }
     if (ts.isIdentifier(node)) {
         // A miss, not a failure: one caller is an optional probe, and an

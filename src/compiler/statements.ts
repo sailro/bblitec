@@ -1,16 +1,25 @@
 import ts from "typescript";
+import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
     isDataTuple,
     tupleComponents,
     type DataType,
 } from "./data-types.js";
 import type {
+    CompiledNodeParticles,
     Value,
     ValueKind,
 } from "./types.js";
 import { lightVectorSetter } from "./assignments.js";
 
 export interface StatementLoweringContext {
+    /** The scene node-particle program; a buffer guard lands on it. */
+    readonly reachedNodeParticles: CompiledNodeParticles;
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
+    resolveStaticExpression(expression: ts.Expression): ts.Expression;
+    /** Marks that a scene threw, so the generated main includes <stdexcept>. */
+    reachThrow(): void;
+    cppString(value: string): string;
     emitDataAssignment(
         expression: ts.BinaryExpression,
     ): boolean;
@@ -168,11 +177,18 @@ export class StatementLowerer {
             return;
         }
         if (ts.isIfStatement(statement)) {
+            // A guard over a particle buffer asserts about generation-time
+            // state, so it is recorded rather than emitted.
+            if (emitParticleAliveGuard(context, statement)) return;
             this.emitIf(context, statement);
             return;
         }
         if (ts.isBlock(statement)) {
             this.emitBlock(context, statement);
+            return;
+        }
+        if (ts.isTryStatement(statement)) {
+            this.emitTry(context, statement);
             return;
         }
         if (ts.isForStatement(statement)) {
@@ -232,6 +248,10 @@ export class StatementLowerer {
             ts.isReturnStatement(statement) &&
             !statement.expression
         ) {
+            return;
+        }
+        if (ts.isThrowStatement(statement)) {
+            this.emitThrow(context, statement);
             return;
         }
         if (ts.isEmptyStatement(statement)) {
@@ -499,9 +519,29 @@ export class StatementLowerer {
             }
             return;
         }
-        context.emit(
-            `if (${context.compileCondition(statement.expression)}) {`,
+        const condition = context.compileCondition(
+            statement.expression,
         );
+        // A condition the compiler already settled leaves only the branch it
+        // takes. The corpus guards a value this port folded — `!system` over
+        // a particle system the bake resolved — and emitting
+        // `if ((!(true) || !(true)))` would compile a body generation has
+        // proved unreachable, dragging its own machinery in with it.
+        if (condition === "true" || condition === "false") {
+            if (condition === "true") {
+                this.emitScopedBody(
+                    context,
+                    statement.thenStatement,
+                );
+            } else if (statement.elseStatement) {
+                this.emitScopedBody(
+                    context,
+                    statement.elseStatement,
+                );
+            }
+            return;
+        }
+        context.emit(`if (${condition}) {`);
         // Alias invalidation is path-sensitive: a branch that always
         // leaves the iteration cannot invalidate anything for the code
         // that follows the `if`, so its effects are rolled back.
@@ -525,6 +565,99 @@ export class StatementLowerer {
             }
         }
         context.emit("}");
+    }
+
+    /**
+     * `try { ... } finally { ... }`, where the finalizer erases to nothing.
+     *
+     * The corpus writes this for cleanup that has no native counterpart at
+     * all: revoking an object URL the browser made, and restoring the
+     * `Math.random` a scene replaced for its own deterministic bake. Both
+     * erase completely, and a finalizer that emits nothing cannot be
+     * observed -- so the block lowers to its body and no exception
+     * semantics are claimed.
+     *
+     * Anything else refuses. A `catch` has nothing to catch: scene code
+     * that fails fails at generation, and a native throw leaves through
+     * `main`. A finalizer that DOES emit would need the exception path this
+     * runtime does not carry, so it refuses naming the first line it wrote.
+     */
+    private emitTry(
+        context: StatementLoweringContext,
+        statement: ts.TryStatement,
+    ): void {
+        if (statement.catchClause) {
+            context.fail(
+                statement.catchClause,
+                "A catch clause is not lowered: scene code that fails " +
+                    "fails at generation.",
+            );
+        }
+        if (!statement.finallyBlock) {
+            context.fail(
+                statement,
+                "A try statement is lowered only with a finally block " +
+                    "that erases to nothing.",
+            );
+        }
+        this.emitScopedBody(context, statement.tryBlock);
+        const finalizer = context.captureEmittedLines(() => {
+            this.emitScopedBody(
+                context,
+                statement.finallyBlock!,
+            );
+        });
+        const emitted = finalizer.find((line) => line.trim().length > 0);
+        if (emitted !== undefined) {
+            context.fail(
+                statement.finallyBlock,
+                "A finally block is lowered only when it erases to " +
+                    `nothing; this one emits '${emitted.trim()}'.`,
+            );
+        }
+    }
+
+    /**
+     * A scene's own precondition, thrown.
+     *
+     * The corpus writes these as fixture guards — this graph must build two
+     * systems, this loader must have returned a mesh — and the generated
+     * main already catches and prints, so the native shape is the same
+     * shape: a runtime error carrying the scene's own message. Only a
+     * static message travels, because one built from state would be
+     * reporting values this runtime does not hold.
+     */
+    private emitThrow(
+        context: StatementLoweringContext,
+        statement: ts.ThrowStatement,
+    ): void {
+        const thrown = context.unwrap(statement.expression);
+        const message =
+            ts.isNewExpression(thrown) &&
+            ts.isIdentifier(thrown.expression) &&
+            thrown.expression.text === "Error"
+                ? thrown.arguments?.[0]
+                : undefined;
+        if (!message) {
+            context.fail(
+                statement,
+                "A scene throws a new Error carrying a static message.",
+            );
+        }
+        const value = context.compileValue(message);
+        if (value.staticString === undefined) {
+            context.fail(
+                message,
+                "A thrown message is a static string: this runtime holds " +
+                    "none of the state a computed one would report.",
+            );
+        }
+        context.reachThrow();
+        context.emit(
+            `throw std::runtime_error(${context.cppString(
+                value.staticString,
+            )});`,
+        );
     }
 
     private emitBlock(

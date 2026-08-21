@@ -79,9 +79,10 @@ Primary source ownership:
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
 | `src/pinned-node-material.ts` | runs the pin's own node-material compiler over a Babylon NME graph, against a recording device, and refuses every arm outside the reached slice |
 | `src/pinned-node-particle.ts` | runs the pin's own node-particle parser, graph builder and CPU simulation in the browser and returns the particle state they froze -- the one port where the value is fragile past a rounding argument, because the seed draws through `Math.sin` |
-| `src/lowering/node-particle-lowerer.ts` | the folded half of the same family: `createParticleBillboard` and `syncParticleBillboard` from their own declarations, over the baked state |
+| `src/lowering/node-particle-lowerer.ts` | the folded half of the same family: the billboard and pure-2D bridges, their two blend mappings and the exact five-mode one, all from their own declarations over the baked state |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation's seed: recorded for the executed bake, refused where lowered code would also answer it |
+| `src/compiler/particle-buffer.ts` | a particle buffer as generation-time state: a column the scene writes and a live-count guard it checks both move to the bake driver and emit nothing |
 | `src/pinned-tone-mapping.ts` | the tone-mapping record a scene selects, read from the pinned module that owns it -- the curve is a value upstream, not a flag |
 | `src/data-url.ts` | a `data:` asset URL, whose bytes are the source text rather than a location to fetch |
 | `src/lowering/effect-lowerer.ts` | the fullscreen-effect family: the pin's own vertex stage lifted, its pass state asserted, and the two records a scene fills |
@@ -247,8 +248,9 @@ The current generated slice includes:
 - pure-2D sprite layers and their own `SpriteRenderer` rendering context,
   over a compile-time-drawn canvas2D atlas, on both GPU backends
 - node-particle graphs frozen at generation: the pin's own simulation run in
-  the browser and its particle state baked, drawn through the billboard
-  family the pin's own bridge folds to
+  the browser and its particle state baked, drawn either through the
+  billboard family or through the pure-2D Sprite2D bridge the pin's own
+  bridges fold to, with the exact Babylon blend modes on both
 - ordered opaque/transparent draw lists, camera matrices, uniforms, and
   frame-graph tasks
 - Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve

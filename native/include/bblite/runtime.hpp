@@ -766,6 +766,14 @@ struct SpriteBlendDescriptor {
     SpriteBlendComponent alpha{};
     // `_premultipliedOpacity`: per-layer opacity scales RGB as well as A.
     bool premultiplied_opacity = false;
+    // `_particlePasses`: the exact Babylon.js particle blends, and the one
+    // field only `particle-blend.ts` ever sets. Zero is every public
+    // descriptor; one is Multiply, which draws the pin's own private
+    // fragment; two is MultiplyAdd, which draws that pass and then a stock
+    // Add pass over the same instances. The count rides the descriptor
+    // because that is where upstream puts it -- the registrar forks on
+    // `blendMode._particlePasses`, never on the numeric mode.
+    int particle_passes = 0;
 };
 
 /** sprite-2d.ts `Sprite2DView`. Identity is a pixel-perfect HUD. */
@@ -870,6 +878,8 @@ struct BillboardSystemRecord {
     std::uint32_t capacity = 0;
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
+    // The mode-4 second pass's blend; see BillboardSystemOptions.
+    SpriteBlendDescriptor add_pass_blend{};
     // billboard-custom-shader.ts: the same opt-in the 2D layer carries --
     // a system built with a descriptor draws the composed program and
     // binds the fx block beside its system block.
@@ -1778,7 +1788,12 @@ struct Sprite2DLayerOptions {
  * value: an absent `sizePx` falls back to the frame, an absent `flipX`
  * preserves the orientation already baked into the UVs.
  */
-/** createFacingBillboardSystem's options, with the pin's own defaults. */
+/**
+ * createFacingBillboardSystem's options, with the pin's own defaults.
+ *
+ * Scene code initializes this aggregate POSITIONALLY, so a new field
+ * appends rather than inserting.
+ */
 struct BillboardSystemOptions {
     double capacity = 16.0;
     SpriteBlendDescriptor blend{};
@@ -1788,6 +1803,12 @@ struct BillboardSystemOptions {
     bool has_alpha_cutoff = false;
     bool custom_shader = false;
     std::vector<PixelsTexture> custom_textures;
+    // particle-billboard-renderable.ts: the mode-4 wrapper's SECOND pass.
+    // The pin builds it as `{...system, blendMode: createParticleBlend(2),
+    // _customShader: undefined}` when the renderable is built; here the
+    // generated builder fills it by name, so no backend resolves a blend of
+    // its own. Read only when `blend.particle_passes == 2`.
+    SpriteBlendDescriptor add_pass_blend{};
 };
 
 /** addBillboardSpriteIndex's props; a `has_` flag marks what was named. */
@@ -1881,11 +1902,32 @@ void set_billboard_shader_params(
     BillboardSystemHandle system,
     Vec4 params);
 
+/**
+ * The sampler overrides `createTexture2DFromPixels` accepts.
+ *
+ * Each field carries a "was it named" flag rather than a default, because
+ * upstream resolves `options.x ?? default` inside the factory itself — so
+ * the defaults live in the generated factory, read off the pin's own
+ * expression, and nothing here restates one. `srgb` is the fifth option and
+ * is refused at generation: no reached call passes it.
+ */
+struct PixelsTextureOptions {
+    TextureFilter min_filter{};
+    bool has_min_filter = false;
+    TextureFilter mag_filter{};
+    bool has_mag_filter = false;
+    TextureAddressMode address_u{};
+    bool has_address_u = false;
+    TextureAddressMode address_v{};
+    bool has_address_v = false;
+};
+
 PixelsTexture create_texture_2d_from_pixels(
     Engine& engine,
     const std::string& path,
     double width,
-    double height);
+    double height,
+    PixelsTextureOptions options = {});
 
 double add_sprite_2d_index(
     Engine& engine,
@@ -1917,6 +1959,10 @@ TaskHandle create_effect_render_task(
 SpriteRendererHandle create_sprite_renderer(
     Engine& engine,
     SpriteRendererOptions options);
+void add_sprite_renderer_layer(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    Sprite2DLayerHandle layer);
 void register_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer);
