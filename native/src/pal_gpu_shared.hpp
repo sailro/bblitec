@@ -84,6 +84,29 @@ inline bool geometry_depth_is_borrowed(
 
 
 /**
+ * Whether a render target hands samplers its depth attachment.
+ *
+ * `rtt.ts` forks on `if (!rt._colorTexture || !rt._colorView)`: a target
+ * that declared a colour format hands that attachment back, and one that
+ * did not hands its depth. `has_color` is the compiler's record of the
+ * declared format, written once by the lowered `create_render_target_texture`
+ * from the descriptor, so the fork reads it rather than inferring the answer
+ * from whichever textures a backend happens to have allocated.
+ *
+ * Both backends ask this, and only the handles they return differ.
+ */
+inline bool render_target_samples_depth(const RenderTargetRecord& record) {
+    return !record.has_color;
+}
+
+/** The refusal both backends owe a depth-only target with no depth. */
+[[noreturn]] inline void fail_render_target_has_no_texture() {
+    throw std::runtime_error(
+        "Depth-only render target has no color texture.");
+}
+
+
+/**
  * The pin's `gpUniforms` block, declared by a geometry-output variant whose
  * attachments include NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
  * (`pbr-geometry-output-shader.ts` createPbrGeometryParamsFragment):

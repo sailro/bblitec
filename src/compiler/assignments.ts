@@ -805,33 +805,29 @@ export function emitPropertyAssignment(
             const texture = context.compileValue(
                 expression.right,
             );
-            // The reached source is a colour render target. An image
-            // texture is the other half of this slot and is not lowered:
-            // the `.babylon` loader already fills the record's bytes, but
-            // no reached scene assigns one from scene code, so the path
-            // would ship unmeasured.
+            // An image texture is the other half of this slot and is not
+            // lowered: the `.babylon` loader already fills the record's
+            // bytes, but no reached scene assigns one from scene code, so
+            // the path would ship unmeasured.
             if (texture.kind === "texture") {
                 context.fail(
                     expression.right,
                     "Reached Standard diffuse textures come from createRenderTargetTexture; an image texture is not lowered.",
                 );
             }
-            context.expectKind(
-                texture,
-                "render-texture",
+            // What this slot accepts, said the way every frame-graph slot
+            // says it. `sampling: "color"` is the aspect the setter folds
+            // -- `rtt.ts` gives a colour view `invertY: true` and the
+            // bilinear sampler, a depth one `invertY: false` and the
+            // nearest -- and `sources` is the ownership: only a target the
+            // scene made, never a geometry task's attachment.
+            const textureCpp = compileRenderTextureValue(
+                context,
                 expression.right,
+                texture,
+                "Reached Standard diffuseTexture",
+                { sampling: "color", sources: ["render-target"] },
             );
-            // rtt.ts forks on the attachment: a colour view carries
-            // `invertY: true` and the bilinear sampler, a depth-only view
-            // `invertY: false` and the nearest one. The colour arm is what
-            // the setter folds, so the depth arm refuses rather than
-            // sampling with the wrong flip and the wrong filter.
-            if (texture.isDepthTexture) {
-                context.fail(
-                    expression.right,
-                    "Reached Standard diffuse textures come from a colour render target; a depth-only one is not lowered.",
-                );
-            }
             context.expectSameEngine(
                 target,
                 texture,
@@ -844,7 +840,7 @@ export function emitPropertyAssignment(
             context.emit(
                 `bbl::set_standard_diffuse_render_texture(` +
                     `${context.requireEngine(target, expression)}, ` +
-                    `${target.cpp}, ${texture.cpp});`,
+                    `${target.cpp}, ${textureCpp});`,
             );
             return;
         }
@@ -1022,6 +1018,7 @@ function requireSimpleAssignment(
 }
 import ts from "typescript";
 import { cameraRecordField } from "./properties.js";
+import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import type {
     Feature,

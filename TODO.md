@@ -310,26 +310,14 @@ that does to the deferred lane by default.
   static record property — 226 `container._gaussianSplats ?? []`, 251
   `xbot.animationGroups ?? []`. Splats, animation groups and the Recast lane sit
   behind them.
-- [ ] Key the PBR and node draw state by material on Dawn, as the Standard
-  colour path now is. `build_render_task_draw_lists` gives a per-pass
-  material override the mesh's own item index, so both draws reach the PAL
-  as one `DawnMesh`; SDL_GPU pushes each block per draw and is immune,
-  while Dawn writes one buffer per mesh and the last write wins.
-  `pinned_mesh_uniforms`/`pinned_material_uniforms`/`pinned_group` and the
-  node pair still key by mesh, and `ensure_pinned_draw_bindings` rebuilds
-  the group when the variant changes, so a second material both poisons the
-  block and steals the group. The compensating guard that survives from
-  before is `pal_dawn.cpp`'s no-color skip, whose comment says it "keeps the
-  no-color override materials from rewriting the shared buffers" — the
-  general fix deletes it. Unreached today: scene 116's PBR override goes
-  through the depth-only path, which binds no material state. One
-  `(material, variant)` map serving all four families is the shape.
 - [ ] Extend `material.diffuseTexture` past the colour render target scene
-  110 measures. Two sources refuse by name: an image texture, and a
-  depth-only `createRenderTargetTexture` output — `rtt.ts` forks on the
-  attachment, giving a colour view `invertY: true` plus the bilinear
-  sampler and a depth view `invertY: false` plus the nearest one, and the
-  setter folds the colour arm. The record and the loader already carry the
+  110 measures. Three sources refuse by name: an image texture, a
+  depth-only `createRenderTargetTexture` output, and a geometry task's
+  attachment. `rtt.ts` forks on the attachment, giving a colour view
+  `invertY: true` plus the bilinear sampler and a depth view
+  `invertY: false` plus the nearest one, and the setter folds the colour
+  arm; a geometry attachment is refused on ownership rather than aspect.
+  The record and the loader already carry the
   image half (`base_color_texture`, filled by the `.babylon` loader), so a
   scene-code write adds that write plus the right `uv_invert_y`: false for
   `loadTexture2D`, true for the KTX2/Basis and texture-array uploads

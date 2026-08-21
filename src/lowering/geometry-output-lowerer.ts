@@ -4,6 +4,97 @@ import { LoweredSource, LoweringContext } from "./context.js";
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
+    /**
+     * `createRenderTargetTexture`, whole: both arms and the fork between
+     * them.
+     *
+     * The pin writes one `if (!rt._colorTexture || !rt._colorView)` and two
+     * returns, and this port folds all three -- the FORK into `has_color`
+     * on the record (`pal::render_target_samples_depth` reads it in both
+     * backends), the DEPTH arm into the emissive slot's nearest sampler and
+     * depth sample type, and the COLOUR arm into the diffuse slot's
+     * bilinear sampler and the `invertY: true` that `isStandardUvInverted`
+     * reads to flip the material's UV block.
+     *
+     * One contract because it is one declaration: anchoring the arms
+     * separately let each be gated on whichever feature happened to fold
+     * it, and left the fork -- the thing that decides which arm a scene
+     * gets -- anchored by nothing at all. It is asserted here because this
+     * is where `create_render_target_texture` is emitted, so every build
+     * that has the function has checked the source it came from.
+     */
+    private assertPinnedRenderTargetTextureArms(rttModule: string): void {
+        const { declaration } = this.context.functionDeclaration(
+            rttModule,
+            "createRenderTargetTexture",
+        );
+        const missingColour = (name: string): boolean =>
+            !this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isPrefixUnaryExpression(node) &&
+                    node.operator ===
+                        ts.SyntaxKind.ExclamationToken &&
+                    this.context
+                        .propertyPath(node.operand)
+                        ?.at(-1) === name,
+            );
+        if (missingColour("_colorTexture") || missingColour("_colorView")) {
+            this.context.contractError(
+                declaration,
+                "Expected the render-target texture to fork on the " +
+                    "absence of a colour texture and view.",
+            );
+        }
+        for (const [property, value] of [
+            ["aspect", "depth-only"],
+            ["_sampleType", "depth"],
+        ] as const) {
+            if (
+                !this.context.hasNode(
+                    declaration,
+                    (node) =>
+                        ts.isPropertyAssignment(node) &&
+                        this.context.propertyName(node.name) ===
+                            property &&
+                        ts.isStringLiteral(node.initializer) &&
+                        node.initializer.text === value,
+                )
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${property}: '${value}'.`,
+                );
+            }
+        }
+        if (
+            !this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    this.context.propertyName(node.name) === "invertY" &&
+                    node.initializer.kind === ts.SyntaxKind.TrueKeyword,
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected the colour render-target view to carry " +
+                    "invertY: true.",
+            );
+        }
+        for (const sampler of [
+            "getNearestSampler",
+            "getBilinearSampler",
+        ] as const) {
+            if (!this.context.hasCall(declaration, sampler)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${sampler} for render-target views.`,
+                );
+            }
+        }
+    }
+
     public lowerTaskRecords(): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
@@ -311,43 +402,7 @@ export class GeometryOutputLowerer {
             );
         }
 
-        const { declaration: createRenderTargetTexture } =
-            this.context.functionDeclaration(
-                rttModule,
-                "createRenderTargetTexture",
-            );
-        for (const [property, value] of [
-            ["aspect", "depth-only"],
-            ["_sampleType", "depth"],
-        ] as const) {
-            if (
-                !this.context.hasNode(
-                    createRenderTargetTexture,
-                    (node) =>
-                        ts.isPropertyAssignment(node) &&
-                        this.context.propertyName(node.name) ===
-                            property &&
-                        ts.isStringLiteral(node.initializer) &&
-                        node.initializer.text === value,
-                )
-            ) {
-                this.context.contractError(
-                    createRenderTargetTexture,
-                    `Expected ${property}: '${value}'.`,
-                );
-            }
-        }
-        if (
-            !this.context.hasCall(
-                createRenderTargetTexture,
-                "getNearestSampler",
-            )
-        ) {
-            this.context.contractError(
-                createRenderTargetTexture,
-                "Expected nearest sampling for depth views.",
-            );
-        }
+        this.assertPinnedRenderTargetTextureArms(rttModule);
 
         return {
             modulePath: geometryModule,

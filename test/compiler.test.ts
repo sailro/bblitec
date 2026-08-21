@@ -3176,3 +3176,103 @@ void main();
         /setFog mode must be a static 0 \(none\), 1 \(exp\), 2 \(exp2\), or 3 \(linear\) literal/,
     );
 });
+
+// The Standard diffuse slot's accepted set, on both axes a render texture
+// has. Each of these refusals has been dead once: the depth-only one was
+// written against a flag only a geometry task's depth ever carried, and the
+// geometry-attachment one existed only as a PAL run-time throw.
+const diffuseSlotScene = (
+    imports: string,
+    body: string,
+): string => `import {
+    addToScene,
+    createArcRotateCamera,
+    createBox,
+    createEngine,
+    createRenderTargetTexture,
+    createSceneContext,
+    createStandardMaterial,
+    registerScene,
+    startEngine,${imports}
+} from "babylon-lite";
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(0, 1, 8, { x: 0, y: 0, z: 0 });
+    const box = createBox(engine, 2);
+    const material = createStandardMaterial();
+${body}
+    box.material = material;
+    addToScene(scene, box);
+    await registerScene(scene);
+    await startEngine(engine);
+}
+main().catch(console.error);
+`;
+
+const renderTarget = (format: string): string =>
+    `    const { texture } = createRenderTargetTexture(engine, {
+        lbl: "r",${format}
+        dFormat: "depth24plus",
+        size: { width: 64, height: 64 },
+    });
+    material.diffuseTexture = texture;`;
+
+test("lowers a colour render target into the Standard diffuse slot", () => {
+    const result = compileSource(
+        diffuseSlotScene("", renderTarget('\n        format: "rgba8unorm",')),
+        {
+            fileName: "corpus/babylon-lite/lab/lite/src/lite/diffuse-colour.ts",
+        },
+    );
+    assert.match(result.cpp, /bbl::set_standard_diffuse_render_texture\(/);
+    assert.ok(
+        result.manifest.features.includes(
+            "material:standard-diffuse-render-texture",
+        ),
+    );
+});
+
+test("refuses a depth-only render target in the Standard diffuse slot", () => {
+    // The pin's depth arm carries `invertY: false` and the nearest sampler;
+    // the setter folds the colour arm, so the aspect has to refuse.
+    assert.throws(
+        () =>
+            compileSource(diffuseSlotScene("", renderTarget("")), {
+                fileName:
+                    "corpus/babylon-lite/lab/lite/src/lite/diffuse-depth.ts",
+            }),
+        /diffuseTexture is sampled as colour, so it cannot be a depth attachment/,
+    );
+});
+
+test("refuses a geometry attachment in the Standard diffuse slot", () => {
+    // Ownership, not aspect: a geometry task's MRT attachment is a colour
+    // texture, and still not something this slot may name.
+    assert.throws(
+        () =>
+            compileSource(
+                diffuseSlotScene(
+                    " createGeometryRendererTask, GeometryTextureType,",
+                    `    const geometry = createGeometryRendererTask(
+        {
+            name: "g",
+            samples: 1,
+            textureDescriptions: [
+                { type: GeometryTextureType.WORLD_NORMAL },
+            ],
+        },
+        engine,
+        scene,
+    );
+    material.diffuseTexture = geometry.geometryWorldNormalTexture!;`,
+                ),
+                {
+                    fileName:
+                        "corpus/babylon-lite/lab/lite/src/lite/diffuse-geometry.ts",
+                },
+            ),
+        /diffuseTexture accepts render-target textures, received a geometry one/,
+    );
+});

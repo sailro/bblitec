@@ -424,10 +424,27 @@ export interface Value {
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     /**
-     * Set on a `render-texture` naming a task's depth attachment rather than
-     * a colour one, which is what a render task's `depth` may bind.
+     * Set on a `render-texture` or `render-target-texture` whose texture is
+     * a depth attachment rather than a colour one. Two things make one: a
+     * geometry task's own depth, which is what a render task's `depth` may
+     * bind, and a render target that declared no colour format, because
+     * `rtt.ts` then hands its depth attachment to samplers.
+     *
+     * This is the ASPECT -- what sampling it gives you. `renderTextureSource`
+     * is the separate question of who owns it.
      */
     isDepthTexture?: true;
+    /**
+     * Which native `RenderTextureSource` a render texture names. The
+     * compiler knows it at every construction site, so a slot that accepts
+     * only some of them refuses the rest by name with a location, rather
+     * than leaving a backend to fail a binding at run time.
+     */
+    renderTextureSource?:
+        | "render-target"
+        | "geometry"
+        | "geometry-output"
+        | "geometry-depth";
     /**
      * Which post-process pass a `task` value names. `outputTexture` reads it
      * to resolve the internal target the pin's `prepareOutputTarget` creates,

@@ -203,12 +203,31 @@ struct GpuMeshSlotMembers {
  * Two slots reach this: the depth-sampled emissive texture
  * `setStandardEmissiveTexture` names, and the colour attachment a
  * `material.diffuseTexture` write names. They are resolved once per draw
- * rather than inside the binding walk, which carries no engine.
+ * rather than inside the binding walk, which carries no frame graph.
  */
 struct StandardRenderTextures {
     SDL_GPUTexture* base_color = nullptr;
     SDL_GPUTexture* standard_emissive = nullptr;
 };
+
+/**
+ * Both slots resolved through the caller's own `source_texture`, which is
+ * the one place this backend turns a `RenderTextureRef` into a texture.
+ */
+template <typename SourceTexture>
+StandardRenderTextures material_render_textures(
+    const MaterialRecord* material,
+    SourceTexture source_texture) {
+    if (!material) return {};
+    return {
+        material->has_diffuse_render_texture
+            ? source_texture(material->diffuse_render_texture)
+            : nullptr,
+        material->has_emissive_render_texture
+            ? source_texture(material->emissive_render_texture)
+            : nullptr,
+    };
+}
 
 GpuMeshSlotMembers mesh_slot_members(
     upstream::MaterialTextureSource source) {
@@ -1470,69 +1489,6 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
         standard_stage_name(entry.vertex_shader));
     state.standard_fragment_slots[variant] = read_pinned_stage_slots(
         standard_stage_name(entry.fragment_shader));
-}
-
-/**
- * The attachment a material's render-texture reference names.
- *
- * Both reached writes -- `setStandardEmissiveTexture` and
- * `material.diffuseTexture` -- take a `createRenderTargetTexture` output,
- * which is an eagerly built render target and nothing else, so that is the
- * one source resolved here. A geometry attachment or the swapchain refuses
- * by name rather than binding something plausible.
- */
-SDL_GPUTexture* material_render_texture(
-    GpuState& state,
-    const Engine& engine,
-    const RenderTextureRef& reference) {
-    if (
-        reference.source != RenderTextureSource::render_target ||
-        reference.target.value >= state.render_targets.size()) {
-        gpu_error(
-            "a material render texture must name a render target built by "
-            "createRenderTargetTexture.");
-    }
-    const RenderTargetRecord& record =
-        engine.render_targets[reference.target.value];
-    const GpuRenderTarget& target =
-        state.render_targets[reference.target.value];
-    if (record.swapchain) {
-        gpu_error("a material cannot sample the swapchain.");
-    }
-    // rtt.ts hands back the colour view when there is one and the
-    // depth-only view otherwise; the same split decides which of this
-    // target's textures a material samples.
-    if (!record.has_color) {
-        if (!record.has_depth || !target.depth) {
-            gpu_error(
-                "a material render texture names a target with neither "
-                "colour nor depth.");
-        }
-        return target.depth;
-    }
-    return target.sampled_color;
-}
-
-/** The frame-graph attachments one Standard material samples. */
-StandardRenderTextures standard_render_textures(
-    GpuState& state,
-    const Engine& engine,
-    const MaterialRecord* material) {
-    StandardRenderTextures textures;
-    if (!material) return textures;
-    if (material->has_diffuse_render_texture) {
-        textures.base_color = material_render_texture(
-            state,
-            engine,
-            material->diffuse_render_texture);
-    }
-    if (material->has_emissive_render_texture) {
-        textures.standard_emissive = material_render_texture(
-            state,
-            engine,
-            material->emissive_render_texture);
-    }
-    return textures;
 }
 
 /**
@@ -5325,12 +5281,11 @@ bool run_gpu_engine(Engine& engine) {
                     if (record.swapchain) return swapchain;
                     const GpuRenderTarget& target =
                         state.render_targets[handle.value];
-                    if (!record.has_color) {
+                    if (pal::render_target_samples_depth(record)) {
                         if (sampled && record.has_depth && target.depth) {
                             return target.depth;
                         }
-                        throw std::runtime_error(
-                            "Depth-only render target has no color texture.");
+                        pal::fail_render_target_has_no_texture();
                     }
                     return sampled ? target.sampled_color : target.color;
                 };
@@ -5600,10 +5555,9 @@ bool run_gpu_engine(Engine& engine) {
                                     bound_pipeline,
                                     geometry_task,
                                     geometry_params,
-                                    standard_render_textures(
-                                        state,
-                                        engine,
-                                        material),
+                                    material_render_textures(
+                                        material,
+                                        source_texture),
                                     geometry_params_buffer);
                                 continue;
                             }

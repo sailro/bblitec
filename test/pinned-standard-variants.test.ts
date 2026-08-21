@@ -695,8 +695,8 @@ test("the native-support block flows from the pin's own declarations", async () 
     // -- and none of the branches the loader cannot feed (no lightmap).
     assert.ok(
         block.includes(
-            "if ((!material.base_color_texture.bytes.empty() || " +
-                "material.has_diffuse_render_texture)) {",
+            "if (!material.base_color_texture.bytes.empty() || " +
+                "material.has_diffuse_render_texture) {",
         ),
     );
     assert.ok(
