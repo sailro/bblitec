@@ -5710,10 +5710,9 @@ bool run_gpu_engine(Engine& engine) {
                                         "Shader draw has an invalid material.");
                                 }
                                 // Per-stage blocks from the generated
-                                // variant table: [optional scene
-                                // worldViewProjection][custom floats
-                                // gathered from the material's flat
-                                // value storage].
+                                // variant table: [the declared system
+                                // matrices][custom floats gathered from
+                                // the material's flat value storage].
                                 const upstream::ShaderVariantInfo&
                                     shader_info =
                                         upstream::shader_variant_info(
@@ -5764,12 +5763,8 @@ bool run_gpu_engine(Engine& engine) {
                                     // custom vertex floats invalidate
                                     // it for the next draw.
                                     scene_matrix_bound =
-                                        shader_info.vertex
-                                            .system_matrix &&
-                                        shader_info.vertex.gather
-                                            .empty() &&
-                                        shader_info.vertex
-                                            .float_size == 16;
+                                        block_is_shared_scene_matrix(
+                                            shader_info.vertex);
                                 }
                             } else {
                                 if (!scene_matrix_bound) {
@@ -7073,9 +7068,8 @@ bool run_gpu_engine(Engine& engine) {
                         bind_shader_material_textures(pass, mesh);
                         if (shader_info.vertex.present) {
                             scene_matrix_bound =
-                                shader_info.vertex.system_matrix &&
-                                shader_info.vertex.gather.empty() &&
-                                shader_info.vertex.float_size == 16;
+                                block_is_shared_scene_matrix(
+                                    shader_info.vertex);
                         }
                     } else {
                         if (!scene_matrix_bound) {

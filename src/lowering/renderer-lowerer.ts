@@ -11,8 +11,15 @@ import {
     pinnedShaderDefineLines,
     shaderPipelineModule,
 } from "./pinned-shader-defines.js";
-import { lowerWgslShaderProgram } from "../shader-ir.js";
-import type { ShaderProgramReflection } from "../shader-ir.js";
+import {
+    lowerWgslShaderProgram,
+    shaderSystemMatrixEnumerator,
+    shaderSystemMatrixTable,
+} from "../shader-ir.js";
+import type {
+    ShaderProgramReflection,
+    ShaderSystemMatrix,
+} from "../shader-ir.js";
 import {
     composeStandaloneWgsl,
     predeclaredShaderProgram,
@@ -693,11 +700,11 @@ export class RendererLowerer {
                         (candidate) => candidate.stage === stage,
                     );
                     if (!block) {
-                        return { present: false, systemMatrix: false, floatSize: 0, gather: [] as number[][] };
+                        return { present: false, systemMatrices: [] as string[], floatSize: 0, gather: [] as number[][] };
                     }
                     return {
                         present: true,
-                        systemMatrix: block.systemMatrix,
+                        systemMatrices: block.systemMatrices,
                         floatSize: block.size / 4,
                         gather: block.members.map((member) => [
                             member.offset / 4,
@@ -726,11 +733,18 @@ export class RendererLowerer {
                 : `${value}f`;
         const stageBlockLiteral = (block: {
             present: boolean;
-            systemMatrix: boolean;
+            systemMatrices: readonly string[];
             floatSize: number;
             gather: number[][];
         }): string =>
-            `ShaderVariantStageBlock{${block.present}, ${block.systemMatrix}, ${block.floatSize}u, {${block.gather
+            `ShaderVariantStageBlock{${block.present}, {${block.systemMatrices
+                .map(
+                    (name) =>
+                        `ShaderSystemMatrix::${shaderSystemMatrixEnumerator(
+                            name as ShaderSystemMatrix,
+                        )}`,
+                )
+                .join(", ")}}, ${block.floatSize}u, {${block.gather
                 .map(
                     ([blockOffset, valueOffset, count]) =>
                         `{${blockOffset}u, ${valueOffset}u, ${count}u}`,
@@ -773,6 +787,11 @@ export class RendererLowerer {
                 "src/material/shader/shader-thin-instance.ts",
             ].map((modulePath) => this.context.sourceFile(modulePath)),
         );
+        // Emitted from the compiler's own table so the generated enum's
+        // order and the enumerators the variant rows name cannot disagree.
+        const systemMatrixEnumerators = shaderSystemMatrixTable
+            .map(({ enumerator }) => "    " + enumerator + ",")
+            .join("\n");
         const backgroundGeometry = this.pinnedBackgroundGeometry();
         const viewMatrixBody = this.pinnedViewMatrixBody();
         if (options.fog) {
@@ -911,11 +930,20 @@ struct RenderFeatures {
 
 // Generated per-scene shader-variant metadata: pipeline state from the
 // pinned shader-pipeline mapping and the reflected per-stage uniform
-// blocks ([optional 16-float worldViewProjection][vec4-slot-packed
+// blocks ([the declared system matrices][vec4-slot-packed
 // custom members]) with gathers from the material's flat value storage.
+// Which matrix each system slot carries, emitted from
+// shaderSystemMatrixTable so this order and the compiler's cannot
+// disagree. The pin lets a caller name any of nine system uniforms; these
+// are the three a reached scene declares, and they head the block in the
+// order the caller declared them.
+enum class ShaderSystemMatrix : std::uint8_t {
+${systemMatrixEnumerators}
+};
+
 struct ShaderVariantStageBlock {
     bool present = false;
-    bool system_matrix = false;
+    std::vector<ShaderSystemMatrix> system_matrices;
     std::uint32_t float_size = 0;
     // {block float offset, value float offset, float count}
     std::vector<std::array<std::uint32_t, 3>> gather;

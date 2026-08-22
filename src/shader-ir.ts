@@ -72,7 +72,8 @@ export interface ShaderUniformBlockReflection {
     binding: 0;
     space: 1 | 3;
     size: number;
-    systemMatrix: boolean;
+    /** The system matrices this stage reads, in declaration order. */
+    systemMatrices: ShaderSystemMatrix[];
     members: ShaderUniformMemberReflection[];
 }
 
@@ -446,8 +447,51 @@ class WgslSubsetParser {
     }
 }
 
+/**
+ * The system uniforms this port fills, each with the C++ enumerator the
+ * generated variant table names it by. Declaration order here IS the
+ * emitted `enum class ShaderSystemMatrix` order, so the two cannot drift.
+ *
+ * `shader-material.ts#isSystemUniform` names nine; these are the three a
+ * reached scene declares. The other six refuse at generation -- not
+ * because they are underivable (`view`, `projection` and `worldView` are
+ * all one call away) but because nothing measures them, and an unreached
+ * arm is one this port would be guessing at.
+ */
+export const shaderSystemMatrixTable = [
+    { name: "world", enumerator: "world" },
+    { name: "viewProjection", enumerator: "view_projection" },
+    { name: "worldViewProjection", enumerator: "world_view_projection" },
+] as const;
+
+export type ShaderSystemMatrix =
+    (typeof shaderSystemMatrixTable)[number]["name"];
+
+export const shaderSystemMatrices = shaderSystemMatrixTable.map(
+    ({ name }) => name,
+) as readonly ShaderSystemMatrix[];
+
+export function isShaderSystemMatrix(
+    name: string,
+): name is ShaderSystemMatrix {
+    return (shaderSystemMatrices as readonly string[]).includes(name);
+}
+
+/** The C++ enumerator for a system matrix; total over the table. */
+export function shaderSystemMatrixEnumerator(
+    name: ShaderSystemMatrix,
+): string {
+    const row = shaderSystemMatrixTable.find(
+        (candidate) => candidate.name === name,
+    );
+    if (!row) {
+        throw new Error(`Unknown shader system matrix '${name}'.`);
+    }
+    return row.enumerator;
+}
+
 function parseUniformSignature(signature: string): { name: string; type: ShaderType } {
-    if (signature === "worldViewProjection") {
+    if (isShaderSystemMatrix(signature)) {
         return { name: signature, type: "mat4x4<f32>" };
     }
     const separator = signature.indexOf(":");
@@ -565,19 +609,24 @@ function reflectUniformBlock(
     module: ShaderModule,
     uniforms: Array<{ name: string; type: ShaderType }>,
 ): ShaderUniformBlockReflection | undefined {
-    const systemMatrix = uniforms.some(
-        ({ name }) =>
-            name === "worldViewProjection" &&
-            stageReadsUniform(module, "shaderSystem", name),
-    );
+    // Declaration order is the layout: each matrix the stage reads takes
+    // four vec4 slots at the head of the block, and the custom floats pack
+    // after them.
+    const systemMatrices = uniforms
+        .filter(
+            ({ name }) =>
+                isShaderSystemMatrix(name) &&
+                stageReadsUniform(module, "shaderSystem", name),
+        )
+        .map(({ name }) => name as ShaderSystemMatrix);
     const custom = uniforms.filter(
         ({ name }) =>
-            name !== "worldViewProjection" &&
+            !isShaderSystemMatrix(name) &&
             stageReadsUniform(module, "shaderUniforms", name),
     );
-    if (!systemMatrix && custom.length === 0) return undefined;
+    if (systemMatrices.length === 0 && custom.length === 0) return undefined;
 
-    let slot = systemMatrix ? 4 : 0;
+    let slot = systemMatrices.length * 4;
     let component = 0;
     const members: ShaderUniformMemberReflection[] = [];
     for (const uniform of custom) {
@@ -609,7 +658,7 @@ function reflectUniformBlock(
         binding: 0,
         space: stage === "vertex" ? 1 : 3,
         size: slotCount * 16,
-        systemMatrix,
+        systemMatrices,
         members,
     };
 }

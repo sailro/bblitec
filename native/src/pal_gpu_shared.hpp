@@ -2288,20 +2288,72 @@ inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
 
 /**
  * One custom-shader stage block, filled from the generated variant
- * table: [optional 16-float scene worldViewProjection][the reflected
- * gathers from the material's flat value storage]. The same floats reach
- * an SDL_GPU push, a Dawn buffer write and the render capture, so the
- * packing lives here. `system_matrix` is null on the arm that binds the
- * shared scene-matrix buffer instead (the Dawn backend, which refuses
- * combined matrix-plus-gather blocks before calling).
+ * table: [the system matrices the stage declared, in that order][the
+ * reflected gathers from the material's flat value storage]. The same
+ * floats reach an SDL_GPU push, a Dawn buffer write and the render
+ * capture, so the packing lives here.
+ *
+ * `world` is the identity because `transformed_vertices` bakes a
+ * shader-material mesh's TRS into its vertices, which makes the pin's
+ * `viewProjection * world * position` the same product as the
+ * single-matrix `worldViewProjection * position`.
+ *
+ * That baking is CONDITIONAL: the same function gives a thin-instanced
+ * mesh the identity TRS and sends its transform through the instance
+ * stream instead. A `world`-declaring shader material on a thin-instanced
+ * mesh therefore needs the real per-draw world, the way
+ * `pinned_draw_world` reads it -- not this constant. No reached scene
+ * declares `world` at all yet, so the case is unbuilt rather than wrong;
+ * the first one that does has to settle it here.
  */
+/**
+ * Whether a stage's whole block is the shared scene matrix, so a backend
+ * may bind the frame's own buffer instead of the material's.
+ *
+ * `viewProjection` and `worldViewProjection` are the same bytes here --
+ * a shader-material draw's world is the identity (see
+ * `shader_stage_block_floats`) -- so either alone satisfies it. Asked in
+ * one place because four sites used to ask it in three spellings, and
+ * generalizing some of them is how the others went wrong.
+ */
+inline bool block_is_shared_scene_matrix(
+    const upstream::ShaderVariantStageBlock& block) {
+    return block.system_matrices.size() == 1 &&
+        block.system_matrices.front() !=
+            upstream::ShaderSystemMatrix::world &&
+        block.gather.empty();
+}
+
 inline std::vector<float> shader_stage_block_floats(
     const upstream::ShaderVariantStageBlock& block,
-    const float* system_matrix,
+    const float* scene_matrix,
     const MaterialRecord& material) {
+    // Declared here rather than reusing `pinned_identity_world`, which
+    // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
+    // this function without it.
+    static constexpr std::array<float, 16> identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
     std::vector<float> floats(block.float_size, 0.0f);
-    if (block.system_matrix && system_matrix) {
-        std::copy_n(system_matrix, 16, floats.begin());
+    std::size_t head = 0;
+    for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
+        // No default arm: a new enumerator has to be given a source here
+        // rather than silently inheriting one.
+        switch (matrix) {
+            case upstream::ShaderSystemMatrix::world:
+                std::copy_n(identity.data(), 16, floats.begin() + head);
+                break;
+            case upstream::ShaderSystemMatrix::view_projection:
+            case upstream::ShaderSystemMatrix::world_view_projection:
+                if (scene_matrix) {
+                    std::copy_n(scene_matrix, 16, floats.begin() + head);
+                }
+                break;
+        }
+        head += 16;
     }
     for (const std::array<std::uint32_t, 3>& gather : block.gather) {
         for (std::uint32_t index = 0; index < gather[2]; ++index) {

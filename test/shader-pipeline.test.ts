@@ -106,11 +106,11 @@ test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
     );
     assert.deepEqual(
         program.reflection.uniformBlocks.map(
-            ({ stage, space, size, systemMatrix }) => ({
+            ({ stage, space, size, systemMatrices }) => ({
                 stage,
                 space,
                 size,
-                systemMatrix,
+                systemMatrices,
             }),
         ),
         [
@@ -118,7 +118,8 @@ test("lowers matrix, varying, branch, and discard WGSL nodes", () => {
                 stage: "vertex",
                 space: 1,
                 size: 64,
-                systemMatrix: true,
+                // One matrix, four vec4 slots at the head of the block.
+                systemMatrices: ["worldViewProjection"],
             },
         ],
     );
@@ -220,4 +221,72 @@ test("generates the shared Tint material vertex interface", () => {
     );
 });
 
+test("packs several system matrices at the head of a stage block", () => {
+    // The pin's own line material declares `world` + `viewProjection` and
+    // reads both in its vertex stage (material/line/line-material.ts), so
+    // the block head is two matrices rather than one and the custom
+    // `lineColor` sits alone in the fragment block.
+    const program = lowerWgslShaderProgram({
+        name: "two-system-matrices",
+        vertexSource: `struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+};
 
+@vertex
+fn mainVertex(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    let finalWorld = shaderSystem.world;
+    out.position = shaderSystem.viewProjection * finalWorld * vec4<f32>(input.position, 1.0);
+    return out;
+}`,
+        fragmentSource: `struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+};
+
+@fragment
+fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
+    return shaderUniforms.lineColor;
+}`,
+        attributes: ["position"],
+        uniforms: ["world", "viewProjection", "lineColor:vec4<f32>"],
+        needAlphaBlending: false,
+        needAlphaTesting: false,
+        backFaceCulling: false,
+        depthWrite: true,
+    });
+    assert.deepEqual(
+        program.reflection.uniformBlocks.map(
+            ({ stage, size, systemMatrices, members }) => ({
+                stage,
+                size,
+                systemMatrices,
+                members: members.map(({ name, offset }) => ({ name, offset })),
+            }),
+        ),
+        [
+            // Two matrices, declaration order, 128 bytes and no members.
+            {
+                stage: "vertex",
+                size: 128,
+                systemMatrices: ["world", "viewProjection"],
+                members: [],
+            },
+            // The fragment stage reads neither matrix, so its block is the
+            // custom uniform alone at offset zero.
+            {
+                stage: "fragment",
+                size: 16,
+                systemMatrices: [],
+                members: [{ name: "lineColor", offset: 0 }],
+            },
+        ],
+    );
+    // The struct field names are the caller's, because the caller's own
+    // WGSL is what reads them.
+    const vertex = emitNativeWgslProgram(program, "vertex");
+    assert.match(vertex, /struct ShaderSystemUniforms \{\s*\n\s*world: mat4x4<f32>,\s*\n\s*viewProjection: mat4x4<f32>,/);
+    assert.match(
+        emitNativeWgslProgram(program, "fragment"),
+        /lineColor: vec4<f32>/,
+    );
+});

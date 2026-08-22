@@ -979,8 +979,11 @@ build error with a source location, not a silently different image.
   an extension the pinned loader implements that this port does not fails at
   generation naming it
 - custom shader variants are bounded by the supported WGSL subset and the
-  `worldViewProjection` system uniform; arbitrary system-uniform sets and
-  matrix-valued custom uniforms remain unsupported. A sampler is named by a
+  `world`, `viewProjection` and `worldViewProjection` system uniforms,
+  which head a stage's block in declaration order. The pin's other six
+  (`view`, `projection`, `worldView`, `cameraPosition`, `screenSize`,
+  `alphaCutoff`), matrix-valued custom uniforms, and a stage reading both a
+  system and a custom uniform all remain unsupported. A sampler is named by a
   string and binds a 2D float texture, loaded by `loadTexture2D`, in the
   fragment stage: a typed `ShaderSamplerDecl`, a depth or comparison
   sampler, a `2d-array` view, a sampler the vertex stage reads (SDL_GPU

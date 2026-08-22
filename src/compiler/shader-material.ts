@@ -9,7 +9,9 @@
 // of the reached program.
 import ts from "typescript";
 import {
+    isShaderSystemMatrix,
     lowerWgslShaderProgram,
+    shaderSystemMatrices,
     type ShaderIrProgram,
 } from "../shader-ir.js";
 import {
@@ -256,17 +258,18 @@ export function compileShaderMaterialOptions(
             `Shader material name '${slug}' collides with a predeclared variant.`,
         );
     }
-    // The reached subset composes the system block from
-    // worldViewProjection alone (or none); other system uniforms
-    // (view, world, projection splits) stay unreached.
+    // The pin names nine system uniforms; the reached subset is the three
+    // that name a matrix a draw already holds, so serving one is a copy
+    // rather than a derivation. `view`, `projection`, `worldView`,
+    // `cameraPosition`, `screenSize` and `alphaCutoff` refuse by name.
     for (const signature of uniforms) {
         if (
             !signature.includes(":") &&
-            signature !== "worldViewProjection"
+            !isShaderSystemMatrix(signature)
         ) {
             context.fail(
                 uniformsExpression,
-                `Reached scene-local shader materials support the worldViewProjection system uniform only, received '${signature}'.`,
+                `Reached scene-local shader materials support the ${shaderSystemMatrices.join("/")} system uniforms, received '${signature}'.`,
             );
         }
     }
