@@ -44,13 +44,6 @@ if ($backend -notin @("SDL_GPU", "DAWN", "BOTH")) {
 if ($ExpectBackend -and $backend -ne $ExpectBackend) {
     throw "Build directory $BuildDirectory was configured with BBLITE_BACKEND=$backend, not $ExpectBackend."
 }
-$cpuFallbackEntry = Select-String -Path $cacheFile -Pattern "^BBLITE_CPU_FALLBACK:\w+=(.+)$" |
-    Select-Object -First 1
-$cpuFallback = if ($cpuFallbackEntry) {
-    $cpuFallbackEntry.Matches[0].Groups[1].Value.Trim() -notin @("OFF", "0", "FALSE", "NO")
-} else {
-    $true
-}
 # Image codecs the generation reached (BBLITE_IMAGE_CODECS in the
 # scene's features.cmake). Generated directories predating codec
 # tree-shaking carry no list and keep the historical png+jpeg set.
@@ -272,17 +265,6 @@ if ($backend -eq "BOTH") {
         Set-Content (Join-Path $packageDirectory "run-$Scene-dawn.cmd") -Encoding Ascii
 }
 
-if ($cpuFallback) {
-    @(
-        "@echo off",
-        "setlocal",
-        'set "BBLITE_GPU=0"',
-        "`"%~dp0$exeName`"",
-        "if errorlevel 1 pause"
-    ) -join "`r`n" |
-        Set-Content (Join-Path $packageDirectory "run-$Scene-cpu.cmd") -Encoding Ascii
-}
-
 $backendDescription = switch ($backend) {
     "SDL_GPU" { "SDL_GPU over Direct3D 12 with offline-compiled shaders" }
     "DAWN" { "Dawn (Chrome's WebGPU) over Direct3D 12, compiling WGSL at startup" }
@@ -313,18 +295,6 @@ $fxcNote = if (($backend -ne "SDL_GPU") -and -not $dawnShared) {
     ""
 }
 
-$fallbackRunNote = if ($cpuFallback) {
-    "`r`n  It automatically falls back to the deterministic SDL_Renderer" +
-        "`r`n  implementation when the GPU backend is unavailable."
-} else {
-    ""
-}
-$cpuTroubleshootNote = if ($cpuFallback) {
-    "`r`n  - run-$Scene-cpu.cmd forces the deterministic SDL_Renderer fallback."
-} else {
-    ""
-}
-
 @"
 bblitec $Scene portable demo (Windows x64)
 ================================================
@@ -332,7 +302,7 @@ bblitec $Scene portable demo (Windows x64)
 Backend: $backendDescription
 
 Run:
-  Double-click run-$Scene.cmd.$fallbackRunNote
+  Double-click run-$Scene.cmd.
 
 Controls:
   Left drag            Orbit
@@ -342,8 +312,10 @@ Controls:
   W / S                Zoom fallback
 
 Troubleshooting:
-  - Requires Windows 10/11.$cpuTroubleshootNote
-  - bblitec-$Scene.log records startup errors and fallback information.
+  - Requires Windows 10/11 and a Direct3D 12 GPU. bblitec renders only
+    on a GPU; there is no software path, so a device that cannot be
+    brought up is an error rather than a slower picture.
+  - bblitec-$Scene.log records startup errors.
   - Keep the assets and shaders directories beside the executable.$fxcNote
 
 $($fidelitySection)Compiler source:

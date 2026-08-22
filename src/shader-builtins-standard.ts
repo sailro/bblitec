@@ -1,3 +1,12 @@
+/**
+ * How many bone matrices the transcribed vertex stage's uniform array
+ * holds. This declaration IS the transport: the C++ `DeformationUniforms`
+ * mirror must match it byte for byte, and a skin larger than it has
+ * nowhere to travel, so generation refuses one. Everything that needs the
+ * number reads it here rather than restating it.
+ */
+export const DEFORMATION_BONE_SLOTS = 64;
+
 // The material families' shared vertex stage. Both fragment transcriptions
 // it once paired with are retired -- PBR and Standard draws run the pin's
 // own composed stages -- so its remaining consumers are the diagnostic,
@@ -29,7 +38,7 @@ struct MorphDeltasUniforms {
     const deformationUniforms = gpuDeformation
         ? `
 struct DeformationUniforms {
-    boneMatrices: array<mat4x4<f32>, 64>,
+    boneMatrices: array<mat4x4<f32>, ${DEFORMATION_BONE_SLOTS}>,
     morphWeights: vec4<f32>,
     options: vec4<f32>,
 }

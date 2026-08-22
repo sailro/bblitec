@@ -24,25 +24,9 @@ function writePng(path: string, pixels: Array<[number, number, number, number]>)
     writeFileSync(path, PNG.sync.write(png));
 }
 
-test("requires configured thresholds for CPU parity gates", () => {
+test("gates a registered scene and leaves an unthresholded one diagnostic", () => {
     assert.deepEqual(
-        resolveParityThresholds(getScene("scene1").parity!, false),
-        {
-            maxMad: 2.2,
-            maxRegionMad: 21.5,
-            gate: "enforced",
-        },
-    );
-    assert.throws(
-        () =>
-            resolveParityThresholds(
-                getScene("scene10").parity!,
-                false,
-            ),
-        /CPU parity thresholds are not configured/,
-    );
-    assert.deepEqual(
-        resolveParityThresholds(getScene("scene10").parity!, true),
+        resolveParityThresholds(getScene("scene10").parity!, "sdl_gpu"),
         {
             maxMad: 0.03,
             maxRegionMad: 0.25,
@@ -50,18 +34,15 @@ test("requires configured thresholds for CPU parity gates", () => {
         },
     );
     assert.deepEqual(
-        resolveParityThresholds(
-            {
-                reference: {
-                    kind: "source",
-                    path: "reference.png",
-                },
-                outputDirectory: "output",
-                backgroundColor: [0, 0, 0],
-                backgroundThreshold: 0,
+        resolveParityThresholds({
+            reference: {
+                kind: "source",
+                path: "reference.png",
             },
-            true,
-        ),
+            outputDirectory: "output",
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 0,
+        }, "sdl_gpu"),
         {
             maxMad: undefined,
             maxRegionMad: undefined,

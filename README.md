@@ -47,6 +47,10 @@ Requirements: Node.js 22+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
 PowerShell and DXC for shader compilation, and Chrome/Edge with WebGPU for
 shader and HDR asset compilation (see [development](docs/development.md)).
 
+**A built scene requires a GPU.** Both backends render through one, there is
+no software fallback, and a device that cannot be brought up is an error
+rather than a slower picture.
+
 ```powershell
 git clone https://github.com/sailro/bblitec.git
 cd bblitec
@@ -87,6 +91,8 @@ generator-specific.
 
 - Generate Babylon behavior from pinned upstream sources; PAL owns only OS and
   SDL mechanics.
+- Render on a GPU or fail explicitly. A degraded path nothing measures is
+  worse than an error that names what is missing.
 - Preserve tree shaking, provenance, typed records, and C++20 portability.
 - Do not tune shaders or loader behavior against a golden image.
 - Keep generated output disposable; fix compiler, lowerer, template, or PAL

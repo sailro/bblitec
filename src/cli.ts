@@ -69,6 +69,7 @@ import {
     type BabylonLight,
 } from "./babylon-asset-features.js";
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
+import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { assetRecord } from "./compiler/assets.js";
 import { bakeNodeParticles } from "./pinned-node-particle.js";
@@ -723,6 +724,32 @@ async function main(): Promise<void> {
     );
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
+    // Which palette transport a skin takes: a build whose composed variants
+    // carry the pin's own skeleton bit reads the palette from its per-bone
+    // texture, which caps no joint count.
+    const pinnedSkeletonPalette = await pinnedFeaturesCarrySkeleton(
+        renderableMeshFeatures,
+    );
+    // Deformation runs on the GPU or not at all, so the transcribed vertex
+    // stage's uniform array is a hard bound rather than a slow path. Both
+    // halves of the question are settled here — the asset's largest skin and
+    // the variant set the scene composes — so refuse by name now instead of
+    // after a native build. The generated loader keeps the same check as the
+    // BBLITE_ASSET_DIR defense, exactly as asset-specializer.ts documents for
+    // every other unsupported-asset refusal.
+    if (
+        !pinnedSkeletonPalette &&
+        specializationFeatures.maxSkinJoints > DEFORMATION_BONE_SLOTS
+    ) {
+        throw new Error(
+            `A skin of ${specializationFeatures.maxSkinJoints} joints exceeds ` +
+                `the ${DEFORMATION_BONE_SLOTS}-matrix bone palette of the ` +
+                "transcribed vertex stage, which is this scene's transport " +
+                "because it composes no pinned skeleton variant. The pin's " +
+                "own per-bone palette texture caps nothing; there is no CPU " +
+                "deformation path to fall back to.",
+        );
+    }
     const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
@@ -817,13 +844,7 @@ async function main(): Promise<void> {
         pinnedMaterialCount:
             materialIndexBase + result.manifest.sceneMaterialCount,
         renderableMeshFeatures,
-        // Which palette transport a skin takes: a build whose composed
-        // variants carry the pin's own skeleton bit reads the palette
-        // from its per-bone texture, which caps no joint count.
-        pinnedSkeletonPalette:
-            await pinnedFeaturesCarrySkeleton(
-                renderableMeshFeatures,
-            ),
+        pinnedSkeletonPalette,
         ...(runtimeMeshFeatures !== undefined
             ? { runtimeMeshFeatures }
             : {}),

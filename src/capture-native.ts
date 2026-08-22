@@ -47,7 +47,6 @@ export function runNativeCapture(
     const scene = resolveScene(idOrSource);
     const backend = canonicalBackend(
         options.backend ?? "sdl_gpu",
-        ["sdl_gpu", "dawn"],
         "capture",
     );
     // Filenames use the shared token ("gpu" for SDL_GPU), matching the
@@ -80,8 +79,6 @@ export function runNativeCapture(
         executable,
         {
             ...(scene.parity?.nativeEnvironment ?? {}),
-            BBLITE_GPU: "1",
-            BBLITE_GPU_REQUIRED: "1",
             ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
             BBLITE_TEST_PASS: "1",
             BBLITE_MAX_FRAMES: "1",

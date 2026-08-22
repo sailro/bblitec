@@ -79,10 +79,6 @@ set(
     "Installed trimmed SDL3 root (empty = toolchain SDL3)"
 )
 
-# The SDL_Renderer CPU fallback. Minimal release shapes compile it out
-# (pair with a BBLITE_SDL_DIR library built without SDL_RENDER); the
-# scene1 --cpu parity gate requires the default ON shape.
-option(BBLITE_CPU_FALLBACK "Compile the SDL_Renderer CPU fallback" ON)
 set_property(
     CACHE BBLITE_BACKEND
     PROPERTY STRINGS "SDL_GPU" "DAWN" "BOTH"
@@ -222,7 +218,9 @@ if(BBLITE_SDL_DIR)
             "BBLITE_SDL_DIR does not contain an SDL3 CMake package: ${BBLITE_SDL_DIR}"
         )
     endif()
-    find_package(SDL3 CONFIG REQUIRED NO_DEFAULT_PATH PATHS "${SDL3_DIR}")
+    # Not REQUIRED: the shared guard below is the one refusal, and its
+    # message names both ways to fix a missing SDL3.
+    find_package(SDL3 CONFIG QUIET NO_DEFAULT_PATH PATHS "${SDL3_DIR}")
     # Trimmed installs carry a single configuration (MinSizeRel); map
     # every consumer configuration onto whichever exists.
     foreach(bblite_sdl_target SDL3::SDL3-static SDL3::SDL3-shared)
@@ -243,18 +241,18 @@ else()
     unset(SDL3_DIR CACHE)
     find_package(SDL3 CONFIG QUIET)
 endif()
-if(SDL3_FOUND)
-    target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL=0)
-    message(WARNING "SDL3 was not found. The generated application will use the headless backend.")
+# SDL3 is required, not optional: it is the platform layer both GPU
+# backends bring their window, events and device up through, and bblitec
+# has no path that renders without one.
+if(NOT SDL3_FOUND)
+    message(
+        FATAL_ERROR
+        "SDL3 was not found. It is required: bblitec renders only on a GPU, "
+        "and both backends reach the device through SDL3. Set VCPKG_ROOT (or "
+        "BBLITE_SDL_DIR) and configure this build directory again."
+    )
 endif()
-if(BBLITE_CPU_FALLBACK)
-    target_compile_definitions(bblite_native PRIVATE BBLITE_CPU_FALLBACK=1)
-else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_CPU_FALLBACK=0)
-endif()
+target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
 
 if(BBLITE_BACKEND_SDL_GPU)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_SDL_GPU=1)

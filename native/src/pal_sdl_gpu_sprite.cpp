@@ -20,13 +20,13 @@
 
 #include "pal_gpu_shared.hpp"
 
-#if BBLITE_HAS_SDL && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
 #endif
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_SDL && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER
 
 bool run_sprite_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
@@ -35,10 +35,6 @@ bool run_sprite_gpu_engine(Engine& engine) {
         "SDL_GPU sprites",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
-    const std::string enabled = environment_variable("BBLITE_GPU");
-    if (enabled == "0" || enabled == "false" || enabled == "off") {
-        return false;
-    }
     if (engine.registered_sprite_renderers.empty()) {
         throw std::runtime_error(
             "Sprite renderer requires a registered SpriteRenderer.");

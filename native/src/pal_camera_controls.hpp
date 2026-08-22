@@ -1,11 +1,8 @@
-// Camera input controls shared by the SDL_Renderer, SDL_GPU, and
-// Dawn frame loops (moved verbatim from pal_sdl.cpp so every backend
-// applies identical pointer, wheel, and keyboard semantics).
+// Camera input controls shared by the SDL_GPU and Dawn frame loops, so
+// both backends apply identical pointer, wheel, and keyboard semantics.
 #pragma once
 
 #include <bblite/runtime.hpp>
-
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL
 
 #include <bblite/upstream/camera_controls.hpp>
 
@@ -121,5 +118,3 @@ inline void update_camera(CameraRecord& camera) {
 }
 
 } // namespace bbl::pal
-
-#endif

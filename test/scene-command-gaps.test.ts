@@ -79,11 +79,6 @@ test("parity --without takes ground|background and nothing else", () => {
 });
 
 test("parity --without refuses companions that would measure something else", () => {
-    // The suppression flags are read by the GPU frame options.
-    assert.throws(
-        () => parseParityArguments(["s", "--without", "ground", "--cpu"]),
-        /does not compose with --cpu/,
-    );
     // --actual skips the native run there would be nothing to suppress in.
     assert.throws(
         () =>

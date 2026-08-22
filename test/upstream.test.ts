@@ -490,11 +490,17 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /std::sin\(\(1\.0 - amount\) \* theta\)/,
     );
-    assert.match(adapter.source, /geometry\.morph_positions\.size\(\) <= 2/);
-    // The transcribed palette's cap, which a composed skeleton variant
-    // lifts by carrying the pin's own per-bone texture instead.
-    assert.match(adapter.source, /\.joints\.size\(\) <= 64/);
-    assert.match(adapter.source, /mesh_record\.gpu_deformation/);
+    // Deformation runs on the GPU or not at all. The transcribed
+    // palette's 64-matrix cap is the transport's limit, so a larger skin
+    // is refused at load rather than deformed CPU-side; a composed
+    // skeleton variant lifts the cap by carrying the pin's own per-bone
+    // texture, and emits no refusal at all.
+    assert.match(adapter.source, /\.joints\.size\(\) > 64/);
+    assert.match(
+        adapter.source,
+        /Skin exceeds the 64-matrix vertex-stage bone/,
+    );
+    assert.match(adapter.source, /\.gpu_deformation = true;/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 

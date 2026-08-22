@@ -9,6 +9,9 @@
 - vcpkg
 - PowerShell and DXC for shader compilation
 - Chrome or Edge with WebGPU for exact HDR GGX asset prefiltering and browser references
+- a GPU to run what is built. bblitec renders through SDL_GPU or Dawn and
+  carries no software renderer, so a device that cannot be brought up fails
+  the run rather than degrading it
 
 The documented Windows toolchain is MSVC 14.51 with Windows SDK
 10.0.26100.0. Linux and macOS use the same generated sources with their native
@@ -539,7 +542,6 @@ combination):
 | `BBLITE_DAWN_DIR` | `artifacts/tools/dawn` | installed Dawn package root; point at `artifacts/tools/dawn-min` for the minimal static FXC-only library |
 | `BBLITE_SDL_DIR` | empty | subsystem-trimmed static SDL3 root (`tools/build-sdl-min.ps1`); empty selects the toolchain (vcpkg) SDL3 |
 | `BBLITE_MINSIZE` | `OFF` | whole-program optimization and dead-stripping (`/GL /Gw`, `/LTCG /OPT:REF /OPT:ICF`) plus a `/MAP` linker map for `tools/map-size-report.mjs` |
-| `BBLITE_CPU_FALLBACK` | `ON` | compile the SDL_Renderer CPU fallback; the scene 1 `--cpu` gate requires the default, minimal shapes turn it off |
 | `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
 | `CMAKE_MSVC_RUNTIME_LIBRARY` | toolchain | pass `MultiThreaded$<$<CONFIG:Debug>:Debug>` with the static triplet; vcpkg does not flip the project's own CRT |
 
@@ -603,7 +605,8 @@ pwsh -File tools\build-dawn-min.ps1
 
 `build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
 video, events, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
-sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer).
+sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer — nothing
+links the software renderer, since bblitec requires a GPU).
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with
@@ -620,8 +623,7 @@ cmake -S native -B native\build-scene1-min-sdl `
   -DBBLITE_GENERATED_DIR="$PWD\generated\scene1" `
   -DBBLITE_BACKEND=SDL_GPU `
   -DBBLITE_MINSIZE=ON `
-  -DBBLITE_SDL_DIR="$PWD\artifacts\tools\sdl-min" `
-  -DBBLITE_CPU_FALLBACK=OFF
+  -DBBLITE_SDL_DIR="$PWD\artifacts\tools\sdl-min"
 cmake --build native\build-scene1-min-sdl --config Release --parallel
 ```
 
@@ -639,9 +641,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 
 | Variable | Purpose |
 | --- | --- |
-| `BBLITE_GPU=0` | force SDL_Renderer fallback |
 | `BBLITE_GPU_BACKEND=dawn` | select the Dawn (WebGPU) render backend; every backend-running scene subcommand also takes `--backend`, which wins over this variable and prints the override |
-| `BBLITE_GPU_REQUIRED=1` | fail instead of falling back |
 | `BBLITE_GPU_DEBUG=1` | enable the backend GPU validation layer |
 | `BBLITE_MSAA=1` | force single-sample rendering for diagnostics, on both backends: it answers whether a difference is multisampling by removing it (`scene -- stability --single-sample` drives it) |
 | `BBLITE_BACKGROUND=0` | disable a requested DDS/HDR/solid-colour skybox (`scene -- parity <id> --without background` drives it) |
@@ -694,26 +694,15 @@ npm run scene -- parity scene273 --recapture-reference
 Registered scenes require their curated reference to exist. Ordinary parity
 fails instead of recreating a missing golden; only
 `--recapture-reference` authorizes an intentional replacement. Ad-hoc scenes
-retain the bootstrap behavior shown above.
-
-Scene 1 CPU and GPU runs use the same generic command:
-
-```powershell
-npm run scene -- parity scene1 --cpu
-npm run scene -- parity scene1
-```
-
-`--cpu` is a gate only when the scene registry defines `cpuThresholds`.
-Requesting CPU parity for any other scene fails explicitly instead of
-reporting an unthresholded pass. Ad-hoc GPU scenes without configured
-thresholds remain available, but reports and console output label them
+retain the bootstrap behavior shown above, and one without configured
+thresholds still measures — its reports and console output are labelled
 `diagnostic-only`.
 
 The full parity flag set (an unknown flag is an error naming this set):
 
 | Flag | Effect |
 | --- | --- |
-| `--backend sdl_gpu\|dawn\|cpu` | select the backend. `gpu` is accepted for `sdl_gpu`, and `--cpu` still means `--backend cpu`. Ambient `BBLITE_GPU_BACKEND` is the fallback; an explicit flag that disagrees with it wins and prints the override. |
+| `--backend sdl_gpu\|dawn` | select the backend. `gpu` is accepted for `sdl_gpu`. Ambient `BBLITE_GPU_BACKEND` is the fallback; an explicit flag that disagrees with it wins and prints the override. |
 | `--seek <t>` | measure pose `<t>` instead of the registry pose, on both sides — the browser capture seeks through the harness, the native run through `BBLITE_ANIMATION_SEEK_SECONDS`. Requires `--recapture-reference` while a golden exists, because a seeked native against an unseeked golden compares two different poses. |
 | `--recapture-reference` | intentionally replace the golden (see above) |
 | `--differential` | both GPU backends plus their direct comparison (below); accepts only `--gpu-debug` beside it |
@@ -723,9 +712,9 @@ The full parity flag set (an unknown flag is an error naming this set):
 | `--no-fail` | report a threshold violation as a warning instead of a failing exit |
 
 Outputs land in the scene's parity directory `artifacts\parity\<scene>`:
-the actual image as `native-{gpu,dawn,cpu}.png` — suffixed per backend, so
+the actual image as `native-{gpu,dawn}.png` — suffixed per backend, so
 an SDL_GPU run and a Dawn run never overwrite each other's evidence — plus
-the diff map, hotspots, `report-{gpu,dawn,cpu}.json`, and optional
+the diff map, hotspots, `report-{gpu,dawn}.json`, and optional
 draw/cluster buffers. Committed goldens live under `reference\<scene>`.
 
 Both GPU backends serve the attribution captures. `BBLITE_GPU_BACKEND=dawn`
@@ -892,8 +881,8 @@ checked separately because each goes stale differently:
   build and a minimal-size build without either looking stale.
 
 The stamp deliberately covers the whole tracked native source set rather than
-the subset a configuration compiles: `BBLITE_CPU_FALLBACK=OFF` drops a
-translation unit, and the same sources must digest identically either way.
+the subset a configuration compiles: `BBLITE_BACKEND` drops a backend's
+translation units, and the same sources must digest identically either way.
 
 Generation rewrites a file only when its bytes change and prunes what a run no
 longer emits, so an unchanged scene rebuilds nothing. `scene -- process`
@@ -1038,10 +1027,9 @@ ships WGSL text plus
 (no FXC — see [backends](backends.md#building-and-running)), and
 `BOTH` ships the dual-backend binary with both shader sets plus a
 `run-<scene>-dawn.cmd` launcher. `jpeg62.dll` and the libjpeg-turbo
-notice ship only when the scene's `BBLITE_IMAGE_CODECS` reaches JPEG,
-and the `run-<scene>-cpu.cmd` launcher only when the build compiled
-the CPU fallback (`BBLITE_CPU_FALLBACK`). Statically linked builds
-(vcpkg `x64-windows-static` with `BBLITE_MINSIZE`, Dawn from
+notice ship only when the scene's `BBLITE_IMAGE_CODECS` reaches JPEG.
+Statically linked builds (vcpkg `x64-windows-static` with
+`BBLITE_MINSIZE`, Dawn from
 `tools/build-dawn-min.ps1`) are detected by the absence of runtime
 DLLs beside the executable and ship the executable alone; `-Variant`
 appends a token to the package name. Text shader intermediates (HLSL,

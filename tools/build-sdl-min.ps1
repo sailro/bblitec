@@ -8,12 +8,11 @@ param(
 # packages. The version tracks the vcpkg-installed SDL3 so the trimmed
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
-# (native/src/pal_sdl.cpp) and renders through SDL_GPU (D3D12) with an
-# SDL_Renderer CPU fallback, so audio, joystick, haptic, HIDAPI,
-# sensor, camera, power, dialog, misc, locale, the GL/Vulkan plumbing,
-# and the SDL_Renderer core are compiled out entirely. Pair with
-# BBLITE_CPU_FALLBACK=OFF: without SDL_RENDER the engine's
-# SDL_Renderer CPU fallback cannot link.
+# and renders through SDL_GPU (D3D12), so audio, joystick, haptic,
+# HIDAPI, sensor, camera, power, dialog, misc, locale, the GL/Vulkan
+# plumbing, and the SDL_Renderer core are compiled out entirely.
+# SDL_RENDER is one of them: bblitec requires a GPU and has no software
+# renderer to link it for.
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
