@@ -203,6 +203,33 @@ complete source map is maintained in `docs/architecture.md`.
 - Preserve the shader and texture contracts documented in architecture and
   fidelity; do not tune backend shaders against a golden.
 
+## Proven sound — do not re-audit
+
+A 2026-08-18 six-axis audit verified these with file:line evidence and closed
+every defect it found. They are the areas not worth re-deriving from scratch;
+anything numeric it also concluded has been left out, because counts are what
+went stale first.
+
+- **PAL isolation, both directions.** CMake translation-unit selection, the
+  backend-type-free shared headers, the stub contract and the `run_engine`
+  dispatch: deleting a backend is dropping its files. SDL3 stays as the
+  platform layer under either.
+- **The PBR pinned pipeline end to end.** The composer executes under Node,
+  extensions register in the pin's order, stages emit verbatim and are gated
+  byte-for-byte against instrumented browser captures, and UBO layouts are
+  cross-checked against the composer's own offsets.
+- **Pin-access discipline.** One executor (`importPinnedModule`), one
+  glTF-to-material mapper, one writer-lowerer, every lowerer on
+  `LoweringContext` — enforced by `compiler-architecture.test.ts`.
+- **Tooling core.** One registry resolver, one browser harness (non-perturbation
+  proven byte-for-byte), one PNG/MAD library, build identity enforced at every
+  capture.
+- **Feature predicates matching upstream exactly.** Transmission end to end,
+  specular/reflectance including factor-1-clears-IOR, the clearcoat/sheen/
+  iridescence/anisotropy option objects term for term, texture-transform
+  stamps, skybox arms, `.babylon` light lists, and the morph-storage
+  any-target rule.
+
 ## Build order
 
 Generation must complete before native builds. Do not run generation and a
