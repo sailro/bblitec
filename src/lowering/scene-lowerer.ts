@@ -5,7 +5,10 @@ export class SceneLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerCore(
-        options: { fog?: boolean } = {},
+        options: {
+            fog?: boolean;
+            managedAnimationGroups?: boolean;
+        } = {},
     ): LoweredSource {
         const modulePath = "src/scene/scene-core.ts";
         const createName = "createSceneContext";
@@ -218,6 +221,30 @@ void set_scene_fog(
             "src/scene/scene-remove.ts",
             "removeFromScene",
         );
+        // A manager created with this engine owns animation time for the
+        // groups attached to it, and a scene it drives has no other way to
+        // reach them: the measured seek walks the scene's seekers, so a
+        // registering scene contributes one per manager. Not a pinned
+        // step -- upstream seeks by calling goToFrame on the groups
+        // themselves, which is what this reproduces.
+        const managerSeek = options.managedAnimationGroups
+            ? `
+    if (!scene.seeks_animation_managers) {
+        scene.seeks_animation_managers = true;
+        Engine* engine = scene.engine;
+        scene.animation_seekers.push_back(
+            [engine](float time) {
+                // Walked when the seek fires, not when it is attached:
+                // a manager created after this scene registered still
+                // owns animation time for the groups on it.
+                for (
+                    const PropertyAnimationManager& manager :
+                    engine->animation_managers) {
+                    seek_animation_manager(manager, *engine, time);
+                }
+            });
+    }`
+            : "";
         return {
             modulePath,
             symbolName: `${createName},${addName},removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
@@ -337,6 +364,36 @@ void add_to_scene(Scene& scene, AssetHandle asset) {
     }
 }
 
+/**
+ * A container's entities, which is what a scene iterating entities and
+ * calling addToScene per entity adds: the pinned container arm's own entity
+ * recursion and nothing else. Its animation groups, their per-frame
+ * tick, its camera and its clear colour are container-level wiring the
+ * pin performs for the container itself, and a scene iterating entities
+ * is usually avoiding exactly that — it drives those groups from its own
+ * AnimationManager instead.
+ *
+ * The pin seeds a glTF container with its root node and lets each loader
+ * feature append its own entities, so adding them one by one adds the
+ * loader's meshes and its lights — which is what this adds in one step.
+ * Generation refuses any other container.
+ *
+ * The animation seeker is not part of the pinned walk: it is this port's
+ * deterministic-pose entry point (BBLITE_ANIMATION_SEEK_SECONDS),
+ * standing for the goToFrame the browser harness calls on the same
+ * groups, so it follows the asset rather than the way it was added.
+ */
+void add_asset_entities(Scene& scene, AssetHandle asset) {
+    require_scene_engine(scene);
+    const AssetRecord& record =
+        asset_record(*scene.engine, asset.value);
+    for (const MeshHandle mesh : record.meshes) add_to_scene(scene, mesh);
+    for (const LightHandle light : record.lights) add_to_scene(scene, light);
+    if (record.animation_seek) {
+        scene.animation_seekers.push_back(record.animation_seek);
+    }
+}
+
 void on_before_render(
     Scene& scene,
     std::function<void(float)> callback) {
@@ -346,7 +403,7 @@ void on_before_render(
 }
 
 void register_scene(Scene& scene) {
-    require_scene_engine(scene);
+    require_scene_engine(scene);${managerSeek}
     for (const auto& builder : scene.deferred_builders) {
         builder();
     }

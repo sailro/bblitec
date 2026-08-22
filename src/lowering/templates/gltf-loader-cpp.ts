@@ -1,3 +1,4 @@
+import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
  *
@@ -228,22 +229,21 @@ export interface GltfMaterialDefaults {
 export function gltfLoaderCpp(
     provenance: string,
     lowered: GltfLoaderLoweredSegments,
-    nonTrianglePrimitives = false,
-    nodeVisibility = false,
-    animationPointer = false,
-    animatedWorldBounds = false,
-    animationPointerMaterials = false,
-    assetTransmission = false,
-    materialSpecular = false,
-    /**
-     * The `KHR_materials_variants` name a scene's `selectVariant` chose, or
-     * "" when unreached. One static selection is the reached shape, so the
-     * name is the only compile-time input: the variant order and the
-     * per-primitive mappings are read from the document, like every other
-     * asset fact.
-     */
-    selectedMaterialVariant = "",
+    options: GltfLoaderOptions = {},
 ): string {
+    const {
+        animationBlending = false,
+        managedGroups = false,
+        pinnedSkeletonPalette = false,
+        nonTrianglePrimitives = false,
+        nodeVisibility = false,
+        animationPointer = false,
+        animatedWorldBounds = false,
+        animationPointerMaterials = false,
+        assetTransmission = false,
+        materialSpecular = false,
+        selectedMaterialVariant = "",
+    } = options;
     // The scene selected a variant, so the loader resolves each mapped
     // primitive's material. `JSON.stringify` is the C++ string literal: the
     // name is asset-declared text, and every other interpolated literal in
@@ -628,7 +628,17 @@ struct AnimatedNode {
     Matrix world{};
     bool computed = false;
     bool computing = false;
-    std::vector<float> weights;
+    std::vector<float> weights;${animationBlending ? `
+    // The mixer accumulates into the TRS above, so the rest pose it
+    // resets to each tick is kept beside it — and the partial-weight
+    // rotation slerp blends against that rest rotation, which is what
+    // upstream's uploadTarget does when a node's weights sum below one.
+    Vec3 rest_translation{};
+    Vec4 rest_rotation{0.0f, 0.0f, 0.0f, 1.0f};
+    Vec3 rest_scale{1.0f, 1.0f, 1.0f};
+    float translation_weight = 0.0f;
+    float rotation_weight = 0.0f;
+    float scale_weight = 0.0f;` : ""}
 };
 
 struct SkinRuntime {
@@ -653,6 +663,9 @@ struct AnimationClip {
     float duration = 0.0f;
     bool playing = false;
     bool stopped = true;
+    // AnimationGroup.loopAnimation, which both advances read; the pinned
+    // group default is true.
+    bool loop = true;
 };
 
 struct AnimationRuntime {
@@ -785,6 +798,106 @@ Vec3 normalize(Vec3 value) {
 }
 
 ${lowered.animationInterpolation}
+
+/**
+ * One transform track sampled at a clip time: the keyframe pair around
+ * it and the interpolation evaluateSampler performs
+ * (src/animation/evaluate.ts), CUBICSPLINE included. Both the direct
+ * per-clip pass and the weighted mixer read a channel through these.
+ */
+std::size_t track_key_at(
+    const std::vector<float>& times,
+    float time) {
+    std::size_t right = 1;
+    while (
+        right < times.size() &&
+        times[right] < time) {
+        ++right;
+    }
+    if (right >= times.size()) {
+        right = times.size() - 1;
+    }
+    return right;
+}
+
+double track_amount_at(
+    const std::vector<float>& times,
+    std::size_t left,
+    std::size_t right,
+    float time) {
+    const double span =
+        static_cast<double>(times[right]) - times[left];
+    return span > 0.0
+        ? std::clamp(
+              (static_cast<double>(time) - times[left]) /
+                  span,
+              0.0,
+              1.0)
+        : 0.0;
+}
+
+Vec4 sample_rotation_track(
+    const RotationTrack& track,
+    float time) {
+    const std::size_t right = track_key_at(track.times, time);
+    const std::size_t left = right > 0 ? right - 1 : 0;
+    const double span =
+        static_cast<double>(track.times[right]) -
+        track.times[left];
+    const double amount =
+        track_amount_at(track.times, left, right, time);
+    return track.cubic
+        ? cubic_quaternion(
+              track.values[left],
+              track.out_tangents[left],
+              track.values[right],
+              track.in_tangents[right],
+              amount,
+              span)
+        : interpolate_quaternion(
+              track.values[left],
+              track.values[right],
+              amount);
+}
+
+Vec3 sample_vec3_track(
+    const TranslationTrack& track,
+    float time) {
+    const std::size_t right = track_key_at(track.times, time);
+    const std::size_t left = right > 0 ? right - 1 : 0;
+    const double span =
+        static_cast<double>(track.times[right]) -
+        track.times[left];
+    const double amount =
+        track_amount_at(track.times, left, right, time);
+    const Vec3 left_value = track.values[left];
+    const Vec3 right_value = track.values[right];
+    return track.cubic
+        ? cubic_vec3(
+              left_value,
+              track.out_tangents[left],
+              right_value,
+              track.in_tangents[right],
+              amount,
+              span)
+        : Vec3{
+              static_cast<float>(
+                  left_value.x +
+                  (static_cast<double>(right_value.x) -
+                   left_value.x) *
+                      amount),
+              static_cast<float>(
+                  left_value.y +
+                  (static_cast<double>(right_value.y) -
+                   left_value.y) *
+                      amount),
+              static_cast<float>(
+                  left_value.z +
+                  (static_cast<double>(right_value.z) -
+                   left_value.z) *
+                      amount),
+          };
+}
 
 Matrix identity_matrix() {
     Matrix result{};
@@ -2112,7 +2225,12 @@ ${animationPointer ? `    animation_runtime->light_nodes =
                             *optional(node, "mesh")))
                         .as_object(),
                     "weights"));
-        }
+        }${animationBlending ? `
+        // The node's authored TRS is the rest pose the weighted mixer
+        // resets to each tick, before any clip accumulates into it.
+        animated_node.rest_translation = animated_node.translation;
+        animated_node.rest_rotation = animated_node.rotation;
+        animated_node.rest_scale = animated_node.scale;` : ""}
     }
     for (const ts::JsonValue& skin_value : skin_json) {
         const JsonObject& skin = skin_value.as_object();
@@ -2837,22 +2955,37 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     optional(node, "skin")
                         ? unsigned_value(*optional(node, "skin"))
                         : std::numeric_limits<std::size_t>::max();
+                ${pinnedSkeletonPalette
+                    ? `// A composed skeleton variant reads the pin's own
+                // palette texture, sized per bone by
+                // bone_palette_layout, so it carries any joint count.
+                // The 64-matrix cap below belongs to the uniform-array
+                // transport the families without a composed variant use.
+                const bool skinned_on_gpu = true;`
+                    : `// The uniform-array palette the transcribed vertex
+                // stage reads holds 64 matrices, so a larger skin keeps
+                // the CPU deformation path.
+                const bool skinned_on_gpu =
+                    skin_index ==
+                        std::numeric_limits<std::size_t>::max() ||
+                    animation_runtime
+                            ->skins.at(skin_index)
+                            .joints.size() <= 64;`}
                 const bool gpu_deformation =
 #if BBLITE_GPU_MORPH_STORAGE
                     // Storage-buffer morphing lifts the two-slot
                     // vertex-attribute morph-target cap.
-                    (
+                    skinned_on_gpu;
 #else
                     geometry.morph_positions.size() <= 2 &&
-                    (
+                    skinned_on_gpu;
 #endif
-                        skin_index ==
-                            std::numeric_limits<std::size_t>::max() ||
-                        animation_runtime
-                                ->skins.at(skin_index)
-                                .joints.size() <= 64);
                 engine.meshes[mesh_record_index]
-                    .gpu_deformation = gpu_deformation;
+                    .gpu_deformation = gpu_deformation;${pinnedSkeletonPalette ? `
+                // A mesh with no skin publishes no palette at all, so the
+                // flag is about the transport rather than about this mesh.
+                engine.meshes[mesh_record_index]
+                    .pinned_bone_palette = true;` : ""}
                 animation_runtime
                     ->node_meshes[node_index]
                     .push_back(mesh_record_index);
@@ -3628,491 +3761,13 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 }
             }
         }
-        const auto apply_animation_time =
-            [animation_runtime, &engine](float time, bool seek) {
-            // The master clock is the scene's elapsed animation time and no
-            // longer wraps: each clip loops over its own duration, the way
-            // upstream's per-group controllers do, and a clip upstream never
-            // started holds at zero.
-            animation_runtime->time = std::max(time, 0.0f);
-            for (AnimationClip& clip : animation_runtime->clips) {
-                if (seek ? clip.stopped : !clip.playing) {
-                    continue;
-                }
-                clip.time = clip.duration > 0.0f
-                    ? std::fmod(
-                          animation_runtime->time,
-                          clip.duration)
-                    : 0.0f;
-                if (seek) {
-                    clip.playing = false;
-                }
-            }${animationPointer ? `
-            for (const VisibilityTrack& track :
-                 animation_runtime->visibility_tracks) {
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (track.times.empty()) continue;
-                // STEP holds each output until the next keyframe, so the
-                // key in effect is the last one at or before the current
-                // time and the first key holds before that.
-                std::size_t key = 0;
-                while (
-                    key + 1 < track.times.size() &&
-                    track.times[key + 1] <=
-                        clip.time) {
-                    ++key;
-                }
-                const bool visible = track.values[key];
-                for (const std::size_t node : track.subtree) {
-                    if (
-                        node >=
-                        animation_runtime->node_meshes.size()) {
-                        continue;
-                    }
-                    for (
-                        const std::uint32_t mesh :
-                        animation_runtime->node_meshes[node]) {
-                        if (mesh < engine.meshes.size()) {
-                            engine.meshes[mesh].visible = visible;
-                        }
-                    }
-                }
-            }` : ""}
-${animationPointerMaterials ? `            for (const MaterialTrack& track :
-                 animation_runtime->material_tracks) {
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.material >= engine.materials.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] < clip.time) {
-                    ++right;
-                }
-                if (right >= track.times.size()) {
-                    right = track.times.size() - 1;
-                }
-                const std::size_t left = right > 0 ? right - 1 : 0;
-                const double span =
-                    static_cast<double>(track.times[right]) -
-                    track.times[left];
-                const double amount = span > 0.0
-                    ? std::clamp(
-                          (static_cast<double>(
-                               clip.time) -
-                           track.times[left]) /
-                              span,
-                          0.0,
-                          1.0)
-                    : 0.0;
-                const Vec4& a = track.values[left];
-                const Vec4& b = track.values[right];
-                const auto mix = [&](float from, float to) {
-                    return static_cast<float>(
-                        from + (to - from) * amount);
-                };
-                MaterialRecord& material =
-                    engine.materials[track.material];
-                switch (track.kind) {
-                    case MaterialTrackKind::base_color_factor:
-                        material.base_color_factor = Color4{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                            mix(a.w, b.w),
-                        };
-                        break;
-                    case MaterialTrackKind::emissive_factor:
-                        material.emissive_base_factor = Color3{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                        };
-                        break;
-                    case MaterialTrackKind::emissive_strength:
-                        material.emissive_strength = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::roughness_from_metallic:
-                        material.roughness_factor = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::normal_texture_scale:
-                        material.normal_texture_scale = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::occlusion_strength:
-                        material.occlusion_strength = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::transmission_factor:
-                        material.transmission_factor = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::index_of_refraction:
-                        // The render plan recomposes the dielectric ratio from
-                        // this every frame, so writing the index is the whole
-                        // of it — the pin instead reaches its reflectance ext,
-                        // which arrives at the same F0.
-                        material.index_of_refraction = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::volume_thickness:
-                        material.thickness = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::volume_attenuation_distance:
-                        material.attenuation_distance = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::volume_attenuation_color:
-                        material.attenuation_color = Color3{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                        };
-                        break;
-                    case MaterialTrackKind::iridescence_factor:
-                        material.iridescence_intensity = mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::iridescence_index_of_refraction:
-                        material.iridescence_index_of_refraction =
-                            mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::iridescence_maximum_thickness:
-                        material.iridescence_maximum_thickness =
-                            mix(a.x, b.x);
-                        break;
-                    case MaterialTrackKind::texture_transform: {
-                        TextureTransform& slot =
-                            material_transform(material, track.slot);
-                        if (
-                            track.component ==
-                            TextureTransformComponent::rotation) {
-                            slot.rotation = mix(a.x, b.x);
-                        } else if (
-                            track.component ==
-                            TextureTransformComponent::offset) {
-                            slot.u_offset = mix(a.x, b.x);
-                            slot.v_offset = mix(a.y, b.y);
-                        } else {
-                            slot.u_scale = mix(a.x, b.x);
-                            slot.v_scale = mix(a.y, b.y);
-                        }
-                        break;
-                    }
-                }
-                // The load-time fold, redone from whichever half moved.
-                material.emissive_factor = Color3{
-                    material.emissive_base_factor.r *
-                        material.emissive_strength,
-                    material.emissive_base_factor.g *
-                        material.emissive_strength,
-                    material.emissive_base_factor.b *
-                        material.emissive_strength,
-                };
-            }
-` : ""}${animationPointer ? `            for (const LightTrack& track :
-                 animation_runtime->light_tracks) {
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.light.value >= engine.lights.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] < clip.time) {
-                    ++right;
-                }
-                const std::size_t left =
-                    right < track.times.size() ? right - 1 : right - 1;
-                const std::size_t clamped_right =
-                    std::min(right, track.times.size() - 1);
-                const float span =
-                    track.times[clamped_right] - track.times[left];
-                const float amount = span > 0.0f
-                    ? std::clamp(
-                          (clip.time - track.times[left]) /
-                              span,
-                          0.0f,
-                          1.0f)
-                    : 0.0f;
-                const Vec4& a = track.values[left];
-                const Vec4& b = track.values[clamped_right];
-                const auto mix =
-                    [amount](const float from, const float to) {
-                    return from + (to - from) * amount;
-                };
-                LightRecord& light = engine.lights[track.light.value];
-                switch (track.kind) {
-                    case LightTrackKind::color:
-                        // The pinned writer sets diffuse and specular alike.
-                        light.diffuse_color = Color3{
-                            mix(a.x, b.x),
-                            mix(a.y, b.y),
-                            mix(a.z, b.z),
-                        };
-                        light.specular_color = light.diffuse_color;
-                        break;
-                    case LightTrackKind::intensity:
-                        light.intensity = mix(a.x, b.x);
-                        break;
-                    case LightTrackKind::range:
-                        light.range = mix(a.x, b.x);
-                        break;
-                    case LightTrackKind::outer_cone_angle:
-                        // angle = value * 2, and the light stores
-                        // cos(angle / 2), so the cosine is of the value.
-                        light.cos_half_angle =
-                            std::cos(mix(a.x, b.x));
-                        break;
-                }
-            }
-` : ""}            for (const RotationTrack& track :
-                 animation_runtime->rotation_tracks) {
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >=
-                        animation_runtime->node_meshes.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] <
-                        clip.time) {
-                    ++right;
-                }
-                if (right >= track.times.size()) {
-                    right = track.times.size() - 1;
-                }
-                const std::size_t left =
-                    right > 0 ? right - 1 : 0;
-                const double span =
-                    static_cast<double>(track.times[right]) -
-                    track.times[left];
-                const double amount =
-                    span > 0.0
-                        ? std::clamp(
-                              (static_cast<double>(
-                                   clip.time) -
-                               track.times[left]) /
-                                  span,
-                              0.0,
-                              1.0)
-                        : 0.0;
-                animation_runtime->nodes[track.node].rotation =
-                    track.cubic
-                        ? cubic_quaternion(
-                              track.values[left],
-                              track.out_tangents[left],
-                              track.values[right],
-                              track.in_tangents[right],
-                              amount,
-                              span)
-                        : interpolate_quaternion(
-                              track.values[left],
-                              track.values[right],
-                              amount);
-            }
-            for (const TranslationTrack& track :
-                 animation_runtime->translation_tracks) {
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >= animation_runtime->nodes.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] <
-                        clip.time) {
-                    ++right;
-                }
-                if (right >= track.times.size()) {
-                    right = track.times.size() - 1;
-                }
-                const std::size_t left =
-                    right > 0 ? right - 1 : 0;
-                const double span =
-                    static_cast<double>(track.times[right]) -
-                    track.times[left];
-                const double amount =
-                    span > 0.0
-                        ? std::clamp(
-                              (static_cast<double>(
-                                   clip.time) -
-                               track.times[left]) /
-                                  span,
-                              0.0,
-                              1.0)
-                        : 0.0;
-                const Vec3 left_value = track.values[left];
-                const Vec3 right_value = track.values[right];
-                animation_runtime->nodes[track.node].translation =
-                    track.cubic
-                        ? cubic_vec3(
-                              left_value,
-                              track.out_tangents[left],
-                              right_value,
-                              track.in_tangents[right],
-                              amount,
-                              span)
-                        : Vec3{
-                              static_cast<float>(
-                                  left_value.x +
-                                  (static_cast<double>(
-                                       right_value.x) -
-                                   left_value.x) *
-                                      amount),
-                              static_cast<float>(
-                                  left_value.y +
-                                  (static_cast<double>(
-                                       right_value.y) -
-                                   left_value.y) *
-                                      amount),
-                              static_cast<float>(
-                                  left_value.z +
-                                  (static_cast<double>(
-                                       right_value.z) -
-                                   left_value.z) *
-                                      amount),
-                          };
-            }
-            for (const TranslationTrack& track :
-                 animation_runtime->scale_tracks) {
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >= animation_runtime->nodes.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] <
-                        clip.time) {
-                    ++right;
-                }
-                if (right >= track.times.size()) {
-                    right = track.times.size() - 1;
-                }
-                const std::size_t left =
-                    right > 0 ? right - 1 : 0;
-                const double span =
-                    static_cast<double>(track.times[right]) -
-                    track.times[left];
-                const double amount =
-                    span > 0.0
-                        ? std::clamp(
-                              (static_cast<double>(
-                                   clip.time) -
-                               track.times[left]) /
-                                  span,
-                              0.0,
-                              1.0)
-                        : 0.0;
-                const Vec3 left_value = track.values[left];
-                const Vec3 right_value = track.values[right];
-                animation_runtime->nodes[track.node].scale =
-                    track.cubic
-                        ? cubic_vec3(
-                              left_value,
-                              track.out_tangents[left],
-                              right_value,
-                              track.in_tangents[right],
-                              amount,
-                              span)
-                        : Vec3{
-                              static_cast<float>(
-                                  left_value.x +
-                                  (static_cast<double>(
-                                       right_value.x) -
-                                   left_value.x) *
-                                      amount),
-                              static_cast<float>(
-                                  left_value.y +
-                                  (static_cast<double>(
-                                       right_value.y) -
-                                   left_value.y) *
-                                      amount),
-                              static_cast<float>(
-                                  left_value.z +
-                                  (static_cast<double>(
-                                       right_value.z) -
-                                   left_value.z) *
-                                      amount),
-                          };
-            }
-            for (
-                auto track_iterator =
-                    animation_runtime
-                        ->weight_tracks.rbegin();
-                track_iterator !=
-                    animation_runtime
-                        ->weight_tracks.rend();
-                ++track_iterator) {
-                const WeightTrack& track =
-                    *track_iterator;
-                const AnimationClip& clip =
-                    animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
-                if (
-                    track.times.empty() ||
-                    track.node >= animation_runtime->nodes.size()) {
-                    continue;
-                }
-                std::size_t right = 1;
-                while (
-                    right < track.times.size() &&
-                    track.times[right] <
-                        clip.time) {
-                    ++right;
-                }
-                if (right >= track.times.size()) {
-                    right = track.times.size() - 1;
-                }
-                const std::size_t left =
-                    right > 0 ? right - 1 : 0;
-                const double span =
-                    static_cast<double>(track.times[right]) -
-                    track.times[left];
-                const double amount =
-                    span > 0.0
-                        ? std::clamp(
-                              (static_cast<double>(
-                                   clip.time) -
-                               track.times[left]) /
-                                  span,
-                              0.0,
-                              1.0)
-                        : 0.0;
-                AnimatedNode& node =
-                    animation_runtime->nodes[track.node];
-                node.weights.resize(track.target_count);
-                for (std::size_t target = 0; target < track.target_count; ++target) {
-                    const float left_value =
-                        track.values[left * track.target_count + target];
-                    const float right_value =
-                        track.values[right * track.target_count + target];
-                    node.weights[target] = static_cast<float>(
-                        left_value +
-                        (static_cast<double>(right_value) -
-                         left_value) *
-                            amount);
-                }
-            }
+        // The pose half of a tick: node worlds, skin palettes, morph
+        // weights and the CPU deformation fallbacks, from whatever the
+        // node TRS currently holds. Split out because the weighted mixer
+        // (src/animation/weighted-gltf-mixer.ts) accumulates a blended
+        // TRS and then needs exactly this pass.
+        const auto apply_animation_pose =
+            [animation_runtime, &engine]() {
             for (AnimatedNode& node : animation_runtime->nodes) {
                 node.computed = false;
                 node.computing = false;
@@ -4397,6 +4052,477 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 ++mesh_record.transform_version;
             }
         };
+${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the manager's weighted
+        // pass over the clips attached to it. Returns whether it drove
+        // this tick — false when nothing qualifies, which is the pin's
+        // own category-handler contract and hands the tick back to the
+        // ordinary per-clip advance.
+        //
+        // Only the accumulation differs from the direct path: each
+        // contributing clip's channels are summed into the node TRS by
+        // weight (rotations by incremental slerp), and the pose pass
+        // then composes exactly as it does for a single clip.
+        const auto apply_blended_animation =
+            [animation_runtime, apply_animation_pose](
+                const std::vector<BlendedClip>& blended,
+                float delta_ms) -> bool {
+            bool qualifies = false;
+            for (const BlendedClip& entry : blended) {
+                if (entry.clip >= animation_runtime->clips.size()) {
+                    continue;
+                }
+                if (animation_runtime->clips[entry.clip].stopped) {
+                    continue;
+                }
+                // A clip at full weight leaves the pose it would have
+                // written alone, so it does not make the mixer the
+                // handler for this tick.
+                if (entry.weight != 1.0f) qualifies = true;
+            }
+            if (!qualifies) return false;
+            for (AnimatedNode& node : animation_runtime->nodes) {
+                node.translation = node.rest_translation;
+                node.rotation = node.rest_rotation;
+                node.scale = node.rest_scale;
+                node.translation_weight = 0.0f;
+                node.rotation_weight = 0.0f;
+                node.scale_weight = 0.0f;
+            }
+            for (const BlendedClip& entry : blended) {
+                if (entry.clip >= animation_runtime->clips.size()) {
+                    continue;
+                }
+                AnimationClip& clip =
+                    animation_runtime->clips[entry.clip];
+                if (clip.stopped) continue;
+                if (clip.playing) {
+                    clip.time += delta_ms * 0.001f;
+                }
+                if (clip.duration <= 0.0f) {
+                    clip.time = 0.0f;
+                } else if (clip.loop && clip.playing) {
+                    clip.time = std::fmod(clip.time, clip.duration);
+                    if (clip.time < 0.0f) clip.time += clip.duration;
+                } else {
+                    clip.time = std::min(
+                        std::max(clip.time, 0.0f),
+                        clip.duration);
+                }
+                const float weight = entry.weight;
+                if (weight == 0.0f) continue;
+                for (const RotationTrack& track :
+                     animation_runtime->rotation_tracks) {
+                    if (
+                        track.clip != entry.clip ||
+                        track.times.empty() ||
+                        track.node >=
+                            animation_runtime->nodes.size()) {
+                        continue;
+                    }
+                    const Vec4 sample =
+                        sample_rotation_track(track, clip.time);
+                    AnimatedNode& node =
+                        animation_runtime->nodes[track.node];
+                    if (node.rotation_weight == 0.0f) {
+                        node.rotation = sample;
+                        node.rotation_weight = weight;
+                        continue;
+                    }
+                    node.rotation = interpolate_quaternion(
+                        node.rotation,
+                        sample,
+                        static_cast<double>(weight) /
+                            (static_cast<double>(
+                                 node.rotation_weight) +
+                             weight));
+                    node.rotation_weight += weight;
+                }
+                // Translation and scale accumulate the same way, so the
+                // channel is a pair of members rather than a second loop.
+                const auto accumulate_vec3 =
+                    [&](const std::vector<TranslationTrack>& tracks,
+                        Vec3 AnimatedNode::*value,
+                        float AnimatedNode::*accumulated) {
+                    for (const TranslationTrack& track : tracks) {
+                        if (
+                            track.clip != entry.clip ||
+                            track.times.empty() ||
+                            track.node >=
+                                animation_runtime->nodes.size()) {
+                            continue;
+                        }
+                        const Vec3 sample =
+                            sample_vec3_track(track, clip.time);
+                        AnimatedNode& node =
+                            animation_runtime->nodes[track.node];
+                        if (node.*accumulated == 0.0f) {
+                            node.*value = Vec3{0.0f, 0.0f, 0.0f};
+                        }
+                        node.*value = Vec3{
+                            (node.*value).x + sample.x * weight,
+                            (node.*value).y + sample.y * weight,
+                            (node.*value).z + sample.z * weight,
+                        };
+                        node.*accumulated += weight;
+                    }
+                };
+                accumulate_vec3(
+                    animation_runtime->translation_tracks,
+                    &AnimatedNode::translation,
+                    &AnimatedNode::translation_weight);
+                accumulate_vec3(
+                    animation_runtime->scale_tracks,
+                    &AnimatedNode::scale,
+                    &AnimatedNode::scale_weight);
+            }
+            // A node the clips animate below full weight keeps the
+            // remainder of its rest rotation; at or above it, the
+            // accumulated slerps are renormalized.
+            for (AnimatedNode& node : animation_runtime->nodes) {
+                if (
+                    node.rotation_weight > 0.0f &&
+                    node.rotation_weight < 1.0f) {
+                    node.rotation = interpolate_quaternion(
+                        node.rest_rotation,
+                        node.rotation,
+                        node.rotation_weight);
+                } else if (node.rotation_weight > 0.0f) {
+                    node.rotation =
+                        normalize_quaternion(node.rotation);
+                }
+            }
+            apply_animation_pose();
+            return true;
+        };
+` : ""}        // Everything a tick evaluates from the clip times it was just
+        // given: the pointer tracks, the transform channels, the morph
+        // weights, and the pose pass. Split out so a manager can advance
+        // only the clips it owns and then run the same evaluation.
+        const auto apply_animation_state =
+            [animation_runtime, &engine, apply_animation_pose]() {${animationPointer ? `
+            for (const VisibilityTrack& track :
+                 animation_runtime->visibility_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (track.times.empty()) continue;
+                // STEP holds each output until the next keyframe, so the
+                // key in effect is the last one at or before the current
+                // time and the first key holds before that.
+                std::size_t key = 0;
+                while (
+                    key + 1 < track.times.size() &&
+                    track.times[key + 1] <=
+                        clip.time) {
+                    ++key;
+                }
+                const bool visible = track.values[key];
+                for (const std::size_t node : track.subtree) {
+                    if (
+                        node >=
+                        animation_runtime->node_meshes.size()) {
+                        continue;
+                    }
+                    for (
+                        const std::uint32_t mesh :
+                        animation_runtime->node_meshes[node]) {
+                        if (mesh < engine.meshes.size()) {
+                            engine.meshes[mesh].visible = visible;
+                        }
+                    }
+                }
+            }` : ""}
+${animationPointerMaterials ? `            for (const MaterialTrack& track :
+                 animation_runtime->material_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (
+                    track.times.empty() ||
+                    track.material >= engine.materials.size()) {
+                    continue;
+                }
+                const std::size_t right =
+                    track_key_at(track.times, clip.time);
+                const std::size_t left = right > 0 ? right - 1 : 0;
+                const double amount = track_amount_at(
+                    track.times,
+                    left,
+                    right,
+                    clip.time);
+                const Vec4& a = track.values[left];
+                const Vec4& b = track.values[right];
+                const auto mix = [&](float from, float to) {
+                    return static_cast<float>(
+                        from + (to - from) * amount);
+                };
+                MaterialRecord& material =
+                    engine.materials[track.material];
+                switch (track.kind) {
+                    case MaterialTrackKind::base_color_factor:
+                        material.base_color_factor = Color4{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                            mix(a.w, b.w),
+                        };
+                        break;
+                    case MaterialTrackKind::emissive_factor:
+                        material.emissive_base_factor = Color3{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                        };
+                        break;
+                    case MaterialTrackKind::emissive_strength:
+                        material.emissive_strength = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::roughness_from_metallic:
+                        material.roughness_factor = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::normal_texture_scale:
+                        material.normal_texture_scale = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::occlusion_strength:
+                        material.occlusion_strength = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::transmission_factor:
+                        material.transmission_factor = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::index_of_refraction:
+                        // The render plan recomposes the dielectric ratio from
+                        // this every frame, so writing the index is the whole
+                        // of it — the pin instead reaches its reflectance ext,
+                        // which arrives at the same F0.
+                        material.index_of_refraction = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::volume_thickness:
+                        material.thickness = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::volume_attenuation_distance:
+                        material.attenuation_distance = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::volume_attenuation_color:
+                        material.attenuation_color = Color3{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                        };
+                        break;
+                    case MaterialTrackKind::iridescence_factor:
+                        material.iridescence_intensity = mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::iridescence_index_of_refraction:
+                        material.iridescence_index_of_refraction =
+                            mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::iridescence_maximum_thickness:
+                        material.iridescence_maximum_thickness =
+                            mix(a.x, b.x);
+                        break;
+                    case MaterialTrackKind::texture_transform: {
+                        TextureTransform& slot =
+                            material_transform(material, track.slot);
+                        if (
+                            track.component ==
+                            TextureTransformComponent::rotation) {
+                            slot.rotation = mix(a.x, b.x);
+                        } else if (
+                            track.component ==
+                            TextureTransformComponent::offset) {
+                            slot.u_offset = mix(a.x, b.x);
+                            slot.v_offset = mix(a.y, b.y);
+                        } else {
+                            slot.u_scale = mix(a.x, b.x);
+                            slot.v_scale = mix(a.y, b.y);
+                        }
+                        break;
+                    }
+                }
+                // The load-time fold, redone from whichever half moved.
+                material.emissive_factor = Color3{
+                    material.emissive_base_factor.r *
+                        material.emissive_strength,
+                    material.emissive_base_factor.g *
+                        material.emissive_strength,
+                    material.emissive_base_factor.b *
+                        material.emissive_strength,
+                };
+            }
+` : ""}${animationPointer ? `            for (const LightTrack& track :
+                 animation_runtime->light_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (
+                    track.times.empty() ||
+                    track.light.value >= engine.lights.size()) {
+                    continue;
+                }
+                std::size_t right = 1;
+                while (
+                    right < track.times.size() &&
+                    track.times[right] < clip.time) {
+                    ++right;
+                }
+                const std::size_t left =
+                    right < track.times.size() ? right - 1 : right - 1;
+                const std::size_t clamped_right =
+                    std::min(right, track.times.size() - 1);
+                const float span =
+                    track.times[clamped_right] - track.times[left];
+                const float amount = span > 0.0f
+                    ? std::clamp(
+                          (clip.time - track.times[left]) /
+                              span,
+                          0.0f,
+                          1.0f)
+                    : 0.0f;
+                const Vec4& a = track.values[left];
+                const Vec4& b = track.values[clamped_right];
+                const auto mix =
+                    [amount](const float from, const float to) {
+                    return from + (to - from) * amount;
+                };
+                LightRecord& light = engine.lights[track.light.value];
+                switch (track.kind) {
+                    case LightTrackKind::color:
+                        // The pinned writer sets diffuse and specular alike.
+                        light.diffuse_color = Color3{
+                            mix(a.x, b.x),
+                            mix(a.y, b.y),
+                            mix(a.z, b.z),
+                        };
+                        light.specular_color = light.diffuse_color;
+                        break;
+                    case LightTrackKind::intensity:
+                        light.intensity = mix(a.x, b.x);
+                        break;
+                    case LightTrackKind::range:
+                        light.range = mix(a.x, b.x);
+                        break;
+                    case LightTrackKind::outer_cone_angle:
+                        // angle = value * 2, and the light stores
+                        // cos(angle / 2), so the cosine is of the value.
+                        light.cos_half_angle =
+                            std::cos(mix(a.x, b.x));
+                        break;
+                }
+            }
+` : ""}            for (const RotationTrack& track :
+                 animation_runtime->rotation_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (
+                    track.times.empty() ||
+                    track.node >=
+                        animation_runtime->node_meshes.size()) {
+                    continue;
+                }
+                animation_runtime->nodes[track.node].rotation =
+                    sample_rotation_track(track, clip.time);
+            }
+            for (const TranslationTrack& track :
+                 animation_runtime->translation_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (
+                    track.times.empty() ||
+                    track.node >=
+                        animation_runtime->nodes.size()) {
+                    continue;
+                }
+                animation_runtime->nodes[track.node].translation =
+                    sample_vec3_track(track, clip.time);
+            }
+            for (const TranslationTrack& track :
+                 animation_runtime->scale_tracks) {
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (
+                    track.times.empty() ||
+                    track.node >=
+                        animation_runtime->nodes.size()) {
+                    continue;
+                }
+                animation_runtime->nodes[track.node].scale =
+                    sample_vec3_track(track, clip.time);
+            }
+            for (
+                auto track_iterator =
+                    animation_runtime
+                        ->weight_tracks.rbegin();
+                track_iterator !=
+                    animation_runtime
+                        ->weight_tracks.rend();
+                ++track_iterator) {
+                const WeightTrack& track =
+                    *track_iterator;
+                const AnimationClip& clip =
+                    animation_runtime->clips[track.clip];
+                if (clip.stopped) continue;
+                if (
+                    track.times.empty() ||
+                    track.node >= animation_runtime->nodes.size()) {
+                    continue;
+                }
+                const std::size_t right =
+                    track_key_at(track.times, clip.time);
+                const std::size_t left =
+                    right > 0 ? right - 1 : 0;
+                const double amount = track_amount_at(
+                    track.times,
+                    left,
+                    right,
+                    clip.time);
+                AnimatedNode& node =
+                    animation_runtime->nodes[track.node];
+                node.weights.resize(track.target_count);
+                for (std::size_t target = 0; target < track.target_count; ++target) {
+                    const float left_value =
+                        track.values[left * track.target_count + target];
+                    const float right_value =
+                        track.values[right * track.target_count + target];
+                    node.weights[target] = static_cast<float>(
+                        left_value +
+                        (static_cast<double>(right_value) -
+                         left_value) *
+                            amount);
+                }
+            }
+            apply_animation_pose();
+        };
+        const auto apply_animation_time =
+            [animation_runtime, apply_animation_state](
+                float time,
+                bool seek) {
+            // The master clock is the scene's elapsed animation time and no
+            // longer wraps: each clip loops over its own duration, the way
+            // upstream's per-group controllers do, and a clip upstream never
+            // started holds at zero.
+            animation_runtime->time = std::max(time, 0.0f);
+            for (AnimationClip& clip : animation_runtime->clips) {
+                if (seek ? clip.stopped : !clip.playing) {
+                    continue;
+                }
+                clip.time = clip.duration <= 0.0f
+                    ? 0.0f
+                    : clip.loop
+                      ? std::fmod(
+                            animation_runtime->time,
+                            clip.duration)
+                      : std::min(
+                            animation_runtime->time,
+                            clip.duration);
+                if (seek) {
+                    clip.playing = false;
+                }
+            }
+            apply_animation_state();
+        };
         apply_animation_time(0.0f, false);
         // The clips scene code addresses, in the document's animation order,
         // plus the writers the group operations need — one per field the
@@ -4441,6 +4567,39 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     delta_ms * 0.001f,
                 false);
         };
+${managedGroups ? `        // The clips a manager owns, advanced each by its own time the way
+        // upstream's per-group controller does — the asset's other clips
+        // keep whatever pose they last wrote, exactly as a group nothing
+        // ticks does upstream.
+        asset.animation_tick_clips =
+            [animation_runtime, apply_animation_state](
+                const std::vector<BlendedClip>& clips,
+                float delta_ms) {
+            for (const BlendedClip& entry : clips) {
+                if (entry.clip >= animation_runtime->clips.size()) {
+                    continue;
+                }
+                AnimationClip& clip =
+                    animation_runtime->clips[entry.clip];
+                if (clip.stopped || !clip.playing) continue;
+                clip.time += delta_ms * 0.001f;
+                if (clip.duration <= 0.0f) {
+                    clip.time = 0.0f;
+                } else if (clip.loop) {
+                    clip.time = std::fmod(clip.time, clip.duration);
+                    if (clip.time < 0.0f) clip.time += clip.duration;
+                } else {
+                    clip.time = std::min(clip.time, clip.duration);
+                }
+            }
+            apply_animation_state();
+        };
+` : ""}        asset.set_clip_loop =
+            [animation_runtime](std::size_t clip, bool loop) {
+            if (clip >= animation_runtime->clips.size()) return;
+            animation_runtime->clips[clip].loop = loop;
+        };${animationBlending ? `
+        asset.animation_blend = apply_blended_animation;` : ""}
     }
     if (asset.meshes.empty()) throw std::runtime_error("glTF contains no renderable meshes.");
     engine.assets.push_back(std::move(asset));

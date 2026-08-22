@@ -120,6 +120,47 @@ test("generates property animation evaluation and seeking", () => {
     );
 });
 
+test("emits the weighted property mixer only when blending is reached", () => {
+    const plain = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation();
+    assert.doesNotMatch(
+        plain.source,
+        /update_weighted_property_animations/,
+    );
+    assert.doesNotMatch(plain.source, /set_animation_weight/);
+
+    const blended = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation({ blending: true });
+    // The mixer's shape: buckets keyed per (mesh, path), the pinned
+    // weighted sum, the hemisphere sign, the final normalize, and the
+    // category-handler early-out that hands an uncontested tick back to
+    // the ordinary per-group path.
+    assert.match(blended.source, /PropertyAnimationBucket& track_bucket/);
+    assert.match(blended.source, /if \(!contested\) return false;/);
+    // The two opt-ins share one handler slot, the way the pin's own
+    // setAnimationTaskCategoryHandler does.
+    assert.match(
+        blended.source,
+        /AnimationCategoryHandler::property_mixer;/,
+    );
+    assert.match(
+        blended.source,
+        /sign = dot < 0\.0 \? -1\.0 : 1\.0;/,
+    );
+    assert.match(
+        blended.source,
+        /normalize_blended_quaternion\(bucket\.values\);/,
+    );
+    // The bucket width comes from the same path table the clip lowerer
+    // validates key values against.
+    assert.match(
+        blended.source,
+        /case PropertyAnimationPath::rotation_quaternion:\s*\r?\n\s*return 4;/,
+    );
+});
+
 test("flows the pinned animation constants into the emission", () => {
     const lowered = new AnimationLowerer(
         new LoweringContext(),
@@ -428,18 +469,21 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /apply_animation_time\(0\.0f, false\)/,
     );
+    // Every transform and morph channel reads its keyframe pair through
+    // the one sampler pair, which carries the pinned clamp.
     assert.match(
         adapter.source,
-        /for \(const RotationTrack& track[\s\S]*?std::clamp\(/,
+        /for \(const RotationTrack& track[\s\S]*?sample_rotation_track\(/,
     );
     assert.match(
         adapter.source,
-        /for \(const TranslationTrack& track[\s\S]*?std::clamp\(/,
+        /for \(const TranslationTrack& track[\s\S]*?sample_vec3_track\(/,
     );
     assert.match(
         adapter.source,
-        /weight_tracks\.rbegin\(\)[\s\S]*?const WeightTrack& track[\s\S]*?std::clamp\(/,
+        /weight_tracks\.rbegin\(\)[\s\S]*?const WeightTrack& track[\s\S]*?track_amount_at\(/,
     );
+    assert.match(adapter.source, /double track_amount_at\([\s\S]*?std::clamp\(/);
     assert.match(adapter.source, /if \(dot > 0\.9995\)/);
     assert.match(adapter.source, /const double theta = std::acos\(dot\)/);
     assert.match(
@@ -447,6 +491,8 @@ test("generates GLB framing validation from upstream constants", () => {
         /std::sin\(\(1\.0 - amount\) \* theta\)/,
     );
     assert.match(adapter.source, /geometry\.morph_positions\.size\(\) <= 2/);
+    // The transcribed palette's cap, which a composed skeleton variant
+    // lifts by carrying the pin's own per-bone texture instead.
     assert.match(adapter.source, /\.joints\.size\(\) <= 64/);
     assert.match(adapter.source, /mesh_record\.gpu_deformation/);
     assert.doesNotMatch(adapter.source, /pal::load_glb/);

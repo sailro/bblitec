@@ -9,6 +9,31 @@ import {
     gltfLoaderCpp,
 } from "./templates/gltf-loader-cpp.js";
 
+/**
+ * What a scene's assets and reached features decide about the emitted
+ * loader. Named rather than positional: the list grows with every asset
+ * axis, and a caller that mis-counts booleans emits a loader for another
+ * scene's shape.
+ */
+export interface GltfLoaderOptions {
+    /** The scene reached `enableAnimationBlending` (the weighted mixer). */
+    animationBlending?: boolean;
+    /** The scene attaches this file's clips to its own manager. */
+    managedGroups?: boolean;
+    /** A composed skeleton variant carries the palette, lifting the
+     *  transcribed 64-matrix cap. */
+    pinnedSkeletonPalette?: boolean;
+    nonTrianglePrimitives?: boolean;
+    nodeVisibility?: boolean;
+    animationPointer?: boolean;
+    animatedWorldBounds?: boolean;
+    animationPointerMaterials?: boolean;
+    assetTransmission?: boolean;
+    materialSpecular?: boolean;
+    /** The `KHR_materials_variants` name a scene selected, or "". */
+    selectedMaterialVariant?: string;
+}
+
 export class GltfLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
@@ -120,16 +145,149 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         };
     }
 
+    /**
+     * The weighted glTF skeleton mixer's own rules, asserted against the
+     * pinned body the emitted C++ mirrors
+     * (src/animation/weighted-gltf-mixer.ts). The emission lives in the
+     * loader template because that is where the node array, the clips and
+     * the skins are; what is pinned here is every decision it makes.
+     */
+    private assertWeightedGltfMixer(): void {
+        const mixerModule =
+            "src/animation/weighted-gltf-mixer.ts";
+        const { declaration: update } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "updateWeightedGltfAnimations",
+            );
+        // Which groups make the mixer the handler for this tick, and the
+        // early-out that hands an unqualified tick back.
+        this.expectOneShape(
+            update,
+            "group._stopped || !mixer || (group.weight === 1 && !group._additive)",
+            "weighted glTF qualifying skip",
+        );
+        this.expectOneShape(
+            update,
+            "keys.size === 0",
+            "weighted glTF early-out",
+        );
+        const { declaration: accumulate } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "accumulateGroup",
+            );
+        // Translation and scale are weighted sums zeroed on the first
+        // write to a node; rotation is an incremental slerp whose amount
+        // is what makes the result independent of clip order.
+        this.expectOneShape(
+            accumulate,
+            "target.tWeight[nodeIdx] === 0",
+            "weighted glTF translation reset",
+        );
+        this.expectOneShape(
+            accumulate,
+            "target.sWeight[nodeIdx] === 0",
+            "weighted glTF scale reset",
+        );
+        this.expectOneShape(
+            accumulate,
+            "target.trs[base + T_OFF] = target.trs[base + T_OFF] + scratch.sample[0] * weight",
+            "weighted glTF translation sum",
+        );
+        this.expectOneShape(
+            accumulate,
+            "target.tWeight[nodeIdx] = target.tWeight[nodeIdx] + weight",
+            "weighted glTF translation weight",
+        );
+        this.expectOneShape(
+            accumulate,
+            "weight / (accumulatedWeight + weight)",
+            "weighted glTF rotation slerp amount",
+        );
+        this.expectOneShape(
+            accumulate,
+            "target.rWeight[nodeIdx] = accumulatedWeight + weight",
+            "weighted glTF rotation weight",
+        );
+        // The mixer's own clip advance, which forks from the manager's
+        // property one: it wraps only while the group plays.
+        const { declaration: advance } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "advanceGroupTime",
+            );
+        this.expectOneShape(
+            advance,
+            "group.currentTime += (deltaMs / 1000) * group.speedRatio",
+            "weighted glTF advance",
+        );
+        this.expectOneShape(
+            advance,
+            "group.loopAnimation && isPlaying",
+            "weighted glTF loop guard",
+        );
+        this.expectOneShape(
+            advance,
+            "group.currentTime %= clip.duration",
+            "weighted glTF loop wrap",
+        );
+        this.expectOneShape(
+            advance,
+            "group.currentTime = Math.min(Math.max(group.currentTime, 0), clip.duration)",
+            "weighted glTF play-range clamp",
+        );
+        // A node the clips animate below full weight keeps the remainder
+        // of its rest rotation.
+        const { declaration: upload } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "uploadTarget",
+            );
+        // The fork itself: below one blends against the rest rotation,
+        // at or above it renormalizes. The `else if` arm's own
+        // `rotationWeight > 0` is the left half of this test, so pinning
+        // the pair pins both branches.
+        this.expectOneShape(
+            upload,
+            "rotationWeight > 0 && rotationWeight < 1",
+            "weighted glTF partial-weight blend",
+        );
+    }
+
+    /** Exactly one expression under `declaration` has this shape. */
+    private expectOneShape(
+        declaration: ts.Node,
+        expected: string,
+        label: string,
+    ): void {
+        const matches = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.Expression =>
+                    ts.isBinaryExpression(node) ||
+                    ts.isPrefixUnaryExpression(node),
+            )
+            .filter((expression) =>
+                this.context.expressionMatchesShape(
+                    expression,
+                    expected,
+                ),
+            );
+        if (matches.length !== 1) {
+            this.context.contractError(
+                declaration,
+                `Expected one ${label}.`,
+            );
+        }
+    }
+
     public lowerLoaderAdapter(
-        nonTrianglePrimitives = false,
-        nodeVisibility = false,
-        animationPointer = false,
-        animatedWorldBounds = false,
-        animationPointerMaterials = false,
-        assetTransmission = false,
-        materialSpecular = false,
-        selectedMaterialVariant = "",
+        options: GltfLoaderOptions = {},
     ): LoweredSource {
+        if (options.animationBlending) {
+            this.assertWeightedGltfMixer();
+        }
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";
         const { declaration } =
@@ -382,14 +540,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     iblEnvironmentScalars,
                     punctualLightLoading,
                 },
-                nonTrianglePrimitives,
-                nodeVisibility,
-                animationPointer,
-                animatedWorldBounds,
-                animationPointerMaterials,
-                assetTransmission,
-                materialSpecular,
-                selectedMaterialVariant,
+                options,
             ),
         };
     }

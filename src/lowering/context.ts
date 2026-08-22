@@ -413,11 +413,35 @@ export class LoweringContext {
         return undefined;
     }
 
-    public assertExpressionShape(
+    /**
+     * Whether an expression has the given shape, without failing when it
+     * does not. `assertExpressionShape` answers "this expression is still
+     * the pin's"; this answers "which of these expressions is the one I
+     * mean", which is what a lowerer needs when the pinned body states a
+     * contract several times over different operands and only the count
+     * of matches is the contract.
+     */
+    public expressionMatchesShape(
         actual: ts.Expression,
         expectedSource: string,
-        label: string,
-    ): void {
+    ): boolean {
+        return (
+            this.nodeFingerprint(actual) ===
+            this.expectedFingerprint(expectedSource)
+        );
+    }
+
+    /**
+     * The fingerprint of an expected shape, parsed once per process: it is
+     * a pure function of the string, and the shape helpers ask for the
+     * same handful of strings across every scene compiled in one run.
+     */
+    private expectedFingerprint(expectedSource: string): string {
+        const cached =
+            LoweringContext.expectedFingerprints.get(
+                expectedSource,
+            );
+        if (cached !== undefined) return cached;
         const expectedFile = ts.createSourceFile(
             "expected-expression.ts",
             `const expected = ${expectedSource};`,
@@ -427,20 +451,40 @@ export class LoweringContext {
         );
         const statement = expectedFile.statements[0];
         const declaration =
-            statement &&
-            ts.isVariableStatement(statement)
+            statement && ts.isVariableStatement(statement)
                 ? statement.declarationList.declarations[0]
                 : undefined;
         if (!declaration?.initializer) {
             throw new Error(
-                `Invalid expected expression for ${label}.`,
+                `Invalid expected expression '${expectedSource}'.`,
             );
         }
-        const actualFingerprint =
-            this.nodeFingerprint(actual);
-        const expectedFingerprint =
-            this.nodeFingerprint(declaration.initializer);
-        if (actualFingerprint !== expectedFingerprint) {
+        const fingerprint = this.nodeFingerprint(
+            declaration.initializer,
+        );
+        LoweringContext.expectedFingerprints.set(
+            expectedSource,
+            fingerprint,
+        );
+        return fingerprint;
+    }
+
+    private static readonly expectedFingerprints = new Map<
+        string,
+        string
+    >();
+
+    public assertExpressionShape(
+        actual: ts.Expression,
+        expectedSource: string,
+        label: string,
+    ): void {
+        if (
+            !this.expressionMatchesShape(
+                actual,
+                expectedSource,
+            )
+        ) {
             this.contractError(
                 actual,
                 `${label} changed; expected '${expectedSource}', found '${actual.getText(actual.getSourceFile())}'.`,

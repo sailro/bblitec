@@ -370,17 +370,21 @@ inline DeformationUniforms build_deformation_uniforms(
         matrix[15] = 1.0f;
     }
     if (!mesh.gpu_deformation) return result;
-    if (mesh.bone_matrices.size() > result.bone_matrices.size()) {
-        throw std::runtime_error(
-            "GPU deformation bone palette exceeds 64 matrices.");
+    // A palette on the pin's own texture is read by the composed skeleton
+    // stage, not from this block, so the bone lanes stay the identity:
+    // filling them would be dead bytes, and this 64-matrix array could
+    // not hold a larger palette anyway. The morph half still travels,
+    // since the two transports are independent.
+    if (!mesh.pinned_bone_palette) {
+        if (mesh.bone_matrices.size() > result.bone_matrices.size()) {
+            throw std::runtime_error(
+                "GPU deformation bone palette exceeds 64 matrices.");
+        }
+        std::copy(
+            mesh.bone_matrices.begin(),
+            mesh.bone_matrices.end(),
+            result.bone_matrices.begin());
     }
-    const std::size_t count = std::min(
-        mesh.bone_matrices.size(),
-        result.bone_matrices.size());
-    std::copy_n(
-        mesh.bone_matrices.begin(),
-        count,
-        result.bone_matrices.begin());
     std::copy(
         mesh.morph_weights.begin(),
         mesh.morph_weights.end(),

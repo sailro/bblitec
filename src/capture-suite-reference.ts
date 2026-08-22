@@ -28,11 +28,26 @@ function mimeType(path: string): string {
 
 export type SuiteSourceTransform = (source: string) => string;
 
+/**
+ * The scene source as the reference capture runs it: transpiled for the
+ * browser, with the pinned package and asset URLs rewritten, and — for a
+ * scene pinned to a pose — the seek the registry describes injected
+ * before `registerScene`.
+ *
+ * The seek is a time write plus a pause, which is what the corpus
+ * scenes' own frozen branches do: the pose then lands on the next tick,
+ * from whoever drives the group. `goToFrame` is the other spelling and
+ * it does not serve every scene — it converts frames through the group's
+ * own rate, so one number cannot seek groups of different rates to one
+ * time, and it applies the pose itself, which a skinned glTF group
+ * refuses unless its controller has already seen an engine (pinned error
+ * #378: a weighted-mixer scene's controller never has). So the registry
+ * pins a pose in seconds and the harness writes seconds.
+ */
 export function suiteBrowserModule(
     sourcePath: string,
     transform?: SuiteSourceTransform,
     captureTimeSeconds?: number,
-    captureFrameRate = 60,
     captureAnimationGroups?: string[],
 ): string {
     const input = readFileSync(resolve(sourcePath), "utf8");
@@ -41,7 +56,6 @@ export function suiteBrowserModule(
         ? (
               `import { ` +
               `onBeforeRender as __captureOnBeforeRender, ` +
-              `goToFrame as __captureGoToFrame, ` +
               `pauseAnimation as __capturePauseAnimation ` +
               `} from "babylon-lite";\n` +
               transformed
@@ -56,7 +70,7 @@ export function suiteBrowserModule(
                     ? `[${captureAnimationGroups.join(", ")}]`
                     : "scene.animationGroups"
             }) {
-                __captureGoToFrame(animationGroup, ${captureTimeSeconds} * ${captureFrameRate});
+                animationGroup.currentTime = ${captureTimeSeconds};
                 __capturePauseAnimation(animationGroup);
             }
             canvas.dataset.animationFrozen = "true";
@@ -246,7 +260,6 @@ export async function captureSuiteReference(
     force: boolean,
     transform?: SuiteSourceTransform,
     captureTimeSeconds?: number,
-    captureFrameRate?: number,
     captureAnimationGroups?: string[],
     options: SuiteCaptureOptions = {},
 ): Promise<void> {
@@ -255,7 +268,6 @@ export async function captureSuiteReference(
         sourcePath,
         transform,
         captureTimeSeconds,
-        captureFrameRate,
         captureAnimationGroups,
     );
     const server = createSuiteSceneServer(moduleSource, {

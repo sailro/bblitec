@@ -24,6 +24,10 @@ import type {
     Value,
     ValueKind,
 } from "./types.js";
+import {
+    emitHandleCollectionLoop,
+    type HandleCollectionTarget,
+} from "./statements.js";
 import type {
     UserFunctionContext,
     UserFunctionLowerer,
@@ -99,6 +103,9 @@ export interface ExpressionContext
     evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined;
+    handleCollectionIterationTarget(
+        expression: ts.Expression,
+    ): HandleCollectionTarget | undefined;
     compileRegisteredConstant(importedName: string): Value | undefined;
     compileRegisteredIntrinsic(
         importedName: string,
@@ -655,6 +662,82 @@ export class ExpressionLowerer {
         return { kind: "void", cpp: "" };
     }
 
+    /**
+     * `<collection>.find(<arrow>)` over a collection of engine handles.
+     *
+     * The collection is loaded, so the search is a real loop over it: the
+     * predicate is the caller's own expression with the element bound,
+     * and the result is the handle plus whether one matched — which is
+     * what a scene tests before using it, and what upstream's `undefined`
+     * return means.
+     */
+    private compileHandleCollectionFind(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (callee.name.text !== "find") {
+            return undefined;
+        }
+        const target =
+            this.context.handleCollectionIterationTarget(
+                callee.expression,
+            );
+        if (!target) {
+            return undefined;
+        }
+        this.context.expectArgumentCount(call, 1, 1);
+        const predicate = this.context.unwrap(
+            call.arguments[0]!,
+        );
+        if (
+            !ts.isArrowFunction(predicate) ||
+            predicate.parameters.length !== 1 ||
+            !ts.isIdentifier(predicate.parameters[0]!.name) ||
+            ts.isBlock(predicate.body)
+        ) {
+            this.context.fail(
+                call.arguments[0] ?? call,
+                "find takes an arrow whose one parameter is the element and whose body is the test.",
+            );
+        }
+        const result = this.context.allocateTemporaryCppName(
+            `${target.temporaryLabel}_match`,
+        );
+        const found = this.context.allocateTemporaryCppName(
+            `${target.temporaryLabel}_found`,
+        );
+        this.context.emit(
+            `${target.elementCppType} ${result}{};`,
+        );
+        this.context.emit(`bool ${found} = false;`);
+        emitHandleCollectionLoop(
+            this.context,
+            target,
+            predicate.parameters[0]!.name as ts.Identifier,
+            (context) => {
+                const item = context.lookup(
+                    predicate.parameters[0]!.name as ts.Identifier,
+                ).cpp;
+                const test = context.compileCondition(
+                    predicate.body as ts.Expression,
+                );
+                context.emit(`if (${test}) {`);
+                context.increaseIndent();
+                context.emit(`${result} = ${item};`);
+                context.emit(`${found} = true;`);
+                context.emit("break;");
+                context.decreaseIndent();
+                context.emit("}");
+            },
+        );
+        return {
+            kind: target.elementKind,
+            cpp: result,
+            engineCpp: target.engineCpp,
+            optionalFoundCpp: found,
+        };
+    }
+
     private compileCall(call: ts.CallExpression): Value {
         const promise = compileImmediatePromise(
             this.context,
@@ -688,6 +771,13 @@ export class ExpressionLowerer {
             );
             if (lightPush) {
                 return lightPush;
+            }
+            const found = this.compileHandleCollectionFind(
+                call,
+                callee,
+            );
+            if (found) {
+                return found;
             }
             // A method on a constructed instance inlines with `this`
             // bound to that instance's field record.

@@ -166,6 +166,24 @@ enum class PropertyAnimationPath {
     position_x,
     scaling,
     rotation_quaternion,
+    camera_alpha,
+};
+
+/**
+ * What a property clip is bound to. Upstream resolves a dotted path
+ * against whatever object the caller passed, so the target and the path
+ * travel together; here the reached objects are a mesh and a camera, and
+ * each path belongs to one of them.
+ */
+enum class PropertyAnimationTargetKind {
+    mesh,
+    camera,
+};
+
+struct PropertyAnimationTarget {
+    PropertyAnimationTargetKind kind =
+        PropertyAnimationTargetKind::mesh;
+    std::uint32_t index = 0;
 };
 
 enum class PropertyAnimationInterpolation {
@@ -641,6 +659,14 @@ struct MeshRecord {
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
     bool gpu_deformation = false;
+    /**
+     * Whether this mesh's bone palette rides the pin's own per-bone
+     * texture (a composed skeleton variant) rather than the 64-matrix
+     * uniform array. The transcribed vertex stage cannot read a palette
+     * that large, so the block it would read is left at the identity and
+     * the draw takes its deformation from the pinned stage instead.
+     */
+    bool pinned_bone_palette = false;
     bool clockwise_front_face = false;
     // Whether the loader stored this mesh's vertices through the native X
     // mirror. Babylon composes its own vertex stage against unmirrored data and
@@ -969,7 +995,7 @@ struct PropertyAnimationClip {
 };
 
 struct PropertyAnimationGroupRecord {
-    MeshHandle target{};
+    PropertyAnimationTarget target{};
     PropertyAnimationClip clip;
     float from_time = 0.0f;
     float to_time = 0.0f;
@@ -977,14 +1003,70 @@ struct PropertyAnimationGroupRecord {
     float speed_ratio = 1.0f;
     bool loop = true;
     bool playing = true;
+    /** `AnimationGroup.weight`: the mixer's contribution, default 1. */
+    float weight = 1.0f;
 };
 
 using PropertyAnimationGroup =
     std::shared_ptr<PropertyAnimationGroupRecord>;
 
+/**
+ * One blended property, the pin's own weighted-mixer bucket. Upstream
+ * keys it by the (object, property name) pair each runtime track
+ * resolved; a lowered track names the same pair as its mesh and its
+ * path, since distinct paths resolve to distinct pairs. How wide the
+ * bucket is and whether it holds a quaternion follow from that path.
+ */
+struct PropertyAnimationBucket {
+    PropertyAnimationTarget target{};
+    PropertyAnimationPath property =
+        PropertyAnimationPath::position;
+    std::array<float, 4> values{};
+    bool contested = false;
+    bool active = false;
+    bool has_reference = false;
+    std::array<float, 4> reference{
+        0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+/**
+ * One clip a manager blends this tick, as the weighted glTF mixer reads
+ * it: which clip of the owning asset, and at what weight. The clip state
+ * lives inside the asset's own animation runtime, so the manager hands
+ * the list across rather than reaching into it.
+ */
+struct BlendedClip {
+    std::size_t clip = 0;
+    float weight = 1.0f;
+};
+
+/**
+ * Which handler a manager's animation-group category has installed.
+ * `setAnimationTaskCategoryHandler` keeps one slot, so the second opt-in
+ * replaces the first rather than composing with it.
+ */
+enum class AnimationCategoryHandler {
+    none,
+    property_mixer,
+    gltf_mixer,
+};
+
 struct PropertyAnimationManagerRecord {
     std::vector<PropertyAnimationGroup> groups;
+    /**
+     * The glTF groups `addAnimationGroups` attached, in attach order.
+     * Upstream keeps them in the manager's own `_animationGroups` list and
+     * ticks each through its controller; the clips themselves live in the
+     * owning asset's runtime, so the handle is what travels here.
+     */
+    std::vector<AnimationGroupHandle> gltf_groups;
     bool started = false;
+    /** Installed by `enablePropertyAnimationBlending` / `enableAnimationBlending`. */
+    AnimationCategoryHandler category_handler =
+        AnimationCategoryHandler::none;
+    /** The mixers' per-manager scratch, upstream's `scratchByManager`. */
+    std::vector<PropertyAnimationBucket> buckets;
+    std::vector<BlendedClip> blend_scratch;
 };
 
 using PropertyAnimationManager =
@@ -1289,6 +1371,8 @@ struct AnimationGroupRecord {
     std::string name;
     std::uint32_t asset = invalid_handle;
     std::size_t clip = 0;
+    /** `AnimationGroup.weight`: what the weighted mixer contributes it at. */
+    float weight = 1.0f;
 };
 
 struct AssetRecord {
@@ -1300,6 +1384,21 @@ struct AssetRecord {
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
+    /**
+     * The weighted pass over the clips a manager attached, present only
+     * when the scene reached `enableAnimationBlending`. Returns whether
+     * it drove the tick — false hands it back to the per-clip advance,
+     * which is the pin's own category-handler contract.
+     */
+    std::function<bool(const std::vector<BlendedClip>&, float)>
+        animation_blend;
+    /**
+     * Advances exactly the clips a manager owns and re-evaluates the
+     * asset, where `animation_tick` advances every clip the file holds
+     * from one master clock. A manager-driven scene takes this one.
+     */
+    std::function<void(const std::vector<BlendedClip>&, float)>
+        animation_tick_clips;
     std::function<void(Scene&)> scene_setup;
     /** This asset's clips, in the document's own animation order. */
     std::vector<AnimationGroupHandle> animation_groups;
@@ -1309,10 +1408,20 @@ struct AssetRecord {
     std::function<void(std::size_t, bool)> set_clip_stopped;
     /** Sets one clip's currentTime in seconds. */
     std::function<void(std::size_t, float)> set_clip_time;
+    /** Sets one clip's loopAnimation, which the weighted mixer reads. */
+    std::function<void(std::size_t, bool)> set_clip_loop;
 };
 
 struct Engine {
     EngineOptions options{};
+    /**
+     * Every animation manager created with this engine
+     * (`createAnimationManager({ engine })`). A manager owns animation time
+     * for the groups attached to it, so a measured seek has to reach it;
+     * registering scenes attach one seeker per manager, the way an asset
+     * added to a scene contributes its own.
+     */
+    std::vector<PropertyAnimationManager> animation_managers;
     std::vector<MeshRecord> meshes;
     std::vector<MaterialRecord> materials;
     std::vector<LightRecord> lights;
@@ -1398,6 +1507,12 @@ struct Scene {
     std::vector<SplatMeshHandle> splat_meshes;
     std::vector<std::function<void(float)>> before_render;
     std::vector<std::function<void(float)>> animation_seekers;
+    /**
+     * Whether this scene already contributed the seeker that reaches the
+     * engine's animation managers. Registration is idempotent upstream,
+     * so the contribution is too.
+     */
+    bool seeks_animation_managers = false;
     std::vector<std::function<void()>> deferred_builders;
     EnvironmentState environment;
     float fixed_delta_ms = 0.0f;
@@ -1732,6 +1847,7 @@ void add_render_task_mesh(
 void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
+void add_asset_entities(Scene& scene, AssetHandle asset);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void on_before_render(
     Scene& scene,
@@ -1743,12 +1859,37 @@ PropertyAnimationClip create_property_animation_clip(
     float frame_rate);
 PropertyAnimationGroup create_property_animation_group(
     PropertyAnimationManager manager,
-    MeshHandle target,
+    PropertyAnimationTarget target,
     PropertyAnimationClip clip,
     PropertyAnimationGroupOptions options);
+void set_animation_weight(
+    PropertyAnimationGroup group,
+    float weight);
+void set_animation_weight(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float weight);
+void enable_animation_blending(
+    PropertyAnimationManager manager);
+void enable_property_animation_blending(
+    PropertyAnimationManager manager);
 void start_animation_manager(
     PropertyAnimationManager manager,
     Scene& scene);
+PropertyAnimationManager create_animation_manager(
+    Engine& engine);
+void add_animation_groups(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    const std::vector<AnimationGroupHandle>& groups);
+void update_animation_manager(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    float delta_ms);
+void seek_animation_manager(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    float time);
 void go_to_frame(
     PropertyAnimationGroup group,
     Engine& engine,
@@ -1756,6 +1897,10 @@ void go_to_frame(
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
+void set_animation_loop(
+    Engine& engine,
+    AnimationGroupHandle group,
+    bool loop);
 void attach_control(Engine& engine, CameraHandle camera);
 void attach_free_control(Engine& engine, CameraHandle camera);
 struct LoadSpriteAtlasOptions {

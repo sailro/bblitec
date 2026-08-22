@@ -62,6 +62,7 @@ import {
     compileTorusOptions,
     type MeshOptionContext,
 } from "./compiler/intrinsics/mesh-options.js";
+import { requireGroupSource } from "./compiler/intrinsics/animation.js";
 import {
     compileRegisteredConstant,
     compileRegisteredIntrinsic,
@@ -179,6 +180,9 @@ import { reachedGeneratedSources } from "./generated-sources.js";
 const featureSources: Record<Feature, string[]> = {
     "animation:gltf-groups": [],
     "animation:property": [],
+    "animation:property-blending": [],
+    "animation:managed-groups": [],
+    "animation:gltf-blending": [],
     "core": ["src/pal.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "camera:arc-rotate": [],
@@ -623,6 +627,12 @@ class Compiler
 
     public emitStatement(statement: ts.Statement): void {
         this.statements.emit(this, statement);
+    }
+
+    public emitExpressionAsStatement(
+        expression: ts.Expression,
+    ): void {
+        this.statements.emitExpression(this, expression);
     }
 
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
@@ -1460,6 +1470,7 @@ class Compiler
         cpp: string;
         frameRate: string;
         duration: string;
+        target: "mesh" | "camera";
     } {
         return compilePropertyAnimationClip(
             this,
@@ -1652,9 +1663,6 @@ class Compiler
         if (!ts.isArrowFunction(unwrapped) && !ts.isFunctionExpression(unwrapped)) {
             this.fail(unwrapped, "onBeforeRender requires an inline callback.");
         }
-        if (!ts.isBlock(unwrapped.body)) {
-            this.fail(unwrapped.body, "onBeforeRender callback requires a block body.");
-        }
         if (unwrapped.parameters.length > 1) {
             this.fail(unwrapped, "onBeforeRender callback supports at most one deltaMs parameter.");
         }
@@ -1686,9 +1694,18 @@ class Compiler
                 });
             }
             this.frameCallbackDepth += 1;
-            for (const statement of unwrapped.body
-                .statements) {
-                this.emitStatement(statement);
+            // A concise arrow body is one expression whose value the
+            // pinned callback contract discards, so it lowers as the
+            // statement it would have been written as.
+            if (ts.isBlock(unwrapped.body)) {
+                for (const statement of unwrapped.body
+                    .statements) {
+                    this.emitStatement(statement);
+                }
+            } else {
+                this.emitExpressionAsStatement(
+                    unwrapped.body,
+                );
             }
         } finally {
             this.frameCallbackDepth -= 1;
@@ -2363,6 +2380,137 @@ class Compiler
      * undefined, so for-of falls through to the plain-data and
      * static-literal paths.
      */
+    /**
+     * A collection expression past the two shapes that leave it
+     * unchanged: `container.animationGroups ?? []` and `?.`.
+     *
+     * `AssetContainer.animationGroups` is optional upstream, so a scene
+     * reading it writes one of those; both resolve to the container's own
+     * collection, and an absent one is the empty vector the loader
+     * already leaves behind — the same zero iterations `?? []` produces.
+     */
+    private unwrapCollectionExpression(
+        expression: ts.Expression,
+    ): ts.Expression {
+        const unwrapped = this.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken &&
+            ts.isArrayLiteralExpression(unwrapped.right) &&
+            unwrapped.right.elements.length === 0
+        ) {
+            return this.unwrapCollectionExpression(
+                unwrapped.left,
+            );
+        }
+        return unwrapped;
+    }
+
+    /**
+     * The glTF animation groups a call names: a container's own
+     * collection, or a static array of groups the scene selected.
+     */
+    public compileAnimationGroupList(
+        expression: ts.Expression,
+    ): { cpp: string; engineCpp: string } {
+        const collection =
+            this.handleCollectionIterationTarget(expression);
+        if (collection) {
+            if (collection.elementKind !== "animation-group") {
+                this.fail(
+                    expression,
+                    `Expected animation groups, received ${collection.property}.`,
+                );
+            }
+            return {
+                cpp: collection.containerCpp,
+                engineCpp: collection.engineCpp,
+            };
+        }
+        const literal = this.probeStaticArrayLiteral(
+            this.unwrapCollectionExpression(expression),
+        );
+        if (!literal) {
+            this.fail(
+                expression,
+                "Expected a container's animationGroups or a static array of groups.",
+            );
+        }
+        const groups = literal.elements.map((element) => {
+            const value = this.compileValue(element);
+            this.expectKind(
+                value,
+                "animation-group",
+                element,
+            );
+            requireGroupSource(
+                this,
+                value,
+                element,
+                "addAnimationGroups",
+                "gltf",
+            );
+            return value;
+        });
+        const engineCpp = groups[0]
+            ? this.requireEngine(groups[0], expression)
+            : this.fail(
+                  expression,
+                  "addAnimationGroups requires at least one group.",
+              );
+        return {
+            cpp:
+                `std::vector<bbl::AnimationGroupHandle>{` +
+                `${groups.map((group) => group.cpp).join(", ")}}`,
+            engineCpp,
+        };
+    }
+
+    /**
+     * `<container>.entities`, when the container is a glTF asset.
+     *
+     * The iteration folds to one body emission over the container itself.
+     * That is not a claim about how many entities there are — `load-gltf`
+     * seeds `[root]` and every loader feature appends its own, so a file
+     * with punctual lights carries several — but about what the body can
+     * do with one: an entity value is accepted by `addToScene` alone, and
+     * adding each entity of a container adds exactly the meshes and lights
+     * the loader created for it, which is what the emitted call does in
+     * one step. A body reaching an entity any other way fails on the
+     * value's kind.
+     *
+     * A `.babylon` container refuses: nothing reached iterates one, and
+     * its entity list carries lights beside the roots, so the fold would
+     * need its own proof.
+     */
+    public assetEntitiesIterationTarget(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            unwrapped.name.text !== "entities"
+        ) {
+            return undefined;
+        }
+        const owner = this.compileValue(unwrapped.expression);
+        if (owner.kind !== "asset") {
+            return undefined;
+        }
+        if (owner.asset?.kind !== "gltf") {
+            this.fail(
+                unwrapped,
+                "Iterating entities is lowered for a glTF container, whose entities are one root node; another container's roots are not.",
+            );
+        }
+        return {
+            ...owner,
+            kind: "asset-entity",
+            engineCpp: this.requireEngine(owner, unwrapped),
+        };
+    }
+
     public handleCollectionIterationTarget(
         expression: ts.Expression,
     ):
@@ -2375,7 +2523,8 @@ class Compiler
               engineCpp: string;
           }
         | undefined {
-        const unwrapped = this.unwrap(expression);
+        const unwrapped =
+            this.unwrapCollectionExpression(expression);
         if (!ts.isPropertyAccessExpression(unwrapped)) {
             return undefined;
         }
@@ -2391,8 +2540,14 @@ class Compiler
         // number-index type is what an iteration yields, and the pinned
         // handle registry turns that type into the kind it binds as and the
         // C++ type the range-for declares. Neither is restated in the table.
+        // A container's own collections are optional upstream
+        // (`animationGroups?: AnimationGroup[]`), and a scene reads one
+        // through `?? []` or `?.`; the element model is the same either
+        // way, so the nullable half is dropped before the index lookup.
         const elementType = this.checker.getIndexTypeOfType(
-            this.checker.getTypeAtLocation(unwrapped),
+            this.checker.getNonNullableType(
+                this.checker.getTypeAtLocation(unwrapped),
+            ),
             ts.IndexKind.Number,
         );
         if (!elementType) {

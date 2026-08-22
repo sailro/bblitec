@@ -224,8 +224,9 @@ The current generated slice includes:
   tree-shaken deformation vertex layout
 - tree-shaken vertex-shader morphing and four-weight skinning with per-mesh
   palettes and weights
-- a narrow CPU fallback for post-deformation flat normals and deformation
-  outside the reached 64-matrix GPU slice
+- a narrow CPU fallback for post-deformation flat normals and for a skin
+  larger than the transcribed 64-matrix palette in a scene that composes no
+  pinned skeleton variant
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - Babylon NME node materials: the graph compiled at generation by the pin's own
@@ -343,8 +344,14 @@ uncapped storage-buffer morph path — the pin's one morph mechanism, which
 the composed variants read: a flat 6-float delta buffer and a
 16-byte-header weights buffer bound as vertex storage, evaluated with the
 pinned accumulation loop before skinning; the two-slot vertex-attribute
-morph lanes remain for direct generated-mesh morph attachment. Skins beyond
-64 joints keep the general CPU deformation path rather than truncating.
+morph lanes remain for direct generated-mesh morph attachment.
+
+How large a skin stays on the GPU follows the transport that carries its
+palette. A scene composing the pin's own skeleton variants reads the
+palette from the pin's per-bone `rgba32float` texture, which is sized from
+the bone count and caps nothing; the 64-matrix uniform array is the
+transcribed vertex stage's transport, so only a scene without a composed
+skeleton variant sends a larger skin down the CPU deformation path.
 
 Two generated lists decide what a scene compiles: `BBLITE_RUNTIME_FEATURES`
 in `features.cmake` from the scene's own TypeScript, and

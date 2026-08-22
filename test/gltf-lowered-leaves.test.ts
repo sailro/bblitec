@@ -1656,15 +1656,7 @@ test("the emitted loader carries every round-4 lowered default", () => {
         );
     }
     const specular = new GltfLowerer(new LoweringContext(store))
-        .lowerLoaderAdapter(
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-        );
+        .lowerLoaderAdapter({ materialSpecular: true });
     for (const line of [
         'float_or(specular, "specularFactor", 1.0f);',
         "std::abs(factor - 1.0f) > 0.000001f ? factor : 1.0f;",
@@ -1981,15 +1973,7 @@ test("the emitted loader carries the factor bakes and the specular surround", ()
         );
     }
     const specular = new GltfLowerer(new LoweringContext(store))
-        .lowerLoaderAdapter(
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-        );
+        .lowerLoaderAdapter({ materialSpecular: true });
     for (const line of [
         "const float base_reflectance = 0.04f;",
         'optional(specular, "specularColorFactor"));',

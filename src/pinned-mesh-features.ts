@@ -62,6 +62,20 @@ export async function pinnedMeshFeaturesFromPrimitive(
     return features;
 }
 
+/**
+ * Whether any of these mesh feature words carries the pin's own skeleton
+ * bit — which is what decides that a build's composed variants include a
+ * skinned stage, and so which palette transport a skin takes.
+ */
+export async function pinnedFeaturesCarrySkeleton(
+    features: readonly number[],
+): Promise<boolean> {
+    const bit = await meshFeatureBits();
+    return features.some(
+        (word) => (word & bit.MSH_HAS_SKELETON) !== 0,
+    );
+}
+
 /** The set of nodes whose mesh is skinned, so primitives can be keyed by it. */
 export function skinnedMeshIndices(document: JsonObject): ReadonlySet<number> {
     const nodes = Array.isArray(document["nodes"])

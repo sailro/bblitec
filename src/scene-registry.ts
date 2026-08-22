@@ -1,7 +1,6 @@
 export interface SceneParityDefinition {
     reference: { kind: "source"; path: string };
     referenceTimeSeconds?: number;
-    referenceFrameRate?: number;
     referenceAnimationGroups?: string[];
     // The native actual lands in `outputDirectory` as
     // `native-{gpu,dawn,cpu}.png` — suffixed per backend so an SDL_GPU
@@ -216,7 +215,6 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Property Position Animation",
         parity: {
             referenceTimeSeconds: 1,
-            referenceFrameRate: 10,
             referenceAnimationGroups: ["group"],
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
@@ -756,7 +754,6 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Property Transform Animation",
         parity: {
             referenceTimeSeconds: 0.5,
-            referenceFrameRate: 12,
             referenceAnimationGroups: ["group"],
             maxFullMad: 0.05,
             maxForegroundMad: 0.2,
@@ -774,7 +771,6 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - STEP Time Animation",
         parity: {
             referenceTimeSeconds: 0.75,
-            referenceFrameRate: 10,
             referenceAnimationGroups: [
                 "linearGroup",
                 "stepGroup",
@@ -785,6 +781,71 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
             nativeEnvironment: {
                 BBLITE_ANIMATION_SEEK_SECONDS: "0.75",
+            },
+        },
+    },
+    {
+        id: "scene152",
+        name: "Scene 152 - Managed Animation Groups",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene152.ts",
+        title: "Babylon Lite Native - Managed Animation Groups",
+        parity: {
+            referenceTimeSeconds: 1,
+            // The scene's own manager drives both a glTF clip and a
+            // camera property clip, and each group converts the pinned
+            // pose through its own frame rate.
+            referenceAnimationGroups: [
+                "cameraGroup",
+                "...(shark.animationGroups ?? [])",
+            ],
+            // Same shark, same pose, same residual as scene 11: the
+            // skinned pose, measured 0.010/0.281 on both backends with
+            // the two agreeing to one LSB, and minimal exactly at this
+            // seek (0.069 at 0.98 s, 0.067 at 1.02 s), so the clock is
+            // right and the difference is the palette.
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.3,
+            backgroundColor: [36, 36, 36],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "1",
+            },
+        },
+    },
+    {
+        id: "scene157",
+        name: "Scene 157 - Weighted Skeleton Blending",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene157.ts",
+        title: "Babylon Lite Native - Weighted Skeleton Blending",
+        parity: {
+            referenceTimeSeconds: 0.5,
+            referenceAnimationGroups: ["walk", "run"],
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
+            },
+        },
+    },
+    {
+        id: "scene155",
+        name: "Scene 155 - Weighted Property Blending",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene155.ts",
+        title: "Babylon Lite Native - Weighted Property Blending",
+        parity: {
+            referenceTimeSeconds: 0.5,
+            referenceAnimationGroups: [
+                "positiveGroup",
+                "negativeGroup",
+            ],
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
             },
         },
     },

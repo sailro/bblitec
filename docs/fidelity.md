@@ -344,10 +344,66 @@ length. Two consequences are not guessable from the file. A stopped group
 writes nothing at all — upstream's `tickAnimationCore` returns early for one,
 so holding its channels at time zero is different: where two clips animate the
 same target, a zero write would overwrite the playing clip's value. And a seek
-reaches only groups that are not stopped, because the reference harness seeks
-with `goToFrame(group, frame)` and no engine, which leaves the pin's tick
-condition false for a stopped group. The project-owned animation-groups gate
-measures both, selecting a clip upstream did not start.
+reaches only groups that are not stopped, because the pin's own tick returns
+early for one. The project-owned animation-groups gate measures both,
+selecting a clip upstream did not start.
+
+**A container's entities are the pin's entity walk, and nothing else.**
+`addToScene(scene, container)` recurses over `container.entities`, then does
+four more things to the container itself: it pushes the file's animation
+groups onto `scene.animationGroups`, appends the per-frame tick that
+advances them, takes the file's camera when the scene has none, and takes
+its clear colour. A scene iterating `entities` reaches only the first half,
+which is what makes the shape worth writing: those scenes drive the same
+clips from an `AnimationManager` of their own, and a scene tick would
+double-advance them. The pin seeds a glTF container with its root node and
+lets each loader feature append its own entities, so adding them one by one
+adds the loader's meshes and its lights — which is what the generated call
+adds in one step, the entity value being accepted by `addToScene` alone.
+Generation refuses a container of any other shape. Scenes 152 and 157
+measure it.
+
+**A manager owns animation time for the groups attached to it, and the
+measured seek has to reach it.** Upstream has no seek — the reference
+harness writes `currentTime` on each group the registry names and pauses it,
+and whoever drives the group applies the pose on its next tick. Native
+mirrors that shape rather than the call: a scene registering with an engine
+contributes one seeker per manager it created, beside the seeker each
+loaded asset already carries.
+
+**The weighted property mixer buckets by the pair the pinned binding
+resolved.** `resolvePropertyBinding` returns the object a dotted path landed
+on and the final property name, and the mixer keys its accumulator on that
+pair — so `position` and `position.x` are different buckets even on one
+mesh, since one resolves to the mesh and the other to its position. A
+lowered track carries a mesh handle and a closed path enumerator, and
+distinct paths resolve to distinct pairs, so the two key the same buckets.
+Weights are summed and never normalized, which is upstream's stated choice:
+two groups at 0.25 and 0.75 write the weighted sum, and a single group at
+0.5 writes half its own value. Scene 155 measures the first.
+
+**The weighted glTF mixer is the same shape one level down, and its
+partial-weight rotation blends against the rest pose.** Each contributing
+clip's translation and scale accumulate as weighted sums — zeroed on the
+first write to a node, so the rest pose is replaced rather than added to —
+while rotations accumulate by incremental slerp at `weight / (accumulated +
+weight)`, which is what makes the result independent of clip order. A node
+whose weights sum below one then slerps from its rest rotation toward the
+accumulated one by that sum, and one at or above it is renormalized. The
+pose that follows — local matrices, the topological world walk, the skin
+palettes — is the same pass a single-clip tick runs, so only the
+accumulation is the mixer's. Scene 157 measures walk and run at half weight
+each.
+
+**How large a skin stays on the GPU follows its palette's transport.** The
+pin uploads a per-bone `rgba32float` texture and caps nothing; this port
+carries that texture for a composed skeleton variant and a 64-matrix uniform
+array for the transcribed vertex stage, so the cap belongs to the second
+transport alone. A mesh whose palette rides the pinned texture leaves the
+uniform array's bone lanes at the identity — the stage that would read them
+is not the stage drawing it. Scene 157's Xbot is 67 joints and measures
+byte-exact on both backends; a skin that large in a scene composing no
+skeleton variant still takes the CPU deformation path.
 A scene's `setPbr*` options reach composition through the pin's own setters,
 the way the loader half already runs `setPbrEmissive`: each stamps its props
 under the field name its extension's `detect` reads, so the composed arm set

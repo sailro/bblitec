@@ -288,6 +288,12 @@ export class StaticEvaluator {
                 // time generation succeeds the guard is settled.
                 return "true";
             }
+            if (value.optionalFoundCpp) {
+                // A handle a search produced: upstream's `find` returns
+                // `undefined` when nothing matched, so the truthiness a
+                // scene tests is whether it did.
+                return value.optionalFoundCpp;
+            }
             if (value.kind !== "boolean") {
                 this.fail(
                     unwrapped,

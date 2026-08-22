@@ -49,20 +49,28 @@ export function compileSceneIntrinsic(
             );
             if (
                 resource.kind !== "asset" &&
+                resource.kind !== "asset-entity" &&
                 resource.kind !== "mesh" &&
                 resource.kind !== "light"
             ) {
                 context.fail(
                     call.arguments[1]!,
-                    `addToScene supports asset, mesh, and light values, received ${resource.kind}.`,
+                    `addToScene supports asset, entity, mesh, and light values, received ${resource.kind}.`,
                 );
             }
             context.expectSameEngine(scene, resource, call);
+            // A container's entity takes the pin's entity walk alone: its
+            // animation groups, per-frame tick, camera and clear colour
+            // belong to the container arm, which a scene iterating
+            // `entities` never reaches.
             return {
                 kind: "void",
                 cpp:
-                    `bbl::add_to_scene(` +
-                    `${scene.cpp}, ${resource.cpp})`,
+                    resource.kind === "asset-entity"
+                        ? `bbl::add_asset_entities(` +
+                          `${scene.cpp}, ${resource.cpp})`
+                        : `bbl::add_to_scene(` +
+                          `${scene.cpp}, ${resource.cpp})`,
             };
         }
 

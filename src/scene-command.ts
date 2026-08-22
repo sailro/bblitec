@@ -968,7 +968,9 @@ async function runSeekBracketCapture(
     outputDirectory: string | undefined,
 ): Promise<void> {
     const scene = resolveScene(idOrSource);
-    const frameRate = scene.parity?.referenceFrameRate ?? 60;
+    // One bracket step is one *display* frame — the scale a residual is
+    // judged against — not a clip's own frame rate.
+    const frameRate = 60;
     const plan = seekBracketPlan(
         explicitSeek ?? scene.parity?.referenceTimeSeconds,
         frameRate,

@@ -6,12 +6,13 @@
 // whole axis in one frame: iterating `scene.animationGroups`, comparing a
 // group's name as a runtime string, and the pinned stop/play operations.
 //
-// No corpus scene reaches it yet — scene 243 writes the same loop inside a
-// query-parameter branch that folds away natively, scene 11's asset needs
-// KHR_materials_pbrSpecularGlossiness, scene 144 addresses its group through
-// `.find` and needs that same extension, and scenes 152/157/158 iterate
-// `entities`. Delete this gate once one of them
-// covers the contract.
+// What remains uncovered is the *scene's* collection. Scenes 152 and 157 now
+// select clips by name from corpus code, but they iterate the container's own
+// `animationGroups` — they add their file entity by entity, so the scene's
+// list stays empty by construction. Scene 243 writes the loop against
+// `scene.animationGroups` inside a query-parameter branch that folds away
+// natively, and scene 144 needs bloom besides. Delete this gate once a corpus
+// scene reaches the scene-owned collection.
 
 import { addToScene, startEngine, createEngine, createSceneContext, createArcRotateCamera, loadEnvironment, loadGltf, attachControl, registerScene, playAnimation, stopAnimation } from "babylon-lite";
 
