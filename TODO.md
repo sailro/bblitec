@@ -136,8 +136,12 @@ act on it — not what was tried.
   `RasterizerState.MultisampleEnable = FALSE`, which keeps a line-list on the
   aliased diamond-exit rule at any sample count, where its Vulkan and Metal
   backends rasterize lines against the target's samples and Dawn sets the flag
-  from the sample count. Report it upstream so this one gets a convergence
-  path too; the measurement is in [backends](docs/backends.md#measured-contracts).
+  from the sample count. Reported upstream as
+  [libsdl-org/SDL#16182](https://github.com/libsdl-org/SDL/issues/16182) with
+  [#16183](https://github.com/libsdl-org/SDL/pull/16183), so this one has a
+  convergence path too; the measurement, including the A/B on two line-free
+  scenes and the documentation claim it contradicts, is in
+  [backends](docs/backends.md#measured-contracts).
   Delete this file and `native/vcpkg-overlay-ports` once a release carries both,
   and move the baseline to it.
 - [ ] Compose environment/camera sizing from object-local bounds through the

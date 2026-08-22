@@ -230,17 +230,26 @@ Regression guards, each measured rather than assumed:
   deployed beside `webgpu_dawn.dll`. FXC in place of DXC carries a
   systemic -1 LSB on lit surfaces (scenes 259/248) plus larger filter
   and discard deltas (248/249); DXC carries none of it.
-- **A multisampled line-list needs D3D12's `MultisampleEnable`, and only
-  Dawn set it.** Dawn derives it from the pipeline's sample count; SDL's
-  D3D12 backend hardcoded `FALSE`, which keeps lines on the aliased
-  diamond-exit rule at any sample count while its Vulkan and Metal backends
-  always rasterize lines against the target's samples. The measurement that
-  named it: SDL_GPU at 4x was pixel-identical to SDL_GPU at one sample and
-  to Dawn at one sample, so nothing about the scene, the shaders or the
-  uniforms was in question. The vendored overlay port carries the one-line
-  fix beside libsdl-org/SDL#15838; scenes 278 and 279 measure 0.000 on both
-  backends with it, and the corpus neutrality run is what shows it moved
-  nothing else.
+- **A multisampled target needs D3D12's `MultisampleEnable`, and only Dawn
+  set it.** Dawn derives it from the pipeline's sample count; SDL's D3D12
+  backend hardcoded `FALSE`. The measurement that named it, on lines:
+  SDL_GPU at 4x was pixel-identical to SDL_GPU at one sample and to Dawn at
+  one sample, so nothing about the scene, the shaders or the uniforms was in
+  question. The vendored overlay port carries the one-line fix beside
+  libsdl-org/SDL#15838, and scenes 278 and 279 measure 0.000 on both
+  backends with it.
+  **It reaches more than lines here, which the flag's own documentation says
+  it should not.** Microsoft's `D3D12_RASTERIZER_DESC` page states that above
+  feature level 10.1 the setting "has no effect on points and triangles with
+  regard to MSAA and impacts only the selection of the line-rendering
+  algorithm" — and then recommends setting it `TRUE` on MSAA targets anyway.
+  Two line-free scenes were A/B measured against a rebuild of SDL with the
+  patch dropped and nothing else changed: scene 8 is 0.000/0.000 with it and
+  0.001/0.001 without, scene 14 is 0.012/0.006 with it and 0.013/0.009
+  without. So this port takes the flag as affecting triangle edges too on
+  the measured device (RTX 4090, driver 32.0.16.1088), reports the pair
+  upstream, and treats the doc's claim as the thing that did not hold rather
+  than the numbers.
 - **The `.env` RGBD cubemap Y-flip is pinned behavior**, not an SDL
   adaptation: upstream `uploadCubemapRGBD` documents "BJS uploads
   cubemap faces with invertY=true"; uploading unflipped costs scene 1
