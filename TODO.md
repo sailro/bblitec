@@ -185,7 +185,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-115 corpus scenes remain unregistered; measured scenes are in
+113 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -204,12 +204,12 @@ module is invisible in a compile probe, because
 the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
-**Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-22, after
-the animation-manager wave and before the line pair): `Number(...)` as a call 9
-(all deferred-lane physics), engine options beyond msaaSamples/requiredLimits 7
-(large-world), `receiveShadows` 6, `??` over a non-static-record operand 6,
-`HavokPhysics` 5, PBR options beyond the reached set 3, a four-argument call 3,
-an unsupported constructor expression 3, `createNavigationPluginAsync` 3.
+**Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-23, after
+scenes 220 and 282): `Number(...)` as a call 9 (all deferred-lane physics),
+engine options beyond msaaSamples/requiredLimits 7 (large-world),
+`receiveShadows` 6, `??` over a non-static-record operand 6, `HavokPhysics` 5,
+PBR options beyond the reached set 3, a four-argument call 3, an unsupported
+constructor expression 3, `createNavigationPluginAsync` 3.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
@@ -232,20 +232,12 @@ remains, and its blocker is an asset mechanism rather than a render one.
 
 ### The eight scenes 1.23.0 added
 
-Four of the eight shipped. Of the four that remain, only 282 needs the corpus
-sync the node-material cluster needs — copy its `shared/` module out of the
-pinned tree and pin its SHA-256.
+Six of the eight shipped. Two remain.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
-| 220 | `KHR_mesh_quantization` on Duck.glb | glTF extension, with 11's spec-gloss |
 | 250 | `enableGltfCameras` | glTF camera import, new in 1.21 |
-| 282 | texture pixels from a module function (+ `shared/scene282-standard-uv-transform`) | Standard UV transform |
 | 300 | an `OffscreenCanvas` construction in `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
-
-Scene 282 is the only corpus scene reaching `stdUvTransformExt`, the ninth
-Standard extension 1.21 added. `pinned-standard-variants.ts` refuses a material
-carrying one by name, so that refusal is what integrating 282 has to lift.
 
 **No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
 `createMeshFromData` half and scene 279 its `setThinInstances` half, but of
@@ -265,10 +257,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (81 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
+**Integrate first (79 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
-140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-220,
-223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 282, 300.
+140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-219,
+223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
@@ -297,18 +289,15 @@ that does to the deferred lane by default.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in
   the corpus.
-- [ ] Scene 220: lower `KHR_mesh_quantization` plus `KHR_texture_transform`
-  (Duck). It refuses without a source location, so a compile probe reports it
-  last; it is not a compiler contract.
-  `KHR_materials_pbrSpecularGlossiness` shipped with scene 11 and is the
-  template: run the pinned extension at generation, project its base-workflow
-  overrides, append the texture slot after the layered extensions so no index
-  moves, and let the pin compose the fragment.
-- [ ] Scene 282: support the Standard UV transform. The pin gates it behind
-  `enableMaterialUvTransform()`, which registers `stdUvTransformExt` — the
-  ninth Standard extension, and the one `pinned-standard-variants.ts` refuses
-  by name. Its texture also comes from a module function the compiler must run
-  at generation, which is the first blocker.
+- [ ] Extend the Standard UV transform past what scene 282 measures. The
+  channel writer is lowered from the pin's own AST, so the arithmetic covers
+  all seven channels, but three inputs the fold does not reach would force a
+  wider shape: `material.uvOffset` (the `enableStandardUvOffset()` resolver,
+  which no reached scene installs, so both components read their `?? 0` arm),
+  the lightmap channel's `legacyFlipV` (the generated loader fills no lightmap
+  slot, so the table folds that conjunct to false), and `rebuildMaterial`,
+  which is what upstream requires to move a transform after the renderable is
+  built — a scene writing one after binding refuses instead.
 - [ ] Scene 12: fold or explicitly lower the reached browser-dependent
   condition.
 - [ ] Scenes 158, 171, 174, 175, 226, 251: lower `??` over an operand that is
@@ -345,7 +334,11 @@ that does to the deferred lane by default.
   image half (`base_color_texture`, filled by the `.babylon` loader), so a
   scene-code write adds that write plus the right `uv_invert_y`: false for
   `loadTexture2D`, true for the KTX2/Basis and texture-array uploads
-  `pinned-standard-variants.ts` already names. Scenes 18 and 272 block here
+  `pinned-standard-variants.ts` already names. The
+  `createTexture2DFromPixels` source shipped with scene 282 and is the
+  template — the record takes the texels and the texture-object properties,
+  and `TextureData::rgba_width`/`rgba_height` tell the shared upload the
+  bytes need no decode. Scenes 18 and 272 block here
   and each wants more besides: 18 the shadow family and `loadTexture2D`,
   272 `cloneTransformNode` and `createSolidTexture2D`. Scenes 25 and 90
   block earlier, on `loadKtxTexture2D` and on a canvas2D data URL built in

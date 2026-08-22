@@ -68,6 +68,7 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./lowering/context.js";
+import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 /** The material fields the pin's Standard feature derivation reads. */
@@ -94,6 +95,9 @@ export interface PinnedStandardMaterialInput {
     disableLighting?: boolean;
     /** Defaults to the pin's 1; below 1 adds `MATERIAL_ALPHA_BLEND`. */
     alpha?: number;
+    /** `enableMaterialUvTransform(material)` marked this material, which is
+     *  what `stdUvTransformExt._meshFeatures` reads. */
+    _hasUvTx?: boolean;
     [key: string]: unknown;
 }
 
@@ -168,17 +172,11 @@ interface StdExtDescriptor {
  * 1.23 moved each texture's detection into its extension's own `_detect`, so
  * an unregistered one silently contributes no bit.
  *
- * The pin ships two more, and both are deliberately absent because both
- * rewrite mesh bits into feature bits through `_meshFeatures`, which makes
- * their registration observable rather than free:
- *
- * - `stdSkeletonExt`, registered only by `enableStandardSkeleton()`.
- * - `stdUvTransformExt` (1.21), registered only by
- *   `enableMaterialUvTransform()`, whose `_meshFeatures` reads
- *   `material._hasUvTx`.
- *
- * No reached scene calls either enabler, and a material arriving with either
- * throws below rather than composing without the fragment.
+ * The pin ships two more that contribute through `_meshFeatures` instead of
+ * `_detect`; `standardMeshFeatureExtensionModules` below carries the one this
+ * port composes, and `stdSkeletonExt` stays absent because no reached scene
+ * calls `enableStandardSkeleton()` and a mesh arriving with a skeleton throws
+ * below rather than composing without the fragment.
  */
 const standardExtensionModules: ReadonlyArray<readonly [string, string]> = [
     ["material/standard/fragments/normal-map-fragment.js", "bumpStdExt"],
@@ -197,6 +195,29 @@ const standardExtensionModules: ReadonlyArray<readonly [string, string]> = [
     ],
 ];
 
+/**
+ * The pin's mesh-phase extension: it carries no `_detect` at all and
+ * contributes its feature bit from `_meshFeatures(meshFeatures, material)`.
+ *
+ * Registering it is still free for every other scene, which is what keeps it
+ * beside the eight rather than behind a per-scene switch: its `_meshFeatures`
+ * reads `material._hasUvTx`, nothing but `enableMaterialUvTransform` sets
+ * that, and `_computeStandardMaterialFeatures`' own loop skips an extension
+ * with no `_detect`. So the process-global registry stays independent of
+ * which scene composes first, exactly as the eight above do. What IS gated on
+ * reach is the generated derivation line, because that is where the pin's own
+ * opt-in lives — a scene that never calls the enabler compiles the same
+ * bytes it always did.
+ */
+const standardMeshFeatureExtensionModules: ReadonlyArray<
+    readonly [string, string]
+> = [
+    [
+        "material/standard/fragments/std-uv-transform-fragment.js",
+        "stdUvTransformExt",
+    ],
+];
+
 /** A `lib`-relative runtime module, as the source path its AST is read at. */
 function pinnedSourcePath(runtimeModule: string): string {
     return `src/${runtimeModule.replace(/\.js$/, ".ts")}`;
@@ -209,7 +230,12 @@ async function registerStandardExtensions(): Promise<void> {
         const flags = await importPinnedModule<{
             _registerStdExt: (ext: StdExtDescriptor) => void;
         }>("material/standard/standard-flags.js");
-        for (const [path, exportName] of standardExtensionModules) {
+        for (
+            const [path, exportName] of [
+                ...standardExtensionModules,
+                ...standardMeshFeatureExtensionModules,
+            ]
+        ) {
             const module = await importPinnedModule<
                 Record<string, StdExtDescriptor>
             >(path);
@@ -263,6 +289,30 @@ export async function pinnedStandardMaterialFeatures(
         backFaceCulling: material.backFaceCulling ?? true,
         alpha: material.alpha ?? 1,
     });
+}
+
+/**
+ * The feature word one renderable composes with.
+ *
+ * `buildStandardMeshRenderables` ORs every registered extension's
+ * `_meshFeatures(meshFeatures, material)` onto the material's own word before
+ * composing and before keying its caches, so a selector row keyed on the
+ * material word alone would never match a marked material at run time. This
+ * is that OR, taken from the same registry.
+ */
+export async function pinnedStandardRenderableFeatures(
+    material: PinnedStandardMaterialInput,
+    meshFeatures: number,
+): Promise<number> {
+    const features = await pinnedStandardMaterialFeatures(material);
+    const flags = await importPinnedModule<{
+        _getStdExtsSorted: () => readonly StdExtDescriptor[];
+    }>("material/standard/standard-flags.js");
+    let word = features;
+    for (const ext of flags._getStdExtsSorted()) {
+        word |= ext._meshFeatures?.(meshFeatures, material) ?? 0;
+    }
+    return word;
 }
 
 /**
@@ -398,14 +448,6 @@ export async function composePinnedStandardVariant(
                 "reaches them through enableStandardSkeleton(), which " +
                 "registers stdSkeletonExt and rewrites mesh bits into " +
                 "HAS_SKELETON, and no reached scene enables it.",
-        );
-    }
-    if ((material as { _hasUvTx?: unknown })._hasUvTx) {
-        throw new Error(
-            "Pinned Standard UV transforms are not composable yet: upstream " +
-                "reaches them through enableMaterialUvTransform(), which " +
-                "registers stdUvTransformExt and rewrites mesh bits into " +
-                "STD_HAS_UV_TRANSFORM, and no reached scene enables it.",
         );
     }
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
@@ -676,6 +718,10 @@ const standardFeatureRecordSources: Readonly<
         "!material.base_color_texture.bytes.empty() || " +
         "material.has_diffuse_render_texture",
     diffuseCoordIndex: "material.diffuse_coord_index",
+    // `enableMaterialUvTransform(material)` marks a hand-built material for
+    // per-texture transforms; the flag is what `stdUvTransformExt`'s
+    // `_meshFeatures` reads, and the only thing that sets it.
+    _hasUvTx: "material.has_uv_transform",
     // `setStandardEmissiveTexture` is the only native source of a Standard
     // emissive texture (the .babylon loader loads none), and it is always the
     // pin's depth-sampled render texture, so both the presence bit and the
@@ -721,18 +767,20 @@ const standardFeatureRecordSources: Readonly<
  */
 function lowerStandardFeatureDerivation(
     context: LoweringContext,
+    uvTransform: boolean,
 ): string {
     const modulePath = "src/material/standard/standard-material.ts";
     const { file, declaration } = context.functionDeclaration(
         modulePath,
         "_computeStandardMaterialFeatures",
     );
+    // A mesh-phase extension declares its own bit in its own module -- the
+    // reserved Standard bit is kept there so a scene that never opts in
+    // retains no shared constant -- so the flag lookup falls through to the
+    // module being lowered before failing.
+    let flagModule = "src/material/standard/standard-flags.ts";
     const flagValue = (name: string): number =>
-        pinnedNumericConstant(
-            context,
-            "src/material/standard/standard-flags.ts",
-            name,
-        );
+        pinnedNumericConstant(context, flagModule, name);
     /** Whether a branch body is the pin's `return 0` early out. */
     const returnsZero = (branch: ts.Statement): boolean => {
         const only = ts.isBlock(branch)
@@ -958,6 +1006,68 @@ function lowerStandardFeatureDerivation(
         }
         scope = previous;
     };
+    /**
+     * One mesh-phase extension's `_meshFeatures`, as the lines it adds.
+     *
+     * `buildStandardMeshRenderables` ORs each registered extension's
+     * `_meshFeatures(meshFeatures, material)` into the feature word before
+     * composing, and `composePinnedStandardVariant` does the same at
+     * generation -- so the runtime derivation has to add the same bit or a
+     * marked material would key a variant that was never composed. The body
+     * is the `cond ? FLAG : 0` shape `lowerFlagExpression` already reads, with
+     * the material named by the hook's *second* parameter.
+     */
+    const lowerMeshFeatures = (
+        runtimeModule: string,
+        exportName: string,
+        indent: string,
+    ): void => {
+        const source = pinnedSourcePath(runtimeModule);
+        const { declaration: hook } = context.methodDeclaration(
+            source,
+            `${exportName}._meshFeatures`,
+        );
+        const parameter = hook.parameters[1];
+        if (!parameter || !ts.isIdentifier(parameter.name)) {
+            throw new Error(
+                `Pinned ${exportName}._meshFeatures takes no named ` +
+                    "material as its second parameter.",
+            );
+        }
+        // The generated derivation takes the material alone, because
+        // `standard_variant_key` derives the word from the record before it
+        // ORs the mesh bits on. A hook that read its first parameter would
+        // need the mesh word here too, so it fails rather than folding.
+        const meshParameter = hook.parameters[0];
+        if (
+            meshParameter && ts.isIdentifier(meshParameter.name) &&
+            !meshParameter.name.text.startsWith("_")
+        ) {
+            throw new Error(
+                `Pinned ${exportName}._meshFeatures reads its mesh-feature ` +
+                    "parameter, which the generated derivation does not " +
+                    "carry.",
+            );
+        }
+        const previousScope = scope;
+        const previousModule = flagModule;
+        scope = newScope(parameter.name.text);
+        flagModule = source;
+        lines.push(`${indent}// ${exportName}`);
+        const body = hook.body;
+        if (!body) {
+            throw new Error(
+                `Pinned ${exportName}._meshFeatures has no body.`,
+            );
+        }
+        if (ts.isBlock(body)) {
+            lowerStatements(body.statements, indent);
+        } else {
+            lowerFlagExpression(body, indent);
+        }
+        scope = previousScope;
+        flagModule = previousModule;
+    };
     const lowerStatements = (
         statements: readonly ts.Statement[],
         indent: string,
@@ -1005,6 +1115,19 @@ function lowerStandardFeatureDerivation(
             if (ts.isForOfStatement(statement)) {
                 for (const [module, name] of standardExtensionModules) {
                     lowerDetect(module, name, indent);
+                }
+                // The mesh-phase extensions contribute in the renderable
+                // builder rather than here, but their bit is part of the
+                // same word this function's callers key a variant by. Only a
+                // scene that reached the pin's own enabler emits the line,
+                // which is where upstream registers the extension at all.
+                if (uvTransform) {
+                    for (
+                        const [module, name] of
+                            standardMeshFeatureExtensionModules
+                    ) {
+                        lowerMeshFeatures(module, name, indent);
+                    }
                 }
                 continue;
             }
@@ -1088,6 +1211,12 @@ export interface StandardSceneCompositionInput {
     /** `material:standard-diffuse-render-texture` reached: scene code hands
      *  a colour attachment to `material.diffuseTexture`. */
     diffuseRenderTexture: boolean;
+    /** `material:standard-diffuse-pixels-texture` reached: scene code hands
+     *  a `createTexture2DFromPixels` texture to `material.diffuseTexture`. */
+    diffusePixelsTexture: boolean;
+    /** `material:standard-uv-transform` reached: scene code marked a
+     *  hand-built material with `enableMaterialUvTransform`. */
+    uvTransform: boolean;
     /** `mesh:thin-instances*` reached: pools can attach to scene meshes. */
     thinInstances: boolean;
     /** Morph storage/deformation reached for scene meshes. */
@@ -1224,6 +1353,8 @@ function sceneCodeMaterialInputs(
     options: {
         emissiveRenderTexture: boolean;
         diffuseRenderTexture: boolean;
+        diffusePixelsTexture: boolean;
+        uvTransform: boolean;
     },
 ): PinnedStandardMaterialInput[] {
     const inputs: PinnedStandardMaterialInput[] = [];
@@ -1233,34 +1364,39 @@ function sceneCodeMaterialInputs(
     const emissiveArms = options.emissiveRenderTexture
         ? [false, true]
         : [false];
-    const diffuseArms = options.diffuseRenderTexture
-        ? [false, true]
-        : [false];
+    // A colour attachment and a pixels texture reach the pin's diffuse
+    // condition identically -- a truthy texture at coordinate index 0 -- so
+    // they are one arm of this sweep rather than two. What differs between
+    // them is the record the runtime fills and the UV block it produces,
+    // neither of which is a composition key.
+    const diffuseArms =
+        options.diffuseRenderTexture || options.diffusePixelsTexture
+            ? [false, true]
+            : [false];
+    const uvTransformArms = options.uvTransform ? [false, true] : [false];
     for (const disableLighting of [false, true]) {
         for (const doubleSided of [false, true]) {
             for (const alphaBlend of [false, true]) {
                 for (const emissive of emissiveArms) {
                     for (const diffuse of diffuseArms) {
-                        inputs.push({
-                            ...(disableLighting
-                                ? { disableLighting: true }
-                                : {}),
-                            backFaceCulling: !doubleSided,
-                            alpha: alphaBlend ? 0.5 : 1,
-                            ...(emissive
-                                ? {
-                                    emissiveTexture: {
-                                        _sampleType: "depth",
-                                    },
-                                }
-                                : {}),
-                            // A colour attachment reaches the pin's
-                            // condition as a plain truthy texture at
-                            // coordinate index 0; what makes it a render
-                            // texture is invertY, which the UV block reads
-                            // rather than the feature word.
-                            ...(diffuse ? { diffuseTexture: {} } : {}),
-                        });
+                        for (const uvTransform of uvTransformArms) {
+                            inputs.push({
+                                ...(disableLighting
+                                    ? { disableLighting: true }
+                                    : {}),
+                                backFaceCulling: !doubleSided,
+                                alpha: alphaBlend ? 0.5 : 1,
+                                ...(emissive
+                                    ? {
+                                        emissiveTexture: {
+                                            _sampleType: "depth",
+                                        },
+                                    }
+                                    : {}),
+                                ...(diffuse ? { diffuseTexture: {} } : {}),
+                                ...(uvTransform ? { _hasUvTx: true } : {}),
+                            });
+                        }
                     }
                 }
             }
@@ -1293,6 +1429,8 @@ export async function composeSceneStandardVariants(
             ...sceneCodeMaterialInputs({
                 emissiveRenderTexture: input.emissiveRenderTexture,
                 diffuseRenderTexture: input.diffuseRenderTexture,
+                diffusePixelsTexture: input.diffusePixelsTexture,
+                uvTransform: input.uvTransform,
             }),
         );
     }
@@ -1312,9 +1450,16 @@ export async function composeSceneStandardVariants(
         // resolvable id: the pin's plain defaults.
         materialInputs.push({});
     }
+    // Keyed by the word a renderable derives rather than the material's own,
+    // because a mesh-phase extension contributes bits `_detect` never sees:
+    // two sweep arms differing only in `_hasUvTx` derive the same material
+    // word and must still compose two variants. The mesh argument is zero
+    // here and that is exact -- `lowerStandardFeatureDerivation` refuses a
+    // `_meshFeatures` hook that reads it, so no registered hook can depend
+    // on the mesh word.
     const featureValues: number[] = [];
     for (const material of materialInputs) {
-        const features = await pinnedStandardMaterialFeatures(material);
+        const features = await pinnedStandardRenderableFeatures(material, 0);
         if (!featureValues.includes(features)) {
             featureValues.push(features);
         }
@@ -1324,7 +1469,7 @@ export async function composeSceneStandardVariants(
     // value stands for every material sharing it.
     const representative = new Map<number, PinnedStandardMaterialInput>();
     for (const material of materialInputs) {
-        const features = await pinnedStandardMaterialFeatures(material);
+        const features = await pinnedStandardRenderableFeatures(material, 0);
         if (!representative.has(features)) {
             representative.set(features, material);
         }
@@ -1400,9 +1545,16 @@ export async function composeSceneStandardVariants(
             variant: index,
         });
     };
-    for (const features of featureValues) {
-        const material = representative.get(features)!;
+    for (const materialFeatures of featureValues) {
+        const material = representative.get(materialFeatures)!;
         for (const meshFeatures of meshValues) {
+            // The word the runtime derives, mesh-phase extensions included:
+            // the selector is keyed by what `standard_variant_key` computes,
+            // not by the material's own bits.
+            const features = await pinnedStandardRenderableFeatures(
+                material,
+                meshFeatures,
+            );
             const vertexColors = input.vertexColors &&
                     (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
                 ? { vertexColors: { vertexAlpha: false } }
@@ -1498,6 +1650,10 @@ export function babylonRenderableCount(documentText: string): number {
 /** Inputs for the native-support block appended to standard_variants.hpp. */
 export interface PinnedStandardSupportOptions {
     selectors: readonly PinnedStandardSelector[];
+    /** `material:standard-uv-transform` reached: scene code called the pin's
+     *  own `enableMaterialUvTransform(material)`, so the derived feature word
+     *  has to carry the extension's mesh-phase bit. */
+    uvTransform: boolean;
     /** Mesh-feature bits per runtime mesh handle, creation-ordered across
      *  every loaded asset's renderables and the scene-code meshes. */
     renderableMeshFeatures: readonly number[];
@@ -1532,7 +1688,32 @@ export function pinnedStandardSupportBlock(
             "src/material/mesh-features.ts",
             name,
         );
-    const derivation = lowerStandardFeatureDerivation(context);
+    const derivation = lowerStandardFeatureDerivation(
+        context,
+        options.uvTransform,
+    );
+    // The mesh-phase extension's own uniform block, emitted only for a scene
+    // that reached the pin's enabler -- the same gate the derivation line
+    // above takes, and the same one upstream's registration takes.
+    const uvTransform = options.uvTransform
+        ? lowerStandardUvTransformWriter(context)
+        : undefined;
+    const uvTransformBlock = uvTransform
+        ? `
+// src/material/standard/fragments/std-uv-transform-fragment.ts
+// stdUvTxUniforms -- the vertex-stage block the extension declares, one
+// 2x2 matrix plus a translation per Standard texture channel.
+struct StandardUvTxUniforms {
+    std::array<float, ${uvTransform.floatsPerChannel * uvTransform.channelCount}> data{};
+};
+static_assert(
+    sizeof(StandardUvTxUniforms) ==
+        ${uvTransform.floatsPerChannel * uvTransform.channelCount * 4},
+    "The pinned Standard UV transform block is "
+    "${uvTransform.channelCount} channels of "
+    "${uvTransform.floatsPerChannel} floats.");
+${uvTransform.source}`
+        : "";
     const selectorRows = options.selectors.map((selector) =>
         `    {${selector.features}u, ${selector.meshFeatures}u, ` +
         `${
@@ -1643,6 +1824,7 @@ inline bool standard_uv_inverted(
 //  - lightmap_level: no record field exists and no generated loader fills
 //    the pin's input, so the pin's own default in StandardMaterialProps
 //    stands.
+${uvTransformBlock}
 inline StandardMaterialProps standard_material_props(
     const MaterialRecord& material) {
     StandardMaterialProps props{};

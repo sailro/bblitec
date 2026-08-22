@@ -224,6 +224,8 @@ const featureSources: Record<Feature, string[]> = {
     "material:shader": [],
     "material:standard": [],
     "material:standard-diffuse-render-texture": [],
+    "material:standard-diffuse-pixels-texture": [],
+    "material:standard-uv-transform": [],
     "material:standard-emissive-render-texture": [],
     "material:standard-vertex-colors": [],
     "mesh:box": [],
@@ -398,6 +400,16 @@ class Compiler
         textures: [],
         sprite2d: [],
     };
+    /**
+     * Pixels-texture locals already handed to a material slot.
+     *
+     * The slot takes a copy where the pin binds the one `Texture2D` object,
+     * so a `texture.uScale = ...` write afterwards would move the local and
+     * not the material -- a silent divergence rather than a different image.
+     * The names are the generated locals', which is what makes the check
+     * hold across scopes.
+     */
+    public readonly boundPixelsTextures = new Set<string>();
     /** The pinned tone-mapping export the scene selected, if any. */
     private selectedToneMapping: string | undefined;
     private readonly reachedEffects_: EffectManifest[] = [];

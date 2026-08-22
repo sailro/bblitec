@@ -431,6 +431,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/standard/set-std-emissive.ts + src/texture/rtt.ts",
         consumers: CMAKE,
     },
+    "material:standard-diffuse-pixels-texture": {
+        provenance:
+            "src/material/standard/standard-material.ts diffuseTexture + " +
+            "src/texture/pixels-texture.ts",
+        consumers: CMAKE,
+    },
+    "material:standard-uv-transform": {
+        provenance:
+            "src/material/enable-material-uv-transform.ts + " +
+            "src/material/standard/fragments/std-uv-transform-fragment.ts",
+        consumers: CMAKE,
+    },
     "texture:file": {
         provenance:
             "src/texture/texture-2d.ts + src/texture/solid-texture.ts",

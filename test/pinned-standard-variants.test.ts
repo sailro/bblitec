@@ -22,12 +22,16 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
-test("registers the pin's eight Standard material extensions", async () => {
+test("registers the pin's nine Standard material extensions", async () => {
     // Sorted by id — `_getStdExtsSorted` localeCompares — which is the
     // iteration order that decides fragment order and bind-group order.
+    // `stdUvTransformExt` sorts first and contributes nothing to a material
+    // `enableMaterialUvTransform` did not mark, which is what lets it be
+    // registered unconditionally beside the eight `_detect` ones.
     // `stdSkeletonExt` is deliberately absent: upstream registers it only
     // through enableStandardSkeleton(), which no reached scene calls.
     assert.deepEqual(await registeredStandardExtensionIds(), [
+        "0-std-uv-transform",
         "normal-map",
         "std-ambient",
         "std-cube-reflection",
@@ -466,6 +470,8 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             noColorViews: false,
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
+            diffusePixelsTexture: false,
+            uvTransform: false,
             thinInstances: true,
             morphTargets: false,
             sceneMaterials: true,
@@ -524,6 +530,8 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             noColorViews: false,
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
+            diffusePixelsTexture: false,
+            uvTransform: false,
             thinInstances: true,
             morphTargets: false,
             sceneMaterials: true,
@@ -608,6 +616,8 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             noColorViews: false,
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
+            diffusePixelsTexture: false,
+            uvTransform: false,
             thinInstances: false,
             morphTargets: false,
             sceneMaterials: false,
@@ -672,7 +682,8 @@ test("the native-support block flows from the pin's own declarations", async () 
                 variant: 1,
             },
         ],
-        renderableMeshFeatures: [0, 0, 4],
+        uvTransform: false,
+            renderableMeshFeatures: [0, 0, 4],
         runtimeMeshFeatures: 0,
     });
     // The pinned values, evaluated from their own declarations rather than
@@ -762,6 +773,7 @@ test("the native-support block flows from the pin's own declarations", async () 
                     variant: 1,
                 },
             ],
+            uvTransform: false,
             renderableMeshFeatures: [0, 0, 4],
             runtimeMeshFeatures: 0,
         }),

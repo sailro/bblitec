@@ -2016,6 +2016,30 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene282",
+        name: "Scene 282 - Standard UV Transform",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene282.ts",
+        title: "Babylon Lite Native - Standard UV Transform",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [9, 11, 18],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene220",
+        name: "Scene 220 - Quantized Duck",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene220.ts",
+        title: "Babylon Lite Native - Quantized Duck",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.003,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

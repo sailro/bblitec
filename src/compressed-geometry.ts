@@ -1,4 +1,4 @@
-// Compressed glTF geometry, decoded at generation time.
+// Compressed and quantized glTF geometry, resolved at generation time.
 //
 // `KHR_draco_mesh_compression` and `EXT_meshopt_compression` are decoded by
 // WebAssembly modules that Babylon Lite loads at run time from
@@ -12,8 +12,13 @@
 // decompression dependency and preserves the rule that a built scene opens
 // only local files. What ships is ordinary geometry.
 //
-// An asset that uses neither extension is returned unchanged, so the pass
-// cannot churn the assets that do not need it.
+// `KHR_mesh_quantization` joins them for the same reason and by an easier
+// route: its whole implementation is one pinned `preParse` hook over the
+// document and its binary chunk, with no browser API in it, so generation
+// runs the pin's own module rather than reimplementing the conversion.
+//
+// An asset that uses none of them is returned unchanged, so a pass cannot
+// churn the assets that do not need it.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
@@ -25,10 +30,12 @@ import {
     asObject,
     type JsonRecord,
 } from "./gltf-document.js";
+import { importPinnedModule } from "./pinned-shader-composer.js";
 import { readUpstreamPin } from "./upstream-source.js";
 
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
+const QUANTIZATION_EXTENSION = "KHR_mesh_quantization";
 
 const COMPONENT_FLOAT = 5126;
 const COMPONENT_UNSIGNED_INT = 5125;
@@ -504,3 +511,110 @@ export async function decompressGeometry(
     return writeGlb(json, built);
 }
 
+
+/**
+ * The pin's own `KHR_mesh_quantization` feature, whose `preParse` hook is the
+ * whole of the extension.
+ *
+ * It rewrites every quantized accessor into a freshly-appended tightly-packed
+ * FLOAT bufferView so the rest of the loader stays unaware of quantization —
+ * a pure function of the asset's own bytes, which is what makes running it at
+ * generation the same answer the browser computes rather than a second
+ * implementation of it. Upstream imports the module only when `extensionsUsed`
+ * lists the extension, so this is also where that boundary belongs: a
+ * non-quantized asset is returned untouched.
+ */
+interface QuantizationFeature {
+    default: {
+        id: string;
+        preParse?: (
+            json: JsonRecord,
+            binChunk: DataView,
+        ) => Promise<DataView | undefined>;
+    };
+}
+
+let quantizationFeature: Promise<QuantizationFeature["default"]> | undefined;
+
+async function loadQuantizationFeature(): Promise<
+    QuantizationFeature["default"]
+> {
+    quantizationFeature ??= (async () => {
+        const module = await importPinnedModule<QuantizationFeature>(
+            "loader-gltf/gltf-ext-quantization.js",
+        );
+        const feature = module.default;
+        if (feature?.id !== QUANTIZATION_EXTENSION || !feature.preParse) {
+            throw new Error(
+                "Pinned loader-gltf/gltf-ext-quantization.js no longer " +
+                    `exports a default ${QUANTIZATION_EXTENSION} feature ` +
+                    "with a preParse hook.",
+            );
+        }
+        return feature;
+    })();
+    return quantizationFeature;
+}
+
+/**
+ * Rewrites every quantized vertex accessor into tightly-packed floats.
+ *
+ * Returns the asset unchanged when it does not use the extension. Runs after
+ * `decompressGeometry`, which is where the pin runs it too — its `preParse`
+ * is ordered after `EXT_meshopt_compression`'s, because a meshopt-filtered
+ * animation output is itself quantized data the hook has to see.
+ */
+export async function dequantizeGeometry(
+    bytes: Uint8Array,
+    label: string,
+): Promise<Uint8Array> {
+    const glb = readGlb(bytes);
+    if (!glb) return bytes;
+    const used = Array.isArray(glb.json.extensionsUsed)
+        ? (glb.json.extensionsUsed as string[])
+        : [];
+    if (!used.includes(QUANTIZATION_EXTENSION)) {
+        return bytes;
+    }
+
+    const json = glb.json;
+    const feature = await loadQuantizationFeature();
+    const binChunk = new DataView(
+        glb.binary.buffer,
+        glb.binary.byteOffset,
+        glb.binary.byteLength,
+    );
+    const rewritten = await feature.preParse?.(json, binChunk);
+    if (!rewritten) {
+        throw new Error(
+            `${label} declares ${QUANTIZATION_EXTENSION} but the pinned ` +
+                "feature converted no accessor, which means the asset " +
+                "carries a quantized shape neither side would dequantize.",
+        );
+    }
+
+    const built = Buffer.from(
+        rewritten.buffer,
+        rewritten.byteOffset,
+        rewritten.byteLength,
+    );
+    json.buffers = [{ byteLength: built.length }];
+    // The bytes no longer carry the extension, so neither may the document:
+    // leaving it in `extensionsRequired` would make the packaged asset
+    // declare a requirement its own accessors no longer express, and the
+    // specializer reads these lists to decide what the pinned loader would do
+    // with the asset it is handed.
+    json.extensionsUsed = used.filter(
+        (name) => name !== QUANTIZATION_EXTENSION,
+    );
+    if (Array.isArray(json.extensionsRequired)) {
+        json.extensionsRequired = (
+            json.extensionsRequired as string[]
+        ).filter((name) => name !== QUANTIZATION_EXTENSION);
+        if ((json.extensionsRequired as string[]).length === 0) {
+            delete json.extensionsRequired;
+        }
+    }
+    console.log(`Dequantized ${label} through the pinned feature.`);
+    return writeGlb(json, built);
+}

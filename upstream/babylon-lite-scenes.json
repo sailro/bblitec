@@ -758,6 +758,18 @@
       "upstreamPath": "lab/lite/src/lite/scene279.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene279.ts",
       "sha256": "d1bc889ae8eefa5bd70f053385882f53f856bedfdb9f93f9d0e9e76979b5321e"
+    },
+    {
+      "id": "scene220",
+      "upstreamPath": "lab/lite/src/lite/scene220.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene220.ts",
+      "sha256": "af8cf834c816bde7ffb671047aaa74c359ae33daf85a255f2430819f40261d94"
+    },
+    {
+      "id": "scene282",
+      "upstreamPath": "lab/lite/src/lite/scene282.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene282.ts",
+      "sha256": "c49adf4bf7d04916f00421242a94454a3c2e012880214c614e923b601d23608c"
     }
   ],
   "modules": [
@@ -940,6 +952,11 @@
       "upstreamPath": "lab/lite/src/shared/npe-sprite2d-fixture.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/npe-sprite2d-fixture.ts",
       "sha256": "438ccab47cc44670e48ae2bb0d69ff000bdde2b152f61765c831dab63dc477d6"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene282-standard-uv-transform.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene282-standard-uv-transform.ts",
+      "sha256": "97940072b0133f03281a2b1c4e68d2bf03df954a5491d95f6622a3fff7cb2d8a"
     }
   ]
 }

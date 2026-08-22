@@ -3076,13 +3076,44 @@ MaterialHandle create_grid_material(
     public lowerStandardTextureSetters(
         diffuse: boolean,
         emissive: boolean,
+        pixels: boolean,
+        uvTransform: boolean,
     ): LoweredSource {
         const rttModule = "src/texture/rtt.ts";
+        if (uvTransform) {
+            // The pin's enabler is a mark plus a lazy module preload; the
+            // preload has no native counterpart, so the assignment is the
+            // whole of it and its shape is asserted before it is restated
+            // as a record write.
+            this.context.assertExpressionShape(
+                this.context
+                    .functionDeclaration(
+                        "src/material/enable-material-uv-transform.ts",
+                        "enableMaterialUvTransform",
+                    )
+                    .declaration.body!.statements.filter(
+                        (statement) => ts.isExpressionStatement(statement),
+                    )
+                    .map((statement) => statement.expression)
+                    .find(
+                        (expression) =>
+                            ts.isBinaryExpression(expression) &&
+                            expression.operatorToken.kind ===
+                                ts.SyntaxKind.EqualsToken &&
+                            ts.isPropertyAccessExpression(expression.left) &&
+                            expression.left.name.text === "_hasUvTx",
+                    )!,
+                "std._hasUvTx = true",
+                "enableMaterialUvTransform mark",
+            );
+        }
         return {
             modulePath: rttModule,
             symbolName: [
                 ...(diffuse ? ["material.diffuseTexture"] : []),
                 ...(emissive ? ["setStandardEmissiveTexture"] : []),
+                ...(pixels ? ["material.diffuseTexture#pixels"] : []),
+                ...(uvTransform ? ["enableMaterialUvTransform"] : []),
             ].join(","),
             header: "",
             source: `// ${this.context.provenance(
@@ -3138,6 +3169,39 @@ void set_standard_emissive_texture(
     MaterialRecord& record = render_texture_material(engine, material);
     record.emissive_render_texture = texture;
     record.has_emissive_render_texture = true;
+}
+` : ""}${pixels ? `
+// The same slot, filled by a createTexture2DFromPixels texture. Upstream
+// has one Texture2D whatever built it and the assignment is a plain field
+// write, so the record takes the texels, the sampler, and the texture-object
+// properties a marked material's UV transform reads back. rgba_width/height
+// are what tell the shared upload these bytes are already texels rather than
+// an encoded file.
+void set_standard_diffuse_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const PixelsTexture& texture) {
+    MaterialRecord& record = render_texture_material(engine, material);
+    TextureData& slot = record.base_color_texture;
+    slot.bytes = texture.rgba;
+    slot.rgba_width = texture.width;
+    slot.rgba_height = texture.height;
+    slot.sampler = texture.sampler;
+    slot.uv_transform = texture.uv_transform;
+    slot.uv_invert_y = texture.uv_invert_y;
+}
+` : ""}${uvTransform ? `
+// src/material/enable-material-uv-transform.ts enableMaterialUvTransform
+//
+// Upstream this marks the material and preloads the extension's fragment
+// module so the group builder can compose it. Generation composes against
+// the extension either way, so the mark is the whole native contract: it is
+// what stdUvTransformExt._meshFeatures reads back, and therefore what
+// standard_material_features ORs into the variant key.
+void enable_material_uv_transform(
+    Engine& engine,
+    MaterialHandle material) {
+    render_texture_material(engine, material).has_uv_transform = true;
 }
 ` : ""}
 } // namespace bbl

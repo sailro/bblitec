@@ -938,18 +938,22 @@ npm run scene -- neutrality artifacts/parity-baseline
 `status:verify` performs the published half of the same comparison.
 
 It already knows the movements that are not findings: scenes 9, 37 and 120 do
-not render bit-identically on Dawn from one run to the next, so their Dawn
-cells move for any change and for no change alike. Those are reported as
-expected wobble and excluded from the exit status; every other moved cell is
-real. Only their *Dawn* cells — SDL_GPU and single-sampled Dawn are both
-bit-stable, which places the wobble in the multisampled Dawn path.
+not render bit-identically from one run to the next, so those cells move for
+any change and for no change alike. They are reported as expected wobble and
+excluded from the exit status; every other moved cell is real. The mover is
+multisampling rather than a backend — at one sample every one of the three
+is byte-identical across runs — so the whitelist is per scene AND per
+backend: scene 9 wobbles on Dawn alone and is measured bit-stable on SDL_GPU,
+while scenes 37 and 120 wobble on both. A cross-backend cell moves when either
+side does, so one wobbling backend excuses it; each scene's own
+`goldenVersusSdlGpu` cells stay compared regardless.
 
 Nothing else is on that list, and the entry fee is a measurement rather than a
-surprising neutrality run: `scene -- stability <id> --backend dawn` has to show
+surprising neutrality run: `scene -- stability <id> --backend <b>` has to show
 the re-runs differing and `--single-sample` has to show them stop. A whitelist
-entry excuses that scene's Dawn cells permanently, so it hides any Dawn
-regression smaller than the wobble — scene 120's spans 0.002 against a 0.004
-Dawn foreground.
+entry excuses those cells permanently, so it hides any regression smaller than
+the wobble — scene 120's spans 0.002 against a 0.004 Dawn foreground on
+Dawn, and measures 0.000250 peak on SDL_GPU against scene 37's 0.000059.
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat

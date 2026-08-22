@@ -161,6 +161,12 @@ struct DawnDrawState {
     WGPUBuffer mesh_uniforms = nullptr;
     WGPUBuffer material_uniforms = nullptr;
     WGPUBuffer uv_uniforms = nullptr;
+#if BBLITE_STANDARD_UV_TRANSFORM
+    // stdUvTransformExt's own block, beside the base `up` one: the pin
+    // binds both on a marked material and the extension's assignment is
+    // what the varying ends up carrying.
+    WGPUBuffer uv_transform_uniforms = nullptr;
+#endif
     WGPUBindGroup group = nullptr;
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = std::numeric_limits<std::size_t>::max();
@@ -174,6 +180,11 @@ inline void release_dawn_draw_states(
     std::map<Key, DawnDrawState>& states) {
     for (auto& [key, draw_state] : states) {
         if (draw_state.group) wgpuBindGroupRelease(draw_state.group);
+#if BBLITE_STANDARD_UV_TRANSFORM
+        if (draw_state.uv_transform_uniforms) {
+            wgpuBufferRelease(draw_state.uv_transform_uniforms);
+        }
+#endif
         if (draw_state.uv_uniforms) {
             wgpuBufferRelease(draw_state.uv_uniforms);
         }
@@ -3102,6 +3113,9 @@ WGPUBindGroup build_standard_draw_group(
     WGPUBuffer mesh_uniforms,
     WGPUBuffer material_uniforms,
     WGPUBuffer uv_uniforms,
+#if BBLITE_STANDARD_UV_TRANSFORM
+    WGPUBuffer uv_transform_uniforms,
+#endif
     WGPUBuffer geometry_params,
     StandardRenderViews render_views) {
     const WGPUTextureView emissive_render_view = render_views.emissive;
@@ -3148,6 +3162,11 @@ WGPUBindGroup build_standard_draw_group(
                 group_entry.buffer = uv_uniforms;
                 group_entry.size =
                     sizeof(upstream::StandardUvTransformUniforms);
+#if BBLITE_STANDARD_UV_TRANSFORM
+            } else if (binding.name == "stdUvTx") {
+                group_entry.buffer = uv_transform_uniforms;
+                group_entry.size = sizeof(upstream::StandardUvTxUniforms);
+#endif
             } else if (binding.name == "gp" && geometry_params) {
                 group_entry.buffer = geometry_params;
                 group_entry.size = sizeof(PinnedGeometryParams);
@@ -3303,6 +3322,12 @@ DawnDrawState& ensure_standard_draw_buffers(
         draw_state.uv_uniforms =
             uniform_buffer(sizeof(upstream::StandardUvTransformUniforms));
     }
+#if BBLITE_STANDARD_UV_TRANSFORM
+    if (!draw_state.uv_transform_uniforms) {
+        draw_state.uv_transform_uniforms =
+            uniform_buffer(sizeof(upstream::StandardUvTxUniforms));
+    }
+#endif
     return draw_state;
 }
 
@@ -3348,7 +3373,12 @@ void write_standard_draw_blocks(
     std::size_t variant,
     WGPUBuffer mesh_uniforms,
     WGPUBuffer material_uniforms,
-    WGPUBuffer uv_uniforms) {
+    WGPUBuffer uv_uniforms
+#if BBLITE_STANDARD_UV_TRANSFORM
+    ,
+    WGPUBuffer uv_transform_uniforms
+#endif
+) {
     const MeshRecord& record = engine.meshes[draw.item.mesh.value];
     const MaterialRecord* material =
         draw.item.material.value < engine.materials.size()
@@ -3390,6 +3420,16 @@ void write_standard_draw_blocks(
         0,
         &uv_block,
         sizeof(uv_block));
+#if BBLITE_STANDARD_UV_TRANSFORM
+    const upstream::StandardUvTxUniforms uv_transform =
+        standard_uv_transform_block(material);
+    wgpuQueueWriteBuffer(
+        state.queue,
+        uv_transform_uniforms,
+        0,
+        &uv_transform,
+        sizeof(uv_transform));
+#endif
 }
 
 /**
@@ -3490,7 +3530,12 @@ void write_standard_geometry_task(
                 variant,
                 draw_state.mesh_uniforms,
                 colour_state.material_uniforms,
-                colour_state.uv_uniforms);
+                colour_state.uv_uniforms
+#if BBLITE_STANDARD_UV_TRANSFORM
+                ,
+                colour_state.uv_transform_uniforms
+#endif
+            );
             if (!draw_state.group) {
                 draw_state.group = build_standard_draw_group(
                     state,
@@ -3500,6 +3545,9 @@ void write_standard_geometry_task(
                     draw_state.mesh_uniforms,
                     colour_state.material_uniforms,
                     colour_state.uv_uniforms,
+#if BBLITE_STANDARD_UV_TRANSFORM
+                    colour_state.uv_transform_uniforms,
+#endif
                     geometry.pinned_geometry_params,
                     // A geometry task writes the MRT attachments and
                     // samples neither slot, and its layout arm is the
@@ -7621,7 +7669,12 @@ bool run_dawn_engine(Engine& engine) {
                             variant,
                             standard_state.mesh_uniforms,
                             standard_state.material_uniforms,
-                            standard_state.uv_uniforms);
+                            standard_state.uv_uniforms
+#if BBLITE_STANDARD_UV_TRANSFORM
+                            ,
+                            standard_state.uv_transform_uniforms
+#endif
+                        );
 #else
                         dawn_error(
                             "Standard draw in a build with no composed "
@@ -8123,6 +8176,9 @@ bool run_dawn_engine(Engine& engine) {
                             standard_state.mesh_uniforms,
                             standard_state.material_uniforms,
                             standard_state.uv_uniforms,
+#if BBLITE_STANDARD_UV_TRANSFORM
+                            standard_state.uv_transform_uniforms,
+#endif
                             nullptr,
                             standard_render_views(
                                 state,

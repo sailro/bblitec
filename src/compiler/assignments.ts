@@ -31,6 +31,27 @@ interface RecordFieldAssignment {
     invert?: boolean;
 }
 
+/**
+ * The `Texture2D` properties a scene writes on a texture it built.
+ *
+ * Upstream these are plain fields on the object every loader and factory
+ * returns; `enableMaterialUvTransform` is what makes any of them observable,
+ * because `writeUvTransformData` is the only reader. A texture bound to no
+ * marked material carries them and nothing samples them, exactly as upstream.
+ * `invertY` is the texture-OBJECT property, which is also what
+ * `isStandardUvInverted` reads -- not `loadTexture2D`'s upload flip.
+ */
+const textureRecordFields: Readonly<
+    Record<string, { record: string; value: "number" | "boolean" }>
+> = {
+    uScale: { record: "uv_transform.u_scale", value: "number" },
+    vScale: { record: "uv_transform.v_scale", value: "number" },
+    uOffset: { record: "uv_transform.u_offset", value: "number" },
+    vOffset: { record: "uv_transform.v_offset", value: "number" },
+    uAng: { record: "uv_transform.u_ang", value: "number" },
+    invertY: { record: "uv_invert_y", value: "boolean" },
+};
+
 const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     {
         kind: "material",
@@ -311,6 +332,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
     readonly checker: ts.TypeChecker;
     /** The scene's node-particle program; a texture write lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
+    /** Pixels-texture locals already copied into a material slot. */
+    readonly boundPixelsTextures: Set<string>;
     resolveStaticExpression(
         expression: ts.Expression,
     ): ts.Expression;
@@ -1031,6 +1054,40 @@ export function emitPropertyAssignment(
             return;
         }
 
+        if (target.kind === "texture" && property in textureRecordFields) {
+            const field = textureRecordFields[property]!;
+            requireSimpleAssignment(
+                context,
+                expression,
+                `texture ${property}`,
+            );
+            if (!target.pixelsTexture) {
+                context.fail(
+                    left,
+                    `Reached '${property}' writes land on a ` +
+                        "createTexture2DFromPixels texture; the loaders' " +
+                        "own textures are not written from scene code.",
+                );
+            }
+            if (context.boundPixelsTextures.has(target.cpp)) {
+                context.fail(
+                    left,
+                    `'${property}' is written after this texture was bound ` +
+                        "to a material, where the slot already took its " +
+                        "copy. Upstream binds one object, so the write " +
+                        "would reach the material there and not here.",
+                );
+            }
+            context.emit(
+                `${target.cpp}.${field.record} = ${
+                    field.value === "boolean"
+                        ? context.compileBoolean(expression.right)
+                        : context.compileNumber(expression.right, "double")
+                };`,
+            );
+            return;
+        }
+
         if (
             target.kind === "material" &&
             property === "diffuseTexture"
@@ -1043,6 +1100,24 @@ export function emitPropertyAssignment(
             const texture = context.compileValue(
                 expression.right,
             );
+            // A `createTexture2DFromPixels` texture is the second source
+            // this slot takes. It is a C++ value rather than a handle, so
+            // the record takes a copy and the local is recorded as spent:
+            // a transform write afterwards would move the local where the
+            // pin would have moved the material's own texture object.
+            if (texture.kind === "texture" && texture.pixelsTexture) {
+                context.reachFeature(
+                    "material:standard-diffuse-pixels-texture",
+                    expression,
+                );
+                context.boundPixelsTextures.add(texture.cpp);
+                context.emit(
+                    `bbl::set_standard_diffuse_pixels_texture(` +
+                        `${context.requireEngine(target, expression)}, ` +
+                        `${target.cpp}, ${texture.cpp});`,
+                );
+                return;
+            }
             // An image texture is the other half of this slot and is not
             // lowered: the `.babylon` loader already fills the record's
             // bytes, but no reached scene assigns one from scene code, so
@@ -1050,7 +1125,7 @@ export function emitPropertyAssignment(
             if (texture.kind === "texture") {
                 context.fail(
                     expression.right,
-                    "Reached Standard diffuse textures come from createRenderTargetTexture; an image texture is not lowered.",
+                    "Reached Standard diffuse textures come from createRenderTargetTexture or createTexture2DFromPixels; an image texture is not lowered.",
                 );
             }
             // What this slot accepts, said the way every frame-graph slot

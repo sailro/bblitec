@@ -1611,6 +1611,26 @@ inline upstream::StandardUvTransformUniforms standard_uv_block(
         block);
     return block;
 }
+
+#if BBLITE_STANDARD_UV_TRANSFORM
+/**
+ * `stdUvTransformExt`'s own block, by the pin's own per-channel writer.
+ *
+ * The extension replaces the base `up` block's assignment in the vertex
+ * stage rather than removing it, so both blocks bind on a marked material
+ * and this one is what the varyings actually read.
+ */
+inline upstream::StandardUvTxUniforms standard_uv_transform_block(
+    const MaterialRecord* material) {
+    upstream::StandardUvTxUniforms block{};
+    if (!material) return block;
+    upstream::write_std_uv_transform_data(
+        *material,
+        upstream::standard_material_props(*material),
+        block);
+    return block;
+}
+#endif
 #endif
 
 // Inverse image processing for the linear-frame clear color shared by
@@ -2014,6 +2034,12 @@ inline DecodedImage decode_uploadable_image(
     if (texture_data.bytes.empty()) {
         image.width = image.height = 1;
         image.rgba.assign(fallback.begin(), fallback.end());
+    } else if (texture_data.rgba_width && texture_data.rgba_height) {
+        // Already texels: a `createTexture2DFromPixels` texture bound to a
+        // material slot. Nothing to decode, and the size is the caller's.
+        image.width = static_cast<int>(texture_data.rgba_width);
+        image.height = static_cast<int>(texture_data.rgba_height);
+        image.rgba = texture_data.bytes;
     } else {
         image = decode_image(ts::ArrayBuffer(texture_data.bytes));
     }

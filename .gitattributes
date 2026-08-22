@@ -8,6 +8,12 @@
 *.hpp text eol=lf
 *.json text eol=lf
 *.md text eol=lf
+# A unified diff writes a context line for a blank source line as a bare
+# newline, so a CRLF checkout turns it into a line holding one carriage
+# return -- which `git apply` reads as neither context nor content and
+# rejects as a corrupt patch. The vendored SDL port applies these, so the
+# whole native build depends on them staying LF.
+*.patch text eol=lf
 *.png binary
 *.ts text eol=lf
 *.yml text eol=lf

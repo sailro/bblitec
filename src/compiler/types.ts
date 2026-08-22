@@ -857,6 +857,8 @@ export type Feature =
     | "sprite:uv-scroll"
     | "sprite:custom-shader"
     | "material:standard-diffuse-render-texture"
+    | "material:standard-diffuse-pixels-texture"
+    | "material:standard-uv-transform"
     | "material:standard-emissive-render-texture"
     | "texture:file"
     | "texture:pixels"

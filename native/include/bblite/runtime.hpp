@@ -572,8 +572,37 @@ struct TextureSamplerState {
     float max_lod = 1000.0f;
 };
 
+/**
+ * The pin's `Texture2D` transform properties (`texture-2d.ts`).
+ *
+ * Upstream these are plain fields on the one `Texture2D` every loader and
+ * factory returns, read by `writeUvTransformData` when a material marked by
+ * `enableMaterialUvTransform` builds its renderable. A texture nothing marks
+ * never has them read, which is why the defaults are the identity rather than
+ * a "has transform" flag: the pin has no such flag either.
+ */
+struct TextureUvTransform {
+    // Plain JavaScript numbers upstream, which `writeUvTransformData` reads
+    // into a rotation and a scale before its single float32 store -- so they
+    // are doubles here for the same reason `CameraRecord`'s scalars are.
+    // Rounding them on the record would round one step early.
+    double u_scale = 1.0;
+    double v_scale = 1.0;
+    double u_offset = 0.0;
+    double v_offset = 0.0;
+    double u_ang = 0.0;
+};
+
 struct TextureData {
     std::vector<std::uint8_t> bytes;
+    // When both are non-zero, `bytes` are RGBA texels at this size rather
+    // than an encoded image. `createTexture2DFromPixels` hands over the
+    // caller's own bytes where every loader hands over a file, and the pin
+    // has one `Texture2D` for both — so one material slot has to hold
+    // either, and the size is what says which.
+    std::uint32_t rgba_width = 0;
+    std::uint32_t rgba_height = 0;
+    TextureUvTransform uv_transform{};
     TextureSamplerState sampler{};
     // The pin's *upload* flip: `loadTexture2D`'s `invertY` option, passed as
     // `flipY` to `copyExternalImageToTexture` (texture-2d.ts). The PALs'
@@ -612,6 +641,12 @@ struct PixelsTexture {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     TextureSamplerState sampler{};
+    // The `Texture2D` properties a scene writes on the result before binding
+    // it: the per-texture transform `enableMaterialUvTransform` reads, and
+    // the texture-object `invertY` that both that transform and
+    // `isStandardUvInverted` fold.
+    TextureUvTransform uv_transform{};
+    bool uv_invert_y = false;
 };
 
 struct ModelVertex {
@@ -1208,6 +1243,10 @@ struct MaterialRecord {
     // Standard diffuse slot fed by another pass's colour attachment rather
     // than by decoded image bytes.
     bool has_diffuse_render_texture = false;
+    // `enableMaterialUvTransform(material)`: the pin's own opt-in mark
+    // (`_hasUvTx`), read back by `stdUvTransformExt._meshFeatures` and
+    // therefore part of the composed variant key.
+    bool has_uv_transform = false;
     bool double_sided = false;
     // The pin's opacityFromRGB (createStandardMaterial default false; the
     // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
@@ -1825,6 +1864,13 @@ void set_standard_emissive_texture(
     Engine& engine,
     MaterialHandle material,
     RenderTextureRef texture);
+void set_standard_diffuse_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const PixelsTexture& texture);
+void enable_material_uv_transform(
+    Engine& engine,
+    MaterialHandle material);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);
