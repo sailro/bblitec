@@ -25,6 +25,14 @@ export interface ShaderMaterialProgramSource {
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
+    /**
+     * The material binds the mesh's thin-instance matrices and its vertex
+     * stage reads them, so the pin's own thin-instance module appends the
+     * four matrix lanes to its `VertexInput`.
+     */
+    useThinInstances?: boolean;
+    /** With them, the per-instance RGBA lane the same module appends. */
+    useThinInstanceColors?: boolean;
 }
 
 /**

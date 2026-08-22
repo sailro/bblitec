@@ -260,6 +260,26 @@ export interface CompiledShaderProgram {
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
+    /**
+     * The pin's own `_topology`, absent where it resolves
+     * `material._topology ?? "triangle-list"`. A line material is the one
+     * reached program that names one, and it names the primitive the
+     * pipeline is built at rather than anything about the program's text.
+     */
+    topology?: "line-list";
+    /**
+     * `useThinInstances`: the material draws through the mesh's
+     * thin-instance matrices, which the pin's own thin-instance module
+     * appends to its `VertexInput` as four lanes the vertex stage reads.
+     */
+    useThinInstances?: boolean;
+    /**
+     * `useThinInstanceColors`: the material binds the mesh's per-instance
+     * RGBA stream and its vertex stage reads `input.instanceColor`. Part of
+     * the program's identity, because the attribute is declared in the
+     * prelude the stage compiles against.
+     */
+    useThinInstanceColors?: boolean;
 }
 
 export interface CompiledShaderDefine {
@@ -823,10 +843,12 @@ export type Feature =
     | "mesh:box"
     | "mesh:from-data"
     | "mesh:ground"
+    | "mesh:lines"
     | "mesh:morph-targets"
     | "mesh:plane"
     | "mesh:sphere"
     | "mesh:thin-instances"
+    | "mesh:thin-instance-colors"
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
     | "particle:node"

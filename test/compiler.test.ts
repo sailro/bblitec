@@ -3363,3 +3363,190 @@ test("refuses a nested frame yield, which waits two frames", () => {
         /Unsupported expression statement: NewExpression/,
     );
 });
+
+// ---------------------------------------------------------------------------
+// The line-system family
+// ---------------------------------------------------------------------------
+
+const LINE_SCENE = (body: string, imports = ""): string => `
+    import { addToScene, createArcRotateCamera, createEngine, createLineSystem, createSceneContext, registerScene, startEngine${imports} } from "babylon-lite";
+
+    async function main(): Promise<void> {
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+${body}
+        scene.camera = createArcRotateCamera(0, 1, 12, { x: 0, y: 0, z: 0 });
+        await registerScene(scene);
+        await startEngine(engine);
+    }
+`;
+
+const UNIFORM_LINE_SYSTEM = `        addToScene(
+            scene,
+            createLineSystem(engine, {
+                name: "lines",
+                lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }, { x: 2, y: 0, z: 0 }]],
+                color: { r: 0.25, g: 0.85, b: 1, a: 1 },
+                useVertexAlpha: false,
+            }),
+        );`;
+
+test("composes the pin's own line material for the permutation a scene reaches", () => {
+    const result = compileSource(LINE_SCENE(UNIFORM_LINE_SYSTEM));
+    const [program] = result.manifest.customShaderPrograms;
+    // The variant's identity is the permutation: the pin names every line
+    // material "LineMaterial" while composing a different program per flag
+    // set, so a scene reaching two forms registers two variants.
+    assert.equal(program?.name, "line-material-opaque");
+    assert.equal(program?.topology, "line-list");
+    // The two system matrices the pin's own stage reads, plus the uniform a
+    // stage with no colour varying declares instead.
+    assert.deepEqual(program?.uniforms, [
+        "world",
+        "viewProjection",
+        "lineColor:vec4<f32>",
+    ]);
+    assert.deepEqual(program?.attributes, ["position"]);
+    assert.deepEqual(program?.uniformDefaults, [
+        { name: "lineColor", values: [0.25, 0.85, 1, 1] },
+    ]);
+    // useVertexAlpha false: no blend, so the pin's own depthWrite default
+    // resolves the other way.
+    assert.equal(program?.needAlphaBlending, false);
+    assert.equal(program?.depthWrite, true);
+    assert.equal(program?.backFaceCulling, false);
+    assert.match(
+        program?.vertexSource ?? "",
+        /out\.position=shaderSystem\.viewProjection\*finalWorld\*vec4<f32>\(input\.position,1\.0\)/,
+    );
+    assert.match(
+        program?.fragmentSource ?? "",
+        /return shaderUniforms\.lineColor;/,
+    );
+    assert.ok(result.manifest.features.includes("mesh:lines"));
+});
+
+test("infers a line system's vertex-colour fork from its geometry", () => {
+    const result = compileSource(
+        LINE_SCENE(`        addToScene(
+            scene,
+            createLineSystem(engine, {
+                lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }]],
+                colors: [[{ r: 1, g: 0, b: 0, a: 1 }, { r: 0, g: 1, b: 0, a: 0.5 }]],
+            }),
+        );`),
+    );
+    const [program] = result.manifest.customShaderPrograms;
+    assert.equal(program?.name, "line-material-vc");
+    assert.deepEqual(program?.attributes, ["position", "color"]);
+    // A stage carrying the colour varying declares no uniform at all.
+    assert.deepEqual(program?.uniforms, ["world", "viewProjection"]);
+    assert.equal(program?.needAlphaBlending, true);
+    assert.equal(program?.depthWrite, false);
+    assert.match(program?.fragmentSource ?? "", /return input\.color;/);
+});
+
+test("reads the thin-instance lanes the pin's own module appends", () => {
+    const result = compileSource(
+        LINE_SCENE(
+            `        const material = createLineMaterial({
+            useThinInstances: true,
+            useThinInstanceColors: true,
+        });
+        const mesh = createLineSystem(engine, {
+            lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }]],
+            material,
+        });
+        setThinInstances(mesh, new Float32Array(32), 2);
+        setThinInstanceColors(mesh, new Float32Array(8));
+        addToScene(scene, mesh);`,
+            ", createLineMaterial, setThinInstanceColors, setThinInstances",
+        ),
+    );
+    const [program] = result.manifest.customShaderPrograms;
+    assert.equal(program?.name, "line-material-ti-tic");
+    assert.equal(program?.useThinInstanceColors, true);
+    assert.match(
+        program?.vertexSource ?? "",
+        /let instanceWorld=mat4x4<f32>\(input\.world0,input\.world1,input\.world2,input\.world3\)/,
+    );
+    assert.match(program?.vertexSource ?? "", /out\.color=input\.instanceColor;/);
+    assert.ok(
+        result.manifest.features.includes("mesh:thin-instance-colors"),
+    );
+    // The pool keeps referencing the caller's array, so a temporary is
+    // bound to a name whose lifetime is the frame loop.
+    assert.match(
+        result.cpp,
+        /bbl::js::F32Array v_bblite_thin_instances_\d+ = /,
+    );
+});
+
+test("refuses the line shapes outside the reached slice", () => {
+    // The pin throws when a supplied material's vertex-colour setting and
+    // the geometry's colour buffer disagree; the compiler knows both.
+    assert.throws(
+        () =>
+            compileSource(
+                LINE_SCENE(
+                    `        const material = createLineMaterial({ useVertexColor: true });
+        addToScene(
+            scene,
+            createLineSystem(engine, {
+                lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }]],
+                material,
+            }),
+        );`,
+                    ", createLineMaterial",
+                ),
+            ),
+        /material\.useVertexColor to match the line color-buffer layout/,
+    );
+    // Instance colours without instances is the pin's own refusal.
+    assert.throws(
+        () =>
+            compileSource(
+                LINE_SCENE(
+                    `        const material = createLineMaterial({ useThinInstanceColors: true });
+        addToScene(scene, createLineSystem(engine, { lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }]], material }));`,
+                    ", createLineMaterial",
+                ),
+            ),
+        /requires useThinInstances when useThinInstanceColors is enabled/,
+    );
+    // A shader material the line factory did not build: it carries a
+    // variant like a line material and composes no line-list program.
+    assert.throws(
+        () =>
+            compileSource(
+                LINE_SCENE(
+                    `        const material = createShaderMaterial({
+            name: "plain",
+            vertexSource: "struct VertexOutput{@builtin(position) position:vec4<f32>,};@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}",
+            fragmentSource: "@fragment fn mainFragment()->@location(0) vec4<f32>{return vec4<f32>(1.0,1.0,1.0,1.0);}",
+            attributes: ["position"],
+            uniforms: ["worldViewProjection"],
+        });
+        addToScene(scene, createLineSystem(engine, { lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }]], material }));`,
+                    ", createShaderMaterial",
+                ),
+            ),
+        /line system's material comes from createLineMaterial/,
+    );
+    // One colour row per line, one colour per point: both are the pin's own
+    // validation, refused at generation where it throws at load.
+    assert.throws(
+        () =>
+            compileSource(
+                LINE_SCENE(`        addToScene(
+            scene,
+            createLineSystem(engine, {
+                lines: [[{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }]],
+                colors: [[{ r: 1, g: 0, b: 0, a: 1 }]],
+            }),
+        );`),
+            ),
+        /one color per point/,
+    );
+});

@@ -113,8 +113,13 @@ rounding; the transmission scenes keep a small Dawn edge (scene 33
 foreground 0.010 versus 0.007) from the scene-colour grab, where
 SDL_GPU copies the resolved opaque colour and the pin reads the
 multisampled attachment; and HillValley and the Standard geometry MRTs
-land closest on Dawn. Image processing is not part of that gap — the
-vendored SDL patch lets SDL_GPU run the pinned per-sample pass.
+land closest on Dawn. The multisampled-line fix below closed most of
+what was left: fourteen published SDL_GPU cells moved toward the golden
+with it and none away, and scenes 8, 14, 28, 37, 120, 253 and 276 now
+measure identically on both backends — scene 120's splat cloud among
+them, from 0.024/0.071 to Dawn's own 0.001/0.003. Image processing is not
+part of that gap either — the vendored SDL patch lets SDL_GPU run the pinned
+per-sample pass.
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
 after adaptive warmup (min(120, max(10, frames/10))), immediate present, same session
@@ -225,6 +230,17 @@ Regression guards, each measured rather than assumed:
   deployed beside `webgpu_dawn.dll`. FXC in place of DXC carries a
   systemic -1 LSB on lit surfaces (scenes 259/248) plus larger filter
   and discard deltas (248/249); DXC carries none of it.
+- **A multisampled line-list needs D3D12's `MultisampleEnable`, and only
+  Dawn set it.** Dawn derives it from the pipeline's sample count; SDL's
+  D3D12 backend hardcoded `FALSE`, which keeps lines on the aliased
+  diamond-exit rule at any sample count while its Vulkan and Metal backends
+  always rasterize lines against the target's samples. The measurement that
+  named it: SDL_GPU at 4x was pixel-identical to SDL_GPU at one sample and
+  to Dawn at one sample, so nothing about the scene, the shaders or the
+  uniforms was in question. The vendored overlay port carries the one-line
+  fix beside libsdl-org/SDL#15838; scenes 278 and 279 measure 0.000 on both
+  backends with it, and the corpus neutrality run is what shows it moved
+  nothing else.
 - **The `.env` RGBD cubemap Y-flip is pinned behavior**, not an SDL
   adaptation: upstream `uploadCubemapRGBD` documents "BJS uploads
   cubemap faces with invertY=true"; uploading unflipped costs scene 1

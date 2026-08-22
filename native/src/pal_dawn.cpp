@@ -276,6 +276,9 @@ struct DawnMesh {
     std::uint32_t instance_count = 1;
     std::uint64_t instance_version = 0;
 #endif
+#if BBLITE_GPU_INSTANCE_COLORS
+    WGPUBuffer instance_colors = nullptr;
+#endif
 #if BBLITE_PBR_VARIANTS > 0
     // The geometry-output MRT arms' per-variant draw state: a mesh drawn in
     // the main pass and in two geometry tasks holds three live bind groups
@@ -873,6 +876,11 @@ struct DawnState : DawnDevice {
             mesh.pinned_instances = nullptr;
 #endif
             if (mesh.instances) wgpuBufferRelease(mesh.instances);
+#if BBLITE_GPU_INSTANCE_COLORS
+            if (mesh.instance_colors) {
+                wgpuBufferRelease(mesh.instance_colors);
+            }
+#endif
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
             if (mesh.owns_morph_buffers) {
@@ -3643,7 +3651,7 @@ DawnPipeline& pipeline_for(
     std::array<WGPUVertexAttribute, base_vertex_attribute_count>
         attributes{};
     fill_base_vertex_attributes(attributes.data());
-    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
+    std::array<WGPUVertexBufferLayout, 3> vertex_layouts{};
     vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
     vertex_layouts[0].arrayStride = sizeof(GpuVertex);
     vertex_layouts[0].attributeCount = attributes.size();
@@ -3655,15 +3663,38 @@ DawnPipeline& pipeline_for(
     for (std::uint32_t column = 0; column < 4; ++column) {
         instance_attributes[column].format = WGPUVertexFormat_Float32x4;
         instance_attributes[column].offset = column * 16;
-        instance_attributes[column].shaderLocation = 16 + column;
+        instance_attributes[column].shaderLocation =
+            instance_matrix_first_location + column;
     }
     vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
     vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
     vertex_layouts[1].attributeCount = instance_attributes.size();
     vertex_layouts[1].attributes = instance_attributes.data();
-    constexpr std::uint32_t vertex_buffer_count = 2;
+    constexpr std::uint32_t matrix_vertex_buffer_count = 2;
 #else
-    constexpr std::uint32_t vertex_buffer_count = 1;
+    constexpr std::uint32_t matrix_vertex_buffer_count = 1;
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+    // The per-instance RGBA stream the pin's own thin-instance module
+    // appends after the matrix lanes, in its own tightly-packed buffer.
+    // Only a material that declares the lane widens its layout, exactly as
+    // the SDL backend widens that one pipeline: every other pipeline keeps
+    // the layout it had, so no draw of theirs owes the slot a buffer.
+    WGPUVertexAttribute instance_color_attribute{};
+    instance_color_attribute.format = WGPUVertexFormat_Float32x4;
+    instance_color_attribute.offset = 0;
+    instance_color_attribute.shaderLocation = instance_color_location;
+    vertex_layouts[2].stepMode = WGPUVertexStepMode_Instance;
+    vertex_layouts[2].arrayStride = sizeof(std::array<float, 4>);
+    vertex_layouts[2].attributeCount = 1;
+    vertex_layouts[2].attributes = &instance_color_attribute;
+    const std::uint32_t vertex_buffer_count =
+        shader_info && shader_info->instance_colors
+            ? matrix_vertex_buffer_count + 1
+            : matrix_vertex_buffer_count;
+#else
+    constexpr std::uint32_t vertex_buffer_count =
+        matrix_vertex_buffer_count;
 #endif
 
     if (traits.grid && !state.grid_vertex_module) {
@@ -3705,8 +3736,15 @@ DawnPipeline& pipeline_for(
     descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
 
+    // The material's own primitive: the pin builds a shader pipeline at
+    // `material._topology ?? "triangle-list"`, and a line material is the
+    // one reached material that names the second one.
     descriptor.primitive.topology =
-        WGPUPrimitiveTopology_TriangleList;
+        shader_info &&
+                shader_info->topology ==
+                    upstream::ShaderTopology::line_list
+            ? WGPUPrimitiveTopology_LineList
+            : WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = traits.front;
     // The pinned shader-pipeline mapping drives variant state:
     // backFaceCulling selects the cull mode, and depthWrite=false turns
@@ -5455,6 +5493,10 @@ void save_dawn_geometry_id_buffer(
             wgpuRenderPassEncoderSetVertexBuffer(
                 pass, 1, mesh.instances, 0, WGPU_WHOLE_SIZE);
 #endif
+#if BBLITE_GPU_INSTANCE_COLORS
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 2, mesh.instance_colors, 0, WGPU_WHOLE_SIZE);
+#endif
             wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
                 mesh.indices,
@@ -5848,7 +5890,12 @@ bool run_dawn_engine(Engine& engine) {
     device_options.hidden_test_pass = hidden_test_pass;
     device_options.immediate_present =
         frame_options.benchmark_requested;
-#if BBLITE_GPU_INSTANCING
+#if BBLITE_GPU_INSTANCE_COLORS
+    // With the per-instance RGBA lane the pin's own thin-instance module
+    // appends, the specialized WGSL reaches the lane after the matrix
+    // columns, and the limit has to cover that location.
+    device_options.max_vertex_attributes = instance_color_location + 1;
+#elif BBLITE_GPU_INSTANCING
     // The SDL-specialized WGSL feeds per-instance matrix columns at
     // locations 16-19; the WebGPU default caps attribute locations
     // below 16, so raise the device limit to cover location 19.
@@ -6232,6 +6279,23 @@ bool run_dawn_engine(Engine& engine) {
                 WGPUBufferUsage_Uniform,
                 nullptr,
                 64);
+#if BBLITE_GPU_INSTANCE_COLORS
+            {
+                // One tightly-packed RGBA row per instance, as the pin's
+                // own colour buffer. A mesh with none still needs the
+                // binding, so it takes one opaque-white row.
+                std::vector<float> instance_colors =
+                    mesh_record.instance_colors;
+                if (instance_colors.empty()) {
+                    instance_colors.assign(4, 1.0f);
+                }
+                mesh.instance_colors = create_buffer(
+                    state,
+                    WGPUBufferUsage_Vertex,
+                    instance_colors.data(),
+                    instance_colors.size() * sizeof(float));
+            }
+#endif
 #if BBLITE_PBR_VARIANTS > 0
             if (mesh_record.instance_source != nullptr) {
                 // Scene-code thin instances already carry Babylon's own
@@ -8166,6 +8230,10 @@ bool run_dawn_engine(Engine& engine) {
 #if BBLITE_GPU_INSTANCING
                 wgpuRenderPassEncoderSetVertexBuffer(
                     list_pass, 1, mesh.instances, 0, WGPU_WHOLE_SIZE);
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    list_pass, 2, mesh.instance_colors, 0, WGPU_WHOLE_SIZE);
 #endif
                 wgpuRenderPassEncoderSetIndexBuffer(
                     list_pass,

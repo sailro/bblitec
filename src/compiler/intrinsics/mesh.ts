@@ -42,6 +42,8 @@ export interface MeshIntrinsicContext
     ): ts.Expression | undefined;
     allocateTemporaryCppName(label: string): string;
     emit(line: string): void;
+    /** Whether a binding emitted now lives as long as the frame loop. */
+    isEntryBodyScope(): boolean;
     requireEngine(value: Value, node: ts.Node): string;
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;
@@ -132,23 +134,35 @@ export function compileMeshIntrinsic(
             );
             // The pinned setThinInstances adopts the caller's array by
             // reference so setThinInstanceCount/flushThinInstances can
-            // re-read it later; the native record keeps the same alias,
-            // which requires a named binding rather than a temporary.
-            if (
-                ts.isNewExpression(
-                    context.unwrap(call.arguments[1]!),
-                )
-            ) {
-                context.fail(
-                    call.arguments[1]!,
-                    "setThinInstances requires a named Float32Array binding; the mesh keeps referencing it for per-frame updates.",
-                );
-            }
-            const matrices =
+            // re-read it later, and the native record keeps the same
+            // alias. Upstream an inline argument survives because the
+            // mesh holds the reference; here the array needs a name whose
+            // lifetime is the frame loop, so one that arrives as a
+            // temporary is bound to a local first. A block-scoped local
+            // would not outlive its block, so that refuses instead.
+            const matricesArgument = context.unwrap(
+                call.arguments[1]!,
+            );
+            const matricesExpression =
                 context.compileTypedArrayArgument(
                     call.arguments[1]!,
                     "f32array",
                 );
+            let matrices = matricesExpression;
+            if (!ts.isIdentifier(matricesArgument)) {
+                if (!context.isEntryBodyScope()) {
+                    context.fail(
+                        call.arguments[1]!,
+                        "setThinInstances takes a named Float32Array binding inside a block; the mesh keeps referencing it for the whole frame loop.",
+                    );
+                }
+                matrices = context.allocateTemporaryCppName(
+                    "thin_instances",
+                );
+                context.emit(
+                    `bbl::js::F32Array ${matrices} = ${matricesExpression};`,
+                );
+            }
             const count = context.compileNumber(
                 call.arguments[2]!,
             );
@@ -158,6 +172,34 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::set_thin_instances(${context.requireEngine(mesh, call)}, ` +
                     `${mesh.cpp}, ${matrices}, ${count})`,
+            };
+        }
+
+        case "setThinInstanceColors": {
+            // The pinned setter stores the caller's array and bumps the
+            // colour version. Nothing in the reached slice re-reads it --
+            // `setThinInstanceColor`, the per-instance twin, is unlowered --
+            // so the record takes a copy rather than the alias
+            // `setThinInstances` needs.
+            context.expectArgumentCount(call, 2, 2);
+            const mesh =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                mesh,
+                "mesh",
+                call.arguments[0]!,
+            );
+            const colors =
+                context.compileTypedArrayArgument(
+                    call.arguments[1]!,
+                    "f32array",
+                );
+            context.reachFeature("mesh:thin-instance-colors", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_thin_instance_colors(${context.requireEngine(mesh, call)}, ` +
+                    `${mesh.cpp}, ${colors})`,
             };
         }
 

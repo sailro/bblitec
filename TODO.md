@@ -121,18 +121,25 @@ act on it — not what was tried.
 
 ## P1 — Runtime and validation
 
-- [ ] Drop the vendored SDL patch once upstream ships it.
+- [ ] Drop the vendored SDL patches once upstream ships them.
   `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the manifest's
-  `builtin-baseline` with
-  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838) appended
-  to its `PATCHES` list, selected by `native/vcpkg-configuration.json`. Without
-  it SDL refuses a multisample texture carrying a read usage and the SDL_GPU
-  backend cannot run the pinned per-sample image-processing pass. **3.6.0 is the
-  release to watch**; when it carries the patch, move `builtin-baseline` to a
-  registry commit containing it and delete both paths. Verify a candidate
-  release by creating a 4x multisample texture with
-  `SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ` (the shape the per-sample pass
-  needs) before moving the baseline.
+  `builtin-baseline` with two entries appended to its `PATCHES` list, selected
+  by `native/vcpkg-configuration.json`.
+  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838) is the
+  first: without it SDL refuses a multisample texture carrying a read usage and
+  the SDL_GPU backend cannot run the pinned per-sample image-processing pass.
+  **3.6.0 is the release to watch**; verify a candidate release by creating a 4x
+  multisample texture with `SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ` (the
+  shape the per-sample pass needs) before moving the baseline.
+  `d3d12-multisample-lines.patch` is the second and is **this project's own**,
+  with no upstream pull request behind it yet: SDL's D3D12 backend hardcodes
+  `RasterizerState.MultisampleEnable = FALSE`, which keeps a line-list on the
+  aliased diamond-exit rule at any sample count, where its Vulkan and Metal
+  backends rasterize lines against the target's samples and Dawn sets the flag
+  from the sample count. Report it upstream so this one gets a convergence
+  path too; the measurement is in [backends](docs/backends.md#measured-contracts).
+  Delete this file and `native/vcpkg-overlay-ports` once a release carries both,
+  and move the baseline to it.
 - [ ] Compose environment/camera sizing from object-local bounds through the
   pinned abs-matrix OBB-to-AABB world transform, and add the `upperRadiusLimit`
   ground/skybox override (upstream `scene-size.ts`, `mesh-world-bounds.ts`,
@@ -174,7 +181,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-117 corpus scenes remain unregistered; measured scenes are in
+115 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -194,11 +201,11 @@ the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
 **Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-22, after
-the animation-manager wave): `Number(...)` as a call 9 (all deferred-lane
-physics), engine options beyond msaaSamples/requiredLimits 7 (large-world),
-`receiveShadows` 6, `??` over a non-static-record operand 6, `HavokPhysics` 5,
-PBR options beyond the reached set 3, a four-argument call 3, an unsupported
-constructor expression 3, `createNavigationPluginAsync` 3.
+the animation-manager wave and before the line pair): `Number(...)` as a call 9
+(all deferred-lane physics), engine options beyond msaaSamples/requiredLimits 7
+(large-world), `receiveShadows` 6, `??` over a non-static-record operand 6,
+`HavokPhysics` 5, PBR options beyond the reached set 3, a four-argument call 3,
+an unsupported constructor expression 3, `createNavigationPluginAsync` 3.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
@@ -237,11 +244,11 @@ Standard extension 1.21 added. `pinned-standard-variants.ts` refuses a material
 carrying one by name, so that refusal is what integrating 282 has to lift.
 
 **No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
-`createMeshFromData` half, but of the scenes reaching `setThinInstances` (16,
-17, 43, 103, 165, 204, 219, 279) or `removeFromScene` (129, 173, 271, 272)
-none compiles, and `flushThinInstances` and `setThinInstanceCount` are
-unreferenced under `corpus/` at this pin — so a project-owned gate stays their
-only validation.
+`createMeshFromData` half and scene 279 its `setThinInstances` half, but of
+the remaining scenes reaching `setThinInstances` (16, 17, 43, 103, 165, 204,
+219) or `removeFromScene` (129, 173, 271, 272) none compiles, and
+`flushThinInstances` and `setThinInstanceCount` are unreferenced under
+`corpus/` at this pin — so a project-owned gate stays their only validation.
 
 Corpus scenes are the preferred validation: a feature is proven by the pinned
 scenes that reach it. Author a gate only for a contract no corpus scene
@@ -254,10 +261,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (83 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
+**Integrate first (81 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-220,
-223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 278, 279, 282, 300.
+223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 282, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
@@ -304,14 +311,6 @@ that does to the deferred lane by default.
   not a static record property — 226 `container._gaussianSplats ?? []`, 158
   and 251 `xbot.animationGroups ?? []`. Splats, animation groups and the
   Recast lane sit behind them.
-- [ ] Scene 120's SDL_GPU residual: 0.024 full / 0.071 region against Dawn's
-  0.001/0.004 on the same golden, so it is entirely the backend differential.
-  It is edge-weighted (edges 0.142, interior 0.028, background 0.000), which
-  points at the projected footprint rather than blend accumulation. Ruled out
-  by measurement: the lowered `build_splat_geometry` (checksum-identical to
-  the pinned JS on the packaged asset), the splat UBO (field-for-field against
-  the browser's), and DXC fast-math reassociation. Not a floor until a pinned
-  line explains it.
 - [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
   reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
   spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
@@ -542,6 +541,19 @@ that does to the deferred lane by default.
   thin-instance colors (`setThinInstanceColors` plus the instance color vertex
   stream), and an explicit image-neutral lowering decision for
   `enableThinInstanceGpuCulling`.
+- [ ] Extend the line slice past what scenes 278 and 279 measure. The
+  polylines themselves are the scene's own static literals, materialized as
+  the nested data the generated flatten reads, so a system whose points are
+  computed at load refuses with a source location — the pin builds its
+  buffers at load and this port could too, but no reached scene needs it.
+  Each remaining entry fails by name: `createLines` and the
+  `createDashedLines`/`updateDashedLines` pair (whose spacing is its own
+  pinned derivation over a retained dash count), `setLineMaterialColor`, a
+  `LineMaterialOptions.depthCompare`, and the per-instance
+  `setThinInstanceColor` twin — which is also what lets the record copy the
+  colour array where the matrix pool keeps the caller's own. No corpus scene
+  at this pin reaches any of them.
+
 - [ ] Extend shader-material options past the slice scenes 159-163 measure.
   `samplers` and `defines` shipped; each remaining option fails by name.
   A sampler is a bare string binding a 2D float texture the fragment reads:
@@ -638,8 +650,6 @@ that does to the deferred lane by default.
 - [ ] Scene 261: support the reached `box.material` assignment; temporal
   anti-aliasing sits behind it.
 - [ ] Scene 275: support `loadFont`.
-- [ ] Scene 278: support `createLineSystem`.
-- [ ] Scene 279: support `createLineMaterial`.
 
 ### Integration-first generation and asset packaging gaps
 
@@ -657,18 +667,19 @@ that does to the deferred lane by default.
   corpus asset carrying them and is compiler-blocked, so the pinned
   `metallicReflectanceTexture` / `reflectanceTexture` pair — including the
   `pow(2.2)` the reflectance fragment applies to each — stays unreached.
-- [ ] Carry primitive topology to the pipeline for points, lines, and line
-  strips. `load-gltf.ts` records a `_topology` index (1=points, 2=lines,
+- [ ] Carry primitive topology to the pipeline for glTF points, lines, and
+  line strips. `load-gltf.ts` records a `_topology` index (1=points, 2=lines,
   3=line-strip, 4=triangle-strip; LINE_LOOP and TRIANGLE_FAN unsupported) and
-  `gltf-feature-primitive.ts` builds the `GPUPrimitiveState`, so the native
-  shape is a topology suffix on the generated `RenderPipelineKind` — which
-  already encodes cull mode and winding — plus a field on each PAL's
-  `PipelineKindTraits` and WebGPU's `stripIndexFormat`. Topology also arrives
-  without an asset: `createLineSystem` sets `mesh._topology = 2` on geometry
-  built from plain arrays and `createLineMaterial` sets
-  `_topology: "line-list"`, so this is the axis Scenes 278 and 279 need. The
-  generated loader rejects those modes by number behind the
-  `nonTrianglePrimitives` specialization flag.
+  `gltf-feature-primitive.ts` builds the `GPUPrimitiveState`; the generated
+  loader still rejects those modes by number behind the
+  `nonTrianglePrimitives` specialization flag. The *material* half shipped
+  with scenes 278/279: a shader material carries the pin's own
+  `_topology ?? "triangle-list"` into its pipeline on both backends
+  (`ShaderVariantInfo::topology`), so what remains is the asset half — a
+  loaded primitive's mode reaching the composed families, which is a
+  topology suffix on the generated `RenderPipelineKind` (it already encodes
+  cull mode and winding) plus WebGPU's `stripIndexFormat`. No corpus scene
+  reaches it: the asset lane is unmeasured until one does.
 
 ### Deferred external and platform-feature scenes
 

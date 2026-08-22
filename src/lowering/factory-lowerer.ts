@@ -8,7 +8,12 @@ import { LoweredSource, LoweringContext } from "./context.js";
 export class FactoryLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerMeshFactories(): LoweredSource {
+    /**
+     * @param instanceColors - whether the scene binds a per-instance RGBA
+     * stream. The setter is emitted only where one is reached, the way the
+     * rest of this unit's surface follows what the scene touches.
+     */
+    public lowerMeshFactories(instanceColors = false): LoweredSource {
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
@@ -1310,6 +1315,12 @@ export class FactoryLowerer {
             "src/mesh/thin-instance.ts",
             "setThinInstances",
         );
+        if (instanceColors) {
+            this.context.functionDeclaration(
+                "src/mesh/thin-instance.ts",
+                "setThinInstanceColors",
+            );
+        }
         this.context.functionDeclaration(
             "src/mesh/thin-instance.ts",
             "setThinInstanceCount",
@@ -1318,6 +1329,23 @@ export class FactoryLowerer {
             "src/mesh/thin-instance.ts",
             "flushThinInstances",
         );
+        const instanceColorSetter = instanceColors
+            ? `// src/mesh/thin-instance.ts setThinInstanceColors: bind the
+// per-instance RGBA stream a material with useThinInstanceColors reads.
+// The pinned setter stores the caller's array and bumps its colour
+// version; nothing in the reached slice re-reads it (the per-instance
+// setThinInstanceColor twin is unlowered), so the record takes a copy.
+void set_thin_instance_colors(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& colors) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    record.instance_colors = colors;
+    record.instance_version += 1;
+}
+
+`
+            : "";
         const value = (input: number): string => this.context.floatLiteral(input);
         // The emitted fragments the decoded tables above compose. Each is
         // plain text interpolation: the byte-for-byte C++ is unchanged as
@@ -1931,7 +1959,7 @@ void set_thin_instances(
     record.instance_version += 1;
 }
 
-// src/mesh/thin-instance.ts setThinInstanceCount: update only the active
+${instanceColorSetter}// src/mesh/thin-instance.ts setThinInstanceCount: update only the active
 // instance count and re-upload the [0, count) matrix range from the SAME
 // array bound by setThinInstances, leaving the capacity (and therefore
 // the allocated GPU buffer) untouched. The pinned helper is a no-op on a

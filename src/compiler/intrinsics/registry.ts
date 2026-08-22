@@ -24,6 +24,10 @@ import {
     type EffectIntrinsicContext,
 } from "./effect.js";
 import {
+    compileLineIntrinsic,
+    type LineIntrinsicContext,
+} from "./line.js";
+import {
     compileMaterialConstant,
     compileMaterialIntrinsic,
     type MaterialIntrinsicContext,
@@ -53,6 +57,7 @@ export interface IntrinsicContext
         CameraIntrinsicContext,
         EngineIntrinsicContext,
         LightIntrinsicContext,
+        LineIntrinsicContext,
         MaterialIntrinsicContext,
         MeshIntrinsicContext,
         ParticleIntrinsicContext,
@@ -71,6 +76,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileCameraIntrinsic,
     compileLightIntrinsic,
     compileMeshIntrinsic,
+    compileLineIntrinsic,
     compileSceneIntrinsic,
     compileAnimationIntrinsic,
     compileMaterialIntrinsic,

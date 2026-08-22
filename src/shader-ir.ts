@@ -129,6 +129,34 @@ const attributeTypes: Record<string, { location: number; type: ShaderType }> = {
     color: { location: 6, type: "vec4<f32>" },
 };
 
+/**
+ * The instance lanes the pin's own thin-instance module appends to a
+ * material's `VertexInput`, at this port's locations rather than at the
+ * declaration-order ones the pin uses: the matrix columns ride the shared
+ * instance vertex buffer both backends already bind at 16-19, and the
+ * per-instance colour a material that declares it takes the lane after.
+ * The same numbers are stated once natively as
+ * `instance_matrix_first_location` / `instance_color_location`
+ * (`native/src/pal_gpu_shared.hpp`), which is what the specialized WGSL
+ * these produce is bound against.
+ */
+const instanceAttributes: ReadonlyArray<{
+    name: string;
+    location: number;
+    type: ShaderType;
+}> = [
+    { name: "world0", location: 16, type: "vec4<f32>" },
+    { name: "world1", location: 17, type: "vec4<f32>" },
+    { name: "world2", location: 18, type: "vec4<f32>" },
+    { name: "world3", location: 19, type: "vec4<f32>" },
+];
+
+const instanceColorAttribute: {
+    name: string;
+    location: number;
+    type: ShaderType;
+} = { name: "instanceColor", location: 20, type: "vec4<f32>" };
+
 function tokenize(source: string): Token[] {
     const tokens: Token[] = [];
     let index = 0;
@@ -679,6 +707,12 @@ export function lowerWgslShaderProgram(
         if (!attribute) throw new Error(`Unsupported vertex attribute '${name}'.`);
         return { name, ...attribute };
     });
+    if (source.useThinInstances) {
+        attributes.push(...instanceAttributes);
+        if (source.useThinInstanceColors) {
+            attributes.push(instanceColorAttribute);
+        }
+    }
     const uniforms = source.uniforms.map(parseUniformSignature);
     // A sampler pair binds in the fragment stage alone here. The pin
     // declares both stages' visibility, but SDL_GPU gives a vertex texture
