@@ -14,6 +14,10 @@ import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
     NodeParticleLowerer,
+    expandedSystems,
+    nodeParticleKey,
+    type NodeParticleRegistrationEmit,
+    type NodeParticleSprite2DEmit,
     type NodeParticleSystemEmit,
 } from "./lowering/node-particle-lowerer.js";
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
@@ -257,8 +261,15 @@ export interface UpstreamEmitOptions {
      * every one opts into a custom shader never loads it, so it is not
      * composed here either.
      */
+    /**
+     * Whether a layer or system SCENE CODE built draws with the stock
+     * program. The node-particle bridges answer for their own layers, which
+     * this emitter derives from the pin's pass table.
+     */
     plainSpriteLayer: boolean;
     plainBillboardSystem: boolean;
+
+
     animationPointer: boolean;
     animationPointerMaterials: boolean;
     assetTransmission: boolean;
@@ -315,6 +326,10 @@ export interface UpstreamEmitOptions {
      * its texture packaged under. Present only when the scene reached one.
      */
     nodeParticles?: readonly NodeParticleSystemEmit[];
+    /** The pure-2D bindings a node-particle scene registered. */
+    nodeParticleSprite2d?: readonly NodeParticleSprite2DEmit[];
+    /** The 3D registrations, as the systems each call actually walked. */
+    nodeParticleRegistrations?: readonly NodeParticleRegistrationEmit[];
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
@@ -399,6 +414,17 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        // Which programs a node-particle system draws is the pin's answer
+        // twice over: the blend mode comes from the graph's own SystemBlock
+        // (so from the bake), and how many passes that mode draws comes from
+        // `createParticleBlend`'s own arms. Deriving both here keeps the
+        // shader set and the emitted C++ reading one table.
+        const particlePrograms = nodeParticleProgramSet(
+            context,
+            options.nodeParticles ?? [],
+            options.nodeParticleSprite2d ?? [],
+            options.nodeParticleRegistrations ?? [],
+        );
         // Scene transmission is reached from the scene's own code and from a
         // loaded asset alike: the pin's `registerPbrTransmission` enables it for
         // any transmissive surface the asset carries, without the scene naming
@@ -826,9 +852,32 @@ ${wgsl}`,
         }
         if (features.includes("sprite:2d")) {
             const sprites = new SpriteLowerer(context);
-            const custom = options.spriteCustomShaders.find(
+            // A pure-2D particle bridge in an exact Multiply mode draws
+            // the pin's OWN custom fragment, so it enters the same composer
+            // the scene's own descriptor would. The composer takes one
+            // custom program per family, so a scene that also builds its
+            // own refuses here: the bridge owns only ITS layers, and
+            // nothing stops a scene making a custom layer beside them.
+            const sceneCustom = options.spriteCustomShaders.find(
                 (entry) => entry.family === "sprite",
             );
+            if (particlePrograms.sprite2dMultiply && sceneCustom) {
+                throw new Error(
+                    "A scene-code Sprite2D custom shader and an exact " +
+                        "node-particle Multiply bridge both compose the " +
+                        "one custom sprite program; this port carries a " +
+                        "single program per family.",
+                );
+            }
+            const custom = particlePrograms.sprite2dMultiply
+                ? {
+                      family: "sprite" as const,
+                      fragment: new NodeParticleLowerer(
+                          context,
+                      ).sprite2dMultiplyFragment(),
+                      extraTextures: [],
+                  }
+                : sceneCustom;
             this.writeSource(
                 "upstream/src/sprite_2d.cpp",
                 sprites.lowerCore(),
@@ -850,7 +899,10 @@ ${wgsl}`,
                 // it: a custom layer keeps this vertex stage but brings its
                 // own fragment, so a scene whose every layer opts in would
                 // compile and deploy a stage nothing loads.
-                if (options.plainSpriteLayer) {
+                if (
+                    options.plainSpriteLayer ||
+                    particlePrograms.plainSprite
+                ) {
                     composedShaders.push({
                         output:
                             "upstream/shaders/sprite.frag.native.wgsl",
@@ -921,7 +973,11 @@ ${wgsl}`,
             // the billboard family's own calls.
             this.writeSource(
                 "upstream/src/node_particles.cpp",
-                new NodeParticleLowerer(context).lower(nodeParticles),
+                new NodeParticleLowerer(context).lower(
+                    nodeParticles,
+                    options.nodeParticleSprite2d ?? [],
+                    options.nodeParticleRegistrations ?? [],
+                ),
                 generated,
                 "upstream/include/bblite/upstream/node_particles.hpp",
             );
@@ -950,22 +1006,38 @@ ${wgsl}`,
                 "src/sprite/billboard-pipeline.ts",
                 "makeBillboardWgsl",
             );
+            // Unlike the 2D family, a billboard program is always a pair:
+            // the pin's composer exposes the view distance and the world
+            // position to a custom body, so each program's vertex stage
+            // travels with its fragment.
+            const pushBillboardProgram = (
+                name: string,
+                composed: ReturnType<typeof billboards.shaderSource>,
+                module?: { modulePath: string; symbolName: string },
+            ): void => {
+                const own = module
+                    ? context.provenance(module.modulePath, module.symbolName)
+                    : provenance;
+                composedShaders.push(
+                    {
+                        output: `upstream/shaders/${name}.vert.native.wgsl`,
+                        data: billboardVertexWgsl(own, composed),
+                    },
+                    {
+                        output: `upstream/shaders/${name}.frag.native.wgsl`,
+                        data: billboardFragmentWgsl(own, composed),
+                    },
+                );
+                if (module) generated.push(module);
+            };
             // The stock pair, only where a plain system draws with it. Unlike
             // the 2D family a custom billboard brings its own vertex stage
             // too, so a scene whose every system opts in loads neither half.
-            if (options.plainBillboardSystem) {
-                composedShaders.push(
-                    {
-                        output:
-                            "upstream/shaders/billboard.vert.native.wgsl",
-                        data: billboardVertexWgsl(provenance, shader),
-                    },
-                    {
-                        output:
-                            "upstream/shaders/billboard.frag.native.wgsl",
-                        data: billboardFragmentWgsl(provenance, shader),
-                    },
-                );
+            if (
+                options.plainBillboardSystem ||
+                particlePrograms.plainBillboard
+            ) {
+                pushBillboardProgram("billboard", shader);
             }
             if (features.includes("sprite:billboard-cutout")) {
                 // The cutout arm discards below the cutoff and is otherwise
@@ -992,33 +1064,25 @@ ${wgsl}`,
                     customBillboard.fragment,
                     customBillboard.extraTextures,
                 );
-                const customProvenance = context.provenance(
-                    "src/sprite/billboard-custom-shader.ts",
-                    "makeCustomBillboardWgsl",
-                );
-                composedShaders.push(
-                    {
-                        output:
-                            "upstream/shaders/billboard_custom.vert.native.wgsl",
-                        data: billboardVertexWgsl(
-                            customProvenance,
-                            shader,
-                        ),
-                    },
-                    {
-                        output:
-                            "upstream/shaders/billboard_custom.frag.native.wgsl",
-                        data: billboardFragmentWgsl(
-                            customProvenance,
-                            shader,
-                        ),
-                    },
-                );
-                generated.push({
-                    modulePath:
-                        "src/sprite/billboard-custom-shader.ts",
+                pushBillboardProgram("billboard_custom", shader, {
+                    modulePath: "src/sprite/billboard-custom-shader.ts",
                     symbolName: "makeCustomBillboardWgsl",
                 });
+            }
+            // The particle family's Multiply program, whose module the pin
+            // writes itself. Mode 4 draws it and then the STOCK program over
+            // the same instances, which is why that mode also records a
+            // plain system.
+            if (particlePrograms.billboardMultiply) {
+                pushBillboardProgram(
+                    "billboard_particle_multiply",
+                    billboards.particleMultiplyShaderSource("facing"),
+                    {
+                        modulePath:
+                            "src/particle/particle-billboard-renderable.ts",
+                        symbolName: "makeMultiplyWgsl",
+                    },
+                );
             }
             if (features.includes("sprite:billboard-axis-locked")) {
                 // The pin's composer swaps only the basis function; the
@@ -1977,6 +2041,70 @@ export function emitUpstreamGenerated(
         features,
         options,
     );
+}
+
+/**
+ * Which programs a scene's node-particle systems draw.
+ *
+ * The blend mode is the graph's, so it arrives with the bake; how many
+ * passes that mode draws is `createParticleBlend`'s, so it is read off the
+ * pin. Mode 4 draws BOTH the private Multiply program and the stock one,
+ * because its second pass is a stock Add over the same instances.
+ */
+function nodeParticleProgramSet(
+    context: LoweringContext,
+    systems: readonly NodeParticleSystemEmit[],
+    sprite2d: readonly NodeParticleSprite2DEmit[],
+    registrations: readonly NodeParticleRegistrationEmit[],
+): {
+    plainBillboard: boolean;
+    billboardMultiply: boolean;
+    plainSprite: boolean;
+    sprite2dMultiply: boolean;
+} {
+    const result = {
+        plainBillboard: false,
+        billboardMultiply: false,
+        plainSprite: false,
+        sprite2dMultiply: false,
+    };
+    if (systems.length === 0) return result;
+    const passesByMode = new NodeParticleLowerer(
+        context,
+    ).particlePassesByMode();
+    const modeOf = new Map(
+        systems.map((system) => [
+            nodeParticleKey(system.bake),
+            system.bake.blendMode,
+        ]),
+    );
+    const bridged = expandedSystems(
+        sprite2d.filter((binding) => binding.exact),
+    );
+    // A pure-2D binding's layers, then every system the billboard family
+    // draws -- which is anything a bridge did not take.
+    for (const binding of sprite2d) {
+        for (const entry of binding.systems) {
+            const key = nodeParticleKey(entry);
+            const passes = bridged.has(key)
+                ? (passesByMode.get(modeOf.get(key) ?? -1) ?? 0)
+                : 0;
+            if (passes >= 1) result.sprite2dMultiply = true;
+            if (passes !== 1) result.plainSprite = true;
+        }
+    }
+    const drawn = expandedSystems(sprite2d);
+    const registeredSystems = expandedSystems(registrations);
+    for (const system of systems) {
+        const key = nodeParticleKey(system.bake);
+        if (drawn.has(key) && !registeredSystems.has(key)) continue;
+        const passes = system.exactBlend
+            ? (passesByMode.get(system.bake.blendMode) ?? 0)
+            : 0;
+        if (passes >= 1) result.billboardMultiply = true;
+        if (passes !== 1) result.plainBillboard = true;
+    }
+    return result;
 }
 
 /**

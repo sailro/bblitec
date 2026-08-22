@@ -1,5 +1,9 @@
 import ts from "typescript";
 import {
+    foldableMathUnary,
+    staticNumberValue,
+} from "./option-helpers.js";
+import {
     DataTypeRegistry,
     dataTypesEqual,
     doubleLiteral,
@@ -9,6 +13,10 @@ import type { Value } from "./types.js";
 
 export interface DataLoweringContext {
     readonly checker: ts.TypeChecker;
+    lookup(identifier: ts.Identifier): Value;
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
+    /** A canvas size as the number generation configured; see the helper. */
+    staticCanvasSize?(expression: ts.Expression): number | undefined;
     readonly dataTypes: DataTypeRegistry;
     compileValue(expression: ts.Expression): Value;
     compileNumber(
@@ -848,6 +856,31 @@ export class DataLowerer {
                     "double",
                 ),
             );
+        // The integer-valued one-argument functions fold over a static
+        // argument: the result is exact in both engines, so the folded value
+        // and the emitted call agree, and a scene that hands one to
+        // generation-time state (a particle column) needs the value rather
+        // than the expression. The transcendental ones deliberately do NOT
+        // fold: V8 and a native maths library need not agree on them.
+        if (foldableMathUnary[method] && call.arguments.length === 1) {
+            // Folded from the SOURCE, never from a compiled value: this arm
+            // runs before the runtime path compiles the argument, and
+            // compiling it speculatively would emit an inlined body twice
+            // when the fold misses. A canvas size reaches the same evaluator
+            // through `staticCanvasSize`, so it folds here too.
+            const folded = staticNumberValue(
+                this.context,
+                call.arguments[0]!,
+            );
+            if (folded !== undefined) {
+                return {
+                    kind: "number",
+                    cpp: doubleLiteral(folded),
+                    staticNumber: folded,
+                    dataType: { kind: "number" },
+                };
+            }
+        }
         const unary = new Map<string, string>([
             ["abs", "std::abs"],
             ["atan", "std::atan"],
@@ -918,6 +951,23 @@ export class DataLowerer {
             return {
                 kind: "number",
                 cpp,
+                dataType: { kind: "number" },
+            };
+        }
+        if (method === "round") {
+            if (call.arguments.length !== 1) {
+                this.context.fail(
+                    call,
+                    "Math.round expects one argument.",
+                );
+            }
+            // Not `std::round`: JavaScript rounds a tie toward +Infinity
+            // and C rounds it away from zero, so the two disagree on every
+            // negative half. `round_js` carries the spec's own rule.
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp: `bbl::js::round_js(${numbers()[0]})`,
                 dataType: { kind: "number" },
             };
         }

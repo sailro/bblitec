@@ -1388,6 +1388,24 @@ SpriteRendererHandle create_sprite_renderer(
             engine.sprite_renderers.size() - 1u)};
 }
 
+// sprite-renderer.ts#addSpriteRendererLayer, whose membership rule is its
+// own: a layer already present is a no-op, not a second draw.
+void add_sprite_renderer_layer(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    Sprite2DLayerHandle layer) {
+    if (layer.value >= engine.sprite_layers.size()) {
+        throw std::runtime_error(
+            "SpriteRenderer received an unknown layer.");
+    }
+    std::vector<Sprite2DLayerHandle>& layers =
+        engine.sprite_renderers[renderer.value].layers;
+    for (const Sprite2DLayerHandle& present : layers) {
+        if (present.value == layer.value) return;
+    }
+    layers.push_back(layer);
+}
+
 void register_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer) {

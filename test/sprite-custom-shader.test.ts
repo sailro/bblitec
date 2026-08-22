@@ -182,8 +182,9 @@ test("refuses pixels that generation cannot produce", () => {
     );
 });
 
-test("refuses sampler options the emitted factory settles", () => {
-    // Only the pin's defaults are lowered, so an override refuses rather
+test("refuses the pixel format option the texture slot cannot carry", () => {
+    // The four sampler overrides lower; `srgb` picks a second texture
+    // format and no reached call passes one, so it refuses by name rather
     // than being dropped on the way to the texture.
     assert.throws(
         () =>
@@ -193,7 +194,7 @@ test("refuses sampler options the emitted factory settles", () => {
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
-            assert.match(error.message, /options are not lowered/);
+            assert.match(error.message, /'srgb' is not lowered/);
             return true;
         },
     );

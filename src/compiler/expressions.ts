@@ -19,7 +19,11 @@ import {
 } from "./promises.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
-import type { Value, ValueKind } from "./types.js";
+import type {
+    CompiledNodeParticles,
+    Value,
+    ValueKind,
+} from "./types.js";
 import type {
     UserFunctionContext,
     UserFunctionLowerer,
@@ -29,6 +33,8 @@ export interface ExpressionContext
     extends PromiseLoweringContext,
         UserFunctionContext {
     readonly evaluator: StaticEvaluator;
+    /** The scene's node-particle program; a systems.push lands on it. */
+    readonly reachedNodeParticles: CompiledNodeParticles;
     readonly dataLowerer: DataLowerer;
     readonly classLowerer: ClassLowerer;
     readonly userFunctions: UserFunctionLowerer;
@@ -597,6 +603,58 @@ export class ExpressionLowerer {
         };
     }
 
+    /**
+     * `set.systems.push(other)`: one built set's systems composed into
+     * another's, so a single registration renders both.
+     *
+     * `NodeParticleSet.systems` is a mutable array behind a readonly
+     * property upstream, and the corpus uses exactly that to render a
+     * Multiply system beside a MultiplyAdd one. It records a step rather
+     * than emitting: the bake replays the push and reports which systems
+     * the registration then walked, because the set's own count is the
+     * graph's answer.
+     */
+    private compileParticleSystemsPush(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (
+            callee.name.text !== "push" ||
+            !ts.isPropertyAccessExpression(callee.expression) ||
+            callee.expression.name.text !== "systems"
+        ) {
+            return undefined;
+        }
+        const set = this.context.compileValue(
+            callee.expression.expression,
+        );
+        if (set.kind !== "node-particle-set") return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const system = this.context.compileValue(call.arguments[0]!);
+        this.context.expectKind(
+            system,
+            "node-particle-system",
+            call.arguments[0]!,
+        );
+        if (
+            set.nodeParticleSetIndex === undefined ||
+            system.nodeParticleSetIndex === undefined ||
+            system.nodeParticleSystemIndex === undefined
+        ) {
+            this.context.fail(
+                call,
+                "A pushed particle system comes from a built set.",
+            );
+        }
+        this.context.reachedNodeParticles.steps.push({
+            op: "push-system",
+            set: set.nodeParticleSetIndex,
+            fromSet: system.nodeParticleSetIndex,
+            fromSystem: system.nodeParticleSystemIndex,
+        });
+        return { kind: "void", cpp: "" };
+    }
+
     private compileCall(call: ts.CallExpression): Value {
         const promise = compileImmediatePromise(
             this.context,
@@ -607,6 +665,11 @@ export class ExpressionLowerer {
         }
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
+            const pushed = this.compileParticleSystemsPush(
+                call,
+                callee,
+            );
+            if (pushed) return pushed;
             const math =
                 this.context.dataLowerer.compileMathCall(call);
             if (math) {

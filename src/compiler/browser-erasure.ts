@@ -43,9 +43,14 @@ export class BrowserErasure {
             ) {
                 return true;
             }
+            const bound =
+                this.context.lookupOptional(unwrapped)?.kind;
+            // A pure-2D particle binding has no native counterpart and the
+            // corpus only reports it, so a read of one erases exactly as a
+            // browser value does.
             return (
-                this.context.lookupOptional(unwrapped)?.kind ===
-                "browser"
+                bound === "browser" ||
+                bound === "node-particle-2d-binding"
             );
         }
         if (
@@ -55,7 +60,10 @@ export class BrowserErasure {
         ) {
             return true;
         }
-        if (ts.isPropertyAccessExpression(unwrapped)) {
+        if (
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped)
+        ) {
             return this.isBrowserOnlyExpression(
                 unwrapped.expression,
             );
@@ -255,14 +263,14 @@ export class BrowserErasure {
             if (
                 ts.isPropertyAccessExpression(
                     unwrapped.expression,
-                ) &&
-                ts.isIdentifier(
-                    unwrapped.expression.expression,
                 )
             ) {
-                const owner = this.context.lookupOptional(
+                // The receiver is evaluated rather than looked up, because
+                // the corpus writes the query read both ways: bound to a
+                // local first, and read straight off the constructor.
+                const owner = this.evaluateBrowserValue(
                     unwrapped.expression.expression,
-                )?.browserValue;
+                );
                 if (owner?.kind === "search-params") {
                     if (
                         unwrapped.expression.name.text ===

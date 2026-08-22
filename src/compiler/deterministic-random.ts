@@ -28,6 +28,18 @@ export interface DeterministicRandomContext {
     fail(node: ts.Node, message: string): never;
 }
 
+/** Whether an expression is the bare `Math.random` function reference. */
+export function isDeterministicRandomRead(
+    expression: ts.Expression,
+): boolean {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        ts.isIdentifier(expression.expression) &&
+        expression.expression.text === "Math" &&
+        expression.name.text === "random"
+    );
+}
+
 /** TypeScript-only expression forms an arrow's text may not carry. */
 function refuseTypeSyntax(
     context: DeterministicRandomContext,
@@ -146,10 +158,23 @@ export function emitDeterministicRandomInstall(
     ) {
         return false;
     }
+    if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+        context.fail(
+            expression,
+            "Math.random is replaced by an arrow function or not at all.",
+        );
+    }
+    // `Math.random = original`: the scene closing the seeded window it
+    // opened. The driver restores the generator it saved, so pinned code
+    // after this point draws from the browser's own again.
     if (
-        expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
-        !ts.isArrowFunction(expression.right)
+        ts.isIdentifier(expression.right) &&
+        context.lookup(expression.right).kind === "js-random"
     ) {
+        context.reachedNodeParticles.steps.push({ op: "random-restore" });
+        return true;
+    }
+    if (!ts.isArrowFunction(expression.right)) {
         context.fail(
             expression,
             "Math.random is replaced by an arrow function or not at all.",

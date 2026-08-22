@@ -212,6 +212,25 @@ using U32Array = std::vector<std::uint32_t>;
     return result;
 }
 
+/**
+ * `Math.round`, at ECMA-262's own rule rather than C's.
+ *
+ * The two differ on a negative tie: JavaScript rounds halves toward
+ * +Infinity (`Math.round(-0.5)` is `-0`), while `std::round` rounds halves
+ * away from zero (`-1`). The spec's rule is "the integer closest to x, ties
+ * toward +Infinity", which is `floor(x) + (x - floor(x) >= 0.5)` -- written
+ * that way rather than as `floor(x + 0.5)` because the addition is not
+ * exact for large magnitudes, where `floor(x) == x` makes this branch return
+ * `x` unchanged, as the spec requires.
+ */
+[[nodiscard]] inline double round_js(double value) {
+    if (!std::isfinite(value) || value == 0.0) {
+        return value;
+    }
+    const double floored = std::floor(value);
+    return value - floored >= 0.5 ? floored + 1.0 : floored;
+}
+
 // Deterministic Math.random: mulberry32 over a pinned seed. The browser
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).

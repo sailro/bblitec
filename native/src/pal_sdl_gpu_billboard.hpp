@@ -38,6 +38,12 @@ namespace bbl::pal {
 /** One billboard system, as GPU resources. */
 struct BillboardPass {
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    // The mode-4 wrapper's second pipeline: a stock Add pass over the same
+    // instances, built only when the descriptor carries two passes. Its
+    // fragment is the stock one, so it binds the same textures and the same
+    // system block at that stage's own slots.
+    SDL_GPUGraphicsPipeline* add_pipeline = nullptr;
+    int add_system_block_slot = -1;
     SDL_GPUBuffer* index_buffer = nullptr;
     SDL_GPUBuffer* instances = nullptr;
     // The atlas and any extra textures, in the order the composed program
@@ -105,15 +111,31 @@ inline BillboardPass create_billboard_pass(
 
     const bool axis_locked =
         system.orientation == BillboardOrientation::axis_locked;
+    // The particle family's Multiply program is a module of the pin's own,
+    // outside both sprite composers: it declares no fx block, and its vertex
+    // stage travels with its fragment because the pin writes them together.
+    const bool particle_multiply = system.blend.particle_passes >= 1;
+    // That pairing is exactly why it is exclusive: the program carries the
+    // FACING basis and the pin's own body, so an axis-locked or custom
+    // system reaching it would silently draw neither. The registrar upstream
+    // only ever builds facing particle systems with no custom shader, so
+    // this says so rather than picking a program that would be wrong.
+    if (particle_multiply && (axis_locked || system.custom_shader)) {
+        throw std::runtime_error(
+            "A node-particle Multiply blend draws the pin's own facing "
+            "program; it has no axis-locked or custom-shader arm.");
+    }
     // Unlike the 2D layer, a custom billboard program brings its own vertex
     // stage: the pin's composer exposes the view distance and the world
     // position to a custom body, which the stock stage does not write.
     SDL_GPUShader* vertex_shader = load_shader(
         device,
-        system.custom_shader
-            ? "billboard_custom.vert"
-            : axis_locked ? "billboard_axis_locked.vert"
-                          : "billboard.vert",
+        particle_multiply
+            ? "billboard_particle_multiply.vert"
+            : system.custom_shader
+                ? "billboard_custom.vert"
+                : axis_locked ? "billboard_axis_locked.vert"
+                              : "billboard.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         // The axis-locked basis reads the system block for its lock axis.
@@ -124,10 +146,12 @@ inline BillboardPass create_billboard_pass(
     // permutation shares the transparent stage.
     const bool cutout =
         system.depth_mode == BillboardDepthMode::cutout;
-    const char* fragment_name = system.custom_shader
-        ? "billboard_custom.frag"
-        : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
-                                             : "billboard.frag";
+    const char* fragment_name = particle_multiply
+        ? "billboard_particle_multiply.frag"
+        : system.custom_shader
+            ? "billboard_custom.frag"
+            : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
+                                                  : "billboard.frag";
     const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
     pass.system_block_slot = stage_uniform_slot(slots, "billboards");
     pass.fx_block_slot = stage_uniform_slot(slots, "fx");
@@ -214,6 +238,53 @@ inline BillboardPass create_billboard_pass(
     if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline");
     SDL_ReleaseGPUShader(device, vertex_shader);
     SDL_ReleaseGPUShader(device, fragment_shader);
+
+    if (system.blend.particle_passes == 2) {
+        // The mode-4 second pass: the STOCK program, the Add blend the
+        // generated builder resolved, and everything else identical -- the
+        // pin builds it as a copy of the system with its custom shader
+        // cleared, over the same instance and index buffers.
+        const SpriteBlendDescriptor& add = system.add_pass_blend;
+        SDL_GPUColorTargetDescription add_target = target;
+        add_target.blend_state.enable_blend = add.enabled;
+        add_target.blend_state.src_color_blendfactor =
+            sprite_blend_factor(add.color.src);
+        add_target.blend_state.dst_color_blendfactor =
+            sprite_blend_factor(add.color.dst);
+        add_target.blend_state.src_alpha_blendfactor =
+            sprite_blend_factor(add.alpha.src);
+        add_target.blend_state.dst_alpha_blendfactor =
+            sprite_blend_factor(add.alpha.dst);
+        const PinnedStageSlots add_slots =
+            read_pinned_stage_slots("billboard.frag");
+        pass.add_system_block_slot =
+            stage_uniform_slot(add_slots, "billboards");
+        SDL_GPUShader* add_vertex = load_shader(
+            device,
+            "billboard.vert",
+            SDL_GPU_SHADERSTAGE_VERTEX,
+            0,
+            1u,
+            "mainVertex");
+        SDL_GPUShader* add_fragment = load_shader(
+            device,
+            "billboard.frag",
+            SDL_GPU_SHADERSTAGE_FRAGMENT,
+            static_cast<std::uint32_t>(add_slots.textures.size()),
+            static_cast<std::uint32_t>(add_slots.uniforms.size()),
+            "mainFragment");
+        SDL_GPUGraphicsPipelineCreateInfo add_info = info;
+        add_info.vertex_shader = add_vertex;
+        add_info.fragment_shader = add_fragment;
+        add_info.target_info.color_target_descriptions = &add_target;
+        pass.add_pipeline =
+            SDL_CreateGPUGraphicsPipeline(device, &add_info);
+        if (!pass.add_pipeline) {
+            gpu_error("SDL_CreateGPUGraphicsPipeline");
+        }
+        SDL_ReleaseGPUShader(device, add_vertex);
+        SDL_ReleaseGPUShader(device, add_fragment);
+    }
 
     SDL_GPUBufferCreateInfo instances{};
     instances.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -369,6 +440,34 @@ inline void record_billboard_pass(
         0,
         0,
         0);
+
+    if (pass.add_pipeline) {
+        // The pin's own mode-4 wrapper: the primary draw leaves the instance
+        // and index buffers bound, so the second pass binds only its
+        // pipeline and its own system block before drawing the same
+        // instances again. It restores the primary pipeline afterwards, so a
+        // caller caching the bound pipeline stays correct.
+        SDL_BindGPUGraphicsPipeline(render_pass, pass.add_pipeline);
+        // The stock fragment keeps the block at the same slot the Multiply
+        // one did for every pairing that can occur, so the push is normally
+        // redundant -- but the slot is read from each stage's own sidecar
+        // rather than assumed, so a stage that moved it still gets one.
+        if (pass.add_system_block_slot != pass.system_block_slot) {
+            push_stage_uniform(
+                command,
+                pass.add_system_block_slot,
+                system_ubo.data(),
+                system_ubo.size() * sizeof(float));
+        }
+        SDL_DrawGPUIndexedPrimitives(
+            render_pass,
+            static_cast<Uint32>(upstream::billboard_index_data.size()),
+            system.count,
+            0,
+            0,
+            0);
+        SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
+    }
 }
 
 inline void release_billboard_pass(
@@ -381,6 +480,9 @@ inline void release_billboard_pass(
     }
     if (pass.pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(device, pass.pipeline);
+    }
+    if (pass.add_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(device, pass.add_pipeline);
     }
     pass = BillboardPass{};
 }

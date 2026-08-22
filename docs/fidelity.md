@@ -689,6 +689,69 @@ identity where the generated sync runs — the billboard the generated builder
 just made carries no sprites — so a second sync is refused at generation
 rather than doubling every particle.
 
+**A registered node-particle set is folded, and the fold is MEASURED rather
+than argued.** `registerNodeParticleSet` appends a callback that animates and
+re-synchronizes every frame, so a frozen bake can only answer for it when
+that step is the identity. Whether it is depends on the graph's own update
+blocks, which is not a question this port can settle by reading: instead the
+bake driver takes each registered system's state, calls
+`animateParticleSystem(system, 1)` once more, and compares every column the
+sync reads. Generation refuses a registration whose columns moved, and refuses
+one whose `updateSpeed` is not zero — the two together are what make the
+per-frame callback provably the identity for any ratio, since
+`scaledUpdateSpeed = updateSpeed * ratio`. Scenes 283 and 284 register frozen
+sets and measure byte-exact on both backends.
+
+**The exact particle blends are a second mapping, and both are read as data.**
+`particle-billboard.ts`'s own `blendForMode` maps three modes to public
+billboard descriptors and degrades the rest to Add; `particle-blend.ts`'s
+`createParticleBlend` resolves all five to private descriptors, including
+Multiply (`dst`/`zero`) and MultiplyAdd. `particle-sprite-2d.ts` carries a
+third mapping onto the 2D descriptors, whose alpha factors differ from the
+billboard ones. All three are emitted from their own declarations, so a factor
+the pin edits changes what is emitted and an arm it adds fails generation.
+Which mapping a system takes is the set's own answer — the enabler installs
+it per system — and it rides the native descriptor as the pin's own
+`_particlePasses` count rather than as a mode number, because that is the
+field the pin's registrar forks on.
+
+**Mode 4 is two passes over one renderable.** The pin wraps the Multiply
+draw with a stock Add pipeline, a second bind group and a second copy of the
+system uniform block, then draws the same instances again and restores the
+primary pipeline so a caller caching it stays correct. Both backends do
+exactly that: one instance buffer, one index buffer, two pipelines, and the
+Add blend built where the pin builds it — `createParticleBlend(2)`, resolved
+by the generated builder rather than by either PAL. Scene 284 measures it.
+
+**The Multiply fragment is the pin's own module, not a fragment arm.**
+`particle-billboard-renderable.ts` writes a whole WGSL module of its own so a
+Multiply-only bundle declares no `SpriteFx` block at all, and
+`particle-sprite-2d-blend-modes.ts` carries the 2D twin with the layer's
+`L.opacityMul` in place of the system's. Generation evaluates the first
+builder and lifts the second's body into the pin's own sprite composer, so
+both stages are the pin's text: `baseColor.rgb * sourceAlpha + white * (1 -
+sourceAlpha)`, which is what makes a zero-alpha texel leave the destination
+unchanged under destination-colour blending. Scenes 283, 284 and 301 measure
+all three shapes byte-exact.
+
+**A particle buffer is generation-time state.** The simulation runs at
+generation, so `buffer.alive` and every column exist only there. A scene that
+writes a column after the freeze is editing the state the bake hands on, and
+one that checks the live count is asserting about it: both move to the bake
+driver and emit nothing native. The guard's message does not travel with it —
+the corpus writes it as a template over the very count it rejects, and the
+driver knows that count, so it reports the real one.
+
+**`Math.round` is JavaScript's rule, not C's.** The two disagree on every
+negative tie: ECMA-262 rounds halves toward +Infinity, so `Math.round(-0.5)`
+is `-0`, while `std::round` rounds away from zero and gives `-1`.
+`bbl::js::round_js` carries the spec's own rule, written as
+`floor(x) + (x - floor(x) >= 0.5)` rather than `floor(x + 0.5)` because that
+addition is not exact at large magnitudes. The five integer-valued one-argument
+functions also fold at generation over a constant argument, where the folded
+value and the emitted call agree exactly; the transcendental ones deliberately
+do not, because V8 and a native maths library need not.
+
 **A particle graph's texture is a `loadTexture2D`, not a `loadSpriteAtlas`.**
 `ParticleTextureSourceBlock` loads through `loadTexture2D` with `invertY`
 alone, so its atlas keeps that loader's sampler: repeat addressing, a full

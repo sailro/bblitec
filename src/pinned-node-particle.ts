@@ -51,6 +51,7 @@ export type NodeParticleGraphSource =
 /** The pinned builders a scene reaches, by their own export names. */
 export type NodeParticleBuilder =
     | "buildNodeParticleSet"
+    | "buildNodeParticleSetWithBlendModes"
     | "buildNodeParticleSetWithFlowMaps"
     | "buildNodeParticleSetWithNoiseTextures";
 
@@ -68,6 +69,20 @@ export type NodeParticleStep =
     | { op: "stop"; set: number; system: number }
     | { op: "animate"; set: number; system: number; ratio: number }
     /**
+     * A scalar the scene writes on the system between steps. The three the
+     * corpus reaches are all inputs to `animateParticleSystem`, so the write
+     * is part of the sequence rather than a property of the result --
+     * `updateSpeed = 0` is exactly what freezes a set the scene then
+     * registers.
+     */
+    | {
+          op: "scalar";
+          set: number;
+          system: number;
+          name: "emitRate" | "updateSpeed" | "targetStopDuration";
+          value: number;
+      }
+    /**
      * The deterministic `Math.random` the scene installs before stepping.
      * Its text is the scene's own arrow, moved into the driver rather than
      * restated: the driver runs in the same engine the golden does, so an
@@ -76,7 +91,47 @@ export type NodeParticleStep =
      * numeric locals, and refuses the assignment outright if the scene
      * reaches `Math.random` anywhere the native runtime would answer.
      */
-    | { op: "random"; declarations: readonly string[]; arrow: string };
+    | { op: "random"; declarations: readonly string[]; arrow: string }
+    /**
+     * `Math.random = original`, the scene closing its seeded window. The
+     * driver holds the generator it replaced, so what follows draws from
+     * the browser's own sequence exactly as the scene does.
+     */
+    | { op: "random-restore" }
+    /**
+     * `set.systems.push(other)`: the corpus composes two independently
+     * built systems into one set so a single registration renders both.
+     * The push is a step because it must land before the registration that
+     * walks the list.
+     */
+    | {
+          op: "push-system";
+          set: number;
+          fromSet: number;
+          fromSystem: number;
+      }
+    /**
+     * A particle buffer is generation-time state: the simulation runs at
+     * generation, so a scene that writes a column afterwards is editing the
+     * state the bake will read, and a scene that checks `alive` is
+     * asserting about it. Both move to the driver, where the buffer exists,
+     * and neither emits native code.
+     */
+    | {
+          op: "buffer-write";
+          set: number;
+          system: number;
+          column: string;
+          index: number;
+          value: number;
+      }
+    | {
+          op: "expect-alive";
+          set: number;
+          system: number;
+          operator: "===" | "!==";
+          value: number;
+      };
 
 /**
  * The scene camera the build reads.
@@ -104,6 +159,64 @@ export interface NodeParticleSetRequest {
     textureBaseUrl?: string;
     /** The scene's camera when the build ran, when it had one. */
     camera?: NodeParticleCamera;
+    /**
+     * `enableNodeParticleBlendModes(set)`, applied after the build.
+     *
+     * The blend-mode builder is that call over `buildNodeParticleSet`, so a
+     * scene reaching either route ends with the same set; this records the
+     * second spelling so the driver runs the chain the scene wrote.
+     */
+    enableBlendModes?: boolean;
+}
+
+/**
+ * One `registerNodeParticleSet2D*` call: the pure-2D bridge's mapping, its
+ * layer presentation options and whether it takes the exact blend modes.
+ *
+ * The layer's capacity, depth, blend and pivot are bridge-owned upstream, so
+ * only the four presentation fields travel; `view` is unreached and refuses.
+ */
+export interface NodeParticleSprite2DRequest {
+    set: number;
+    exact: boolean;
+    autoStart: boolean;
+    pixelsPerUnit: number;
+    originPx: readonly [number, number];
+    invertY: boolean;
+    opacity?: number;
+    visible?: boolean;
+    order?: number;
+}
+
+/**
+ * One `registerNodeParticleSet` call, which the scene makes on a whole set
+ * rather than on a system it named.
+ *
+ * How many systems the set has is the graph's answer, so the expansion
+ * happens in the driver — the one place that has the built set.
+ */
+export interface NodeParticleRegistration {
+    set: number;
+    autoStart: boolean;
+}
+
+/**
+ * One `system.texture = createTexture2DFromPixels(...)` the scene wrote.
+ *
+ * A graph whose texture block carries no URL leaves the system untextured,
+ * and both `createParticleBillboard` and the Sprite2D bridge throw there —
+ * so the assignment is part of the program, and the driver replays it by
+ * calling the same module the native asset bakes from.
+ */
+export interface NodeParticleTextureRequest {
+    set: number;
+    system: number;
+    /** `generated:pixels:<module>#<export>`, the executed-module source. */
+    source: string;
+    width: number;
+    height: number;
+    /** The sampler literals the call named, in the pin's own spelling. */
+    options: Record<string, string>;
 }
 
 /**
@@ -119,13 +232,26 @@ export interface NodeParticleBakeRequest {
     steps: readonly NodeParticleStep[];
     /** Which (set, system) pairs a `createParticleBillboard` froze. */
     billboards: readonly { set: number; system: number }[];
+    /** Which sets `registerNodeParticleSet` registered on the scene. */
+    registrations?: readonly NodeParticleRegistration[];
+    /** The textures scene code assigned onto systems, in reach order. */
+    textures?: readonly NodeParticleTextureRequest[];
+    /** The pure-2D bridges a scene registered on a SpriteRenderer. */
+    sprite2d?: readonly NodeParticleSprite2DRequest[];
 }
 
 /** The pinned `loadTexture2D` call the graph's texture block made. */
 export interface NodeParticleTexture {
+    /** The URL the graph's own block loaded, or "" for a scene texture. */
     url: string;
     /** `loadTexture2D`'s own `invertY`, as the block passed it. */
     invertY: boolean;
+    /**
+     * Whether scene code assigned this texture. Its bytes are already a
+     * generated asset and its sampler is the pixels loader's, so nothing
+     * about it is packaged from a URL.
+     */
+    sceneAssigned: boolean;
     width: number;
     height: number;
 }
@@ -142,6 +268,20 @@ export interface NodeParticleSystemBake {
     capacity: number;
     /** The pin's numeric `system.blendMode`; `blendForMode` maps it. */
     blendMode: number;
+    /**
+     * `system.updateSpeed` after the scene's own steps, and whether one more
+     * `animateParticleSystem(system, 1)` left every column it reads
+     * untouched.
+     *
+     * `registerNodeParticleSet` appends a callback that animates and
+     * re-synchronizes every frame, which one frozen state cannot answer in
+     * general. It CAN answer it for a system the scene froze, and that is a
+     * measurement rather than an argument about the graph's blocks: the
+     * driver takes the state, steps once more, and compares. Generation
+     * refuses a registration where either half fails.
+     */
+    updateSpeed: number;
+    stepIsIdentity: boolean;
     texture: NodeParticleTexture | null;
     spriteSheet: { cellWidth: number; cellHeight: number } | null;
     /** `buffer.alive` — the length of every column below. */
@@ -155,8 +295,27 @@ export interface NodeParticleSystemBake {
     frames: number[] | null;
 }
 
+/**
+ * Which systems one registration walked, in the pin's own order.
+ *
+ * A set's system count is the graph's answer and `systems.push` can add one
+ * from another set, so the list is observed rather than predicted: the
+ * driver reads `set.systems` at the point the scene registered it.
+ */
+export interface NodeParticleExpansion {
+    /** Index into the request's `registrations` or `sprite2d` list. */
+    request: number;
+    /** The request's own `autoStart`, which the identity probe replays. */
+    autoStart: boolean;
+    systems: Array<{ set: number; system: number }>;
+}
+
 export interface NodeParticleBake {
     systems: NodeParticleSystemBake[];
+    /** `registerNodeParticleSet` expansions, in request order. */
+    registrations: NodeParticleExpansion[];
+    /** `registerNodeParticleSet2D*` expansions, in request order. */
+    sprite2d: NodeParticleExpansion[];
 }
 
 /** The pinned package path the served driver imports. */
@@ -171,28 +330,90 @@ function graphExpression(graph: NodeParticleGraphSource): string {
 }
 
 /**
- * The graph modules the driver imports, one line each, deduplicated.
+ * The scene modules the driver imports, one line each, deduplicated: the
+ * graph factories and the pixel-buffer factories a texture assignment names.
  *
  * The corpus writes `../shared/sceneNNN-npe.js`; the suite server transpiles
  * the `.ts` sibling on demand, which is the same resolution the reference
  * capture performs for the scene's own imports.
  */
-function graphImports(sets: readonly NodeParticleSetRequest[]): string {
+function graphImports(request: NodeParticleBakeRequest): string {
     const lines = new Set<string>();
-    for (const set of sets) {
-        if (set.graph.kind !== "module") continue;
-        const specifier = `/${set.graph.module.replace(/\.ts$/, ".js")}`;
+    const moduleImport = (module: string, exportName: string): void => {
+        const specifier = `/${module.replace(/\.ts$/, ".js")}`;
         lines.add(
-            `import { ${set.graph.exportName} } from ` +
+            `import { ${exportName} } from ` +
                 `${JSON.stringify(specifier)};`,
         );
+    };
+    for (const set of request.sets) {
+        if (set.graph.kind !== "module") continue;
+        moduleImport(set.graph.module, set.graph.exportName);
+    }
+    for (const texture of request.textures ?? []) {
+        const { module, exportName } = pixelsModule(texture.source);
+        moduleImport(module, exportName);
     }
     return [...lines].join("\n");
+}
+
+/** The module and export a `generated:pixels:` source names. */
+function pixelsModule(source: string): {
+    module: string;
+    exportName: string;
+} {
+    const prefix = "generated:pixels:";
+    const separator = source.lastIndexOf("#");
+    if (!source.startsWith(prefix) || separator < 0) {
+        throw new Error(
+            `A node-particle texture names '${source}', which is not an ` +
+                "executed pixel-buffer module.",
+        );
+    }
+    return {
+        module: source.slice(prefix.length, separator),
+        exportName: source.slice(separator + 1),
+    };
+}
+
+/**
+ * The scene's own texture assignments, replayed before anything reads a
+ * system's texture. The options travel as the pin's own literals, so the
+ * driver's call is the scene's call.
+ */
+function textureAssignments(
+    textures: readonly NodeParticleTextureRequest[],
+): string {
+    return textures
+        .map((texture) => {
+            const { exportName } = pixelsModule(texture.source);
+            const options = Object.entries(texture.options)
+                .map(([name, value]) => `${name}: ${JSON.stringify(value)}`)
+                .join(", ");
+            return (
+                `    systemAt(${texture.set}, ${texture.system}).texture = ` +
+                `createTexture2DFromPixels(engine, ${exportName}(), ` +
+                `${texture.width}, ${texture.height}` +
+                `${options ? `, { ${options} }` : ""});`
+            );
+        })
+        .join("\n");
 }
 
 function stepProgram(steps: readonly NodeParticleStep[]): string {
     const lines: string[] = [];
     for (const step of steps) {
+        if (step.op === "push-system") {
+            lines.push(
+                `    sets[${step.set}].systems.push(` +
+                    `systemAt(${step.fromSet}, ${step.fromSystem}));`,
+            );
+            continue;
+        }
+        if (step.op === "random-restore") {
+            lines.push("    Math.random = originalRandom;");
+            continue;
+        }
         if (step.op === "random") {
             // The captures and the arrow go into a scope of their own. They
             // are the scene's own names, and the driver's top level already
@@ -210,10 +431,34 @@ function stepProgram(steps: readonly NodeParticleStep[]): string {
             continue;
         }
         const system = `systemAt(${step.set}, ${step.system})`;
-        if (step.op === "start") {
+        if (step.op === "buffer-write") {
+            lines.push(
+                `    ${system}.buffer.${step.column}[${step.index}] = ` +
+                    `${step.value};`,
+            );
+        } else if (step.op === "expect-alive") {
+            // The scene's own message is a template over the very count it
+            // rejects; the driver knows that count, so it reports the real
+            // one rather than replaying text with an interpolation.
+            const label =
+                `node-particle bake: set ${step.set} system ` +
+                `${step.system} has `;
+            const tail =
+                ` live particles, which the scene's own guard rejects ` +
+                `(${step.operator} ${step.value}).`;
+            lines.push(
+                `    if (${system}.buffer.alive ${step.operator} ` +
+                    `${step.value}) {`,
+                `        throw new Error(${JSON.stringify(label)} + ` +
+                    `${system}.buffer.alive + ${JSON.stringify(tail)});`,
+                "    }",
+            );
+        } else if (step.op === "start") {
             lines.push(`    startParticleSystem(${system});`);
         } else if (step.op === "stop") {
             lines.push(`    stopParticleSystem(${system});`);
+        } else if (step.op === "scalar") {
+            lines.push(`    ${system}.${step.name} = ${step.value};`);
         } else {
             lines.push(
                 `    animateParticleSystem(${system}, ${step.ratio});`,
@@ -252,9 +497,27 @@ function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
                               `${JSON.stringify(set.textureBaseUrl)},`,
                       ]),
                 "    });",
+                ...(set.enableBlendModes
+                    ? [
+                          `    sets[${index}] = ` +
+                              `enableNodeParticleBlendModes(sets[${index}]);`,
+                      ]
+                    : []),
             ].join("\n"),
         )
         .join("\n");
+}
+
+/**
+ * The pinned entry points the driver imports beyond the fixed set: the
+ * builders the scene reached, and the enabler when one of them applied it.
+ */
+function driverImports(sets: readonly NodeParticleSetRequest[]): string[] {
+    const names = new Set<string>(sets.map((set) => set.builder));
+    if (sets.some((set) => set.enableBlendModes)) {
+        names.add("enableNodeParticleBlendModes");
+    }
+    return [...names];
 }
 
 /**
@@ -267,15 +530,13 @@ function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
  * ratio) plus the one function a deterministic seed has to be.
  */
 function driverModule(request: NodeParticleBakeRequest): string {
-    const builders = [
-        ...new Set(request.sets.map((set) => set.builder)),
-    ].join(`,\n         `);
+    const builders = driverImports(request.sets).join(`,\n         `);
     return `import { createEngine, createSceneContext, enableDeviceLostSceneRecovery,
          createArcRotateCamera, parseNodeParticleSource, startParticleSystem,
          stopParticleSystem, animateParticleSystem, createParticleBillboard,
-         syncParticleBillboard,
+         syncParticleBillboard, createTexture2DFromPixels,
          ${builders} } from ${JSON.stringify(pinnedPackage)};
-${graphImports(request.sets)}
+${graphImports(request)}
 
 window.__bakeNodeParticles = async () => {
     const canvas = document.getElementById("renderCanvas");
@@ -285,6 +546,9 @@ window.__bakeNodeParticles = async () => {
     // back from the pin rather than re-resolved here.
     enableDeviceLostSceneRecovery(engine);
     const scene = createSceneContext(engine);
+    // Held so a scene that closes its seeded window puts back the same
+    // generator the page started with.
+    const originalRandom = Math.random;
     const sets = [];
 ${buildCalls(request.sets)}
     const systemAt = (setIndex, index) => {
@@ -296,9 +560,55 @@ ${buildCalls(request.sets)}
         }
         return system;
     };
+    // The (set, system) pair a system was BUILT as, stamped before any
+    // systems.push can move it into another set's list.
+    const origins = new Map();
+    for (let setIndex = 0; setIndex < sets.length; setIndex++) {
+        sets[setIndex].systems.forEach((system, index) => {
+            if (!origins.has(system)) {
+                origins.set(system, { set: setIndex, system: index });
+            }
+        });
+    }
+    const originOf = (system) => {
+        const origin = origins.get(system);
+        if (!origin) {
+            throw new Error("node-particle bake: a registered system was not built by any set");
+        }
+        return origin;
+    };
+${textureAssignments(request.textures ?? [])}
 ${stepProgram(request.steps)}
+    // A registration names a SET; how many systems it has is the graph's
+    // answer, and systems.push can add one built elsewhere, so the
+    // expansion happens here, in the pin's own order. Each system carries
+    // the (set, system) pair it was BUILT as, which is the key the baked
+    // table is looked up by.
+    const frozen = ${JSON.stringify([...request.billboards])};
+    const expand = (requests) =>
+        requests.map(({ set: setIndex, autoStart }, request) => ({
+            request,
+            autoStart: autoStart ?? true,
+            systems: sets[setIndex].systems.map((system) => {
+                const origin = originOf(system);
+                if (!frozen.some((entry) =>
+                    entry.set === origin.set && entry.system === origin.system)) {
+                    frozen.push({ set: origin.set, system: origin.system });
+                }
+                return origin;
+            }),
+        }));
+    const registrationExpansions = expand(${JSON.stringify([
+        ...(request.registrations ?? []),
+    ])});
+    const sprite2dExpansions = expand(${JSON.stringify([
+        ...(request.sprite2d ?? []),
+    ])});
+    const sceneTextures = ${JSON.stringify(
+        (request.textures ?? []).map(({ set, system }) => ({ set, system })),
+    )};
     const systems = [];
-    for (const { set: setIndex, system: index } of ${JSON.stringify([...request.billboards])}) {
+    for (const { set: setIndex, system: index } of frozen) {
         const system = systemAt(setIndex, index);
         // The billboard is built and synced so the atlas the pin derives and
         // the count it writes are observed rather than predicted; the bake
@@ -312,8 +622,15 @@ ${stepProgram(request.steps)}
                 " of " + alive + " live particles");
         }
         const sheet = system._spriteSheet;
-        const source = system.texture ? system.texture._recoverySource : null;
-        if (system.texture && (!source || source.kind !== "url")) {
+        // A texture the SCENE assigned came from createTexture2DFromPixels,
+        // whose bytes are already a generated asset; only a texture the
+        // graph's own block loaded carries a URL to package.
+        const sceneTextured = sceneTextures.some(
+            (entry) => entry.set === setIndex && entry.system === index);
+        const source = system.texture && !sceneTextured
+            ? system.texture._recoverySource
+            : null;
+        if (system.texture && !sceneTextured && (!source || source.kind !== "url")) {
             throw new Error("node-particle bake: the system's texture is not a loaded image");
         }
         const positions = [];
@@ -333,10 +650,13 @@ ${stepProgram(request.steps)}
             system: index,
             capacity: buffer.capacity,
             blendMode: system.blendMode,
+            updateSpeed: system.updateSpeed,
+            stepIsIdentity: false,
             texture: system.texture
                 ? {
-                      url: source.url,
-                      invertY: source.opts.invertY === true,
+                      url: source ? source.url : "",
+                      invertY: source ? source.opts.invertY === true : false,
+                      sceneAssigned: sceneTextured,
                       width: system.texture.width,
                       height: system.texture.height,
                   }
@@ -352,7 +672,52 @@ ${stepProgram(request.steps)}
             frames,
         });
     }
-    return { systems };
+    // Every state is read before any probe runs: a probe step consumes the
+    // seeded sequence, and a later system's extraction must not see it.
+    // Only a REGISTERED system needs the probe -- it is the per-frame step
+    // that has to be the identity -- and the step is a full simulation
+    // frame, so a scene that registers nothing pays nothing.
+    // A registration with autoStart starts its systems BEFORE the hook
+    // runs, and an unstarted system leaves animateParticleSystem at its
+    // first line -- so the probe replays the start it would have had.
+    const hooked = new Map();
+    for (const expansion of registrationExpansions.concat(sprite2dExpansions)) {
+        for (const entry of expansion.systems) {
+            const key = entry.set + ":" + entry.system;
+            hooked.set(key, (hooked.get(key) ?? false) || expansion.autoStart);
+        }
+    }
+    for (const baked of systems) {
+        if (!hooked.has(baked.set + ":" + baked.system)) continue;
+        const system = systemAt(baked.set, baked.system);
+        if (hooked.get(baked.set + ":" + baked.system)) {
+            startParticleSystem(system);
+        }
+        animateParticleSystem(system, 1);
+        const buffer = system.buffer;
+        const sheet = system._spriteSheet;
+        let same = buffer.alive === baked.alive;
+        for (let i = 0; same && i < buffer.alive; i++) {
+            same =
+                buffer.posX[i] === baked.positions[i * 3] &&
+                buffer.posY[i] === baked.positions[i * 3 + 1] &&
+                buffer.posZ[i] === baked.positions[i * 3 + 2] &&
+                buffer.size[i] * buffer.scaleX[i] === baked.sizes[i * 2] &&
+                buffer.size[i] * buffer.scaleY[i] === baked.sizes[i * 2 + 1] &&
+                buffer.colorR[i] === baked.colors[i * 4] &&
+                buffer.colorG[i] === baked.colors[i * 4 + 1] &&
+                buffer.colorB[i] === baked.colors[i * 4 + 2] &&
+                buffer.colorA[i] === baked.colors[i * 4 + 3] &&
+                buffer.angle[i] === baked.rotations[i] &&
+                (!sheet || sheet.cellIndex[i] === baked.frames[i]);
+        }
+        baked.stepIsIdentity = same;
+    }
+    return {
+        systems,
+        registrations: registrationExpansions,
+        sprite2d: sprite2dExpansions,
+    };
 };
 `;
 }
@@ -361,7 +726,8 @@ function assertBake(value: unknown): NodeParticleBake {
     if (
         typeof value !== "object" ||
         value === null ||
-        !Array.isArray((value as { systems?: unknown }).systems)
+        !Array.isArray((value as { systems?: unknown }).systems) ||
+        !Array.isArray((value as { sprite2d?: unknown }).sprite2d)
     ) {
         throw new Error("The node-particle bake returned no systems.");
     }

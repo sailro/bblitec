@@ -76,7 +76,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
-| [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard that draws it is folded |
+| [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
 | [Fullscreen effects](#fullscreen-effects) | Compile → Run | the caller's WGSL wrapped in the pin's own vertex stage at generation; the swapchain renderer or the frame-graph task at run time |
@@ -115,6 +115,13 @@ analyzable entry file against one engine.
 - **Browser erasure and AOT promises.** The browser `main` wrapper, DOM,
   timing, and dataset instrumentation are erased, and every `await` on a
   materialized asset resolves immediately.
+- **Preconditions and cleanup.** A scene's own `throw new Error("...")` lowers
+  to a runtime error carrying that message, which the generated `main` already
+  catches and prints; a message built from state refuses, because this runtime
+  holds none of what one would report. A `try` with a `finally` whose body
+  erases to nothing lowers to the try block alone — that is how the corpus
+  revokes an object URL and puts back a `Math.random` it replaced — and a
+  `catch`, or a finalizer that emits, refuses.
 
 **Why compile time:** this is the compiler. There is no interpreter, no
 run-time module loading, and no run-time object identity — a compile-time
@@ -241,9 +248,8 @@ expression. Recorded per scene as `drawn-sprite-atlas`. The frame grid is
 **Why a pixel buffer is compile time**, a larger adaptation recorded
 separately as `computed-pixel-buffer`: those bytes *are* an expression, so
 unlike the atlas they are portable in principle. Two facts stand against it.
-The function is not lowerable — this compiler has no `Math.round`, and the
-module memoizes through a module-level binding the data model does not
-carry. And the value is fragile: three of the palette's 768 channel values
+The function is not lowerable in THIS compiler: the module memoizes through
+a module-level binding the data model does not carry. And the value is fragile: three of the palette's 768 channel values
 land 2.8e-14 below a rounding boundary, one ulp of `sin`, so a reassociated
 expression or a different rounding rule flips an entry and with it a pixel.
 Executing it under the engine the golden runs in makes the result checkable
@@ -280,8 +286,9 @@ Chromium and bakes the particle buffer. Recorded per scene as
 `executed-node-particle-simulation`; the baked state depends on the Chrome
 that ran it, exactly as the drawn atlas and the pinned GGX prefilter do.
 
-**What stays folded is everything downstream.** `createParticleBillboard` and
-`syncParticleBillboard` are lowered from their own pinned declarations — the
+**What stays folded is everything downstream**, on both render targets.
+`createParticleBillboard` and `syncParticleBillboard` are lowered from their
+own pinned declarations — the
 grid atlas over the graph's texture, the blend its numeric mode selects, the
 five props the sync writes per particle — so the generated scene builds the
 billboard system the pin would have built and writes the sprites the pin
@@ -292,11 +299,34 @@ graph, the emitter and the texture base URL — and the **camera**, because
 `UpdateFlowMapBlock` derives a view-projection during the build and a build
 with no camera leaves the flow update a silent no-op.
 
+**Two render targets, and the exact blends on both.** A frozen set draws
+either as camera-facing billboards or through the pure-2D Sprite2D bridge,
+and each has a plain mapping and an exact one. The plain builders map three
+Babylon blend modes and degrade the rest; `enableNodeParticleBlendModes` (or
+the builder that applies it) resolves all five, which turns mode 3 into the
+pin's own private Multiply fragment and mode 4 into that pass followed by a
+stock Add pass over the same instances. The pure-2D bridge takes the same
+five through `registerNodeParticleSet2DWithBlendModes`, where mode 4 is two
+equal-order layers the renderer's stable sort keeps adjacent.
+
+**A registered set is folded, and the fold is measured.**
+`registerNodeParticleSet` appends a callback that animates and
+re-synchronizes every frame, which one frozen state cannot answer in
+general. It can for a system the scene froze, and generation proves it
+rather than assuming it: the driver takes each registered system's state,
+steps it once more, and compares every column the sync reads. A registration
+whose system still moves, or whose `updateSpeed` is not zero, refuses.
+
+**A particle buffer is generation-time state.** The simulation runs at
+generation, so `buffer.alive` and every column exist only there: a scene that
+writes a column afterwards is editing the state the bake hands on, and one
+that checks the live count is asserting about it. Both move to the driver and
+emit nothing.
+
 What refuses at generation, by name: a snippet id (a network read at page
-load), a set registered on the scene (its `_beforeRender` hook animates every
-frame, which one frozen state cannot answer), the blend-mode and Sprite2D
-bridge builders, a system stepped or synced twice, and a flow-map build whose
-scene camera is not a static arc-rotate construction.
+load), a live set (one whose per-frame step moves particles), a system
+stepped or synced twice, `parseNodeParticleSetFromSnippet`, and a flow-map
+build whose scene camera is not a static arc-rotate construction.
 
 ### Shader pipeline
 
@@ -655,7 +685,11 @@ own builder writes, re-homed after the atlas in this backend's fragment
 texture group. Their pixels come from `createTexture2DFromPixels`, whose
 bytes a scene module computes and generation bakes — see
 [drawn and computed assets](#drawn-and-computed-assets) for why they are
-executed rather than ported.
+executed rather than ported. Its four sampler overrides
+(`addressModeU`/`V`, `minFilter`, `magFilter`) travel as "named, and this
+value", because the generated factory resolves `?? default` where upstream
+resolves it; `srgb` picks a second texture format and no reached call
+passes one, so it refuses by name.
 
 Every blend mode either family exports is lowered as the pure data upstream
 keeps it as — the descriptors are read out of the pinned modules rather than
@@ -848,7 +882,7 @@ before it trusts a measurement.
 | Environments | HDR and DDS packaged (GGX prefilter, SH projection); BRDF LUT integrated | `.env` parsed, RGBD decoded, cubes uploaded and sampled |
 | Shaders | composition, specialization and reflection for both backends, plus DXIL/SPIR-V/MSL for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
 | Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass, the billboard sort |
-| Node particles | the graph parsed, built and simulated by the pin, its particle state baked | nothing of the simulation; the billboard it folds to draws like any other |
+| Node particles | the graph parsed, built and simulated by the pin, its particle state baked | nothing of the simulation; the billboard or Sprite2D layers it folds to draw like any others |
 | Animation | property clips and groups lowered to typed records | glTF channel data read from the asset; all evaluation and seeking |
 | Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, CPU fallbacks |
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |

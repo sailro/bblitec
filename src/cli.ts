@@ -71,7 +71,11 @@ import {
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { assetRecord } from "./compiler/assets.js";
 import { bakeNodeParticles } from "./pinned-node-particle.js";
-import type { NodeParticleSystemEmit } from "./lowering/node-particle-lowerer.js";
+import type {
+    NodeParticleRegistrationEmit,
+    NodeParticleSprite2DEmit,
+    NodeParticleSystemEmit,
+} from "./lowering/node-particle-lowerer.js";
 
 interface CliOptions {
     input: string;
@@ -377,20 +381,82 @@ function materializedAssetSource(
  */
 async function bakeNodeParticleSystems(
     program: CompiledNodeParticles,
-): Promise<NodeParticleSystemEmit[]> {
+): Promise<{
+    systems: NodeParticleSystemEmit[];
+    sprite2d: NodeParticleSprite2DEmit[];
+    registrations: NodeParticleRegistrationEmit[];
+}> {
     const bake = await bakeNodeParticles(program);
-    return bake.systems.map((system) => {
-        const asset = system.texture
-            ? assetRecord(system.texture.url, "texture")
-            : undefined;
+    const systems = bake.systems.map((system) => {
+        // A texture the scene assigned is already a generated asset -- the
+        // pixel-buffer module the compiler registered -- so only a graph's
+        // own loaded image is packaged from its URL here.
+        const asset =
+            system.texture && !system.texture.sceneAssigned
+                ? assetRecord(system.texture.url, "texture")
+                : undefined;
+        const assigned = program.textures.find(
+            (entry) =>
+                entry.set === system.set &&
+                entry.system === system.system,
+        );
+        const set = program.sets[system.set];
         return {
             bake: system,
+            exactBlend:
+                set?.builder === "buildNodeParticleSetWithBlendModes" ||
+                set?.enableBlendModes === true,
             textureAsset: asset?.output ?? "",
+            ...(assigned
+                ? {
+                      texturePixels: {
+                          source: assigned.source,
+                          asset: assigned.asset,
+                          width: assigned.width,
+                          height: assigned.height,
+                          options: assigned.options,
+                      },
+                  }
+                : {}),
             ...(asset ? { asset } : {}),
         };
     });
+    // The bake reports which systems each pure-2D binding walked, because a
+    // set's count is the graph's answer and `systems.push` can add one from
+    // another set. The mapping constants beside it are the scene's own.
+    const sprite2d = bake.sprite2d.map((expansion) => {
+        const request = program.sprite2d[expansion.request]!;
+        return {
+            exact: request.exact,
+            pixelsPerUnit: request.pixelsPerUnit,
+            originPx: request.originPx,
+            invertY: request.invertY,
+            ...(request.opacity === undefined
+                ? {}
+                : { opacity: request.opacity }),
+            ...(request.visible === undefined
+                ? {}
+                : { visible: request.visible }),
+            ...(request.order === undefined
+                ? {}
+                : { order: request.order }),
+            systems: expansion.systems,
+        };
+    });
+    // Both registrars report which systems each call walked, for the
+    // same reason: a set's count is the graph's answer, and `systems.push`
+    // can add one built elsewhere.
+    const registrations = bake.registrations.map((expansion) => ({
+        systems: expansion.systems,
+    }));
+    return { systems, sprite2d, registrations };
 }
 
+/**
+ * How many passes one baked system's billboard draws, by the pin's own rule:
+ * the pass count rides `createParticleBlend`'s descriptor, and only the
+ * exact-blend chain reaches it. Zero is the stock program.
+ */
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
     const inputPath = resolve(options.input);
@@ -463,9 +529,12 @@ async function main(): Promise<void> {
     // only known once the pin has resolved it against the scene's
     // `textureBaseUrl`. Joining here keeps it ahead of every consumer: the
     // emitters below, the image-codec scan and the manifest write.
-    const nodeParticles = bakingNodeParticles
+    const bakedParticles = bakingNodeParticles
         ? await bakingNodeParticles
-        : [];
+        : { systems: [], sprite2d: [], registrations: [] };
+    const nodeParticles = bakedParticles.systems;
+    const nodeParticleSprite2d = bakedParticles.sprite2d;
+    const nodeParticleRegistrations = bakedParticles.registrations;
     for (const system of nodeParticles) {
         if (!system.asset) continue;
         if (
@@ -662,6 +731,12 @@ async function main(): Promise<void> {
         postProcessShaders,
         postProcessComposites,
         ...(nodeParticles.length > 0 ? { nodeParticles } : {}),
+        ...(nodeParticleSprite2d.length > 0
+            ? { nodeParticleSprite2d }
+            : {}),
+        ...(nodeParticleRegistrations.length > 0
+            ? { nodeParticleRegistrations }
+            : {}),
         gpuDeformation:
             specializationFeatures.gpuDeformation ||
             result.manifest.features.includes(

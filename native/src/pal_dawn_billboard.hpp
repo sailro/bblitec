@@ -43,6 +43,13 @@ struct DawnBillboardPass {
     WGPURenderPipeline pipeline = nullptr;
     WGPUShaderModule vertex_module = nullptr;
     WGPUShaderModule fragment_module = nullptr;
+    // The mode-4 wrapper's second pass: a stock Add pipeline over the same
+    // instances and the same bind groups, built only when the descriptor
+    // carries two passes. Its layout is identical -- the Multiply system
+    // declares no fx block either -- so nothing but the pipeline differs.
+    WGPURenderPipeline add_pipeline = nullptr;
+    WGPUShaderModule add_vertex_module = nullptr;
+    WGPUShaderModule add_fragment_module = nullptr;
     std::array<WGPUBindGroupLayout, 4> group_layouts{};
     WGPUBuffer index_buffer = nullptr;
     WGPUBuffer instances = nullptr;
@@ -131,11 +138,26 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     // Unlike the 2D layer, a custom billboard program brings its own vertex
     // stage: the pin's composer exposes the view distance and the world
     // position to a custom body, which the stock stage does not write.
+    // The particle family's Multiply program is a module of the pin's own,
+    // outside both sprite composers: it declares no fx block, and its vertex
+    // stage travels with its fragment because the pin writes them together.
+    const bool particle_multiply = system.blend.particle_passes >= 1;
+    // That pairing is exactly why it is exclusive: the program carries the
+    // FACING basis and the pin's own body, so an axis-locked or custom
+    // system reaching it would silently draw neither. The registrar upstream
+    // only ever builds facing particle systems with no custom shader, so
+    // this says so rather than picking a program that would be wrong.
+    if (particle_multiply && (axis_locked || system.custom_shader)) {
+        throw std::runtime_error(
+            "A node-particle Multiply blend draws the pin's own facing "
+            "program; it has no axis-locked or custom-shader arm.");
+    }
     pass.vertex_module = load_wgsl_module(
         device,
-        system.custom_shader ? "billboard_custom.vert"
-        : axis_locked       ? "billboard_axis_locked.vert"
-                            : "billboard.vert");
+        particle_multiply    ? "billboard_particle_multiply.vert"
+        : system.custom_shader ? "billboard_custom.vert"
+        : axis_locked        ? "billboard_axis_locked.vert"
+                             : "billboard.vert");
     // The cutout arm discards below the cutoff; with alpha-to-coverage the
     // pin drops the discard and lets sample coverage carry the edge, so that
     // permutation shares the transparent stage.
@@ -143,7 +165,8 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         system.depth_mode == BillboardDepthMode::cutout;
     pass.fragment_module = load_wgsl_module(
         device,
-        system.custom_shader ? "billboard_custom.frag"
+        particle_multiply    ? "billboard_particle_multiply.frag"
+        : system.custom_shader ? "billboard_custom.frag"
         : cutout && !system.alpha_to_coverage
             ? "billboard_cutout.frag"
             : "billboard.frag");
@@ -306,10 +329,48 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         system.alpha_to_coverage;
     descriptor.fragment = &fragment_state;
     pass.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
-    wgpuPipelineLayoutRelease(pipeline_layout);
     if (!pass.pipeline) {
+        wgpuPipelineLayoutRelease(pipeline_layout);
         dawn_error("wgpuDeviceCreateRenderPipeline billboard");
     }
+
+    if (system.blend.particle_passes == 2) {
+        // The mode-4 second pass: the STOCK program, the Add blend the
+        // generated builder resolved, and the same layout -- the pin builds
+        // it as a copy of the system with its custom shader cleared.
+        const SpriteBlendDescriptor& add = system.add_pass_blend;
+        WGPUBlendState add_blend{};
+        add_blend.color.operation = WGPUBlendOperation_Add;
+        add_blend.color.srcFactor =
+            dawn_sprite_blend_factor(add.color.src);
+        add_blend.color.dstFactor =
+            dawn_sprite_blend_factor(add.color.dst);
+        add_blend.alpha.operation = WGPUBlendOperation_Add;
+        add_blend.alpha.srcFactor =
+            dawn_sprite_blend_factor(add.alpha.src);
+        add_blend.alpha.dstFactor =
+            dawn_sprite_blend_factor(add.alpha.dst);
+        WGPUColorTargetState add_target = color_target;
+        add_target.blend = add.enabled ? &add_blend : nullptr;
+        pass.add_vertex_module =
+            load_wgsl_module(device, "billboard.vert");
+        pass.add_fragment_module =
+            load_wgsl_module(device, "billboard.frag");
+        WGPUFragmentState add_fragment = fragment_state;
+        add_fragment.module = pass.add_fragment_module;
+        add_fragment.targets = &add_target;
+        WGPURenderPipelineDescriptor add_descriptor = descriptor;
+        add_descriptor.vertex.module = pass.add_vertex_module;
+        add_descriptor.fragment = &add_fragment;
+        pass.add_pipeline =
+            wgpuDeviceCreateRenderPipeline(device, &add_descriptor);
+        if (!pass.add_pipeline) {
+            wgpuPipelineLayoutRelease(pipeline_layout);
+            dawn_error(
+                "wgpuDeviceCreateRenderPipeline billboard add pass");
+        }
+    }
+    wgpuPipelineLayoutRelease(pipeline_layout);
 
     {
         WGPUBufferDescriptor instance_descriptor =
@@ -520,6 +581,22 @@ inline void record_dawn_billboard_pass(
         0,
         0,
         0);
+
+    if (pass.add_pipeline) {
+        // The pin's own mode-4 wrapper: the primary draw leaves its buffers
+        // and bind groups bound, so the second pass sets only its pipeline
+        // before drawing the same instances, then restores the primary one.
+        wgpuRenderPassEncoderSetPipeline(encoder, pass.add_pipeline);
+        wgpuRenderPassEncoderDrawIndexed(
+            encoder,
+            static_cast<std::uint32_t>(
+                upstream::billboard_index_data.size()),
+            system.count,
+            0,
+            0,
+            0);
+        wgpuRenderPassEncoderSetPipeline(encoder, pass.pipeline);
+    }
 }
 
 inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
@@ -535,6 +612,13 @@ inline void release_dawn_billboard_pass(DawnBillboardPass& pass) {
     if (pass.fragment_uniforms) wgpuBufferRelease(pass.fragment_uniforms);
     if (pass.instances) wgpuBufferRelease(pass.instances);
     if (pass.index_buffer) wgpuBufferRelease(pass.index_buffer);
+    if (pass.add_pipeline) wgpuRenderPipelineRelease(pass.add_pipeline);
+    if (pass.add_vertex_module) {
+        wgpuShaderModuleRelease(pass.add_vertex_module);
+    }
+    if (pass.add_fragment_module) {
+        wgpuShaderModuleRelease(pass.add_fragment_module);
+    }
     for (WGPUBindGroupLayout layout : pass.group_layouts) {
         if (layout) wgpuBindGroupLayoutRelease(layout);
     }

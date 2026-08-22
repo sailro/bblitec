@@ -23,6 +23,44 @@ export const textureFilterByPin: Readonly<Record<string, string>> = {
     linear: "TextureFilter::linear",
 };
 
+/**
+ * The `PixelsTextureOptions` a `createTexture2DFromPixels` call named, as
+ * the native aggregate.
+ *
+ * Two places write it — the call site, and the generated node-particle atlas
+ * builder that rebuilds the same call against its own engine parameter — so
+ * the mapping from the pin's own literals to this runtime's enumerators
+ * lives here once. A literal with no row fails naming it, rather than
+ * silently picking a neighbour.
+ */
+export function pixelsTextureOptionsCpp(
+    named: Readonly<Record<string, string>>,
+    fail: (message: string) => never,
+): string {
+    if (Object.keys(named).length === 0) return "";
+    const field = (
+        name: string,
+        table: Readonly<Record<string, string>>,
+    ): string => {
+        const literal = named[name];
+        if (literal === undefined) return "{}, false";
+        const mapped = table[literal];
+        if (!mapped) {
+            fail(
+                `createTexture2DFromPixels ${name} '${literal}' is not one ` +
+                    `of the pinned literals: ${Object.keys(table).join(", ")}.`,
+            );
+        }
+        return `bbl::${mapped}, true`;
+    };
+    return (
+        `bbl::PixelsTextureOptions{${field("minFilter", textureFilterByPin)}, ` +
+        `${field("magFilter", textureFilterByPin)}, ` +
+        `${field("addressModeU", addressModeByPin)}, ` +
+        `${field("addressModeV", addressModeByPin)}}`
+    );
+}
+
 export const mipmapModeByPin: Readonly<Record<string, string>> = {
     nearest: "TextureMipmapMode::nearest",
     linear: "TextureMipmapMode::linear",

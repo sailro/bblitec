@@ -5,7 +5,9 @@ import type {
     NodeParticleBuilder,
     NodeParticleCamera,
     NodeParticleGraphSource,
+    NodeParticleRegistration,
     NodeParticleSetRequest,
+    NodeParticleSprite2DRequest,
     NodeParticleStep,
 } from "../pinned-node-particle.js";
 import type { DataType } from "./data-types.js";
@@ -317,8 +319,40 @@ export type CompiledNodeMaterial =
  * across both. Only `synced` is this side's: the compiler refuses a second
  * write to one frozen state, which the driver has no opinion about.
  */
+/**
+ * A `createTexture2DFromPixels` call, as the bake driver replays it: the
+ * executed module that produces the bytes, the size the call named, and the
+ * sampler literals it passed, in the pin's own spelling.
+ */
+export interface PixelsTextureSource {
+    /** `pixels:<module>#<export>`, the executed-module asset source. */
+    source: string;
+    /** The packaged asset's output name, as a native string literal. */
+    asset: string;
+    width: number;
+    height: number;
+    options: Record<string, string>;
+}
+
+/**
+ * One `system.texture = ...` the scene wrote.
+ *
+ * The call is not carried as its compiled expression, because the generated
+ * atlas builder evaluates it in a translation unit of its own where the
+ * scene's engine local does not exist: what travels is what the call named,
+ * and the builder writes the call against its own parameter.
+ */
+export interface NodeParticleTextureAssignment
+    extends PixelsTextureSource {
+    set: number;
+    system: number;
+}
+
 export interface CompiledNodeParticles
-    extends Omit<NodeParticleBakeRequest, "sets" | "billboards"> {
+    extends Omit<
+        NodeParticleBakeRequest,
+        "sets" | "billboards" | "registrations"
+    > {
     sets: NodeParticleSetRequest[];
     billboards: Array<{
         set: number;
@@ -326,6 +360,11 @@ export interface CompiledNodeParticles
         /** Whether a `syncParticleBillboard` already wrote this one. */
         synced?: boolean;
     }>;
+    registrations: NodeParticleRegistration[];
+    /** Every `system.texture = ...` the scene wrote, in reach order. */
+    textures: NodeParticleTextureAssignment[];
+    /** Every pure-2D bridge registration, in reach order. */
+    sprite2d: NodeParticleSprite2DRequest[];
     steps: NodeParticleStep[];
 }
 
@@ -488,6 +527,22 @@ export type ValueKind =
     | "browser"
     | "callback"
     | "camera"
+    /**
+     * The `Math.random` function itself, saved by a scene that replaces it
+     * for a node-particle bake and puts it back afterwards. It emits
+     * nothing: the replacement parameterizes generation and the restore
+     * closes that window.
+     */
+    | "js-random"
+    /**
+     * The binding `registerNodeParticleSet2D*` returns: the hook and the
+     * layers it attached, which upstream owns and this port folds into the
+     * generated registrar. Every operation on it refuses at its own
+     * intrinsic, and the corpus only reports its state through the canvas
+     * dataset -- so a read of it erases with the instrumentation around it,
+     * and one that reaches anything else fails rather than compiling.
+     */
+    | "node-particle-2d-binding"
     | "camera-ortho"
     | "camera-world-matrix"
     | "color4"
@@ -579,6 +634,13 @@ export interface Value {
     /** Which set, and which of its systems, in the manifest's own order. */
     nodeParticleSetIndex?: number;
     nodeParticleSystemIndex?: number;
+    /**
+     * For a `createTexture2DFromPixels` texture: what the bake driver needs
+     * to build the same texture in the browser. A particle system's texture
+     * is assigned in scene code, and the pin reads its width and height to
+     * partition the atlas, so the driver has to hold the real one.
+     */
+    pixelsTexture?: PixelsTextureSource;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     /**

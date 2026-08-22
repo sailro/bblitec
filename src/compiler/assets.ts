@@ -168,7 +168,7 @@ function registerExecutedModuleAsset(
     expression: ts.Expression,
     kind: "sprite-atlas" | "pixels",
     label: string,
-): string | undefined {
+): { cpp: string; source: string } | undefined {
     const unwrapped = context.unwrap(expression);
     if (!ts.isCallExpression(unwrapped)) {
         return undefined;
@@ -190,7 +190,7 @@ function registerExecutedModuleAsset(
             : spriteAtlasAssetSource(reference.module, reference.exportName),
         kind,
     );
-    return context.cppString(asset.output);
+    return { cpp: context.cppString(asset.output), source: asset.source };
 }
 
 /**
@@ -212,7 +212,7 @@ export function registerSpriteAtlasAsset(
             expression,
             "sprite-atlas",
             "drawn sprite atlas",
-        ) ??
+        )?.cpp ??
         // A plain URL still works: the atlas is an image either way.
         context.cppString(
             registerAsset(
@@ -237,7 +237,7 @@ export function registerSpriteAtlasAsset(
 export function registerPixelsAsset(
     context: AssetRegistryContext,
     expression: ts.Expression,
-): string {
+): { cpp: string; source: string } {
     const registered = registerExecutedModuleAsset(
         context,
         expression,

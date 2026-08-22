@@ -1895,6 +1895,44 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene283",
+        name: "Scene 283 - NPE Multiply Blend",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene283.ts",
+        title: "Babylon Lite Native - Particle Multiply",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The warm destination the Multiply pass darkens; a fully
+            // transparent texel has to leave it untouched.
+            backgroundColor: [166, 115, 64],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene284",
+        name: "Scene 284 - NPE MultiplyAdd Blend",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene284.ts",
+        title: "Babylon Lite Native - Particle MultiplyAdd",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [166, 115, 64],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene301",
+        name: "Scene 301 - NPE Sprite2D Blend Modes",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene301.ts",
+        title: "Babylon Lite Native - Particle Sprite2D",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [166, 115, 64],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

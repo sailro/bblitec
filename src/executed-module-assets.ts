@@ -23,11 +23,10 @@
  * bytes depend on the Chrome that compiled them. Both kinds record it as a
  * fidelity adaptation.
  */
-import { createServer } from "node:http";
-import { readFileSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
+import { createSuiteSceneServer } from "./capture-suite-reference.js";
 import {
-    transpileForBrowser,
+    gotoScenePage,
     withBrowserPage,
 } from "./browser-harness.js";
 
@@ -100,40 +99,26 @@ export function parseExecutedModuleSource(
 async function evaluateModuleExport(
     source: ExecutedModuleSource,
 ): Promise<string> {
-    const moduleName = basename(source.modulePath).replace(/\.ts$/, ".js");
-    const label = basename(source.modulePath);
-    const moduleSource = transpileForBrowser(
-        readFileSync(source.modulePath, "utf8"),
-        source.modulePath,
-    );
-    const html =
-        `<!doctype html><html><head><title>${label}</title></head>` +
-        "<body></body></html>";
-
-    const server = createServer((request, response) => {
-        if ((request.url ?? "/") === `/${moduleName}`) {
-            response.writeHead(200, {
-                "Content-Type": "text/javascript; charset=utf-8",
-            });
-            response.end(moduleSource);
-            return;
-        }
-        response.writeHead(200, {
-            "Content-Type": "text/html; charset=utf-8",
-        });
-        response.end(html);
-    });
-    const result: unknown = await withBrowserPage(
-        server,
-        {
-            serverName: `${label} server`,
-            browserRequirement:
-                "Baking a scene module's own output requires Chrome or Edge.",
-        },
-        async (page, origin) => {
-            await page.goto(`${origin}/`);
-            return page.evaluate(
-                `import("/${moduleName}").then((module) => {
+    // The module is served at its own repository-relative path rather than
+    // at the root under its basename, because a scene module may import a
+    // SIBLING -- scene 283's pixel buffer and its graph live in one file
+    // that reads scene 262's graph next door. A relative specifier only
+    // resolves if the module keeps its directory, and the suite server
+    // already transpiles any repository `.ts` on demand.
+    const root = resolve(".");
+    const relativePath = relative(root, source.modulePath)
+        .split(sep)
+        .join("/");
+    if (relativePath.startsWith("..")) {
+        throw new Error(
+            `Executed module '${source.modulePath}' is outside the ` +
+                "repository, so its siblings cannot be served.",
+        );
+    }
+    const specifier = `/${relativePath.replace(/\.ts$/, ".js")}`;
+    const server = createSuiteSceneServer(
+        `window.__runModuleExport = () =>
+            import(${JSON.stringify(specifier)}).then((module) => {
                     const factory = module[${JSON.stringify(source.exportName)}];
                     if (typeof factory !== "function") {
                         throw new Error(
@@ -149,8 +134,24 @@ async function evaluateModuleExport(
                         binary += String.fromCharCode(byte);
                     }
                     return btoa(binary);
-                })`,
+                });
+`,
+    );
+    const result: unknown = await withBrowserPage(
+        server,
+        {
+            serverName: `${relativePath} server`,
+            browserRequirement:
+                "Baking a scene module's own output requires Chrome or Edge.",
+        },
+        async (page, origin) => {
+            await gotoScenePage(page, origin);
+            await page.waitForFunction(
+                "typeof window.__runModuleExport === 'function'",
+                null,
+                { timeout: 60_000 },
             );
+            return page.evaluate("window.__runModuleExport()");
         },
     );
     if (typeof result !== "string") {

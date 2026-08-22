@@ -19,6 +19,10 @@ const blendModule = "src/sprite/billboard-blend.ts";
 const pipelineModule = "src/sprite/billboard-pipeline.ts";
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const customShaderModule = "src/sprite/billboard-custom-shader.ts";
+// The particle family owns its own Multiply module, deliberately outside
+// the two sprite composers: it declares no SpriteFx block at all.
+const particleMultiplyModule =
+    "src/particle/particle-billboard-renderable.ts";
 
 /**
  * Which basis the vertex stage builds. The pin's composer emits one of two
@@ -638,6 +642,66 @@ export class BillboardLowerer {
         };
     }
 
+    /**
+     * The particle family's private Multiply program.
+     *
+     * It is a third billboard composer, not this one with a fragment swapped
+     * in: `particle-billboard-renderable.ts` writes its own whole module so
+     * the Multiply-only bundle carries no `SpriteFx` declaration, layout
+     * entry or per-frame write at all. Its vertex half is byte-identical to
+     * the stock stage today, and it is still taken from the pin's own
+     * builder — a builder that starts differing has to move what we deploy,
+     * not be caught by a comparison here.
+     */
+    public particleMultiplyShaderSource(
+        orientation: BillboardOrientation,
+    ): BillboardShaderSource {
+        const full = this.shaderText.evaluate(
+            particleMultiplyModule,
+            "makeMultiplyWgsl",
+            new Map<string, ShaderTextBinding>([
+                ["orientation", orientation],
+            ]),
+        );
+        const basis = this.shaderText.evaluate(
+            pipelineModule,
+            "makeBillboardBasisWgsl",
+            new Map<string, string | boolean>([
+                ["orientation", orientation],
+            ]),
+        );
+        return {
+            vertexReadsSystemBlock: basis.includes("billboards."),
+            systemStructFields: this.shaderText.braced(
+                full,
+                "struct S {",
+                "particle multiply system uniform struct",
+            ),
+            basisFunction: basis,
+            instanceStructFields: this.shaderText.braced(
+                full,
+                "struct I {",
+                "particle multiply instance struct",
+            ),
+            varyingStructFields: this.shaderText.braced(
+                full,
+                "struct O {",
+                "particle multiply varying struct",
+            ),
+            vertexBody: this.shaderText.braced(
+                full,
+                "fn vs(in: I) -> O {",
+                "particle multiply vertex stage",
+            ),
+            fragmentBody: this.shaderText.braced(
+                full,
+                "fn fs(in: O) -> @location(0) vec4f {",
+                "particle multiply fragment stage",
+            ),
+            extraTextureBindings: "",
+        };
+    }
+
     private elementIndexText(
         target: ts.Expression,
     ): string | undefined {
@@ -888,6 +952,7 @@ BillboardSystemHandle create_billboard_system(
     BillboardSystemRecord system;
     system.atlas = atlas;
     system.blend = options.blend;
+    system.add_pass_blend = options.add_pass_blend;
     // initSystem, through the fx hook: a system built with a descriptor
     // draws that program, its extra textures bind after the atlas, and
     // its params start zeroed.

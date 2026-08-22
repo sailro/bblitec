@@ -710,6 +710,24 @@
       "upstreamPath": "lab/lite/src/lite/scene281.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene281.ts",
       "sha256": "73aa006d8cbac72f01487a657cfaef690768bc4582bdb3921d6c5c96d4af282a"
+    },
+    {
+      "id": "scene283",
+      "upstreamPath": "lab/lite/src/lite/scene283.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene283.ts",
+      "sha256": "ffee4a242ac398d3414e742b18a4717ef2fa3e2f497148be93de355fda6ac70c"
+    },
+    {
+      "id": "scene284",
+      "upstreamPath": "lab/lite/src/lite/scene284.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene284.ts",
+      "sha256": "744e002f7a6614a36e0583f9649c804e1ea130fa85a41d79d1a854400d5a1e59"
+    },
+    {
+      "id": "scene301",
+      "upstreamPath": "lab/lite/src/lite/scene301.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene301.ts",
+      "sha256": "345bb25b618b9561624541b8931393bf363be9268a3b99f8504da85feeec32ff"
     }
   ],
   "modules": [
@@ -877,6 +895,21 @@
       "upstreamPath": "lab/lite/src/shared/scene281-npe.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene281-npe.ts",
       "sha256": "84af45168b7db23d0104e348634d0d23f290f485ffc31f140fa8bc8c1c853054"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene283-npe-multiply-blend.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene283-npe-multiply-blend.ts",
+      "sha256": "bf84ecfb80206fb4c14ee87291a15ca0f28447308db89136197d49754d4925d9"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene284-npe-multiply-add-blend.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene284-npe-multiply-add-blend.ts",
+      "sha256": "1b6bea60e15801cc5cd0e2635c7d1fb6d078c3bc7036fbb17165046a1186f491"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/npe-sprite2d-fixture.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/npe-sprite2d-fixture.ts",
+      "sha256": "438ccab47cc44670e48ae2bb0d69ff000bdde2b152f61765c831dab63dc477d6"
     }
   ]
 }

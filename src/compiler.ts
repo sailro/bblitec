@@ -169,7 +169,10 @@ import { ClassLowerer } from "./compiler/classes.js";
 import {
     shaderMaterialPrograms,
 } from "./shader-material-programs.js";
-import { assertDeterministicRandomUnreached } from "./compiler/deterministic-random.js";
+import {
+    assertDeterministicRandomUnreached,
+    isDeterministicRandomRead,
+} from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 
@@ -356,6 +359,8 @@ class Compiler
     > = [];
     public jsDataReached = false;
     public jsRandomReached = false;
+    /** Whether a scene threw one of its own preconditions. */
+    public throwReached = false;
     private readonly staticConstants = new Map<
         ts.Symbol,
         ts.Expression
@@ -377,6 +382,9 @@ class Compiler
         sets: [],
         steps: [],
         billboards: [],
+        registrations: [],
+        textures: [],
+        sprite2d: [],
     };
     /** The pinned tone-mapping export the scene selected, if any. */
     private selectedToneMapping: string | undefined;
@@ -660,6 +668,20 @@ class Compiler
             return;
         }
 
+        // `const original = Math.random`, which the corpus writes only to
+        // put the generator back after a seeded window. It names the
+        // function itself rather than a value, so it emits nothing and the
+        // binding exists for the restore assignment to recognize.
+        if (
+            isDeterministicRandomRead(declaration.initializer)
+        ) {
+            this.defineVariable(declaration.name, {
+                kind: "js-random",
+                cpp: "",
+            });
+            return;
+        }
+
         if (this.isBrowserOnlyExpression(declaration.initializer)) {
             const browserValue =
                 this.evaluateBrowserValue(
@@ -699,6 +721,12 @@ class Compiler
         }
 
         const value = this.compileValue(declaration.initializer);
+        if (value.kind === "node-particle-2d-binding") {
+            // Nothing native to bind: the registrar already ran, and the
+            // binding exists so instrumentation can report it.
+            this.defineVariable(declaration.name, value);
+            return;
+        }
         if (value.kind === "void" || value.kind === "browser") {
             this.fail(declaration.initializer, `Expression assigned to '${sourceName}' does not produce a native value.`);
         }
@@ -801,9 +829,7 @@ class Compiler
                   )
                 : value.cpp;
         const maybeUnused =
-            value.kind === "boolean"
-                ? "[[maybe_unused]] "
-                : "";
+            value.kind === "boolean" ? "[[maybe_unused]] " : "";
         this.emit(
             `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
         );
@@ -1520,7 +1546,10 @@ class Compiler
     public compileCondition(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
-            return `!(${this.compileCondition(unwrapped.operand)})`;
+            const operand = this.compileCondition(unwrapped.operand);
+            if (operand === "true") return "false";
+            if (operand === "false") return "true";
+            return `!(${operand})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
             const typed =
@@ -1550,7 +1579,26 @@ class Compiler
                 unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken
             ) {
-                return `(${this.compileCondition(unwrapped.left)} ${operator} ${this.compileCondition(unwrapped.right)})`;
+                const left = this.compileCondition(unwrapped.left);
+                const right = this.compileCondition(unwrapped.right);
+                // Short-circuit over a settled operand: the surviving side
+                // is the whole condition, and where both settled the
+                // condition itself is a constant `emitIf` drops the branch
+                // for. Only a side-effect-free operand reaches here --
+                // `compileCondition` refuses anything else -- so dropping
+                // one is dropping nothing.
+                const identity =
+                    unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken
+                        ? "true"
+                        : "false";
+                const absorbing = identity === "true" ? "false" : "true";
+                if (left === absorbing || right === absorbing) {
+                    return absorbing;
+                }
+                if (left === identity) return right;
+                if (right === identity) return left;
+                return `(${left} ${operator} ${right})`;
             }
             return `(${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
         }
@@ -1884,6 +1932,10 @@ class Compiler
         return file === this.sourceFile;
     }
 
+    public reachThrow(): void {
+        this.throwReached = true;
+    }
+
     public reachJsData(): void {
         this.jsDataReached = true;
     }
@@ -2121,7 +2173,8 @@ class Compiler
         const declaration = `double ${cppName} = `;
         for (let index = this.body.length - 1; index >= 0; index -= 1) {
             const line = this.body[index]!;
-            if (line.trimStart().startsWith(declaration)) {
+            const trimmed = line.trimStart();
+            if (trimmed.startsWith(declaration)) {
                 this.body[index] = line.replace(
                     declaration,
                     `[[maybe_unused]] ${declaration}`,
@@ -2138,6 +2191,32 @@ class Compiler
             `Cannot mark local '${cppName}' unused: no emitted ` +
                 "declaration matches it.",
         );
+    }
+
+    /**
+     * Mark every emitted numeric local that nothing else in the body reads.
+     *
+     * Folding is what creates them: a scene's `const x = Math.round(...)`
+     * can end up with every reader folded too, or moved to generation as a
+     * bake step, and MSVC /W4 warns on a local that is initialized and never
+     * referenced. This runs once over the finished body and marks only the
+     * declarations whose name appears nowhere else, so a local that IS read
+     * keeps the warning that would catch a lowering bug.
+     */
+    private markUnreferencedNumericLocals(): void {
+        const declaration = /^(\s*)(double )([A-Za-z_][A-Za-z0-9_]*) = /;
+        const counts = new Map<string, number>();
+        for (const line of this.body) {
+            for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+                counts.set(name, (counts.get(name) ?? 0) + 1);
+            }
+        }
+        for (const [index, line] of this.body.entries()) {
+            const match = declaration.exec(line);
+            if (!match || counts.get(match[3]!) !== 1) continue;
+            this.body[index] =
+                `${match[1]}[[maybe_unused]] ${line.trimStart()}`;
+        }
     }
 
     /** How many lines the body stream holds, for a caller that may undo. */
@@ -2373,7 +2452,7 @@ class Compiler
 
     public registerPixelsAsset(
         expression: ts.Expression,
-    ): string {
+    ): { cpp: string; source: string } {
         return registerPixelsAsset(this, expression);
     }
 
@@ -2466,6 +2545,16 @@ class Compiler
             "HTMLCanvasElement"
             ? unwrapped.name.text
             : undefined;
+    }
+
+    public staticCanvasSize(
+        expression: ts.Expression,
+    ): number | undefined {
+        const property = this.canvasSizeProperty(expression);
+        if (!property) return undefined;
+        return property === "width"
+            ? this.options.width
+            : this.options.height;
     }
 
     public canvasSizeValue(
@@ -2951,9 +3040,7 @@ class Compiler
                     : `${value.staticNumber}`
                 : value.cpp;
         const maybeUnused =
-            value.kind === "boolean"
-                ? "[[maybe_unused]] "
-                : "";
+            value.kind === "boolean" ? "[[maybe_unused]] " : "";
         this.emit(
             `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
         );
@@ -3393,6 +3480,9 @@ class Compiler
                 ].join("\n"),
             );
         }
+        // The body is finished, so a local nothing referenced is now
+        // decidable — mark those, and only those.
+        this.markUnreferencedNumericLocals();
         const preamble =
             preambleSections.length > 0
                 ? `\n${preambleSections.join("\n\n")}\n`
@@ -3405,7 +3495,7 @@ class Compiler
 ${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${nodeParticleInclude}${postProcessInclude}
 #include <cmath>
 #include <exception>
-#include <iostream>
+#include <iostream>${this.throwReached ? "\n#include <stdexcept>" : ""}
 ${preamble}
 int main() {
     try {

@@ -622,12 +622,47 @@ export class PinnedShaderText {
             if (constant !== undefined) {
                 return constant;
             }
+            // A module-scope `const` in the module being evaluated is the
+            // pin's own text and is read straight off its declaration. Only
+            // a name the module does NOT declare — an import — has to be
+            // supplied, which is what keeps that module owning it.
+            const declared = this.moduleConstant(node.text, modulePath);
+            if (declared !== undefined) {
+                return this.evaluateString(
+                    declared,
+                    scope,
+                    modulePath,
+                );
+            }
             return this.context.contractError(
                 node,
                 `Pinned shader text reads '${node.text}', which the permutation does not bind.`,
             );
         }
         return this.evaluateString(node, scope, modulePath);
+    }
+
+    /**
+     * The initializer of a module-scope `const` the evaluated module
+     * declares, or undefined when it declares no such name.
+     */
+    private moduleConstant(
+        name: string,
+        modulePath: string,
+    ): ts.Expression | undefined {
+        const file = this.context.sourceFile(modulePath);
+        for (const statement of file.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const binding of statement.declarationList.declarations) {
+                if (
+                    ts.isIdentifier(binding.name) &&
+                    binding.name.text === name
+                ) {
+                    return binding.initializer;
+                }
+            }
+        }
+        return undefined;
     }
 
     /**

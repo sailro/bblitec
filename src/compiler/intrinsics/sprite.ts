@@ -8,11 +8,19 @@ import {
     isDataTuple,
     tupleComponents,
 } from "../data-types.js";
-import { addressModeByPin } from "../../pinned-address-modes.js";
+import {
+    addressModeByPin,
+    pixelsTextureOptionsCpp,
+} from "../../pinned-address-modes.js";
+import {
+    staticNumberValue,
+    type PositiveIntegerContext,
+} from "../option-helpers.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
 
 export interface SpriteIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext,
+        PositiveIntegerContext {
     requireDefaultEngine(node: ts.Node): string;
     compileVec3(
         expression: ts.Expression,
@@ -28,7 +36,9 @@ export interface SpriteIntrinsicContext
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
-    registerPixelsAsset(expression: ts.Expression): string;
+    registerPixelsAsset(
+        expression: ts.Expression,
+    ): { cpp: string; source: string };
     allocateTemporaryCppName(label: string): string;
     /** One layer or system built without a custom shader, so with the stock program. */
     recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
@@ -221,6 +231,62 @@ function property(
     name: string,
 ): Value | undefined {
     return options?.recordProperties?.[name];
+}
+
+/**
+ * `PixelsTexture2DOptions`, as the record the generated factory resolves
+ * against the pin's own defaults.
+ *
+ * Only the four sampler fields are lowered, which is what the corpus
+ * reaches through both of its routes — `addressMode*` for a tiling data
+ * texture (scenes 231, 282) and the `nearest` filters for a procedural
+ * sprite (282, 283, 284, 301). `srgb` selects `rgba8unorm-srgb`, which
+ * changes how the texel decodes rather than how it is sampled, and no
+ * reached call passes it.
+ */
+function pixelsSamplerOptions(
+    context: SpriteIntrinsicContext,
+    expression: ts.Expression | undefined,
+): { cpp: string; named: Record<string, string> } {
+    if (!expression) {
+        return { cpp: "", named: {} };
+    }
+    const options = optionsRecord(
+        context,
+        expression,
+        "createTexture2DFromPixels",
+    );
+    const named: Record<string, string> = {};
+    for (const [field, value] of Object.entries(
+        options?.recordProperties ?? {},
+    )) {
+        if (
+            ![
+                "addressModeU",
+                "addressModeV",
+                "minFilter",
+                "magFilter",
+            ].includes(field)
+        ) {
+            context.fail(
+                expression,
+                `createTexture2DFromPixels '${field}' is not lowered; ` +
+                    "the reached slice is the four sampler overrides.",
+            );
+        }
+        if (value.staticString === undefined) {
+            context.fail(
+                expression,
+                `createTexture2DFromPixels ${field} is one of the pinned ` +
+                    "string literals.",
+            );
+        }
+        named[field] = value.staticString;
+    }
+    const cpp = pixelsTextureOptionsCpp(named, (message) =>
+        context.fail(expression, message),
+    );
+    return { cpp: cpp ? `, ${cpp}` : "", named };
 }
 
 function numberOption(
@@ -782,22 +848,44 @@ export function compileSpriteIntrinsic(
                 call.arguments[3]!,
                 "double",
             );
-            // The pin's sampler and format overrides. Only its defaults are
-            // reached, and the emitted factory settles those, so an options
-            // record refuses rather than being dropped.
-            if (call.arguments[4]) {
-                context.fail(
-                    call.arguments[4],
-                    "createTexture2DFromPixels options are not lowered.",
-                );
-            }
+            // The pin's sampler overrides. Each travels as "named, and this
+            // value", because the factory resolves `?? default` where
+            // upstream resolves it. `srgb` picks a second texture format and
+            // no reached call passes one, so it refuses by name.
+            const sampler = pixelsSamplerOptions(
+                context,
+                call.arguments[4],
+            );
+            const staticSize = [
+                staticNumberValue(context, call.arguments[2]!),
+                staticNumberValue(context, call.arguments[3]!),
+            ];
             context.reachFeature("texture:pixels", call);
             return {
                 kind: "texture",
                 cpp:
                     `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
-                    `bbl::asset_path(${pixels}), ${width}, ${height})`,
+                    `bbl::asset_path(${pixels.cpp}), ${width}, ${height}` +
+                    `${sampler.cpp})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
+                // A node-particle system's texture is assigned in scene
+                // code, and the bake driver has to build the same one to
+                // see the size the pin partitions its atlas by. A size the
+                // source does not settle carries no record at all, so the
+                // refusal lands at the assignment that needed one rather
+                // than at every pixels texture in the corpus.
+                ...(staticSize[0] !== undefined &&
+                staticSize[1] !== undefined
+                    ? {
+                          pixelsTexture: {
+                              source: pixels.source,
+                              asset: pixels.cpp,
+                              width: staticSize[0],
+                              height: staticSize[1],
+                              options: sampler.named,
+                          },
+                      }
+                    : {}),
             };
         }
 
@@ -996,15 +1084,15 @@ export function compileSpriteIntrinsic(
                 "createSpriteRenderer",
             );
             const layers = property(options, "layers");
-            if (
-                layers?.kind !== "tuple" ||
-                !layers.tupleElements?.length
-            ) {
+            if (layers?.kind !== "tuple" || !layers.tupleElements) {
                 context.fail(
                     call.arguments[1]!,
-                    "createSpriteRenderer requires a non-empty array of layers.",
+                    "createSpriteRenderer requires an array of layers.",
                 );
             }
+            // An empty list is the pin's own shape for a renderer whose
+            // layers arrive later: a node-particle bridge owns and attaches
+            // one per system, so the scene builds the renderer with none.
             for (const layer of layers.tupleElements) {
                 context.expectKind(
                     layer,

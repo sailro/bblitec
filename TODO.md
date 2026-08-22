@@ -175,7 +175,7 @@ record future audits build on.
 
 ## P1 — Full Babylon Lite corpus audit
 
-123 corpus scenes remain unregistered; measured scenes are in
+120 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -187,7 +187,7 @@ The command accepts an unregistered path.
 **The corpus carries only the shared modules registered scenes import**,
 each pinned in `upstream/babylon-lite-scenes.json`. Integrating a scene that
 imports one starts by copying it out of the pinned upstream tree and pinning
-its SHA-256 beside the scenes. The thirteen shipped node-material graphs and the seven shipped node-particle
+its SHA-256 beside the scenes. The thirteen shipped node-material graphs and the ten shipped node-particle
 graphs are already there; the remaining node-material, node-particle and skin
 modules are not — and a missing module is invisible in a compile probe, because
 the compiler reports the unresolved identifier the import would have bound
@@ -202,8 +202,8 @@ node-particle wave added moved fourteen scenes past it), PBR options beyond
 the reached set 3, a static array literal 3, `createNavigationPluginAsync` 3.
 Node materials shipped thirteen of their twenty-two; each of the nine that
 remain sits behind a capability the reached slice refuses. Node particles
-shipped seven of their eleven; the four that remain need the exact blend modes
-or the Sprite2D bridge.
+shipped ten of their eleven; only scene 300 remains, behind the drawn atlas
+its graph is handed.
 
 - [ ] Scene 11's residual is a skinned pose, not its material: the composed
   fragment is byte-identical to the browser's and `scene -- diff` names two
@@ -212,9 +212,10 @@ or the Sprite2D bridge.
   skinning determinism axis, which also gates any other skinned glTF.
 
 **Rank by the whole family, not by the first blocker.** Node particles reached
-*eleven* scenes (262, 263, 264, 276, 277, 280, 281, 283, 284, 300, 301); seven
-shipped as the frozen bake and the four that remain each sit behind one further
-arm — the exact Multiply/MultiplyAdd blends, or the Sprite2D bridge.
+*eleven* scenes (262, 263, 264, 276, 277, 280, 281, 283, 284, 300, 301) and ten
+have shipped: seven as the frozen bake drawn through billboards, then the exact
+Multiply and MultiplyAdd blends and the pure-2D Sprite2D bridge. Only 300
+remains, and its blocker is an asset mechanism rather than a render one.
 
 ### The eight scenes 1.23.0 added
 
@@ -228,10 +229,10 @@ cluster needs: copy the module out of the pinned tree and pin its SHA-256.
 | 250 | `enableGltfCameras` | glTF camera import, new in 1.21 |
 | 281 | shipped: node particles, frozen bake | node particles |
 | 282 | texture pixels from a module function (+ `shared/scene282-standard-uv-transform`) | Standard UV transform |
-| 283 | exact Multiply blend (+ `shared/scene283-npe-multiply-blend`) | node particles |
-| 284 | exact MultiplyAdd blend (+ `shared/scene284-npe-multiply-add-blend`) | node particles |
-| 300 | `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
-| 301 | Sprite2D blend-mode bridge (+ `shared/scene283-npe-multiply-blend`) | node particles through Sprite2D |
+| 283 | shipped: exact Multiply blend | node particles |
+| 284 | shipped: exact MultiplyAdd blend | node particles |
+| 300 | a drawn atlas URL handed to the graph (+ `shared/npe-sprite2d-fixture`) | node particles through Sprite2D |
+| 301 | shipped: Sprite2D blend-mode bridge | node particles through Sprite2D |
 
 Scene 282 is the only corpus scene reaching `stdUvTransformExt`, the ninth
 Standard extension 1.21 added. `pinned-standard-variants.ts` refuses a material
@@ -254,11 +255,11 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (89 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
+**Integrate first (86 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 152, 155-158, 165, 179, 200-207, 211, 214, 215, 217-220,
-223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 278, 279, 282-284, 300,
-301. Includes static CSG/CSG2, compressed assets
+223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 278, 279, 282, 300.
+Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
 user-input or external-service contract.
@@ -372,8 +373,10 @@ that does to the deferred lane by default.
     depth slot: the sprite pass appends to the scene's frame.
   - `setSprite2DCoverageGamma`, a shader permutation the pin installs
     through a lazily-registered hook, as the custom shaders do.
-  - `createTexture2DFromPixels` past its defaults: the `srgb` format and
-    the sampler overrides refuse, because no reached call passes options.
+  - `createTexture2DFromPixels`'s `srgb` format, which picks
+    `rgba8unorm-srgb` and so changes how a texel decodes rather than how it
+    is sampled. The four sampler overrides shipped with scenes 283/284/301;
+    no reached call passes `srgb`.
   - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
     `clearSprite2DLayer` and the Handle API: the writer is lowered for the add
     arm only; the update arm's "preserve what was not supplied" resolution needs
@@ -570,33 +573,43 @@ that does to the deferred lane by default.
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
   `scene231-skin` module, and `mesh.hasVertexAlpha`.
 - [ ] Scene 241: fold the reached query-derived camera alpha.
-- [ ] Extend the node-particle slice past the frozen bake scenes 262, 263,
-  264, 276, 277, 280 and 281 measure. Each remaining item fails by name:
-  - the **exact blend modes** (283, 284, 301): `buildNodeParticleSetWithBlendModes`
-    and `enableNodeParticleBlendModes` resolve Multiply and MultiplyAdd, which
-    the plain billboard path degrades to Add. Multiply is a dedicated fragment
-    (`particle-billboard-renderable.ts` MULTIPLY_FRAGMENT_WGSL, spliced through
-    the pin's own billboard fx hook) and MultiplyAdd is that pass followed by a
-    stock Add pass over the same instances -- two pipelines, two bind groups,
-    one renderable. `docs/lite/architecture/42-node-particle.md` section 10.1
-    carries the full factor table.
-  - the **Sprite2D bridge** (300, 301): `createParticleSprite2DBridge` and
-    `registerNodeParticleSet2D` map NPE world XY onto a pure-2D layer, which is
-    the sprite path this repository already owns. 300 additionally pokes
-    `system.buffer` and installs its own `_spriteSheet` after the freeze, and
-    301 builds two sets seeded in one random sequence -- the bake request
-    already carries a whole-scene program for that reason.
-  - a **live** set: `registerNodeParticleSet` appends a `_beforeRender` callback
-    that animates and re-synchronizes every frame, which one frozen state
-    cannot answer. Scenes 283 and 284 reach it with `updateSpeed = 0`, where the
-    animation is a no-op and the sync rewrites the same values -- so the frozen
-    bake is the right image and only the registration shape refuses.
+- [ ] Scene 300 is the last node-particle scene, and its whole remaining
+  chain is one mechanism plus two fixture shapes:
+  - an **executed atlas URL flowing into a graph**.
+    `createNpeSprite2DOrientationAtlasUrl()` draws a 128x64 atlas with
+    `OffscreenCanvas` and returns a `URL.createObjectURL` blob, which the
+    scene passes to `createNpeSprite2DGraph(flareUrl)` — so the graph's own
+    `ParticleTextureSourceBlock` loads it. The executed-module machinery
+    already bakes a drawn atlas, but only from a `data:` URL returned to the
+    compiler; here the value is a graph factory ARGUMENT, and the driver has
+    to call the same export so the pin loads the same image. The three parts:
+    accept an executed-module call as a graph factory argument, read a blob
+    URL back inside the page that made it, and join the baked asset to the
+    system whose texture came from that argument.
+  - `system._spriteSheet = { cellWidth, cellHeight, cellIndex, update }`
+    installed after the freeze, which the bake reads for the atlas cell size
+    and the per-particle frame. It is another generation-time write, beside
+    the column writes `src/compiler/particle-buffer.ts` already carries.
+  - `renderer._beforeUpdate.push(<closure>)`, which the scene uses only to
+    publish live state through the canvas dataset.
+  Its fixture is `skipParity` upstream (Babylon.js has no pure-2D renderer),
+  so its golden is the Lite page like every other scene here.
+- [ ] Extend the node-particle slice past what scenes 262, 263, 264, 276,
+  277, 280, 281, 283, 284 and 301 measure. Each remaining item fails by name:
+  - a **live** set: a registration whose per-frame step actually moves
+    particles. Generation measures this rather than assuming it — the driver
+    steps each registered system once more and compares every column the sync
+    reads — so what refuses is a set the scene did not freeze.
   - `parseNodeParticleSetFromSnippet`, the emitter world matrix, a second
     `createParticleBillboard` or `syncParticleBillboard` on one system, and a
     flow-map build whose scene camera is not a static arc-rotate construction.
   - a node-particle texture block asking for a flipped upload
     (`invertY` on the block): the sprite atlas record carries no upload flip,
     and no reached graph sets it.
+  - the pure-2D bridge's `view` layer option and the manual
+    `createParticleSprite2DBridge` / `syncParticleSprite2DBridge` /
+    `disposeNodeParticleSet2DBinding` entry points, none of which a corpus
+    scene reaches: the two that do go through the managed registrars.
 - [ ] Scenes 269, 270: support transform nodes.
 - [ ] Scene 261: support the reached `box.material` assignment; temporal
   anti-aliasing sits behind it.
