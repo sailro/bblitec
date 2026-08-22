@@ -85,15 +85,20 @@ function emitUniformBlock(
     block: ShaderUniformBlockReflection | undefined,
 ): string | undefined {
     if (!block) return undefined;
-    if (block.systemMatrix && block.members.length > 0) {
+    if (block.systemMatrices.length > 0 && block.members.length > 0) {
         throw new Error(
             "Native WGSL does not yet support mixed system and custom uniform blocks.",
         );
     }
     const group = block.stage === "vertex" ? 1 : 3;
-    if (block.systemMatrix) {
+    if (block.systemMatrices.length > 0) {
+        // The caller's own WGSL names these fields, so the struct is
+        // written in the order the uniforms were declared rather than in
+        // any order of this port's choosing.
         return `struct ShaderSystemUniforms {
-    worldViewProjection: mat4x4<f32>,
+${block.systemMatrices
+    .map((name) => `    ${name}: mat4x4<f32>,`)
+    .join("\n")}
 }
 @group(${group}) @binding(0) var<uniform> shaderSystem: ShaderSystemUniforms;`;
     }

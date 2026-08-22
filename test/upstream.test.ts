@@ -785,7 +785,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     // reflects a vertex-only system block and declares no samplers.
     assert.match(
         lowered.source,
-        /"circular-cutout",[\s\S]*?ShaderVariantStageBlock\{true, true, 16u, \{\}\},\s*\r?\n\s*ShaderVariantStageBlock\{false, false, 0u, \{\}\},\s*\r?\n\s*\{\},/,
+        /"circular-cutout",[\s\S]*?ShaderVariantStageBlock\{true, \{ShaderSystemMatrix::world_view_projection\}, 16u, \{\}\},\s*\r?\n\s*ShaderVariantStageBlock\{false, \{\}, 0u, \{\}\},\s*\r?\n\s*\{\},/,
     );
     // The alpha-card entry carries the historical native defaults
     // (depth 0.5, opacity 1.0) at their declaration-order value offsets

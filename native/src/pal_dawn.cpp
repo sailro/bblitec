@@ -4905,7 +4905,8 @@ DawnMeshBindings& bindings_for(
             : nullptr;
     if (
         binding_shader_info &&
-        !binding_shader_info->vertex.gather.empty()) {
+        binding_shader_info->vertex.present &&
+        !block_is_shared_scene_matrix(binding_shader_info->vertex)) {
         scene_entries[scene_entry_count].buffer =
             mesh.shader_vertex_uniforms;
         scene_entries[scene_entry_count].size =
@@ -7619,12 +7620,12 @@ bool run_dawn_engine(Engine& engine) {
                                 shader_info =
                                     upstream::shader_variant_info(
                                         draw.item.shader_variant);
-                            // Custom stage blocks gather from the
-                            // material's flat value storage; a pure
-                            // system-matrix vertex block binds the
-                            // shared scene matrix instead. Combined
-                            // matrix-plus-custom blocks are not
-                            // reached on this backend.
+                            // A block that is exactly the shared scene
+                            // matrix binds the frame's own buffer and
+                            // needs no write; everything else -- custom
+                            // gathers, or several system matrices --
+                            // owns the material's buffer and is filled
+                            // here.
                             const auto write_stage_block =
                                 [&](
                                     const upstream::
@@ -7633,20 +7634,14 @@ bool run_dawn_engine(Engine& engine) {
                                     WGPUBuffer buffer) {
                                 if (
                                     !block.present ||
-                                    block.gather.empty()) {
+                                    block_is_shared_scene_matrix(block)) {
                                     return;
-                                }
-                                if (block.system_matrix) {
-                                    dawn_error(
-                                        "combined system and custom "
-                                        "shader uniform blocks are "
-                                        "not implemented yet.");
                                 }
                                 const std::vector<float>
                                     block_floats =
                                         shader_stage_block_floats(
                                             block,
-                                            nullptr,
+                                            matrix.data(),
                                             material);
                                 wgpuQueueWriteBuffer(
                                     state.queue,
