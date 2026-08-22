@@ -1,5 +1,5 @@
 /**
- * The generated material texture-slot table (AUDIT NA-1).
+ * The generated material texture-slot table.
  *
  * The five hand-kept copies — both backends' upload selection, the two
  * pinned name maps and Dawn's slot-order comment — collapse into the one

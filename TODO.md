@@ -4,11 +4,6 @@ Only unfinished work belongs here. What is done is in [status](docs/status.md),
 the docs, and Git history. Entries state what remains and the facts needed to
 act on it — not what was tried.
 
-The 2026-08-18 repository audit tracked its findings separately in
-[AUDIT.md](AUDIT.md), under the same delete-when-fixed rule as this file.
-Its open entries are closed; what persists there is the verified-clean
-record future audits build on.
-
 ## Constraints
 
 - derive Babylon behavior from the pinned upstream TypeScript
@@ -31,23 +26,10 @@ record future audits build on.
   site, both fail explicitly. `canvas.width`/`canvas.height` name the engine's
   configured size; a scene reading them after a resize needs the live
   render-target size from the pinned `getRenderTargetSize`.
-- [ ] Replace the conservative alias rules (const path-bound locals alias
-  natively and are poisoned when their container is resized; mutable
-  path-bound locals are read-only copies; owned locals reject writes after
-  escaping by copy) with real escape analysis when a reached scene needs
-  shared mutable objects.
-- [ ] Close the primary-slot directional specular residual: a directional light
-  in the first analytic slot under mid/low roughness renders its specular
-  highlight a few percent dim (sphere, roughness 0.35, max channel delta 10-15
-  at the highlight, independent of `directIntensity`). No gated scene reaches
-  it. Diff the primary directional block against the pinned
-  `singlelight-directional-wgsl.ts` term by term.
 - [ ] Route inline return expressions through double precision: inlined value
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
   inlined function.
-- [ ] Extend array coverage to `shift`/`unshift` and the `indexOf` `fromIndex`
-  form when a reached scene needs them.
 - [ ] Support off-center orthographic planes: `enableOrthographicCamera` accepts
   explicit `left`/`right`/`bottom`/`top` bounds replacing the half-extent
   derivation, and `disableOrthographicCamera` restores the perspective
@@ -61,14 +43,21 @@ record future audits build on.
 - [ ] Lower general render/update callbacks.
 - [ ] Define ownership for escaping captures.
 - [ ] Generalize immediate AOT promises and dynamic-import dispatch.
-- [ ] Add a native scheduler only for genuinely runtime-dependent async work.
 
 ### Classes and objects
 
 - [ ] Lower the required class/method/getter/setter/inheritance subset.
-- [ ] Define object identity and ownership.
-- [ ] Add optional GC only for cyclic or JavaScript-managed graphs that cannot
-  use deterministic ownership.
+
+## P1 — Port, do not re-derive
+
+- [ ] Retire the hand-written C++ that encodes upstream semantics, leaf by
+  leaf. Two shapes are legitimate — LOWER (walk the pinned AST) or EXECUTE
+  (run the pin and bake); a re-typed formula agrees only until upstream
+  changes it. The templates in `src/lowering/templates/` are 5,319 lines,
+  of which `gltf-loader-cpp.ts` alone is 4,548, and `renderer-lowerer.ts`
+  is 4,516. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
+  are the mechanisms to reuse. Each leaf is its own measurement: lower or
+  execute it, then prove the generated tree moved only where intended.
 
 ## P1 — Assets and materials
 
@@ -83,10 +72,6 @@ record future audits build on.
 - [ ] Sparse accessors, and the point/line/line-strip primitive modes.
 - [ ] glTF animation: STEP channels, and a group's speed ratio, weight and
   mask.
-- [ ] glTF cameras. A PBR scene whose first light is a spot fails explicitly:
-  the primary analytic slot encodes the light kind in `lightDirection.w` and
-  carries no cone.
-- [ ] KTX2/Basis and compression investigations.
 
 ### Property animation
 
@@ -100,9 +85,14 @@ record future audits build on.
 
 ### Material extensions
 
+- [ ] Close the primary-slot directional specular residual: a directional light
+  in the first analytic slot under mid/low roughness renders its specular
+  highlight a few percent dim (sphere, roughness 0.35, max channel delta 10-15
+  at the highlight, independent of `directIntensity`). No gated scene reaches
+  it. Diff the primary directional block against the pinned
+  `singlelight-directional-wgsl.ts` term by term.
+
 - [ ] Anisotropy, including `setPbrAnisotropy`.
-- [ ] Require typed metadata specialization, focused tests, and an independent
-  parity scene for each extension.
 - [ ] Carry a spot light's cone angle at the pin's precision. The pinned factory
   computes `Math.cos(angle * 0.5)` in doubles into a float UBO; the compiler
   passes scalars as `static_cast<float>(<double expression>)`, so the cosine is
@@ -127,7 +117,6 @@ record future audits build on.
 
 - [ ] Define a versioned native scene format with deterministic hashes.
 - [ ] Prepack geometry, materials, textures, hierarchy, and animation data.
-- [ ] Retain source loaders for development and parity.
 - [ ] Measure startup, runtime, and size tradeoffs.
 
 ## P1 — Runtime and validation
@@ -159,25 +148,28 @@ record future audits build on.
 - [ ] Add device-loss and resize-safe resource recreation.
 - [ ] Add multiple registered scenes and scene switching.
 - [ ] Add headless renderer tests.
-- [ ] Add differential tests for camera, environment, material, and transform
-  functions.
-- [ ] Add malformed asset and backend-layout tests.
+- [ ] Add per-function differential tests for camera, environment, material
+  and transform math. The seven project-owned `examples/regression-*.ts`
+  gates and `parity --differential` compare whole images, not functions.
+- [ ] Add backend-layout tests: nothing checks a compiled stage's `.slots`
+  register layout against what the PAL binds.
 
 ## P1 — Developer experience
 
 - [ ] Add portable CMake presets.
 - [ ] Share one `VCPKG_INSTALLED_DIR` across build trees. Each build directory
-  carries its own 48 MB copy of `vcpkg_installed`, about 2.8 GB across the
-  matrix.
+  carries its own ~49 MB copy of `vcpkg_installed`: 133 trees, 7.6 GB.
 - [ ] Clear the one MSVC /W4 warning the generated glTF loader carries:
   `C4456: declaration of 'world' hides previous local declaration`, where
   the animated-world-bounds arm names a `Vec3 world` inside the
-  node-world walk's `std::vector<Matrix> world`. Sixteen scenes compile
-  it. A rename in the emitted text is the whole fix; it is a mechanical
+  node-world walk's `std::vector<Matrix> world`. Nineteen generated trees
+  compile it — sixteen scenes and three regression fixtures. A rename in
+  the emitted text is the whole fix; it is a mechanical
   change to every glTF scene's generated bytes, so it wants its own
   neutrality pass rather than riding a feature.
-- [ ] Improve missing-tool and stale-output diagnostics.
-- [ ] Add `--explain-feature` and generated-code-to-upstream inspection.
+- [ ] Add `--explain-feature`. The inspection half shipped as `scene -- diff`'s
+  pinned-block and shader-arm attribution plus the per-scene
+  `feature-activation.json`.
 - [ ] Document adding a lowerer and curated scene fixture.
 
 ## P1 — Full Babylon Lite corpus audit
@@ -194,9 +186,10 @@ The command accepts an unregistered path.
 **The corpus carries only the shared modules registered scenes import**,
 each pinned in `upstream/babylon-lite-scenes.json`. Integrating a scene that
 imports one starts by copying it out of the pinned upstream tree and pinning
-its SHA-256 beside the scenes. The thirteen shipped node-material graphs and the ten shipped node-particle
-graphs are already there; the remaining node-material, node-particle and skin
-modules are not — and a missing module is invisible in a compile probe, because
+its SHA-256 beside the scenes. The twenty shipped node-material graphs and the
+ten shipped node-particle graphs are already there, as is scene 300's Sprite2D
+fixture; the remaining node-material and skin modules are not — and a missing
+module is invisible in a compile probe, because
 the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
@@ -206,22 +199,19 @@ physics), engine options beyond msaaSamples/requiredLimits 7 (large-world),
 `receiveShadows` 6, `??` over a non-static-record operand 6, `HavokPhysics` 5,
 PBR options beyond the reached set 3, a four-argument call 3, an unsupported
 constructor expression 3, `createNavigationPluginAsync` 3.
-Node materials shipped thirteen of their twenty-two; each of the nine that
-remain sits behind a capability the reached slice refuses. Node particles
-shipped ten of their eleven; only scene 300 remains, behind the drawn atlas
-its graph is handed.
+Node materials shipped twenty of the thirty-one scenes reaching
+`parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
+capability the reached slice refuses and three (111, 140, 141) behind blockers
+unrelated to node materials. Node particles shipped ten of their eleven; only
+scene 300 remains, behind the drawn atlas its graph is handed.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
-  full and 0.28 foreground on both backends, which agree with each other to
-  one LSB. The composed fragment is byte-identical to the browser's, and
-  `scene -- diff` names two bone-palette matrices the browser never uploaded
-  — expected, since this port conjugates the mesh world into the palette
-  while the pin keeps it on the draw, so the two are equal only up to that
-  rewrite. Scene 152's seek sweep puts the minimum exactly at the gated pose
-  (0.069 at 0.98 s, 0.010 at 1.00 s, 0.067 at 1.02 s), so the clock is not
-  the cause; the palette is. Both scenes carry the shark at a 0.01 root
-  scale, which is where the conjugation loses the most precision — the next
-  measurement to make is the same asset at unit scale.
+  full and 0.28 foreground, identical on both backends. The composed fragment
+  is byte-identical to the browser's and the pose is not a clock offset, so
+  the palette is the suspect: this port conjugates the mesh world into it
+  where the pin keeps that world on the draw, and both scenes carry the shark
+  at a 0.01 root scale where the conjugation loses the most precision. Next
+  measurement: the same asset at unit scale.
 
 **Rank by the whole family, not by the first blocker.** Node particles reached
 *eleven* scenes (262, 263, 264, 276, 277, 280, 281, 283, 284, 300, 301) and ten
@@ -231,30 +221,27 @@ remains, and its blocker is an asset mechanism rather than a render one.
 
 ### The eight scenes 1.23.0 added
 
-Audited 2026-08-20 by compile probe. Six import a `shared/` module the corpus
-does not carry, so each starts with the same corpus sync the node-material
-cluster needs: copy the module out of the pinned tree and pin its SHA-256.
+Four of the eight shipped. Of the four that remain, only 282 needs the corpus
+sync the node-material cluster needs — copy its `shared/` module out of the
+pinned tree and pin its SHA-256.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
 | 220 | `KHR_mesh_quantization` on Duck.glb | glTF extension, with 11's spec-gloss |
 | 250 | `enableGltfCameras` | glTF camera import, new in 1.21 |
-| 281 | shipped: node particles, frozen bake | node particles |
 | 282 | texture pixels from a module function (+ `shared/scene282-standard-uv-transform`) | Standard UV transform |
-| 283 | shipped: exact Multiply blend | node particles |
-| 284 | shipped: exact MultiplyAdd blend | node particles |
-| 300 | a drawn atlas URL handed to the graph (+ `shared/npe-sprite2d-fixture`) | node particles through Sprite2D |
-| 301 | shipped: Sprite2D blend-mode bridge | node particles through Sprite2D |
+| 300 | an `OffscreenCanvas` construction in `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
 
 Scene 282 is the only corpus scene reaching `stdUvTransformExt`, the ninth
 Standard extension 1.21 added. `pinned-standard-variants.ts` refuses a material
 carrying one by name, so that refusal is what integrating 282 has to lift.
 
-**No corpus scene can retire the runtime-sweep gate.** Of the scenes reaching
-`createMeshFromData` (86, 114, 170-175, 231), `setThinInstances` (16, 17, 43,
-103, 165, 204, 219, 279) or `removeFromScene` (129, 173, 271, 272), none
-compiles. `flushThinInstances` and `setThinInstanceCount` are unreferenced under
-`corpus/` at this pin, so a project-owned gate is their only validation.
+**No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
+`createMeshFromData` half, but of the scenes reaching `setThinInstances` (16,
+17, 43, 103, 165, 204, 219, 279) or `removeFromScene` (129, 173, 271, 272)
+none compiles, and `flushThinInstances` and `setThinInstanceCount` are
+unreferenced under `corpus/` at this pin — so a project-owned gate stays their
+only validation.
 
 Corpus scenes are the preferred validation: a feature is proven by the pinned
 scenes that reach it. Author a gate only for a contract no corpus scene
@@ -289,12 +276,12 @@ that does to the deferred lane by default.
 - [ ] Scenes 158, 218, 269: the loader-returned-collection shapes still
   unreached. Iterating `entities` and `animationGroups`, `?? []` over one and
   `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
-  a collection bound to a **local** (`const groups = c.animationGroups ?? []`,
-  158 and 218), a collection passed to a user function (158's `requireGroup`),
-  and `[0]` (218, 269). Each is the same value travelling further than a call
-  argument, so they belong together. Scene 144 is past the axis now — its
-  first blocker is `goToFrame`'s three-argument form — and 250's is
-  `enableGltfCameras` alone.
+  and `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
+  a collection passed to a user function (158's `requireGroup`) and `[0]`
+  (218). Each is the same value travelling further than a call argument, so
+  they belong together. Scene 269 is past the axis — its first blocker is
+  `createTransformNode`, with 270 — as is 144, whose first blocker is
+  `goToFrame`'s three-argument form, and 250's is `enableGltfCameras` alone.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in
@@ -311,27 +298,25 @@ that does to the deferred lane by default.
   ninth Standard extension, and the one `pinned-standard-variants.ts` refuses
   by name. Its texture also comes from a module function the compiler must run
   at generation, which is the first blocker.
-- [ ] Scenes 12, 43: fold or explicitly lower the reached browser-dependent
-  conditions.
-- [ ] Scenes 171, 174, 175, 226, 251: lower `??` over an operand that is not a
-  static record property — 226 `container._gaussianSplats ?? []`, 251
-  `xbot.animationGroups ?? []`. Splats, animation groups and the Recast lane sit
-  behind them.
-- [ ] Scene 120's SDL_GPU residual: 0.024 full / 0.071 region, all of it the
-  backend differential (SDL_GPU-vs-Dawn 0.024, max 2, within1 99.97%), where
-  Dawn measures 0.001/0.004 against the same golden. Eliminated by
-  measurement: the lowered `build_splat_geometry` is bit-identical to the
-  pinned JS on the packaged asset (all five payloads and both bounds, checked
-  by checksum); the browser's own 224-byte splat UBO matches ours field for
-  field (`scene -- uniforms scene120 --size 224`); and recompiling the vertex
-  stage with DXC `-Gis` moves it by 0.0002, so it is not fast-math
-  reassociation. The residual is edge-weighted (edges 0.142, interior 0.028,
-  background 0.000), which points at the projected footprint rather than blend
-  accumulation. Not a floor until a pinned line explains it.
+- [ ] Scene 12: fold or explicitly lower the reached browser-dependent
+  condition.
+- [ ] Scenes 158, 171, 174, 175, 226, 251: lower `??` over an operand that is
+  not a static record property — 226 `container._gaussianSplats ?? []`, 158
+  and 251 `xbot.animationGroups ?? []`. Splats, animation groups and the
+  Recast lane sit behind them.
+- [ ] Scene 120's SDL_GPU residual: 0.024 full / 0.071 region against Dawn's
+  0.001/0.004 on the same golden, so it is entirely the backend differential.
+  It is edge-weighted (edges 0.142, interior 0.028, background 0.000), which
+  points at the projected footprint rather than blend accumulation. Ruled out
+  by measurement: the lowered `build_splat_geometry` (checksum-identical to
+  the pinned JS on the packaged asset), the splat UBO (field-for-field against
+  the browser's), and DXC fast-math reassociation. Not a floor until a pinned
+  line explains it.
 - [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
   reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
   spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
-  and its 1..5 rgba32uint SH textures), 125 (`bakeCurrentTransformIntoVertices`)
+  and its 1..5 rgba32uint SH textures), 125 (a write to a splat mesh's
+  `position`, with `bakeCurrentTransformIntoVertices` behind it)
   and 126 (a `GsShaderFragment` plugin spliced into the pin's own stage, which
   `applyGsFragments` mangles field names for). `loadSOG` (122) needs a ZIP and
   a WebP decoder; `loadSPZ` (123) needs gzip. 127/128 add
@@ -357,17 +342,17 @@ that does to the deferred lane by default.
   image half (`base_color_texture`, filled by the `.babylon` loader), so a
   scene-code write adds that write plus the right `uv_invert_y`: false for
   `loadTexture2D`, true for the KTX2/Basis and texture-array uploads
-  `pinned-standard-variants.ts` already names. Scenes 18, 25, 90 and 272
-  sit behind it and each wants more besides: 18 the shadow family and
-  `loadTexture2D`, 25 `loadKtxTexture2D` and `uvScale`, 90 `alphaCutOff`
-  plus a static-array loop and a canvas2D data URL built in the entry file,
-  272 `cloneTransformNode` and `createSolidTexture2D`.
+  `pinned-standard-variants.ts` already names. Scenes 18 and 272 block here
+  and each wants more besides: 18 the shadow family and `loadTexture2D`,
+  272 `cloneTransformNode` and `createSolidTexture2D`. Scenes 25 and 90
+  block earlier, on `loadKtxTexture2D` and on a canvas2D data URL built in
+  the entry file.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
 - [ ] Scene 26: its first blocker is a non-literal string argument;
   image-processing `toneMapping` shipped with scene 87 and `AcesToneMapping`
   is one of the three records `src/pinned-tone-mapping.ts` already reads.
 - [ ] Scene 36: support `loadBasisTexture2D`.
-- [ ] Scene 38: support `createCylinder`.
+- [ ] Scenes 38, 43: support `createCylinder` and `createTube`.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
@@ -400,15 +385,14 @@ that does to the deferred lane by default.
     blend behind it.
   - Scene 52: `onSceneDispose`, then the HUD-over-scene composition the native
     renderers refuse.
-  - Scene 53: `spriteBlendOpaque`, then depth-hosted layers.
+  - Scene 53: depth-hosted layers, then `spriteBlendOpaque`.
   - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
-  - Scenes 205, 206: engine options.
-- [ ] Extend node materials past the slice scenes 60, 61, 63, 67-71, 77-80,
-  82, 84, 85, 88 and 89 measure. Each item is a block the composed graph reaches
-  and this port refuses by name at generation, so a scene's own error says
-  which:
+- [ ] Extend node materials past the slice scenes 60-63, 67-71, 77-82, 84, 85,
+  87, 88 and 89 measure. Each item is a block the composed graph reaches and
+  this port refuses by name at generation, though a scene whose first blocker
+  is elsewhere reports that instead:
   - a scene-supplied `blockLoader` (73, 83), which is the pin's bundle-size
     device: the scene passes a function mapping each block class name to a
     dynamic import of the pin's own emitter module, so `loadGraphEmitters`
@@ -419,19 +403,14 @@ that does to the deferred lane by default.
     `material/node/blocks/*.js` emitter, and compose with exactly those.
     73 additionally wants camera viewports and a loader-returned collection.
   - `MorphTargetsBlock` (64, 66), two vertex storage bindings.
-  - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86, which also wants
-    `setClipPlane`).
+  - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86).
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
-  - a graph reached through `getSceneNNNme()` behind a gzip payload (66, 72,
-    73), which is a module function rather than an exported object.
+  - a graph reached through `getSceneNNNme()` behind a gzip payload (64, 66,
+    72, 73), which is a module function rather than an exported object.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
-  - `MeshAttributeExistsBlock` and `ClipPlanesBlock` (86, which also wants
-    `setClipPlane` and a mesh-data module function behind
-    `createMeshFromData`).
   - the `inputs` handles, which no reached scene writes: a scene setting one
     would need the node UBO rewritten per frame instead of folded.
-  - shadows (65, 66, 72), which are not a node-material contract.
 
 - [ ] Extend the fullscreen-effect slice past scenes 74, 75 and 76. Each item
   fails by name today: a custom `vertexWGSL`, an `EffectWrapperOptions.blend`
@@ -506,10 +485,10 @@ that does to the deferred lane by default.
   already treats it as per-frame state in `write_pinned_frame_blocks`. The
   push has to stay per draw, but the build does not. One hoist covering all
   three families, not a per-family change.
-- [ ] Scenes 66, 72, 214, 215, 271: support `receiveShadows`.
+- [ ] Scenes 65, 66, 72, 214, 215, 271: support `receiveShadows`.
 - [ ] Scene 73: support camera viewports.
-- [ ] Scene 75: support the `SCENE_CLEAR_COLOR` shader binding.
-- [ ] Scene 86: support `setClipPlane`.
+- [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
+  behind its `createMeshFromData`.
 - [ ] Scene 91: support `initializeCsg2Async`.
 - [ ] Scene 99: support `enableBoneControl`.
 - [ ] Scene 111: support mesh IDs.
@@ -517,10 +496,6 @@ that does to the deferred lane by default.
 - [ ] Scenes 113, 129: support mesh names.
 - [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
 - [ ] Scene 149: support the reached constructor expression.
-- [ ] Scenes 120, 121, 124-126: support `loadSplat`.
-- [ ] Scene 122: support `loadSOG`.
-- [ ] Scene 123: support `loadSPZ`.
-- [ ] Scenes 127, 128: support `createLinearDepthMaterial`.
 - [ ] Scene 140: fold the reached browser-derived boolean.
 - [ ] Scene 144: support `createBloomPostProcessTask`. Its chain is four
   passes over the composite machinery scene 148 shipped, but its merge is
@@ -562,7 +537,8 @@ that does to the deferred lane by default.
   asset seeker moves every clip that is not stopped, and 158 pins its
   additive pose with `pauseAnimation`, so a paused clip has to stay where the
   scene put it.
-- [ ] Scene 165: the viewProjection + world system-uniform pair, per-instance
+- [ ] Scene 165: a `createShaderMaterial` call with no `name`, then the
+  viewProjection + world system-uniform pair, per-instance
   thin-instance colors (`setThinInstanceColors` plus the instance color vertex
   stream), and an explicit image-neutral lowering decision for
   `enableThinInstanceGpuCulling`.
@@ -619,7 +595,8 @@ that does to the deferred lane by default.
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
   `scene231-skin` module, and `mesh.hasVertexAlpha`.
-- [ ] Scene 241: fold the reached query-derived camera alpha.
+- [ ] Scene 241: support `isNaN`, which guards the scene's own query-parameter
+  fold over `camAlpha`, `camBeta`, `camRadius`, `camTX/TY/TZ` and `camFov`.
 - [ ] Scene 300 is the last node-particle scene, and its whole remaining
   chain is one mechanism plus two fixture shapes:
   - an **executed atlas URL flowing into a graph**.
@@ -699,19 +676,19 @@ These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
 - [ ] Scenes 40-42, 44-49, 100-106, 209: add Havok behind an independent physics
-  dependency/PAL boundary. First blockers include browser conditions, Havok
-  initialization, four-argument calls, and engine options.
+  dependency/PAL boundary. First blockers: `Number(...)` as a call (40-42,
+  44, 45, 47, 100, 101, 106), `HavokPhysics` (48, 102-105), a four-argument
+  call (49), engine options (209), and an unresolved variable (46).
 - [ ] Scenes 170-175: add Recast navigation behind an explicit dependency
-  boundary. First blockers include numeric operators and
-  `createNavigationPluginAsync`.
+  boundary. First blockers: `createNavigationPluginAsync` (170, 172, 173) and
+  `??` over a non-static-record operand (171, 174, 175).
 - [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
   through `CanvasRenderingContext2D`, not Babylon Lite rendering. First blocker:
-  the reached one-argument call.
+  animation manager options past `engine`.
 - [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
   wheel handling. First blocker: reached `void` expression statements.
 - [ ] Scenes 221, 222, 224: add pointer-driven gizmo picking and drag routing.
-  First blockers: mesh names, four-argument calls, a browser-dependent
-  condition.
+  First blockers: mesh names (221) and four-argument calls (222, 224).
 - [ ] Scene 225: add geospatial camera controls; the scene reaches
   `attachGeospatialControls` even though its reference frame is a static pose.
   First blocker: `createGeospatialCamera`.
@@ -743,23 +720,18 @@ CLI exposes no combined-sampler emission.
   separate-sampler aliasing and the PBR fragment's cbuffer/array layout.
 - [ ] Build and run generated SPIR-V on Linux.
 - [ ] Validate depth, clip space, cubemap orientation, and texture color spaces.
-- [ ] Validate BRDF LUT and cubemap orientation on Vulkan hardware.
 - [ ] Test discrete and integrated adapters.
 
 ### Metal
 
 - [ ] Build and run generated MSL on macOS.
 - [ ] Validate uniform layout, derivatives, cubemaps, and blending.
-- [ ] Validate BRDF LUT and cubemap orientation on Metal hardware.
 - [ ] Investigate iOS after macOS is stable.
 
 ## P2 — Platform and performance
 
 - [ ] Add touch, gamepad, and fuller keyboard mapping.
 - [ ] Inventory and lower static audio playback behind an SDL audio PAL.
-- [ ] Add runtime HTTP/files only when compile-time materialization is
-  insufficient.
-- [ ] Keep physics behind an independent PAL/dependency boundary.
 - [ ] Separate CPU submission, GPU execution, decode, and startup timing.
 - [ ] Track executable, shader, and asset sizes consistently.
 - [ ] Deduplicate resources and batch uploads before investigating meshlets,
@@ -778,25 +750,3 @@ Both backends stay long-term as mutually validating implementations;
   build options (a DXC-less build changes rendering, so the compiler stays),
   ship only the CRT DLLs the exe imports, drop SPIR-V from D3D12-only packages
   once packaging can declare a target driver, and evaluate packed native assets.
-
-## P2 — Shader deployment conventions
-
-- [ ] Publish each deployed stage's entry point instead of matching its file
-  name. `tools/compile-shaders.ps1` picks the entry point and the register
-  convention from three filename prefixes — `variant-`, `postprocess-`,
-  `node-` — plus a fourth flag carved out of the first, so the deployment
-  convention is encoded twice in two languages and a rename compiles a stage
-  at the wrong entry point with no error. Generation already writes
-  `upstream/shaders/composition.json` and nothing reads it: add each row's
-  entry points and whether it is pin-composed, have the script look the file
-  up there, and keep `mainVertex`/`mainFragment` as the fallback for the
-  stages this repository authors. Both prefix ladders then delete.
-
-## Documentation maintenance
-
-- [ ] Keep status metrics and the README comparison image synchronized with
-  validated results.
-- [ ] Update development and repository instructions when build workflows or
-  recurring pitfalls change.
-- [ ] Keep this file free of history: no completed items, no investigation
-  narrative, no before/after measurements.
