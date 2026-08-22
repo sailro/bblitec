@@ -12,6 +12,31 @@ import type {
 } from "./types.js";
 import { lightVectorSetter } from "./assignments.js";
 
+/** One engine handle collection an expression names. */
+export interface HandleCollectionTarget {
+    property: string;
+    temporaryLabel: string;
+    containerCpp: string;
+    elementKind: ValueKind;
+    elementCppType: string;
+    engineCpp: string;
+}
+
+/** What emitting a loop over one of those collections needs. */
+export interface HandleCollectionLoopContext {
+    allocateTemporaryCppName(label: string): string;
+    allocateBlockPrefix(): string;
+    emit(line: string): void;
+    increaseIndent(): void;
+    decreaseIndent(): void;
+    pushScope(cppPrefix: string): void;
+    popScope(): void;
+    bindLocalValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
+}
+
 export interface StatementLoweringContext {
     /** The scene node-particle program; a buffer guard lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
@@ -31,18 +56,12 @@ export interface StatementLoweringContext {
     ):
         | { container: Value; element: DataType }
         | undefined;
+    assetEntitiesIterationTarget(
+        expression: ts.Expression,
+    ): Value | undefined;
     handleCollectionIterationTarget(
         expression: ts.Expression,
-    ):
-        | {
-              property: string;
-              temporaryLabel: string;
-              containerCpp: string;
-              elementKind: ValueKind;
-              elementCppType: string;
-              engineCpp: string;
-          }
-        | undefined;
+    ): HandleCollectionTarget | undefined;
     bindDataIterationVariable(
         name: ts.BindingName,
         itemCpp: string,
@@ -155,6 +174,51 @@ function frameYieldInsideLoop(node: ts.Node): boolean {
         }
     }
     return false;
+}
+
+/** A loop body's statements, whether or not it was written as a block. */
+function bodyStatements(
+    statement: ts.IterationStatement,
+): readonly ts.Statement[] {
+    return ts.isBlock(statement.statement)
+        ? statement.statement.statements
+        : [statement.statement];
+}
+
+/**
+ * The emitted range-for over an engine handle collection: the loop, its
+ * scope, and the binding the body reads. Both the `for...of` lowering and
+ * the `.find` search emit exactly this frame, so it is written once —
+ * only the body differs.
+ */
+export function emitHandleCollectionLoop<
+    Context extends HandleCollectionLoopContext,
+>(
+    context: Context,
+    target: HandleCollectionTarget,
+    binding: ts.Identifier,
+    emitBody: (context: Context) => void,
+): void {
+    const item = context.allocateTemporaryCppName(
+        target.temporaryLabel,
+    );
+    context.emit(
+        `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
+    );
+    context.increaseIndent();
+    context.pushScope(context.allocateBlockPrefix());
+    try {
+        context.bindLocalValue(binding, {
+            kind: target.elementKind,
+            cpp: item,
+            engineCpp: target.engineCpp,
+        });
+        emitBody(context);
+    } finally {
+        context.popScope();
+        context.decreaseIndent();
+    }
+    context.emit("}");
 }
 
 export class StatementLowerer {
@@ -945,15 +1009,19 @@ export class StatementLowerer {
                 "for...of bindings cannot carry initializers.",
             );
         }
-        const staticLiteral =
-            ts.isIdentifier(declaration.name) &&
-            !this.bindsEnclosingLoop(statement.statement)
-                ? context.probeStaticArrayLiteral(
-                      statement.expression,
-                  )
-                : undefined;
+        // The engine-collection paths answer first: their expressions are
+        // property reads (or a `?? []` over one), which the static probe
+        // would try to resolve as a value and refuse.
         if (
-            !staticLiteral &&
+            this.emitAssetEntitiesForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
+        if (
             this.emitHandleCollectionForOf(
                 context,
                 statement,
@@ -962,6 +1030,13 @@ export class StatementLowerer {
         ) {
             return;
         }
+        const staticLiteral =
+            ts.isIdentifier(declaration.name) &&
+            !this.bindsEnclosingLoop(statement.statement)
+                ? context.probeStaticArrayLiteral(
+                      statement.expression,
+                  )
+                : undefined;
         if (
             !staticLiteral &&
             this.emitRuntimeForOf(
@@ -1017,6 +1092,53 @@ export class StatementLowerer {
     }
 
     /**
+     * Iterates an asset container's `entities`.
+     *
+     * The body is emitted once, with the binding standing for the
+     * container's entities as a set: an entity value is accepted by
+     * `addToScene` alone, and adding every entity of a container adds
+     * exactly the meshes and lights its loader created. What the entity
+     * walk adds is only that; the container's own wiring — its animation
+     * groups, their per-frame tick, its camera and its clear colour —
+     * belongs to `addToScene(scene, container)` and is exactly what a
+     * scene iterating entities is avoiding.
+     */
+    private emitAssetEntitiesForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const target = context.assetEntitiesIterationTarget(
+            statement.expression,
+        );
+        if (!target) {
+            return false;
+        }
+        if (!ts.isIdentifier(declaration.name)) {
+            context.fail(
+                declaration.name,
+                "Iterating entities requires an identifier binding.",
+            );
+        }
+        if (this.bindsEnclosingLoop(statement.statement)) {
+            context.fail(
+                statement,
+                "break/continue in an entity loop is not lowered; a container's entities are one root.",
+            );
+        }
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            context.bindLocalValue(declaration.name, target);
+            for (const nested of bodyStatements(statement)) {
+                this.emit(context, nested);
+            }
+        } finally {
+            context.popScope();
+        }
+        return true;
+    }
+
+    /**
      * Iterates a collection an engine handle exposes — handles into the
      * engine, not a data container, so it binds a handle value instead of a
      * data element. Which collections exist is the table in `properties.ts`;
@@ -1042,31 +1164,16 @@ export class StatementLowerer {
                 `Iterating ${target.property} requires an identifier binding.`,
             );
         }
-        const item = context.allocateTemporaryCppName(
-            target.temporaryLabel,
+        emitHandleCollectionLoop(
+            context,
+            target,
+            declaration.name,
+            (loopContext) => {
+                for (const nested of bodyStatements(statement)) {
+                    this.emit(loopContext, nested);
+                }
+            },
         );
-        context.emit(
-            `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
-        );
-        context.increaseIndent();
-        context.pushScope(context.allocateBlockPrefix());
-        try {
-            context.bindLocalValue(declaration.name, {
-                kind: target.elementKind,
-                cpp: item,
-                engineCpp: target.engineCpp,
-            });
-            const statements = ts.isBlock(statement.statement)
-                ? statement.statement.statements
-                : [statement.statement];
-            for (const nested of statements) {
-                this.emit(context, nested);
-            }
-        } finally {
-            context.popScope();
-            context.decreaseIndent();
-        }
-        context.emit("}");
         return true;
     }
 
@@ -1138,7 +1245,12 @@ export class StatementLowerer {
         }
     }
 
-    private emitExpression(
+    /**
+     * One expression lowered as a statement. Public for a caller holding
+     * an expression rather than an `ExpressionStatement` — a concise
+     * arrow body, whose value the pin's callback contract discards.
+     */
+    public emitExpression(
         context: StatementLoweringContext,
         expression: ts.Expression,
     ): void {

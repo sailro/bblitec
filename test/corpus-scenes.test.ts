@@ -198,7 +198,6 @@ test("keeps exact-source corpus references immutable", () => {
                     scene.source,
                     undefined,
                     scene.parity.referenceTimeSeconds,
-                    scene.parity.referenceFrameRate,
                     scene.parity
                         .referenceAnimationGroups,
                 ),

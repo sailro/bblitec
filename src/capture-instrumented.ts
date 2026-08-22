@@ -208,7 +208,6 @@ export async function runInstrumentedCapture(
     const scene = resolveScene(idOrSource);
     const seekSeconds =
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
-    const frameRate = scene.parity?.referenceFrameRate ?? 60;
     const animationGroups = scene.parity?.referenceAnimationGroups;
     const skipDrawIndexCount = options.skipDrawIndexCount ?? 0;
     const outputDirectory = resolve(
@@ -218,7 +217,6 @@ export async function runInstrumentedCapture(
         scene.source,
         undefined,
         seekSeconds,
-        frameRate,
         animationGroups,
     );
     const server = createSuiteSceneServer(

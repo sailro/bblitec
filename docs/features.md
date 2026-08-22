@@ -613,8 +613,20 @@ and glTF LINEAR/CUBICSPLINE transform channels with LINEAR morph weights.
 A glTF file's animations arrive as one group each, in the document's order,
 reachable as `scene.animationGroups` and by name: upstream starts only the
 first and loops each over its own length, so `playAnimation`,
-`pauseAnimation`, `stopAnimation` and `goToFrame` select among clips of
-different durations.
+`pauseAnimation`, `stopAnimation`, `goToFrame` and `loopAnimation` select
+among clips of different durations.
+
+A scene may also drive those clips itself. `createAnimationManager({ engine })`
+plus `addAnimationGroups` moves ownership from the scene to a manager the
+scene ticks through `updateAnimationManager`, which is what a file added
+entity by entity needs — iterating a container's `entities` adds its nodes
+and nothing else, exactly as the pinned `addToScene` splits the two. A
+manager also owns the two weighted mixers, each an opt-in of its own:
+`enablePropertyAnimationBlending` blends the property tracks several groups
+share into one weighted write per property, and `enableAnimationBlending`
+blends glTF clips into one skeleton pose, both under `setAnimationWeight`.
+Without a mixer the groups write in turn and the last one wins, which is
+also the pin's behaviour.
 
 `KHR_animation_pointer` reaches node visibility; punctual light color,
 intensity, range and outer cone angle; and fifteen material targets — base
@@ -641,9 +653,13 @@ skinning, GPU position and normal morph targets through the pin's uncapped
 storage-buffer path — Babylon Lite's one morph mechanism, compiled in for
 any morph target at all — direct single-target morph attachment on generated
 meshes, static `EXT_mesh_gpu_instancing`, and post-deformation flat
-normals. Morph deltas apply before skinning. Two narrow CPU fallbacks remain:
-skins beyond 64 joints, and face-normal recomputation for primitives with no
-source normals.
+normals. Morph deltas apply before skinning. A skin of any size stays on the
+GPU wherever the scene composes the pin's own skeleton variants, whose
+palette is the pin's per-bone texture; the 64-matrix uniform array behind
+the transcribed vertex stage is what a larger skin would exceed, and only
+then does it fall back to CPU deformation. Scene 157's 67-joint Xbot
+measures the first path. The other narrow CPU fallback is face-normal
+recomputation for primitives with no source normals.
 
 ### Sprites
 

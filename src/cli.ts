@@ -68,6 +68,7 @@ import {
     reachedStandardLights,
     type BabylonLight,
 } from "./babylon-asset-features.js";
+import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { assetRecord } from "./compiler/assets.js";
 import { bakeNodeParticles } from "./pinned-node-particle.js";
@@ -816,6 +817,13 @@ async function main(): Promise<void> {
         pinnedMaterialCount:
             materialIndexBase + result.manifest.sceneMaterialCount,
         renderableMeshFeatures,
+        // Which palette transport a skin takes: a build whose composed
+        // variants carry the pin's own skeleton bit reads the palette
+        // from its per-bone texture, which caps no joint count.
+        pinnedSkeletonPalette:
+            await pinnedFeaturesCarrySkeleton(
+                renderableMeshFeatures,
+            ),
         ...(runtimeMeshFeatures !== undefined
             ? { runtimeMeshFeatures }
             : {}),

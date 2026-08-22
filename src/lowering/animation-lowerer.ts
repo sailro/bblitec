@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { propertyAnimationPaths } from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 /** A JavaScript number as the C++ float literal the templates emit. */
@@ -111,14 +112,98 @@ export class AnimationLowerer {
 }`
             );
         };
+        // The pin has no setter for loopAnimation -- it is a public field
+        // on the group -- so the emitted writer is the field write, taking
+        // the same route to the clip the operations above take. Its
+        // default and the weight's are the group factory's own literals,
+        // and the generated records carry those values, so both are read
+        // from the pin rather than restated.
+        const { file: groupFile, declaration: createGroups } =
+            this.context.functionDeclaration(
+                groupModule,
+                "createAnimationGroups",
+            );
+        const groupLiteral = this.context.findNodes(
+            createGroups,
+            (node): node is ts.ObjectLiteralExpression =>
+                ts.isObjectLiteralExpression(node) &&
+                node.properties.some(
+                    (property) =>
+                        ts.isPropertyAssignment(property) &&
+                        this.context.propertyName(
+                            property.name,
+                        ) === "loopAnimation",
+                ),
+        )[0];
+        if (!groupLiteral) {
+            this.context.contractError(
+                createGroups,
+                "Expected the glTF group literal.",
+            );
+        }
+        const groupDefault = (name: string): string => {
+            const initializer =
+                this.context.propertyInitializer(
+                    groupLiteral,
+                    name,
+                );
+            if (
+                initializer.kind === ts.SyntaxKind.TrueKeyword
+            ) {
+                return "true";
+            }
+            if (ts.isNumericLiteral(initializer)) {
+                return floatLiteral(
+                    this.context.numericValue(
+                        initializer,
+                        groupFile,
+                    ),
+                );
+            }
+            return this.context.contractError(
+                initializer,
+                `Expected a literal default for '${name}'.`,
+            );
+        };
+        // The generated clip record and the engine's group record carry
+        // these defaults as their own initializers, so what is checked
+        // here is that the pin still agrees with them.
+        for (const [name, expected] of [
+            ["loopAnimation", "true"],
+            ["weight", "1.0"],
+        ] as const) {
+            const actual = groupDefault(name);
+            if (actual !== expected) {
+                this.context.contractError(
+                    groupLiteral,
+                    `A glTF animation group now starts with ${name} ` +
+                        `${actual}; the native clip and group records ` +
+                        `default it to ${expected}.`,
+                );
+            }
+        }
+        const loopWriter =
+            `void set_animation_loop(
+    Engine& engine,
+    AnimationGroupHandle group,
+    bool loop) {
+    const AnimationGroupRecord& record =
+        group_record(engine, group);
+    AssetRecord& asset = group_asset(engine, record);
+    if (asset.set_clip_loop) {
+        asset.set_clip_loop(record.clip, loop);
+    }
+}`;
         const operations = [
             operation("playAnimation", "play_animation"),
             operation("pauseAnimation", "pause_animation"),
             operation("stopAnimation", "stop_animation"),
+            loopWriter,
         ].join("\n\n");
         return {
             modulePath: groupModule,
-            symbolName: "playAnimation,pauseAnimation,stopAnimation",
+            symbolName:
+                "playAnimation,pauseAnimation,stopAnimation,loopAnimation",
             header: "",
             source: `// ${this.context.provenance(
                 groupModule,
@@ -158,7 +243,612 @@ ${operations}
         };
     }
 
-    public lowerPropertyAnimation(): LoweredSource {
+    /**
+     * Exactly one expression under `declaration` has this shape.
+     *
+     * The fingerprint a shape comparison uses carries the operator, so
+     * naming the shape is the whole predicate — and the count is the
+     * contract: a pinned body that grows a second copy of a rule, or
+     * loses the one it had, fails generation here.
+     */
+    private expectOneShape(
+        declaration: ts.Node,
+        expected: string,
+        label: string,
+    ): void {
+        const matches = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter((expression) =>
+                this.context.expressionMatchesShape(
+                    expression,
+                    expected,
+                ),
+            );
+        if (matches.length !== 1) {
+            this.context.contractError(
+                declaration,
+                `Expected one ${label}.`,
+            );
+        }
+    }
+
+    /**
+     * The pin's optional weighted property mixer
+     * (src/animation/weighted-pointer-mixer.ts), reached only through
+     * `enablePropertyAnimationBlending`. Without it two groups writing one
+     * property devolve into last-write-wins, which is exactly what the
+     * mixer exists to stop: it buckets the tracks by the (target,
+     * property) pair each binding resolved, samples every contributing
+     * group at its own time, and writes one weighted sum per bucket.
+     *
+     * Everything load-bearing is asserted against the pinned bodies here:
+     * which groups make a bucket contested, the early-out that hands the
+     * tick back to the ordinary per-group path, the weighted-sum term, the
+     * quaternion hemisphere rule and its final normalize, and the mixer's
+     * own time advance — which is a second copy of the playback
+     * arithmetic upstream, forking from the controller's on the loop
+     * branch, so it is asserted separately rather than assumed identical.
+     */
+    private lowerWeightedPointerMixer(msPerSecond: number): string {
+        const mixerModule =
+            "src/animation/weighted-pointer-mixer.ts";
+        const weightModule = "src/animation/animation-weight.ts";
+        const { declaration: setWeight } =
+            this.context.functionDeclaration(
+                weightModule,
+                "setAnimationWeight",
+            );
+        this.context.assertExpressionShape(
+            this.context.findNodes(
+                setWeight,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.BarBarToken &&
+                    ts.isBinaryExpression(node.right),
+            )[0] ??
+                this.context.contractError(
+                    setWeight,
+                    "Expected the animation weight range guard.",
+                ),
+            "!Number.isFinite(weight) || weight < 0 || weight > 1",
+            "Animation weight range guard",
+        );
+        const weightWrites = this.context
+            .findNodes(
+                setWeight,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken,
+            )
+            .filter(
+                (expression) =>
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === "group.weight",
+            );
+        if (weightWrites.length !== 1) {
+            this.context.contractError(
+                setWeight,
+                "Expected setAnimationWeight to write the group weight.",
+            );
+        }
+        // The opt-in itself: registering the category handler is what
+        // makes the manager blend instead of ticking each group, so the
+        // native flag stands for that registration.
+        const { declaration: enableBlending } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "enablePropertyAnimationBlending",
+            );
+        this.context.assertExpressionShape(
+            this.context.callExpression(
+                enableBlending,
+                "setAnimationTaskCategoryHandler",
+            ),
+            "setAnimationTaskCategoryHandler(manager, ANIMATION_GROUP_TASK_CATEGORY, updateWeightedPointerAnimations)",
+            "Property animation blending opt-in",
+        );
+        const { declaration: mixer } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "updateWeightedPointerAnimations",
+            );
+        // A group at full weight never marks a bucket contested, so a
+        // scene that enables blending without weighting anything keeps
+        // the ordinary per-group writes.
+        this.expectOneShape(
+            mixer,
+            "group._stopped || group.weight === 1 || !mixer",
+            "contested-bucket skip",
+        );
+        this.expectOneShape(
+            mixer,
+            "contestedCount === 0",
+            "uncontested early-out",
+        );
+        this.expectOneShape(mixer, "weight === 0", "zero-weight skip");
+        this.expectOneShape(
+            mixer,
+            "bucket.quaternion && bucket.arity === 4",
+            "blended quaternion normalize guard",
+        );
+        const { declaration: accumulate } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "accumulateWeightedTrack",
+            );
+        this.context.assertExpressionShape(
+            this.context
+                .findNodes(
+                    accumulate,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken,
+                )
+                .filter((expression) =>
+                    ts.isElementAccessExpression(
+                        expression.left,
+                    ),
+                )[0] ??
+                this.context.contractError(
+                    accumulate,
+                    "Expected the weighted accumulation write.",
+                ),
+            "bucket.values[i] = bucket.values[i] + sample[i] * weight * sign",
+            "Weighted animation accumulation",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                accumulate,
+                "sign",
+            ),
+            "1",
+            "Weighted animation default sign",
+        );
+        this.context.assertExpressionShape(
+            this.context
+                .findNodes(
+                    accumulate,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken &&
+                        ts.isIdentifier(node.left) &&
+                        node.left.text === "sign",
+                )[0] ??
+                this.context.contractError(
+                    accumulate,
+                    "Expected the quaternion hemisphere sign rule.",
+                ),
+            "sign = dot < 0 ? -1 : 1",
+            "Weighted animation hemisphere sign",
+        );
+        const { declaration: normalize } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "normalizeQuaternion",
+            );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                normalize,
+                "lenSq",
+            ),
+            "x * x + y * y + z * z + w * w",
+            "Blended quaternion length",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(normalize, "inv"),
+            "1 / Math.sqrt(lenSq)",
+            "Blended quaternion normalize",
+        );
+        // The mixer's own advance. It forks from the controller's tick on
+        // the loop branch — that one wraps only while playing, this one
+        // wraps whenever the group loops — so both are pinned rather than
+        // one being derived from the other.
+        const { declaration: advance } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "advancePropertyGroupTime",
+            );
+        this.context.assertExpressionShape(
+            this.context
+                .findNodes(
+                    advance,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.PlusEqualsToken &&
+                        this.context
+                            .propertyPath(node.left)
+                            ?.join(".") ===
+                            "group.currentTime" &&
+                        ts.isBinaryExpression(
+                            this.context.unwrapExpression(
+                                node.right,
+                            ),
+                        ),
+                )[0]?.right ??
+                this.context.contractError(
+                    advance,
+                    "Expected the mixer playback advance.",
+                ),
+            `(deltaMs / ${msPerSecond}) * group.speedRatio`,
+            "Mixer playback advance",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                advance,
+                "fromTime",
+            ),
+            "Math.max(0, Math.min(mixer[MIX_FROM], mixer[MIX_DURATION]))",
+            "Mixer play-range start",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(advance, "toTime"),
+            "mixer[MIX_TO] > fromTime ? Math.min(mixer[MIX_TO], mixer[MIX_DURATION]) : mixer[MIX_DURATION]",
+            "Mixer play-range end",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                advance,
+                "duration",
+            ),
+            "Math.max(0, toTime - fromTime)",
+            "Mixer play-range duration",
+        );
+        this.expectOneShape(
+            advance,
+            "group.currentTime = fromTime + ((group.currentTime - fromTime) % duration)",
+            "mixer loop wrap",
+        );
+        this.expectOneShape(
+            advance,
+            "group.currentTime += duration",
+            "mixer wrap correction",
+        );
+        this.expectOneShape(
+            advance,
+            "group.currentTime = Math.min(Math.max(group.currentTime, fromTime), toTime)",
+            "mixer play-range clamp",
+        );
+        return `
+/**
+ * ${this.context.provenance(
+     mixerModule,
+     "updateWeightedPointerAnimations",
+ )}
+ *
+ * The bucket key is the pin's (target object, property name) pair: a
+ * lowered track resolves that pair from its mesh and its path, and
+ * distinct paths resolve to distinct pairs, so the mesh handle and the
+ * path name the same bucket the pin's binding would.
+ */
+PropertyAnimationBucket& track_bucket(
+    std::vector<PropertyAnimationBucket>& buckets,
+    PropertyAnimationTarget target,
+    PropertyAnimationPath path) {
+    for (PropertyAnimationBucket& candidate : buckets) {
+        if (
+            candidate.target.kind == target.kind &&
+            candidate.target.index == target.index &&
+            candidate.property == path) {
+            return candidate;
+        }
+    }
+    PropertyAnimationBucket bucket;
+    bucket.target = target;
+    bucket.property = path;
+    buckets.push_back(bucket);
+    return buckets.back();
+}
+
+// The sum runs in double and rounds once at the float store, which is
+// where the pinned Float32Array bucket rounds it.
+void accumulate_weighted_track(
+    PropertyAnimationBucket& bucket,
+    const std::array<float, 4>& sample,
+    float weight) {
+    bucket.active = true;
+    double sign = 1.0;
+    if (
+        bucket.property ==
+        PropertyAnimationPath::rotation_quaternion) {
+        if (!bucket.has_reference) {
+            bucket.reference = sample;
+            bucket.has_reference = true;
+        } else {
+            const double dot =
+                static_cast<double>(bucket.reference[0]) * sample[0] +
+                static_cast<double>(bucket.reference[1]) * sample[1] +
+                static_cast<double>(bucket.reference[2]) * sample[2] +
+                static_cast<double>(bucket.reference[3]) * sample[3];
+            sign = dot < 0.0 ? -1.0 : 1.0;
+        }
+    }
+    const std::size_t arity = track_arity(bucket.property);
+    for (std::size_t index = 0; index < arity; ++index) {
+        bucket.values[index] = static_cast<float>(
+            static_cast<double>(bucket.values[index]) +
+            static_cast<double>(sample[index]) *
+                static_cast<double>(weight) * sign);
+    }
+}
+
+void normalize_blended_quaternion(
+    std::array<float, 4>& values) {
+    const double length_squared =
+        static_cast<double>(values[0]) * values[0] +
+        static_cast<double>(values[1]) * values[1] +
+        static_cast<double>(values[2]) * values[2] +
+        static_cast<double>(values[3]) * values[3];
+    if (length_squared > 0.0) {
+        const double inverse = 1.0 / std::sqrt(length_squared);
+        for (float& component : values) {
+            component = static_cast<float>(component * inverse);
+        }
+    }
+}
+
+float advance_property_group_time(
+    const PropertyAnimationGroup& group,
+    float delta_ms) {
+    if (group->playing) {
+        group->current_time +=
+            delta_ms * ${this.context.floatLiteral(1 / msPerSecond)} *
+            group->speed_ratio;
+    }
+    const float from_time = std::max(
+        0.0f,
+        std::min(group->from_time, group->clip.duration));
+    const float to_time = group->to_time > from_time
+        ? std::min(group->to_time, group->clip.duration)
+        : group->clip.duration;
+    const float duration = std::max(0.0f, to_time - from_time);
+    if (duration <= 0.0f) return from_time;
+    if (group->loop) {
+        group->current_time =
+            from_time +
+            std::fmod(group->current_time - from_time, duration);
+        if (group->current_time < from_time) {
+            group->current_time += duration;
+        }
+    } else {
+        group->current_time = std::min(
+            std::max(group->current_time, from_time),
+            to_time);
+    }
+    return group->current_time;
+}
+
+/**
+ * Returns whether the mixer handled this tick, which is the pin's
+ * category-handler contract: true means the manager skips the
+ * animation-group tasks it would otherwise have ticked.
+ *
+ * Every group a property manager owns carries a mixer upstream, and a
+ * stopped one cannot be reached -- stopAnimation is lowered for glTF
+ * groups alone — so the pinned skip reduces to the weight test.
+ */
+bool update_weighted_property_animations(
+    Engine& engine,
+    PropertyAnimationManagerRecord& manager,
+    float delta_ms) {
+    for (PropertyAnimationBucket& bucket : manager.buckets) {
+        bucket.contested = false;
+        bucket.active = false;
+        bucket.has_reference = false;
+        bucket.values.fill(0.0f);
+    }
+    bool contested = false;
+    for (const PropertyAnimationGroup& group : manager.groups) {
+        if (!group || group->weight == 1.0f) continue;
+        for (const PropertyAnimationTrack& track :
+             group->clip.tracks) {
+            track_bucket(
+                manager.buckets,
+                group->target,
+                track.path).contested = true;
+            contested = true;
+        }
+    }
+    if (!contested) return false;
+    for (const PropertyAnimationGroup& group : manager.groups) {
+        if (!group) continue;
+        const float time =
+            advance_property_group_time(group, delta_ms);
+        const float weight = group->weight;
+        if (weight == 0.0f) continue;
+        for (const PropertyAnimationTrack& track :
+             group->clip.tracks) {
+            const std::array<float, 4> sample =
+                evaluate_track(track, time);
+            PropertyAnimationBucket& bucket = track_bucket(
+                manager.buckets,
+                group->target,
+                track.path);
+            if (!bucket.contested) {
+                write_track_value(
+                    engine,
+                    group->target,
+                    track.path,
+                    sample);
+                continue;
+            }
+            accumulate_weighted_track(bucket, sample, weight);
+        }
+    }
+    for (PropertyAnimationBucket& bucket : manager.buckets) {
+        if (!bucket.active) continue;
+        if (
+            bucket.property ==
+            PropertyAnimationPath::rotation_quaternion) {
+            normalize_blended_quaternion(bucket.values);
+        }
+        write_track_value(
+            engine,
+            bucket.target,
+            bucket.property,
+            bucket.values);
+    }
+    return true;
+}
+`;
+    }
+
+    /**
+     * The manager as an owner of glTF groups
+     * (src/animation/animation-group-task.ts): `addAnimationGroups`
+     * attaches each group so the manager ticks it, and
+     * `updateAnimationManager` advances everything it owns. Reached by a
+     * scene that drives a loaded file's clips itself instead of letting
+     * `addToScene` register them with the scene.
+     *
+     * A group's clip state lives in its asset's own runtime, so the
+     * manager hands that runtime the clips it owns and their weights;
+     * `animation_tick_clips` advances exactly those, the way upstream
+     * ticks each attached group through its own controller. The clips a
+     * manager does not own keep the pose they last wrote, which is what
+     * a group nothing ticks does upstream.
+     */
+    private lowerManagedGroups(): string {
+        const taskModule =
+            "src/animation/animation-group-task.ts";
+        const managerModule =
+            "src/animation/animation-manager.ts";
+        const { declaration: addGroups } =
+            this.context.functionDeclaration(
+                taskModule,
+                "addAnimationGroups",
+            );
+        if (!this.context.hasCall(addGroups, "addAnimationGroup")) {
+            this.context.contractError(
+                addGroups,
+                "Expected addAnimationGroups to attach each group.",
+            );
+        }
+        const { declaration: addGroup } =
+            this.context.functionDeclaration(
+                taskModule,
+                "addAnimationGroup",
+            );
+        // Attaching twice is the pin's own no-op, and attaching to a
+        // second manager is its own error; both travel into the emitted
+        // attach so a scene reaching either behaves the way it would
+        // upstream.
+        this.expectOneShape(
+            addGroup,
+            "owner === manager",
+            "animation group attach check",
+        );
+        const { declaration: update } =
+            this.context.functionDeclaration(
+                managerModule,
+                "updateAnimationManager",
+            );
+        // The step guard: a non-finite or negative delta advances nothing.
+        this.expectOneShape(
+            update,
+            "!Number.isFinite(step) || step < 0",
+            "animation manager step guard",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(update, "step"),
+            "manager.fixedDeltaMs > 0 ? manager.fixedDeltaMs : deltaMs",
+            "Animation manager fixed step",
+        );
+        return `
+PropertyAnimationManager create_animation_manager(
+    Engine& engine) {
+    auto manager =
+        std::make_shared<PropertyAnimationManagerRecord>();
+    engine.animation_managers.push_back(manager);
+    return manager;
+}
+
+void add_animation_groups(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    const std::vector<AnimationGroupHandle>& groups) {
+    PropertyAnimationManagerRecord& owner =
+        require_manager(manager);
+    for (const AnimationGroupHandle group : groups) {
+        if (group.value >= engine.animation_groups.size()) {
+            throw std::runtime_error(
+                "Invalid animation group handle.");
+        }
+        // Attaching a group twice is the pin's own no-op.
+        const auto found = std::find_if(
+            owner.gltf_groups.begin(),
+            owner.gltf_groups.end(),
+            [group](const AnimationGroupHandle candidate) {
+                return candidate.value == group.value;
+            });
+        if (found != owner.gltf_groups.end()) continue;
+        owner.gltf_groups.push_back(group);
+    }
+}
+
+void update_animation_manager(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    float delta_ms) {
+    PropertyAnimationManagerRecord& owner =
+        require_manager(manager);
+    if (!std::isfinite(delta_ms) || delta_ms < 0.0f) return;
+    tick_manager(engine, owner, delta_ms);
+}
+
+void seek_animation_manager(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    float time) {
+    seek_manager_groups(
+        engine,
+        require_manager(manager),
+        time);
+}
+
+void set_animation_weight(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float weight) {
+    if (group.value >= engine.animation_groups.size()) {
+        throw std::runtime_error(
+            "Invalid animation group handle.");
+    }
+    engine.animation_groups[group.value].weight =
+        checked_animation_weight(weight);
+}
+
+void enable_animation_blending(
+    PropertyAnimationManager manager) {
+    // setAnimationTaskCategoryHandler keeps ONE handler per manager, so
+    // the second opt-in replaces the first rather than composing.
+    require_manager(manager).category_handler =
+        AnimationCategoryHandler::gltf_mixer;
+}
+`;
+    }
+
+    public lowerPropertyAnimation(
+        options: {
+            /** The scene reached `enablePropertyAnimationBlending`. */
+            blending?: boolean;
+            /** The scene drives a loaded file's clips from a manager. */
+            managedGroups?: boolean;
+        } = {},
+    ): LoweredSource {
+        const {
+            blending = false,
+            managedGroups = false,
+        } = options;
         const propertyModule = "src/animation/property-animation.ts";
         const managerModule = "src/animation/animation-manager.ts";
         const groupModule = "src/animation/animation-group.ts";
@@ -494,6 +1184,146 @@ ${operations}
             "Animation seek conversion",
         );
 
+        // A bucket is as wide as its path's key values, which the same
+        // table the clip lowerer validates keys against already states.
+        const trackArity = blending
+            ? `
+constexpr std::size_t track_arity(PropertyAnimationPath path) {
+    switch (path) {
+${[...propertyAnimationPaths.values()]
+    .map(
+        (info) =>
+            `        case PropertyAnimationPath::${info.native}:\n` +
+            `            return ${info.components};`,
+    )
+    .join("\n")}
+    }
+    return 0;
+}
+`
+            : "";
+        const mixerSource = blending
+            ? this.lowerWeightedPointerMixer(msPerSecond)
+            : "";
+        const weightEntryPoints = blending
+            ? `
+void set_animation_weight(
+    PropertyAnimationGroup group,
+    float weight) {
+    if (!group) {
+        throw std::runtime_error(
+            "Property animation group is null.");
+    }
+    group->weight = checked_animation_weight(weight);
+}
+
+void enable_property_animation_blending(
+    PropertyAnimationManager manager) {
+    require_manager(manager).category_handler =
+        AnimationCategoryHandler::property_mixer;
+}
+`
+            : "";
+        // The pin's category handler returns whether it drove the
+        // animation-group tasks this tick; when it did, the manager skips
+        // exactly those tasks, which here is every group it owns.
+        const blendingTick = blending
+            ? `
+    if (
+        manager.category_handler ==
+            AnimationCategoryHandler::property_mixer &&
+        update_weighted_property_animations(
+            engine, manager, delta_ms)) {
+        return;
+    }`
+            : "";
+        const managerEntryPoints = managedGroups
+            ? this.lowerManagedGroups()
+            : "";
+        // The two guards every entry point below shares: the pinned weight
+        // range (src/animation/animation-weight.ts) and the manager
+        // null check.
+        const weightHelpers =
+            blending || managedGroups
+                ? `float checked_animation_weight(float weight) {
+    if (
+        !std::isfinite(weight) ||
+        weight < 0.0f ||
+        weight > 1.0f) {
+        throw std::runtime_error(
+            "Animation weight must be a finite number between 0 "
+            "and 1, got " +
+            std::to_string(weight));
+    }
+    return weight;
+}
+
+PropertyAnimationManagerRecord& require_manager(
+    const PropertyAnimationManager& manager) {
+    if (!manager) {
+        throw std::runtime_error(
+            "Property animation manager is null.");
+    }
+    return *manager;
+}
+
+`
+                : "";
+        // A glTF group's clip advances inside its asset's own runtime, so
+        // the manager ticks each distinct asset it holds groups from,
+        // once per frame.
+        const managedGroupTick = managedGroups
+            ? `
+    std::vector<std::uint32_t> ticked_assets;
+    for (const AnimationGroupHandle group : manager.gltf_groups) {
+        if (group.value >= engine.animation_groups.size()) continue;
+        const std::uint32_t asset =
+            engine.animation_groups[group.value].asset;
+        if (asset >= engine.assets.size()) continue;
+        if (
+            std::find(
+                ticked_assets.begin(),
+                ticked_assets.end(),
+                asset) != ticked_assets.end()) {
+            continue;
+        }
+        ticked_assets.push_back(asset);
+        // The clips this manager owns, at the weights it holds. Reusing
+        // the manager's own scratch keeps the capacity across frames.
+        manager.blend_scratch.clear();
+        for (const AnimationGroupHandle attached :
+             manager.gltf_groups) {
+            if (
+                attached.value >= engine.animation_groups.size()) {
+                continue;
+            }
+            const AnimationGroupRecord& entry =
+                engine.animation_groups[attached.value];
+            if (entry.asset != asset) continue;
+            manager.blend_scratch.push_back(
+                BlendedClip{entry.clip, entry.weight});
+        }
+        AssetRecord& record = engine.assets[asset];
+        // The manager's own weighted pass first, exactly where the pin
+        // runs its category handler: when it drives the tick, the clips
+        // it holds are not advanced a second time.
+        if (
+            manager.category_handler ==
+                AnimationCategoryHandler::gltf_mixer &&
+            record.animation_blend &&
+            record.animation_blend(
+                manager.blend_scratch,
+                delta_ms)) {
+            continue;
+        }
+        if (record.animation_tick_clips) {
+            record.animation_tick_clips(
+                manager.blend_scratch,
+                delta_ms);
+        }
+    }`
+            : "";
+
         return {
             modulePath: propertyModule,
             symbolName:
@@ -508,6 +1338,7 @@ ${operations}
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace bbl {
@@ -621,38 +1452,76 @@ std::array<float, 4> evaluate_track(
     return result;
 }
 
-void apply_group(
+${weightHelpers}/**
+ * The pinned binding's writer: one property, one path, on the object the
+ * clip was bound to. A mesh transform also marks the mesh, which is what
+ * the pinned setters do through their own observable vectors.
+ */
+void write_track_value(
     Engine& engine,
-    const PropertyAnimationGroup& group) {
-    if (!group || group->target.value >= engine.meshes.size()) {
+    PropertyAnimationTarget target,
+    PropertyAnimationPath path,
+    const std::array<float, 4>& value) {
+    if (target.kind == PropertyAnimationTargetKind::camera) {
+        if (target.index >= engine.cameras.size()) {
+            throw std::runtime_error(
+                "Property animation group has an invalid camera target.");
+        }
+        CameraRecord& camera = engine.cameras[target.index];
+        switch (path) {
+            case PropertyAnimationPath::camera_alpha:
+                camera.alpha = value[0];
+                break;
+            default:
+                throw std::runtime_error(
+                    "Property animation path does not belong to a camera.");
+        }
+        return;
+    }
+    if (target.index >= engine.meshes.size()) {
         throw std::runtime_error(
             "Property animation group has an invalid mesh target.");
     }
-    MeshRecord& mesh = engine.meshes[group->target.value];
-    for (const PropertyAnimationTrack& track :
-         group->clip.tracks) {
-        const std::array<float, 4> value =
-            evaluate_track(track, group->current_time);
-        switch (track.path) {
-            case PropertyAnimationPath::position:
-                mesh.position = Vec3{
-                    value[0], value[1], value[2]};
-                break;
-            case PropertyAnimationPath::position_x:
-                mesh.position.x = value[0];
-                break;
-            case PropertyAnimationPath::scaling:
-                mesh.scaling = Vec3{
-                    value[0], value[1], value[2]};
-                break;
-            case PropertyAnimationPath::rotation_quaternion:
-                mesh.rotation_quaternion = Vec4{
-                    value[0], value[1], value[2], value[3]};
-                mesh.has_rotation_quaternion = true;
-                break;
-        }
+    MeshRecord& mesh = engine.meshes[target.index];
+    switch (path) {
+        case PropertyAnimationPath::position:
+            mesh.position = Vec3{
+                value[0], value[1], value[2]};
+            break;
+        case PropertyAnimationPath::position_x:
+            mesh.position.x = value[0];
+            break;
+        case PropertyAnimationPath::scaling:
+            mesh.scaling = Vec3{
+                value[0], value[1], value[2]};
+            break;
+        case PropertyAnimationPath::rotation_quaternion:
+            mesh.rotation_quaternion = Vec4{
+                value[0], value[1], value[2], value[3]};
+            mesh.has_rotation_quaternion = true;
+            break;
+        default:
+            throw std::runtime_error(
+                "Property animation path does not belong to a mesh.");
     }
     ++mesh.transform_version;
+}
+${trackArity}
+void apply_group(
+    Engine& engine,
+    const PropertyAnimationGroup& group) {
+    if (!group) {
+        throw std::runtime_error(
+            "Property animation group is null.");
+    }
+    for (const PropertyAnimationTrack& track :
+         group->clip.tracks) {
+        write_track_value(
+            engine,
+            group->target,
+            track.path,
+            evaluate_track(track, group->current_time));
+    }
 }
 
 void tick_group(
@@ -682,12 +1551,49 @@ void tick_group(
     }
     apply_group(engine, group);
 }
+${mixerSource}
+/**
+ * One manager tick: upstream's updateAnimationManager, whose category
+ * handler drives the animation-group tasks when it is installed and
+ * whose remaining tasks each advance themselves.
+ */
+void tick_manager(
+    Engine& engine,
+    PropertyAnimationManagerRecord& manager,
+    float delta_ms) {${blendingTick}
+    for (const PropertyAnimationGroup& group : manager.groups) {
+        tick_group(engine, group, delta_ms);
+    }${managedGroupTick}
+}
+
+/**
+ * The measured seek, applied to what this manager owns: each property
+ * group is placed at the requested time and paused, which is the pose
+ * the reference harness produces with goToFrame plus pauseAnimation. A
+ * glTF group is seeked through its own asset, whose seeker the scene
+ * already carries.
+ */
+void seek_manager_groups(
+    Engine& engine,
+    PropertyAnimationManagerRecord& manager,
+    float time) {
+    for (const PropertyAnimationGroup& group : manager.groups) {
+        if (!group) continue;
+        group->current_time = std::clamp(
+            time,
+            group->from_time,
+            group->to_time);
+        group->playing = false;
+        apply_group(engine, group);
+    }
+}
 
 } // namespace
 
 PropertyAnimationManager create_animation_manager() {
     return std::make_shared<PropertyAnimationManagerRecord>();
 }
+${managerEntryPoints}${weightEntryPoints}
 
 PropertyAnimationClip create_property_animation_clip(
     std::string name,
@@ -719,7 +1625,7 @@ PropertyAnimationClip create_property_animation_clip(
 
 PropertyAnimationGroup create_property_animation_group(
     PropertyAnimationManager manager,
-    MeshHandle target,
+    PropertyAnimationTarget target,
     PropertyAnimationClip clip,
     PropertyAnimationGroupOptions options) {
     if (!manager) {
@@ -755,23 +1661,11 @@ void start_animation_manager(
     Engine* engine = scene.engine;
     scene.before_render.push_back(
         [manager, engine](float delta_ms) {
-            for (const PropertyAnimationGroup& group :
-                 manager->groups) {
-                tick_group(*engine, group, delta_ms);
-            }
+            tick_manager(*engine, *manager, delta_ms);
         });
     scene.animation_seekers.push_back(
         [manager, engine](float time) {
-            for (const PropertyAnimationGroup& group :
-                 manager->groups) {
-                if (!group) continue;
-                group->current_time = std::clamp(
-                    time,
-                    group->from_time,
-                    group->to_time);
-                group->playing = false;
-                apply_group(*engine, group);
-            }
+            seek_manager_groups(*engine, *manager, time);
         });
 }
 

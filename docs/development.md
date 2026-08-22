@@ -1008,11 +1008,19 @@ the distinct mechanisms:
 | 240 | 0.5 s | glTF node transform |
 | 245 | 1.0 s | recursive skeleton hierarchy |
 
-`referenceTimeSeconds`, `referenceFrameRate`, and optional
-`referenceAnimationGroups` in `src/scene-registry.ts` describe browser
-capture seeking. Native parity uses `BBLITE_ANIMATION_SEEK_SECONDS`. Capture
-metadata must match the pinned scene's own frame rate and explicit groups;
-glTF scenes usually seek `scene.animationGroups`.
+`referenceTimeSeconds` and optional `referenceAnimationGroups` in
+`src/scene-registry.ts` describe browser capture seeking: the harness writes
+that time onto each named group and pauses it, so the pose lands on the next
+tick from whoever drives the group. The shape is upstream's own parity
+freeze — a frame-count gate that pauses and signals through
+`canvas.dataset.animationFrozen` — with the pose pinned by time rather than
+by frame count, since the native side measures a time. Native parity uses
+`BBLITE_ANIMATION_SEEK_SECONDS`. The groups are scene-source expressions
+evaluated where the seek is injected — a local name, or a spread of a
+container's own collection — and a scene that names none seeks
+`scene.animationGroups`, which is what a glTF file added whole exposes. A
+scene driving its clips through its own manager has to name them, since it
+never registers them with the scene.
 
 ## Portable demo packages
 

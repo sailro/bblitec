@@ -334,6 +334,12 @@ export interface UpstreamEmitOptions {
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
+    /**
+     * Whether those bits carry the pin's own skeleton bit anywhere, so a
+     * composed skeleton stage exists and the palette rides its per-bone
+     * texture rather than the transcribed 64-matrix uniform array.
+     */
+    pinnedSkeletonPalette?: boolean;
     /** The bits for meshes created past the static table, when one value
      *  covers every scene-code builder; undefined refuses them. */
     runtimeMeshFeatures?: number;
@@ -535,6 +541,9 @@ class GeneratedSourceWriter {
             "upstream/src/scene_core.cpp",
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
+                managedAnimationGroups: features.includes(
+                    "animation:managed-groups",
+                ),
             }),
             generated,
         );
@@ -681,7 +690,14 @@ class GeneratedSourceWriter {
         if (features.includes("animation:property")) {
             this.writeSource(
                 "upstream/src/animation_property.cpp",
-                new AnimationLowerer(context).lowerPropertyAnimation(),
+                new AnimationLowerer(context).lowerPropertyAnimation({
+                    blending: features.includes(
+                        "animation:property-blending",
+                    ),
+                    managedGroups: features.includes(
+                        "animation:managed-groups",
+                    ),
+                }),
                 generated,
             );
         }
@@ -695,16 +711,28 @@ class GeneratedSourceWriter {
             );
             this.writeSource(
                 "upstream/src/gltf_loader.cpp",
-                gltf.lowerLoaderAdapter(
-                    options.nonTrianglePrimitives,
-                    options.nodeVisibility,
-                    options.animationPointer,
-                    options.animatedWorldBounds,
-                    options.animationPointerMaterials,
-                    options.assetTransmission,
-                    options.materialSpecular,
-                    options.selectedMaterialVariant,
-                ),
+                gltf.lowerLoaderAdapter({
+                    animationBlending: features.includes(
+                        "animation:gltf-blending",
+                    ),
+                    managedGroups: features.includes(
+                        "animation:managed-groups",
+                    ),
+                    pinnedSkeletonPalette:
+                        options.pinnedSkeletonPalette ?? false,
+                    nonTrianglePrimitives:
+                        options.nonTrianglePrimitives,
+                    nodeVisibility: options.nodeVisibility,
+                    animationPointer: options.animationPointer,
+                    animatedWorldBounds:
+                        options.animatedWorldBounds,
+                    animationPointerMaterials:
+                        options.animationPointerMaterials,
+                    assetTransmission: options.assetTransmission,
+                    materialSpecular: options.materialSpecular,
+                    selectedMaterialVariant:
+                        options.selectedMaterialVariant,
+                }),
                 generated,
             );
             generated.push({

@@ -522,6 +522,7 @@ export type ValueKind =
     | "animation-clip"
     | "animation-group"
     | "animation-manager"
+    | "asset-entity"
     | "asset"
     | "boolean"
     | "browser"
@@ -641,6 +642,22 @@ export interface Value {
      * partition the atlas, so the driver has to hold the real one.
      */
     pixelsTexture?: PixelsTextureSource;
+    /**
+     * Set on the `animation-group` a property clip produced. A glTF group
+     * is the engine handle its loader created, while
+     * `createPropertyAnimationGroup` returns the shared record the manager
+     * drives, and the two take different native entry points — so an
+     * operation serving one names the other with a source location instead
+     * of emitting C++ that would not compile. Absent means the handle form.
+     */
+    animationGroupSource?: "property";
+    /**
+     * For a handle a search produced: the native boolean saying whether
+     * the search matched. Upstream's `find` returns `undefined` when
+     * nothing does, and a scene tests that before using the result, so
+     * the flag is what a truthiness test on this value reads.
+     */
+    optionalFoundCpp?: string;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     /**
@@ -702,6 +719,13 @@ export interface Value {
     shaderVariant?: string;
     animationFrameRate?: string;
     animationDuration?: string;
+    /**
+     * Which object kind an `animation-clip` value's paths bind to. A
+     * pinned path is resolved against whatever object the group was
+     * created with, so the clip and the target have to agree; the closed
+     * path table decides which kind each one names.
+     */
+    animationTargetKind?: "mesh" | "camera";
     staticNumber?: number;
     staticString?: string;
     tupleElements?: Value[];
@@ -760,6 +784,9 @@ export interface Value {
 export type Feature =
     | "animation:gltf-groups"
     | "animation:property"
+    | "animation:property-blending"
+    | "animation:managed-groups"
+    | "animation:gltf-blending"
     | "background:ground"
     | "background:skybox"
     | "core"

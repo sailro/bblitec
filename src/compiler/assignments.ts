@@ -1187,6 +1187,41 @@ export function emitPropertyAssignment(
         }
     }
 
+    if (left.name.text === "loopAnimation") {
+        // AnimationGroup.loopAnimation is a public field upstream, and a
+        // glTF group's state lives in its asset's runtime, so the write
+        // takes the same writer route the group operations take.
+        const group = context.compileValue(left.expression);
+        context.expectKind(
+            group,
+            "animation-group",
+            left.expression,
+        );
+        requireGroupSource(
+            context,
+            group,
+            left,
+            "loopAnimation",
+            "gltf",
+        );
+        if (operator !== "=") {
+            context.fail(
+                left,
+                "loopAnimation takes a plain assignment.",
+            );
+        }
+        context.reachFeature("animation:gltf-groups", left);
+        context.emit(
+            `bbl::set_animation_loop(${context.requireEngine(
+                group,
+                expression,
+            )}, ${group.cpp}, ${context.compileBoolean(
+                expression.right,
+            )});`,
+        );
+        return;
+    }
+
     if (
         ts.isPropertyAccessExpression(left.expression) &&
         ["position", "rotation", "scaling"].includes(
@@ -1272,6 +1307,7 @@ function requireSimpleAssignment(
     }
 }
 import ts from "typescript";
+import { requireGroupSource } from "./intrinsics/animation.js";
 import { emitParticleBufferWrite } from "./particle-buffer.js";
 import { staticNumberValue } from "./option-helpers.js";
 import {

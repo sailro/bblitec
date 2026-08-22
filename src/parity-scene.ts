@@ -1066,7 +1066,6 @@ export async function runSceneParity(
         arguments_.recaptureReference,
         undefined,
         seek ?? config.referenceTimeSeconds,
-        config.referenceFrameRate,
         config.referenceAnimationGroups,
         { seededRandom: usesSeededRandom(scene) },
     );

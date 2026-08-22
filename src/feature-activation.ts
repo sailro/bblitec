@@ -164,6 +164,28 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/animation/property-animation.ts",
         consumers: CMAKE,
     },
+    "animation:property-blending": {
+        provenance:
+            "src/animation/weighted-pointer-mixer.ts " +
+            "(enablePropertyAnimationBlending installs the manager's " +
+            "animation-group category handler) + " +
+            "src/animation/animation-weight.ts (setAnimationWeight)",
+        consumers: CMAKE,
+    },
+    "animation:managed-groups": {
+        provenance:
+            "src/animation/animation-group-task.ts (addAnimationGroups " +
+            "attaches a loaded file's clips to a scene-owned manager) + " +
+            "src/animation/animation-manager.ts (updateAnimationManager)",
+        consumers: CMAKE,
+    },
+    "animation:gltf-blending": {
+        provenance:
+            "src/animation/weighted-gltf-mixer.ts " +
+            "(enableAnimationBlending installs the weighted skeleton " +
+            "mixer as the manager's animation-group category handler)",
+        consumers: CMAKE,
+    },
     "core": {
         provenance:
             "src/engine/engine.ts + src/scene/scene-core.ts " +

@@ -36,6 +36,61 @@ export interface PropertyAnimationContext {
     fail(node: ts.Node, message: string): never;
 }
 
+/**
+ * The reached property paths, each with the native track enumerator it
+ * lowers to and how many components its keys carry.
+ *
+ * Upstream reads a track's stride off its first key value
+ * (`getTrackStride`) because a path is any dotted string there; here the
+ * path is one of a closed set resolved at compile time, so the count is
+ * a property of the path. Both consumers read this one table: key
+ * validation below, and the emitted mixer's bucket width, which the
+ * animation lowerer generates from it.
+ */
+export type PropertyAnimationTargetKind = "mesh" | "camera";
+
+export const propertyAnimationPaths: ReadonlyMap<
+    string,
+    {
+        native: string;
+        components: number;
+        target: PropertyAnimationTargetKind;
+    }
+> = new Map([
+    [
+        "position",
+        { native: "position", components: 3, target: "mesh" },
+    ],
+    [
+        "position.x",
+        {
+            native: "position_x",
+            components: 1,
+            target: "mesh",
+        },
+    ],
+    [
+        "scaling",
+        { native: "scaling", components: 3, target: "mesh" },
+    ],
+    [
+        "rotationQuaternion",
+        {
+            native: "rotation_quaternion",
+            components: 4,
+            target: "mesh",
+        },
+    ],
+    [
+        "alpha",
+        {
+            native: "camera_alpha",
+            components: 1,
+            target: "camera",
+        },
+    ],
+]);
+
 export function compilePropertyAnimationClip(
     context: PropertyAnimationContext,
     nameExpression: ts.Expression,
@@ -45,6 +100,7 @@ export function compilePropertyAnimationClip(
     cpp: string;
     frameRate: string;
     duration: string;
+    target: PropertyAnimationTargetKind;
 } {
     const tracks = context.expectStaticArrayLiteral(tracksExpression);
     if (tracks.elements.length === 0) {
@@ -87,6 +143,7 @@ export function compilePropertyAnimationClip(
         }
         frameRate = distinct[0] ?? "60.0f";
     }
+    const targets = new Set<PropertyAnimationTargetKind>();
     const compiledTracks = tracks.elements.map((element) => {
         const track = context.expectObjectLiteral(
             context.resolveStaticExpression(element),
@@ -100,45 +157,14 @@ export function compilePropertyAnimationClip(
             );
         }
         const path = context.compileStaticString(pathExpression);
-        const pathInfo = new Map<
-            string,
-            { native: string; components: number }
-        >([
-            [
-                "position",
-                {
-                    native: "position",
-                    components: 3,
-                },
-            ],
-            [
-                "position.x",
-                {
-                    native: "position_x",
-                    components: 1,
-                },
-            ],
-            [
-                "scaling",
-                {
-                    native: "scaling",
-                    components: 3,
-                },
-            ],
-            [
-                "rotationQuaternion",
-                {
-                    native: "rotation_quaternion",
-                    components: 4,
-                },
-            ],
-        ]).get(path);
+        const pathInfo = propertyAnimationPaths.get(path);
         if (!pathInfo) {
             context.fail(
                 pathExpression,
                 `Unsupported property animation path '${path}'.`,
             );
         }
+        targets.add(pathInfo.target);
         const interpolationExpression =
             context.objectProperty(track, "interpolation");
         const interpolation = interpolationExpression
@@ -191,11 +217,21 @@ export function compilePropertyAnimationClip(
         });
         return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${pathInfo.native}, bbl::PropertyAnimationInterpolation::${interpolation}, {${compiledKeys.join(", ")}}}`;
     });
+    if (targets.size > 1) {
+        // Upstream resolves each path against the one object the group
+        // was bound to, so a clip whose paths name different objects
+        // could never have bound at all.
+        context.fail(
+            tracks,
+            "Property animation tracks in one clip must animate the same object kind.",
+        );
+    }
     const name = context.compileStaticString(nameExpression);
     return {
         cpp: `bbl::create_property_animation_clip(${context.cppString(name)}, {${compiledTracks.join(", ")}}, ${frameRate})`,
         frameRate,
         duration: "0.0f",
+        target: [...targets][0] ?? "mesh",
     };
 }
 

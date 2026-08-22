@@ -182,7 +182,6 @@ export async function runGeometryOutputDiagnostics(
             impostorShimTransform(),
             seek,
             undefined,
-            undefined,
             { virtualModules: { [impostorShimPath]: impostorShimModule(task) } },
         );
         runNative(
