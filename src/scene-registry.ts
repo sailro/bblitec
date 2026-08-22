@@ -1981,6 +1981,30 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene278",
+        name: "Scene 278 - Line System",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene278.ts",
+        title: "Babylon Lite Native - Line System",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [6, 9, 17],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene279",
+        name: "Scene 279 - Line System Update",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene279.ts",
+        title: "Babylon Lite Native - Line System Update",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 6, 13],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene301",
         name: "Scene 301 - NPE Sprite2D Blend Modes",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene301.ts",

@@ -83,10 +83,27 @@ const HOST_CALLS = new Map<
     ["String", (argument) => String(argument)],
 ]);
 
+/** The logical operators a builder derives one permutation flag from. */
+const LOGICAL = new Set<ts.SyntaxKind>([
+    ts.SyntaxKind.AmpersandAmpersandToken,
+    ts.SyntaxKind.BarBarToken,
+]);
+
 function isRecord(
     value: ShaderTextBinding,
 ): value is ShaderTextRecord {
     return typeof value === "object" && !Array.isArray(value);
+}
+
+/** JavaScript truthiness over the values a permutation binds. */
+function truthy(value: ShaderTextBinding): boolean {
+    return typeof value === "string"
+        ? value.length > 0
+        : typeof value === "number"
+            ? value !== 0
+            : typeof value === "boolean"
+                ? value
+                : true;
 }
 
 export class PinnedShaderText {
@@ -560,6 +577,30 @@ export class PinnedShaderText {
             return ARITHMETIC.get(node.operatorToken.kind)!(
                 this.number(node.left, scope, modulePath),
                 this.number(node.right, scope, modulePath),
+            );
+        }
+        // A builder that derives one flag from others binds the result, so
+        // `&&`/`||`/`!` reach this evaluator as values rather than only as
+        // branch conditions -- `const hasColor = useVertexColor ||
+        // useThinInstanceColors` in the line material's own stage builder.
+        // JavaScript's short-circuit result is the operand, not a boolean,
+        // so the operand is what is returned.
+        if (ts.isBinaryExpression(node) && LOGICAL.has(node.operatorToken.kind)) {
+            const left = this.evaluateValue(node.left, scope, modulePath);
+            const keepsLeft =
+                node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+                    ? truthy(left)
+                    : !truthy(left);
+            return keepsLeft
+                ? left
+                : this.evaluateValue(node.right, scope, modulePath);
+        }
+        if (
+            ts.isPrefixUnaryExpression(node) &&
+            node.operator === ts.SyntaxKind.ExclamationToken
+        ) {
+            return !truthy(
+                this.evaluateValue(node.operand, scope, modulePath),
             );
         }
         // `extras.length` and `extras[i].name`: the shapes a builder reads a

@@ -482,7 +482,27 @@ Box, sphere, subdivided ground, plane, and torus primitives;
 geometry; glTF triangle-list and triangle-strip primitive modes; generated and
 flat normals; negative transforms; and fixed-capacity thin-instance pools —
 the capacity is established when the pool is set and the matrix array stays
-aliased, so flush and count updates re-read it per frame.
+aliased, so flush and count updates re-read it per frame. An array the caller
+builds at the call site is bound to a name first, because the pool keeps
+referencing it for the whole frame loop; one built inside a block refuses,
+since the binding would not outlive it.
+
+A **line system** is one of those meshes rather than a renderer of its own.
+`createLineSystem` concatenates its polylines into a single indexed mesh —
+all points in line order, an index pair per segment, no index joining one
+line to the next, and one zero normal per vertex because the shared mesh
+uploader requires the buffer while the line shader binds no normal — and
+draws it with the `ShaderMaterial` `createLineMaterial` builds, whose
+`_topology` is `"line-list"`. Everything after that is the shader-material
+path: `updateLineSystem` rewrites positions and colours over an unchanged
+connectivity (a changed line or point count refuses, as upstream throws),
+and `setThinInstanceColors` binds the per-instance RGBA stream a material
+created with `useThinInstanceColors` reads. The colour precedence is the
+pin's own: vertex colours, instance colours, their product, or the
+`lineColor` uniform. `createLines`, `createDashedLines`,
+`updateDashedLines` and `setLineMaterialColor` are unreached and refuse by
+name, as does a line system whose material's vertex-colour setting
+disagrees with its geometry.
 
 ### Lights
 
@@ -537,6 +557,13 @@ WGSL `const` declarations the pin's own prelude writes — WGSL has no
 preprocessor, so a define is a constant the shader compiler folds a branch
 against, and the set is part of the program's identity rather than per-draw
 state.
+
+A shader material also states the primitive its pipeline is built at. The
+pin resolves `material._topology ?? "triangle-list"` inside its own pipeline
+builder and keys its cache on it, so the topology travels with the program
+rather than with a draw; the line family is the one reached material that
+names the second one, and both backends translate the same generated
+enumerator.
 
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
@@ -662,6 +689,15 @@ computed per frame on the CPU is the face normal of a primitive that carries
 none, whose positions stay GPU-skinned.
 [Architecture](architecture.md#animation-and-deformation) carries both
 mechanisms.
+
+A thin-instanced mesh may also carry a per-instance RGBA stream
+(`setThinInstanceColors`), which a material declaring
+`useThinInstanceColors` reads as the lane the pin's own thin-instance module
+appends after the matrix columns. It is its own tightly-packed instance
+buffer on both backends, and only a material that declares the lane builds a
+pipeline wide enough to bind it. The per-instance `setThinInstanceColor`
+twin is unreached and unlowered, which is why the record takes a copy of the
+array where the matrix pool keeps the caller's own.
 
 ### Sprites
 

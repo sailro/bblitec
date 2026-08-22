@@ -9,6 +9,7 @@ import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
+import { LineLowerer } from "./lowering/line-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
@@ -283,6 +284,12 @@ export interface UpstreamEmitOptions {
     textureTransform: boolean;
     imageBasedLighting: boolean;
     gpuInstancing: boolean;
+    /**
+     * The mesh carries a per-instance RGBA stream (`setThinInstanceColors`)
+     * and a material reads it, which widens the instance vertex layout by
+     * the lane the pin's own thin-instance module appends.
+     */
+    gpuInstanceColors: boolean;
     punctualLights: boolean;
     clearcoat: boolean;
     sheen: boolean;
@@ -461,6 +468,7 @@ class GeneratedSourceWriter {
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
 #define BBLITE_GPU_MORPH_STORAGE ${options.morphStorage ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
+#define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 #define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
@@ -1477,13 +1485,23 @@ ${composed.wgsl}`,
             features.includes("mesh:morph-targets") ||
             features.includes("mesh:plane") ||
             features.includes("mesh:sphere") ||
+            features.includes("mesh:thin-instance-colors") ||
             features.includes("mesh:thin-instances") ||
             features.includes("mesh:thin-instances-dynamic") ||
             features.includes("mesh:torus")
         ) {
             this.writeSource(
                 "upstream/src/mesh_factories.cpp",
-                factories.lowerMeshFactories(),
+                factories.lowerMeshFactories(
+                    features.includes("mesh:thin-instance-colors"),
+                ),
+                generated,
+            );
+        }
+        if (features.includes("mesh:lines")) {
+            this.writeSource(
+                "upstream/src/mesh_lines.cpp",
+                new LineLowerer(context).lowerLineSystem(),
                 generated,
             );
         }
@@ -2055,6 +2073,7 @@ export function emitUpstreamGenerated(
         textureTransform: false,
         imageBasedLighting: false,
         gpuInstancing: false,
+        gpuInstanceColors: false,
         punctualLights: false,
         clearcoat: false,
         sheen: false,

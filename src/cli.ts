@@ -821,6 +821,9 @@ async function main(): Promise<void> {
             result.manifest.features.includes(
                 "mesh:thin-instances-dynamic",
             ),
+        gpuInstanceColors: result.manifest.features.includes(
+            "mesh:thin-instance-colors",
+        ),
         punctualLights:
             specializationFeatures.punctualLights,
         clearcoat: emittedArms.clearcoat,

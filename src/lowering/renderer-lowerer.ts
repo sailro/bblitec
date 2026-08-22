@@ -716,6 +716,9 @@ export class RendererLowerer {
                 return {
                     name: program.name,
                     samplers: reflection.samplers,
+                    topology: program.topology ?? "triangle-list",
+                    instanceColors:
+                        program.useThinInstanceColors === true,
                     alphaBlending: program.needAlphaBlending,
                     alphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
@@ -754,6 +757,8 @@ export class RendererLowerer {
             (info) =>
                 `    ShaderVariantInfo{
         "${info.name}",
+        ShaderTopology::${info.topology === "line-list" ? "line_list" : "triangle_list"},
+        ${info.instanceColors},
         ${info.alphaBlending},
         ${info.alphaTesting},
         ${info.backFaceCulling},
@@ -949,8 +954,21 @@ struct ShaderVariantStageBlock {
     std::vector<std::array<std::uint32_t, 3>> gather;
 };
 
+// The pin's own material._topology, defaulted to "triangle-list": a
+// material states the primitive its pipeline is built at, and the line
+// family is the one reached material that names a second one.
+enum class ShaderTopology : std::uint8_t {
+    triangle_list,
+    line_list,
+};
+
 struct ShaderVariantInfo {
     const char* name = "";
+    ShaderTopology topology = ShaderTopology::triangle_list;
+    // The material reads the mesh's per-instance RGBA stream, so its
+    // pipeline declares the lane the pin's own thin-instance module
+    // appends and its draws bind that buffer.
+    bool instance_colors = false;
     bool alpha_blending = false;
     bool alpha_testing = false;
     bool back_face_culling = true;

@@ -205,10 +205,15 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:morph-targets",
             "mesh:plane",
             "mesh:sphere",
+            "mesh:thin-instance-colors",
             "mesh:thin-instances",
             "mesh:thin-instances-dynamic",
             "mesh:torus",
         ],
+    },
+    {
+        source: "upstream/src/mesh_lines.cpp",
+        features: ["mesh:lines"],
     },
 ];
 

@@ -1,0 +1,19 @@
+diff --git a/src/gpu/d3d12/SDL_gpu_d3d12.c b/src/gpu/d3d12/SDL_gpu_d3d12.c
+index e7fefa3e815c7..b1c5d0a2f7e91 100644
+--- a/src/gpu/d3d12/SDL_gpu_d3d12.c
++++ b/src/gpu/d3d12/SDL_gpu_d3d12.c
+@@ -3244,6 +3244,14 @@ static SDL_GPUGraphicsPipeline *D3D12_CreateGraphicsPipeline(
+     psoDesc.SampleMask = 0xFFFFFFFF;
+     psoDesc.SampleDesc.Count = SDLToD3D12_SampleCount[createinfo->multisample_state.sample_count];
+     psoDesc.SampleDesc.Quality = (createinfo->multisample_state.sample_count > SDL_GPU_SAMPLECOUNT_1) ? D3D12_STANDARD_MULTISAMPLE_PATTERN : 0;
++    // D3D12 rasterizes a LINELIST with the aliased diamond-exit rule unless
++    // MultisampleEnable is set, in which case it uses the quadrilateral rule
++    // that resolves line coverage against the target's samples. Vulkan and
++    // Metal have no such switch and always take the multisampled path, so
++    // leaving this FALSE makes the D3D12 backend the only one whose lines
++    // ignore a pipeline's sample count. It affects line rasterization only:
++    // triangle coverage is per-sample on a multisampled target either way.
++    psoDesc.RasterizerState.MultisampleEnable = (createinfo->multisample_state.sample_count > SDL_GPU_SAMPLECOUNT_1) ? TRUE : FALSE;
+
+     if (createinfo->target_info.has_depth_stencil_target) {
+         psoDesc.DSVFormat = SDLToD3D12_DepthFormat[createinfo->target_info.depth_stencil_format];

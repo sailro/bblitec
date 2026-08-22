@@ -11,6 +11,12 @@ vcpkg_from_github(
         # Applies to the release branch unmodified. Drop this overlay
         # once the patch ships in an SDL release.
         sdl-multisample-read.patch
+        # A LINELIST pipeline on a multisampled target: D3D12 takes the
+        # aliased diamond-exit rule unless MultisampleEnable is set, where
+        # Vulkan and Metal always rasterize lines against the target's
+        # samples. This project's own patch, not yet an upstream PR; the
+        # measurement behind it is in docs/backends.md.
+        d3d12-multisample-lines.patch
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)

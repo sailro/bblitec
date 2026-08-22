@@ -81,6 +81,8 @@ Primary source ownership:
 | `src/pinned-node-particle.ts` | runs the pin's own node-particle parser, graph builder and CPU simulation in the browser and returns the particle state they froze -- the one port where the value is fragile past a rounding argument, because the seed draws through `Math.sin` |
 | `src/lowering/node-particle-lowerer.ts` | the folded half of the same family: the billboard and pure-2D bridges, their two blend mappings and the exact five-mode one, all from their own declarations over the baked state |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
+| `src/lowering/line-lowerer.ts` | the line family: the polyline flatten emitted as C++ from its own pinned declaration, and the `ShaderMaterial` `createLineMaterial` composes -- its two stages folded out of that module's own text builders |
+| `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
 | `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation's seed: recorded for the executed bake, refused where lowered code would also answer it |
 | `src/compiler/particle-buffer.ts` | a particle buffer as generation-time state: a column the scene writes and a live-count guard it checks both move to the bake driver and emit nothing |
 | `src/pinned-tone-mapping.ts` | the tone-mapping record a scene selects, read from the pinned module that owns it -- the curve is a value upstream, not a flag |
@@ -245,6 +247,10 @@ The current generated slice includes:
 - generated infinite-distance solid and HDR skybox behavior
 - finite root-positioned DDS background cubes matching Babylon Lite's scene
   view-projection contract
+- polyline systems: the pin's own flatten into one indexed mesh, drawn by the
+  `ShaderMaterial` its line material composes, at the `line-list` topology
+  that material names -- with per-point colours, a fixed-topology update, and
+  the per-instance RGBA stream a thin-instanced line material reads
 - pure-2D sprite layers and their own `SpriteRenderer` rendering context,
   over a compile-time-drawn canvas2D atlas, on both GPU backends
 - node-particle graphs frozen at generation: the pin's own simulation run in

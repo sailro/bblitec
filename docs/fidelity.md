@@ -610,6 +610,42 @@ sampler's `textureBinding` fallback ("the texture it names, or the first
 texture slot") resolved once at generation. Scenes 74, 75 and 76 measure the
 three shapes byte-exact on both backends.
 
+**A line system is a mesh and a shader material, and both halves come from
+the pin.** `create-line-system.ts` flattens the polylines at load and hands
+the result to `createMeshFromData`, so the flatten is emitted as generated
+C++ with each rule it folds asserted against the declaration that states it:
+the segment index pair `(vertex - 1, vertex)` written only for
+`pointIndex > 0`, the `Math.max(0, line.length - 1) * 2` index count, the
+zero normal buffer, and the five validation throws. The material is the
+program `line-material.ts` composes: its two stages are folded out of that
+module's own `vertexSource`/`fragmentSource` builders — the same evaluator
+the sprite composers go through — and its declarations and fixed-function
+state are read off the `createShaderMaterial` call it makes, so the deployed
+WGSL is the pin's text for the permutation the scene reached. Two of the
+pin's own stamps fold away with a reason: `mesh._topology = 2` is glTF
+bookkeeping the port carries on the material instead, and
+`mesh.hasVertexAlpha` is read only by the Standard family, which no line
+mesh reaches. The variant's *identity* is the permutation rather than the
+name, because the pin names every line material `"LineMaterial"` while
+composing a different program per flag set. Scenes 278 and 279 measure both
+at 0.000 on both backends.
+
+**A line-list on a multisampled target needs D3D12's multisampled line
+rule, and SDL_GPU did not ask for it.** Dawn sets
+`RasterizerState.MultisampleEnable` from the pipeline's sample count
+(`RenderPipelineD3D12.cpp`), which selects the quadrilateral rule that
+resolves line coverage against the target's samples; SDL's D3D12 backend
+hardcoded it to `FALSE` (`SDL_gpu_d3d12.c`), leaving lines on the aliased
+diamond-exit rule whatever the sample count, where its own Vulkan and Metal
+backends have no such switch. Measured before the fix: SDL_GPU at 4x was
+pixel-identical to SDL_GPU at one sample and to Dawn at one sample, and
+scene 278 measured 0.284 full MAD against a byte-exact Dawn. The vendored
+overlay port (`native/vcpkg-overlay-ports/sdl3`) now carries that one line
+beside libsdl-org/SDL#15838, and both backends measure 0.000. It affects
+line rasterization only — triangle coverage is per-sample on a multisampled
+target either way — which the corpus-wide neutrality run measures rather
+than assumes.
+
 **A render target sampled as a Standard diffuse texture flips V in the UV
 block, not at upload.** `createRenderTargetTexture` returns its colour
 attachment as a `Texture2D` carrying `invertY: true`, and

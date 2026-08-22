@@ -376,6 +376,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/create-ground.ts",
         consumers: CMAKE,
     },
+    "mesh:lines": {
+        provenance: "src/mesh/create-line-system.ts",
+        consumers: CMAKE,
+    },
     "mesh:morph-targets": {
         provenance: "src/morph/create-morph-targets.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
@@ -389,6 +393,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "mesh:thin-instances": {
+        provenance: "src/mesh/thin-instance.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
+    "mesh:thin-instance-colors": {
         provenance: "src/mesh/thin-instance.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },

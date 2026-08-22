@@ -105,6 +105,11 @@ struct GpuMesh {
 #endif
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
+#if BBLITE_GPU_INSTANCE_COLORS
+    // The per-instance RGBA stream a material with useThinInstanceColors
+    // reads, in its own tightly-packed instance buffer.
+    SDL_GPUBuffer* instance_colors = nullptr;
+#endif
     std::uint64_t instance_version = 0;
 #if BBLITE_GPU_MORPH_STORAGE
     SDL_GPUBuffer* morph_deltas = nullptr;
@@ -333,7 +338,20 @@ void bind_shader_material_textures(
 void bind_mesh_vertex_buffers(
     SDL_GPURenderPass* pass,
     const GpuMesh& mesh) {
-#if BBLITE_GPU_INSTANCING
+#if BBLITE_GPU_INSTANCE_COLORS
+    // The matrix pool at slot 1 and the per-instance RGBA rows at slot 2,
+    // which the line family's vertex stage reads as `instanceColor`.
+    const std::array<SDL_GPUBufferBinding, 3> bindings{
+        SDL_GPUBufferBinding{mesh.vertices, 0},
+        SDL_GPUBufferBinding{mesh.instances, 0},
+        SDL_GPUBufferBinding{mesh.instance_colors, 0},
+    };
+    SDL_BindGPUVertexBuffers(
+        pass,
+        0,
+        bindings.data(),
+        static_cast<Uint32>(bindings.size()));
+#elif BBLITE_GPU_INSTANCING
     const std::array<SDL_GPUBufferBinding, 2> bindings{
         SDL_GPUBufferBinding{mesh.vertices, 0},
         SDL_GPUBufferBinding{mesh.instances, 0},
@@ -2971,6 +2989,9 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
 #endif
     SDL_ReleaseGPUBuffer(state.device, mesh.indices);
     SDL_ReleaseGPUBuffer(state.device, mesh.instances);
+#if BBLITE_GPU_INSTANCE_COLORS
+    SDL_ReleaseGPUBuffer(state.device, mesh.instance_colors);
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
     if (mesh.owns_morph_buffers) {
         SDL_ReleaseGPUBuffer(state.device, mesh.morph_deltas);
@@ -4152,12 +4173,65 @@ bool run_gpu_engine(Engine& engine) {
                     info.back_face_culling
                         ? SDL_GPU_CULLMODE_BACK
                         : SDL_GPU_CULLMODE_NONE;
+                // The material's own primitive: the pin builds a shader
+                // pipeline at `material._topology ?? "triangle-list"`, and
+                // a line material is the one reached material that names
+                // the second one.
+                shader_pipeline_info.primitive_type =
+                    info.topology == upstream::ShaderTopology::line_list
+                        ? SDL_GPU_PRIMITIVETYPE_LINELIST
+                        : SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
                 if (!info.depth_write) {
                     shader_pipeline_info.depth_stencil_state
                         .enable_depth_write = false;
                 }
                 shader_pipeline_info.target_info
                     .color_target_descriptions = &shader_target;
+#if BBLITE_GPU_INSTANCE_COLORS
+                // A material reading the per-instance RGBA stream draws
+                // through a widened vertex input: the shared layout plus
+                // the lane the pin's own thin-instance module appends,
+                // in its own tightly-packed instance buffer. Only this
+                // family declares it, so every other pipeline keeps the
+                // layout it had.
+                std::array<SDL_GPUVertexBufferDescription, 3>
+                    color_vertex_buffers{};
+                std::array<
+                    SDL_GPUVertexAttribute,
+                    attributes.size() + 1> color_attributes{};
+                if (info.instance_colors) {
+                    std::copy(
+                        vertex_buffers.begin(),
+                        vertex_buffers.end(),
+                        color_vertex_buffers.begin());
+                    color_vertex_buffers[2].slot = 2;
+                    color_vertex_buffers[2].pitch =
+                        sizeof(std::array<float, 4>);
+                    color_vertex_buffers[2].input_rate =
+                        SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+                    std::copy(
+                        attributes.begin(),
+                        attributes.end(),
+                        color_attributes.begin());
+                    color_attributes[attributes.size()] =
+                        SDL_GPUVertexAttribute{
+                            instance_color_location,
+                            2,
+                            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+                            0};
+                    shader_pipeline_info.vertex_input_state
+                        .vertex_buffer_descriptions =
+                        color_vertex_buffers.data();
+                    shader_pipeline_info.vertex_input_state
+                        .num_vertex_buffers = static_cast<Uint32>(
+                        color_vertex_buffers.size());
+                    shader_pipeline_info.vertex_input_state
+                        .vertex_attributes = color_attributes.data();
+                    shader_pipeline_info.vertex_input_state
+                        .num_vertex_attributes = static_cast<Uint32>(
+                        color_attributes.size());
+                }
+#endif
                 state.shader_pipelines[variant] =
                     SDL_CreateGPUGraphicsPipeline(
                         state.device,
@@ -4828,6 +4902,22 @@ bool run_gpu_engine(Engine& engine) {
                           instance_matrices.size());
             gpu_mesh.instance_version =
                 mesh_record.instance_version;
+#if BBLITE_GPU_INSTANCE_COLORS
+            {
+                // One tightly-packed RGBA row per instance. A mesh with
+                // none still binds the slot, so it takes one white row.
+                std::vector<float> instance_colors =
+                    mesh_record.instance_colors;
+                if (instance_colors.empty()) {
+                    instance_colors.assign(4, 1.0f);
+                }
+                gpu_mesh.instance_colors = upload_buffer(
+                    state.device,
+                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                    instance_colors.data(),
+                    instance_colors.size() * sizeof(float));
+            }
+#endif
 #endif
             gpu_mesh.index_count =             static_cast<std::uint32_t>(geometry.indices.size());
             gpu_mesh.transform_version =

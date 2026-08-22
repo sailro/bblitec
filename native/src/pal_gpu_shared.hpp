@@ -119,6 +119,16 @@ struct PinnedGeometryParams {
     std::array<float, 4> cameraNearFar{};
 };
 
+// Where the per-instance streams sit in the shared attribute table both
+// backends bind against. The matrix columns take the four lanes after the
+// vertex attributes, and the RGBA stream a material with
+// `useThinInstanceColors` reads takes the one after them -- the same
+// numbers `src/shader-ir.ts` specializes the WGSL to, stated once here so
+// the two backends cannot disagree about them.
+inline constexpr std::uint32_t instance_matrix_first_location = 16;
+inline constexpr std::uint32_t instance_color_location =
+    instance_matrix_first_location + 4;
+
 struct GpuVertex {
     float position[3];
     float normal[3];

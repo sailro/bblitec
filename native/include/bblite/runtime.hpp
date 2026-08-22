@@ -626,6 +626,19 @@ struct ModelVertex {
     Vec4 weights{};
 };
 
+// The flattened line-system geometry `createLineSystemData` produces: the
+// concatenated points, one zero normal triple per vertex (the shared mesh
+// uploader requires the buffer; the line shader binds no normal), the
+// segment index pairs, the optional per-point RGBA, and the per-polyline
+// point counts a later `updateLineSystem` validates against.
+struct LineSystemData {
+    std::vector<float> positions;
+    std::vector<float> normals;
+    std::vector<std::uint32_t> indices;
+    std::vector<float> colors;
+    std::vector<std::uint32_t> line_point_counts;
+};
+
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
@@ -699,6 +712,16 @@ struct MeshRecord {
     std::uint32_t instance_count = 0;
     std::uint64_t instance_version = 0;
     const std::vector<float>* instance_source = nullptr;
+    // The per-instance RGBA stream `setThinInstanceColors` bound, as the
+    // pin's own tightly-packed float4 rows. Empty where the mesh has none.
+    std::vector<float> instance_colors;
+    // `Mesh._linePointCounts`: the polyline sizes a line system was built
+    // from, kept because `updateLineSystem` refuses a changed connectivity
+    // rather than rewriting a mesh whose segments moved. The flag beside it
+    // is the pin's own `mesh._gpu.colorBuffer` test: an update cannot give
+    // a line system colours it was not created with.
+    std::vector<std::uint32_t> line_point_counts;
+    bool line_has_colors = false;
     std::array<float, 4> morph_weights{};
     // Uncapped weights for the storage-buffer morph path; versioned so
     // PAL re-uploads only when the animation evaluator writes them.
@@ -1644,6 +1667,31 @@ void set_thin_instance_count(
     MeshHandle mesh,
     double count);
 void flush_thin_instances(Engine& engine, MeshHandle mesh);
+void set_thin_instance_colors(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& colors);
+void flatten_line_attributes(
+    const std::vector<std::vector<Vec3>>& lines,
+    const std::vector<std::vector<Vec4>>& colors,
+    std::size_t vertex_count,
+    std::vector<float>& positions,
+    std::vector<float>& out_colors,
+    std::vector<std::uint32_t>* line_point_counts,
+    std::vector<std::uint32_t>* indices);
+LineSystemData create_line_system_data(
+    const std::vector<std::vector<Vec3>>& lines,
+    const std::vector<std::vector<Vec4>>& colors);
+MeshHandle create_line_system(
+    Engine& engine,
+    const std::vector<std::vector<Vec3>>& lines,
+    const std::vector<std::vector<Vec4>>& colors,
+    MaterialHandle material);
+void update_line_system(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<std::vector<Vec3>>& lines,
+    const std::vector<std::vector<Vec4>>& colors);
 AssetHandle load_gltf(Engine& engine, const std::string& path);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);

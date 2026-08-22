@@ -1,5 +1,5 @@
 {
-  "$comment": "Overlay ports take precedence over the registry named by vcpkg.json's builtin-baseline. The only entry carries libsdl-org/SDL#15838, without which the SDL_GPU backend cannot run the pinned per-sample image-processing pass. Delete this file and native/vcpkg-overlay-ports once an SDL release contains the patch, and move the baseline to it.",
+  "$comment": "Overlay ports take precedence over the registry named by vcpkg.json's builtin-baseline. The entry carries two patches: libsdl-org/SDL#15838, without which the SDL_GPU backend cannot run the pinned per-sample image-processing pass, and this project's own D3D12 multisampled-line rasterization fix, without which a line-list pipeline ignores its target's sample count. Delete this file and native/vcpkg-overlay-ports once an SDL release contains both, and move the baseline to it.",
   "overlay-ports": [
     "./vcpkg-overlay-ports"
   ]

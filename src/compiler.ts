@@ -82,6 +82,12 @@ import {
     type NodeMaterialContext,
 } from "./compiler/node-material.js";
 import {
+    lineMaterialPermutation,
+    reachLineMaterialProgram,
+    type LineMaterialPermutation,
+    type ReachedLineMaterial,
+} from "./compiler/line-material.js";
+import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
     reachedShaderProgram,
@@ -223,10 +229,12 @@ const featureSources: Record<Feature, string[]> = {
     "mesh:box": [],
     "mesh:from-data": [],
     "mesh:ground": [],
+    "mesh:lines": [],
     "mesh:morph-targets": [],
     "mesh:plane": [],
     "mesh:sphere": [],
     "mesh:thin-instances": [],
+    "mesh:thin-instance-colors": [],
     "mesh:thin-instances-dynamic": [],
     "mesh:torus": [],
     "scene:remove": [],
@@ -1387,6 +1395,27 @@ class Compiler
         expression: ts.Expression,
     ): { name: string; id: number } {
         return compileShaderMaterialOptions(this, expression);
+    }
+
+    /**
+     * Registers the shader variant a `createLineMaterial` (or the material a
+     * `createLineSystem` builds for itself) composes. The program is folded
+     * from the pin's own factory; what is decided here is only that this
+     * scene reached it.
+     */
+    public reachLineMaterial(
+        node: ts.Node,
+        options: ReachedLineMaterial,
+    ): { name: string; id: number } {
+        return reachLineMaterialProgram(this, node, options);
+    }
+
+    /** What a registered line variant settled, by variant name. */
+    public lineMaterialPermutation(
+        name: string,
+        node: ts.Node,
+    ): LineMaterialPermutation | undefined {
+        return lineMaterialPermutation(this, name, node);
     }
 
     /** Records one effect descriptor and returns its index in reach order. */
@@ -3575,6 +3604,16 @@ class Compiler
 
     public emit(line: string): void {
         this.body.push(`${"    ".repeat(this.indentLevel)}${line}`);
+    }
+
+    /**
+     * Whether lowering is at the entry body's own top level rather than
+     * inside a block it opened. What it decides: a binding emitted here
+     * lives as long as the frame loop, which is what the pinned
+     * `setThinInstances` alias contract needs of the array it adopts.
+     */
+    public isEntryBodyScope(): boolean {
+        return this.indentLevel === 2;
     }
 
     public increaseIndent(): void {
