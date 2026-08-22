@@ -17,6 +17,7 @@ function specialization(
         gpuDeformation: false,
         animatedWorldBounds: false,
         morphStorage: false,
+        maxSkinJoints: 0,
         nonTrianglePrimitives: false,
         nodeVisibility: false,
         animationPointer: false,

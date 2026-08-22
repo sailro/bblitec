@@ -192,7 +192,9 @@ complete source map is maintained in `docs/architecture.md`.
   found defects a green matrix passed. When it finds something, turn it into a
   measurement — copy the scene to `examples/`, move its camera there, and
   `parity --recapture-reference` — rather than a screenshot.
-- `BBLITE_GPU=0` forces the CPU fallback.
+- **bblitec requires a GPU.** There is no software renderer and no CPU
+  fallback: a backend that cannot bring a device up throws, and the throw is
+  the answer. Do not add a degraded path — nothing would measure it.
 - glTF material handling must be metadata-driven:
   `OPAQUE`, `MASK`, `BLEND`, alpha cutoff, and double-sided state. Do not add
   scene-name, geometry-position, or reference-image heuristics.

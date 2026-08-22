@@ -129,11 +129,7 @@ export async function runGeometryOutputDiagnostics(
     options: GeometryDiagnosticsOptions = {},
 ): Promise<void> {
     const recaptureReference = options.recaptureReference ?? false;
-    const backend = resolveBackend(
-        options.backend,
-        ["sdl_gpu", "dawn"],
-        "geometry",
-    );
+    const backend = resolveBackend(options.backend, "geometry");
     applyGpuBackendEnvironment(backend);
     // Backend-produced files carry the shared filename token
     // (`-gpu`/`-dawn`) so the two backends' attachments sit side by side;
@@ -187,7 +183,6 @@ export async function runGeometryOutputDiagnostics(
         runNative(
             defaultExecutable(scene.buildDirectory),
             actual,
-            true,
             {
                 BBLITE_COPY_TASK: task,
                 ...(seek !== undefined

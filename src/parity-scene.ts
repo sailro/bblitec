@@ -187,20 +187,22 @@ export function flagNumber(
 }
 
 /**
- * A `--backend` value in canonical spelling. Values are `sdl_gpu|dawn`
- * (plus `cpu` where a CPU gate exists); `gpu` is accepted as an input
- * alias for `sdl_gpu` because that is the token the parity artifacts have
- * always used.
+ * Every backend a measured run can select. One list, because a command
+ * that accepted a different set would be measuring something the others
+ * cannot -- which is how `--backend cpu` outlived the renderer behind it.
  */
-export function canonicalBackend(
-    value: string,
-    allowed: readonly string[],
-    command: string,
-): string {
+export const NATIVE_BACKENDS = ["sdl_gpu", "dawn"] as const;
+
+/**
+ * A `--backend` value in canonical spelling. Values are `sdl_gpu|dawn`;
+ * `gpu` is accepted as an input alias for `sdl_gpu` because that is the
+ * token the parity artifacts have always used.
+ */
+export function canonicalBackend(value: string, command: string): string {
     const canonical = value === "gpu" ? "sdl_gpu" : value;
-    if (!allowed.includes(canonical)) {
+    if (!(NATIVE_BACKENDS as readonly string[]).includes(canonical)) {
         throw new Error(
-            `${command}: --backend must be ${allowed.join("|")} (got '${value}').`,
+            `${command}: --backend must be ${NATIVE_BACKENDS.join("|")} (got '${value}').`,
         );
     }
     return canonical;
@@ -216,7 +218,6 @@ export function canonicalBackend(
  */
 export function resolveBackend(
     explicit: string | undefined,
-    allowed: readonly string[],
     command: string,
 ): string {
     const ambient = process.env.BBLITE_GPU_BACKEND;
@@ -229,7 +230,7 @@ export function resolveBackend(
     if (explicit === undefined) {
         return ambientBackend ?? "sdl_gpu";
     }
-    const canonical = canonicalBackend(explicit, allowed, command);
+    const canonical = canonicalBackend(explicit, command);
     if (ambientBackend !== undefined && ambientBackend !== canonical) {
         console.warn(
             `--backend ${canonical} overrides ambient BBLITE_GPU_BACKEND=${ambient} for this run.`,
@@ -241,8 +242,8 @@ export function resolveBackend(
 /**
  * The token a backend spells in artifact *filenames*: `gpu` for SDL_GPU,
  * for continuity with the parity artifacts that predate the second
- * backend (`report-gpu.json`, `diff-map-gpu.png`); `dawn` and `cpu` are
- * themselves. `--backend` values stay the unambiguous `sdl_gpu|dawn`.
+ * backend (`report-gpu.json`, `diff-map-gpu.png`); `dawn` is itself.
+ * `--backend` values stay the unambiguous `sdl_gpu|dawn`.
  */
 export function backendFileToken(backend: string): string {
     return backend === "sdl_gpu" ? "gpu" : backend;
@@ -597,7 +598,7 @@ export interface ParityArguments {
     noFail: boolean;
     differential: boolean;
     gpuDebug: boolean;
-    /** Canonical explicit selection, `sdl_gpu|dawn|cpu`; ambient fallback
+    /** Canonical explicit selection, `sdl_gpu|dawn`; ambient fallback
      *  is applied later by `resolveBackend`. */
     backend?: string;
     seekSeconds?: number;
@@ -628,7 +629,6 @@ export function parseParityArguments(rest: string[]): ParityArguments {
             boolean: [
                 "--recapture-reference",
                 "--no-fail",
-                "--cpu",
                 "--differential",
                 "--gpu-debug",
             ],
@@ -637,22 +637,10 @@ export function parseParityArguments(rest: string[]): ParityArguments {
         "parity",
     );
     const explicit = parsed.values.get("--backend");
-    let backend =
+    const backend =
         explicit === undefined
             ? undefined
-            : canonicalBackend(
-                  explicit,
-                  ["sdl_gpu", "dawn", "cpu"],
-                  "parity",
-              );
-    if (parsed.flags.has("--cpu")) {
-        if (backend !== undefined && backend !== "cpu") {
-            throw new Error(
-                "parity: --cpu means --backend cpu; drop one of them.",
-            );
-        }
-        backend = "cpu";
-    }
+            : canonicalBackend(explicit, "parity");
     const sceneId = parsed.positionals[0];
     const executable = parsed.values.get("--exe");
     const actual = parsed.values.get("--actual");
@@ -695,9 +683,7 @@ export function parseParityArguments(rest: string[]): ParityArguments {
             ...(result.executable !== undefined ? ["--exe"] : []),
             ...(result.actual !== undefined ? ["--actual"] : []),
             ...(result.noFail ? ["--no-fail"] : []),
-            ...(result.backend !== undefined
-                ? [backend === "cpu" ? "--cpu" : "--backend"]
-                : []),
+            ...(result.backend !== undefined ? ["--backend"] : []),
             ...(result.seekSeconds !== undefined ? ["--seek"] : []),
             ...(result.without !== undefined ? ["--without"] : []),
         ];
@@ -711,11 +697,6 @@ export function parseParityArguments(rest: string[]): ParityArguments {
         // The suppression flags are read by the native GPU frame options,
         // and the experiment is native-versus-unchanged-golden; each of
         // these companions would quietly measure something else.
-        if (result.backend === "cpu") {
-            throw new Error(
-                "parity: --without drives the native GPU frame options (BBLITE_GROUND/BBLITE_BACKGROUND) and does not compose with --cpu.",
-            );
-        }
         if (result.actual !== undefined) {
             throw new Error(
                 "parity: --actual supplies a pre-rendered image, so there is no native run for --without to suppress anything in.",
@@ -844,7 +825,6 @@ export function spawnNativeMeasured(
 export function runNative(
     executable: string,
     screenshot: string,
-    gpu: boolean,
     nativeEnvironment?: Record<string, string>,
     idBufferPath?: string,
     clusterBufferPath?: string,
@@ -870,30 +850,22 @@ export function runNative(
         : 1;
     spawnNativeMeasured(executable, {
         ...nativeEnvironment,
-            ...(gpu
-                ? {
-                      BBLITE_GPU: "1",
-                      BBLITE_GPU_REQUIRED: "1",
-                      ...(idBufferPath ? { BBLITE_ID_BUFFER: resolve(idBufferPath) } : {}),
-                      ...(clusterBufferPath
-                          ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
-                          : {}),
-                  }
-                : {
-                      BBLITE_GPU: "0",
-                      SDL_VIDEODRIVER: "dummy",
-                      SDL_RENDER_DRIVER: "software",
-                  }),
-            BBLITE_MAX_FRAMES: String(maxFrames),
-            BBLITE_SCREENSHOT: resolve(screenshot),
-            BBLITE_TEST_PASS: "1",
-            ...(generatedDirectory
-                ? {
-                      BBLITE_BUILD_STAMP_OUT: resolve(
-                          `${screenshot}.build-stamp`,
-                      ),
-                  }
-                : {}),
+        ...(idBufferPath
+            ? { BBLITE_ID_BUFFER: resolve(idBufferPath) }
+            : {}),
+        ...(clusterBufferPath
+            ? { BBLITE_CLUSTER_BUFFER: resolve(clusterBufferPath) }
+            : {}),
+        BBLITE_MAX_FRAMES: String(maxFrames),
+        BBLITE_SCREENSHOT: resolve(screenshot),
+        BBLITE_TEST_PASS: "1",
+        ...(generatedDirectory
+            ? {
+                  BBLITE_BUILD_STAMP_OUT: resolve(
+                      `${screenshot}.build-stamp`,
+                  ),
+              }
+            : {}),
     });
     if (generatedDirectory) {
         verifyBuildIdentity(
@@ -922,41 +894,26 @@ export function validateReferenceCapture(
 
 export function resolveParityThresholds(
     config: SceneParityDefinition,
-    gpu: boolean,
+    backend: string,
 ): {
     maxMad: number | undefined;
     maxRegionMad: number | undefined;
     gate: "enforced" | "diagnostic-only";
 } {
-    if (gpu) {
-        if (
-            process.env.BBLITE_GPU_BACKEND === "dawn" &&
-            config.dawnThresholds
-        ) {
-            return {
-                maxMad: config.dawnThresholds.maxFullMad,
-                maxRegionMad: config.dawnThresholds.maxForegroundMad,
-                gate: "enforced",
-            };
-        }
-        const enforced =
-            config.maxFullMad !== undefined &&
-            config.maxForegroundMad !== undefined;
+    if (backend === "dawn" && config.dawnThresholds) {
         return {
-            maxMad: config.maxFullMad,
-            maxRegionMad: config.maxForegroundMad,
-            gate: enforced ? "enforced" : "diagnostic-only",
+            maxMad: config.dawnThresholds.maxFullMad,
+            maxRegionMad: config.dawnThresholds.maxForegroundMad,
+            gate: "enforced",
         };
     }
-    if (!config.cpuThresholds) {
-        throw new Error(
-            "CPU parity thresholds are not configured for this scene.",
-        );
-    }
+    const enforced =
+        config.maxFullMad !== undefined &&
+        config.maxForegroundMad !== undefined;
     return {
-        maxMad: config.cpuThresholds.maxFullMad,
-        maxRegionMad: config.cpuThresholds.maxForegroundMad,
-        gate: "enforced",
+        maxMad: config.maxFullMad,
+        maxRegionMad: config.maxForegroundMad,
+        gate: enforced ? "enforced" : "diagnostic-only",
     };
 }
 
@@ -980,16 +937,11 @@ export async function runSceneParity(
     const scene = resolveScene(arguments_.sceneId);
     const config = scene.parity;
     if (!config) throw new Error(`Scene '${scene.id}' has no parity definition.`);
-    const backend = resolveBackend(
-        arguments_.backend,
-        ["sdl_gpu", "dawn", "cpu"],
-        "parity",
-    );
-    const gpu = backend !== "cpu";
-    // The thresholds, the report labels and the native child all read the
-    // backend from the environment, so the resolved selection is applied
-    // there once rather than threaded to each.
-    if (gpu) applyGpuBackendEnvironment(backend);
+    const backend = resolveBackend(arguments_.backend, "parity");
+    // The native child reads the backend from the environment, so the
+    // resolved selection is applied there once; the thresholds and the
+    // report labels take the value directly.
+    applyGpuBackendEnvironment(backend);
     const reference = resolve(config.reference.path);
     const outputDirectory = resolve(config.outputDirectory);
     mkdirSync(outputDirectory, { recursive: true });
@@ -1026,29 +978,22 @@ export async function runSceneParity(
                   maxRegionMad: undefined,
                   gate: "diagnostic-only" as const,
               }
-            : resolveParityThresholds(config, gpu);
-    const renderer = gpu
-        ? {
-              mode: "gpu",
-              implementation: backend === "dawn" ? "Dawn" : "SDL_GPU",
-              driverSelection: process.env.SDL_GPU_DRIVER ?? "auto",
-          }
-        : {
-              mode: "cpu-fallback",
-              implementation: "SDL_Renderer",
-              driverSelection: process.env.SDL_RENDER_DRIVER ?? "software",
-          };
+            : resolveParityThresholds(config, backend);
+    const renderer = {
+        implementation: backend === "dawn" ? "Dawn" : "SDL_GPU",
+        driverSelection: process.env.SDL_GPU_DRIVER ?? "auto",
+    };
     // A suppression run skips the attribution buffers: their filenames
     // carry no suffix, so writing them would overwrite the standard run's,
     // and with the draw set changed the ids would not line up anyway.
-    const idBufferPath = gpu && !without && config.attribution?.drawIds
+    const idBufferPath = !without && config.attribution?.drawIds
         ? resolve(outputDirectory, "draw-ids-gpu.png")
         : undefined;
     const idVisualizationPath = idBufferPath
         ? resolve(outputDirectory, "draw-ids-visual-gpu.png")
         : undefined;
     const clusterBufferPath =
-        gpu && !without && config.attribution?.triangleClusters
+        !without && config.attribution?.triangleClusters
         ? resolve(outputDirectory, "triangle-clusters-gpu.png")
         : undefined;
     const clusterVisualizationPath = clusterBufferPath
@@ -1077,7 +1022,6 @@ export async function runSceneParity(
                     defaultExecutable(scene.buildDirectory),
             ),
             actual,
-            gpu,
             {
                 ...config.nativeEnvironment,
                 // The same pose on both sides: the browser capture above
@@ -1260,7 +1204,9 @@ export async function runSceneParity(
         report,
     );
 
-    console.log(`Renderer: ${renderer.implementation} (${renderer.mode}, ${renderer.driverSelection})`);
+    console.log(
+        `Renderer: ${renderer.implementation} (${renderer.driverSelection})`,
+    );
     if (without !== undefined) {
         console.log(
             `Suppressed natively: ${without} (${withoutVariable(without)}=0), measured against the unchanged golden. ` +
@@ -1454,7 +1400,7 @@ export function parseStabilityArguments(
     const backend =
         explicit === undefined
             ? undefined
-            : canonicalBackend(explicit, ["sdl_gpu", "dawn"], "stability");
+            : canonicalBackend(explicit, "stability");
     return {
         runs,
         singleSample: parsed.flags.has("--single-sample"),
@@ -1558,11 +1504,7 @@ export function runStabilityReport(
     if (!config) {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
     }
-    const backend = resolveBackend(
-        stabilityArguments.backend,
-        ["sdl_gpu", "dawn"],
-        "stability",
-    );
+    const backend = resolveBackend(stabilityArguments.backend, "stability");
     applyGpuBackendEnvironment(backend);
     const reference = resolve(config.reference.path);
     if (!existsSync(reference)) {
@@ -1604,7 +1546,6 @@ export function runStabilityReport(
         runNative(
             executable,
             image,
-            true,
             {
                 ...config.nativeEnvironment,
                 ...(stabilityArguments.singleSample

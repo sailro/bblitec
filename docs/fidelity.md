@@ -395,15 +395,13 @@ palettes — is the same pass a single-clip tick runs, so only the
 accumulation is the mixer's. Scene 157 measures walk and run at half weight
 each.
 
-**How large a skin stays on the GPU follows its palette's transport.** The
-pin uploads a per-bone `rgba32float` texture and caps nothing; this port
-carries that texture for a composed skeleton variant and a 64-matrix uniform
-array for the transcribed vertex stage, so the cap belongs to the second
-transport alone. A mesh whose palette rides the pinned texture leaves the
-uniform array's bone lanes at the identity — the stage that would read them
-is not the stage drawing it. Scene 157's Xbot is 67 joints and measures
-byte-exact on both backends; a skin that large in a scene composing no
-skeleton variant still takes the CPU deformation path.
+**How large a skin stays on the GPU follows its palette's transport.** A
+mesh whose palette rides the pinned per-bone texture leaves the uniform
+array's bone lanes at the identity — the stage that would read them is not
+the stage drawing it. Scene 157's Xbot is 67 joints and measures byte-exact
+on both backends. See
+[Architecture](architecture.md#animation-and-deformation) for the two
+transports and the refusal between them.
 A scene's `setPbr*` options reach composition through the pin's own setters,
 the way the loader half already runs `setPbrEmissive`: each stamps its props
 under the field name its extension's `detect` reads, so the composed arm set
@@ -489,11 +487,10 @@ any morph target at all: a flat 6-float delta buffer and a weights
 buffer with the 16-byte `{count, vertexCount}` header, accumulated in
 ascending target order before skinning, with source-marker assertions
 pinning the loop, indexing, and header ABI. Scene 243 gates it.
-Primitives without source normals remain
-deindexed and use a narrow CPU fallback to recompute post-deformation face
-normals, while their positions are still GPU-skinned. See
+Primitives without source normals remain deindexed, and their face normals
+are recomputed after deformation while their positions stay GPU-skinned. See
 [Architecture](architecture.md#animation-and-deformation) for layout,
-specialization, and fallback limits.
+specialization, and why that normal cannot come from a vertex stage.
 Static `EXT_mesh_gpu_instancing` preserves Babylon Lite's split transform
 contract: extension matrices remain local T/R/S data and the node world matrix
 is applied separately in the vertex shader.
@@ -918,7 +915,7 @@ fragment-kill semantics.
 
 ## Parity reports
 
-Reports separate CPU and GPU renderers and include:
+Reports name the backend they measured and include:
 
 - full and foreground RGB MAD
 - exact and within-1/3/5-byte ratios

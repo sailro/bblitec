@@ -433,9 +433,9 @@ out the entire class of defect in one command.
 
 | Path | Written by | Holds |
 | --- | --- | --- |
-| `artifacts/parity/<id>/report-{gpu,dawn,cpu}.json` | `parity` | MAD, region breakdown, hotspots, attribution, per backend |
+| `artifacts/parity/<id>/report-{gpu,dawn}.json` | `parity` | MAD, region breakdown, hotspots, attribution, per backend |
 | `artifacts/parity/<id>/report-differential.json` | `parity --differential` | both backends plus their direct comparison |
-| `artifacts/parity/<id>/native-{gpu,dawn,cpu}.png` | `parity` | the native actual, suffixed per backend so runs cannot overwrite each other |
+| `artifacts/parity/<id>/native-{gpu,dawn}.png` | `parity` | the native actual, suffixed per backend so runs cannot overwrite each other |
 | `artifacts/parity/<id>/diff-map-<backend>.png`, `hotspots-<backend>.png` | `parity` | where the pixels differ |
 | `artifacts/parity/<id>/geometry/<task>-{lite,native-<backend>,diff-<backend>}.png`, `report-<backend>.json` | `geometry` | frame-graph copy-task attachments: the browser reference (backend-free `-lite`), the native attachment and diff per backend |
 | `artifacts/capture/<id>/shaders/*.wgsl` | `capture` | the browser's own composed shader modules |

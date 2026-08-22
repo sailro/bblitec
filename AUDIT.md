@@ -53,8 +53,8 @@ shapes only: LOWER (walk the pinned AST) or EXECUTE (run the pin and bake).
 
 - **PAL isolation, both directions** (CMake TU selection, include graph
   grep-verified backend-type-free shared headers, stub contract,
-  `run_engine` dispatch, sprite TUs, CPU-fallback-off): deleting a backend is
-  dropping its files. Removing SDL_GPU keeps SDL3 as the platform layer —
+  `run_engine` dispatch, sprite TUs): deleting a backend is dropping its
+  files. Removing SDL_GPU keeps SDL3 as the platform layer —
   intended. One asymmetry: SDL TUs subtracted from the generated list, Dawn
   TUs added natively.
 - **The PBR pinned pipeline end-to-end**: composer executed under Node,

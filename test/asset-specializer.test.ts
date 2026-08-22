@@ -231,6 +231,52 @@ test("the skeleton module needs skins and a JOINTS_0 primitive", () => {
     }
 });
 
+test("records the largest skin, which bounds the palette transport", () => {
+    // Deformation runs on the GPU or not at all, so which transport can
+    // carry a skin is a generation-time question: the pin's own per-bone
+    // palette texture caps nothing, while the transcribed vertex stage's
+    // uniform array holds DEFORMATION_BONE_SLOTS matrices. The specializer
+    // supplies the asset half of that comparison.
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-"));
+    try {
+        const path = join(directory, "skinned.glb");
+        writeGlb(path, {
+            accessors: [{ count: 3 }],
+            meshes: [
+                {
+                    primitives: [
+                        { attributes: { POSITION: 0, JOINTS_0: 0, WEIGHTS_0: 0 } },
+                    ],
+                },
+            ],
+            nodes: [{ mesh: 0 }],
+            skins: [
+                { joints: [0, 1, 2] },
+                { joints: Array.from({ length: 70 }, (_, index) => index) },
+            ],
+        });
+        // The largest skin, not the first and not the sum.
+        assert.equal(specializeGltf(path, "skinned.glb").features.maxSkinJoints, 70);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("an asset with no skins bounds nothing", () => {
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-"));
+    try {
+        const path = join(directory, "static.glb");
+        writeGlb(path, {
+            accessors: [{ count: 3 }],
+            meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+            nodes: [{ mesh: 0 }],
+        });
+        assert.equal(specializeGltf(path, "static.glb").features.maxSkinJoints, 0);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
 test("refuses asset content the pinned loader implements and this port does not", () => {
     const directory = mkdtempSync(join(tmpdir(), "bblitec-gltf-"));
     try {

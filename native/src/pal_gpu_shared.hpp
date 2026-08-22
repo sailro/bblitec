@@ -376,10 +376,10 @@ inline DeformationUniforms build_deformation_uniforms(
     // not hold a larger palette anyway. The morph half still travels,
     // since the two transports are independent.
     if (!mesh.pinned_bone_palette) {
-        if (mesh.bone_matrices.size() > result.bone_matrices.size()) {
-            throw std::runtime_error(
-                "GPU deformation bone palette exceeds 64 matrices.");
-        }
+        // Sized by the loader from the skin's joint count, which
+        // generation refuses above this array's length and the loader
+        // refuses again for a BBLITE_ASSET_DIR override -- so the copy
+        // cannot overrun and needs no third check here.
         std::copy(
             mesh.bone_matrices.begin(),
             mesh.bone_matrices.end(),
@@ -1776,9 +1776,8 @@ inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& widt
 /**
  * The warmup every renderer's benchmark discards before sampling: a
  * tenth of the requested frames, clamped to [10, 120]. One policy for
- * the GPU frame loops, their sprite variants and the SDL_Renderer CPU
- * fallback, so the published numbers of any two renderers cover the
- * same measured span of a run.
+ * both GPU frame loops and their sprite variants, so the published
+ * numbers of any two renderers cover the same measured span of a run.
  */
 [[nodiscard]] inline long benchmark_warmup_frames(long benchmark_frames) {
     return benchmark_frames > 0
@@ -2360,10 +2359,10 @@ private:
 };
 
 /**
- * The benchmark summary every renderer prints -- the GPU frame loops,
- * their sprite variants and the SDL_Renderer CPU fallback. The numbers
- * are compared across backends, so both the shape of the line and the
- * statistics behind it are produced in exactly one place. The contract:
+ * The benchmark summary every renderer prints -- both GPU frame loops
+ * and their sprite variants. The numbers are compared across backends,
+ * so both the shape of the line and the statistics behind it are
+ * produced in exactly one place. The contract:
  * one line opening with the "Babylon Lite <backend> benchmark |
  * driver=<driver>" identity prefix that names the renderer, then
  * `frames=` and the average / median / p95 / min / max frame CPU times

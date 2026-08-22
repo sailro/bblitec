@@ -19,13 +19,13 @@
 
 #include "pal_gpu_shared.hpp"
 
-#if BBLITE_HAS_SDL && BBLITE_HAS_EFFECT_RENDERER
+#if BBLITE_HAS_EFFECT_RENDERER
 #include "pal_sdl_gpu_effect.hpp"
 #endif
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_SDL && BBLITE_HAS_EFFECT_RENDERER
+#if BBLITE_HAS_EFFECT_RENDERER
 
 bool run_effect_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
@@ -34,10 +34,6 @@ bool run_effect_gpu_engine(Engine& engine) {
         "SDL_GPU effects",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
-    const std::string enabled = environment_variable("BBLITE_GPU");
-    if (enabled == "0" || enabled == "false" || enabled == "off") {
-        return false;
-    }
     if (engine.registered_effect_renderers.empty()) {
         throw std::runtime_error(
             "Effect renderer requires a registered EffectRenderer.");

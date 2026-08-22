@@ -12,8 +12,9 @@ packing (`native/src/pal_gpu_shared.hpp`), differ only at the GPU API
 layer, and are measured against the same goldens — a scene is
 integrated only when it passes on both, and [status](status.md)
 publishes the two MAD columns. `BBLITE_GPU_BACKEND=dawn` selects Dawn
-at runtime; SDL_GPU is the default. The SDL_Renderer CPU fallback is
-unrelated to either.
+at runtime; SDL_GPU is the default. There is no third option: bblitec
+requires a GPU, and a backend that cannot bring a device up throws
+rather than degrading into something else.
 
 Keeping both is deliberate: two independent compiler and API stacks
 that must agree pixel-for-pixel are a differential diagnostic no
@@ -84,12 +85,12 @@ multisampled scene-colour grab on transmission scenes) carry tighter
 under SDL_GPU-sized ceilings.
 
 Parity artifacts are backend-suffixed (`report-gpu.json` /
-`diff-map-gpu.png` for SDL_GPU, `-dawn` for Dawn, `-cpu` for the
-SDL_Renderer fallback), so both backends' reports, diff maps, and
-hotspots coexist per scene. **Measure only against a freshly processed
-build**: Dawn reads `*.native.wgsl` from the build snapshot while
-SDL_GPU reads offline DXIL, so a snapshot that mixes generations skews
-only the Dawn side and reads as a Dawn-only residual.
+`diff-map-gpu.png` for SDL_GPU, `-dawn` for Dawn), so both backends'
+reports, diff maps, and hotspots coexist per scene. **Measure only
+against a freshly processed build**: Dawn reads `*.native.wgsl` from
+the build snapshot while SDL_GPU reads offline DXIL, so a snapshot that
+mixes generations skews only the Dawn side and reads as a Dawn-only
+residual.
 
 The scene 1 attribution captures (draw-id buffer and triangle-cluster
 buffer) render on either backend under the same environment switch;

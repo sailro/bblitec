@@ -79,15 +79,15 @@ test("flagNumber rejects a value that does not parse", () => {
 
 test("canonicalizes backend values, accepting 'gpu' for sdl_gpu", () => {
     assert.equal(
-        canonicalBackend("gpu", ["sdl_gpu", "dawn"], "capture"),
+        canonicalBackend("gpu", "capture"),
         "sdl_gpu",
     );
     assert.equal(
-        canonicalBackend("dawn", ["sdl_gpu", "dawn"], "capture"),
+        canonicalBackend("dawn", "capture"),
         "dawn",
     );
     assert.throws(
-        () => canonicalBackend("vulkan", ["sdl_gpu", "dawn"], "capture"),
+        () => canonicalBackend("vulkan", "capture"),
         /--backend must be sdl_gpu\|dawn \(got 'vulkan'\)/,
     );
 });
@@ -98,7 +98,6 @@ test("spells sdl_gpu as 'gpu' in artifact filenames", () => {
     // parity artifacts, while `--backend` values stay sdl_gpu|dawn.
     assert.equal(backendFileToken("sdl_gpu"), "gpu");
     assert.equal(backendFileToken("dawn"), "dawn");
-    assert.equal(backendFileToken("cpu"), "cpu");
 });
 
 test("resolves the backend from the flag, the ambient variable, then the default", () => {
@@ -106,23 +105,23 @@ test("resolves the backend from the flag, the ambient variable, then the default
     try {
         delete process.env.BBLITE_GPU_BACKEND;
         assert.equal(
-            resolveBackend(undefined, ["sdl_gpu", "dawn"], "diff"),
+            resolveBackend(undefined, "diff"),
             "sdl_gpu",
         );
         // The ambient variable is the fallback — the case that used to
         // silently measure sdl_gpu under BBLITE_GPU_BACKEND=dawn.
         process.env.BBLITE_GPU_BACKEND = "dawn";
         assert.equal(
-            resolveBackend(undefined, ["sdl_gpu", "dawn"], "diff"),
+            resolveBackend(undefined, "diff"),
             "dawn",
         );
         // An explicit flag wins over the ambient variable.
         assert.equal(
-            resolveBackend("sdl_gpu", ["sdl_gpu", "dawn"], "diff"),
+            resolveBackend("sdl_gpu", "diff"),
             "sdl_gpu",
         );
         assert.equal(
-            resolveBackend("gpu", ["sdl_gpu", "dawn"], "diff"),
+            resolveBackend("gpu", "diff"),
             "sdl_gpu",
         );
     } finally {
@@ -150,15 +149,17 @@ test("parses the parity flag set", () => {
     assert.ok(!parsed.differential);
 });
 
-test("keeps --cpu as an alias for --backend cpu", () => {
-    assert.equal(parseParityArguments(["--cpu"]).backend, "cpu");
-    assert.equal(
-        parseParityArguments(["--backend", "cpu"]).backend,
-        "cpu",
+test("refuses the deleted CPU backend selection", () => {
+    // bblitec requires a GPU: there is no SDL_Renderer fallback to
+    // measure, so the flag that selected one is an error rather than a
+    // silently ignored no-op.
+    assert.throws(
+        () => parseParityArguments(["--cpu"]),
+        /Unknown parity argument '--cpu'/,
     );
     assert.throws(
-        () => parseParityArguments(["--cpu", "--backend", "dawn"]),
-        /--cpu means --backend cpu/,
+        () => parseParityArguments(["--backend", "cpu"]),
+        /--backend must be sdl_gpu\|dawn/,
     );
 });
 

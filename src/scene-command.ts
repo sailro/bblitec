@@ -839,7 +839,6 @@ async function runRenderDiff(
     if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
     const backend = resolveBackend(
         parsed.values.get("--backend"),
-        ["sdl_gpu", "dawn"],
         "diff",
     );
     const token = backendFileToken(backend);
@@ -1105,7 +1104,7 @@ async function runProbeVariants(
     const backendFlag = parsed.values.get("--backend");
     if (
         backendFlag !== undefined &&
-        canonicalBackend(backendFlag, ["sdl_gpu", "dawn"], "probe-variants") !==
+        canonicalBackend(backendFlag, "probe-variants") !==
             "dawn"
     ) {
         throw new Error(
@@ -1626,7 +1625,6 @@ async function main(): Promise<void> {
             if (parsed.flags.has("--gpu-debug")) enableGpuDebug();
             const backend = resolveBackend(
                 parsed.values.get("--backend"),
-                ["sdl_gpu", "dawn"],
                 "capture",
             );
             const result = runNativeCapture(id, {

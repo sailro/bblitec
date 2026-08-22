@@ -44,7 +44,7 @@
 #endif
 #include "pal_render_capture.hpp"
 
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include <SDL3_image/SDL_image.h>
@@ -57,7 +57,7 @@
 
 namespace bbl::pal {
 
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
 
@@ -3571,9 +3571,7 @@ bool run_gpu_engine(Engine& engine) {
         "SDL_GPU",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/true);
-#if defined(BBLITE_HAS_SDL) && BBLITE_HAS_SDL && defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-    const std::string enabled = environment_variable("BBLITE_GPU");
-    if (enabled == "0" || enabled == "false" || enabled == "off") return false;
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("GPU renderer requires a registered scene.");
     }

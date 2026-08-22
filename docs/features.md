@@ -81,7 +81,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
 | [Fullscreen effects](#fullscreen-effects) | Compile → Run | the caller's WGSL wrapped in the pin's own vertex stage at generation; the swapchain renderer or the frame-graph task at run time |
 | [Image processing](#image-processing) | Compile → Run | the tone-mapping curve composed into the PBR fragment; exposure and contrast live per frame |
-| [Render backends](#render-backends) | Run | SDL_GPU, Dawn, CPU fallback, transmission, image processing |
+| [Render backends](#render-backends) | Run | SDL_GPU, Dawn, transmission, image processing |
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
 | [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
 
@@ -653,13 +653,15 @@ skinning, GPU position and normal morph targets through the pin's uncapped
 storage-buffer path — Babylon Lite's one morph mechanism, compiled in for
 any morph target at all — direct single-target morph attachment on generated
 meshes, static `EXT_mesh_gpu_instancing`, and post-deformation flat
-normals. Morph deltas apply before skinning. A skin of any size stays on the
-GPU wherever the scene composes the pin's own skeleton variants, whose
-palette is the pin's per-bone texture; the 64-matrix uniform array behind
-the transcribed vertex stage is what a larger skin would exceed, and only
-then does it fall back to CPU deformation. Scene 157's 67-joint Xbot
-measures the first path. The other narrow CPU fallback is face-normal
-recomputation for primitives with no source normals.
+normals. Morph deltas apply before skinning. Deformation runs on the GPU or
+not at all: a skin of any size rides the pin's own per-bone palette texture
+wherever the scene composes its skeleton variants, and one exceeding the
+transcribed vertex stage's 64-matrix array elsewhere is refused at
+generation rather than deformed CPU-side. The one deformation quantity still
+computed per frame on the CPU is the face normal of a primitive that carries
+none, whose positions stay GPU-skinned.
+[Architecture](architecture.md#animation-and-deformation) carries both
+mechanisms.
 
 ### Sprites
 
@@ -866,8 +868,10 @@ alone.
 
 Two peer GPU backends render the same generated plans and are selected at run
 time in a build that compiled both (`BBLITE_GPU_BACKEND=dawn`; SDL_GPU is the
-default), plus a deterministic SDL_Renderer CPU fallback. They do not start the
-same way: SDL_GPU loads content-addressed offline binaries and does no shader
+default). **bblitec requires a GPU**, and there is no third choice: a backend
+that cannot bring a device up throws rather than degrading into a software
+picture nothing measures. They do not start the same way: SDL_GPU loads
+content-addressed offline binaries and does no shader
 work at all, while Dawn compiles the generated WGSL through its own embedded
 Tint and DXC as modules and pipelines are created — see
 [shader pipeline](#shader-pipeline). Ordered opaque and
@@ -900,7 +904,7 @@ before it trusts a measurement.
 | Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass, the billboard sort |
 | Node particles | the graph parsed, built and simulated by the pin, its particle state baked | nothing of the simulation; the billboard or Sprite2D layers it folds to draw like any others |
 | Animation | property clips and groups lowered to typed records | glTF channel data read from the asset; all evaluation and seeking |
-| Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, CPU fallbacks |
+| Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, post-deformation face normals |
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
@@ -914,12 +918,12 @@ The same split applies to the switches.
 **Compile-time** (CMake cache values and generation output; see
 [development](development.md#build-switches)): `BBLITE_GENERATED_DIR`,
 `BBLITE_BACKEND` (which backends are compiled in at all), `BBLITE_DAWN_DIR`,
-`BBLITE_SDL_DIR`, `BBLITE_MINSIZE`, `BBLITE_CPU_FALLBACK`,
-`VCPKG_TARGET_TRIPLET`, and the generated `BBLITE_IMAGE_CODECS`.
+`BBLITE_SDL_DIR`, `BBLITE_MINSIZE`, `VCPKG_TARGET_TRIPLET`, and the
+generated `BBLITE_IMAGE_CODECS`.
 
 **Run-time** (environment variables; see
-[development](development.md#runtime-switches)): `BBLITE_GPU`,
-`BBLITE_GPU_BACKEND`, `BBLITE_GPU_REQUIRED`, `BBLITE_GPU_DEBUG`,
+[development](development.md#runtime-switches)): `BBLITE_GPU_BACKEND`,
+`BBLITE_GPU_DEBUG`,
 `BBLITE_MSAA`, `BBLITE_BACKGROUND`, `BBLITE_GROUND`, `BBLITE_MAX_FRAMES`,
 `BBLITE_SCREENSHOT(_FRAME)`, `BBLITE_BENCHMARK_FRAMES`,
 `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`,
@@ -999,6 +1003,11 @@ build error with a source location, not a silently different image.
   because it would interleave the variant table's creation-order key
 - an orthographic camera composed with an environment skybox or ground fails,
   because those build their own perspective view-projection
+- a skin larger than the transcribed vertex stage's 64-matrix bone palette,
+  in a scene composing no pinned skeleton variant, fails naming the joint
+  count and the transport. Deformation runs on the GPU or not at all, so
+  the palette is a bound rather than a slow path; the generated loader
+  keeps the same check as the `BBLITE_ASSET_DIR` defense
 
 ### Refused at run time
 

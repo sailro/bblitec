@@ -24,6 +24,8 @@ interface GltfSpecialization {
         morphTargets: boolean;
         maxMorphTargets: number;
         skins: boolean;
+        /** Joints in the largest skin, which the palette transport bounds. */
+        maxSkinJoints: number;
         sparseAccessors: boolean;
         nonTrianglePrimitives: boolean;
         animationPointerMaterials: boolean;
@@ -461,6 +463,20 @@ export function specializeGltf(
             (primitive) =>
                 asObject(primitive.attributes)?.JOINTS_0 !== undefined,
         );
+    // Which palette transport can carry this asset is decided by its
+    // largest skin. The composed skeleton variants read the pin's own
+    // per-bone texture and cap nothing; the transcribed vertex stage's
+    // uniform array does, so generation compares the two.
+    // `joints` is an array of node indices, so it is counted rather than
+    // read through `asRecords`, which keeps only object entries.
+    const maxSkinJoints = asRecords(document.skins).reduce(
+        (largest, skin) =>
+            Math.max(
+                largest,
+                Array.isArray(skin.joints) ? skin.joints.length : 0,
+            ),
+        0,
+    );
     const sparseAccessors = accessors.some((accessor) => accessor.sparse !== undefined);
     // The pinned loader reads a second influence pair when a primitive
     // carries one (`gltf-feature-skeleton.ts`, MSH_HAS_SKELETON_8, eight
@@ -591,6 +607,7 @@ export function specializeGltf(
             morphTargets,
             maxMorphTargets,
             skins,
+            maxSkinJoints,
             sparseAccessors,
             nonTrianglePrimitives,
             animationPointerMaterials,
@@ -616,6 +633,13 @@ export interface AssetSpecializationFeatures {
      */
     animatedWorldBounds: boolean;
     morphStorage: boolean;
+    /**
+     * Joints in the largest skin any reached asset carries. Compared at
+     * generation against the palette transport the scene's composed
+     * variants select, so an unrenderable skin is named before a native
+     * build exists rather than throwing at load.
+     */
+    maxSkinJoints: number;
     nonTrianglePrimitives: boolean;
     nodeVisibility: boolean;
     animationPointer: boolean;
@@ -647,6 +671,7 @@ export function emitAssetSpecializations(
             gpuDeformation: false,
             animatedWorldBounds: false,
             morphStorage: false,
+            maxSkinJoints: 0,
             nonTrianglePrimitives: false,
             nodeVisibility: false,
             animationPointer: false,
@@ -718,6 +743,11 @@ export function emitAssetSpecializations(
         morphStorage: specializations.some(
             (specialization) =>
                 specialization.features.maxMorphTargets > 0,
+        ),
+        maxSkinJoints: specializations.reduce(
+            (largest, specialization) =>
+                Math.max(largest, specialization.features.maxSkinJoints),
+            0,
         ),
         // Half of Babylon Lite's own predicate for the dynamically imported
         // `gltf-feature-primitive.js` — the pinned registry tests

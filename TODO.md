@@ -154,20 +154,6 @@ record future audits build on.
   rotation. This closes once the loader records each primitive's local box
   beside its node matrix. The port must keep every sized scene bit-identical at
   its gated pose.
-- [ ] The CPU deformation fallback is unvalidated, and upstream has no
-  counterpart to it. `docs/lite/architecture/13-skeleton.md` states the pin's
-  one skinning transport: a `[boneCount * 4, 1]` rgba32float bone texture,
-  sixteen floats per bone, sampled by the skeleton `ShaderFragment` — no
-  joint cap and no CPU path anywhere. This port's fallback exists only
-  because the transcribed vertex stage carries a 64-matrix uniform array, so
-  it serves a skin larger than that in a scene composing no pinned skeleton
-  variant. No registered scene reaches it: forcing scene 5 onto it (by
-  pinning `gpu_deformation` false in its generated loader) measures 1.534
-  full / 16.778 foreground against its own golden, where the GPU path is
-  0.000. The vertex arithmetic looked right under a probe — a joint's matrix
-  applied to the bind-local position, mirrored once at the store — so the
-  divergence is elsewhere in that path. Given the pin has no such path, the
-  likely answer is to delete it and refuse the case rather than repair it.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.

@@ -1,3 +1,4 @@
+import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -2958,30 +2959,30 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                 ${pinnedSkeletonPalette
                     ? `// A composed skeleton variant reads the pin's own
                 // palette texture, sized per bone by
-                // bone_palette_layout, so it carries any joint count.
-                // The 64-matrix cap below belongs to the uniform-array
-                // transport the families without a composed variant use.
-                const bool skinned_on_gpu = true;`
-                    : `// The uniform-array palette the transcribed vertex
-                // stage reads holds 64 matrices, so a larger skin keeps
-                // the CPU deformation path.
-                const bool skinned_on_gpu =
-                    skin_index ==
-                        std::numeric_limits<std::size_t>::max() ||
+                // bone_palette_layout, so it carries any joint count and
+                // has no size to refuse.`
+                    : `// Deformation runs on the GPU or not at all, and the
+                // uniform-array palette the transcribed vertex stage
+                // reads holds ${DEFORMATION_BONE_SLOTS} matrices. Generation already
+                // refuses a larger skin by name; this is the load-time
+                // defense for a BBLITE_ASSET_DIR override, the same
+                // split asset-specializer.ts documents for every other
+                // unsupported-asset check.
+                if (
+                    skin_index !=
+                        std::numeric_limits<std::size_t>::max() &&
                     animation_runtime
                             ->skins.at(skin_index)
-                            .joints.size() <= 64;`}
-                const bool gpu_deformation =
-#if BBLITE_GPU_MORPH_STORAGE
-                    // Storage-buffer morphing lifts the two-slot
-                    // vertex-attribute morph-target cap.
-                    skinned_on_gpu;
-#else
-                    geometry.morph_positions.size() <= 2 &&
-                    skinned_on_gpu;
-#endif
+                            .joints.size() > ${DEFORMATION_BONE_SLOTS}) {
+                    throw std::runtime_error(
+                        "Skin exceeds the ${DEFORMATION_BONE_SLOTS}-matrix vertex-stage bone "
+                        "palette. That palette is the transport for a "
+                        "scene composing no pinned skeleton variant; "
+                        "the pin's own per-bone palette texture caps "
+                        "nothing.");
+                }`}
                 engine.meshes[mesh_record_index]
-                    .gpu_deformation = gpu_deformation;${pinnedSkeletonPalette ? `
+                    .gpu_deformation = true;${pinnedSkeletonPalette ? `
                 // A mesh with no skin publishes no palette at all, so the
                 // flag is about the transport rather than about this mesh.
                 engine.meshes[mesh_record_index]
@@ -3887,9 +3888,11 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     ++mesh_record.morph_weights_version;
                 }
 #endif
-                if (
-                    mesh_record.gpu_deformation &&
-                    !geometry.flat_normals) {
+                // Positions deform on the GPU. A primitive with no
+                // source normals was deindexed at load, so only its face
+                // normals still have to be recomputed here, from the
+                // positions this loop skins CPU-side for that purpose.
+                if (!geometry.flat_normals) {
                     ++mesh_record.transform_version;
                     continue;
                 }
@@ -3901,16 +3904,6 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         geometry.bind_vertices[vertex_index];
                     Vec3 morphed_position =
                         bind.local_position;
-                    Vec3 morphed_normal{
-                        -bind.normal.x,
-                        bind.normal.y,
-                        bind.normal.z,
-                    };
-                    Vec3 morphed_tangent{
-                        -bind.tangent.x,
-                        bind.tangent.y,
-                        bind.tangent.z,
-                    };
                     const std::vector<float>& morph_weights =
                         animation_runtime
                             ->nodes[binding.node]
@@ -3923,32 +3916,14 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         const float weight = morph_weights[target];
                         const Vec3 position_delta =
                             geometry.morph_positions[target][vertex_index];
-                        const Vec3 normal_delta =
-                            geometry.morph_normals[target][vertex_index];
-                        const Vec3 tangent_delta =
-                            geometry.morph_tangents[target][vertex_index];
                         morphed_position.x +=
                             position_delta.x * weight;
                         morphed_position.y +=
                             position_delta.y * weight;
                         morphed_position.z +=
                             position_delta.z * weight;
-                        morphed_normal.x +=
-                            normal_delta.x * weight;
-                        morphed_normal.y +=
-                            normal_delta.y * weight;
-                        morphed_normal.z +=
-                            normal_delta.z * weight;
-                        morphed_tangent.x +=
-                            tangent_delta.x * weight;
-                        morphed_tangent.y +=
-                            tangent_delta.y * weight;
-                        morphed_tangent.z +=
-                            tangent_delta.z * weight;
                     }
                     Vec3 position{};
-                    Vec3 normal{};
-                    Vec3 tangent{};
                     if (skin) {
                         const std::array<float, 4> weights{
                             bind.weights.x,
@@ -3968,34 +3943,14 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                                 transform_point_raw(
                                     joint_matrices[joint],
                                     morphed_position);
-                            const Vec3 joint_normal =
-                                transform_direction_raw(
-                                    joint_matrices[joint],
-                                    morphed_normal);
-                            const Vec3 joint_tangent =
-                                transform_direction_raw(
-                                    joint_matrices[joint],
-                                    morphed_tangent);
                             position.x += joint_position.x * weight;
                             position.y += joint_position.y * weight;
                             position.z += joint_position.z * weight;
-                            normal.x += joint_normal.x * weight;
-                            normal.y += joint_normal.y * weight;
-                            normal.z += joint_normal.z * weight;
-                            tangent.x += joint_tangent.x * weight;
-                            tangent.y += joint_tangent.y * weight;
-                            tangent.z += joint_tangent.z * weight;
                         }
                     } else {
                         position = transform_point_raw(
                             mesh_world,
                             morphed_position);
-                        normal = transform_direction_raw(
-                            mesh_world,
-                            morphed_normal);
-                        tangent = transform_direction_raw(
-                            mesh_world,
-                            morphed_tangent);
                     }
                     ModelVertex& vertex =
                         geometry.vertices[vertex_index];
@@ -4004,50 +3959,32 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         position.y,
                         position.z,
                     };
-                    vertex.normal = normalize(Vec3{
-                        -normal.x,
-                        normal.y,
-                        normal.z,
-                    });
-                    const Vec3 native_tangent = normalize(Vec3{
-                        -tangent.x,
-                        tangent.y,
-                        tangent.z,
-                    });
-                    vertex.tangent = Vec4{
-                        native_tangent.x,
-                        native_tangent.y,
-                        native_tangent.z,
-                        bind.tangent.w,
-                    };
                 }
-                if (geometry.flat_normals) {
-                    for (
-                        std::size_t index = 0;
-                        index < geometry.vertices.size();
-                        index += 3) {
-                        ModelVertex& a = geometry.vertices[index];
-                        ModelVertex& b = geometry.vertices[index + 1];
-                        ModelVertex& c = geometry.vertices[index + 2];
-                        const Vec3 edge1{
-                            b.position.x - a.position.x,
-                            b.position.y - a.position.y,
-                            b.position.z - a.position.z,
-                        };
-                        const Vec3 edge2{
-                            c.position.x - a.position.x,
-                            c.position.y - a.position.y,
-                            c.position.z - a.position.z,
-                        };
-                        const Vec3 face = normalize(Vec3{
-                            edge2.y * edge1.z - edge2.z * edge1.y,
-                            edge2.z * edge1.x - edge2.x * edge1.z,
-                            edge2.x * edge1.y - edge2.y * edge1.x,
-                        });
-                        a.normal = face;
-                        b.normal = face;
-                        c.normal = face;
-                    }
+                for (
+                    std::size_t index = 0;
+                    index < geometry.vertices.size();
+                    index += 3) {
+                    ModelVertex& a = geometry.vertices[index];
+                    ModelVertex& b = geometry.vertices[index + 1];
+                    ModelVertex& c = geometry.vertices[index + 2];
+                    const Vec3 edge1{
+                        b.position.x - a.position.x,
+                        b.position.y - a.position.y,
+                        b.position.z - a.position.z,
+                    };
+                    const Vec3 edge2{
+                        c.position.x - a.position.x,
+                        c.position.y - a.position.y,
+                        c.position.z - a.position.z,
+                    };
+                    const Vec3 face = normalize(Vec3{
+                        edge2.y * edge1.z - edge2.z * edge1.y,
+                        edge2.z * edge1.x - edge2.x * edge1.z,
+                        edge2.x * edge1.y - edge2.y * edge1.x,
+                    });
+                    a.normal = face;
+                    b.normal = face;
+                    c.normal = face;
                 }
                 ++mesh_record.transform_version;
             }

@@ -105,7 +105,7 @@ Primary source ownership:
 | `upstream/babylon-lite-scenes.json` | immutable corpus paths and SHA-256 evidence |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
-| `native/src/pal_sdl.cpp` | deterministic SDL_Renderer fallback |
+| `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
@@ -224,9 +224,8 @@ The current generated slice includes:
   tree-shaken deformation vertex layout
 - tree-shaken vertex-shader morphing and four-weight skinning with per-mesh
   palettes and weights
-- a narrow CPU fallback for post-deformation flat normals and for a skin
-  larger than the transcribed 64-matrix palette in a scene that composes no
-  pinned skeleton variant
+- post-deformation face normals for primitives that carry none, recomputed
+  each frame beside the GPU skinning that moves their positions
 - the HillValley-required `.babylon` loader slice
 - Standard/PBR/Grid material records, no-color views, and typed custom shaders
 - Babylon NME node materials: the graph compiled at generation by the pin's own
@@ -328,8 +327,10 @@ but have separate generated runtimes:
   the node world matrix in the generated vertex stage
 - morph deltas are applied before skinning
 - authored normals/tangents deform in the vertex shader
-- primitives without source normals are deindexed; CPU recomputes their face
-  normals after deformation while positions remain GPU-skinned
+- primitives without source normals are deindexed, and their face normals are
+  recomputed after deformation while positions stay GPU-skinned — the one
+  deformation quantity a shader cannot produce from a per-vertex input, since
+  a face normal is a property of the triangle
 
 Asset specialization enables the deformation vertex variant when a
 materialized glTF contains animation; direct `createMorphTargets` reachability
@@ -346,12 +347,16 @@ the composed variants read: a flat 6-float delta buffer and a
 pinned accumulation loop before skinning; the two-slot vertex-attribute
 morph lanes remain for direct generated-mesh morph attachment.
 
-How large a skin stays on the GPU follows the transport that carries its
-palette. A scene composing the pin's own skeleton variants reads the
-palette from the pin's per-bone `rgba32float` texture, which is sized from
-the bone count and caps nothing; the 64-matrix uniform array is the
-transcribed vertex stage's transport, so only a scene without a composed
-skeleton variant sends a larger skin down the CPU deformation path.
+How large a skin can be follows the transport that carries its palette. A
+scene composing the pin's own skeleton variants reads the palette from the
+pin's per-bone `rgba32float` texture, which is sized from the bone count and
+caps nothing; the 64-matrix uniform array is the transcribed vertex stage's
+transport, so a scene without a composed skeleton variant is bounded by it.
+Deformation runs on the GPU or not at all: a larger skin there is refused at
+generation, naming the joint count and the transport, and the generated
+loader keeps the same check as the `BBLITE_ASSET_DIR` defense. Upstream has
+no CPU skinning path to mirror, so one composed only for this case would be
+measured by nothing.
 
 Two generated lists decide what a scene compiles: `BBLITE_RUNTIME_FEATURES`
 in `features.cmake` from the scene's own TypeScript, and
@@ -413,8 +418,10 @@ Important contracts:
 - native builds place reached assets and snapshotted shaders beside the
   executable to avoid absolute paths and cross-scene drift
 
-The SDL_Renderer path remains a deterministic CPU fallback and supports the
-same reached quaternion mesh transforms.
+**bblitec requires a GPU.** There is no software renderer to degrade into: a
+backend that cannot bring a device up throws, and `run_engine` propagates it
+rather than routing around it. A build with no compiled backend that can draw
+the scene says so by name.
 
 ## Repository invariants
 

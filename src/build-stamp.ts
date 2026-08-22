@@ -17,9 +17,9 @@
 //     build and a minimal-size build without either looking stale.
 //
 // The stamp deliberately covers the whole tracked native source set
-// rather than the subset a configuration compiles: `BBLITE_CPU_FALLBACK`
-// drops a translation unit, and the same sources must digest identically
-// whether or not it is compiled in.
+// rather than the subset a configuration compiles: `BBLITE_BACKEND`
+// drops a backend's translation units, and the same sources must digest
+// identically whichever backends are compiled in.
 import { createHash } from "node:crypto";
 import {
     existsSync,

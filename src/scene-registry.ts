@@ -3,12 +3,11 @@ export interface SceneParityDefinition {
     referenceTimeSeconds?: number;
     referenceAnimationGroups?: string[];
     // The native actual lands in `outputDirectory` as
-    // `native-{gpu,dawn,cpu}.png` — suffixed per backend so an SDL_GPU
+    // `native-{gpu,dawn}.png` — suffixed per backend so an SDL_GPU
     // run and a Dawn run cannot overwrite each other's evidence.
     outputDirectory: string;
     maxFullMad?: number;
     maxForegroundMad?: number;
-    cpuThresholds?: { maxFullMad: number; maxForegroundMad: number };
     // Tighter gates for the Dawn backend where it is structurally
     // closer to the golden than SDL_GPU (per-sample transmission,
     // browser-compiler parity); the shared thresholds above gate
@@ -74,7 +73,6 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             maxFullMad: 0.002,
             maxForegroundMad: 0.015,
-            cpuThresholds: { maxFullMad: 2.2, maxForegroundMad: 21.5 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             attribution: {
