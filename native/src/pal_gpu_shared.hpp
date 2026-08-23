@@ -1848,12 +1848,21 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
     // both Dawn paths packed to half, a silent backend delta.
     if (texture_data.bytes.empty()) {
         width = height = 1;
-        return {
-            float_to_half(0.0f),
-            float_to_half(0.0f),
-            float_to_half(0.0f),
-            float_to_half(1.0f)};
+        return {0, 0, 0, float_to_half(1.0f)};
     }
+    // The pin's `pow(c.rgb, vec3f(2.2))` reads a normalized byte, so it has
+    // 256 possible arguments. Tabulating them is the same expression on the
+    // same inputs -- bit-identical -- and takes the decode of an environment
+    // off `std::pow` entirely.
+    static const std::array<float, 256> gamma_expanded = [] {
+        std::array<float, 256> table{};
+        for (std::size_t byte = 0; byte < table.size(); ++byte) {
+            table[byte] =
+                std::pow(static_cast<float>(byte) / 255.0f, 2.2f);
+        }
+        return table;
+    }();
+    const std::uint16_t opaque = float_to_half(1.0f);
     const DecodedImage image = decode_image(ts::ArrayBuffer(texture_data.bytes));
     width = image.width;
     height = image.height;
@@ -1862,9 +1871,9 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
         const float alpha = std::max(static_cast<float>(image.rgba[index + 3]) / 255.0f, 1.0f / 255.0f);
         for (std::size_t channel = 0; channel < 3; ++channel) {
             result[index + channel] = float_to_half(
-                std::pow(static_cast<float>(image.rgba[index + channel]) / 255.0f, 2.2f) / alpha);
+                gamma_expanded[image.rgba[index + channel]] / alpha);
         }
-        result[index + 3] = float_to_half(1.0f);
+        result[index + 3] = opaque;
     }
     return result;
 }

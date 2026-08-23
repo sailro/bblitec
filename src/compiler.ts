@@ -221,6 +221,7 @@ const featureSources: Record<Feature, string[]> = {
     "material:clearcoat-f0-remap": [],
     "material:iridescence": [],
     "material:anisotropy": [],
+    "material:tracking": [],
     "material:emissive": [],
     "material:no-color-view": [],
     "material:grid": [],
@@ -1402,12 +1403,6 @@ class Compiler
         expression: ts.Expression,
     ): CompiledAnisotropyOptions {
         return compileAnisotropyOptions(this, expression);
-    }
-
-    public numberPair(
-        expression: ts.Expression,
-    ): readonly [number, number] {
-        return this.evaluator.numberPair(expression);
     }
 
     public compileSheenOptions(

@@ -234,7 +234,7 @@ async function compile(idOrSource: string): Promise<void> {
             "--title",
             scene.title,
         ];
-        if (scene.parity?.referenceSearch) {
+        if (scene.parity?.referenceSearch !== undefined) {
             arguments_.push("--search", scene.parity.referenceSearch);
         }
         if (

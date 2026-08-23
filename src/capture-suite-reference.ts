@@ -102,8 +102,12 @@ export function suiteBrowserModule(
  * way. A browser resolves neither, so both are rewritten to the published
  * module, and a subpath keeps its own path under `lib/` with the `.js` the
  * package ships (a specifier that already carries one keeps it).
+ *
+ * The names are `compiler/symbols.ts`'s `babylonPackages`, spelled here as a
+ * literal because the alternation has to be escaped for a regex. A test
+ * asserts every name in that list is rewritten, so the two cannot drift.
  */
-function pinnedPackageSpecifiers(source: string): string {
+export function pinnedPackageSpecifiers(source: string): string {
     return source.replace(
         /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
         (_match, subpath?: string) =>

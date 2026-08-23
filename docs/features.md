@@ -115,7 +115,15 @@ analyzable entry file against one engine.
   pinned seeded `Math.random` are available.
 - **Browser erasure and AOT promises.** The browser `main` wrapper, DOM,
   timing, and dataset instrumentation are erased, and every `await` on a
-  materialized asset resolves immediately.
+  materialized asset resolves immediately. `window.location.search` reads as
+  the query the scene's reference pose is captured at, so a scene that
+  branches on one takes the branch its golden was captured under.
+- **Material tracking.** `installPbrTracking` and `installStdTracking` define
+  value-preserving accessors so a later write marks the material's UBO dirty.
+  Generation already emits the re-upload for every property a scene writes, so
+  the installers emit nothing and the scene records
+  `material-tracking-observers-dropped`. `enableMaterialTracking`, the async
+  entry point that picks between them, is not reached and refuses by name.
 - **Preconditions and cleanup.** A scene's own `throw new Error("...")` lowers
   to a runtime error carrying that message, which the generated `main` already
   catches and prints; a message built from state refuses, because this runtime
@@ -130,7 +138,8 @@ record has no native representation to store or select between, so it cannot
 outlive generation. Static evaluation and inlining are how the subset reaches
 C++ at all. Each divergence this introduces is recorded per scene in
 `fidelity.json` (`plain-data-value-model`, `deterministic-seeded-random`,
-`entry-main-wrapper-erasure`, `synchronous-aot-await`).
+`entry-main-wrapper-erasure`, `synchronous-aot-await`,
+`material-tracking-observers-dropped`).
 
 ### Feature and capability selection
 

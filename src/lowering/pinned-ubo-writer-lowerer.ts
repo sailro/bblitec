@@ -271,14 +271,33 @@ function guardedField(
     state: WriterState,
     condition: ts.Expression,
 ): string | undefined {
+    return offsetLocalComparedToUndefined(state, condition, [
+        ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        ts.SyntaxKind.ExclamationEqualsToken,
+    ]);
+}
+
+/**
+ * The offset field a `<local> <op> undefined` comparison names, for the
+ * operators the caller accepts. `guardedField` reads the presence forms and
+ * `absentOffsetGuardFields` the absence ones; the shape they test is the
+ * same, so it is stated once.
+ */
+function offsetLocalComparedToUndefined(
+    state: WriterState,
+    condition: ts.Expression,
+    operators: readonly ts.SyntaxKind[],
+): string | undefined {
     if (!ts.isBinaryExpression(condition)) return undefined;
-    const isComparison =
-        condition.operatorToken.kind ===
-            ts.SyntaxKind.ExclamationEqualsEqualsToken ||
-        condition.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken;
-    if (!isComparison) return undefined;
-    const local = ts.isIdentifier(condition.left) ? condition.left.text : '';
-    return state.offsetLocals.get(local);
+    if (!operators.includes(condition.operatorToken.kind)) return undefined;
+    if (
+        !ts.isIdentifier(condition.right) ||
+        condition.right.text !== "undefined"
+    ) {
+        return undefined;
+    }
+    if (!ts.isIdentifier(condition.left)) return undefined;
+    return state.offsetLocals.get(condition.left.text);
 }
 
 /** The field an `offsets.has("x")` guard tests. */
@@ -721,25 +740,45 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
 }
 
 /**
- * Marks the point a generation-decided `return` cuts the body off. It rides
- * back through the emitted lines so a return nested in a folded branch stops
- * the enclosing body too, exactly as the pin's own control flow would.
+ * Lowered statements, and whether a generation-decided `return` cut the body
+ * off at them. Carrying the stop out of band is what lets each consumer
+ * decide: a folded branch propagates it, because the pin's own control flow
+ * would leave the enclosing body too, while a run-time branch cannot and
+ * refuses instead.
  */
-const stopMarker = "// bblite: generation-decided return";
+interface EmittedStatements {
+    lines: string[];
+    stopped: boolean;
+}
 
 /** Lowers a body, stopping where a generation-decided return cuts it off. */
 function emitBody(
     state: WriterState,
     statements: readonly ts.Statement[],
-): string[] {
+): EmittedStatements {
     const lines: string[] = [];
     for (const statement of statements) {
-        for (const line of emitStatement(state, statement)) {
-            if (line === stopMarker) return lines;
-            lines.push(line);
-        }
+        const emitted = emitStatement(state, statement);
+        lines.push(...emitted.lines);
+        if (emitted.stopped) return { lines, stopped: true };
     }
-    return lines;
+    return { lines, stopped: false };
+}
+
+/** A run-time branch cannot carry a generation-decided return out of itself. */
+function requireNoStop(
+    state: WriterState,
+    emitted: EmittedStatements,
+    statement: ts.Statement,
+): string[] {
+    if (emitted.stopped) {
+        throw new Error(
+            `Pinned ${state.request.symbolName} takes a generation-decided ` +
+                "return inside a run-time branch, which the emitted writer " +
+                `cannot express: ${statement.getText(state.file)}.`,
+        );
+    }
+    return emitted.lines;
 }
 
 /**
@@ -768,23 +807,22 @@ function absentOffsetGuardFields(
         const field = guardedFieldByHas(condition.operand);
         return field === undefined ? undefined : [field];
     }
-    if (!ts.isBinaryExpression(condition)) return undefined;
-    const equals = condition.operatorToken.kind ===
-            ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
-    if (!equals) return undefined;
-    if (
-        !ts.isIdentifier(condition.right) ||
-        condition.right.text !== "undefined"
-    ) {
-        return undefined;
-    }
-    const local = ts.isIdentifier(condition.left) ? condition.left.text : "";
-    const field = state.offsetLocals.get(local);
+    const field = offsetLocalComparedToUndefined(state, condition, [
+        ts.SyntaxKind.EqualsEqualsEqualsToken,
+        ts.SyntaxKind.EqualsEqualsToken,
+    ]);
     return field === undefined ? undefined : [field];
 }
 
-function emitStatement(state: WriterState, statement: ts.Statement): string[] {
+/**
+ * Lowers one pinned statement. Only an `if` can carry a generation-decided
+ * return out of itself, so the other statement kinds keep their plain
+ * `string[]` shape in `emitPlainStatement` below.
+ */
+function emitStatement(
+    state: WriterState,
+    statement: ts.Statement,
+): EmittedStatements {
     // The pin's guards (`!cc?.isEnabled`, `!offsets.has(...)`) decide whether
     // the extension contributes at all. Generation already knows that from the
     // composed variant, so the guard is the caller's and is dropped rather than
@@ -806,9 +844,9 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
                     !state.request.slots.some((slot) => slot.name === field)
                 )
             ) {
-                return [stopMarker];
+                return { lines: [], stopped: true };
             }
-            return [];
+            return { lines: [], stopped: false };
         }
         // `if (vOff !== undefined) { ... }` guards a block on whether the
         // variant declares that field. Generation knows the answer, so the
@@ -819,8 +857,10 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             const declares = state.request.slots.some((slot) =>
                 slot.name === guarded
             );
-            if (!declares) return [];
+            if (!declares) return { lines: [], stopped: false };
             const body = ts.isBlock(then) ? then.statements : [then];
+            // The block is inlined into the enclosing body, so a return
+            // inside it leaves that body too -- exactly as the pin's would.
             return emitBody(state, body);
         }
         // A branch the pin takes at write time on caller state — the
@@ -829,11 +869,14 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
         // after every generation-time fold above declined, and a condition
         // with no named source still fails inside `emitExpression`.
         const body = ts.isBlock(then) ? then.statements : [then];
-        return [
-            `    if (${emitExpression(state, statement.expression)}) {`,
-            ...emitBody(state, body),
-            "    }",
-        ];
+        return {
+            lines: [
+                `    if (${emitExpression(state, statement.expression)}) {`,
+                ...requireNoStop(state, emitBody(state, body), statement),
+                "    }",
+            ],
+            stopped: false,
+        };
     }
     // A real branch the pin takes at write time — the UV transform picks its
     // rotation-free form when the angle is zero — is a runtime condition here,
@@ -845,14 +888,24 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
         const elseBody = ts.isBlock(statement.elseStatement)
             ? statement.elseStatement.statements
             : [statement.elseStatement];
-        return [
-            `    if (${emitExpression(state, statement.expression)}) {`,
-            ...emitBody(state, thenBody),
-            "    } else {",
-            ...emitBody(state, elseBody),
-            "    }",
-        ];
+        return {
+            lines: [
+                `    if (${emitExpression(state, statement.expression)}) {`,
+                ...requireNoStop(state, emitBody(state, thenBody), statement),
+                "    } else {",
+                ...requireNoStop(state, emitBody(state, elseBody), statement),
+                "    }",
+            ],
+            stopped: false,
+        };
     }
+    return { lines: emitPlainStatement(state, statement), stopped: false };
+}
+
+function emitPlainStatement(
+    state: WriterState,
+    statement: ts.Statement,
+): string[] {
     if (ts.isVariableStatement(statement)) {
         const lines: string[] = [];
         for (const binding of statement.declarationList.declarations) {
@@ -1218,7 +1271,7 @@ function lowerNested(
         laneSourceFor: () => undefined,
         nestedDeclarations: state.nestedDeclarations,
     };
-    return emitBody(nestedState, declaration.body.statements);
+    return emitBody(nestedState, declaration.body.statements).lines;
 }
 
 /**
@@ -1287,5 +1340,5 @@ export function lowerPinnedUboWriter(
         },
         nestedDeclarations,
     };
-    return emitBody(state, declaration.body.statements);
+    return emitBody(state, declaration.body.statements).lines;
 }

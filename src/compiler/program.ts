@@ -5,6 +5,7 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { isBabylonModule } from "./symbols.js";
 import {
     findRepositoryRoot,
 } from "../upstream-source.js";
@@ -104,10 +105,7 @@ export function createCompilerProgram(
         ) =>
             moduleLiterals.map((moduleLiteral) => {
                 const moduleName = moduleLiteral.text;
-                if (
-                    moduleName === "babylon-lite" ||
-                    moduleName === "@babylonjs/lite"
-                ) {
+                if (isBabylonModule(moduleName)) {
                     return {
                         resolvedModule: {
                             resolvedFileName: babylonTypes,

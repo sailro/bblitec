@@ -7,6 +7,7 @@
 // calls these through its context.
 import ts from "typescript";
 import type { Value } from "../types.js";
+import { doubleLiteral } from "../../cpp-literals.js";
 import {
     compilePositiveInteger,
     type PositiveIntegerContext,
@@ -97,8 +98,8 @@ export function compileGroundOptions(
         ];
     }
     return [
-        width ? context.compileNumber(width) : "1.0f",
-        height ? context.compileNumber(height) : "1.0f",
+        width ? context.compileNumber(width, "double") : "1.0",
+        height ? context.compileNumber(height, "double") : "1.0",
         subdivisions
             ? compilePositiveInteger(context, subdivisions)
             : "1u",
@@ -176,11 +177,18 @@ export function compileSphereOptions(
                     `Sphere option '${name}' must be numeric.`,
                 );
             }
-            return value.cpp;
+            // The record's own property was compiled at the default float
+            // precision, but the pin halves a diameter as a JavaScript
+            // number before the vertex chain rounds. Restate the value at
+            // that precision, or widen the expression where the scene
+            // computes it.
+            return value.staticNumber !== undefined
+                ? doubleLiteral(value.staticNumber)
+                : `static_cast<double>(${value.cpp})`;
         };
         const diameter = number(
             "diameter",
-            "1.0f",
+            "1.0",
         );
         const segments =
             record.recordProperties.segments;
@@ -225,19 +233,22 @@ export function compileSphereOptions(
     const diameterX = context.objectProperty(object, "diameterX");
     const diameterY = context.objectProperty(object, "diameterY");
     const diameterZ = context.objectProperty(object, "diameterZ");
+    // Doubles, because the pin halves them as JavaScript numbers before the
+    // vertex chain rounds: `rx = diameterX / 2` off a float diameter is not
+    // `rx` off the pin's. See the mesh-builder contract in docs/fidelity.md.
     const compiledDiameter = diameter
-        ? context.compileNumber(diameter)
-        : "1.0f";
+        ? context.compileNumber(diameter, "double")
+        : "1.0";
     return [
         segments ? compilePositiveInteger(context, segments) : "32u",
         diameterX
-            ? context.compileNumber(diameterX)
+            ? context.compileNumber(diameterX, "double")
             : compiledDiameter,
         diameterY
-            ? context.compileNumber(diameterY)
+            ? context.compileNumber(diameterY, "double")
             : compiledDiameter,
         diameterZ
-            ? context.compileNumber(diameterZ)
+            ? context.compileNumber(diameterZ, "double")
             : compiledDiameter,
     ];
 }
@@ -257,8 +268,8 @@ export function compileTorusOptions(
     const thickness = context.objectProperty(object, "thickness");
     const tessellation = context.objectProperty(object, "tessellation");
     return [
-        diameter ? context.compileNumber(diameter) : "1.0f",
-        thickness ? context.compileNumber(thickness) : "0.5f",
+        diameter ? context.compileNumber(diameter, "double") : "1.0",
+        thickness ? context.compileNumber(thickness, "double") : "0.5",
         tessellation
             ? compilePositiveInteger(context, tessellation)
             : "16u",

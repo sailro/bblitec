@@ -1643,8 +1643,8 @@ struct Scene {
 };
 
 struct GroundOptions {
-    float width = 1.0f;
-    float height = 1.0f;
+    double width = 1.0;
+    double height = 1.0;
     std::uint32_t subdivisions = 1;
     Vec2 uv_scale{1.0f, 1.0f};
 };
@@ -1660,11 +1660,13 @@ struct PlaneOptions {
     float height = 1.0f;
 };
 
+// The pin halves these as JavaScript numbers before its vertex chain rounds,
+// so they are doubles here for the same reason `CameraRecord`'s scalars are.
 struct SphereOptions {
     std::uint32_t segments = 32;
-    float diameter_x = 1.0f;
-    float diameter_y = 1.0f;
-    float diameter_z = 1.0f;
+    double diameter_x = 1.0;
+    double diameter_y = 1.0;
+    double diameter_z = 1.0;
 };
 
 struct SphereMeshData {
@@ -1677,8 +1679,8 @@ struct SphereMeshData {
 };
 
 struct TorusOptions {
-    float diameter = 1.0f;
-    float thickness = 0.5f;
+    double diameter = 1.0;
+    double thickness = 0.5;
     std::uint32_t tessellation = 16;
 };
 

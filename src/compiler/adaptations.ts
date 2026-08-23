@@ -204,6 +204,35 @@ export function compileAdaptations(
             ],
         });
     }
+
+    if (features.includes("material:tracking")) {
+        adaptations.push({
+            id: "material-tracking-observers-dropped",
+            category: "browser-erasure",
+            sourceSemantics:
+                "The scene installs the pin's material tracking, which " +
+                "defines value-preserving accessors over the UBO-backed " +
+                "properties so that any later write marks the material's " +
+                "UBO dirty and it re-uploads.",
+            nativeSemantics:
+                "Nothing is installed. Generation already knows which " +
+                "properties the scene writes and emits the re-upload for " +
+                "them, so the run-time observer has nothing left to " +
+                "observe. Installing changes no value, so the frame the " +
+                "install itself produces is unchanged.",
+            risk: "low",
+            validation: [
+                "the installer's own primitives are value-preserving: " +
+                    "tracking-primitives.ts defines each property with a " +
+                    "getter returning the captured value and a setter whose " +
+                    "only effect is markMaterialUboDirty",
+                "a scene that writes a tracked property is covered by the " +
+                    "per-frame material regression gates, which measure the " +
+                    "re-upload the compiler emits",
+            ],
+        });
+    }
+
     if (features.includes("particle:node")) {
         adaptations.push({
             id: "executed-node-particle-simulation",

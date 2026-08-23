@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
+import {
+    babylonPackages,
+    isBabylonModule,
+} from "../src/compiler/symbols.js";
 import {
     mkdtempSync,
     readFileSync,
@@ -202,11 +207,11 @@ test("preserves reached box, ground, and sphere options", () => {
     );
     assert.match(
         result.cpp,
-        /GroundOptions\{6\.0f, 7\.0f, 4u, bbl::Vec2\{2\.0f, 3\.0f\}\}/,
+        /GroundOptions\{6\.0, 7\.0, 4u, bbl::Vec2\{2\.0f, 3\.0f\}\}/,
     );
     assert.match(
         result.cpp,
-        /SphereOptions\{8u, 2\.0f, 4\.0f, 5\.0f\}/,
+        /SphereOptions\{8u, 2\.0, 4\.0, 5\.0\}/,
     );
 });
 
@@ -230,7 +235,7 @@ test("compiles pinned Standard material morph targets", () => {
     ]);
     assert.match(
         result.cpp,
-        /create_sphere_data\(bbl::SphereOptions\{32u, 1\.0f, 1\.0f, 1\.0f\}\)/,
+        /create_sphere_data\(bbl::SphereOptions\{32u, 1\.0, 1\.0, 1\.0\}\)/,
     );
     assert.match(
         result.cpp,
@@ -3612,4 +3617,26 @@ test("refuses the line shapes outside the reached slice", () => {
             ),
         /one color per point/,
     );
+});
+
+test("every pinned package spelling reaches the served module", () => {
+    // `capture-suite-reference.ts` rewrites specifiers with a regex literal
+    // and `compiler/symbols.ts` dispatches them with a predicate. Neither can
+    // read the other, so this is what keeps the two lists the same one.
+    for (const packageName of babylonPackages) {
+        assert.match(
+            pinnedPackageSpecifiers(`import x from "${packageName}";`),
+            /"\/node_modules\/@babylonjs\/lite\/lib\/index\.js"/,
+            `${packageName} is not rewritten to the served module.`,
+        );
+        assert.match(
+            pinnedPackageSpecifiers(`import x from "${packageName}/mesh/a";`),
+            /"\/node_modules\/@babylonjs\/lite\/lib\/mesh\/a\.js"/,
+            `${packageName} subpaths are not rewritten to the served module.`,
+        );
+        assert.ok(
+            isBabylonModule(packageName) &&
+                isBabylonModule(`${packageName}/mesh/a`),
+        );
+    }
 });

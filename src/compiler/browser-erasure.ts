@@ -173,7 +173,7 @@ export class BrowserErasure {
             const argument = unwrapped.arguments?.[0];
             const over = argument
                 ? this.evaluateBrowserValue(argument)
-                : { kind: "string" as const, value: "" };
+                : undefined;
             return {
                 kind: "search-params",
                 search: over?.kind === "string" ? over.value : "",

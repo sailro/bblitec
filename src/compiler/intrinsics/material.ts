@@ -789,6 +789,7 @@ export function compileMaterialIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const material = context.compileValue(call.arguments[0]!);
             context.expectKind(material, "material", call.arguments[0]!);
+            context.reachFeature("material:tracking", call);
             return { kind: "void", cpp: "" };
         }
 

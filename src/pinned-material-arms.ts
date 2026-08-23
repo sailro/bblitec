@@ -786,7 +786,11 @@ export async function composeScenePbrVariants(
         if (material.anisotropy) {
             setters.setPbrAnisotropy(input, {
                 isEnabled: material.anisotropy.isEnabled,
-                intensity: material.anisotropy.intensity,
+                // A computed intensity states no number, so the props reach
+                // the pin without one and its writer's own default applies.
+                ...(material.anisotropy.intensity !== undefined
+                    ? { intensity: material.anisotropy.intensity }
+                    : {}),
                 direction: material.anisotropy.direction,
             });
         }

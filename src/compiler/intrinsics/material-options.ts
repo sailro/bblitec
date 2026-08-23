@@ -16,12 +16,15 @@ import type {
     ValueKind,
 } from "../types.js";
 import {
+    staticNumberPair,
+    staticNumberValue,
     validateObjectProperties,
     type ObjectValidationContext,
+    type PositiveIntegerContext,
 } from "../option-helpers.js";
 
 export interface MaterialOptionContext
-    extends ObjectValidationContext {
+    extends ObjectValidationContext, PositiveIntegerContext {
     readonly scenePbrMaterials: ScenePbrMaterialManifest[];
     readonly assets: ReadonlyMap<string, CompileAsset>;
     recordSceneMaterialSlot(): number;
@@ -49,9 +52,6 @@ export interface MaterialOptionContext
         precision?: "float" | "double",
     ): string;
     compileVec2(expression: ts.Expression): string;
-    /** The two numbers a `[x, y]` literal states, for a manifest the
-     *  composition input reads rather than the emitted call. */
-    numberPair(expression: ts.Expression): readonly [number, number];
 }
 
 /**
@@ -82,11 +82,11 @@ export type CompiledPbrMaterialOptions = [
     number,
 ];
 
-/** What a reached `setPbrAnisotropy` settled: the emitted arguments, and
- *  the numbers the composition input needs. The four other extensions read
- *  their manifest numbers back out of the emitted text, which a fixed-arity
- *  tuple makes workable; anisotropy carries four values of three shapes, so
- *  it names them. */
+/** What a reached `setPbrAnisotropy` settled: the emitted arguments, and the
+ *  manifest the composition input reads. Its numbers come from the pinned AST
+ *  through `staticNumberValue`, not from the C++ just emitted -- a scene that
+ *  computes its intensity has no number to state, and the manifest says so
+ *  rather than carrying the `NaN` a re-parse would produce. */
 export interface CompiledAnisotropyOptions {
     enabled: string;
     intensity: string;
@@ -478,19 +478,31 @@ export function compileAnisotropyOptions(
     const enabled = isEnabled
         ? context.compileBoolean(isEnabled)
         : "false";
-    const scale = intensity ? context.compileNumber(intensity) : "1.0f";
+    const staticDirection = direction
+        ? staticNumberPair(context, direction) ??
+            context.fail(
+                direction,
+                "An anisotropy direction must be a static [x, y].",
+            )
+        : ([1, 0] as const);
+    const staticIntensity = intensity
+        ? staticNumberValue(context, intensity)
+        : 1;
     return {
         enabled,
-        intensity: scale,
+        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
         direction: direction
             ? context.compileVec2(direction)
             : "bbl::Vec2{1.0f, 0.0f}",
         manifest: {
             isEnabled: enabled === "true",
-            intensity: Number.parseFloat(scale),
-            direction: direction
-                ? context.numberPair(direction)
-                : [1, 0],
+            // Omitted where the scene computes the value: the composition
+            // then replays the pin's own `?? 1.0` default, which is what the
+            // variant reads. Nothing in the pinned `detect` selects on it.
+            ...(staticIntensity !== undefined
+                ? { intensity: staticIntensity }
+                : {}),
+            direction: staticDirection,
         },
     };
 }

@@ -123,51 +123,24 @@ export class StaticEvaluator {
     }
 
     public compileVec2(expression: ts.Expression): string {
-        return `bbl::Vec2{${this.vec2Components(expression).join(", ")}}`;
-    }
-
-    /**
-     * The two numbers a `[x, y]` literal states.
-     *
-     * `compileVec2` beside it answers the same question in C++; a manifest
-     * the composition input reads needs the values themselves, because the
-     * pin's own extension reads them as JavaScript numbers. A component the
-     * scene computes has no number here and fails rather than reaching the
-     * composition as NaN.
-     */
-    public numberPair(
-        expression: ts.Expression,
-    ): readonly [number, number] {
-        const numbers = this.vec2Components(expression).map((text) =>
-            Number.parseFloat(text),
-        );
-        if (numbers.some((value) => !Number.isFinite(value))) {
-            this.fail(
-                this.unwrap(expression),
-                "Expected a Vec2 of static numbers.",
-            );
-        }
-        return [numbers[0]!, numbers[1]!];
-    }
-
-    /** The two components of a Vec2 literal, as emitted C++ scalars. */
-    private vec2Components(
-        expression: ts.Expression,
-    ): readonly [string, string] {
         const unwrapped = this.unwrap(expression);
         const tuple = this.tupleElements(unwrapped, 2);
-        const components = tuple
-            ? tuple.map((value) => this.numberValue(value, unwrapped))
-            : ts.isArrayLiteralExpression(unwrapped) &&
-                    unwrapped.elements.length === 2
-                ? unwrapped.elements.map((element) =>
-                    this.compileNumber(element)
+        if (tuple) {
+            return `bbl::Vec2{${tuple
+                .map((value) =>
+                    this.numberValue(value, unwrapped),
                 )
-                : undefined;
-        if (!components) {
-            this.fail(unwrapped, "Expected a Vec2 array [x, y].");
+                .join(", ")}}`;
         }
-        return [components[0]!, components[1]!];
+        if (
+            ts.isArrayLiteralExpression(unwrapped) &&
+            unwrapped.elements.length === 2
+        ) {
+            return `bbl::Vec2{${unwrapped.elements
+                .map((element) => this.compileNumber(element))
+                .join(", ")}}`;
+        }
+        this.fail(unwrapped, "Expected a Vec2 array [x, y].");
     }
 
     public compileVec4(expression: ts.Expression): string {

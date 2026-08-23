@@ -242,8 +242,16 @@ with every pixel inside one byte on the pin's. Across the corpus the
 correction is last-bit: every gate still passes, and the one published row
 it moves on both backends is scene 19's foreground, by a thousandth.
 
+The rule starts at the call site, not at the loop: `SphereOptions`,
+`GroundOptions` and `TorusOptions` carry their scalars as `double` and
+`compileSphereOptions` and friends emit them at that precision, because the
+pin halves a diameter as a JavaScript number before the chain rounds. A float
+option would make `rx` a float32 neighbour of the pin's `diameterX / 2` --
+scenes 116 and 162 pass `1.6` and `0.45`, which are not representable.
+
 `create-box.ts` and `create-plane.ts` need no such care: their vertices are
-literals scaled by a halving, which is exact in both precisions.
+literals scaled by a halving, which is the last operation before the store and
+so rounds to the same float either way.
 
 **The RGBD decode's result type is the pin's storage type.**
 `src/loader-env/rgbd-decode.ts` decodes `.env` faces and the BRDF LUT into a

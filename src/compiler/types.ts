@@ -193,7 +193,9 @@ export interface ScenePbrIridescenceManifest {
  */
 export interface ScenePbrAnisotropyManifest {
     isEnabled: boolean;
-    intensity: number;
+    /** Absent where the scene computes it; the composition then replays the
+     *  pin's own default, as its writer's `?? 1.0` would. */
+    intensity?: number;
     direction: readonly [number, number];
 }
 
@@ -859,6 +861,7 @@ export type Feature =
     | "material:clearcoat-f0-remap"
     | "material:iridescence"
     | "material:anisotropy"
+    | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"
     | "material:grid"

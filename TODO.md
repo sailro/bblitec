@@ -92,16 +92,38 @@ act on it — not what was tried.
   it. Diff the primary directional block against the pinned
   `singlelight-directional-wgsl.ts` term by term.
 
-- [ ] Give the PBR extension manifests their numbers rather than parsing them
-  back out of emitted C++. `setPbrClearCoat`, `setPbrSheen`,
-  `setPbrIridescence`, and `setPbrAnisotropy` each build their composition
-  input with `Number.parseFloat` over the text they just emitted, which reads
-  `NaN` for a value the scene computes (scene 23 passes one). It is inert
-  today because no pinned arm selects a variant on those numbers -- only on
-  `isEnabled` and on whether a texture is present -- so the composed shader is
-  still exact. An arm whose shape did depend on a value would compose against
-  `NaN` silently. The compiled options already know the static value where
-  there is one; carry it beside the emitted string instead of re-parsing.
+- [ ] Lower the procedural mesh builders through `PinnedNumericLowerer` instead
+  of hand-typing their precision. `factory-lowerer.ts` emits
+  `build_sphere_geometry`, `build_ground_geometry` and `build_torus_geometry`
+  as template strings whose `double` chain and per-store `static_cast<float>`
+  are written by hand and checked only by regex snapshots in
+  `test/lowerer-anchors.test.ts` and `test/upstream.test.ts`.
+  `src/lowering/pinned-numeric-lowerer.ts` already states the same two rules
+  structurally -- a JS number is an f64, a `Float32Array` store rounds to f32
+  -- and derives them from the pinned AST; `splat-lowerer.ts` and
+  `standard-uv-transform-lowerer.ts` already share it. `createSphereData` and
+  `createFlatGroundData` are its shape: `new F32(...)` buffers, a double vertex
+  chain, `Math.sin`/`Math.cos`, indexed stores. Until then nothing enforces the
+  contract `docs/fidelity.md` states -- the existing gates assert expression
+  shape, never store width, which is why the float chain survived until scene
+  23 measured it. If the whole lowering is too large in one pass, the
+  intermediate is a gate that reads the pinned builder's `new F32(...)`
+  declarations and asserts every emitted `static_cast<float>` corresponds to
+  one of its stores and no other rounding appears.
+
+- [ ] Give the three older PBR extension manifests their numbers rather than
+  parsing them back out of emitted C++. `setPbrClearCoat`, `setPbrSheen` and
+  `setPbrIridescence` still build their composition input with
+  `Number.parseFloat` over the text they just emitted (twelve sites in
+  `src/compiler/intrinsics/material.ts`), which reads `NaN` for a value the
+  scene computes. `setPbrAnisotropy` no longer does: it reads the pinned AST
+  through `staticNumberValue` / `staticNumberPair`
+  (`src/compiler/option-helpers.ts`) and omits what the scene computes, so the
+  pin's own default applies. Do the same for the other three. It is inert
+  today -- no corpus scene passes a computed value to them, and no pinned arm
+  selects a variant on those numbers -- but it is one convention where there
+  should be one. The blocker is that `CompiledLayerOptions` is a fixed tuple
+  of emitted strings with no room for the value beside it.
 
 - [ ] Carry a spot light's cone angle at the pin's precision. The pinned factory
   computes `Math.cos(angle * 0.5)` in doubles into a float UBO; the compiler

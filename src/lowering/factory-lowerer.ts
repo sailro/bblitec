@@ -451,11 +451,10 @@ export class FactoryLowerer {
             );
         }
         // The ground vertex, paired with the emitted ModelVertex: the
-        // column/row positions (the emission precomputes width * 0.5f for
-        // the exact -width / 2), the constant up normal (which flows), and
-        // the UV generation whose tiling scale the emission folds into the
-        // generated coordinate — exact, because scaling by the default 1 is
-        // an identity in float.
+        // column/row positions (emitted as the pin writes them, in double),
+        // the constant up normal (which flows), and the UV generation whose
+        // tiling scale the emission applies to the stored float, as the
+        // pin's own second pass does.
         assertVariable(
             ground,
             "x",
@@ -1461,13 +1460,13 @@ ${boxAddFaceCalls}
 }
 
 MeshHandle create_ground(Engine& engine, GroundOptions options) {
-    const float width = options.width;
-    const float height = options.height;
+    const double width = options.width;
+    const double height = options.height;
     const std::uint32_t subdivisions =
         std::max<std::uint32_t>(1, options.subdivisions);
     const std::uint32_t columns = subdivisions + 1;
-    const float half_width = width * 0.5f;
-    const float half_height = height * 0.5f;
+    const float half_width = static_cast<float>(width * 0.5);
+    const float half_height = static_cast<float>(height * 0.5);
     ModelGeometry geometry;
     geometry.vertices.reserve(
         static_cast<std::size_t>(columns) * columns);
@@ -1479,8 +1478,6 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
     // see build_sphere_geometry. The UV scale multiplies the stored float
     // because the pin's second pass reads its own UV array back before
     // scaling it, which is why the stored value is named here.
-    const double span_x = width;
-    const double span_z = height;
     for (std::uint32_t row = 0; row <= subdivisions; ++row) {
         const double normalized_row =
             static_cast<double>(row) /
@@ -1497,10 +1494,10 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
             geometry.vertices.push_back(ModelVertex{
                 Vec3{
                     static_cast<float>(
-                        -span_x / 2.0 + normalized_column * span_x),
+                        -width / 2.0 + normalized_column * width),
                     0.0f,
                     static_cast<float>(
-                        -span_z / 2.0 + (1.0 - normalized_row) * span_z),
+                        -height / 2.0 + (1.0 - normalized_row) * height),
                 },
                 ${groundNormal},
                 Vec4{1.0f, 0.0f, 0.0f, 1.0f},
@@ -1540,7 +1537,11 @@ ${groundWindingList}
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::ground;
-    mesh.dimensions = Vec3{width, 0.0f, height};
+    mesh.dimensions = Vec3{
+        static_cast<float>(width),
+        0.0f,
+        static_cast<float>(height),
+    };
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1691,9 +1692,9 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
     mesh.dimensions = Vec3{
-        options.diameter_x,
-        options.diameter_y,
-        options.diameter_z,
+        static_cast<float>(options.diameter_x),
+        static_cast<float>(options.diameter_y),
+        static_cast<float>(options.diameter_z),
     };
     mesh.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1800,15 +1801,15 @@ void set_morph_target_weights(
 }
 
 MeshHandle create_torus(Engine& engine, TorusOptions options) {
-    const float diameter =
-        options.diameter > 0.0f ? options.diameter : ${value(torusDiameter)};
-    const float thickness =
-        options.thickness > 0.0f ? options.thickness : ${value(torusThickness)};
+    const double diameter =
+        options.diameter > 0.0 ? options.diameter : ${scalar(torusDiameter)};
+    const double thickness =
+        options.thickness > 0.0 ? options.thickness : ${scalar(torusThickness)};
     const std::uint32_t tessellation = std::max<std::uint32_t>(
         3,
         options.tessellation > 0 ? options.tessellation : ${torusTessellation}u);
-    const double major_radius = static_cast<double>(diameter) * 0.5;
-    const double minor_radius = static_cast<double>(thickness) * 0.5;
+    const double major_radius = diameter * 0.5;
+    const double minor_radius = thickness * 0.5;
     const std::uint32_t stride = tessellation + 1;
     ModelGeometry geometry;
     geometry.vertices.reserve(
