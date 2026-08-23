@@ -298,8 +298,10 @@ that does to the deferred lane by default.
 
 ### Integration-first compiler contract gaps
 
-- [ ] Scene 115: support `Number.isFinite`, then re-audit for deterministic
-  picking.
+- [ ] Scene 115: lower the definite-assignment declaration
+  `let resolveFrozen!: () => void`; query-derived `Number.isFinite` conditions
+  now fold to the native reference environment before the selected value arm
+  lowers.
 - [ ] Scenes 158, 218, 269: the loader-returned-collection shapes still
   unreached. Iterating `entities` and `animationGroups`, `?? []` over one and
   `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
@@ -626,8 +628,6 @@ that does to the deferred lane by default.
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
   `scene231-skin` module, and `mesh.hasVertexAlpha`.
-- [ ] Scene 241: support `isNaN`, which guards the scene's own query-parameter
-  fold over `camAlpha`, `camBeta`, `camRadius`, `camTX/TY/TZ` and `camFov`.
 - [ ] Scene 300 is the last node-particle scene, and its whole remaining
   chain is one mechanism plus two fixture shapes:
   - an **executed atlas URL flowing into a graph**.
@@ -681,9 +681,14 @@ that does to the deferred lane by default.
   `TransformNode` containers (`load-babylon.ts` second pass); the native loader
   skips parented and geometry-less nodes silently. No measured scene is
   affected. Reached by Scene 143, whose Sponza load hits neither.
+- [ ] Lower `KHR_materials_anisotropy` from glTF assets. Scene 241 now reaches
+  the loader after its query-derived `isNaN` predicates fold, and its
+  AnimationPointerUVs fixture is the first corpus asset carrying the
+  extension.
 - [ ] Extend `KHR_materials_specular` past its two factors: `specularTexture`
   and `specularColorTexture` fail explicitly at load. Scene 241 is the only
-  corpus asset carrying them and is compiler-blocked, so the pinned
+  corpus asset carrying them and is blocked earlier by its anisotropy
+  extension, so the pinned
   `metallicReflectanceTexture` / `reflectanceTexture` pair — including the
   `pow(2.2)` the reflectance fragment applies to each — stays unreached.
 - [ ] Carry primitive topology to the pipeline for glTF points, lines, and

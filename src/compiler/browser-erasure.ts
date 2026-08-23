@@ -20,6 +20,9 @@ export interface BrowserErasureContext {
     lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined;
+    isDefaultLibraryIdentifier(
+        identifier: ts.Identifier,
+    ): boolean;
     /** The query string the reference pose is captured at. */
     referenceSearch(): string;
 }
@@ -41,7 +44,10 @@ export class BrowserErasure {
                     "document",
                     "performance",
                     "window",
-                ].includes(unwrapped.text)
+                ].includes(unwrapped.text) &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped,
+                )
             ) {
                 return true;
             }
@@ -58,7 +64,10 @@ export class BrowserErasure {
         if (
             ts.isNewExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
+            unwrapped.expression.text === "URLSearchParams" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            )
         ) {
             return true;
         }
@@ -104,6 +113,9 @@ export class BrowserErasure {
                 ts.isIdentifier(unwrapped.expression) &&
                 ["isNaN", "parseFloat"].includes(
                     unwrapped.expression.text,
+                ) &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
                 )
             ) {
                 return browserArgument;
@@ -117,7 +129,10 @@ export class BrowserErasure {
                 ) &&
                 unwrapped.expression.expression.text ===
                     "Number" &&
-                unwrapped.expression.name.text === "isFinite"
+                unwrapped.expression.name.text === "isFinite" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression.expression,
+                )
             ) {
                 return browserArgument;
             }
@@ -168,7 +183,10 @@ export class BrowserErasure {
         if (
             ts.isNewExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
+            unwrapped.expression.text === "URLSearchParams" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            )
         ) {
             const argument = unwrapped.arguments?.[0];
             const over = argument
@@ -189,7 +207,10 @@ export class BrowserErasure {
             ts.isIdentifier(
                 unwrapped.expression.expression,
             ) &&
-            unwrapped.expression.expression.text === "window"
+            unwrapped.expression.expression.text === "window" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression.expression,
+            )
         ) {
             return {
                 kind: "string",
@@ -331,7 +352,10 @@ export class BrowserErasure {
             }
             if (
                 ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "parseFloat"
+                unwrapped.expression.text === "parseFloat" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
+                )
             ) {
                 const argument =
                     this.evaluateBrowserValue(
@@ -348,7 +372,10 @@ export class BrowserErasure {
             }
             if (
                 ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "isNaN"
+                unwrapped.expression.text === "isNaN" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
+                )
             ) {
                 const argument =
                     this.evaluateBrowserValue(
@@ -372,7 +399,10 @@ export class BrowserErasure {
                 ) &&
                 unwrapped.expression.expression.text ===
                     "Number" &&
-                unwrapped.expression.name.text === "isFinite"
+                unwrapped.expression.name.text === "isFinite" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression.expression,
+                )
             ) {
                 const argument =
                     this.evaluateBrowserValue(

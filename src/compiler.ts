@@ -480,6 +480,10 @@ class Compiler
             (expression) => this.compileValue(expression),
             (expression) =>
                 this.compileCondition(expression),
+            (expression) =>
+                this.evaluateBrowserValue(expression),
+            (expression) =>
+                this.isBrowserOnlyExpression(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
@@ -1576,6 +1580,25 @@ class Compiler
         return this.options.search;
     }
 
+    public isDefaultLibraryIdentifier(
+        identifier: ts.Identifier,
+    ): boolean {
+        const declarations =
+            this.symbols.valueSymbol(identifier)?.declarations;
+        return Boolean(
+            declarations?.length &&
+                declarations.some((declaration) => {
+                    const source = declaration.getSourceFile();
+                    return (
+                        source.hasNoDefaultLib &&
+                        /(?:^|[\\/])lib\.[^\\/]+\.d\.ts$/i.test(
+                            source.fileName,
+                        )
+                    );
+                }),
+        );
+    }
+
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean {
@@ -1616,6 +1639,18 @@ class Compiler
 
     public compileCondition(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (this.isBrowserOnlyExpression(unwrapped)) {
+            const condition =
+                this.evaluateBrowserCondition(unwrapped);
+            if (condition === undefined) {
+                this.fail(
+                    unwrapped,
+                    "Browser-dependent condition cannot be determined for native AOT lowering.",
+                );
+            }
+            this.erasedBrowserExpressions.add(unwrapped.pos);
+            return condition ? "true" : "false";
+        }
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
             const operand = this.compileCondition(unwrapped.operand);
             if (operand === "true") return "false";

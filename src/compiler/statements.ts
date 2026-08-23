@@ -130,12 +130,6 @@ export interface StatementLoweringContext {
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
-    isBrowserOnlyExpression(
-        expression: ts.Expression,
-    ): boolean;
-    evaluateBrowserCondition(
-        expression: ts.Expression,
-    ): boolean | undefined;
     eraseBrowserInstrumentation(position: number): void;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
@@ -552,37 +546,6 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.IfStatement,
     ): void {
-        if (
-            context.isBrowserOnlyExpression(
-                statement.expression,
-            )
-        ) {
-            const condition =
-                context.evaluateBrowserCondition(
-                    statement.expression,
-                );
-            if (condition === undefined) {
-                context.fail(
-                    statement.expression,
-                    "Browser-dependent condition cannot be determined for native AOT lowering.",
-                );
-            }
-            context.eraseBrowserInstrumentation(
-                statement.pos,
-            );
-            if (condition) {
-                this.emitScopedBody(
-                    context,
-                    statement.thenStatement,
-                );
-            } else if (statement.elseStatement) {
-                this.emitScopedBody(
-                    context,
-                    statement.elseStatement,
-                );
-            }
-            return;
-        }
         const condition = context.compileCondition(
             statement.expression,
         );

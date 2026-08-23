@@ -2023,6 +2023,111 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("folds browser numeric predicates in conditional values", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            box.position.x = Number.isFinite(seek) ? seek : 3;
+            box.position.y = isNaN(seek) ? 4 : seek;
+        }
+    `;
+    const result = compileSource(source);
+
+    assert.match(result.cpp, /\.position\.x = 3\.0f/);
+    assert.match(result.cpp, /\.position\.y = 4\.0f/);
+    assert.doesNotMatch(result.cpp, /Number\.isFinite|isNaN|\? 0\.0/);
+
+    const queried = compileSource(source, {
+        search: "?seekTime=1.5",
+    });
+    assert.match(queried.cpp, /\.position\.x = 1\.5f/);
+    assert.match(queried.cpp, /\.position\.y = 1\.5f/);
+});
+
+test("does not fold shadowed browser predicate names", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        const isNaN = (_value: number): boolean => false;
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            box.position.x = isNaN(seek) ? 4 : 5;
+        }
+    `);
+
+    assert.match(result.cpp, /\.position\.x = 5\.0f/);
+});
+
+test("does not browser-fold ordinary parseFloat calls", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createBox,
+                    createEngine,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const box = createBox(engine);
+                    const numeric = 1.5;
+                    box.position.x = parseFloat(numeric as any);
+                }
+            `),
+        /Call 'parseFloat' does not resolve/,
+    );
+});
+
+test("materializes direct browser primitive call arms", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const params = new URLSearchParams(window.location.search);
+            const selected = params.has("value")
+                ? params.get("value")!
+                : "fallback.glb";
+            await loadGltf(engine, selected);
+        }
+    `, { search: "?value=chosen.glb" });
+
+    assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
+});
+
+test("prunes browser-selected typed data branches", () => {
+    const result = compileSource(`
+        interface Pick { value: number; }
+
+        const params = new URLSearchParams(window.location.search);
+        const seek = parseFloat(params.get("seekTime") || "");
+        const picked: Pick = isNaN(seek)
+            ? { value: 3 }
+            : { value: document.title.length };
+    `);
+
+    assert.match(result.cpp, /Pick v_picked = .*\{3\.0\}/);
+    assert.doesNotMatch(result.cpp, /document|title/);
+});
+
 test("reads the query the reference pose is captured at", () => {
     const source = `
         import {

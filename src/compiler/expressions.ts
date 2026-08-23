@@ -145,7 +145,10 @@ export class ExpressionLowerer {
         if (ts.isIdentifier(unwrapped)) {
             const value = this.context.lookupOptional(unwrapped);
             if (value) {
-                return value;
+                return this.materializeBrowserPrimitive(
+                    unwrapped,
+                    value,
+                );
             }
             const resolved =
                 this.context.resolveStaticExpression(unwrapped);
@@ -312,10 +315,26 @@ export class ExpressionLowerer {
             }
             return value;
         }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            this.context.isBrowserOnlyExpression(unwrapped)
+        ) {
+            return this.compileBrowserValue(unwrapped);
+        }
         if (ts.isCallExpression(unwrapped)) {
             return this.compileCall(unwrapped);
         }
         if (ts.isConditionalExpression(unwrapped)) {
+            const condition = this.context.compileCondition(
+                unwrapped.condition,
+            );
+            if (condition === "true" || condition === "false") {
+                return this.compileValue(
+                    condition === "true"
+                        ? unwrapped.whenTrue
+                        : unwrapped.whenFalse,
+                );
+            }
             const whenTrue = this.compileValue(
                 unwrapped.whenTrue,
             );
@@ -343,9 +362,6 @@ export class ExpressionLowerer {
                         "Conditional tuple branches must have the same length.",
                     );
                 }
-                const condition = this.context.compileCondition(
-                    unwrapped.condition,
-                );
                 return {
                     kind: "tuple",
                     cpp: "",
@@ -361,7 +377,7 @@ export class ExpressionLowerer {
                 };
             }
             return this.selectValue(
-                this.context.compileCondition(unwrapped.condition),
+                condition,
                 whenTrue,
                 whenFalse,
                 unwrapped,
@@ -521,18 +537,66 @@ export class ExpressionLowerer {
             };
         }
         if (this.context.isBrowserOnlyExpression(unwrapped)) {
-            const browserValue =
-                this.context.evaluateBrowserValue(unwrapped);
-            return {
-                kind: "browser",
-                cpp: "",
-                ...(browserValue
-                    ? { browserValue }
-                    : {}),
-            };
+            return this.compileBrowserValue(unwrapped);
         }
 
         this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+    }
+
+    private compileBrowserValue(
+        expression: ts.Expression,
+    ): Value {
+        const browserValue =
+            this.context.evaluateBrowserValue(expression);
+        return this.materializeBrowserPrimitive(expression, {
+            kind: "browser",
+            cpp: "",
+            ...(browserValue
+                ? { browserValue }
+                : {}),
+        });
+    }
+
+    private materializeBrowserPrimitive(
+        expression: ts.Expression,
+        value: Value,
+    ): Value {
+        if (value.kind !== "browser" || !value.browserValue) {
+            return value;
+        }
+        switch (value.browserValue.kind) {
+            case "number":
+                return {
+                    kind: "number",
+                    cpp: this.context.compileNumber(expression),
+                    ...(Number.isFinite(
+                        value.browserValue.value,
+                    )
+                        ? {
+                              staticNumber:
+                                  value.browserValue.value,
+                          }
+                        : {}),
+                };
+            case "boolean":
+                return {
+                    kind: "boolean",
+                    cpp: value.browserValue.value
+                        ? "true"
+                        : "false",
+                };
+            case "string":
+                return {
+                    kind: "string",
+                    cpp: this.context.cppString(
+                        value.browserValue.value,
+                    ),
+                    staticString: value.browserValue.value,
+                };
+            case "null":
+            case "search-params":
+                return value;
+        }
     }
 
     /**

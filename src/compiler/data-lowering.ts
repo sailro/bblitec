@@ -1411,8 +1411,19 @@ export class DataLowerer {
             dataType.kind !== "number" &&
             dataType.kind !== "boolean"
         ) {
+            const condition = this.context.compileCondition(
+                unwrapped.condition,
+            );
+            if (condition === "true" || condition === "false") {
+                return this.compileForSink(
+                    condition === "true"
+                        ? unwrapped.whenTrue
+                        : unwrapped.whenFalse,
+                    dataType,
+                );
+            }
             return (
-                `(${this.context.compileCondition(unwrapped.condition)}` +
+                `(${condition}` +
                 ` ? ${this.compileForSink(unwrapped.whenTrue, dataType)}` +
                 ` : ${this.compileForSink(unwrapped.whenFalse, dataType)})`
             );
