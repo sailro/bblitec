@@ -238,10 +238,9 @@ export class BrowserErasure {
             ) {
                 const truthy = this.browserTruthy(left);
                 if (truthy === false) {
-                    return {
-                        kind: "boolean",
-                        value: false,
-                    };
+                    // JavaScript's value-selecting `&&` returns its left
+                    // operand unchanged when that operand is falsy.
+                    return left;
                 }
                 return truthy
                     ? this.evaluateBrowserValue(

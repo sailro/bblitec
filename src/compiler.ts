@@ -730,7 +730,6 @@ class Compiler
                 this.evaluateBrowserValue(
                     declaration.initializer,
                 );
-            this.erasedBrowserExpressions.add(declaration.initializer.pos);
             this.defineVariable(declaration.name, {
                 kind: "browser",
                 cpp: "",
@@ -1641,7 +1640,7 @@ class Compiler
                     "Browser-dependent condition cannot be determined for native AOT lowering.",
                 );
             }
-            this.erasedBrowserExpressions.add(unwrapped.pos);
+            this.recordBrowserExpression(unwrapped);
             return condition ? "true" : "false";
         }
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
@@ -2835,8 +2834,18 @@ class Compiler
     public evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
-        return this.browserErasure.evaluateBrowserValue(
+        const value = this.browserErasure.evaluateBrowserValue(
             expression,
+        );
+        this.recordBrowserExpression(expression);
+        return value;
+    }
+
+    private recordBrowserExpression(
+        expression: ts.Expression,
+    ): void {
+        this.erasedBrowserExpressions.add(
+            this.unwrap(expression).pos,
         );
     }
 

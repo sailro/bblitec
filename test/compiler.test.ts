@@ -2083,6 +2083,34 @@ test("uses JavaScript truthiness for browser query values in conditions", () => 
     );
 });
 
+test("preserves falsy browser values selected by logical and", () => {
+    const result = compileSource(
+        `
+            import {
+                createBox,
+                createEngine,
+            } from "@babylonjs/lite";
+
+            async function main() {
+                const engine = await createEngine({});
+                const box = createBox(engine);
+                const params = new URLSearchParams(window.location.search);
+                const missing = params.get("missing") && true;
+                const empty = params.get("empty") && true;
+                const zero = parseFloat(params.get("zero") || "") && true;
+                box.position.x = missing === null ? 1 : 2;
+                box.position.y = empty === "" ? 3 : 4;
+                box.position.z = zero === 0 ? 5 : 6;
+            }
+        `,
+        { search: "?empty=&zero=0" },
+    );
+
+    assert.match(result.cpp, /\.position\.x = 1\.0f;/);
+    assert.match(result.cpp, /\.position\.y = 3\.0f;/);
+    assert.match(result.cpp, /\.position\.z = 5\.0f;/);
+});
+
 test("folds browser numeric predicates in conditional values", () => {
     const source = `
         import {
@@ -2171,6 +2199,47 @@ test("materializes direct browser primitive call arms", () => {
     `, { search: "?value=chosen.glb" });
 
     assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
+});
+
+test("records direct browser primitive materialization", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.position.x = parseFloat(
+                new URLSearchParams(window.location.search).get("x") || "3"
+            );
+        }
+    `);
+
+    assert.match(result.cpp, /\.position\.x = 3\.0f;/);
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
+test("records erased browser declarations without primitive values", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const started = performance.now();
+            await createEngine({});
+        }
+    `);
+
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
 });
 
 test("folds static string concatenation in asset arguments", () => {
