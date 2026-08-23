@@ -18,12 +18,12 @@ import { UpstreamSourceStore } from "../src/upstream-source.js";
 const sources = {
     presence: {
         diffuseTexture:
-            "!material.base_color_texture.bytes.empty() || " +
+            "material.base_color_texture.has_image() || " +
             "material.has_diffuse_render_texture",
-        _bumpTexture: "!material.bump_texture.bytes.empty()",
-        _specularTexture: "!material.specular_texture.bytes.empty()",
-        _ambientTexture: "!material.ambient_texture.bytes.empty()",
-        _opacityTexture: "!material.opacity_texture.bytes.empty()",
+        _bumpTexture: "material.bump_texture.has_image()",
+        _specularTexture: "material.specular_texture.has_image()",
+        _ambientTexture: "material.ambient_texture.has_image()",
+        _opacityTexture: "material.opacity_texture.has_image()",
     },
     coordIndex: {
         diffuseCoordIndex: "material.diffuse_coord_index",
@@ -71,7 +71,7 @@ test("takes a channel's texture from the same expression its feature bit does", 
     // would write the untextured identity into a slot the fragment samples.
     assert.ok(
         source.includes(
-            "(!material.base_color_texture.bytes.empty() || " +
+            "(material.base_color_texture.has_image() || " +
                 "material.has_diffuse_render_texture) ? " +
                 "&material.base_color_texture : nullptr",
         ),

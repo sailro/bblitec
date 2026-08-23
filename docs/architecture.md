@@ -80,6 +80,8 @@ Primary source ownership:
 | `src/pinned-node-material.ts` | runs the pin's own node-material compiler over a Babylon NME graph, against a recording device, and refuses every arm outside the reached slice |
 | `src/pinned-node-particle.ts` | runs the pin's own node-particle parser, graph builder and CPU simulation in the browser and returns the particle state they froze -- the one port where the value is fragile past a rounding argument, because the seed draws through `Math.sin` |
 | `src/lowering/node-particle-lowerer.ts` | the folded half of the same family: the billboard and pure-2D bridges, their two blend mappings and the exact five-mode one, all from their own declarations over the baked state |
+| `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's own parser lowered to C++, its block-compression format table, and the two folds generation needs from the same modules — which suffix a device's features select, and the URL rewrite that reaches it |
+| `src/basis-transcode.ts` | the one texture the browser produces: the pinned Basis loader run in headless Chromium, and the KTX1 container its transcode is packaged as |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/lowering/line-lowerer.ts` | the line family: the polyline flatten emitted as C++ from its own pinned declaration, and the `ShaderMaterial` `createLineMaterial` composes -- its two stages folded out of that module's own text builders |
 | `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
@@ -242,6 +244,10 @@ The current generated slice includes:
   normal mapping
 - `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization and
   pinned 1024-sample GGX prefiltering
+- block-compressed textures: a KTX1 container parsed at load by the pin's own
+  parser and uploaded as the blocks and mip chain it carries, and a Basis
+  file transcoded by the pin's own loader at generation into the same
+  container
 - `EXT_lights_image_based` RGBD cubemaps plus an offline-generated,
   half-float 1024-sample BRDF LUT
 - generated infinite-distance solid and HDR skybox behavior

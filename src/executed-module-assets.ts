@@ -26,8 +26,8 @@
 import { relative, resolve, sep } from "node:path";
 import { createSuiteSceneServer } from "./capture-suite-reference.js";
 import {
-    gotoScenePage,
-    withBrowserPage,
+    pageBase64Script,
+    runPageGlobal,
 } from "./browser-harness.js";
 
 /** The module that produces an asset, and the factory that returns it. */
@@ -117,7 +117,8 @@ async function evaluateModuleExport(
     }
     const specifier = `/${relativePath.replace(/\.ts$/, ".js")}`;
     const server = createSuiteSceneServer(
-        `window.__runModuleExport = () =>
+        `${pageBase64Script}
+window.__runModuleExport = () =>
             import(${JSON.stringify(specifier)}).then((module) => {
                     const factory = module[${JSON.stringify(source.exportName)}];
                     if (typeof factory !== "function") {
@@ -127,31 +128,18 @@ async function evaluateModuleExport(
                     }
                     const value = factory();
                     if (!ArrayBuffer.isView(value)) return value;
-                    const bytes = new Uint8Array(
-                        value.buffer, value.byteOffset, value.byteLength);
-                    let binary = "";
-                    for (const byte of bytes) {
-                        binary += String.fromCharCode(byte);
-                    }
-                    return btoa(binary);
+                    return bblBase64(new Uint8Array(
+                        value.buffer, value.byteOffset, value.byteLength));
                 });
 `,
     );
-    const result: unknown = await withBrowserPage(
+    const result: unknown = await runPageGlobal(
         server,
+        "__runModuleExport",
         {
             serverName: `${relativePath} server`,
             browserRequirement:
                 "Baking a scene module's own output requires Chrome or Edge.",
-        },
-        async (page, origin) => {
-            await gotoScenePage(page, origin);
-            await page.waitForFunction(
-                "typeof window.__runModuleExport === 'function'",
-                null,
-                { timeout: 60_000 },
-            );
-            return page.evaluate("window.__runModuleExport()");
         },
     );
     if (typeof result !== "string") {

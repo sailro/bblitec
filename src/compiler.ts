@@ -225,8 +225,10 @@ const featureSources: Record<Feature, string[]> = {
     "material:standard": [],
     "material:standard-diffuse-render-texture": [],
     "material:standard-diffuse-pixels-texture": [],
+    "material:standard-diffuse-file-texture": [],
     "material:standard-uv-transform": [],
     "material:standard-emissive-render-texture": [],
+    "material:standard-emissive-file-texture": [],
     "material:standard-vertex-colors": [],
     "mesh:box": [],
     "mesh:from-data": [],
@@ -244,6 +246,7 @@ const featureSources: Record<Feature, string[]> = {
     "sprite:uv-scroll": [],
     "sprite:custom-shader": [],
     "texture:file": [],
+    "texture:compressed": [],
     "texture:pixels": [],
     "sprite:billboard": [],
     // A frozen node-particle system draws through the billboard family; the

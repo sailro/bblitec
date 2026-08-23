@@ -406,6 +406,10 @@ export interface CompileAsset {
         // A Gaussian-splat container, packaged into the interchange row
         // buffer the pin's own `.splat` files already are.
         | "splat"
+        // A Basis Universal texture, transcoded by the pin's own loader at
+        // generation and packaged as the KTX1 container the runtime's one
+        // compressed-texture reader takes.
+        | "basis"
         | "texture";
     faceSize?: number;
     /**
@@ -860,7 +864,10 @@ export type Feature =
     | "material:standard-diffuse-pixels-texture"
     | "material:standard-uv-transform"
     | "material:standard-emissive-render-texture"
+    | "material:standard-diffuse-file-texture"
+    | "material:standard-emissive-file-texture"
     | "texture:file"
+    | "texture:compressed"
     | "texture:pixels"
     | "sprite:billboard"
     | "sprite:billboard-axis-locked"

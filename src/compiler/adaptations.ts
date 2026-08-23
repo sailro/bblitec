@@ -185,6 +185,25 @@ export function compileAdaptations(
             ],
         });
     }
+    if (
+        [...context.assets.values()].some(
+            (asset) => asset.kind === "basis",
+        )
+    ) {
+        adaptations.push({
+            id: "executed-basis-transcode",
+            category: "asset-materialization",
+            sourceSemantics:
+                "loadBasisTexture2D fetches the Binomial transcoder from a CDN at run time, transcodes the .basis file to the first compressed format the device reports, and uploads the mip chain it produced.",
+            nativeSemantics:
+                "Generation runs the pin's own loader in headless Chromium and packages what the transcoder uploaded, as the KTX1 container the runtime's one compressed-texture reader takes. The transcoder is a WebAssembly module the page injects with a script tag, so a native runtime would carry a decompressor it has no other use for -- the reason Draco and meshopt decode at generation too -- and the target format is a device question both the reference and the compiled backends answer with BC7 on D3D12. The baked bytes depend on the Chrome that compiled them, as the drawn atlas and the pinned GGX prefilter already do.",
+            risk: "medium",
+            validation: [
+                "scene 36 parity against the browser golden, which transcodes the same file at load",
+                "byte-stable across repeated compilations",
+            ],
+        });
+    }
     if (features.includes("particle:node")) {
         adaptations.push({
             id: "executed-node-particle-simulation",

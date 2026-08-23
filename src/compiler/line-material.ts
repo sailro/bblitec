@@ -18,7 +18,7 @@ import {
     variantName,
     type LineMaterialOptions,
 } from "../lowering/line-lowerer.js";
-import { UpstreamSourceStore } from "../upstream-source.js";
+import { sharedUpstreamStore } from "../upstream-source.js";
 import { lowerWgslShaderProgram } from "../shader-ir.js";
 import {
     reachedShaderProgram,
@@ -35,7 +35,7 @@ let cached: LineLowerer | undefined;
 function lineLowerer(): LineLowerer {
     if (!cached) {
         cached = new LineLowerer(
-            new LoweringContext(new UpstreamSourceStore()),
+            new LoweringContext(sharedUpstreamStore()),
         );
     }
     return cached;

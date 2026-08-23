@@ -386,12 +386,29 @@ export function compileMaterialIntrinsic(
             const material = context.compileValue(call.arguments[0]!);
             context.expectKind(material, "material", call.arguments[0]!);
             const texture = context.compileValue(call.arguments[1]!);
+            context.expectSameEngine(material, texture, call);
+            // The slot takes either source the pin's one Texture2D can be.
+            // Which arm the composed variant takes follows from that: only
+            // a render target carries `_sampleType === "depth"`, which is
+            // what selects the extension's unfilterable-float binding.
+            if (texture.kind === "texture" && texture.textureFile) {
+                context.reachFeature(
+                    "material:standard-emissive-file-texture",
+                    call,
+                );
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::set_standard_emissive_file_texture(` +
+                        `${context.requireEngine(material, call)}, ` +
+                        `${material.cpp}, ${texture.cpp})`,
+                };
+            }
             context.expectKind(
                 texture,
                 "render-texture",
                 call.arguments[1]!,
             );
-            context.expectSameEngine(material, texture, call);
             context.reachFeature(
                 "material:standard-emissive-render-texture",
                 call,

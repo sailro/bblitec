@@ -476,6 +476,19 @@ regression appears:
   material texture gets the full chain
   `1 + floor(log2(max(w,h)))`; sRGB correctness comes from the texture
   format (`rgba8unorm-srgb` for base color/emissive on PBR).
+- **Compressed textures** (`ktx-loader.ts` uploadCompressed): a KTX or
+  transcoded Basis slot uploads the container's own blocks and its own mip
+  chain — no decode, no blit-generated chain, and no sRGB choice, because
+  the format the file states is the view. Both backends translate the pin's
+  own WebGPU format name and copy each level at the block-padded extent the
+  pin computes (`ceil(w / blockW) * blockW`), which is what a tail mip
+  smaller than one block needs. Dawn additionally requests
+  `texture-compression-bc` at device creation, beside float32-filterable and
+  primitive-index, mirroring the pinned engine's own opportunistic feature
+  list. Because that request is opportunistic, an adapter reporting no block
+  compression reaches the upload, so each backend refuses it there by name —
+  Dawn on the adapter feature, SDL_GPU through
+  `SDL_GPUTextureSupportsFormat`.
 - **glTF samplers** (`gltf-sampler-desc.ts`): wrap 33071→clamp,
   33648→mirror, else repeat; min/mip filters from the combined enum;
   non-mipmap min filters mean "sample mip 0 only" → `lodMaxClamp 0`;

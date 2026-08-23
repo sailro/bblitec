@@ -185,7 +185,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-113 corpus scenes remain unregistered; measured scenes are in
+111 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -205,7 +205,7 @@ the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
 **Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-23, after
-scenes 220 and 282): `Number(...)` as a call 9 (all deferred-lane physics),
+scenes 25 and 36): `Number(...)` as a call 9 (all deferred-lane physics),
 engine options beyond msaaSamples/requiredLimits 7 (large-world),
 `receiveShadows` 6, `??` over a non-static-record operand 6, `HavokPhysics` 5,
 PBR options beyond the reached set 3, a four-argument call 3, an unsupported
@@ -257,7 +257,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (79 scenes):** 4, 12, 16-18, 20, 22, 23, 25, 26, 36, 38, 43,
+**Integrate first (77 scenes):** 4, 12, 16-18, 20, 22, 23, 26, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.
@@ -323,31 +323,22 @@ that does to the deferred lane by default.
   material at all. The reach is right and the name is not; renaming it to
   something like `renderer:scene` touches every manifest and every feature
   table, so it is filed rather than done inside a scene integration.
-- [ ] Extend `material.diffuseTexture` past the colour render target scene
-  110 measures. Three sources refuse by name: an image texture, a
-  depth-only `createRenderTargetTexture` output, and a geometry task's
-  attachment. `rtt.ts` forks on the attachment, giving a colour view
-  `invertY: true` plus the bilinear sampler and a depth view
-  `invertY: false` plus the nearest one, and the setter folds the colour
-  arm; a geometry attachment is refused on ownership rather than aspect.
-  The record and the loader already carry the
-  image half (`base_color_texture`, filled by the `.babylon` loader), so a
-  scene-code write adds that write plus the right `uv_invert_y`: false for
-  `loadTexture2D`, true for the KTX2/Basis and texture-array uploads
-  `pinned-standard-variants.ts` already names. The
-  `createTexture2DFromPixels` source shipped with scene 282 and is the
-  template — the record takes the texels and the texture-object properties,
-  and `TextureData::rgba_width`/`rgba_height` tell the shared upload the
-  bytes need no decode. Scenes 18 and 272 block here
-  and each wants more besides: 18 the shadow family and `loadTexture2D`,
-  272 `cloneTransformNode` and `createSolidTexture2D`. Scenes 25 and 90
-  block earlier, on `loadKtxTexture2D` and on a canvas2D data URL built in
-  the entry file.
+- [ ] Extend `material.diffuseTexture` past the sources scenes 110, 282, 25
+  and 36 measure. Two refuse by name: a depth-only
+  `createRenderTargetTexture` output, and a geometry task's attachment.
+  `rtt.ts` forks on the attachment, giving a colour view `invertY: true`
+  plus the bilinear sampler and a depth view `invertY: false` plus the
+  nearest one, and the setter folds the colour arm; a geometry attachment is
+  refused on ownership rather than aspect. An image texture whose own `srgb`
+  option is set refuses too: the slot's encoding is the family's, and no
+  reached scene asks for the other. Scenes 18, 90 and 272 block here and each
+  wants more besides: 18 the shadow family, 90 CSG and a canvas2D data URL
+  built in the entry file, 272 `cloneTransformNode` and
+  `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
 - [ ] Scene 26: its first blocker is a non-literal string argument;
   image-processing `toneMapping` shipped with scene 87 and `AcesToneMapping`
   is one of the three records `src/pinned-tone-mapping.ts` already reads.
-- [ ] Scene 36: support `loadBasisTexture2D`.
 - [ ] Scenes 38, 43: support `createCylinder` and `createTube`.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
@@ -488,7 +479,14 @@ that does to the deferred lane by default.
 - [ ] Scene 91: support `initializeCsg2Async`.
 - [ ] Scene 99: support `enableBoneControl`.
 - [ ] Scene 111: support mesh IDs.
-- [ ] Scene 112: resolve and lower `addDdsEnvironmentBackground`.
+- [ ] Scene 112: `addDdsEnvironmentBackground`, then `KHR_texture_basisu`.
+  Each KTX2 image transcodes at generation as a `.basis` file already does,
+  packaged as the KTX1 container the runtime reads, so the generated glTF
+  loader sniffs that magic and fills `TextureData::compressed` instead of
+  decoding. `uploadKtx2Texture2D` takes sRGB per call and caches by
+  `index:sRGB`, so an image feeding both a base-colour and a linear slot
+  transcodes twice. Its six materials share one packed `OcclusionRoughMetal`
+  image, so the loader's `OffscreenCanvas` ORM composite is not reached.
 - [ ] Scenes 113, 129: support mesh names.
 - [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
 - [ ] Scene 149: support the reached constructor expression.

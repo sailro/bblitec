@@ -4,6 +4,7 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { compressedTextureUrl } from "../compressed-texture.js";
 
 interface CompiledEnvironmentOptions {
     groundTextureUrl: string;
@@ -54,6 +55,7 @@ export interface AssetIntrinsicContext
         node: ts.Node,
     ): void;
     resolveBundledAsset(source: string): string;
+    unwrap(expression: ts.Expression): ts.Expression;
     cppString(value: string): string;
     objectProperty(
         object: ts.ObjectLiteralExpression,
@@ -62,6 +64,43 @@ export interface AssetIntrinsicContext
     compileBoolean(expression: ts.Expression): string;
     requireEngine(value: Value, node: ts.Node): string;
     fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * The container `loadKtxTexture2D(engine, baseUrl, suffixes)` fetches.
+ *
+ * The suffix list is the scene's own, and which of them this build can
+ * sample is generation's answer — the pin asks the device, and a native
+ * build has no network for a second candidate.
+ */
+function ktxContainerUrl(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    baseUrl: string,
+): string {
+    const suffixes = context.unwrap(call.arguments[2]!);
+    if (!ts.isArrayLiteralExpression(suffixes)) {
+        context.fail(
+            call.arguments[2]!,
+            "A reached loadKtxTexture2D takes its suffixes as an array " +
+                "literal: generation resolves which one the compiled " +
+                "backends can sample.",
+        );
+    }
+    const listed = suffixes.elements.map((element) =>
+        context.compileStringLiteral(element),
+    );
+    const url = compressedTextureUrl(baseUrl, listed);
+    if (url === undefined) {
+        context.fail(
+            call.arguments[2]!,
+            `A reached loadKtxTexture2D lists no block-compression suffix ` +
+                `(${listed.join(", ")}); the compiled backends report no ` +
+                "other compressed-format feature, and packaging the pin's " +
+                "uncompressed fallback would render a different texture.",
+        );
+    }
+    return url;
 }
 
 export function compileAssetIntrinsic(
@@ -352,6 +391,41 @@ export function compileAssetIntrinsic(
                 textureFile: { srgb },
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "loadKtxTexture2D":
+        case "loadBasisTexture2D": {
+            // Both loaders end at the same native reader: the container's
+            // blocks and its own mip chain. What differs is where the
+            // container comes from — a suffix generation resolves against
+            // the compiled backends' formats, or a `.basis` file the pin's
+            // own loader transcodes at generation — and the texture-OBJECT
+            // `invertY`, which `uploadCompressed` leaves unset and
+            // `basis-loader.ts` sets. Neither takes the sampler options
+            // upstream resolves against defaults no reached call moves, so
+            // an options argument refuses rather than shipping an
+            // unmeasured sampler.
+            const basis = importedName === "loadBasisTexture2D";
+            context.expectArgumentCount(call, basis ? 2 : 3, basis ? 2 : 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const url = context.compileStringLiteral(call.arguments[1]!);
+            const asset = basis
+                ? context.registerAsset(url, "basis")
+                : context.registerAsset(
+                      ktxContainerUrl(context, call, url),
+                      "texture",
+                  );
+            context.reachFeature("texture:compressed", call);
+            return {
+                kind: "texture",
+                cpp:
+                    `bbl::load_compressed_texture(${engine.cpp}, ` +
+                    `bbl::asset_path(${context.cppString(asset.output)}), ` +
+                    `${basis ? "true" : "false"})`,
+                textureFile: { srgb: false },
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 

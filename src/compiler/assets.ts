@@ -105,6 +105,10 @@ export function assetRecord(
             // scene fetched.
             : kind === "splat"
                 ? `${basenameWithoutExtension(sourceName)}.splat`
+            // A transcoded Basis texture packages as the KTX1 container the
+            // runtime's one compressed-texture reader takes.
+            : kind === "basis"
+                ? `${basenameWithoutExtension(sourceName)}.ktx`
             : sourceName;
     const safeName = packagedName.replace(/[^A-Za-z0-9._-]/g, "_");
     const output =

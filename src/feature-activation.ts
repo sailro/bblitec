@@ -431,6 +431,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/standard/set-std-emissive.ts + src/texture/rtt.ts",
         consumers: CMAKE,
     },
+    "material:standard-emissive-file-texture": {
+        provenance:
+            "src/material/standard/set-std-emissive.ts + " +
+            "src/texture/texture-2d.ts",
+        consumers: CMAKE,
+    },
+    "material:standard-diffuse-file-texture": {
+        provenance:
+            "src/material/standard/standard-material.ts diffuseTexture + " +
+            "src/texture/texture-2d.ts",
+        consumers: CMAKE,
+    },
     "material:standard-diffuse-pixels-texture": {
         provenance:
             "src/material/standard/standard-material.ts diffuseTexture + " +
@@ -446,6 +458,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "texture:file": {
         provenance:
             "src/texture/texture-2d.ts + src/texture/solid-texture.ts",
+        consumers: CMAKE,
+    },
+    "texture:compressed": {
+        provenance:
+            "src/texture/ktx-loader.ts + src/texture/compressed-formats.ts",
         consumers: CMAKE,
     },
     "texture:pixels": {

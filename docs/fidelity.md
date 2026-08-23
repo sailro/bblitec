@@ -27,8 +27,9 @@ Generated scenes contain:
 | `upstream/shaders/shader-compiler.json` | pinned compiler backend and executable hashes |
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
-`await`, compile-time asset materialization (drawn sprite atlases and HDR
-cubemaps included), the SDL platform boundary, the native shader backends,
+`await`, compile-time asset materialization (drawn sprite atlases, HDR
+cubemaps and transcoded Basis textures included), the SDL platform boundary,
+the native shader backends,
 and four-influence skinning for an asset carrying `JOINTS_1`/`WEIGHTS_1`
 (`four-influence-skinning`: the pinned loader skins eight influences, the
 generated loader keeps the first pair and drops the tail weights). Scenes
@@ -691,6 +692,47 @@ it. Scene 282 measures the composed stages byte-identical to the browser's
 and every uploaded lane bit-identical; its one differing pixel of 921600 sits
 4.0e-6 from a texel boundary, where nearest filtering takes the neighbouring
 checker row.
+
+**A compressed texture's blocks are uploaded as the container carries them,
+and which container is fetched is generation's one answer to a device
+question.** `ktx-loader.ts` parses a KTX1 header, slices its mip chain and
+resolves `glInternalFormat` through `compressed-formats.ts`; all three are
+plain data over the file, so the parser is lowered to C++ and runs at load,
+exactly as the `.env` container parser does. What cannot run at load is the
+*selection*: `loadKtxTexture2D` keeps the suffixes whose feature
+`device.features` reports and tries them in order, and a native build has no
+network for a second candidate. Generation resolves it over the compiled
+backends' feature set — block compression, which is what a D3D12 adapter
+reports on both of them and in the browser reference — and the emitted format
+table carries the pin's block-compression rows alone, so a file outside them
+refuses at the pin's own `if (!format) throw` rather than at an upload that
+cannot name what it was handed. Both PALs then translate the pin's own WebGPU
+format name, upload the block-padded copy extent the pin computes for each
+level (a 2x2 tail mip still occupies one 4x4 block), and generate no mips.
+Scene 25 measures byte-exact on both backends, including at a grazing camera
+that samples the whole chain.
+
+**A Basis file is transcoded by the pin's own loader and packaged as KTX1.**
+`basis-loader.ts` injects the Binomial transcoder from a CDN with a `<script>`
+tag and picks its target format from `device.features` — a browser API and a
+device question — so generation runs the pinned loader in headless Chromium
+and bakes what it uploaded. It is written back as a KTX1 container because
+the port already reads one: the transcoded chain is exactly what `parseKtx1`
+returns, and the GL enum it is stored under is the pin's own table read
+backwards. Recorded per scene as `executed-basis-transcode`, with the drawn
+atlas's tradeoff. Scene 36's Mustang transcodes to `bc7-rgba-unorm` at
+768x512 with one level, which is what an instrumented capture shows the
+browser uploading, and measures byte-exact on both backends.
+
+**A texture-object `invertY` is a UV-block flip, and the two compressed
+loaders disagree about it.** `Texture2D.invertY` states that the texel data
+is stored top-down and must be flipped when sampled, "applied at UV-transform
+time in the material, so compressed-format textures remain correct" — an
+in-place row swap over blocks being impossible. `basis-loader.ts` sets it and
+`ktx-loader.ts` does not, so a Standard material sampling a Basis texture
+flips its UV block and one sampling a KTX texture does not. The native record
+keeps that property (`uv_invert_y`) apart from the upload flip (`invert_y`)
+for the same reason the render-target arm does.
 
 **A render target sampled as a Standard diffuse texture flips V in the UV
 block, not at upload.** `createRenderTargetTexture` returns its colour

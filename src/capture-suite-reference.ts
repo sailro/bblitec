@@ -118,6 +118,13 @@ export interface SuiteCaptureOptions {
      * capture still runs the pinned code.
      */
     virtualModules?: Readonly<Record<string, string>>;
+    /**
+     * Extra binary payloads served by path. A pinned loader that fetches its
+     * own asset is handed a loopback URL to these rather than the remote one,
+     * so the bytes come from the same download cache every other asset uses
+     * and a recompile asks the network for nothing it already has.
+     */
+    virtualAssets?: Readonly<Record<string, Uint8Array>>;
 }
 
 export function createSuiteSceneServer(
@@ -158,6 +165,14 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
         if (virtualModule !== undefined) {
             response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
             response.end(virtualModule);
+            return;
+        }
+        const virtualAsset = options.virtualAssets?.[url.pathname];
+        if (virtualAsset !== undefined) {
+            response.writeHead(200, {
+                "Content-Type": mimeType(url.pathname),
+            });
+            response.end(virtualAsset);
             return;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");

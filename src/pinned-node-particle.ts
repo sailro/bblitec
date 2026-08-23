@@ -32,9 +32,8 @@
  */
 import { createSuiteSceneServer } from "./capture-suite-reference.js";
 import {
-    gotoScenePage,
+    runPageGlobal,
     screenshotCaptureBrowserArgs,
-    withBrowserPage,
 } from "./browser-harness.js";
 
 /** The graph a `parseNodeParticleSource` call reached. */
@@ -742,25 +741,13 @@ export async function bakeNodeParticles(
     request: NodeParticleBakeRequest,
 ): Promise<NodeParticleBake> {
     const server = createSuiteSceneServer(driverModule(request));
-    const result = await withBrowserPage(
-        server,
-        {
-            serverName: "node-particle bake server",
-            browserRequirement:
-                "Baking a node-particle simulation requires Chrome or Edge.",
-            browserArgs: screenshotCaptureBrowserArgs,
-            viewport: { width: 1280, height: 720 },
-            pageErrorPrefix: "Node particle",
-        },
-        async (page, origin) => {
-            await gotoScenePage(page, origin);
-            await page.waitForFunction(
-                "typeof window.__bakeNodeParticles === 'function'",
-                null,
-                { timeout: 60_000 },
-            );
-            return page.evaluate("window.__bakeNodeParticles()");
-        },
-    );
+    const result = await runPageGlobal(server, "__bakeNodeParticles", {
+        serverName: "node-particle bake server",
+        browserRequirement:
+            "Baking a node-particle simulation requires Chrome or Edge.",
+        browserArgs: screenshotCaptureBrowserArgs,
+        viewport: { width: 1280, height: 720 },
+        pageErrorPrefix: "Node particle",
+    });
     return assertBake(result);
 }
