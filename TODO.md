@@ -305,7 +305,6 @@ that does to the deferred lane by default.
 - [ ] Scenes 12, 158, 218, 269: the loader-returned-collection shapes still
   unreached. Iterating `entities` and `animationGroups`, `?? []` over one and
   `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
-  and `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
   a collection passed to a user function (158's `requireGroup`) and `[0]`
   (12 and 218). Each is the same value travelling further than a call argument,
   so they belong together. Scene 269 is past the axis — its first blocker is

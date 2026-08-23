@@ -1585,14 +1585,11 @@ class Compiler
     ): boolean {
         const declarations =
             this.symbols.valueSymbol(identifier)?.declarations;
-        return Boolean(
-            declarations?.length &&
-                declarations.some((declaration) =>
-                    this.program.isSourceFileDefaultLibrary(
-                        declaration.getSourceFile(),
-                    ),
-                ),
-        );
+        return declarations?.some((declaration) =>
+            this.program.isSourceFileDefaultLibrary(
+                declaration.getSourceFile(),
+            ),
+        ) ?? false;
     }
 
     public compileSceneDefaultRenderTask(
