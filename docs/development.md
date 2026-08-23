@@ -669,6 +669,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_GPU_SHADER_DIR=<path>` | override shader directory |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
 | `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
+| `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
 | `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
 Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
@@ -679,6 +680,10 @@ Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
 
 Corpus reference capture serves a minimal local page containing only the
 render canvas; it does not include Babylon Lite's showcase loading overlay.
+A physics scene additionally resolves `@babylonjs/havok` to the published
+ESM module and its WASM to the pinned `lab/public` copy, so the reference
+runs the real solver; the devDependency exists for that page alone and
+nothing native links it ([fidelity](fidelity.md#physics-contract)).
 Relative local imports resolve from the entry source's repository path;
 requested `.js` modules transpile on demand from their sibling `.ts`
 sources. When the generated manifest records the
@@ -1065,6 +1070,13 @@ the README embeds the scene's current parity numbers when
   `generated\` survive a build (useful for disposable printf debugging)
   but are wiped by the next `compile`/`process`.
 - `LNK1168`: stop the specific running executable that locks the output.
+- `C1083: Cannot open compiler generated file` while vcpkg builds a
+  dependency from source: MSVC hit `MAX_PATH`. vcpkg's build trees live under
+  the build directory, so a repository checked out at a long path (a
+  `.claude/worktrees/<name>` worktree, for instance) overflows it for a port
+  with deep sources. Configure once with
+  `-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=C:/bt`; the port then lands in
+  the global binary cache and every later configure restores it from there.
 - `ucrtd.lib` missing: ensure `LIB` contains the MSVC x64, Windows UCRT x64,
   and Windows UM x64 library directories.
 - generator mismatch: delete the affected `native\build-*` directory and

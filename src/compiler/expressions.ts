@@ -939,6 +939,20 @@ export class ExpressionLowerer {
             );
         }
 
+        // `await HavokPhysics({ locateFile: ... })` -- the browser's own
+        // solver module, fetched and instantiated while the page loads.
+        // The pin hands it to `createHavokWorld` and calls `HP_*` on it;
+        // a native build reaches its solver through the PAL instead, so
+        // the call reaches nothing and the value exists only to be
+        // accepted there. The same shape as the tracking installers: the
+        // scene's line is legal and emits nothing.
+        if (this.context.symbols.isPhysicsEngineModule(callee)) {
+            return {
+                kind: "physics-engine-module",
+                cpp: "",
+            };
+        }
+
         const importedName =
             this.context.symbols.importedName(callee);
         if (importedName) {

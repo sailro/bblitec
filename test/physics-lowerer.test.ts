@@ -1,0 +1,175 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { LoweringContext } from "../src/lowering/context.js";
+import { PhysicsLowerer } from "../src/lowering/physics-lowerer.js";
+
+/**
+ * The focused test `docs/fidelity.md` requires for a high-risk adaptation.
+ *
+ * `substituted-physics-solver` is the one divergence in this repository that
+ * is not bit-faithful by construction, so what has to be pinned is
+ * everything the port DOES take from upstream: the constants that flow out
+ * of the pinned declarations into the emission, and the contract battery
+ * that refuses generation when one of the rules the emitted template
+ * restates moves.
+ *
+ * These assertions are the flowed results. The structural contracts inside
+ * the lowerer are what stop generation when the pin itself moves; this test
+ * is what catches an extraction that silently starts reading the wrong
+ * declaration and hands back a plausible number.
+ */
+
+const lowered = new PhysicsLowerer(new LoweringContext()).lowerPhysics();
+
+test("the step clamp flows from the pinned MAX_STEP_MS", () => {
+    // A 100 ms ceiling is a 10 fps floor: the pin caps a hitch so a single
+    // huge dt cannot tunnel a fast body through thin geometry.
+    assert.match(
+        lowered.header,
+        /inline constexpr double physics_max_step_ms = 100\.0;/,
+    );
+});
+
+test("gravity and the material defaults flow from their own `??` arms", () => {
+    assert.match(
+        lowered.header,
+        /pinned_default_gravity\(\) \{\n    return Vec3d\{0\.0, -9\.81, 0\.0\};/,
+    );
+    assert.match(
+        lowered.header,
+        /physics_default_friction = 0\.2;/,
+    );
+    assert.match(
+        lowered.header,
+        /physics_default_restitution = 0\.2;/,
+    );
+});
+
+test("the three pinned enumerations keep the pin's own numbering", () => {
+    // Read from the `const enum` declarations, which are the only place the
+    // numbers exist -- the TypeScript emitter inlines them, so nothing at
+    // run time could be consulted instead.
+    assert.match(
+        lowered.header,
+        /enum class PhysicsShapeType : std::int32_t \{\n    SPHERE = 0,\n    CAPSULE = 1,\n    CYLINDER = 2,\n    BOX = 3,\n    CONVEX_HULL = 4,\n    CONTAINER = 5,\n    MESH = 6,\n    HEIGHTFIELD = 7,\n\};/,
+    );
+    assert.match(
+        lowered.header,
+        /enum class PhysicsMotionType : std::int32_t \{\n    STATIC = 0,\n    ANIMATED = 1,\n    DYNAMIC = 2,\n\};/,
+    );
+    assert.match(
+        lowered.header,
+        /enum class PhysicsPrestepType : std::int32_t \{\n    DISABLED = 0,\n    TELEPORT = 1,\n    ACTION = 2,\n\};/,
+    );
+});
+
+test("the pin's own motion-type mapping is emitted, not left to the PAL", () => {
+    // Upstream does not hand its enum to the solver either: it maps
+    // STATIC/ANIMATED/DYNAMIC onto the back end's own three. Keeping that
+    // mapping in generated code is what makes a renumbering upstream a
+    // change here rather than a silent swap inside whichever solver links.
+    for (const arm of [
+        /case PhysicsMotionType::STATIC:\n            return pal::PhysicsMotionType::immovable;/,
+        /case PhysicsMotionType::ANIMATED:\n            return pal::PhysicsMotionType::node_driven;/,
+        /case PhysicsMotionType::DYNAMIC:\n            return pal::PhysicsMotionType::simulated;/,
+    ]) {
+        assert.match(lowered.header, arm);
+    }
+});
+
+test("the step gate and its four phases are emitted in the pin's order", () => {
+    assert.match(
+        lowered.source,
+        /world\.fixed_delta_ms > 0\.0 \? world\.fixed_delta_ms : delta_ms/,
+    );
+    assert.match(
+        lowered.source,
+        /if \(!std::isfinite\(step_ms\) \|\| step_ms <= 0\.0\)/,
+    );
+    assert.match(
+        lowered.source,
+        /std::min\(step_ms, physics_max_step_ms\) \/ 1000\.0/,
+    );
+    const order = [
+        "sync_node_to_body(",
+        "pal::physics_world_step(",
+        "sync_body_to_node(",
+        "world.after_step",
+    ];
+    let cursor = -1;
+    for (const marker of order) {
+        const at = lowered.source.indexOf(marker, cursor + 1);
+        assert.ok(
+            at > cursor,
+            `expected the emitted step to run ${order.join(
+                " then ",
+            )}; '${marker}' is out of that order`,
+        );
+        cursor = at;
+    }
+});
+
+test("the aggregate keeps the pinned ordering mass derivation depends on", () => {
+    const order = [
+        "pal::physics_body_create(",
+        "pal::physics_body_set_motion_type(",
+        "pal::physics_world_add_body(",
+        "pal::physics_body_set_shape(",
+        "pal::physics_shape_set_material(",
+        "pal::physics_shape_build_mass_properties(",
+        "pal::physics_body_set_mass_properties(",
+    ];
+    let cursor = -1;
+    for (const marker of order) {
+        const at = lowered.source.indexOf(marker, cursor + 1);
+        assert.ok(
+            at > cursor,
+            `expected the emitted aggregate to run ${order.join(
+                " then ",
+            )}; '${marker}' is out of that order`,
+        );
+        cursor = at;
+    }
+    // `mass === 0` is what selects the motion type, and a mass is written
+    // only for a positive one -- both the pin's own rules.
+    assert.match(
+        lowered.source,
+        /options\.mass == 0\.0\n *\? PhysicsMotionType::STATIC\n *: PhysicsMotionType::DYNAMIC/,
+    );
+    assert.match(lowered.source, /if \(options\.mass > 0\.0\)/);
+});
+
+test("the material carries the pin's own per-channel combine modes", () => {
+    // MINIMUM for friction and MAXIMUM for restitution is upstream's
+    // choice, not the linked solver's default, so it crosses the PAL
+    // surface as data.
+    assert.match(
+        lowered.source,
+        /pal::PhysicsMaterialCombine::minimum,\n *pal::PhysicsMaterialCombine::maximum,/,
+    );
+});
+
+test("a body's integrated pose writes the two fields the pin writes", () => {
+    assert.match(lowered.source, /mesh\.position = Vec3\{/);
+    assert.match(lowered.source, /mesh\.rotation_quaternion = Vec4\{/);
+    assert.match(lowered.source, /\+\+mesh\.transform_version;/);
+});
+
+test("no solver is named in generated code", () => {
+    // The whole point of the seam: swapping the implementation is dropping
+    // in a different PAL translation unit, so no generated CODE may know
+    // which one is linked. Comment lines are excluded deliberately -- the
+    // emitted provenance cites the pin's own `hknp` parameter, which is
+    // the boundary being described rather than a dependency on it.
+    const code = (text: string): string =>
+        text
+            .split("\n")
+            .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+            .join("\n");
+    for (const text of [lowered.header, lowered.source]) {
+        assert.doesNotMatch(
+            code(text),
+            /bullet|btRigidBody|btVector3|hknp/i,
+        );
+    }
+});

@@ -109,9 +109,13 @@ export class BrowserErasure {
                 unwrapped.arguments.some((argument) =>
                     this.isBrowserOnlyExpression(argument),
                 );
+            // `Number(x)` joins `isNaN` and `parseFloat` as a conversion
+            // over a browser-derived value: it is how every physics scene
+            // reads the step its capture is pinned at
+            // (`Number(params.get("captureFrame"))`).
             if (
                 ts.isIdentifier(unwrapped.expression) &&
-                ["isNaN", "parseFloat"].includes(
+                ["isNaN", "Number", "parseFloat"].includes(
                     unwrapped.expression.text,
                 ) &&
                 this.context.isDefaultLibraryIdentifier(
@@ -432,6 +436,43 @@ export class BrowserErasure {
                 return {
                     kind: "number",
                     value: Number.parseFloat(text),
+                };
+            }
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === "Number" &&
+                unwrapped.arguments.length === 1 &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
+                )
+            ) {
+                const argument =
+                    this.evaluateBrowserValue(
+                        unwrapped.arguments[0]!,
+                    );
+                // Only the kinds JavaScript converts to a NUMBER fold; an
+                // opaque browser object or the search-params record does
+                // not, and is listed by what it IS rather than by what it
+                // is not so a kind added later does not silently join.
+                if (
+                    argument === undefined ||
+                    !["boolean", "null", "number", "string"].includes(
+                        argument.kind,
+                    )
+                ) {
+                    return undefined;
+                }
+                // The conversion is the language's own, not a table
+                // restated here: `Number(null)` is 0, `Number("")` is 0
+                // and `Number("abc")` is NaN, which is exactly what the
+                // `Number.isFinite` guard beside it then reads.
+                return {
+                    kind: "number",
+                    value: Number(
+                        argument.kind === "null"
+                            ? null
+                            : (argument as { value: unknown }).value,
+                    ),
                 };
             }
             if (

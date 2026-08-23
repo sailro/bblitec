@@ -505,6 +505,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "+ src/particle/particle-billboard.ts",
         consumers: CMAKE,
     },
+    "physics:world": {
+        provenance:
+            "src/physics/havok.ts createHavokWorld + _stepWorld " +
+            "(the pin's own `hknp` parameter is the back end this port " +
+            "supplies from the PAL)",
+        consumers: CMAKE,
+    },
+    "physics:aggregate": {
+        provenance:
+            "src/physics/havok.ts createPhysicsAggregate + " +
+            "createPrimitivePhysicsShapeHandle",
+        consumers: CMAKE,
+    },
     "sprite:billboard-custom-shader": {
         provenance:
             "src/sprite/billboard-custom-shader.ts + src/sprite/custom-shader-core.ts",

@@ -27,6 +27,15 @@ foreach(BBLITE_IMAGE_CODEC IN ITEMS "jpeg" "webp")
     endif()
 endforeach()
 
+# The rigid-body solver, selected the same way and for the same reason: a
+# scene that creates no physics world installs and links nothing.
+if(
+    "physics:world" IN_LIST BBLITE_RUNTIME_FEATURES
+    AND NOT "physics" IN_LIST VCPKG_MANIFEST_FEATURES
+)
+    list(APPEND VCPKG_MANIFEST_FEATURES "physics")
+endif()
+
 project(babylon_lite_native LANGUAGES CXX)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
@@ -466,6 +475,17 @@ else()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_SPLATS=0
+    )
+endif()
+
+# The solver is reached only through `bblite/pal_physics.hpp`, whose
+# implementation is one translation unit the feature list selects
+# (`featureSources`). Nothing generated names Bullet.
+if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
+    find_package(Bullet CONFIG REQUIRED)
+    target_link_libraries(
+        bblite_native
+        PRIVATE BulletDynamics BulletCollision LinearMath
     )
 endif()
 

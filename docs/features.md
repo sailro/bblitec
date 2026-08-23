@@ -78,6 +78,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
+| [Physics](#physics) | Run | rigid bodies, primitive shapes, one fixed step per frame — over a substituted solver |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
 | [Fullscreen effects](#fullscreen-effects) | Compile → Run | the caller's WGSL wrapped in the pin's own vertex stage at generation; the swapchain renderer or the frame-graph task at run time |
@@ -857,6 +858,66 @@ A custom billboard program brings its own vertex stage, which is the one place
 the two families differ: the pin's billboard composer writes the view distance
 and the world position a custom body may read, and the stock stage does not.
 
+### Physics
+
+Rigid-body simulation, and the one family here whose numbers are not the
+pin's. It is worth reading the split before the feature list, because the
+split is the whole design.
+
+**The pin already drew the boundary.** `createHavokWorld(scene, hknp)` takes
+the solver as a *parameter* and every call the pinned physics layer makes on
+it is an `HP_*` entry point, so `src/physics/havok.ts` is not "the Havok
+integration" — it is Babylon's rigid-body semantics written against a fixed
+back-end surface. That splits exactly along this repository's ownership rule:
+
+- **Generated**, lowered from the pinned module: the world record and its
+  body list, the step gate (`_fixedDeltaMs > 0 ? _fixedDeltaMs : deltaMs`,
+  the non-finite rejection, and the `Math.min(stepMs, MAX_STEP_MS) / 1000`
+  tunnelling clamp), the four phases of a frame in order (pre-step node→body
+  sync, step, post-step body→node sync, after-step callbacks), the
+  aggregate's own ordering, and the shape parameters derived from the mesh's
+  bounds. Every constant is read from the pinned declaration rather than
+  restated, so a bump that moves one moves what is emitted.
+- **PAL**, `native/include/bblite/pal_physics.hpp` and one implementation
+  translation unit: the `HP_*` surface itself. That is a third-party library
+  behind a fixed entry-point list, which is the role SDL already plays.
+
+**The solver is Bullet, and that is the divergence.** The Havok WASM module
+is a proprietary binary this project cannot redistribute; Bullet is Zlib.
+Nothing generated names a solver, so a different implementation is a
+different translation unit — but two rigid-body solvers integrate different
+contact models, so a body's pose after N steps is a *different number*
+rather than a rounding of the same one. This is the only adaptation in the
+repository that is not bit-faithful by construction, it is recorded per
+scene as `substituted-physics-solver`, and it is why a physics scene cannot
+carry a pixel threshold against a Havok golden at a moving pose. What it can
+be measured by is a trajectory, plus a pixel comparison at rest, where the
+configuration is static and phase drops out — and there the two solvers
+agree to 16 pixels in 921,600 ([fidelity](fidelity.md#physics-contract)).
+
+`@babylonjs/havok` is a **browser-only devDependency**: the capture harness
+serves it to the reference page so a physics scene has a golden at all. It
+is never linked, never shipped, and reaches nothing in the native binary —
+`await HavokPhysics(...)` compiles to nothing, and the solver a build links
+is selected by the `physics:world` feature.
+
+The reached slice: `createHavokWorld` with an explicit or defaulted gravity,
+`createPhysicsAggregate` over the four primitive shapes
+`createPrimitivePhysicsShapeHandle` builds without a mesh (sphere, box,
+capsule, cylinder) with `mass`, `friction` and `restitution`, and
+`onPhysicsAfterStep`. The step registers at the *front* of the scene's
+before-render list, as the pin's `unshift` puts it, so a scene reading a
+pose in its own callback reads this frame's rather than the previous
+frame's. A body's integrated position and rotation are written onto the same
+`MeshRecord` fields property animation writes, and bump the same
+`transform_version` the renderer re-reads.
+
+Everything else in the pinned physics layer refuses at generation naming
+what it reached: mesh and convex-hull shapes (the pin's own mesh
+accumulator), containers, heightfields, constraints, queries, triggers,
+collision events, the character controller, the debug viewer, floating
+origin, and every body control past creation.
+
 ### Frame graph
 
 Render targets and tasks, material overrides, depth-only passes, 7+4 geometry
@@ -1072,7 +1133,8 @@ build error with a source location, not a silently different image.
   parameters pass by native reference; `new Array` elements zero-initialize;
   and `Math.random` is the pinned seeded sequence — each recorded in
   `fidelity.json`
-- no physics, audio, or networking
+- no audio or networking. Physics is reached, behind a substituted solver
+  ([below](#physics))
 - property animation covers LINEAR/STEP scalar and vector tracks, quaternion
   slerp, group ranges/looping/speed, and deterministic seeking for the reached
   mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
