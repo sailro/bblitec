@@ -2890,21 +2890,21 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     // The stored vertices already carry the mirror the
                     // native convention applies, so undo it before the node
                     // matrix and re-apply it after.
-                    const Vec3 world = transform_point(
+                    const Vec3 world_corner = transform_point(
                         node_world,
                         Vec3{-corner.x, corner.y, corner.z});
                     if (!has_world_bounds) {
-                        geometry.world_bounds_min = world;
-                        geometry.world_bounds_max = world;
+                        geometry.world_bounds_min = world_corner;
+                        geometry.world_bounds_max = world_corner;
                         has_world_bounds = true;
                         continue;
                     }
-                    geometry.world_bounds_min.x = std::min(geometry.world_bounds_min.x, world.x);
-                    geometry.world_bounds_min.y = std::min(geometry.world_bounds_min.y, world.y);
-                    geometry.world_bounds_min.z = std::min(geometry.world_bounds_min.z, world.z);
-                    geometry.world_bounds_max.x = std::max(geometry.world_bounds_max.x, world.x);
-                    geometry.world_bounds_max.y = std::max(geometry.world_bounds_max.y, world.y);
-                    geometry.world_bounds_max.z = std::max(geometry.world_bounds_max.z, world.z);
+                    geometry.world_bounds_min.x = std::min(geometry.world_bounds_min.x, world_corner.x);
+                    geometry.world_bounds_min.y = std::min(geometry.world_bounds_min.y, world_corner.y);
+                    geometry.world_bounds_min.z = std::min(geometry.world_bounds_min.z, world_corner.z);
+                    geometry.world_bounds_max.x = std::max(geometry.world_bounds_max.x, world_corner.x);
+                    geometry.world_bounds_max.y = std::max(geometry.world_bounds_max.y, world_corner.y);
+                    geometry.world_bounds_max.z = std::max(geometry.world_bounds_max.z, world_corner.z);
                 }
             }
 ` : ""}            engine.geometries.push_back(std::move(geometry));
