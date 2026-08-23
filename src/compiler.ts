@@ -1640,7 +1640,6 @@ class Compiler
                     "Browser-dependent condition cannot be determined for native AOT lowering.",
                 );
             }
-            this.recordBrowserExpression(unwrapped);
             return condition ? "true" : "false";
         }
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
@@ -2826,9 +2825,12 @@ class Compiler
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
-        return this.browserErasure.evaluateBrowserCondition(
-            expression,
-        );
+        const condition =
+            this.browserErasure.evaluateBrowserCondition(
+                expression,
+            );
+        this.recordBrowserExpression(expression);
+        return condition;
     }
 
     public evaluateBrowserValue(
