@@ -700,6 +700,14 @@ function pinnedNumericConstant(
 }
 
 /**
+ * The render-texture half of the emissive slot.
+ *
+ * Two derivations read it — the slot's presence, and the depth arm the pin
+ * selects from `_sampleType` — so the record field is spelled once.
+ */
+const emissiveRenderTextureSource = "material.has_emissive_render_texture";
+
+/**
  * How the pin's `StandardMaterialProps` reads map onto our MaterialRecord.
  *
  * A null source folds the pin's condition to false because the generated
@@ -715,7 +723,7 @@ const standardFeatureRecordSources: Readonly<
     // fills the render-texture pair instead: an image and an attachment
     // both light HAS_DIFFUSE_TEXTURE.
     diffuseTexture:
-        "!material.base_color_texture.bytes.empty() || " +
+        "material.base_color_texture.has_image() || " +
         "material.has_diffuse_render_texture",
     diffuseCoordIndex: "material.diffuse_coord_index",
     // `enableMaterialUvTransform(material)` marks a hand-built material for
@@ -723,20 +731,24 @@ const standardFeatureRecordSources: Readonly<
     // `_meshFeatures` reads, and the only thing that sets it.
     _hasUvTx: "material.has_uv_transform",
     // `setStandardEmissiveTexture` is the only native source of a Standard
-    // emissive texture (the .babylon loader loads none), and it is always the
-    // pin's depth-sampled render texture, so both the presence bit and the
-    // depth arm key off the flag.
-    _emissiveTexture: "material.has_emissive_render_texture",
-    _bumpTexture: "!material.bump_texture.bytes.empty()",
-    _specularTexture: "!material.specular_texture.bytes.empty()",
+    // emissive texture (the .babylon loader loads none), and it takes both
+    // of the pin's `Texture2D` sources: a depth render target, and a loaded
+    // image. The presence bit is either; the depth arm is the render target
+    // alone, which is the only one carrying `_sampleType`, so both sites
+    // compose from the one spelling below rather than repeating it.
+    _emissiveTexture:
+        `${emissiveRenderTextureSource} || ` +
+        "material.emissive_texture.has_image()",
+    _bumpTexture: "material.bump_texture.has_image()",
+    _specularTexture: "material.specular_texture.has_image()",
     specularCoordIndex: "material.specular_coord_index",
-    _ambientTexture: "!material.ambient_texture.bytes.empty()",
+    _ambientTexture: "material.ambient_texture.has_image()",
     ambientCoordIndex: "material.ambient_coord_index",
     // The generated .babylon loader loads no lightmap slot.
     _lightmapTexture: null,
     lightmapCoordIndex: null,
     useLightmapAsShadowmap: null,
-    _opacityTexture: "!material.opacity_texture.bytes.empty()",
+    _opacityTexture: "material.opacity_texture.has_image()",
     // babylon-loader-cpp.ts reads opacityTexture.getAlphaFromRGB into the
     // record, mirroring the pin's own loader write (load-babylon.ts
     // TEX_SLOTS opacity extra: `if (t.getAlphaFromRGB) m.opacityFromRGB`).
@@ -745,7 +757,7 @@ const standardFeatureRecordSources: Readonly<
     // of reflectionTexture (texture_data() drops isCube entries), the same
     // split the pin's loader makes (TEX_SLOTS `skipIf: isCube` vs the
     // separate cube branch).
-    _reflectionTexture: "!material.reflection_texture.bytes.empty()",
+    _reflectionTexture: "material.reflection_texture.has_image()",
     _reflectionCubeTexture: "material.reflection_cube != invalid_handle",
     backFaceCulling: "!material.double_sided",
     disableLighting: "material.disable_lighting",
@@ -870,9 +882,11 @@ function lowerStandardFeatureDerivation(
             const operator = unwrapped.operatorToken.kind;
             const left = context.unwrapExpression(unwrapped.left);
             const right = context.unwrapExpression(unwrapped.right);
-            // `m.emissiveTexture._sampleType === "depth"`: the native
-            // record's only emissive source is the compiled render-texture
-            // setter, which is the pin's depth-sampled texture.
+            // `m.emissiveTexture._sampleType === "depth"`: of the two
+            // sources the compiled setter takes, only a render target is
+            // the pin's depth-sampled texture -- `rtt.ts` stamps the
+            // property and `loadTexture2D` leaves it unset -- so the arm
+            // follows that flag rather than the slot's presence.
             if (
                 operator === ts.SyntaxKind.EqualsEqualsEqualsToken &&
                 ts.isPropertyAccessExpression(left) &&
@@ -881,8 +895,7 @@ function lowerStandardFeatureDerivation(
                 ts.isStringLiteral(right) &&
                 right.text === "depth"
             ) {
-                return standardFeatureRecordSources["_emissiveTexture"] ??
-                    undefined;
+                return emissiveRenderTextureSource;
             }
             // `m.lightmapTexture.uAng === Math.PI` and any other read off an
             // unmapped property folds with its property.
@@ -1214,6 +1227,14 @@ export interface StandardSceneCompositionInput {
     /** `material:standard-diffuse-pixels-texture` reached: scene code hands
      *  a `createTexture2DFromPixels` texture to `material.diffuseTexture`. */
     diffusePixelsTexture: boolean;
+    /** `material:standard-diffuse-file-texture` reached: scene code hands a
+     *  loaded image to `material.diffuseTexture`. */
+    diffuseFileTexture: boolean;
+    /** `material:standard-emissive-file-texture` reached: scene code hands
+     *  a loaded image to `setStandardEmissiveTexture`, which composes the
+     *  extension's filtering arm where a depth attachment composes its
+     *  unfilterable-float one. */
+    emissiveFileTexture: boolean;
     /** `material:standard-uv-transform` reached: scene code marked a
      *  hand-built material with `enableMaterialUvTransform`. */
     uvTransform: boolean;
@@ -1352,25 +1373,32 @@ function babylonMaterialInput(
 function sceneCodeMaterialInputs(
     options: {
         emissiveRenderTexture: boolean;
+        emissiveFileTexture: boolean;
         diffuseRenderTexture: boolean;
         diffusePixelsTexture: boolean;
+        diffuseFileTexture: boolean;
         uvTransform: boolean;
     },
 ): PinnedStandardMaterialInput[] {
     const inputs: PinnedStandardMaterialInput[] = [];
     // An axis a scene does not reach contributes one arm, not two, so a
-    // scene writing neither render texture sweeps the same eight inputs it
-    // always did.
-    const emissiveArms = options.emissiveRenderTexture
-        ? [false, true]
-        : [false];
-    // A colour attachment and a pixels texture reach the pin's diffuse
-    // condition identically -- a truthy texture at coordinate index 0 -- so
-    // they are one arm of this sweep rather than two. What differs between
-    // them is the record the runtime fills and the UV block it produces,
-    // neither of which is a composition key.
+    // scene writing neither emissive texture sweeps the same eight inputs
+    // it always did. The two emissive sources are separate arms where the
+    // diffuse ones are not: `stdEmissiveExt._detect` reads the texture's
+    // own `_sampleType`, so a depth attachment composes a variant an image
+    // does not.
+    const emissiveArms: ("none" | "depth" | "image")[] = ["none"];
+    if (options.emissiveRenderTexture) emissiveArms.push("depth");
+    if (options.emissiveFileTexture) emissiveArms.push("image");
+    // A colour attachment, a pixels texture and a loaded image reach the
+    // pin's diffuse condition identically -- a truthy texture at coordinate
+    // index 0 -- so they are one arm of this sweep rather than three. What
+    // differs between them is the record the runtime fills and the UV block
+    // it produces, neither of which is a composition key.
     const diffuseArms =
-        options.diffuseRenderTexture || options.diffusePixelsTexture
+        options.diffuseRenderTexture ||
+        options.diffusePixelsTexture ||
+        options.diffuseFileTexture
             ? [false, true]
             : [false];
     const uvTransformArms = options.uvTransform ? [false, true] : [false];
@@ -1386,13 +1414,14 @@ function sceneCodeMaterialInputs(
                                     : {}),
                                 backFaceCulling: !doubleSided,
                                 alpha: alphaBlend ? 0.5 : 1,
-                                ...(emissive
-                                    ? {
-                                        emissiveTexture: {
-                                            _sampleType: "depth",
-                                        },
-                                    }
-                                    : {}),
+                                ...(emissive === "none"
+                                    ? {}
+                                    : {
+                                        emissiveTexture:
+                                            emissive === "depth"
+                                                ? { _sampleType: "depth" }
+                                                : {},
+                                    }),
                                 ...(diffuse ? { diffuseTexture: {} } : {}),
                                 ...(uvTransform ? { _hasUvTx: true } : {}),
                             });
@@ -1428,8 +1457,10 @@ export async function composeSceneStandardVariants(
         materialInputs.push(
             ...sceneCodeMaterialInputs({
                 emissiveRenderTexture: input.emissiveRenderTexture,
+                emissiveFileTexture: input.emissiveFileTexture,
                 diffuseRenderTexture: input.diffuseRenderTexture,
                 diffusePixelsTexture: input.diffusePixelsTexture,
+                diffuseFileTexture: input.diffuseFileTexture,
                 uvTransform: input.uvTransform,
             }),
         );

@@ -9,6 +9,7 @@ import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
+import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.js";
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
@@ -38,7 +39,10 @@ import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
-import { UpstreamSourceStore } from "./upstream-source.js";
+import {
+    sharedUpstreamStore,
+    UpstreamSourceStore,
+} from "./upstream-source.js";
 import type {
     EffectManifest,
     SpriteCustomShaderManifest,
@@ -110,7 +114,7 @@ function pinnedMaxLights(context: LoweringContext): number {
  *  max-lights refusal row so it records the constant's value beside
  *  the checked count. */
 export function readPinnedMaxLights(): number {
-    return pinnedMaxLights(new LoweringContext(new UpstreamSourceStore()));
+    return pinnedMaxLights(new LoweringContext(sharedUpstreamStore()));
 }
 
 function meshLightIndexWordOffset(context: LoweringContext): number {
@@ -1454,30 +1458,41 @@ ${composed.wgsl}`,
             );
         }
         {
-            const diffuse = features.includes(
-                "material:standard-diffuse-render-texture",
-            );
-            const emissive = features.includes(
-                "material:standard-emissive-render-texture",
-            );
-            const pixels = features.includes(
-                "material:standard-diffuse-pixels-texture",
-            );
-            const uvTransform = features.includes(
-                "material:standard-uv-transform",
-            );
-            if (diffuse || emissive || pixels || uvTransform) {
+            const setters = {
+                diffuse: features.includes(
+                    "material:standard-diffuse-render-texture",
+                ),
+                emissive: features.includes(
+                    "material:standard-emissive-render-texture",
+                ),
+                pixels: features.includes(
+                    "material:standard-diffuse-pixels-texture",
+                ),
+                diffuseFile: features.includes(
+                    "material:standard-diffuse-file-texture",
+                ),
+                emissiveFile: features.includes(
+                    "material:standard-emissive-file-texture",
+                ),
+                uvTransform: features.includes(
+                    "material:standard-uv-transform",
+                ),
+            };
+            if (Object.values(setters).some(Boolean)) {
                 this.writeSource(
                     "upstream/src/material_texture_setters.cpp",
-                    factories.lowerStandardTextureSetters(
-                        diffuse,
-                        emissive,
-                        pixels,
-                        uvTransform,
-                    ),
+                    factories.lowerStandardTextureSetters(setters),
                     generated,
                 );
             }
+        }
+        if (features.includes("texture:compressed")) {
+            this.writeSource(
+                "upstream/src/compressed_texture.cpp",
+                new CompressedTextureLowerer(context).lower(),
+                generated,
+                "upstream/include/bblite/upstream/compressed_texture.hpp",
+            );
         }
         if (features.includes("material:no-color-view")) {
             this.writeSource(
@@ -2095,7 +2110,7 @@ export function emitUpstreamGenerated(
     },
     tree = new GeneratedTree(outputRoot),
 ): void {
-    new GeneratedSourceWriter(tree, new UpstreamSourceStore()).emit(
+    new GeneratedSourceWriter(tree, sharedUpstreamStore()).emit(
         features,
         options,
     );

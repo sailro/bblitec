@@ -39,6 +39,11 @@ import { glbJsonText } from "./gltf-document.js";
 import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
 import { packageSplat } from "./splat-packager.js";
+import {
+    transcodeBasisTexture,
+    writeKtx1,
+} from "./basis-transcode.js";
+import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
 import { parseDataUrl } from "./data-url.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
@@ -227,6 +232,30 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
         writeFileSync(
             destination,
             packageSplat(await assetBytes(source, inputPath)).rows,
+        );
+        return;
+    }
+
+    if (asset.kind === "basis") {
+        // The one texture whose bytes the browser produces: the pin fetches
+        // its transcoder from a CDN and picks a target format from the
+        // device, so generation runs the pinned loader and packages what it
+        // uploaded. The file itself rides the ordinary download cache and is
+        // served back to the page from the loopback origin, so a recompile
+        // asks the CDN for the transcoder alone.
+        const lowerer = compressedTextureLowerer();
+        const transcoded = await transcodeBasisTexture(
+            source,
+            await assetBytes(source, inputPath),
+        );
+        writeFileSync(
+            destination,
+            writeKtx1(
+                transcoded,
+                lowerer.magicBytes(),
+                lowerer.glInternalFormat(transcoded.gpuFormat),
+                lowerer.headerLayout(),
+            ),
         );
         return;
     }

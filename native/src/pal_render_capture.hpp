@@ -278,15 +278,33 @@ private:
  * digest across two slots is itself a finding (the same texture bound
  * twice is a real defect shape here).
  */
-inline std::string payload_digest(const std::vector<std::uint8_t>& bytes) {
-    std::uint64_t hash = 0xcbf29ce484222325ull;
+inline std::uint64_t fold_payload(
+    const std::vector<std::uint8_t>& bytes,
+    std::uint64_t hash = 0xcbf29ce484222325ull) {
     for (const std::uint8_t byte : bytes) {
         hash ^= byte;
         hash *= 0x100000001b3ull;
     }
+    return hash;
+}
+
+inline std::string digest_text(std::uint64_t hash) {
     std::ostringstream text;
     text << std::hex << std::setw(16) << std::setfill('0') << hash;
     return text.str();
+}
+
+/** Every level of a compressed payload, folded into one comparable digest. */
+inline std::string payload_digest(const CompressedTexture& texture) {
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    for (const CompressedMipLevel& mip : texture.mips) {
+        hash = fold_payload(mip.bytes, hash);
+    }
+    return digest_text(hash);
+}
+
+inline std::string payload_digest(const std::vector<std::uint8_t>& bytes) {
+    return digest_text(fold_payload(bytes));
 }
 
 inline const char* primitive_name(PrimitiveKind kind) {
@@ -444,11 +462,26 @@ inline void write_texture_slot(
     JsonWriter& json,
     const char* slot,
     const TextureData& texture) {
-    if (texture.bytes.empty()) return;
+    if (!texture.has_image()) return;
     json.begin_object();
     json.field("slot", slot);
-    json.field("byteLength", texture.bytes.size());
-    json.field("digest", payload_digest(texture.bytes));
+    // A compressed slot's payload is its blocks rather than `bytes`, and
+    // its own chain rather than one the upload generates, so it reports
+    // both — a diff against the browser's uploads compares the same
+    // quantities either way.
+    std::size_t byte_length = texture.bytes.size();
+    std::string digest = payload_digest(texture.bytes);
+    if (!texture.compressed.mips.empty()) {
+        byte_length = 0;
+        for (const CompressedMipLevel& mip : texture.compressed.mips) {
+            byte_length += mip.bytes.size();
+        }
+        digest = payload_digest(texture.compressed);
+        json.field("format", std::string(texture.compressed.format));
+        json.field("mipLevels", texture.compressed.mips.size());
+    }
+    json.field("byteLength", byte_length);
+    json.field("digest", digest);
     json.field("invertY", texture.invert_y);
     json.field("uvInvertY", texture.uv_invert_y);
     json.key("sampler");

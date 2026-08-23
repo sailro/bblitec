@@ -2007,11 +2007,108 @@ void dump_deformation_uniforms(
 
 
 
+/** The SDL enumerator for one shared block format. */
+SDL_GPUTextureFormat compressed_texture_format(std::string_view name) {
+    switch (compressed_block_format(name)) {
+        case CompressedBlockFormat::bc1_rgba_unorm:
+            return SDL_GPU_TEXTUREFORMAT_BC1_RGBA_UNORM;
+        case CompressedBlockFormat::bc2_rgba_unorm:
+            return SDL_GPU_TEXTUREFORMAT_BC2_RGBA_UNORM;
+        case CompressedBlockFormat::bc3_rgba_unorm:
+            return SDL_GPU_TEXTUREFORMAT_BC3_RGBA_UNORM;
+        case CompressedBlockFormat::bc7_rgba_unorm:
+            return SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM;
+        case CompressedBlockFormat::bc7_rgba_unorm_srgb:
+            return SDL_GPU_TEXTUREFORMAT_BC7_RGBA_UNORM_SRGB;
+    }
+    throw std::runtime_error(
+        "SDL_GPU has no compressed texture format for '" +
+        std::string(name) + "'.");
+}
+
+/**
+ * A texture whose bytes are already blocks: the container's own mip chain,
+ * uploaded level by level with nothing decoded and nothing generated.
+ */
+SDL_GPUTexture* upload_compressed_texture(
+    SDL_GPUDevice* device,
+    const CompressedTexture& compressed) {
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+    texture_info.format = compressed_texture_format(compressed.format);
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = compressed.width;
+    texture_info.height = compressed.height;
+    texture_info.layer_count_or_depth = 1;
+    texture_info.num_levels =
+        static_cast<Uint32>(compressed.mips.size());
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    if (!SDL_GPUTextureSupportsFormat(
+            device,
+            texture_info.format,
+            SDL_GPU_TEXTURETYPE_2D,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+        throw std::runtime_error(
+            "This device cannot sample '" +
+            std::string(compressed.format) + "' textures.");
+    }
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    if (!texture) gpu_error("SDL_CreateGPUTexture compressed");
+
+    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    std::vector<SDL_GPUTransferBuffer*> transfers;
+    transfers.reserve(compressed.mips.size());
+    for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
+        const CompressedMipLevel& mip = compressed.mips[level];
+        const CompressedMipCopy geometry =
+            compressed_mip_copy(compressed, mip);
+        SDL_GPUTransferBufferCreateInfo transfer_info{};
+        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        transfer_info.size = static_cast<Uint32>(mip.bytes.size());
+        SDL_GPUTransferBuffer* transfer =
+            SDL_CreateGPUTransferBuffer(device, &transfer_info);
+        if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
+        transfers.push_back(transfer);
+        void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+        if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
+        std::memcpy(mapped, mip.bytes.data(), mip.bytes.size());
+        SDL_UnmapGPUTransferBuffer(device, transfer);
+        // SDL takes both in pixels and divides by the format's block size
+        // itself, so the padded extent is what it needs here too.
+        SDL_GPUTextureTransferInfo source{
+            transfer, 0, geometry.width, geometry.height};
+        SDL_GPUTextureRegion destination{
+            texture,
+            static_cast<Uint32>(level),
+            0, 0, 0, 0,
+            geometry.width,
+            geometry.height,
+            1};
+        SDL_UploadToGPUTexture(copy, &source, &destination, false);
+    }
+    SDL_EndGPUCopyPass(copy);
+    if (!SDL_SubmitGPUCommandBuffer(command)) {
+        gpu_error("SDL_SubmitGPUCommandBuffer");
+    }
+    for (SDL_GPUTransferBuffer* transfer : transfers) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer);
+    }
+    return texture;
+}
+
 SDL_GPUTexture* upload_texture(
     SDL_GPUDevice* device,
     const TextureData& texture_data,
     bool srgb,
     std::array<std::uint8_t, 4> fallback) {
+    // A compressed slot carries its own format and its own chain, so the
+    // table's sRGB rule has nothing to select: the container states which
+    // of the two views its blocks decode through.
+    if (!texture_data.compressed.mips.empty()) {
+        return upload_compressed_texture(device, texture_data.compressed);
+    }
     const DecodedImage image =
         decode_uploadable_image(texture_data, fallback);
     SDL_GPUTextureCreateInfo texture_info{};
@@ -4974,9 +5071,10 @@ bool run_gpu_engine(Engine& engine) {
                           slot_row.source,
                           standard_material)
                     : nullptr;
+                const TextureData empty{};
                 gpu_mesh.*members.texture = upload_texture(
                     state.device,
-                    data ? *data : TextureData{},
+                    data ? *data : empty,
                     material_slot_srgb(
                         slot_row.srgb,
                         data,

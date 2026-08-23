@@ -5,6 +5,23 @@ import {
 } from "../pinned-address-modes.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
+/**
+ * Which arms of the Standard material's texture slots a scene reached.
+ *
+ * One slot takes several sources — `diffuseTexture` alone is written from a
+ * colour render target, a pixels texture and a loaded image — so the setters
+ * are emitted per reached source rather than per slot, and the flags travel
+ * named because six positional booleans read as an accident.
+ */
+export interface StandardTextureSetters {
+    diffuse: boolean;
+    emissive: boolean;
+    pixels: boolean;
+    diffuseFile: boolean;
+    emissiveFile: boolean;
+    uvTransform: boolean;
+}
+
 export class FactoryLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
@@ -3074,11 +3091,16 @@ MaterialHandle create_grid_material(
      * view TU, neither of which is named for them.
      */
     public lowerStandardTextureSetters(
-        diffuse: boolean,
-        emissive: boolean,
-        pixels: boolean,
-        uvTransform: boolean,
+        reached: StandardTextureSetters,
     ): LoweredSource {
+        const {
+            diffuse,
+            emissive,
+            pixels,
+            diffuseFile,
+            emissiveFile,
+            uvTransform,
+        } = reached;
         // The material module that owns `diffuseTexture` -- the property
         // every arm below writes. `rtt.ts` is where only ONE of the sources
         // comes from, so naming it here attributed the pixels setter and the
@@ -3115,6 +3137,10 @@ MaterialHandle create_grid_material(
                 ...(diffuse ? ["material.diffuseTexture"] : []),
                 ...(emissive ? ["setStandardEmissiveTexture"] : []),
                 ...(pixels ? ["material.diffuseTexture#pixels"] : []),
+                ...(diffuseFile ? ["material.diffuseTexture#file"] : []),
+                ...(emissiveFile
+                    ? ["setStandardEmissiveTexture#file"]
+                    : []),
                 ...(uvTransform ? ["enableMaterialUvTransform"] : []),
             ].join(","),
             header: "",
@@ -3133,6 +3159,9 @@ MaterialHandle create_grid_material(
                         : []),
                     ...(pixels
                         ? ["src/texture/pixels-texture.ts"]
+                        : []),
+                    ...(diffuseFile || emissiveFile
+                        ? ["src/texture/texture-2d.ts"]
                         : []),
                     ...(uvTransform
                         ? [
@@ -3210,6 +3239,33 @@ void set_standard_diffuse_pixels_texture(
     slot.sampler = texture.sampler;
     slot.uv_transform = texture.uv_transform;
     slot.uv_invert_y = texture.uv_invert_y;
+}
+` : ""}${diffuseFile ? `
+// The same slot, filled by a loaded image -- the third source it takes, and
+// the one the .babylon loader already fills for a material it builds. The
+// texture object travels whole because the pin has one Texture2D whatever
+// loaded it: the upload flip, the sampler and the texture-object invertY
+// the Standard UV block reads are all properties of the texture rather than
+// of the slot.
+void set_standard_diffuse_file_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const FileTexture& texture) {
+    standard_slot_material(engine, material).base_color_texture =
+        texture.data;
+}
+` : ""}${emissiveFile ? `
+// setStandardEmissiveTexture over a loaded image. The render-texture arm
+// beside it writes its own pair because a render target is bound as a view
+// rather than uploaded; an image fills the record slot the .babylon loader
+// fills, and the composed variant takes the non-depth arm of the pin's own
+// emissive extension because only a depth render target carries
+// _sampleType === "depth".
+void set_standard_emissive_file_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const FileTexture& texture) {
+    standard_slot_material(engine, material).emissive_texture = texture.data;
 }
 ` : ""}${uvTransform ? `
 // src/material/enable-material-uv-transform.ts enableMaterialUvTransform

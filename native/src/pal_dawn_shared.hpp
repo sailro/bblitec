@@ -325,23 +325,24 @@ inline void create_dawn_device(
     }
 
     WGPUDeviceDescriptor device_descriptor = WGPU_DEVICE_DESCRIPTOR_INIT;
-    // The pinned engine requests float32-filterable whenever the
-    // adapter offers it; the depth-copy r32float texture relies on it.
-    // Primitive-index unlocks the triangle-cluster diagnostic shader's
-    // `enable primitive_index` directive (attribution captures only).
-    std::array<WGPUFeatureName, 2> device_features{};
+    // `engine.ts` requests each optional feature the adapter offers rather
+    // than the ones a scene reaches, so a later enable call needs no second
+    // device; this asks for the three that arm of the list this port uses.
+    // Float32-filterable is what the depth-copy r32float texture relies on,
+    // primitive-index unlocks the triangle-cluster diagnostic shader's
+    // `enable primitive_index` directive (attribution captures only), and
+    // texture-compression-bc is what a KTX or transcoded Basis texture
+    // uploads through.
+    std::array<WGPUFeatureName, 3> device_features{};
     std::size_t device_feature_count = 0;
-    if (wgpuAdapterHasFeature(
-            state.adapter,
-            WGPUFeatureName_Float32Filterable)) {
-        device_features[device_feature_count++] =
-            WGPUFeatureName_Float32Filterable;
-    }
-    if (wgpuAdapterHasFeature(
-            state.adapter,
-            WGPUFeatureName_PrimitiveIndex)) {
-        device_features[device_feature_count++] =
-            WGPUFeatureName_PrimitiveIndex;
+    for (const WGPUFeatureName feature : {
+             WGPUFeatureName_Float32Filterable,
+             WGPUFeatureName_PrimitiveIndex,
+             WGPUFeatureName_TextureCompressionBC,
+         }) {
+        if (wgpuAdapterHasFeature(state.adapter, feature)) {
+            device_features[device_feature_count++] = feature;
+        }
     }
     device_descriptor.requiredFeatureCount = device_feature_count;
     device_descriptor.requiredFeatures = device_features.data();

@@ -24,8 +24,9 @@ interface RecordFieldAssignment {
     kind: "material" | "camera-ortho";
     property: string;
     collection: "materials" | "cameras";
-    field: string;
-    value: "color3" | "number" | "boolean";
+    /** The record field, or the pair a two-element source writes. */
+    field: string | readonly [string, string];
+    value: "color3" | "number" | "boolean" | "number2";
     simpleOnly?: boolean;
     /** Stored as the logical inverse of what the source assigns. */
     invert?: boolean;
@@ -75,6 +76,19 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         collection: "materials",
         field: "base_color_factor.a",
         value: "number",
+    },
+    {
+        // The pin's `uvScale: [number, number]`, which
+        // `writeStandardUvTransformData` reads into the material's own UV
+        // block. It is a pair of record fields because
+        // `standard_material_props` composes them back into the props
+        // mirror the pinned writer reads.
+        kind: "material",
+        property: "uvScale",
+        collection: "materials",
+        field: ["diffuse_u_scale", "diffuse_v_scale"],
+        value: "number2",
+        simpleOnly: true,
     },
     {
         kind: "material",
@@ -1110,15 +1124,30 @@ export function emitPropertyAssignment(
                 );
                 return;
             }
-            // An image texture is the other half of this slot and is not
-            // lowered: the `.babylon` loader already fills the record's
-            // bytes, but no reached scene assigns one from scene code, so
-            // the path would ship unmeasured.
-            if (texture.kind === "texture") {
-                context.fail(
-                    expression.right,
-                    "Reached Standard diffuse textures come from createRenderTargetTexture or createTexture2DFromPixels; an image texture is not lowered.",
+            // A loaded image is the third source, and the one the
+            // `.babylon` loader already fills this slot with. The texture
+            // object travels whole rather than as bytes, because the
+            // sampler, the upload flip and the texture-object `invertY`
+            // the Standard UV block reads are all the texture's own.
+            if (texture.kind === "texture" && texture.textureFile) {
+                if (texture.textureFile.srgb) {
+                    context.fail(
+                        expression.right,
+                        "A Standard diffuse slot uploads through the " +
+                            "family's own encoding, which is linear; an " +
+                            "sRGB texture in it is not lowered.",
+                    );
+                }
+                context.reachFeature(
+                    "material:standard-diffuse-file-texture",
+                    expression,
                 );
+                context.emit(
+                    `bbl::set_standard_diffuse_file_texture(` +
+                        `${context.requireEngine(target, expression)}, ` +
+                        `${target.cpp}, ${texture.cpp});`,
+                );
+                return;
             }
             // What this slot accepts, said the way every frame-graph slot
             // says it. `sampling: "color"` is the aspect the setter folds
@@ -1163,6 +1192,38 @@ export function emitPropertyAssignment(
                     `${recordField.kind} ${recordField.property}`,
                 );
             }
+            const record =
+                `${context.requireEngine(target, expression)}` +
+                `.${recordField.collection}[${target.cpp}.value]`;
+            if (recordField.value === "number2") {
+                const elements = context.unwrap(expression.right);
+                const fields = recordField.field;
+                if (
+                    !ts.isArrayLiteralExpression(elements) ||
+                    elements.elements.length !== 2 ||
+                    typeof fields === "string"
+                ) {
+                    context.fail(
+                        expression.right,
+                        `Reached ${recordField.kind} ${recordField.property} ` +
+                            "takes a two-element array literal.",
+                    );
+                }
+                for (const [index, field] of fields.entries()) {
+                    context.emit(
+                        `${record}.${field} = ` +
+                            `${context.compileNumber(elements.elements[index]!)};`,
+                    );
+                }
+                return;
+            }
+            if (typeof recordField.field !== "string") {
+                context.fail(
+                    expression,
+                    `Reached ${recordField.kind} ${recordField.property} ` +
+                        "names a field pair with a scalar value.",
+                );
+            }
             const value =
                 recordField.value === "color3"
                     ? context.compileColor3(expression.right)
@@ -1178,7 +1239,7 @@ export function emitPropertyAssignment(
                 ? `!(${value})`
                 : value;
             context.emit(
-                `${context.requireEngine(target, expression)}.${recordField.collection}[${target.cpp}.value].${recordField.field} ` +
+                `${record}.${recordField.field} ` +
                     `${recordField.simpleOnly ? "=" : operator} ${stored};`,
             );
             return;

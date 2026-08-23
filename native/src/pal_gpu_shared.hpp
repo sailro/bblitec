@@ -266,7 +266,7 @@ inline bool material_slot_srgb(
             // scene-code solid textures are rgba8unorm, sampled without
             // decode.
             return !standard_material &&
-                (data && !data->bytes.empty()
+                (data && data->has_image()
                      ? true
                      : material == nullptr ||
                          material->base_color_fallback_srgb);
@@ -2061,6 +2061,74 @@ inline DecodedImage decode_uploadable_image(
         }
     }
     return image;
+}
+
+/**
+ * One compressed mip level's copy geometry, by the pin's own rules
+ * (`ktx-loader.ts` uploadCompressed, `basis-loader.ts`).
+ *
+ * The copy extent is the block-padded size rather than the logical one:
+ * a tail mip smaller than the block — 2x2 and 1x1 under a 4x4 block —
+ * still occupies one whole block, and both WebGPU and D3D12 reject a
+ * copy extent that is not a block multiple.
+ */
+struct CompressedMipCopy {
+    std::uint32_t row_bytes;
+    std::uint32_t block_rows;
+    std::uint32_t width;
+    std::uint32_t height;
+};
+
+inline CompressedMipCopy compressed_mip_copy(
+    const CompressedTexture& texture,
+    const CompressedMipLevel& mip) {
+    const std::uint32_t blocks_per_row =
+        (mip.width + texture.block_width - 1) / texture.block_width;
+    const std::uint32_t block_rows =
+        (mip.height + texture.block_height - 1) / texture.block_height;
+    return CompressedMipCopy{
+        blocks_per_row * texture.block_bytes,
+        block_rows,
+        blocks_per_row * texture.block_width,
+        block_rows * texture.block_height,
+    };
+}
+
+/**
+ * The block-compressed formats this port uploads, as the pin's own WebGPU
+ * format names resolve to.
+ *
+ * The generated table carries the pinned rows; this is the set both
+ * backends can bind, so each translates one enumerator rather than
+ * repeating the names. A name outside it is refused where the container is
+ * parsed, which is the pin's own `if (!format) throw`.
+ */
+enum class CompressedBlockFormat {
+    bc1_rgba_unorm,
+    bc2_rgba_unorm,
+    bc3_rgba_unorm,
+    bc7_rgba_unorm,
+    bc7_rgba_unorm_srgb,
+};
+
+inline CompressedBlockFormat compressed_block_format(std::string_view name) {
+    if (name == "bc1-rgba-unorm") {
+        return CompressedBlockFormat::bc1_rgba_unorm;
+    }
+    if (name == "bc2-rgba-unorm") {
+        return CompressedBlockFormat::bc2_rgba_unorm;
+    }
+    if (name == "bc3-rgba-unorm") {
+        return CompressedBlockFormat::bc3_rgba_unorm;
+    }
+    if (name == "bc7-rgba-unorm") {
+        return CompressedBlockFormat::bc7_rgba_unorm;
+    }
+    if (name == "bc7-rgba-unorm-srgb") {
+        return CompressedBlockFormat::bc7_rgba_unorm_srgb;
+    }
+    throw std::runtime_error(
+        "No compressed texture format for '" + std::string(name) + "'.");
 }
 
 /**

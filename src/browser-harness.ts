@@ -194,6 +194,55 @@ export async function waitForSceneReady(
 }
 
 /**
+ * Serve one page module, wait for the global it installs, and return what
+ * that global's call resolved to.
+ *
+ * Three generation-time bakes hand a driver module to the page and read one
+ * value back — a drawn atlas or a computed buffer
+ * (`executed-module-assets.ts`), a frozen node-particle state
+ * (`pinned-node-particle.ts`), and a Basis transcode
+ * (`basis-transcode.ts`). Each carried its own copy of the same four steps,
+ * which is the duplication this module exists to hold once; what differs is
+ * the module, the global's name, and the harness options the page needs.
+ */
+export async function runPageGlobal(
+    server: Server,
+    globalName: string,
+    options: BrowserPageOptions,
+): Promise<unknown> {
+    return withBrowserPage(server, options, async (page, origin) => {
+        await gotoScenePage(page, origin);
+        await page.waitForFunction(
+            `typeof window.${globalName} === 'function'`,
+            null,
+            { timeout: 60_000 },
+        );
+        return page.evaluate(`window.${globalName}()`);
+    });
+}
+
+/**
+ * The page-side chunked base64 encoder, as a source fragment.
+ *
+ * Bytes cross the page boundary as text because the boundary serializes
+ * JSON: a number per byte costs about four bytes of wire each and turns a
+ * megapixel read-back into ten seconds. The chunking is what keeps
+ * `String.fromCharCode` off its argument limit, and it is one copy because
+ * four harnesses had grown four.
+ */
+export const pageBase64Script =
+    "const bblBase64 = (bytes) => {\n" +
+    "    let binary = \"\";\n" +
+    "    for (let index = 0; index < bytes.length; index += 0x8000) {\n" +
+    "        binary += String.fromCharCode.apply(\n" +
+    "            null,\n" +
+    "            bytes.subarray(index, index + 0x8000),\n" +
+    "        );\n" +
+    "    }\n" +
+    "    return btoa(binary);\n" +
+    "};\n";
+
+/**
  * Navigate to the page the suite scene server serves.
  *
  * Split out of `waitForSceneReady` because one harness loads that page and

@@ -6,6 +6,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bbl {
@@ -593,6 +594,36 @@ struct TextureUvTransform {
     double u_ang = 0.0;
 };
 
+/** One mip level of a compressed texture, as its container stores it. */
+struct CompressedMipLevel {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
+/**
+ * A texture whose bytes are already GPU blocks.
+ *
+ * `ktx-loader.ts` and `basis-loader.ts` both end at
+ * `device.queue.writeTexture` over a block-compressed format, with the mip
+ * chain the container carries rather than one the engine blits — so nothing
+ * here is decoded, and the chain is uploaded as it arrives.
+ *
+ * `format` is the pin's own WebGPU format name (`bc2-rgba-unorm`), which is
+ * what each backend translates: the name is the pinned table's, so a format
+ * the pin adds needs no enumerator here. It is a view into the generated
+ * format table's static storage, which is the only thing that ever fills it.
+ */
+struct CompressedTexture {
+    std::string_view format{};
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t block_width = 0;
+    std::uint32_t block_height = 0;
+    std::uint32_t block_bytes = 0;
+    std::vector<CompressedMipLevel> mips;
+};
+
 struct TextureData {
     std::vector<std::uint8_t> bytes;
     // When both are non-zero, `bytes` are RGBA texels at this size rather
@@ -622,6 +653,23 @@ struct TextureData {
     // 127 of 128, which is that property evaluating false over `.babylon`
     // textures.
     bool uv_invert_y = false;
+    // A KTX container's or a transcoder's own blocks. Filled instead of
+    // `bytes` rather than beside it: the blocks are what uploads, so
+    // keeping the container file as well would carry the payload twice.
+    CompressedTexture compressed{};
+
+    /**
+     * Whether this slot carries an image at all.
+     *
+     * An encoded file and `createTexture2DFromPixels` texels both land in
+     * `bytes`; a compressed container's blocks land beside it. So every
+     * "does this material have this texture" test asks here rather than
+     * testing one field — a second predicate for the same fact is what
+     * drifts.
+     */
+    bool has_image() const {
+        return !bytes.empty() || !compressed.mips.empty();
+    }
 };
 
 struct FileTexture {
@@ -1846,6 +1894,15 @@ FileTexture load_file_texture(
     TextureSamplerState sampler,
     bool invert_y,
     bool srgb);
+// `ktx-loader.ts` loadKtxTexture2D, past the suffix selection generation
+// resolved: the container is parsed and its blocks are uploaded as they
+// are. `invert_y` is the texture-object property the pin's own loader
+// leaves unset here and sets in `basis-loader.ts`, which is what decides
+// the Standard UV block's V flip.
+FileTexture load_compressed_texture(
+    Engine& engine,
+    const std::string& path,
+    bool invert_y);
 void set_material_base_color_file(
     Engine& engine,
     MaterialHandle material,
@@ -1864,10 +1921,18 @@ void set_standard_emissive_texture(
     Engine& engine,
     MaterialHandle material,
     RenderTextureRef texture);
+void set_standard_emissive_file_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const FileTexture& texture);
 void set_standard_diffuse_pixels_texture(
     Engine& engine,
     MaterialHandle material,
     const PixelsTexture& texture);
+void set_standard_diffuse_file_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const FileTexture& texture);
 void enable_material_uv_transform(
     Engine& engine,
     MaterialHandle material);

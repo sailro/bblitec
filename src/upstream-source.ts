@@ -117,6 +117,23 @@ function virtualSourcePath(source: string): string | undefined {
     return relativeMarker >= 0 ? normalized.slice(relativeMarker) : undefined;
 }
 
+/**
+ * The one store a process reads the pin through.
+ *
+ * Constructing a store parses the whole published source-map set and every
+ * public export -- around 14 MB of JSON and a hundred-plus source files --
+ * and the pin does not change while a process runs, so the modules that
+ * reach for pinned facts share this rather than each rebuilding it. A
+ * caller that needs an isolated store (a test pointing at another tree)
+ * still constructs its own.
+ */
+let shared: UpstreamSourceStore | undefined;
+
+export function sharedUpstreamStore(): UpstreamSourceStore {
+    if (!shared) shared = new UpstreamSourceStore();
+    return shared;
+}
+
 export class UpstreamSourceStore {
     public readonly packageRoot: string;
     public readonly pin: UpstreamPin;

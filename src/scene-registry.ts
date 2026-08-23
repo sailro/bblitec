@@ -2040,6 +2040,30 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene25",
+        name: "Scene 25 - KTX Compressed Texture",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene25.ts",
+        title: "Babylon Lite Native - KTX Compressed Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene36",
+        name: "Scene 36 - Basis Universal Texture",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene36.ts",
+        title: "Babylon Lite Native - Basis Universal Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

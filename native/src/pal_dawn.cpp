@@ -1408,12 +1408,97 @@ void generate_mipmaps(
     wgpuCommandEncoderRelease(encoder);
 }
 
+/**
+ * The WebGPU enumerator for one shared block format. The pin writes
+ * `GPUTextureFormat` strings, so this is the C API's own spelling of the
+ * name the container states.
+ */
+WGPUTextureFormat compressed_texture_format(std::string_view name) {
+    switch (compressed_block_format(name)) {
+        case CompressedBlockFormat::bc1_rgba_unorm:
+            return WGPUTextureFormat_BC1RGBAUnorm;
+        case CompressedBlockFormat::bc2_rgba_unorm:
+            return WGPUTextureFormat_BC2RGBAUnorm;
+        case CompressedBlockFormat::bc3_rgba_unorm:
+            return WGPUTextureFormat_BC3RGBAUnorm;
+        case CompressedBlockFormat::bc7_rgba_unorm:
+            return WGPUTextureFormat_BC7RGBAUnorm;
+        case CompressedBlockFormat::bc7_rgba_unorm_srgb:
+            return WGPUTextureFormat_BC7RGBAUnormSrgb;
+    }
+    throw std::runtime_error(
+        "Dawn has no compressed texture format for '" +
+        std::string(name) + "'.");
+}
+
+/**
+ * A texture whose bytes are already blocks: the container's own mip chain,
+ * uploaded level by level with nothing decoded and nothing generated.
+ */
+WGPUTexture upload_compressed_texture(
+    DawnState& state,
+    const CompressedTexture& compressed) {
+    // The device request is opportunistic (the pinned engine asks for every
+    // optional feature the adapter offers), so an adapter without block
+    // compression reaches here rather than failing at creation. Refuse by
+    // name, as the SDL_GPU sibling does through
+    // `SDL_GPUTextureSupportsFormat`.
+    if (!wgpuAdapterHasFeature(
+            state.adapter,
+            WGPUFeatureName_TextureCompressionBC)) {
+        throw std::runtime_error(
+            "This adapter cannot sample '" +
+            std::string(compressed.format) +
+            "' textures: it reports no block-compression feature.");
+    }
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.size = {compressed.width, compressed.height, 1};
+    descriptor.format = compressed_texture_format(compressed.format);
+    descriptor.mipLevelCount =
+        static_cast<std::uint32_t>(compressed.mips.size());
+    WGPUTexture texture =
+        wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture) dawn_error("wgpuDeviceCreateTexture compressed");
+    for (std::size_t level = 0; level < compressed.mips.size(); ++level) {
+        const CompressedMipLevel& mip = compressed.mips[level];
+        const CompressedMipCopy geometry =
+            compressed_mip_copy(compressed, mip);
+        WGPUTexelCopyTextureInfo destination =
+            WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+        destination.texture = texture;
+        destination.mipLevel = static_cast<std::uint32_t>(level);
+        WGPUTexelCopyBufferLayout layout{};
+        layout.offset = 0;
+        layout.bytesPerRow = geometry.row_bytes;
+        layout.rowsPerImage = geometry.block_rows;
+        const WGPUExtent3D size{geometry.width, geometry.height, 1};
+        wgpuQueueWriteTexture(
+            state.queue,
+            &destination,
+            mip.bytes.data(),
+            mip.bytes.size(),
+            &layout,
+            &size);
+    }
+    return texture;
+}
+
 WGPUTexture upload_material_texture(
     DawnState& state,
     const TextureData& texture_data,
     bool srgb,
     const std::array<std::uint8_t, 4>& fallback,
     std::uint32_t& out_mip_count) {
+    // A compressed slot carries its own format and its own chain, so the
+    // table's sRGB rule has nothing to select: the container states which
+    // of the two views its blocks decode through.
+    if (!texture_data.compressed.mips.empty()) {
+        out_mip_count =
+            static_cast<std::uint32_t>(texture_data.compressed.mips.size());
+        return upload_compressed_texture(state, texture_data.compressed);
+    }
     const DecodedImage image =
         decode_uploadable_image(texture_data, fallback);
     const std::uint32_t mip_count = full_mip_chain(

@@ -167,8 +167,14 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "material:standard-diffuse-render-texture",
             "material:standard-emissive-render-texture",
             "material:standard-diffuse-pixels-texture",
+            "material:standard-diffuse-file-texture",
+            "material:standard-emissive-file-texture",
             "material:standard-uv-transform",
         ],
+    },
+    {
+        source: "upstream/src/compressed_texture.cpp",
+        features: ["texture:compressed"],
     },
     {
         source: "upstream/src/material_grid.cpp",

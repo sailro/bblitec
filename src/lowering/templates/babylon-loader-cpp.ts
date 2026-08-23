@@ -350,7 +350,7 @@ ${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
             texture->value("coordinatesIndex", 0) == 1 ? 1u : 0u;
     }
     material.alpha_mode =
-        alpha < 1.0f || !material.opacity_texture.bytes.empty()
+        alpha < 1.0f || material.opacity_texture.has_image()
             ? MaterialAlphaMode::blend
             : MaterialAlphaMode::opaque;
     engine.materials.push_back(std::move(material));

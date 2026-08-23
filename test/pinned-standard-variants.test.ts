@@ -471,6 +471,8 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
             diffusePixelsTexture: false,
+            diffuseFileTexture: false,
+            emissiveFileTexture: false,
             uvTransform: false,
             thinInstances: true,
             morphTargets: false,
@@ -531,6 +533,8 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
             diffusePixelsTexture: false,
+            diffuseFileTexture: false,
+            emissiveFileTexture: false,
             uvTransform: false,
             thinInstances: true,
             morphTargets: false,
@@ -617,6 +621,8 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
             diffusePixelsTexture: false,
+            diffuseFileTexture: false,
+            emissiveFileTexture: false,
             uvTransform: false,
             thinInstances: false,
             morphTargets: false,
@@ -706,7 +712,7 @@ test("the native-support block flows from the pin's own declarations", async () 
     // -- and none of the branches the loader cannot feed (no lightmap).
     assert.ok(
         block.includes(
-            "if (!material.base_color_texture.bytes.empty() || " +
+            "if (material.base_color_texture.has_image() || " +
                 "material.has_diffuse_render_texture) {",
         ),
     );
@@ -747,7 +753,7 @@ test("the native-support block flows from the pin's own declarations", async () 
     assert.ok(block.includes("if (material.opacity_from_rgb) {"));
     assert.ok(
         block.includes(
-            "if (!material.reflection_texture.bytes.empty()) {",
+            "if (material.reflection_texture.has_image()) {",
         ),
     );
     // The composed variants' rT/rS pair resolves through the slot table,

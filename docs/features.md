@@ -63,6 +63,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Feature and capability selection](#feature-and-capability-selection) | Compile | which generated modules, shader variants, codecs, and capability defines exist at all |
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
 | [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, to ordinary geometry |
+| [Compressed textures](#compressed-textures) | Compile → Run | which container to fetch, and a Basis file transcoded, at generation; the container parsed and its blocks uploaded at load |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
 | [Drawn and computed assets](#drawn-and-computed-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
 | [Shader pipeline](#shader-pipeline) | Compile → Run | composed and specialized at generation; compiled offline for SDL_GPU, in-process by Dawn |
@@ -215,6 +216,44 @@ chunk, with no browser API in it, so generation runs the pin's own module
 rather than reimplementing the conversion and the packaged asset drops the
 extension. Upstream imports that module only when `extensionsUsed` lists it,
 which is the boundary this pass keeps.
+
+### Compressed textures
+
+A `.ktx` container and a `.basis` file both end at the same place — GPU
+blocks and the mip chain the file carries, uploaded with nothing decoded and
+nothing generated — but they divide across the two phases differently, and
+the split is the same one `.env` and `.hdr` already take.
+
+- **A KTX1 container is parsed at load.** It already holds blocks and its own
+  chain, so there is no browser work to reproduce: the pinned parser is
+  lowered to C++ and runs at startup, resolving the file's `glInternalFormat`
+  against the pin's own format table.
+- **Which container to fetch is decided at generation.** `loadKtxTexture2D`
+  takes a base URL and a suffix list, keeps the suffixes whose compressed
+  format the *device* reports, and tries them in order — a run-time question a
+  native build cannot ask, because it has no network to fetch a second
+  candidate with. Generation answers it once with block compression, which
+  is what the validated platform reports, and that is the golden's answer
+  too: the browser reference runs D3D12, where a WebGPU adapter reports
+  `texture-compression-bc` and neither ASTC nor ETC2. A call listing no
+  block-compression suffix refuses rather than packaging the pin's
+  uncompressed fallback, which is a different texture; a device that cannot
+  sample the packaged format refuses it by name at upload, on both backends.
+- **A Basis file is transcoded at generation**, and is the one texture whose
+  bytes the browser produces. Its transcoder is a JavaScript+WebAssembly
+  module the page injects with a `<script>` tag, and the format it transcodes
+  *into* is another device question. So generation runs the pinned loader in
+  headless Chromium and packages what it uploaded, as a KTX1 container — the
+  runtime already reads one, so the transcode needs no second reader.
+  Recorded per scene as `executed-basis-transcode`; the baked bytes depend on
+  the Chrome that compiled them, exactly as the drawn atlas does.
+
+The texture object's own `invertY` travels with it either way, because it is
+not an upload flip: the pin applies it in the material's UV transform, which
+is what keeps a compressed texture correct where an in-place row swap is
+impossible. `loadKtxTexture2D` leaves it unset and `loadBasisTexture2D` sets
+it, so a Standard material sampling a Basis texture flips its UV block and one
+sampling a KTX texture does not.
 
 ### Environment compilation
 
@@ -548,12 +587,19 @@ loaded image carries no such property and is flipped at upload instead.
 A `createTexture2DFromPixels` texture is the second source the slot takes:
 upstream has one `Texture2D` whatever built it, so the record copies the
 texels, the sampler and the texture-object properties across, and the
-already-decoded arm of the shared upload reads them straight through. Three
-sources still refuse by name with a source location, on the two axes a
-render texture has: an image texture is the wrong kind; a depth-only render
-target is the wrong *aspect*, because the pin gives that arm the opposite
-flip and a different sampler; and a geometry task's attachment is the wrong
-*source*, owned by a pass rather than by the scene.
+already-decoded arm of the shared upload reads them straight through. A
+loaded image — an ordinary one, a KTX container or a transcoded Basis file —
+is the third, and travels whole for the same reason: the sampler, the upload
+flip and the texture-object `invertY` the UV block reads are the texture's
+rather than the slot's. `setStandardEmissiveTexture` takes an image too, and
+the composed variant follows: only a render target carries the pin's
+`_sampleType === "depth"`, which is what selects the extension's
+unfilterable-float binding. Three sources still refuse by name with a source
+location: a depth-only render target is the wrong *aspect*, because the pin
+gives that arm the opposite flip and a different sampler; a geometry task's
+attachment is the wrong *source*, owned by a pass rather than by the scene;
+and an image whose own `srgb` option is set is the wrong *encoding*, since
+the slot's is the material family's.
 
 `enableMaterialUvTransform(material)` marks a hand-built Standard material
 for independent per-texture transforms, which is the pin's own opt-in for its
@@ -967,6 +1013,7 @@ before it trusts a measurement.
 | Deformation | which vertex layout and shader variant exist, from the asset | joint palettes, morph weights, skinning and morphing, post-deformation face normals |
 | Lights | which light-kind writers and `light_*.cpp` units exist | the lights buffer, per-mesh light sets, uniforms |
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
+| Compressed textures | which container the device's formats select, and a Basis file transcoded into one | the container parsed, its blocks uploaded, its own chain sampled |
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
 | Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, the textures the scene supplied, and the per-mesh light selection that block carries |
 | Fullscreen effects | the caller's fragment wrapped in the pin's own vertex stage, and the bind-group layout the descriptor declared | the pass, its uniform bytes, and the textures the scene bound |
@@ -1038,6 +1085,13 @@ build error with a source location, not a silently different image.
   specular textures and anisotropy remain unsupported, and an asset carrying
   an extension the pinned loader implements that this port does not fails at
   generation naming it
+- a compressed texture is a KTX1 container or a Basis file loaded from scene
+  code. Neither loader's sampler options are lowered, because the reached
+  calls pass none; a `loadKtxTexture2D` whose suffixes are not an array
+  literal, or whose listed suffixes name no block-compression format, fails
+  at generation, as does a KTX file whose `glInternalFormat` is outside that
+  table. KTX2 — the container `KHR_texture_basisu` redirects a glTF texture
+  to — needs the pin's second decoder and is unreached
 - custom shader variants are bounded by the supported WGSL subset and the
   `world`, `viewProjection` and `worldViewProjection` system uniforms,
   which head a stage's block in declaration order. The pin's other six
