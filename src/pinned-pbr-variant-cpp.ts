@@ -128,6 +128,26 @@ const extensionWriters: ReadonlyArray<{
         },
     },
     {
+        // The one extension whose writer is a method on its own `pbrExt`
+        // literal rather than a top-level `writeXUBO`. Its texture arm --
+        // the `anisotropyUVm`/`anisotropyUVt` pair -- rides the second
+        // feature bit, which no reached call sets, so the nested transform
+        // writer folds away with the offsets it looks up.
+        modulePath: "src/material/pbr/fragments/anisotropy-fragment.ts",
+        symbolName: "pbrExt.writeUbo",
+        sourceLocal: "aniso",
+        baseField: "anisotropyParams",
+        propertySources: {
+            intensity: "material.anisotropy_intensity",
+            direction: "material.anisotropy_direction",
+            // Named as absent so a variant that did declare the transform
+            // fields would fail here rather than read a record field that
+            // does not exist.
+            texture: null,
+        },
+        vectorProperties: { direction: 2 },
+    },
+    {
         modulePath: "src/material/pbr/fragments/reflectance-fragment.ts",
         symbolName: "writeReflectanceUBO",
         sourceLocal: "",

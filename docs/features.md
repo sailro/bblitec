@@ -115,7 +115,15 @@ analyzable entry file against one engine.
   pinned seeded `Math.random` are available.
 - **Browser erasure and AOT promises.** The browser `main` wrapper, DOM,
   timing, and dataset instrumentation are erased, and every `await` on a
-  materialized asset resolves immediately.
+  materialized asset resolves immediately. `window.location.search` reads as
+  the query the scene's reference pose is captured at, so a scene that
+  branches on one takes the branch its golden was captured under.
+- **Material tracking.** `installPbrTracking` and `installStdTracking` define
+  value-preserving accessors so a later write marks the material's UBO dirty.
+  Generation already emits the re-upload for every property a scene writes, so
+  the installers emit nothing and the scene records
+  `material-tracking-observers-dropped`. `enableMaterialTracking`, the async
+  entry point that picks between them, is not reached and refuses by name.
 - **Preconditions and cleanup.** A scene's own `throw new Error("...")` lowers
   to a runtime error carrying that message, which the generated `main` already
   catches and prints; a message built from state refuses, because this runtime
@@ -130,7 +138,8 @@ record has no native representation to store or select between, so it cannot
 outlive generation. Static evaluation and inlining are how the subset reaches
 C++ at all. Each divergence this introduces is recorded per scene in
 `fidelity.json` (`plain-data-value-model`, `deterministic-seeded-random`,
-`entry-main-wrapper-erasure`, `synchronous-aot-await`).
+`entry-main-wrapper-erasure`, `synchronous-aot-await`,
+`material-tracking-observers-dropped`).
 
 ### Feature and capability selection
 
@@ -638,7 +647,8 @@ enumerator.
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, transmission, IOR, volume, dispersion,
-clearcoat, sheen, iridescence, and the spec-gloss workflow replacement.
+clearcoat, sheen, iridescence, anisotropy, and the spec-gloss workflow
+replacement.
 
 ### Node materials
 
@@ -1080,11 +1090,14 @@ build error with a source location, not a silently different image.
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
-- PBR material extensions cover clearcoat, sheen, iridescence, dispersion,
-  and the spec-gloss workflow replacement with one shared UV transform;
-  specular textures and anisotropy remain unsupported, and an asset carrying
-  an extension the pinned loader implements that this port does not fails at
-  generation naming it
+- PBR material extensions cover clearcoat, sheen, iridescence, anisotropy,
+  dispersion, and the spec-gloss workflow replacement with one shared UV
+  transform. Anisotropy carries the layer's own parameters; its per-layer
+  texture and its UV transform are not reached, and the pinned writer's own
+  early return drops that arm from the emitted writer rather than leaving it
+  to a run-time branch. Specular textures remain unsupported, and an asset
+  carrying an extension the pinned loader implements that this port does not
+  fails at generation naming it
 - a compressed texture is a KTX1 container or a Basis file loaded from scene
   code. Neither loader's sampler options are lowered, because the reached
   calls pass none; a `loadKtxTexture2D` whose suffixes are not an array

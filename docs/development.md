@@ -139,7 +139,7 @@ other, so a missing one fails the corpus tests rather than degrading quietly.
 | `src/scene-registry.ts` | the entry: id, source, title, thresholds, background, native environment |
 | `upstream/babylon-lite-scenes.json` | the SHA-256 of the corpus source, proving it matches the pin |
 | `reference/<id>/babylon-lite-golden.png` | the browser golden |
-| `reference/exact-corpus-manifest.json` | `sourceSha256`, `referenceSha256`, and `moduleSha256` over the browser module the capture harness builds |
+| `reference/exact-corpus-manifest.json` | `sourceSha256`, `referenceSha256`, `moduleSha256` over the browser module the capture harness builds, and `referenceSearch` for a scene the pin serves at a query |
 | `test/scene-registry.test.ts` | the registry id list in file order, and the curated count the README publishes |
 | `docs/images/scenes/scene<N>.png` | a 320x180 preview: a 4x4 box-filtered average of the golden |
 | `docs/images/scenes/scene<N>-banner.png` | optional. The same box-filtered derivation taken over a centred window of the golden rather than the whole frame, for a README banner cell whose subject is too small to read at 170px |
@@ -163,6 +163,16 @@ under: a reference captured without them carries no seek, so the scene
 free-ran, and diffing a seeked native run against it produces a large and
 meaningless result. When native and `scene -- capture <id> --seek <t>` agree
 but the golden does not, the golden is stale.
+
+A scene can pin its pose a second way, which the seek does not cover: a
+corpus scene that reads `?seekTime=` off its own URL branches on the query
+before it ever installs an animation, so what freezes it is the query, not a
+seek. `parity.referenceSearch` is that query string. The reference page is
+navigated with it and the compiler is given the same text, so
+`window.location.search` folds to what the reference read and the native
+scene takes the branch the golden was captured under. It also belongs in
+`reference/exact-corpus-manifest.json` beside the module digest, which
+cannot carry it: the query is a navigation parameter, not module text.
 
 ### Sizing a capability before implementing it
 

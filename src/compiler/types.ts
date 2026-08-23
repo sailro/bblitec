@@ -17,6 +17,14 @@ export interface CompileOptions {
     title?: string;
     width?: number;
     height?: number;
+    /**
+     * The query string the scene's reference pose is captured at
+     * (`"?seekTime=0"`). `window.location.search` folds to it, so a scene
+     * that branches on a query parameter takes the same branch natively
+     * that the reference page takes. Empty when the pin serves the scene
+     * bare, which is every scene that does not read the query.
+     */
+    search?: string;
 }
 
 export interface CompileManifest {
@@ -178,6 +186,19 @@ export interface ScenePbrIridescenceManifest {
     maximumThickness: number;
 }
 
+/**
+ * `AnisotropyProps`, as the pin's own `writeUbo` reads it: the intensity
+ * and the two direction components, with the defaults that writer resolves.
+ * A texture carries the extension's second feature bit and is refused.
+ */
+export interface ScenePbrAnisotropyManifest {
+    isEnabled: boolean;
+    /** Absent where the scene computes it; the composition then replays the
+     *  pin's own default, as its writer's `?? 1.0` would. */
+    intensity?: number;
+    direction: readonly [number, number];
+}
+
 export interface ScenePbrMaterialManifest {
     /**
      * How many scene-code materials of any family the program had created
@@ -200,6 +221,8 @@ export interface ScenePbrMaterialManifest {
     clearCoat?: ScenePbrClearCoatManifest;
     /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
     iridescence?: ScenePbrIridescenceManifest;
+    /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
+    anisotropy?: ScenePbrAnisotropyManifest;
     /**
      * The linear RGB `setPbrEmissive` passes. Its presence is what the
      * emissive extension's `detect` reads, so a material that never
@@ -791,7 +814,7 @@ export interface Value {
         | { kind: "boolean"; value: boolean }
         | { kind: "number"; value: number }
         | { kind: "null" }
-        | { kind: "search-params" }
+        | { kind: "search-params"; search: string }
         | { kind: "string"; value: string };
     cameraKind?: "arc-rotate" | "free";
     msaaSamples?: 1 | 4;
@@ -837,6 +860,8 @@ export type Feature =
     | "material:sheen-albedo-scaling"
     | "material:clearcoat-f0-remap"
     | "material:iridescence"
+    | "material:anisotropy"
+    | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"
     | "material:grid"
@@ -890,4 +915,5 @@ export interface ResolvedCompileOptions {
     title: string;
     width: number;
     height: number;
+    search: string;
 }

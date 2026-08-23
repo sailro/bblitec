@@ -48,6 +48,8 @@ import {
     compilePbrMaterialOptions,
     compileGridMaterialOptions,
     compileClearCoatOptions,
+    compileAnisotropyOptions,
+    type CompiledAnisotropyOptions,
     compileIridescenceOptions,
     compileSheenOptions,
     type CompiledLayerOptions,
@@ -152,6 +154,7 @@ import type {
     ResolvedCompileOptions,
     SceneMeshManifest,
     ScenePbrClearCoatManifest,
+    ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
     ScenePbrMaterialManifest,
     ScenePbrSheenManifest,
@@ -217,6 +220,8 @@ const featureSources: Record<Feature, string[]> = {
     "material:sheen-albedo-scaling": [],
     "material:clearcoat-f0-remap": [],
     "material:iridescence": [],
+    "material:anisotropy": [],
+    "material:tracking": [],
     "material:emissive": [],
     "material:no-color-view": [],
     "material:grid": [],
@@ -330,6 +335,7 @@ export function compileSource(source: string, options: CompileOptions = {}): Com
         title: options.title ?? "Babylon Lite Native",
         width: options.width ?? 1280,
         height: options.height ?? 720,
+        search: options.search ?? "",
         },
     );
     return compiler.compile();
@@ -1393,6 +1399,12 @@ class Compiler
         return compileIridescenceOptions(this, expression);
     }
 
+    public compileAnisotropyOptions(
+        expression: ts.Expression,
+    ): CompiledAnisotropyOptions {
+        return compileAnisotropyOptions(this, expression);
+    }
+
     public compileSheenOptions(
         expression: ts.Expression,
     ): {
@@ -1558,6 +1570,10 @@ class Compiler
         expression: ts.Expression,
     ): string {
         return compileDdsEnvironmentOptions(this, expression);
+    }
+
+    public referenceSearch(): string {
+        return this.options.search;
     }
 
     public compileSceneDefaultRenderTask(
@@ -3430,6 +3446,16 @@ class Compiler
             "setPbrIridescence",
             index,
         ).iridescence = iridescence;
+    }
+
+    public recordScenePbrAnisotropy(
+        anisotropy: ScenePbrAnisotropyManifest,
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter(
+            "setPbrAnisotropy",
+            index,
+        ).anisotropy = anisotropy;
     }
 
     /** One layer or system built without a custom shader, so with the stock program. */

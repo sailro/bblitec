@@ -1666,26 +1666,26 @@ void upload_environment(DawnState& state, const EnvironmentState& environment) {
                 source_bytes = face_data.bytes.data();
             } else {
                 // RGBD faces are Y-flipped on upload, matching the
-                // pinned uploadCubemapRGBD (BJS invertY cubemaps).
+                // pinned uploadCubemapRGBD (BJS invertY cubemaps). The
+                // decode already hands back the upload's own type, so the
+                // flip is a row swap in place rather than a second buffer.
                 int face_width = 0;
                 int face_height = 0;
-                const std::vector<float> pixels =
-                    decode_rgbd(face_data, face_width, face_height);
-                half_pixels.resize(pixels.size());
-                const std::size_t row_floats =
+                half_pixels = decode_rgbd(face_data, face_width, face_height);
+                const std::size_t row_channels =
                     static_cast<std::size_t>(face_width) * 4;
-                for (int row = 0; row < face_height; ++row) {
-                    const std::size_t source_row =
-                        static_cast<std::size_t>(
-                            face_height - row - 1);
-                    for (std::size_t column = 0;
-                         column < row_floats;
-                         ++column) {
-                        half_pixels[
-                            static_cast<std::size_t>(row) * row_floats +
-                            column] = float_to_half(
-                            pixels[source_row * row_floats + column]);
-                    }
+                for (int row = 0; row < face_height / 2; ++row) {
+                    const auto top = half_pixels.begin() +
+                        static_cast<std::ptrdiff_t>(
+                            static_cast<std::size_t>(row) * row_channels);
+                    const auto bottom = half_pixels.begin() +
+                        static_cast<std::ptrdiff_t>(
+                            static_cast<std::size_t>(
+                                face_height - row - 1) * row_channels);
+                    std::swap_ranges(
+                        top,
+                        top + static_cast<std::ptrdiff_t>(row_channels),
+                        bottom);
                 }
                 source_bytes = reinterpret_cast<const std::uint8_t*>(
                     half_pixels.data());
@@ -1749,14 +1749,10 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
         if (environment.brdf_lut.bytes.empty()) return;
         int lut_width = 0;
         int lut_height = 0;
-        const std::vector<float> pixels =
+        half_pixels =
             decode_rgbd(environment.brdf_lut, lut_width, lut_height);
         width = static_cast<std::uint32_t>(lut_width);
         height = static_cast<std::uint32_t>(lut_height);
-        half_pixels.reserve(pixels.size());
-        for (const float value : pixels) {
-            half_pixels.push_back(float_to_half(value));
-        }
     }
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage =
@@ -6173,14 +6169,13 @@ bool run_dawn_engine(Engine& engine) {
     // environment-less PBR scene shades ambient reflections from this face.
     // SDL_GPU uploads the same `environment_fallback_face`; zeros here were
     // a silent backend delta.
+    const std::vector<std::uint16_t> fallback_halves = fallback_face_halves();
     std::vector<std::uint8_t> fallback_rgba16f(8);
-    for (std::size_t channel = 0; channel < 4; ++channel) {
-        const std::uint16_t half =
-            float_to_half(environment_fallback_face[channel]);
+    for (std::size_t channel = 0; channel < fallback_halves.size(); ++channel) {
         fallback_rgba16f[channel * 2] =
-            static_cast<std::uint8_t>(half & 0xff);
+            static_cast<std::uint8_t>(fallback_halves[channel] & 0xff);
         fallback_rgba16f[channel * 2 + 1] =
-            static_cast<std::uint8_t>(half >> 8);
+            static_cast<std::uint8_t>(fallback_halves[channel] >> 8);
     }
     state.environment_cube = create_solid_texture(
         state,

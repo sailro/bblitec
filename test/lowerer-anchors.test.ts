@@ -66,12 +66,13 @@ test("mesh factory tables flow from the pinned builders", () => {
         /\{a, a \+ 1, b, b, a \+ 1, b \+ 1\}/,
     );
     // Torus: TWO_PI's factor, the reciprocal of the pinned Math.PI / 2
-    // phase, and the pinned triangulation order.
+    // phase, and the pinned triangulation order. The whole chain is the
+    // pin's own precision, so the constants are doubles with it.
     assert.match(
         lowered.source,
-        /outer_index\) \* 2\.0f \* pi/,
+        /static_cast<double>\(outer_index\) \* 2\.0 \*\s+pi_double/,
     );
-    assert.match(lowered.source, /pi \* 0\.5f;/);
+    assert.match(lowered.source, /pi_double \* 0\.5;/);
     assert.match(
         lowered.source,
         /\{\n                    outer_index \* stride \+ inner_index,\n                    outer_index \* stride \+ next_inner,\n                    next_outer \* stride \+ inner_index,/,

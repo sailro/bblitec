@@ -352,6 +352,29 @@ export function staticNumberValue(
  * node-particle emitter -- and both need the VALUE rather than the native
  * expression `compileVec3` emits.
  */
+/**
+ * The two numbers an `[x, y]` array literal states, or undefined where the
+ * scene computes one.
+ *
+ * `staticVec3Value` beside it reads the `{ x, y, z }` object the pin uses for
+ * positions; a layer direction is an array in the pinned props, so it reads
+ * that shape. Both answer the same question the emitted C++ cannot: the value,
+ * not the expression.
+ */
+export function staticNumberPair(
+    context: PositiveIntegerContext,
+    expression: ts.Expression,
+): readonly [number, number] | undefined {
+    const node = context.resolveStaticExpression(expression);
+    if (!ts.isArrayLiteralExpression(node) || node.elements.length !== 2) {
+        return undefined;
+    }
+    const [x, y] = node.elements.map((element) =>
+        staticNumberValue(context, element)
+    );
+    return x === undefined || y === undefined ? undefined : [x, y];
+}
+
 export function staticVec3Value(
     context: PositiveIntegerContext,
     expression: ts.Expression,

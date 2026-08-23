@@ -10,17 +10,21 @@
 import ts from "typescript";
 import type {
     CompileAsset,
+    ScenePbrAnisotropyManifest,
     ScenePbrMaterialManifest,
     Value,
     ValueKind,
 } from "../types.js";
 import {
+    staticNumberPair,
+    staticNumberValue,
     validateObjectProperties,
     type ObjectValidationContext,
+    type PositiveIntegerContext,
 } from "../option-helpers.js";
 
 export interface MaterialOptionContext
-    extends ObjectValidationContext {
+    extends ObjectValidationContext, PositiveIntegerContext {
     readonly scenePbrMaterials: ScenePbrMaterialManifest[];
     readonly assets: ReadonlyMap<string, CompileAsset>;
     recordSceneMaterialSlot(): number;
@@ -47,6 +51,7 @@ export interface MaterialOptionContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileVec2(expression: ts.Expression): string;
 }
 
 /**
@@ -76,6 +81,18 @@ export type CompiledPbrMaterialOptions = [
     string,
     number,
 ];
+
+/** What a reached `setPbrAnisotropy` settled: the emitted arguments, and the
+ *  manifest the composition input reads. Its numbers come from the pinned AST
+ *  through `staticNumberValue`, not from the C++ just emitted -- a scene that
+ *  computes its intensity has no number to state, and the manifest says so
+ *  rather than carrying the `NaN` a re-parse would produce. */
+export interface CompiledAnisotropyOptions {
+    enabled: string;
+    intensity: string;
+    direction: string;
+    manifest: ScenePbrAnisotropyManifest;
+}
 
 /** The reached slice of the extension option objects the setters take. */
 export type CompiledLayerOptions = [
@@ -432,6 +449,62 @@ export function compileIridescenceOptions(
             ? context.compileNumber(maximumThickness)
             : "400.0f",
     ];
+}
+
+/**
+ * The reached slice of `AnisotropyProps`.
+ *
+ * The defaults are `writeUbo`'s own — `intensity ?? 1.0` and
+ * `direction ?? [1, 0]` in `fragments/anisotropy-fragment.ts` — and the
+ * `isEnabled` guard stays there too, which is why a disabled layer still
+ * stamps the material. `texture` is rejected: it carries the extension's
+ * second feature bit (`PBR2_HAS_ANISO_TEX`), its own binding pair and its
+ * own UV transform, and no reached call passes one.
+ */
+export function compileAnisotropyOptions(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): CompiledAnisotropyOptions {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["isEnabled", "intensity", "direction"],
+        "Reached anisotropy options support isEnabled, intensity, and direction.",
+    );
+    const isEnabled = context.objectProperty(object, "isEnabled");
+    const intensity = context.objectProperty(object, "intensity");
+    const direction = context.objectProperty(object, "direction");
+    const enabled = isEnabled
+        ? context.compileBoolean(isEnabled)
+        : "false";
+    const staticDirection = direction
+        ? staticNumberPair(context, direction) ??
+            context.fail(
+                direction,
+                "An anisotropy direction must be a static [x, y].",
+            )
+        : ([1, 0] as const);
+    const staticIntensity = intensity
+        ? staticNumberValue(context, intensity)
+        : 1;
+    return {
+        enabled,
+        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
+        direction: direction
+            ? context.compileVec2(direction)
+            : "bbl::Vec2{1.0f, 0.0f}",
+        manifest: {
+            isEnabled: enabled === "true",
+            // Omitted where the scene computes the value: the composition
+            // then replays the pin's own `?? 1.0` default, which is what the
+            // variant reads. Nothing in the pinned `detect` selects on it.
+            ...(staticIntensity !== undefined
+                ? { intensity: staticIntensity }
+                : {}),
+            direction: staticDirection,
+        },
+    };
 }
 
 /**

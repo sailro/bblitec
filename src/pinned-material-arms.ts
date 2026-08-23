@@ -665,6 +665,7 @@ interface ScenePbrSetters {
     setPbrSheen: PinnedLayerSetter<Record<string, unknown>>;
     setPbrClearCoat: PinnedLayerSetter<Record<string, unknown>>;
     setPbrIridescence: PinnedLayerSetter<Record<string, unknown>>;
+    setPbrAnisotropy: PinnedLayerSetter<Record<string, unknown>>;
     setPbrEmissive: PinnedLayerSetter<readonly number[]>;
 }
 
@@ -672,24 +673,29 @@ let scenePbrSettersPromise: Promise<ScenePbrSetters> | undefined;
 
 function scenePbrSetters(): Promise<ScenePbrSetters> {
     scenePbrSettersPromise ??= (async () => {
-        const [sheen, clearCoat, iridescence, emissive] = await Promise.all([
-            importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
-                "material/pbr/set-sheen.js",
-            ),
-            importPinnedModule<Pick<ScenePbrSetters, "setPbrClearCoat">>(
-                "material/pbr/set-clearcoat.js",
-            ),
-            importPinnedModule<Pick<ScenePbrSetters, "setPbrIridescence">>(
-                "material/pbr/set-iridescence.js",
-            ),
-            importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
-                "material/pbr/set-emissive.js",
-            ),
-        ]);
+        const [sheen, clearCoat, iridescence, anisotropy, emissive] =
+            await Promise.all([
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
+                    "material/pbr/set-sheen.js",
+                ),
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrClearCoat">>(
+                    "material/pbr/set-clearcoat.js",
+                ),
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrIridescence">>(
+                    "material/pbr/set-iridescence.js",
+                ),
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrAnisotropy">>(
+                    "material/pbr/set-anisotropy.js",
+                ),
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
+                    "material/pbr/set-emissive.js",
+                ),
+            ]);
         return {
             setPbrSheen: sheen.setPbrSheen,
             setPbrClearCoat: clearCoat.setPbrClearCoat,
             setPbrIridescence: iridescence.setPbrIridescence,
+            setPbrAnisotropy: anisotropy.setPbrAnisotropy,
             setPbrEmissive: emissive.setPbrEmissive,
         };
     })();
@@ -775,6 +781,17 @@ export async function composeScenePbrVariants(
                     material.iridescence.minimumThickness,
                 maximumThickness:
                     material.iridescence.maximumThickness,
+            });
+        }
+        if (material.anisotropy) {
+            setters.setPbrAnisotropy(input, {
+                isEnabled: material.anisotropy.isEnabled,
+                // A computed intensity states no number, so the props reach
+                // the pin without one and its writer's own default applies.
+                ...(material.anisotropy.intensity !== undefined
+                    ? { intensity: material.anisotropy.intensity }
+                    : {}),
+                direction: material.anisotropy.direction,
             });
         }
         if (material.emissiveColor) {

@@ -20,6 +20,8 @@ export interface BrowserErasureContext {
     lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined;
+    /** The query string the reference pose is captured at. */
+    referenceSearch(): string;
 }
 
 export class BrowserErasure {
@@ -168,7 +170,14 @@ export class BrowserErasure {
             ts.isIdentifier(unwrapped.expression) &&
             unwrapped.expression.text === "URLSearchParams"
         ) {
-            return { kind: "search-params" };
+            const argument = unwrapped.arguments?.[0];
+            const over = argument
+                ? this.evaluateBrowserValue(argument)
+                : undefined;
+            return {
+                kind: "search-params",
+                search: over?.kind === "string" ? over.value : "",
+            };
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -182,7 +191,10 @@ export class BrowserErasure {
             ) &&
             unwrapped.expression.expression.text === "window"
         ) {
-            return { kind: "string", value: "" };
+            return {
+                kind: "string",
+                value: this.context.referenceSearch(),
+            };
         }
         if (
             ts.isPrefixUnaryExpression(unwrapped) &&
@@ -257,6 +269,25 @@ export class BrowserErasure {
                             : !equal,
                 };
             }
+            // `seekTimeParam > 0` -- how the corpus separates a query that
+            // names a pose from one that only asks to freeze. Both sides
+            // are numbers by the time the query has folded, so the
+            // comparison is the ordinary numeric one.
+            const relational = relationalOperator(
+                unwrapped.operatorToken.kind,
+            );
+            if (relational) {
+                const right = this.evaluateBrowserValue(
+                    unwrapped.right,
+                );
+                if (left?.kind !== "number" || right?.kind !== "number") {
+                    return undefined;
+                }
+                return {
+                    kind: "boolean",
+                    value: relational(left.value, right.value),
+                };
+            }
             return undefined;
         }
         if (ts.isCallExpression(unwrapped)) {
@@ -271,22 +302,31 @@ export class BrowserErasure {
                 const owner = this.evaluateBrowserValue(
                     unwrapped.expression.expression,
                 );
-                if (owner?.kind === "search-params") {
-                    if (
-                        unwrapped.expression.name.text ===
-                        "has"
-                    ) {
+                const method = unwrapped.expression.name.text;
+                if (
+                    owner?.kind === "search-params" &&
+                    (method === "get" || method === "has")
+                ) {
+                    // The pin's own parser answers the pin's own query, so
+                    // the read folds to exactly what the reference page
+                    // sees. A scene captured bare has an empty query and
+                    // every parameter reads as absent, as before.
+                    const argument = unwrapped.arguments[0];
+                    const key = argument
+                        ? this.evaluateBrowserValue(argument)
+                        : undefined;
+                    if (key?.kind !== "string") return undefined;
+                    const parameters = new URLSearchParams(owner.search);
+                    if (method === "has") {
                         return {
                             kind: "boolean",
-                            value: false,
+                            value: parameters.has(key.value),
                         };
                     }
-                    if (
-                        unwrapped.expression.name.text ===
-                        "get"
-                    ) {
-                        return { kind: "null" };
-                    }
+                    const found = parameters.get(key.value);
+                    return found === null
+                        ? { kind: "null" }
+                        : { kind: "string", value: found };
                 }
             }
             if (
@@ -452,6 +492,24 @@ export class BrowserErasure {
             call.expression.expression.name.text ===
                 "_device";
         return objectAssign || deviceEvent;
+    }
+}
+
+/** The comparison a relational token performs, if it is one. */
+function relationalOperator(
+    kind: ts.SyntaxKind,
+): ((left: number, right: number) => boolean) | undefined {
+    switch (kind) {
+        case ts.SyntaxKind.GreaterThanToken:
+            return (left, right) => left > right;
+        case ts.SyntaxKind.GreaterThanEqualsToken:
+            return (left, right) => left >= right;
+        case ts.SyntaxKind.LessThanToken:
+            return (left, right) => left < right;
+        case ts.SyntaxKind.LessThanEqualsToken:
+            return (left, right) => left <= right;
+        default:
+            return undefined;
     }
 }
 

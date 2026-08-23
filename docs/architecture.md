@@ -51,7 +51,7 @@ Primary source ownership:
 | `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
 | `src/compiler/expressions.ts` | the value switch and call dispatch every expression position goes through |
-| `src/compiler/browser-erasure.ts` | browser-only expression identification, compile-time values, erased instrumentation |
+| `src/compiler/browser-erasure.ts` | browser-only expression identification, compile-time values (including the reference pose's query string), erased instrumentation |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |

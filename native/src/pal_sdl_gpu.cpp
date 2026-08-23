@@ -2269,14 +2269,15 @@ SDL_GPUTexture* upload_cube_texture(
 SDL_GPUTexture* upload_rgbd_texture(SDL_GPUDevice* device, const TextureData& texture_data) {
     int width = 0;
     int height = 0;
-    const std::vector<float> pixels = decode_rgbd(texture_data, width, height);
+    const std::vector<std::uint16_t> pixels =
+        decode_rgbd(texture_data, width, height);
     return upload_2d_texture(
         device,
         pixels.data(),
-        pixels.size() * sizeof(float),
+        pixels.size() * sizeof(std::uint16_t),
         static_cast<std::uint32_t>(width),
         static_cast<std::uint32_t>(height),
-        SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT,
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
         "upload RGBD texture");
 }
 
@@ -2342,7 +2343,6 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                     ? &environment.specular_faces[
                           static_cast<std::size_t>(mip) * 6 + face]
                     : nullptr;
-            std::vector<float> decoded_pixels;
             std::vector<std::uint16_t> decoded_half_pixels;
             const std::uint8_t* source_bytes = nullptr;
             std::size_t byte_size = 0;
@@ -2360,20 +2360,12 @@ SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState
                 row_size =
                     static_cast<std::size_t>(image_width) * 8;
             } else {
-                decoded_pixels = face_data
+                decoded_half_pixels = face_data
                     ? decode_rgbd(
                           *face_data,
                           image_width,
                           image_height)
-                    : std::vector<float>(
-                          environment_fallback_face,
-                          environment_fallback_face + 4);
-                decoded_half_pixels.reserve(
-                    decoded_pixels.size());
-                for (const float value : decoded_pixels) {
-                    decoded_half_pixels.push_back(
-                        float_to_half(value));
-                }
+                    : fallback_face_halves();
                 source_bytes =
                     reinterpret_cast<const std::uint8_t*>(
                         decoded_half_pixels.data());

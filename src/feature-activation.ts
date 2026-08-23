@@ -335,6 +335,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/pbr/set-iridescence.ts",
         consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
     },
+    "material:anisotropy": {
+        provenance: "src/material/pbr/set-anisotropy.ts",
+        // No capability define: the layer declares no binding and no texture
+        // slot, so its whole arm rides the composed variant.
+        consumers: ["features.cmake", "variant table"],
+    },
+    "material:tracking": {
+        provenance: "src/material/tracking/pbr-tracking.ts",
+        // Nothing is emitted for it, so the only consumer is the record of
+        // what was dropped and why.
+        consumers: ["features.cmake"],
+    },
     "material:emissive": {
         provenance: "src/material/pbr/set-emissive.ts",
         consumers: ["features.cmake", "variant table"],

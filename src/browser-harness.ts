@@ -172,8 +172,9 @@ export async function waitForSceneReady(
     page: Page,
     origin: string,
     awaitFrozenPose: boolean,
+    search?: string,
 ): Promise<void> {
-    await gotoScenePage(page, origin);
+    await gotoScenePage(page, origin, search);
     await page.waitForFunction(
         () =>
             document.getElementById("renderCanvas")?.dataset.ready ===
@@ -253,8 +254,9 @@ export const pageBase64Script =
 export async function gotoScenePage(
     page: Page,
     origin: string,
+    search = "",
 ): Promise<void> {
-    await page.goto(`${origin}/scene.html`, {
+    await page.goto(`${origin}/scene.html${search}`, {
         waitUntil: "domcontentloaded",
         timeout: 120_000,
     });

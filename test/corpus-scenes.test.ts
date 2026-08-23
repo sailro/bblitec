@@ -35,6 +35,14 @@ interface CorpusReferenceEntry {
     reference: string;
     referenceSha256: string;
     moduleSha256: string;
+    /**
+     * The query the reference page was served at, for a scene whose own
+     * pinned spec serves one. The module digest cannot carry it -- the
+     * query is a navigation parameter, not module text -- so a golden
+     * captured bare and one captured at a pose would otherwise share a
+     * provenance.
+     */
+    referenceSearch?: string;
 }
 
 interface CorpusReferenceManifest {
@@ -207,6 +215,11 @@ test("keeps exact-source corpus references immutable", () => {
             moduleDigest,
             reference.moduleSha256,
             `${reference.id} capture module differs from golden provenance.`,
+        );
+        assert.equal(
+            reference.referenceSearch,
+            scene.parity.referenceSearch,
+            `${reference.id} capture query differs from golden provenance.`,
         );
     }
 });

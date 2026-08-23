@@ -1,9 +1,30 @@
 import ts from "typescript";
 
-const babylonModules = new Set([
+/** The two names a scene spells the pinned package with. */
+export const babylonPackages = [
     "babylon-lite",
     "@babylonjs/lite",
-]);
+] as const;
+
+/**
+ * Whether an import specifier names the pinned package. A scene reaches a
+ * pinned module either through the package entry point or through one of its
+ * subpaths (`babylon-lite/material/tracking/pbr-tracking`), which the pin's
+ * own scenes use for the modules its entry point does not re-export. Both
+ * spellings name the same pinned code, so both dispatch by the imported name.
+ *
+ * The one answer to this question: module resolution
+ * (`program.ts`) and the capture harness's specifier rewrite
+ * (`capture-suite-reference.ts`) read it too, so a subpath cannot be pinned
+ * for one of them and unknown to another.
+ */
+export function isBabylonModule(specifier: string): boolean {
+    return babylonPackages.some(
+        (packageName) =>
+            specifier === packageName ||
+            specifier.startsWith(`${packageName}/`),
+    );
+}
 
 export class CompilerSymbols {
     public constructor(
@@ -58,7 +79,7 @@ export class CompilerSymbols {
         if (
             !ts.isImportDeclaration(importDeclaration) ||
             !ts.isStringLiteral(importDeclaration.moduleSpecifier) ||
-            !babylonModules.has(importDeclaration.moduleSpecifier.text)
+            !isBabylonModule(importDeclaration.moduleSpecifier.text)
         ) {
             return undefined;
         }

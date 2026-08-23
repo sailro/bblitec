@@ -2,6 +2,14 @@ export interface SceneParityDefinition {
     reference: { kind: "source"; path: string };
     referenceTimeSeconds?: number;
     referenceAnimationGroups?: string[];
+    /**
+     * The query string the pinned parity spec serves this scene at, when it
+     * serves one (`"?seekTime=0"`). The reference page is navigated with it
+     * and the compiler folds `window.location.search` to the same text, so
+     * both sides take the branch the pin's own test takes. A scene the pin
+     * serves bare leaves this unset, and the query reads as empty.
+     */
+    referenceSearch?: string;
     // The native actual lands in `outputDirectory` as
     // `native-{gpu,dawn}.png` — suffixed per backend so an SDL_GPU
     // run and a Dawn run cannot overwrite each other's evidence.
@@ -1153,6 +1161,28 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: {
                 BBLITE_ANIMATION_SEEK_SECONDS: "6.5",
             },
+        },
+    },
+    {
+        id: "scene23",
+        name: "Scene 23 - PBR Anisotropy",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene23.ts",
+        title: "Babylon Lite Native - PBR Anisotropy",
+        parity: {
+            // The pin's own spec serves this scene at `?seekTime=0`, which
+            // freezes the animated intensity at one and skips the
+            // per-frame writer. Both sides read the same query.
+            referenceSearch: "?seekTime=0",
+            // Measured 0.002 / 0.017 on both backends, every differing
+            // pixel within one byte and all of them on the sphere. A
+            // mirror-metal material samples the specular cube at mip 0
+            // through a derivative-derived reflection, which resolves a
+            // last-bit difference in the interpolated frame as a
+            // one-step colour difference.
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.02,
+            backgroundColor: [53, 53, 82],
+            backgroundThreshold: 30,
         },
     },
     {

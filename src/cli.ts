@@ -90,11 +90,12 @@ interface CliOptions {
     title?: string;
     width?: number;
     height?: number;
+    search?: string;
     idDiagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--id-diagnostics]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--id-diagnostics]");
     process.exit(2);
 }
 
@@ -116,6 +117,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let title: string | undefined;
     let width: number | undefined;
     let height: number | undefined;
+    let search: string | undefined;
     let idDiagnostics = false;
 
     for (let index = 1; index < arguments_.length; index += 1) {
@@ -140,6 +142,11 @@ function parseArguments(arguments_: string[]): CliOptions {
                 height = parsePositiveInteger(value, flag);
                 index += 1;
                 break;
+            case "--search":
+                if (!value) usage();
+                search = value;
+                index += 1;
+                break;
             case "--id-diagnostics":
                 idDiagnostics = true;
                 break;
@@ -159,6 +166,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(title ? { title } : {}),
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
+        ...(search ? { search } : {}),
     };
 }
 
@@ -498,6 +506,7 @@ async function main(): Promise<void> {
         ...(options.title ? { title: options.title } : {}),
         ...(options.width ? { width: options.width } : {}),
         ...(options.height ? { height: options.height } : {}),
+        ...(options.search ? { search: options.search } : {}),
     });
 
     // The frozen node-particle bake is a Chromium run that nothing between

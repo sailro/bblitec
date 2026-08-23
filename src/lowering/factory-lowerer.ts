@@ -451,11 +451,10 @@ export class FactoryLowerer {
             );
         }
         // The ground vertex, paired with the emitted ModelVertex: the
-        // column/row positions (the emission precomputes width * 0.5f for
-        // the exact -width / 2), the constant up normal (which flows), and
-        // the UV generation whose tiling scale the emission folds into the
-        // generated coordinate — exact, because scaling by the default 1 is
-        // an identity in float.
+        // column/row positions (emitted as the pin writes them, in double),
+        // the constant up normal (which flows), and the UV generation whose
+        // tiling scale the emission applies to the stored float, as the
+        // pin's own second pass does.
         assertVariable(
             ground,
             "x",
@@ -1364,6 +1363,10 @@ void set_thin_instance_colors(
 `
             : "";
         const value = (input: number): string => this.context.floatLiteral(input);
+        // The builders that run the pin's chain in doubles take double
+        // literals with it, so no constant rounds to float mid-expression.
+        const scalar = (input: number): string =>
+            this.context.doubleLiteral(input);
         // The emitted fragments the decoded tables above compose. Each is
         // plain text interpolation: the byte-for-byte C++ is unchanged as
         // long as the pin is, and moves with the pin when it moves.
@@ -1457,13 +1460,13 @@ ${boxAddFaceCalls}
 }
 
 MeshHandle create_ground(Engine& engine, GroundOptions options) {
-    const float width = options.width;
-    const float height = options.height;
+    const double width = options.width;
+    const double height = options.height;
     const std::uint32_t subdivisions =
         std::max<std::uint32_t>(1, options.subdivisions);
     const std::uint32_t columns = subdivisions + 1;
-    const float half_width = width * 0.5f;
-    const float half_height = height * 0.5f;
+    const float half_width = static_cast<float>(width * 0.5);
+    const float half_height = static_cast<float>(height * 0.5);
     ModelGeometry geometry;
     geometry.vertices.reserve(
         static_cast<std::size_t>(columns) * columns);
@@ -1471,30 +1474,38 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
         static_cast<std::size_t>(subdivisions) *
         subdivisions *
         6);
+    // Doubles through, rounded where the pin's Float32Array stores are --
+    // see build_sphere_geometry. The UV scale multiplies the stored float
+    // because the pin's second pass reads its own UV array back before
+    // scaling it, which is why the stored value is named here.
     for (std::uint32_t row = 0; row <= subdivisions; ++row) {
-        const float normalized_row =
-            static_cast<float>(row) /
-            static_cast<float>(subdivisions);
+        const double normalized_row =
+            static_cast<double>(row) /
+            static_cast<double>(subdivisions);
         for (
             std::uint32_t column = 0;
             column <= subdivisions;
             ++column) {
-            const float normalized_column =
-                static_cast<float>(column) /
-                static_cast<float>(subdivisions);
+            const double normalized_column =
+                static_cast<double>(column) /
+                static_cast<double>(subdivisions);
+            const float stored_u = static_cast<float>(normalized_column);
+            const float stored_v = static_cast<float>(1.0 - normalized_row);
             geometry.vertices.push_back(ModelVertex{
                 Vec3{
-                    -half_width + normalized_column * width,
+                    static_cast<float>(
+                        -width / 2.0 + normalized_column * width),
                     0.0f,
-                    -half_height +
-                        (1.0f - normalized_row) * height,
+                    static_cast<float>(
+                        -height / 2.0 + (1.0 - normalized_row) * height),
                 },
                 ${groundNormal},
                 Vec4{1.0f, 0.0f, 0.0f, 1.0f},
                 Vec2{
-                    normalized_column * options.uv_scale.x,
-                    (1.0f - normalized_row) *
-                        options.uv_scale.y,
+                    static_cast<float>(
+                        stored_u * static_cast<double>(options.uv_scale.x)),
+                    static_cast<float>(
+                        stored_v * static_cast<double>(options.uv_scale.y)),
                 },
             });
         }
@@ -1526,7 +1537,11 @@ ${groundWindingList}
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::ground;
-    mesh.dimensions = Vec3{width, 0.0f, height};
+    mesh.dimensions = Vec3{
+        static_cast<float>(width),
+        0.0f,
+        static_cast<float>(height),
+    };
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1557,10 +1572,10 @@ ${planeVertices}
 static ModelGeometry build_sphere_geometry(SphereOptions options) {
     const std::uint32_t segments =
         std::max<std::uint32_t>(${sphereMinSegments}, options.segments);
-    const Vec3 radius{
-        options.diameter_x * 0.5f,
-        options.diameter_y * 0.5f,
-        options.diameter_z * 0.5f,
+    const Vec3d radius{
+        options.diameter_x * 0.5,
+        options.diameter_y * 0.5,
+        options.diameter_z * 0.5,
     };
     const std::uint32_t z_steps = ${spherePolarBase} + segments;
     const std::uint32_t y_steps = ${sphereAzimuthFactor} * z_steps;
@@ -1569,28 +1584,41 @@ static ModelGeometry build_sphere_geometry(SphereOptions options) {
         static_cast<std::size_t>(z_steps + 1) * (y_steps + 1));
     geometry.indices.reserve(
         static_cast<std::size_t>(z_steps) * y_steps * ${sphereIndicesPerQuad});
+    // The pin runs this whole chain in JavaScript numbers and rounds only
+    // where its Float32Arrays store, so the angles, the trig, and the
+    // radius products stay double here and each store does its own
+    // conversion. Rounding earlier -- a float angle, or a position built
+    // from the already-rounded normal -- moves the normals by a few ulps,
+    // which a mirror-metal material resolves as a visibly different
+    // reflection.
     for (std::uint32_t z_step = 0; z_step <= z_steps; ++z_step) {
-        const float normalized_z =
-            static_cast<float>(z_step) / static_cast<float>(z_steps);
-        const float angle_z = normalized_z * pi;
+        const double normalized_z =
+            static_cast<double>(z_step) / static_cast<double>(z_steps);
+        const double angle_z = normalized_z * pi_double;
         for (std::uint32_t y_step = 0; y_step <= y_steps; ++y_step) {
-            const float normalized_y =
-                static_cast<float>(y_step) / static_cast<float>(y_steps);
-            const float angle_y = normalized_y * pi * ${value(sphereTurnFactor)};
-            const Vec3 normal{
-                std::sin(angle_z) * std::cos(angle_y),
-                std::cos(angle_z),
-                -std::sin(angle_z) * std::sin(angle_y),
-            };
+            const double normalized_y =
+                static_cast<double>(y_step) / static_cast<double>(y_steps);
+            const double angle_y =
+                normalized_y * pi_double * ${scalar(sphereTurnFactor)};
+            const double nx = std::sin(angle_z) * std::cos(angle_y);
+            const double ny = std::cos(angle_z);
+            const double nz = -std::sin(angle_z) * std::sin(angle_y);
             geometry.vertices.push_back(ModelVertex{
                 Vec3{
-                    radius.x * normal.x,
-                    radius.y * normal.y,
-                    radius.z * normal.z,
+                    static_cast<float>(radius.x * nx),
+                    static_cast<float>(radius.y * ny),
+                    static_cast<float>(radius.z * nz),
                 },
-                normal,
+                Vec3{
+                    static_cast<float>(nx),
+                    static_cast<float>(ny),
+                    static_cast<float>(nz),
+                },
                 Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-                Vec2{normalized_y, normalized_z},
+                Vec2{
+                    static_cast<float>(normalized_y),
+                    static_cast<float>(normalized_z),
+                },
             });
         }
 
@@ -1604,10 +1632,16 @@ static ModelGeometry build_sphere_geometry(SphereOptions options) {
                 {${sphereQuadPattern.join(", ")}});
         }
     }
-    geometry.bounds_min =
-        Vec3{-radius.x, -radius.y, -radius.z};
-    geometry.bounds_max =
-        Vec3{radius.x, radius.y, radius.z};
+    geometry.bounds_min = Vec3{
+        static_cast<float>(-radius.x),
+        static_cast<float>(-radius.y),
+        static_cast<float>(-radius.z),
+    };
+    geometry.bounds_max = Vec3{
+        static_cast<float>(radius.x),
+        static_cast<float>(radius.y),
+        static_cast<float>(radius.z),
+    };
     for (ModelVertex& vertex : geometry.vertices) {
         vertex.local_position = vertex.position;
     }
@@ -1658,9 +1692,9 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
     mesh.dimensions = Vec3{
-        options.diameter_x,
-        options.diameter_y,
-        options.diameter_z,
+        static_cast<float>(options.diameter_x),
+        static_cast<float>(options.diameter_y),
+        static_cast<float>(options.diameter_z),
     };
     mesh.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1767,15 +1801,15 @@ void set_morph_target_weights(
 }
 
 MeshHandle create_torus(Engine& engine, TorusOptions options) {
-    const float diameter =
-        options.diameter > 0.0f ? options.diameter : ${value(torusDiameter)};
-    const float thickness =
-        options.thickness > 0.0f ? options.thickness : ${value(torusThickness)};
+    const double diameter =
+        options.diameter > 0.0 ? options.diameter : ${scalar(torusDiameter)};
+    const double thickness =
+        options.thickness > 0.0 ? options.thickness : ${scalar(torusThickness)};
     const std::uint32_t tessellation = std::max<std::uint32_t>(
         3,
         options.tessellation > 0 ? options.tessellation : ${torusTessellation}u);
-    const float major_radius = diameter * 0.5f;
-    const float minor_radius = thickness * 0.5f;
+    const double major_radius = diameter * 0.5;
+    const double minor_radius = thickness * 0.5;
     const std::uint32_t stride = tessellation + 1;
     ModelGeometry geometry;
     geometry.vertices.reserve(
@@ -1785,36 +1819,46 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
     for (std::uint32_t outer_index = 0;
          outer_index <= tessellation;
          ++outer_index) {
-        const float outer_angle =
-            static_cast<float>(outer_index) * ${value(torusTurnFactor)} * pi /
-                static_cast<float>(tessellation) -
-            pi * ${value(1 / torusPhaseDivisor)};
-        const float cos_outer = std::cos(outer_angle);
-        const float sin_outer = std::sin(outer_angle);
+        const double outer_angle =
+            static_cast<double>(outer_index) * ${scalar(torusTurnFactor)} *
+                    pi_double /
+                static_cast<double>(tessellation) -
+            pi_double * ${scalar(1 / torusPhaseDivisor)};
+        const double cos_outer = std::cos(outer_angle);
+        const double sin_outer = std::sin(outer_angle);
         for (std::uint32_t inner_index = 0;
              inner_index <= tessellation;
              ++inner_index) {
-            const float inner_angle =
-                static_cast<float>(inner_index) * ${value(torusTurnFactor)} * pi /
-                    static_cast<float>(tessellation) +
-                pi;
-            const float dx = std::cos(inner_angle);
-            const float dy = std::sin(inner_angle);
+            const double inner_angle =
+                static_cast<double>(inner_index) * ${scalar(torusTurnFactor)} *
+                        pi_double /
+                    static_cast<double>(tessellation) +
+                pi_double;
+            const double dx = std::cos(inner_angle);
+            const double dy = std::sin(inner_angle);
             const Vec3 position{
-                (dx * minor_radius + major_radius) * cos_outer,
-                dy * minor_radius,
-                -(dx * minor_radius + major_radius) * sin_outer,
+                static_cast<float>(
+                    (dx * minor_radius + major_radius) * cos_outer),
+                static_cast<float>(dy * minor_radius),
+                static_cast<float>(
+                    -(dx * minor_radius + major_radius) * sin_outer),
             };
             geometry.vertices.push_back(ModelVertex{
                 position,
-                Vec3{dx * cos_outer, dy, -dx * sin_outer},
+                Vec3{
+                    static_cast<float>(dx * cos_outer),
+                    static_cast<float>(dy),
+                    static_cast<float>(-dx * sin_outer),
+                },
                 Vec4{1.0f, 0.0f, 0.0f, 1.0f},
                 Vec2{
-                    static_cast<float>(outer_index) /
-                        static_cast<float>(tessellation),
-                    ${value(torusUvUnit)} -
-                        static_cast<float>(inner_index) /
-                            static_cast<float>(tessellation),
+                    static_cast<float>(
+                        static_cast<double>(outer_index) /
+                        static_cast<double>(tessellation)),
+                    static_cast<float>(
+                        ${scalar(torusUvUnit)} -
+                        static_cast<double>(inner_index) /
+                            static_cast<double>(tessellation)),
                 },
                 {},
                 position,
@@ -1830,11 +1874,13 @@ ${torusTriangulationList}
                 });
         }
     }
-    const float outer_radius = major_radius + minor_radius;
+    const float outer_radius =
+        static_cast<float>(major_radius + minor_radius);
+    const float minor_extent = static_cast<float>(minor_radius);
     geometry.bounds_min =
-        Vec3{-outer_radius, -minor_radius, -outer_radius};
+        Vec3{-outer_radius, -minor_extent, -outer_radius};
     geometry.bounds_max =
-        Vec3{outer_radius, minor_radius, outer_radius};
+        Vec3{outer_radius, minor_extent, outer_radius};
     for (ModelVertex& vertex : geometry.vertices) {
         vertex.local_position = vertex.position;
     }
@@ -2862,6 +2908,26 @@ void set_pbr_iridescence(
     record.iridescence_index_of_refraction = index_of_refraction;
     record.iridescence_minimum_thickness = minimum_thickness;
     record.iridescence_maximum_thickness = maximum_thickness;
+}
+
+// src/material/pbr/fragments/anisotropy-fragment.ts#pbrExt.writeUbo: the
+// isEnabled guard is the writer's own, so a disabled layer writes no slice
+// and the record keeps the pin's defaults. Those defaults -- an intensity
+// of one and a [1, 0] direction -- are that same writer's own nullish
+// arms, resolved at the call site.
+void set_pbr_anisotropy(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    float intensity,
+    Vec2 direction) {
+    if (!enabled) {
+        return;
+    }
+    MaterialRecord& record = engine.materials[material.value];
+    record.has_anisotropy = true;
+    record.anisotropy_intensity = intensity;
+    record.anisotropy_direction = direction;
 }
 
 MaterialHandle create_pbr_material(

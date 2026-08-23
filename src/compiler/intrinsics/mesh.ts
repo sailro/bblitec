@@ -339,7 +339,7 @@ export function compileMeshIntrinsic(
             );
             const options = call.arguments[1]
                 ? context.compileSphereOptions(call.arguments[1])
-                : ["32u", "1.0f", "1.0f", "1.0f"];
+                : ["32u", "1.0", "1.0", "1.0"];
             context.reachFeature("mesh:sphere", call);
             return {
                 kind: "mesh",
@@ -358,7 +358,7 @@ export function compileMeshIntrinsic(
                 ? context.compileSphereOptions(
                       call.arguments[0],
                   )
-                : ["32u", "1.0f", "1.0f", "1.0f"];
+                : ["32u", "1.0", "1.0", "1.0"];
             const temporary =
                 context.allocateTemporaryCppName(
                     "sphere_data",

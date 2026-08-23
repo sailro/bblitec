@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
+import {
+    babylonPackages,
+    isBabylonModule,
+} from "../src/compiler/symbols.js";
 import {
     mkdtempSync,
     readFileSync,
@@ -202,11 +207,11 @@ test("preserves reached box, ground, and sphere options", () => {
     );
     assert.match(
         result.cpp,
-        /GroundOptions\{6\.0f, 7\.0f, 4u, bbl::Vec2\{2\.0f, 3\.0f\}\}/,
+        /GroundOptions\{6\.0, 7\.0, 4u, bbl::Vec2\{2\.0f, 3\.0f\}\}/,
     );
     assert.match(
         result.cpp,
-        /SphereOptions\{8u, 2\.0f, 4\.0f, 5\.0f\}/,
+        /SphereOptions\{8u, 2\.0, 4\.0, 5\.0\}/,
     );
 });
 
@@ -230,7 +235,7 @@ test("compiles pinned Standard material morph targets", () => {
     ]);
     assert.match(
         result.cpp,
-        /create_sphere_data\(bbl::SphereOptions\{32u, 1\.0f, 1\.0f, 1\.0f\}\)/,
+        /create_sphere_data\(bbl::SphereOptions\{32u, 1\.0, 1\.0, 1\.0\}\)/,
     );
     assert.match(
         result.cpp,
@@ -2018,6 +2023,69 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("reads the query the reference pose is captured at", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            let x = 0;
+            if (!isNaN(seek) && seek > 0) {
+                x = 1;
+            } else if (!isNaN(seek)) {
+                x = 2;
+            } else {
+                x = 3;
+            }
+            box.position.x = x;
+        }
+    `;
+    // Bare, as every scene the pin serves without a query compiles today.
+    assert.match(compileSource(source).cpp, /v_x = 3\.0;/);
+    // At the pose scene 23's own spec serves: present, and not above zero.
+    assert.match(
+        compileSource(source, { search: "?seekTime=0" }).cpp,
+        /v_x = 2\.0;/,
+    );
+    // And a pose that names a time takes the arm above zero.
+    assert.match(
+        compileSource(source, { search: "?seekTime=1.5" }).cpp,
+        /v_x = 1\.0;/,
+    );
+});
+
+test("dispatches a pinned subpath import as the pinned package", () => {
+    // The pin's own scenes reach modules its entry point does not
+    // re-export. Installing tracking is one of them, and it emits nothing:
+    // every primitive it defines preserves its value and only marks the UBO
+    // dirty on a later write, which generation already knows about.
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+        import { installPbrTracking } from "babylon-lite/material/tracking/pbr-tracking";
+
+        async function main() {
+            const engine = await createEngine({});
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 1, 0),
+            });
+            installPbrTracking(material);
+        }
+    `);
+    assert.doesNotMatch(result.cpp, /install_pbr_tracking|installPbrTracking/);
+    assert.match(result.cpp, /create_pbr_material/);
+});
+
 test("rejects unsupported dynamic engine and scene options", () => {
     assert.throws(
         () =>
@@ -3549,4 +3617,26 @@ test("refuses the line shapes outside the reached slice", () => {
             ),
         /one color per point/,
     );
+});
+
+test("every pinned package spelling reaches the served module", () => {
+    // `capture-suite-reference.ts` rewrites specifiers with a regex literal
+    // and `compiler/symbols.ts` dispatches them with a predicate. Neither can
+    // read the other, so this is what keeps the two lists the same one.
+    for (const packageName of babylonPackages) {
+        assert.match(
+            pinnedPackageSpecifiers(`import x from "${packageName}";`),
+            /"\/node_modules\/@babylonjs\/lite\/lib\/index\.js"/,
+            `${packageName} is not rewritten to the served module.`,
+        );
+        assert.match(
+            pinnedPackageSpecifiers(`import x from "${packageName}/mesh/a";`),
+            /"\/node_modules\/@babylonjs\/lite\/lib\/mesh\/a\.js"/,
+            `${packageName} subpaths are not rewritten to the served module.`,
+        );
+        assert.ok(
+            isBabylonModule(packageName) &&
+                isBabylonModule(`${packageName}/mesh/a`),
+        );
+    }
 });
