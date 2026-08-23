@@ -537,9 +537,14 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     assert.match(mesh.source, /geometry\.vertices\.insert/);
     assert.match(mesh.source, /vertex\.local_position = vertex\.position/);
     assert.match(mesh.source, /const std::uint32_t subdivisions/);
-    assert.match(mesh.source, /normalized_column \* options\.uv_scale\.x/);
+    assert.match(
+        mesh.source,
+        /stored_u \* static_cast<double>\(options\.uv_scale\.x\)/,
+    );
     assert.match(mesh.source, /bottom_right,\s*top_right,\s*top_left/s);
-    assert.match(mesh.source, /radius\.x \* normal\.x/);
+    // The pin builds the position from the unrounded normal, not from
+    // the float it just stored, so the product names the double.
+    assert.match(mesh.source, /static_cast<float>\(radius\.x \* nx\)/);
     assert.match(mesh.source, /options\.diameter_y/);
     assert.match(mesh.source, /mesh\.geometry =/);
     assert.match(mesh.source, /create_plane\(Engine& engine, PlaneOptions options\)/);

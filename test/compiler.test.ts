@@ -2018,6 +2018,69 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("reads the query the reference pose is captured at", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            let x = 0;
+            if (!isNaN(seek) && seek > 0) {
+                x = 1;
+            } else if (!isNaN(seek)) {
+                x = 2;
+            } else {
+                x = 3;
+            }
+            box.position.x = x;
+        }
+    `;
+    // Bare, as every scene the pin serves without a query compiles today.
+    assert.match(compileSource(source).cpp, /v_x = 3\.0;/);
+    // At the pose scene 23's own spec serves: present, and not above zero.
+    assert.match(
+        compileSource(source, { search: "?seekTime=0" }).cpp,
+        /v_x = 2\.0;/,
+    );
+    // And a pose that names a time takes the arm above zero.
+    assert.match(
+        compileSource(source, { search: "?seekTime=1.5" }).cpp,
+        /v_x = 1\.0;/,
+    );
+});
+
+test("dispatches a pinned subpath import as the pinned package", () => {
+    // The pin's own scenes reach modules its entry point does not
+    // re-export. Installing tracking is one of them, and it emits nothing:
+    // every primitive it defines preserves its value and only marks the UBO
+    // dirty on a later write, which generation already knows about.
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+        import { installPbrTracking } from "babylon-lite/material/tracking/pbr-tracking";
+
+        async function main() {
+            const engine = await createEngine({});
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 1, 0),
+            });
+            installPbrTracking(material);
+        }
+    `);
+    assert.doesNotMatch(result.cpp, /install_pbr_tracking|installPbrTracking/);
+    assert.match(result.cpp, /create_pbr_material/);
+});
+
 test("rejects unsupported dynamic engine and scene options", () => {
     assert.throws(
         () =>

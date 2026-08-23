@@ -1669,23 +1669,21 @@ void upload_environment(DawnState& state, const EnvironmentState& environment) {
                 // pinned uploadCubemapRGBD (BJS invertY cubemaps).
                 int face_width = 0;
                 int face_height = 0;
-                const std::vector<float> pixels =
+                const std::vector<std::uint16_t> pixels =
                     decode_rgbd(face_data, face_width, face_height);
                 half_pixels.resize(pixels.size());
-                const std::size_t row_floats =
+                const std::size_t row_channels =
                     static_cast<std::size_t>(face_width) * 4;
                 for (int row = 0; row < face_height; ++row) {
                     const std::size_t source_row =
                         static_cast<std::size_t>(
                             face_height - row - 1);
-                    for (std::size_t column = 0;
-                         column < row_floats;
-                         ++column) {
-                        half_pixels[
-                            static_cast<std::size_t>(row) * row_floats +
-                            column] = float_to_half(
-                            pixels[source_row * row_floats + column]);
-                    }
+                    std::copy_n(
+                        pixels.begin() + static_cast<std::ptrdiff_t>(
+                            source_row * row_channels),
+                        row_channels,
+                        half_pixels.begin() + static_cast<std::ptrdiff_t>(
+                            static_cast<std::size_t>(row) * row_channels));
                 }
                 source_bytes = reinterpret_cast<const std::uint8_t*>(
                     half_pixels.data());
@@ -1749,14 +1747,10 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
         if (environment.brdf_lut.bytes.empty()) return;
         int lut_width = 0;
         int lut_height = 0;
-        const std::vector<float> pixels =
+        half_pixels =
             decode_rgbd(environment.brdf_lut, lut_width, lut_height);
         width = static_cast<std::uint32_t>(lut_width);
         height = static_cast<std::uint32_t>(lut_height);
-        half_pixels.reserve(pixels.size());
-        for (const float value : pixels) {
-            half_pixels.push_back(float_to_half(value));
-        }
     }
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage =

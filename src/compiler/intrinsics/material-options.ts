@@ -10,6 +10,7 @@
 import ts from "typescript";
 import type {
     CompileAsset,
+    ScenePbrAnisotropyManifest,
     ScenePbrMaterialManifest,
     Value,
     ValueKind,
@@ -47,6 +48,10 @@ export interface MaterialOptionContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileVec2(expression: ts.Expression): string;
+    /** The two numbers a `[x, y]` literal states, for a manifest the
+     *  composition input reads rather than the emitted call. */
+    numberPair(expression: ts.Expression): readonly [number, number];
 }
 
 /**
@@ -76,6 +81,18 @@ export type CompiledPbrMaterialOptions = [
     string,
     number,
 ];
+
+/** What a reached `setPbrAnisotropy` settled: the emitted arguments, and
+ *  the numbers the composition input needs. The four other extensions read
+ *  their manifest numbers back out of the emitted text, which a fixed-arity
+ *  tuple makes workable; anisotropy carries four values of three shapes, so
+ *  it names them. */
+export interface CompiledAnisotropyOptions {
+    enabled: string;
+    intensity: string;
+    direction: string;
+    manifest: ScenePbrAnisotropyManifest;
+}
 
 /** The reached slice of the extension option objects the setters take. */
 export type CompiledLayerOptions = [
@@ -432,6 +449,50 @@ export function compileIridescenceOptions(
             ? context.compileNumber(maximumThickness)
             : "400.0f",
     ];
+}
+
+/**
+ * The reached slice of `AnisotropyProps`.
+ *
+ * The defaults are `writeUbo`'s own — `intensity ?? 1.0` and
+ * `direction ?? [1, 0]` in `fragments/anisotropy-fragment.ts` — and the
+ * `isEnabled` guard stays there too, which is why a disabled layer still
+ * stamps the material. `texture` is rejected: it carries the extension's
+ * second feature bit (`PBR2_HAS_ANISO_TEX`), its own binding pair and its
+ * own UV transform, and no reached call passes one.
+ */
+export function compileAnisotropyOptions(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): CompiledAnisotropyOptions {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["isEnabled", "intensity", "direction"],
+        "Reached anisotropy options support isEnabled, intensity, and direction.",
+    );
+    const isEnabled = context.objectProperty(object, "isEnabled");
+    const intensity = context.objectProperty(object, "intensity");
+    const direction = context.objectProperty(object, "direction");
+    const enabled = isEnabled
+        ? context.compileBoolean(isEnabled)
+        : "false";
+    const scale = intensity ? context.compileNumber(intensity) : "1.0f";
+    return {
+        enabled,
+        intensity: scale,
+        direction: direction
+            ? context.compileVec2(direction)
+            : "bbl::Vec2{1.0f, 0.0f}",
+        manifest: {
+            isEnabled: enabled === "true",
+            intensity: Number.parseFloat(scale),
+            direction: direction
+                ? context.numberPair(direction)
+                : [1, 0],
+        },
+    };
 }
 
 /**

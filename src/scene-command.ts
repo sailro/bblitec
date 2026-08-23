@@ -234,6 +234,9 @@ async function compile(idOrSource: string): Promise<void> {
             "--title",
             scene.title,
         ];
+        if (scene.parity?.referenceSearch) {
+            arguments_.push("--search", scene.parity.referenceSearch);
+        }
         if (
             scene.parity?.attribution?.drawIds ||
             scene.parity?.attribution?.triangleClusters

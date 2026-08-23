@@ -1,9 +1,21 @@
 import ts from "typescript";
 
-const babylonModules = new Set([
-    "babylon-lite",
-    "@babylonjs/lite",
-]);
+const babylonPackages = ["babylon-lite", "@babylonjs/lite"];
+
+/**
+ * Whether an import specifier names the pinned package. A scene reaches a
+ * pinned module either through the package entry point or through one of its
+ * subpaths (`babylon-lite/material/tracking/pbr-tracking`), which the pin's
+ * own scenes use for the modules its entry point does not re-export. Both
+ * spellings name the same pinned code, so both dispatch by the imported name.
+ */
+function isBabylonModule(specifier: string): boolean {
+    return babylonPackages.some(
+        (packageName) =>
+            specifier === packageName ||
+            specifier.startsWith(`${packageName}/`),
+    );
+}
 
 export class CompilerSymbols {
     public constructor(
@@ -58,7 +70,7 @@ export class CompilerSymbols {
         if (
             !ts.isImportDeclaration(importDeclaration) ||
             !ts.isStringLiteral(importDeclaration.moduleSpecifier) ||
-            !babylonModules.has(importDeclaration.moduleSpecifier.text)
+            !isBabylonModule(importDeclaration.moduleSpecifier.text)
         ) {
             return undefined;
         }

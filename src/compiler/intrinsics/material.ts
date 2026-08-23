@@ -1,10 +1,12 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import type { CompiledAnisotropyOptions } from "./material-options.js";
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import type {
     ScenePbrClearCoatManifest,
+    ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
     ScenePbrSheenManifest,
 } from "../types.js";
@@ -29,6 +31,10 @@ export interface MaterialIntrinsicContext
     ): void;
     recordScenePbrIridescence(
         iridescence: ScenePbrIridescenceManifest,
+        index: number | undefined,
+    ): void;
+    recordScenePbrAnisotropy(
+        anisotropy: ScenePbrAnisotropyManifest,
         index: number | undefined,
     ): void;
     recordScenePbrEmissive(
@@ -66,6 +72,9 @@ export interface MaterialIntrinsicContext
     compileIridescenceOptions(
         expression: ts.Expression,
     ): CompiledLayerOptions;
+    compileAnisotropyOptions(
+        expression: ts.Expression,
+    ): CompiledAnisotropyOptions;
     compileSheenOptions(expression: ts.Expression): {
         enabled: string;
         color: string;
@@ -727,6 +736,60 @@ export function compileMaterialIntrinsic(
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp}, ${iridescence.join(", ")})`,
             };
+        }
+
+        case "setPbrAnisotropy": {
+            // src/material/pbr/set-anisotropy.ts, the same opt-in shape as
+            // its three siblings: the props land on the material and the
+            // fragment extension registers unconditionally, so the call
+            // reaches the feature and the `isEnabled` guard stays where the
+            // pin keeps it, in the UBO writer. The layer carries no
+            // capability define because it declares no binding and no
+            // texture slot -- its whole arm rides the composed variant --
+            // and `KHR_materials_anisotropy` reaches the same extension
+            // from an asset, which no corpus asset does today.
+            context.expectArgumentCount(call, 2, 2);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const anisotropy = context.compileAnisotropyOptions(
+                call.arguments[1]!,
+            );
+            context.recordScenePbrAnisotropy(
+                anisotropy.manifest,
+                material.scenePbrMaterialIndex,
+            );
+            context.reachFeature("material:anisotropy", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_anisotropy(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${anisotropy.enabled}, ` +
+                    `${anisotropy.intensity}, ${anisotropy.direction})`,
+            };
+        }
+
+        case "installPbrTracking":
+        case "installStdTracking": {
+            // src/material/tracking/{pbr,std}-tracking.ts. Every primitive
+            // they install is `Object.defineProperty` with a
+            // value-preserving getter and a setter whose only effect is
+            // `markMaterialUboDirty` -- so installing changes no value, and
+            // what it buys is that a *later* write re-uploads the UBO.
+            // Generation already knows which properties a scene writes and
+            // re-uploads for them, so the run-time observer has nothing
+            // left to observe. The call reaches its material to keep the
+            // argument on the walk, and emits nothing.
+            //
+            // `enableMaterialTracking`, the entry point that picks between
+            // these two by family, is deliberately absent: it is `async`
+            // and reaches its material through `getMaterialSource`, and no
+            // corpus scene calls it, so it fails by name rather than being
+            // lowered on an unmeasured guess.
+            context.expectArgumentCount(call, 1, 1);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            return { kind: "void", cpp: "" };
         }
 
         case "setPbrSheen": {

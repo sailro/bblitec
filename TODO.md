@@ -92,7 +92,17 @@ act on it — not what was tried.
   it. Diff the primary directional block against the pinned
   `singlelight-directional-wgsl.ts` term by term.
 
-- [ ] Anisotropy, including `setPbrAnisotropy`.
+- [ ] Give the PBR extension manifests their numbers rather than parsing them
+  back out of emitted C++. `setPbrClearCoat`, `setPbrSheen`,
+  `setPbrIridescence`, and `setPbrAnisotropy` each build their composition
+  input with `Number.parseFloat` over the text they just emitted, which reads
+  `NaN` for a value the scene computes (scene 23 passes one). It is inert
+  today because no pinned arm selects a variant on those numbers -- only on
+  `isEnabled` and on whether a texture is present -- so the composed shader is
+  still exact. An arm whose shape did depend on a value would compose against
+  `NaN` silently. The compiled options already know the static value where
+  there is one; carry it beside the emitted string instead of re-parsing.
+
 - [ ] Carry a spot light's cone angle at the pin's precision. The pinned factory
   computes `Math.cos(angle * 0.5)` in doubles into a float UBO; the compiler
   passes scalars as `static_cast<float>(<double expression>)`, so the cosine is
@@ -257,7 +267,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (77 scenes):** 4, 12, 16-18, 20, 22, 23, 26, 38, 43,
+**Integrate first (76 scenes):** 4, 12, 16-18, 20, 22, 26, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.

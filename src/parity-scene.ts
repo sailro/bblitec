@@ -1012,7 +1012,12 @@ export async function runSceneParity(
         undefined,
         seek ?? config.referenceTimeSeconds,
         config.referenceAnimationGroups,
-        { seededRandom: usesSeededRandom(scene) },
+        {
+            seededRandom: usesSeededRandom(scene),
+            ...(config.referenceSearch !== undefined
+                ? { search: config.referenceSearch }
+                : {}),
+        },
     );
     if (!arguments_.actual) {
         runNative(

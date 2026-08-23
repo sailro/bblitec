@@ -227,6 +227,46 @@ round one store early, and that is not a rounding-sized difference:
 `Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
 neighbour, which moves the whole second row of the view matrix.
 
+**The procedural mesh builders are doubles, and each float32 store is one
+the pin performs.** The same rule as the camera's, one layer down.
+`create-sphere.ts`, `create-ground.ts` and `create-torus.ts` run their
+whole vertex chain in JavaScript numbers -- the normalized step, the angle,
+`Math.sin`/`Math.cos`, and the radius product -- and round only where they
+store into a `Float32Array`. `factory-lowerer.ts` emits that chain in
+`double` with `pi_double`, converts at each store, and builds the position
+from the unrounded normal rather than from the one it just stored.
+A float chain reads as harmless and is not: the sphere's normals move a few
+ulps, which a rougher material absorbs and a mirror-metal one does not.
+Scene 23 measured 0.004 with a 33-byte peak on the float chain and 0.002
+with every pixel inside one byte on the pin's. Across the corpus the
+correction is last-bit: every gate still passes, and the one published row
+it moves on both backends is scene 19's foreground, by a thousandth.
+
+`create-box.ts` and `create-plane.ts` need no such care: their vertices are
+literals scaled by a halving, which is exact in both precisions.
+
+**The RGBD decode's result type is the pin's storage type.**
+`src/loader-env/rgbd-decode.ts` decodes `.env` faces and the BRDF LUT into a
+`texture_storage_2d<rgba16float, write>`, so a half *is* the decode's result,
+not a packing step a caller may skip. `decode_rgbd` returns halves for that
+reason: the SDL_GPU BRDF-LUT path used to upload them as `RGBA32Float` while
+the cube and both Dawn paths packed to half, which is more precision than the
+pin has and a silent backend delta besides. Aligning it moved 19 SDL_GPU
+published rows by a thousandth, all inside their gates.
+
+**A scene's reference pose can be a query string, and both sides read the
+same one.** A corpus scene that branches on `?seekTime=` reads
+`window.location.search` through `URLSearchParams`, and the branch decides
+whether the scene animates at all. `parity.referenceSearch` in the registry
+is that query: the reference page is navigated with it, and the compiler
+folds `window.location.search` to the same text, so `params.get` and
+`params.has` answer from the pin's own parser and the native scene keeps
+the branch the reference took. A scene the pin serves bare leaves it unset,
+and the query reads as empty. `reference/exact-corpus-manifest.json` records
+it beside the module digest, because a navigation parameter is not module
+text and two goldens captured at different poses would otherwise share a
+provenance.
+
 **The reached slice renders under one depth convention, and it is the
 pin's.** `src/engine/render-target.ts` declares `REVERSE_DEPTH_COMPARE =
 "greater-equal"`, `mat4PerspectiveLHToRef` maps `near -> 1` and `far -> 0`,

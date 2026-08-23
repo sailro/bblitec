@@ -178,7 +178,14 @@ export async function runGeometryOutputDiagnostics(
             impostorShimTransform(),
             seek,
             undefined,
-            { virtualModules: { [impostorShimPath]: impostorShimModule(task) } },
+            {
+                virtualModules: {
+                    [impostorShimPath]: impostorShimModule(task),
+                },
+                ...(scene.parity?.referenceSearch !== undefined
+                    ? { search: scene.parity.referenceSearch }
+                    : {}),
+            },
         );
         runNative(
             defaultExecutable(scene.buildDirectory),

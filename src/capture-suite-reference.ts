@@ -79,9 +79,7 @@ export function suiteBrowserModule(
     await registerScene(scene);`,
           )
         : transformed;
-    const source = framed
-        .replaceAll('"@babylonjs/lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
-        .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
+    const source = pinnedPackageSpecifiers(framed)
         .replaceAll(
             '"/brdf-lut.png"',
             `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
@@ -93,6 +91,28 @@ export function suiteBrowserModule(
               'await startEngine(engine); canvas.dataset.ready = "true";',
           );
     return transpileForBrowser(readySource, sourcePath);
+}
+
+/**
+ * The pinned package's own specifiers, as the served page resolves them.
+ *
+ * A corpus scene imports the package two ways: by its bare name, and by a
+ * SUBPATH for an entry point the index does not re-export — the PBR
+ * tracking installer and the DDS background builder are both written that
+ * way. A browser resolves neither, so both are rewritten to the published
+ * module, and a subpath keeps its own path under `lib/` with the `.js` the
+ * package ships (a specifier that already carries one keeps it).
+ */
+function pinnedPackageSpecifiers(source: string): string {
+    return source.replace(
+        /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
+        (_match, subpath?: string) =>
+            subpath
+                ? `"/node_modules/@babylonjs/lite/lib${
+                      subpath.endsWith(".js") ? subpath : `${subpath}.js`
+                  }"`
+                : '"/node_modules/@babylonjs/lite/lib/index.js"',
+    );
 }
 
 /**
@@ -125,6 +145,12 @@ export interface SuiteCaptureOptions {
      * and a recompile asks the network for nothing it already has.
      */
     virtualAssets?: Readonly<Record<string, Uint8Array>>;
+    /**
+     * The query string the page is served at, when the scene's own parity
+     * spec serves one (`"?seekTime=0"`). The compiler folds the same text,
+     * so the native scene takes the branch the reference page takes.
+     */
+    search?: string;
 }
 
 export function createSuiteSceneServer(
@@ -194,9 +220,9 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
                 existsSync(typescriptPath) &&
                 statSync(typescriptPath).isFile()
             ) {
-                const moduleText = readFileSync(typescriptPath, "utf8")
-                    .replaceAll('"@babylonjs/lite"', '"/node_modules/@babylonjs/lite/lib/index.js"')
-                    .replaceAll('"babylon-lite"', '"/node_modules/@babylonjs/lite/lib/index.js"');
+                const moduleText = pinnedPackageSpecifiers(
+                    readFileSync(typescriptPath, "utf8"),
+                );
                 response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
                 response.end(
                     transpileForBrowser(moduleText, typescriptPath),
@@ -303,6 +329,7 @@ export async function captureSuiteReference(
                 page,
                 origin,
                 captureTimeSeconds !== undefined,
+                options.search,
             );
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
             await page

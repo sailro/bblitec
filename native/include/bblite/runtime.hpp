@@ -1268,6 +1268,12 @@ struct MaterialRecord {
     Color3 sheen_color{0.0f, 0.0f, 0.0f};
     float sheen_roughness = 0.0f;
     float sheen_intensity = 1.0f;
+    // KHR_materials_anisotropy / `setPbrAnisotropy`. The direction is the
+    // pin's own `direction ?? [1, 0]`, written beside the intensity into
+    // `anisotropyParams` by the extension's own writer.
+    float anisotropy_intensity = 1.0f;
+    Vec2 anisotropy_direction{1.0f, 0.0f};
+    bool has_anisotropy = false;
     float iridescence_intensity = 0.0f;
     // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
     // 100..400 nm (gltf-ext-iridescence.ts).
@@ -1864,6 +1870,12 @@ void set_pbr_clearcoat(
     float roughness,
     float index_of_refraction,
     float normal_scale);
+void set_pbr_anisotropy(
+    Engine& engine,
+    MaterialHandle material,
+    bool enabled,
+    float intensity,
+    Vec2 direction);
 void set_pbr_iridescence(
     Engine& engine,
     MaterialHandle material,

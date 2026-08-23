@@ -489,6 +489,30 @@ function vectorOriginProperty(
 /** Colour members, in the order the pin indexes them. */
 const colourMembers = ["r", "g", "b", "a"] as const;
 
+/** Vec2 members, for the two-lane values the pin indexes the same way. */
+const vec2Members = ["x", "y"] as const;
+
+/**
+ * The member a lane of a named vector reads. Our runtime carries a two-lane
+ * value as a Vec2 and a wider one as a colour, so the lane count picks the
+ * member set. Arrays and anything wider index by lane and never come here.
+ */
+function vectorMember(
+    symbolName: string,
+    owner: string,
+    lanes: number,
+    lane: number,
+): string {
+    const member = lanes === 2 ? vec2Members[lane] : colourMembers[lane];
+    if (member === undefined) {
+        throw new Error(
+            `Pinned ${symbolName} reads lane ${lane} of '${owner}', which a ` +
+                `${lanes}-lane value does not have.`,
+        );
+    }
+    return member;
+}
+
 function emitExpression(state: WriterState, expression: ts.Expression): string {
     const node = expression;
     if (ts.isParenthesizedExpression(node)) {
@@ -621,13 +645,12 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         if (local.kind === "array" || local.lanes > 4) {
             return `${node.expression.text}[${lane}]`;
         }
-        const member = colourMembers[lane];
-        if (member === undefined) {
-            throw new Error(
-                `Pinned ${state.request.symbolName} reads lane ${lane} of ` +
-                    `'${node.expression.text}', which a colour does not have.`,
-            );
-        }
+        const member = vectorMember(
+            state.request.symbolName,
+            node.expression.text,
+            local.lanes,
+            lane,
+        );
         return `${node.expression.text}.${member}`;
     }
     if (ts.isPropertyAccessChain(node) || ts.isElementAccessChain(node)) {
@@ -663,13 +686,12 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         if (lanes !== undefined && typeof source === "string") {
             const lane = Number.parseInt(node.argumentExpression.text, 10);
             if (lanes > 4) return `${source}[${lane}]`;
-            const member = colourMembers[lane];
-            if (member === undefined) {
-                throw new Error(
-                    `Pinned ${state.request.symbolName} reads lane ${lane} of ` +
-                        `'${owner}', which a colour does not have.`,
-                );
-            }
+            const member = vectorMember(
+                state.request.symbolName,
+                owner,
+                lanes,
+                lane,
+            );
             return `${source}.${member}`;
         }
     }
@@ -698,6 +720,70 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
     );
 }
 
+/**
+ * Marks the point a generation-decided `return` cuts the body off. It rides
+ * back through the emitted lines so a return nested in a folded branch stops
+ * the enclosing body too, exactly as the pin's own control flow would.
+ */
+const stopMarker = "// bblite: generation-decided return";
+
+/** Lowers a body, stopping where a generation-decided return cuts it off. */
+function emitBody(
+    state: WriterState,
+    statements: readonly ts.Statement[],
+): string[] {
+    const lines: string[] = [];
+    for (const statement of statements) {
+        for (const line of emitStatement(state, statement)) {
+            if (line === stopMarker) return lines;
+            lines.push(line);
+        }
+    }
+    return lines;
+}
+
+/**
+ * The offset fields an early return tests for absence: `mOff === undefined`,
+ * `!offsets.has("x")`, and `||` chains of either. The positive forms are
+ * `guardedField` and `guardedFieldByHas`; this is their complement, and the
+ * anisotropy writer guards its UV-transform tail with it.
+ */
+function absentOffsetGuardFields(
+    state: WriterState,
+    condition: ts.Expression,
+): string[] | undefined {
+    if (
+        ts.isBinaryExpression(condition) &&
+        condition.operatorToken.kind === ts.SyntaxKind.BarBarToken
+    ) {
+        const left = absentOffsetGuardFields(state, condition.left);
+        const right = absentOffsetGuardFields(state, condition.right);
+        if (left === undefined || right === undefined) return undefined;
+        return [...left, ...right];
+    }
+    if (
+        ts.isPrefixUnaryExpression(condition) &&
+        condition.operator === ts.SyntaxKind.ExclamationToken
+    ) {
+        const field = guardedFieldByHas(condition.operand);
+        return field === undefined ? undefined : [field];
+    }
+    if (!ts.isBinaryExpression(condition)) return undefined;
+    const equals = condition.operatorToken.kind ===
+            ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken;
+    if (!equals) return undefined;
+    if (
+        !ts.isIdentifier(condition.right) ||
+        condition.right.text !== "undefined"
+    ) {
+        return undefined;
+    }
+    const local = ts.isIdentifier(condition.left) ? condition.left.text : "";
+    const field = state.offsetLocals.get(local);
+    return field === undefined ? undefined : [field];
+}
+
 function emitStatement(state: WriterState, statement: ts.Statement): string[] {
     // The pin's guards (`!cc?.isEnabled`, `!offsets.has(...)`) decide whether
     // the extension contributes at all. Generation already knows that from the
@@ -709,7 +795,21 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             ? then.statements.length === 1 &&
                 ts.isReturnStatement(then.statements[0]!)
             : ts.isReturnStatement(then);
-        if (onlyReturn) return [];
+        if (onlyReturn) {
+            // The mirror of the fold below: `if (mOff === undefined) return;`
+            // stops the writer when the variant does not declare that field.
+            // Generation knows which fields the variant declares, so when one
+            // is missing the return is taken and everything after it is dead.
+            const absent = absentOffsetGuardFields(state, statement.expression);
+            if (
+                absent?.some((field) =>
+                    !state.request.slots.some((slot) => slot.name === field)
+                )
+            ) {
+                return [stopMarker];
+            }
+            return [];
+        }
         // `if (vOff !== undefined) { ... }` guards a block on whether the
         // variant declares that field. Generation knows the answer, so the
         // block is inlined or dropped rather than becoming a runtime branch.
@@ -721,7 +821,7 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             );
             if (!declares) return [];
             const body = ts.isBlock(then) ? then.statements : [then];
-            return body.flatMap((inner) => emitStatement(state, inner));
+            return emitBody(state, body);
         }
         // A branch the pin takes at write time on caller state — the
         // Standard UV writer's `if (invertY)` — is a runtime condition here
@@ -731,7 +831,7 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
         const body = ts.isBlock(then) ? then.statements : [then];
         return [
             `    if (${emitExpression(state, statement.expression)}) {`,
-            ...body.flatMap((inner) => emitStatement(state, inner)),
+            ...emitBody(state, body),
             "    }",
         ];
     }
@@ -747,9 +847,9 @@ function emitStatement(state: WriterState, statement: ts.Statement): string[] {
             : [statement.elseStatement];
         return [
             `    if (${emitExpression(state, statement.expression)}) {`,
-            ...thenBody.flatMap((inner) => emitStatement(state, inner)),
+            ...emitBody(state, thenBody),
             "    } else {",
-            ...elseBody.flatMap((inner) => emitStatement(state, inner)),
+            ...emitBody(state, elseBody),
             "    }",
         ];
     }
@@ -1118,9 +1218,7 @@ function lowerNested(
         laneSourceFor: () => undefined,
         nestedDeclarations: state.nestedDeclarations,
     };
-    return declaration.body.statements.flatMap((statement) =>
-        emitStatement(nestedState, statement)
-    );
+    return emitBody(nestedState, declaration.body.statements);
 }
 
 /**
@@ -1189,7 +1287,5 @@ export function lowerPinnedUboWriter(
         },
         nestedDeclarations,
     };
-    return declaration.body.statements.flatMap((statement) =>
-        emitStatement(state, statement)
-    );
+    return emitBody(state, declaration.body.statements);
 }

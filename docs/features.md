@@ -638,7 +638,8 @@ enumerator.
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, transmission, IOR, volume, dispersion,
-clearcoat, sheen, iridescence, and the spec-gloss workflow replacement.
+clearcoat, sheen, iridescence, anisotropy, and the spec-gloss workflow
+replacement.
 
 ### Node materials
 
@@ -1080,11 +1081,14 @@ build error with a source location, not a silently different image.
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
-- PBR material extensions cover clearcoat, sheen, iridescence, dispersion,
-  and the spec-gloss workflow replacement with one shared UV transform;
-  specular textures and anisotropy remain unsupported, and an asset carrying
-  an extension the pinned loader implements that this port does not fails at
-  generation naming it
+- PBR material extensions cover clearcoat, sheen, iridescence, anisotropy,
+  dispersion, and the spec-gloss workflow replacement with one shared UV
+  transform. Anisotropy carries the layer's own parameters; its per-layer
+  texture and its UV transform are not reached, and the pinned writer's own
+  early return drops that arm from the emitted writer rather than leaving it
+  to a run-time branch. Specular textures remain unsupported, and an asset
+  carrying an extension the pinned loader implements that this port does not
+  fails at generation naming it
 - a compressed texture is a KTX1 container or a Basis file loaded from scene
   code. Neither loader's sampler options are lowered, because the reached
   calls pass none; a `loadKtxTexture2D` whose suffixes are not an array

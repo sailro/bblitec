@@ -150,3 +150,63 @@ test("lowers the pinned emissive UBO writer", () => {
     assert.match(body, /out\.emissiveColor\[2\] = /);
     assert.match(body, /material\.emissive_factor/);
 });
+
+/**
+ * The anisotropy writer, whose UV-transform tail sits behind an early return
+ * on two offsets that only the texture-carrying variant declares. Generation
+ * decides that return, so the tail is dropped rather than lowered against a
+ * property our records do not carry -- and the two-lane direction reads a
+ * Vec2's members, not a colour's.
+ */
+test("takes the pinned anisotropy writer's absent-offset early return", () => {
+    const lines = lowerPinnedUboWriter(context(), {
+        modulePath: "src/material/pbr/fragments/anisotropy-fragment.ts",
+        symbolName: "pbrExt.writeUbo",
+        sourceLocal: "aniso",
+        baseField: "anisotropyParams",
+        slots: [{ name: "anisotropyParams", offset: 0, lanes: 4 }],
+        propertySources: {
+            intensity: "material.anisotropy_intensity",
+            direction: "material.anisotropy_direction",
+            texture: null,
+        },
+        vectorProperties: { direction: 2 },
+    });
+    const body = lines.join("\n");
+    assert.match(body, /out\.anisotropyParams\[0\] = .*anisotropy_intensity/);
+    assert.match(body, /out\.anisotropyParams\[1\] = .*\.x\)/);
+    assert.match(body, /out\.anisotropyParams\[2\] = .*\.y\)/);
+    // The tail the early return cuts off, and the colour members a two-lane
+    // value must not borrow.
+    assert.doesNotMatch(body, /anisotropyUVm|anisotropyUVt|uScale|uAng/);
+    assert.doesNotMatch(body, /dir\.r|dir\.g/);
+});
+
+/** The variant that does declare the transform fields keeps the tail. */
+test("keeps the anisotropy UV transform when the variant declares it", () => {
+    const lines = lowerPinnedUboWriter(context(), {
+        modulePath: "src/material/pbr/fragments/anisotropy-fragment.ts",
+        symbolName: "pbrExt.writeUbo",
+        sourceLocal: "aniso",
+        baseField: "anisotropyParams",
+        slots: [
+            { name: "anisotropyParams", offset: 0, lanes: 4 },
+            { name: "anisotropyUVm", offset: 16, lanes: 4 },
+            { name: "anisotropyUVt", offset: 32, lanes: 4 },
+        ],
+        propertySources: {
+            intensity: "material.anisotropy_intensity",
+            direction: "material.anisotropy_direction",
+            texture: "transform",
+            uScale: "transform.u_scale",
+            vScale: "transform.v_scale",
+            uAng: "transform.u_ang",
+            uOffset: "transform.u_offset",
+            vOffset: "transform.v_offset",
+        },
+        vectorProperties: { direction: 2 },
+    });
+    const body = lines.join("\n");
+    assert.match(body, /out\.anisotropyUVm\[0\] = /);
+    assert.match(body, /out\.anisotropyUVt\[0\] = /);
+});

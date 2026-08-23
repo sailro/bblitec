@@ -1782,23 +1782,89 @@ inline std::vector<std::uint8_t> pack_morph_weights(
 // silent backend delta on any environment-less PBR scene.)
 inline constexpr float environment_fallback_face[4] = {0.15f, 0.16f, 0.2f, 1.0f};
 
-// RGBD decode and half-float packing shared by both render
-// backends (moved verbatim from pal_sdl_gpu.cpp).
-inline std::vector<float> decode_rgbd(const TextureData& texture_data, int& width, int& height) {
+inline std::uint16_t float_to_half(float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    const std::uint16_t sign =
+        static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
+    const std::uint32_t exponent = (bits >> 23) & 0xffu;
+    const std::uint32_t mantissa = bits & 0x7fffffu;
+    if (exponent == 0xffu) {
+        return static_cast<std::uint16_t>(
+            sign | (mantissa == 0 ? 0x7c00u : 0x7e00u));
+    }
+    const int half_exponent =
+        static_cast<int>(exponent) - 127 + 15;
+    if (half_exponent >= 0x1f) {
+        return static_cast<std::uint16_t>(sign | 0x7c00u);
+    }
+    if (half_exponent <= 0) {
+        if (half_exponent < -10) return sign;
+        const std::uint32_t normalized = mantissa | 0x800000u;
+        const int shift = 14 - half_exponent;
+        const std::uint32_t rounded =
+            (
+                normalized +
+                (1u << (shift - 1)) -
+                1u +
+                ((normalized >> shift) & 1u)) >>
+            shift;
+        return static_cast<std::uint16_t>(sign | rounded);
+    }
+    const std::uint32_t rounded =
+        mantissa + 0xfffu + ((mantissa >> 13) & 1u);
+    if ((rounded & 0x800000u) != 0) {
+        const int next_exponent = half_exponent + 1;
+        return static_cast<std::uint16_t>(
+            next_exponent >= 0x1f
+                ? sign | 0x7c00u
+                : sign |
+                    static_cast<std::uint16_t>(
+                        next_exponent << 10));
+    }
+    return static_cast<std::uint16_t>(
+        sign |
+        static_cast<std::uint16_t>(half_exponent << 10) |
+        static_cast<std::uint16_t>(rounded >> 13));
+}
+
+/** The fallback face in the decode's own storage type. */
+inline std::vector<std::uint16_t> fallback_face_halves() {
+    std::vector<std::uint16_t> face;
+    face.reserve(4);
+    for (const float channel : environment_fallback_face) {
+        face.push_back(float_to_half(channel));
+    }
+    return face;
+}
+
+// The RGBD decode both render backends upload through.
+inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, int& width, int& height) {
+    // src/loader-env/rgbd-decode.ts: the pin decodes into a
+    // `texture_storage_2d<rgba16float, write>`, so a half is the decode's
+    // result type, not a packing step a caller may skip. Returning halves
+    // is what keeps every caller on the pin's precision -- the SDL_GPU
+    // BRDF-LUT path used to upload these as RGBA32Float while the cube and
+    // both Dawn paths packed to half, a silent backend delta.
     if (texture_data.bytes.empty()) {
         width = height = 1;
-        return {0.0f, 0.0f, 0.0f, 1.0f};
+        return {
+            float_to_half(0.0f),
+            float_to_half(0.0f),
+            float_to_half(0.0f),
+            float_to_half(1.0f)};
     }
     const DecodedImage image = decode_image(ts::ArrayBuffer(texture_data.bytes));
     width = image.width;
     height = image.height;
-    std::vector<float> result(static_cast<std::size_t>(width) * height * 4);
+    std::vector<std::uint16_t> result(static_cast<std::size_t>(width) * height * 4);
     for (std::size_t index = 0; index < image.rgba.size(); index += 4) {
         const float alpha = std::max(static_cast<float>(image.rgba[index + 3]) / 255.0f, 1.0f / 255.0f);
-        result[index] = std::pow(static_cast<float>(image.rgba[index]) / 255.0f, 2.2f) / alpha;
-        result[index + 1] = std::pow(static_cast<float>(image.rgba[index + 1]) / 255.0f, 2.2f) / alpha;
-        result[index + 2] = std::pow(static_cast<float>(image.rgba[index + 2]) / 255.0f, 2.2f) / alpha;
-        result[index + 3] = 1.0f;
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            result[index + channel] = float_to_half(
+                std::pow(static_cast<float>(image.rgba[index + channel]) / 255.0f, 2.2f) / alpha);
+        }
+        result[index + 3] = float_to_half(1.0f);
     }
     return result;
 }
@@ -2584,7 +2650,7 @@ inline void reject_unsupported_frame_options(
     }
 }
 
-// The readback inverse of float_to_half below, shared by both backends'
+// The readback inverse of float_to_half above, shared by both backends'
 // screenshot and diagnostic-buffer paths: a half-float channel decoded
 // and quantized to the byte a PNG stores.
 inline std::uint8_t half_to_byte(std::uint16_t value) {
@@ -2606,52 +2672,6 @@ inline std::uint8_t half_to_byte(std::uint16_t value) {
     if (negative) decoded = -decoded;
     return static_cast<std::uint8_t>(
         std::lround(std::clamp(decoded, 0.0f, 1.0f) * 255.0f));
-}
-
-inline std::uint16_t float_to_half(float value) {
-    std::uint32_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    const std::uint16_t sign =
-        static_cast<std::uint16_t>((bits >> 16) & 0x8000u);
-    const std::uint32_t exponent = (bits >> 23) & 0xffu;
-    const std::uint32_t mantissa = bits & 0x7fffffu;
-    if (exponent == 0xffu) {
-        return static_cast<std::uint16_t>(
-            sign | (mantissa == 0 ? 0x7c00u : 0x7e00u));
-    }
-    const int half_exponent =
-        static_cast<int>(exponent) - 127 + 15;
-    if (half_exponent >= 0x1f) {
-        return static_cast<std::uint16_t>(sign | 0x7c00u);
-    }
-    if (half_exponent <= 0) {
-        if (half_exponent < -10) return sign;
-        const std::uint32_t normalized = mantissa | 0x800000u;
-        const int shift = 14 - half_exponent;
-        const std::uint32_t rounded =
-            (
-                normalized +
-                (1u << (shift - 1)) -
-                1u +
-                ((normalized >> shift) & 1u)) >>
-            shift;
-        return static_cast<std::uint16_t>(sign | rounded);
-    }
-    const std::uint32_t rounded =
-        mantissa + 0xfffu + ((mantissa >> 13) & 1u);
-    if ((rounded & 0x800000u) != 0) {
-        const int next_exponent = half_exponent + 1;
-        return static_cast<std::uint16_t>(
-            next_exponent >= 0x1f
-                ? sign | 0x7c00u
-                : sign |
-                    static_cast<std::uint16_t>(
-                        next_exponent << 10));
-    }
-    return static_cast<std::uint16_t>(
-        sign |
-        static_cast<std::uint16_t>(half_exponent << 10) |
-        static_cast<std::uint16_t>(rounded >> 13));
 }
 
 // ---------------------------------------------------------------------------
