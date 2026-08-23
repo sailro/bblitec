@@ -4,32 +4,42 @@
  * `std-uv-transform-fragment.ts` fills one 8-float channel per Standard
  * texture slot: a 2x2 matrix carrying `uScale`/`vScale` and a rotation by
  * `uAng`, then a translation composed against the material's own
- * `uvScale`/`uvOffset`, then a `invertY` flip that negates the second matrix
+ * `uvScale`/`uvOffset`, then an `invertY` flip that negates the second matrix
  * row and mirrors the V translation. Every one of those is arithmetic, and a
  * second copy of it here would agree with the pin only until the pin edits a
- * sign — so the body comes from the pinned declaration's own AST.
+ * sign — so the body is translated by `PinnedNumericLowerer`, from the pinned
+ * declaration's own AST. That translator already carries the two rules this
+ * writer needs: a JS number is an f64, and a `Float32Array` store rounds to
+ * f32 exactly where the pin's store does.
  *
- * Two things are folded rather than lowered, both because their *shape* is
- * the contract and generation already knows the answer:
+ * What this module owns is the correspondence, never the formula: which
+ * record member each pinned name reads, and which parts generation folds
+ * because it already knows them.
  *
- * - the `CHANNELS` table, read out of the pinned module and unrolled into
- *   seven calls, because the pin's own loop bound is `CHANNELS.length` and
- *   each entry names a fixed slot;
- * - `legacyFlipV`'s first conjunct (`textureKey === "_lightmapTexture"`),
- *   which is a per-channel constant in that same table.
+ * Two things are folded rather than translated, both because their *shape* is
+ * the contract: the `CHANNELS` table, read out of the pinned module and
+ * unrolled into its own row count because the pin's loop bound is
+ * `CHANNELS.length`; and the two per-row arguments that table decides.
  *
  * The values stay live: the emitted writer reads the material record every
  * time it runs, so a scene that moves a texture's transform moves the block.
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import {
+    type PinnedBinding,
+    PinnedNumericLowerer,
+} from "./pinned-numeric-lowerer.js";
 
 /** The module the extension and both its writers live in. */
 const MODULE = "src/material/standard/fragments/std-uv-transform-fragment.ts";
 
+/** The pinned slot whose legacy V flip the fold below depends on. */
+const LIGHTMAP_SLOT = "_lightmapTexture";
+
 /** One row of the pinned `CHANNELS` table. */
 interface PinnedChannel {
-    /** The WGSL field prefix (`d`, `e`, `b`, ...). */
+    /** The WGSL field prefix (`d`, `e`, `b`, ...), used in the emitted note. */
     name: string;
     /** The material property the pin reads the texture from. */
     textureKey: string;
@@ -38,438 +48,155 @@ interface PinnedChannel {
 }
 
 /**
- * Where this port keeps each channel's texture and coordinate index.
+ * Where this port keeps each channel's texture, by the pin's own slot name.
  *
- * The Standard record splits the pin's one `Texture2D` per slot into a
- * `TextureData` member, so a channel names the member rather than a
- * property; a slot the generated loader never fills is `null` and its
- * channel writes the untextured identity, which is what the pin's own
+ * A `null` means the generated loader fills no such slot, so the channel
+ * writes the untextured identity — which is what the pin's own
  * `texture?.x ?? default` reads produce for an absent texture.
  */
-const channelRecordSources: Readonly<
-    Record<string, { texture: string | null; coordIndex: string | null }>
+const channelSlots: Readonly<Record<string, string | null>> = {
+    diffuseTexture: "material.base_color_texture",
+    _emissiveTexture: null,
+    _bumpTexture: "material.bump_texture",
+    _specularTexture: "material.specular_texture",
+    _ambientTexture: "material.ambient_texture",
+    [LIGHTMAP_SLOT]: null,
+    _opacityTexture: "material.opacity_texture",
+};
+
+/**
+ * The pinned `Texture2D` transform properties, as this port's record spells
+ * them.
+ *
+ * Shared with the compiler's own property-assignment table, so the writer
+ * that reads a member and the setter that writes it cannot disagree about
+ * which record field it is.
+ */
+export const TEXTURE_UV_PROPERTIES: Readonly<
+    Record<string, { record: string; value: "number" | "boolean" }>
 > = {
-    _diffuseTexture: {
-        texture: "material.base_color_texture",
-        coordIndex: "material.diffuse_coord_index",
-    },
-    diffuseTexture: {
-        texture: "material.base_color_texture",
-        coordIndex: "material.diffuse_coord_index",
-    },
-    _emissiveTexture: { texture: null, coordIndex: null },
-    _bumpTexture: { texture: "material.bump_texture", coordIndex: null },
-    _specularTexture: {
-        texture: "material.specular_texture",
-        coordIndex: "material.specular_coord_index",
-    },
-    _ambientTexture: {
-        texture: "material.ambient_texture",
-        coordIndex: "material.ambient_coord_index",
-    },
-    _lightmapTexture: { texture: null, coordIndex: null },
-    _opacityTexture: { texture: "material.opacity_texture", coordIndex: null },
+    uScale: { record: "uv_transform.u_scale", value: "number" },
+    vScale: { record: "uv_transform.v_scale", value: "number" },
+    uOffset: { record: "uv_transform.u_offset", value: "number" },
+    vOffset: { record: "uv_transform.v_offset", value: "number" },
+    uAng: { record: "uv_transform.u_ang", value: "number" },
+    invertY: { record: "uv_invert_y", value: "boolean" },
 };
 
-/** The pinned `Texture2D` properties, as this port's record spells them. */
-const texturePropertySources: Readonly<Record<string, string>> = {
-    uScale: "uv_transform.u_scale",
-    vScale: "uv_transform.v_scale",
-    uOffset: "uv_transform.u_offset",
-    vOffset: "uv_transform.v_offset",
-    uAng: "uv_transform.u_ang",
-    invertY: "uv_invert_y",
-};
-
-/** The writer's parameters, as the emitted C++ names them. */
-const parameterNames: Readonly<Record<string, string>> = {
-    data: "data",
-    channel: "channel",
-    texture: "texture",
-    material: "material",
-    materialOffsetX: "material_offset_x",
-    materialOffsetY: "material_offset_y",
-    usesUv2: "uses_uv2",
-    legacyFlipV: "legacy_flip_v",
-};
-
-function moduleConstant(
-    context: LoweringContext,
-    name: string,
-): number {
-    const initializer = context.variableInitializer(
-        context.sourceFile(MODULE).statements.find(
-            (statement): statement is ts.VariableStatement =>
-                ts.isVariableStatement(statement) &&
-                statement.declarationList.declarations.some(
-                    (declaration) =>
-                        ts.isIdentifier(declaration.name) &&
-                        declaration.name.text === name,
-                ),
-        )!,
-        name,
-    );
-    return context.numericValue(initializer, context.sourceFile(MODULE));
+/**
+ * The record correspondences the caller holds, passed in rather than
+ * restated.
+ *
+ * `presence` maps a pinned slot name to the expression that says the record
+ * carries it — the same one `standardFeatureRecordSources` derives that
+ * channel's feature bit from, so a channel cannot compose while its texture
+ * reads as absent. `coordIndex` likewise maps the pin's own `coordIndexKey`
+ * to the record's UV-set field, or null where the loader fills none.
+ */
+export interface ChannelSources {
+    presence: Readonly<Record<string, string | null | undefined>>;
+    coordIndex: Readonly<Record<string, string | null | undefined>>;
 }
 
 /** The pinned `CHANNELS` table, read out of its own declaration. */
 function pinnedChannels(context: LoweringContext): PinnedChannel[] {
     const file = context.sourceFile(MODULE);
-    const statement = file.statements.find(
-        (candidate): candidate is ts.VariableStatement =>
-            ts.isVariableStatement(candidate) &&
-            candidate.declarationList.declarations.some(
-                (declaration) =>
-                    ts.isIdentifier(declaration.name) &&
-                    declaration.name.text === "CHANNELS",
-            ),
-    );
-    if (!statement) {
-        throw new Error(`Pinned ${MODULE} no longer declares CHANNELS.`);
-    }
     const initializer = context.unwrapExpression(
-        context.variableInitializer(statement, "CHANNELS"),
+        context.variableInitializer(file, "CHANNELS"),
     );
     if (!ts.isArrayLiteralExpression(initializer)) {
-        throw new Error(
-            `Pinned CHANNELS is no longer an array literal.`,
+        return context.contractError(
+            initializer,
+            "Pinned CHANNELS is no longer an array literal.",
         );
     }
     return initializer.elements.map((element) => {
         const row = context.unwrapExpression(element);
         if (!ts.isArrayLiteralExpression(row) || row.elements.length !== 5) {
-            throw new Error(
+            return context.contractError(
+                row,
                 "Pinned CHANNELS rows are no longer " +
                     "[name, feature, uv2, textureKey, coordIndexKey].",
             );
         }
-        const literal = (index: number): string | null => {
-            const value = context.unwrapExpression(row.elements[index]!);
-            if (ts.isStringLiteral(value)) return value.text;
-            if (value.kind === ts.SyntaxKind.NullKeyword) return null;
-            throw new Error(
-                `Pinned CHANNELS element ${index} is neither a string nor ` +
-                    "null.",
-            );
+        const text = (index: number): string =>
+            context.stringValue(row.elements[index]!, file);
+        const coordIndex = context.unwrapExpression(row.elements[4]!);
+        return {
+            name: text(0),
+            textureKey: text(3),
+            coordIndexKey: coordIndex.kind === ts.SyntaxKind.NullKeyword
+                ? null
+                : text(4),
         };
-        const name = literal(0);
-        const textureKey = literal(3);
-        if (name === null || textureKey === null) {
-            throw new Error("Pinned CHANNELS row has no name or slot.");
-        }
-        return { name, textureKey, coordIndexKey: literal(4) };
     });
 }
 
-/** Per-channel constants the unrolled call sites need. */
-interface ChannelEmit {
-    /** `const TextureData*` expression, or `nullptr`. */
-    texture: string;
-    /** The `usesUv2` argument. */
-    usesUv2: string;
-    /** The `legacyFlipV` argument. */
-    legacyFlipV: string;
-}
-
+/** The three arguments one unrolled call site folds. */
 function channelArguments(
     channel: PinnedChannel,
-    lightmapKey: string,
-): ChannelEmit {
-    const sources = channelRecordSources[channel.textureKey];
-    if (!sources) {
+    sources: ChannelSources,
+): { texture: string; usesUv2: string; legacyFlipV: string } {
+    if (!(channel.textureKey in channelSlots)) {
         throw new Error(
             `Pinned CHANNELS names slot '${channel.textureKey}', which has ` +
                 "no record source in this port.",
         );
     }
-    const texture = sources.texture === null
+    const slot = channelSlots[channel.textureKey]!;
+    const present = sources.presence[channel.textureKey];
+    if (slot !== null && !present) {
+        throw new Error(
+            `Pinned CHANNELS slot '${channel.textureKey}' has a record ` +
+                "member but no presence expression, so its channel could " +
+                "compose while its texture read as absent.",
+        );
+    }
+    const texture = slot === null
         ? "nullptr"
-        : `${sources.texture}.bytes.empty() ? nullptr : &${sources.texture}`;
+        : `(${present}) ? &${slot} : nullptr`;
     // `coordIndexKey !== null && material[coordIndexKey] === 1`: the first
-    // conjunct is the table's own answer, so a channel with no coordinate
-    // index folds to false exactly as the pin's `&&` does.
-    const usesUv2 = channel.coordIndexKey === null || !sources.coordIndex
-        ? "false"
-        : `${sources.coordIndex} == 1`;
-    // `textureKey === "_lightmapTexture" && texture?.uAng === Math.PI`: the
-    // generated loader fills no lightmap slot, so the whole conjunction is
-    // the table's constant false. A port that grows the slot has to grow
-    // this with it, which is why the key is compared rather than assumed.
-    const legacyFlipV = channel.textureKey === lightmapKey &&
-            sources.texture !== null
-        ? `${sources.texture}.uv_transform.u_ang == ` +
-            "static_cast<float>(3.141592653589793)"
-        : "false";
-    return { texture, usesUv2, legacyFlipV };
-}
-
-interface EmitState {
-    file: ts.SourceFile;
-    context: LoweringContext;
-    /** Locals bound in the pinned body, by their C++ name. */
-    locals: Map<string, string>;
-    constants: Readonly<Record<string, number>>;
-}
-
-/**
- * One `texture?.<property>` read, with the value an absent texture produces.
- *
- * The pin reads through an optional chain and resolves the `undefined` with
- * either a `??` arm or a coercion; this port's record has no absent state, so
- * the null test is spelled and the pin's own resolution is the else arm.
- */
-function emitOptionalTextureRead(
-    state: EmitState,
-    access: ts.PropertyAccessExpression,
-    absent: string,
-): string {
-    const property = access.name.text;
-    const source = texturePropertySources[property];
-    if (!source) {
+    // conjunct is the table's own answer, and the second folds to false for a
+    // UV set the generated loader never records.
+    const coordIndex = channel.coordIndexKey === null
+        ? null
+        : sources.coordIndex[channel.coordIndexKey] ?? null;
+    // `textureKey === "_lightmapTexture" && texture?.uAng === Math.PI`. The
+    // generated loader fills no lightmap slot at all, so it is the SECOND
+    // conjunct that folds this: `texture` is absent there and
+    // `undefined === Math.PI` is false upstream. A port that grows the slot
+    // has to lower the comparison rather than inherit the fold.
+    if (channel.textureKey === LIGHTMAP_SLOT && slot !== null) {
         throw new Error(
-            `Pinned UV transform writer reads texture.${property}, which ` +
-                "has no record source.",
+            "This port now records a lightmap texture, so the pinned legacy " +
+                "V flip (`texture?.uAng === Math.PI`) no longer folds to " +
+                "false and has to be lowered.",
         );
     }
-    void state;
-    return `(texture ? texture->${source} : ${absent})`;
-}
-
-function emitExpression(state: EmitState, node: ts.Expression): string {
-    const expression = state.context.unwrapExpression(node);
-    if (ts.isNumericLiteral(expression)) {
-        return state.context.doubleLiteral(Number(expression.text));
-    }
-    if (ts.isIdentifier(expression)) {
-        const local = state.locals.get(expression.text);
-        if (local) return local;
-        const parameter = parameterNames[expression.text];
-        if (parameter) return parameter;
-        const constant = state.constants[expression.text];
-        if (constant !== undefined) {
-            return state.context.doubleLiteral(constant);
-        }
-        throw new Error(
-            `Pinned UV transform writer reads unknown '${expression.text}'.`,
-        );
-    }
-    if (ts.isPrefixUnaryExpression(expression)) {
-        const operand = emitExpression(state, expression.operand);
-        if (expression.operator === ts.SyntaxKind.MinusToken) {
-            return `-(${operand})`;
-        }
-        if (expression.operator === ts.SyntaxKind.ExclamationToken) {
-            return `!(${operand})`;
-        }
-        throw new Error(
-            "Pinned UV transform writer uses an unsupported unary operator.",
-        );
-    }
-    if (ts.isConditionalExpression(expression)) {
-        return `(${emitExpression(state, expression.condition)} ? ` +
-            `${emitExpression(state, expression.whenTrue)} : ` +
-            `${emitExpression(state, expression.whenFalse)})`;
-    }
-    if (ts.isCallExpression(expression)) {
-        const callee = state.context.unwrapExpression(expression.expression);
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Math"
-        ) {
-            const name = callee.name.text;
-            if (name !== "cos" && name !== "sin") {
-                throw new Error(
-                    `Pinned UV transform writer calls Math.${name}, which ` +
-                        "is not lowered.",
-                );
-            }
-            return `std::${name}(${
-                emitExpression(state, expression.arguments[0]!)
-            })`;
-        }
-        throw new Error("Pinned UV transform writer makes an unknown call.");
-    }
-    if (ts.isElementAccessExpression(expression)) {
-        // `data[offset + n]` and `material.uvScale[0]`. A literal index is
-        // already an integer; a computed one rides the float `offset` the
-        // pin binds, whose values are small and exact.
-        const target = emitExpression(state, expression.expression);
-        const argument = state.context.unwrapExpression(
-            expression.argumentExpression,
-        );
-        if (ts.isNumericLiteral(argument)) {
-            return `${target}[${Number(argument.text)}]`;
-        }
-        const index = emitExpression(state, argument);
-        return `${target}[static_cast<std::size_t>(${index})]`;
-    }
-    if (ts.isPropertyAccessExpression(expression)) {
-        const target = state.context.unwrapExpression(expression.expression);
-        const property = expression.name.text;
-        if (ts.isIdentifier(target) && target.text === "material") {
-            if (property === "uvScale") return "material.uv_scale";
-            throw new Error(
-                `Pinned UV transform writer reads material.${property}, ` +
-                    "which has no record source.",
-            );
-        }
-        if (ts.isIdentifier(target) && target.text === "texture") {
-            // `texture?.x` with no `??` beside it: JavaScript reads
-            // `undefined`, which the pin then coerces (`!!texture?.invertY`).
-            // The record has no absent state, so the fallback is spelled.
-            return emitOptionalTextureRead(
-                state,
-                expression,
-                property === "invertY" ? "false" : "0.0",
-            );
-        }
-        if (
-            ts.isIdentifier(target) &&
-            target.text === "Math" &&
-            property === "PI"
-        ) {
-            return "static_cast<float>(3.141592653589793)";
-        }
-        throw new Error(
-            `Pinned UV transform writer reads an unmapped property ` +
-                `'${expression.getText(state.file)}'.`,
-        );
-    }
-    if (ts.isBinaryExpression(expression)) {
-        const operator = expression.operatorToken.kind;
-        // `texture?.uScale ?? 1` — the record always carries a value, so the
-        // fallback is what an absent texture produces, exactly as upstream.
-        if (operator === ts.SyntaxKind.QuestionQuestionToken) {
-            const left = state.context.unwrapExpression(expression.left);
-            if (
-                !ts.isPropertyAccessExpression(left) ||
-                !left.questionDotToken ||
-                !ts.isIdentifier(left.expression) ||
-                left.expression.text !== "texture"
-            ) {
-                throw new Error(
-                    "Pinned UV transform writer coalesces something other " +
-                        "than an optional texture property.",
-                );
-            }
-            return emitOptionalTextureRead(
-                state,
-                left,
-                emitExpression(state, expression.right),
-            );
-        }
-        const spelled: Partial<Record<ts.SyntaxKind, string>> = {
-            [ts.SyntaxKind.PlusToken]: "+",
-            [ts.SyntaxKind.MinusToken]: "-",
-            [ts.SyntaxKind.AsteriskToken]: "*",
-            [ts.SyntaxKind.SlashToken]: "/",
-            [ts.SyntaxKind.EqualsEqualsEqualsToken]: "==",
-            [ts.SyntaxKind.ExclamationEqualsEqualsToken]: "!=",
-        };
-        const symbol = spelled[operator];
-        if (!symbol) {
-            throw new Error(
-                "Pinned UV transform writer uses an unsupported operator " +
-                    `'${expression.operatorToken.getText(state.file)}'.`,
-            );
-        }
-        // `!!texture?.invertY !== legacyFlipV` — the double negation is
-        // JavaScript coercing an optional read to a boolean, which the
-        // record's own bool already is.
-        return `(${emitExpression(state, expression.left)} ${symbol} ` +
-            `${emitExpression(state, expression.right)})`;
-    }
-    throw new Error(
-        `Pinned UV transform writer has an unsupported expression ` +
-            `'${expression.getText(state.file)}'.`,
-    );
-}
-
-function emitStatements(
-    state: EmitState,
-    statements: readonly ts.Statement[],
-    indent: string,
-): string[] {
-    const lines: string[] = [];
-    for (const statement of statements) {
-        if (ts.isVariableStatement(statement)) {
-            for (const binding of statement.declarationList.declarations) {
-                if (!ts.isIdentifier(binding.name) || !binding.initializer) {
-                    throw new Error(
-                        "Pinned UV transform writer binds something other " +
-                            "than a named local.",
-                    );
-                }
-                const name = binding.name.text;
-                const cpp = `local_${name}`;
-                const value = emitExpression(state, binding.initializer);
-                lines.push(`${indent}const double ${cpp} = ${value};`);
-                state.locals.set(name, cpp);
-            }
-            continue;
-        }
-        if (ts.isExpressionStatement(statement)) {
-            const expression = state.context.unwrapExpression(
-                statement.expression,
-            );
-            if (
-                !ts.isBinaryExpression(expression) ||
-                expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken
-            ) {
-                throw new Error(
-                    "Pinned UV transform writer has a statement that is " +
-                        "not a store.",
-                );
-            }
-            // The pin computes in JavaScript doubles and rounds once, at
-            // the `Float32Array` store -- so the store is where this port
-            // rounds too. Rounding each intermediate instead moved one
-            // pixel of scene 282's nearest-filtered checkerboard, which is
-            // what a texel boundary looks like when a lane lands a bit low.
-            lines.push(
-                `${indent}${emitExpression(state, expression.left)} = ` +
-                    `static_cast<float>(` +
-                    `${emitExpression(state, expression.right)});`,
-            );
-            continue;
-        }
-        if (ts.isIfStatement(statement) && !statement.elseStatement) {
-            const body = ts.isBlock(statement.thenStatement)
-                ? statement.thenStatement.statements
-                : [statement.thenStatement];
-            lines.push(
-                `${indent}if (${
-                    emitExpression(state, statement.expression)
-                }) {`,
-                ...emitStatements(state, body, `${indent}    `),
-                `${indent}}`,
-            );
-            continue;
-        }
-        throw new Error(
-            "Pinned UV transform writer has an unsupported statement " +
-                `'${statement.getText(state.file).split("\n")[0]}'.`,
-        );
-    }
-    return lines;
+    return {
+        texture,
+        usesUv2: coordIndex === null ? "false" : `${coordIndex} == 1`,
+        legacyFlipV: "false",
+    };
 }
 
 export interface LoweredStandardUvTransform {
-    floatsPerChannel: number;
-    channelCount: number;
-    /** The two emitted C++ functions. */
+    /** Floats the whole block occupies. */
+    floatCount: number;
+    /** The struct, its size assertion, and the two emitted functions. */
     source: string;
 }
 
-/**
- * The pinned channel writer plus the unrolled data writer, as C++.
- */
+/** The pinned channel writer plus the unrolled data writer, as C++. */
 export function lowerStandardUvTransformWriter(
     context: LoweringContext,
+    sources: ChannelSources,
 ): LoweredStandardUvTransform {
-    const floatsPerChannel = moduleConstant(context, "FLOATS_PER_CHANNEL");
-    const channelCount = moduleConstant(context, "CHANNEL_COUNT");
+    const file = context.sourceFile(MODULE);
+    const constant = (name: string): number =>
+        context.numericValue(context.variableInitializer(file, name), file);
+    const floatsPerChannel = constant("FLOATS_PER_CHANNEL");
+    const channelCount = constant("CHANNEL_COUNT");
     const channels = pinnedChannels(context);
     if (channels.length !== channelCount) {
         throw new Error(
@@ -477,7 +204,47 @@ export function lowerStandardUvTransformWriter(
                 `${channels.length} rows.`,
         );
     }
-    const file = context.sourceFile(MODULE);
+    const floatCount = floatsPerChannel * channelCount;
+
+    // `data` is registered as an f32 buffer, which is what makes every
+    // intermediate a double and every store round once -- the pin's own
+    // `Float32Array` semantics, read off the binding rather than restated.
+    const bindings = new Map<string, PinnedBinding>([
+        ["data", { cpp: "data", type: "f32" }],
+        ["channel", { cpp: "channel", type: "scalar" }],
+        ["material.uvScale", { cpp: "material.uv_scale", type: "f32" }],
+        ["materialOffsetX", { cpp: "material_offset_x", type: "scalar" }],
+        ["materialOffsetY", { cpp: "material_offset_y", type: "scalar" }],
+        ["usesUv2", { cpp: "uses_uv2", type: "bool" }],
+        ["legacyFlipV", { cpp: "legacy_flip_v", type: "bool" }],
+        ["FLOATS_PER_CHANNEL", { cpp: `${floatsPerChannel}.0`, type: "scalar" }],
+        [
+            "texture",
+            {
+                cpp: "texture",
+                type: "scalar",
+                optional: {
+                    present: "texture != nullptr",
+                    members: new Map(
+                        Object.entries(TEXTURE_UV_PROPERTIES).map(
+                            ([pinned, { record, value }]) => [
+                                pinned,
+                                {
+                                    cpp: `texture->${record}`,
+                                    // Only the boolean is read outside a
+                                    // `??`, under the pin's own `!!`
+                                    // coercion of `undefined`.
+                                    ...(value === "boolean"
+                                        ? { absent: "false" }
+                                        : {}),
+                                },
+                            ],
+                        ),
+                    ),
+                },
+            },
+        ],
+    ]);
     const { declaration: channelWriter } = context.functionDeclaration(
         MODULE,
         "writeChannel",
@@ -485,49 +252,48 @@ export function lowerStandardUvTransformWriter(
     if (!channelWriter.body) {
         throw new Error("Pinned writeChannel has no body.");
     }
-    const state: EmitState = {
-        file,
-        context,
-        locals: new Map(),
-        constants: { FLOATS_PER_CHANNEL: floatsPerChannel },
-    };
-    const channelBody = emitStatements(
-        state,
-        channelWriter.body.statements,
-        "    ",
-    ).join("\n");
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings,
+        calls: new Map([
+            ["Math.cos", (args: readonly string[]) => `std::cos(${args[0]})`],
+            ["Math.sin", (args: readonly string[]) => `std::sin(${args[0]})`],
+        ]),
+    });
+    const channelBody = channelWriter.body.statements
+        .flatMap((statement) => lowerer.statement(statement, "    "))
+        .join("\n");
 
-    // The data writer's own two reads, and the shape of the loop this
-    // unrolls. Asserting them is what makes a changed pin fail here rather
-    // than emit a stale unroll.
+    // The data writer's own two reads and the two folded arguments, asserted
+    // against their own expressions so a changed pin fails here rather than
+    // emitting a stale unroll.
     const { declaration: dataWriter } = context.functionDeclaration(
         MODULE,
         "writeUvTransformData",
     );
-    const dataSource = dataWriter.getText(file);
-    for (
-        const marker of [
-            "const materialOffsetX = material.uvOffset?.[0] ?? 0;",
-            "const materialOffsetY = material.uvOffset?.[1] ?? 0;",
-            "for (let i = 0; i < CHANNELS.length; i++) {",
-            "coordIndexKey !== null && material[coordIndexKey] === 1,",
-        ]
-    ) {
-        if (!dataSource.includes(marker)) {
-            throw new Error(
-                `Pinned writeUvTransformData no longer contains '${marker}'.`,
-            );
-        }
-    }
-    const lightmapKey = "_lightmapTexture";
-    if (!dataSource.includes(`textureKey === "${lightmapKey}"`)) {
-        throw new Error(
-            "Pinned writeUvTransformData no longer folds its legacy flip on " +
-                `'${lightmapKey}'.`,
+    for (const [local, shape] of [
+        ["materialOffsetX", "material.uvOffset?.[0] ?? 0"],
+        ["materialOffsetY", "material.uvOffset?.[1] ?? 0"],
+    ] as const) {
+        context.assertExpressionShape(
+            context.variableInitializer(dataWriter, local),
+            shape,
+            `writeUvTransformData ${local}`,
         );
     }
+    const call = context.callExpression(dataWriter, "writeChannel");
+    context.assertExpressionShape(
+        call.arguments[6]!,
+        "coordIndexKey !== null && material[coordIndexKey] === 1",
+        "writeUvTransformData usesUv2",
+    );
+    context.assertExpressionShape(
+        call.arguments[7]!,
+        `textureKey === "${LIGHTMAP_SLOT}" && texture?.uAng === Math.PI`,
+        "writeUvTransformData legacyFlipV",
+    );
+
     const calls = channels.map((channel, index) => {
-        const emit = channelArguments(channel, lightmapKey);
+        const emit = channelArguments(channel, sources);
         return `    // channel ${index}: ${channel.name} (${channel.textureKey})
     write_std_uv_transform_channel(
         out.data,
@@ -540,9 +306,22 @@ export function lowerStandardUvTransformWriter(
         ${emit.legacyFlipV});`;
     });
     const source = `
+
+// ${context.provenance(MODULE, "stdUvTxUniforms")}
+//
+// The vertex-stage block the extension declares: one 2x2 matrix plus a
+// translation per Standard texture channel.
+struct StandardUvTxUniforms {
+    std::array<float, ${floatCount}> data{};
+};
+static_assert(
+    sizeof(StandardUvTxUniforms) == ${floatCount * 4},
+    "The pinned Standard UV transform block is ${channelCount} channels of "
+    "${floatsPerChannel} floats.");
+
 // ${context.provenance(MODULE, "writeChannel")}
 inline void write_std_uv_transform_channel(
-    std::array<float, ${floatsPerChannel * channelCount}>& data,
+    std::array<float, ${floatCount}>& data,
     double channel,
     const bbl::TextureData* texture,
     [[maybe_unused]] const StandardMaterialProps& material,
@@ -569,5 +348,5 @@ inline void write_std_uv_transform_data(
 ${calls.join("\n")}
 }
 `;
-    return { floatsPerChannel, channelCount, source };
+    return { floatCount, source };
 }

@@ -36,21 +36,13 @@ interface RecordFieldAssignment {
  *
  * Upstream these are plain fields on the object every loader and factory
  * returns; `enableMaterialUvTransform` is what makes any of them observable,
- * because `writeUvTransformData` is the only reader. A texture bound to no
- * marked material carries them and nothing samples them, exactly as upstream.
- * `invertY` is the texture-OBJECT property, which is also what
- * `isStandardUvInverted` reads -- not `loadTexture2D`'s upload flip.
+ * because `writeUvTransformData` is the only reader. The table is that
+ * writer's own, imported rather than restated, so the member a write lands
+ * on and the member the block reads back cannot drift apart. `invertY` is the
+ * texture-OBJECT property, which is also what `isStandardUvInverted` reads --
+ * not `loadTexture2D`'s upload flip.
  */
-const textureRecordFields: Readonly<
-    Record<string, { record: string; value: "number" | "boolean" }>
-> = {
-    uScale: { record: "uv_transform.u_scale", value: "number" },
-    vScale: { record: "uv_transform.v_scale", value: "number" },
-    uOffset: { record: "uv_transform.u_offset", value: "number" },
-    vOffset: { record: "uv_transform.v_offset", value: "number" },
-    uAng: { record: "uv_transform.u_ang", value: "number" },
-    invertY: { record: "uv_invert_y", value: "boolean" },
-};
+const textureRecordFields = TEXTURE_UV_PROPERTIES;
 
 const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     {
@@ -1382,6 +1374,7 @@ function requireSimpleAssignment(
     }
 }
 import ts from "typescript";
+import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGroupSource } from "./intrinsics/animation.js";
 import { emitParticleBufferWrite } from "./particle-buffer.js";
 import { staticNumberValue } from "./option-helpers.js";

@@ -1468,7 +1468,7 @@ ${composed.wgsl}`,
             );
             if (diffuse || emissive || pixels || uvTransform) {
                 this.writeSource(
-                    "upstream/src/material_render_textures.cpp",
+                    "upstream/src/material_texture_setters.cpp",
                     factories.lowerStandardTextureSetters(
                         diffuse,
                         emissive,

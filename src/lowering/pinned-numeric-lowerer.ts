@@ -39,6 +39,20 @@ export interface PinnedBinding {
      * `scalar` is an f64 local or parameter.
      */
     type: "f32" | "u32" | "f32-view" | "u8-view" | "scalar" | "bool";
+    /**
+     * A record the pin reads through an optional chain (`texture?.uScale`).
+     *
+     * `present` is the C++ test that says the record exists, and `members`
+     * spells each property the body may read off it. What an ABSENT record
+     * yields is the pin's own answer rather than one invented here: a read
+     * under `??` takes that operator's right side, and a read the pin
+     * coerces instead (`!!texture?.invertY`) takes the member's own
+     * `absent`. A member with neither, read outside a `??`, fails.
+     */
+    optional?: {
+        present: string;
+        members: ReadonlyMap<string, { cpp: string; absent?: string }>;
+    };
 }
 
 export interface PinnedNumericScope {
@@ -410,12 +424,26 @@ export class PinnedNumericLowerer {
 
     private elementType(target: ts.Expression): string | undefined {
         if (!ts.isElementAccessExpression(target)) return undefined;
-        const owner = this.unwrap(target.expression);
-        if (!ts.isIdentifier(owner)) return undefined;
-        const binding = this.scope.bindings.get(owner.text);
+        const binding = this.elementOwner(target);
         if (binding?.type === "f32") return "float";
         if (binding?.type === "u32") return "std::uint32_t";
         return undefined;
+    }
+
+    /**
+     * The binding an element access indexes.
+     *
+     * Keyed by the owner's own text, the way `propertyAccess` is, so a
+     * member array the pin indexes (`material.uvScale[0]`) resolves through
+     * the same registration a bare buffer does. An identifier's text is its
+     * name, so this is the identifier lookup widened rather than replaced.
+     */
+    private elementOwner(
+        expression: ts.ElementAccessExpression,
+    ): PinnedBinding | undefined {
+        return this.scope.bindings.get(
+            this.unwrap(expression.expression).getText(this.file),
+        );
     }
 
     private assignmentTarget(expression: ts.Expression): string {
@@ -434,12 +462,8 @@ export class PinnedNumericLowerer {
     private elementAccess(
         expression: ts.ElementAccessExpression,
     ): string {
-        const owner = this.unwrap(expression.expression);
-        if (!ts.isIdentifier(owner)) {
-            this.fail(expression, "element access");
-        }
-        const binding = this.scope.bindings.get(owner.text);
-        if (!binding) this.fail(owner, "element access owner");
+        const binding = this.elementOwner(expression);
+        if (!binding) this.fail(expression, "element access owner");
         const index = this.expression(expression.argumentExpression);
         return `${binding.cpp}[static_cast<std::size_t>(${index})]`;
     }
@@ -535,11 +559,40 @@ export class PinnedNumericLowerer {
         return this.fail(node, "expression");
     }
 
+    /** One property read off a binding the pin treats as optional. */
+    private optionalMember(
+        node: ts.PropertyAccessExpression,
+    ): { present: string; member: { cpp: string; absent?: string } } | undefined {
+        const owner = this.unwrap(node.expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const binding = this.scope.bindings.get(owner.text);
+        const optional = binding?.optional;
+        if (!optional) return undefined;
+        const member = optional.members.get(node.name.text);
+        if (!member) {
+            this.fail(node, `optional member '${node.name.text}'`);
+        }
+        return { present: optional.present, member };
+    }
+
     private propertyAccess(
         node: ts.PropertyAccessExpression,
+        absentOverride?: string,
     ): string {
         const named = this.scope.bindings.get(node.getText(this.file));
         if (named) return named.cpp;
+        const optional = this.optionalMember(node);
+        if (optional) {
+            const absent = absentOverride ?? optional.member.absent;
+            if (absent === undefined) {
+                this.fail(
+                    node,
+                    "optional read with no `??` and no coercion default",
+                );
+            }
+            return `(${optional.present} ? ${optional.member.cpp} : ` +
+                `${absent})`;
+        }
         const owner = this.unwrap(node.expression);
         if (!ts.isIdentifier(owner)) {
             this.fail(node, "property access");
@@ -610,6 +663,19 @@ export class PinnedNumericLowerer {
             );
         }
         switch (node.operatorToken.kind) {
+            case ts.SyntaxKind.QuestionQuestionToken: {
+                // The pin resolves an absent optional read with its own
+                // default, so the right side IS the default -- read from the
+                // AST rather than restated beside the member.
+                const left = this.unwrap(node.left);
+                if (!ts.isPropertyAccessExpression(left)) {
+                    return this.fail(node, "'??' over a non-optional read");
+                }
+                return this.propertyAccess(
+                    left,
+                    this.expression(node.right),
+                );
+            }
             case ts.SyntaxKind.EqualsEqualsEqualsToken:
                 return (
                     `(${this.expression(node.left)} == ` +

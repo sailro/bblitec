@@ -67,6 +67,19 @@ export function cellBackends(path: string): string[] {
     return backends;
 }
 
+/**
+ * Whether one cell's movement is the measured wobble rather than a finding.
+ *
+ * Both the neutrality run and the published-table check ask this, so they ask
+ * it once: this module exists because the comparison kept being retyped, and
+ * a predicate spelled twice is the same failure one level down.
+ */
+export function isWobblingCell(scene: string, path: string): boolean {
+    const wobbling = wobbleScenes.get(scene);
+    if (!wobbling) return false;
+    return cellBackends(path).some((backend) => wobbling.has(backend));
+}
+
 type Json = Record<string, unknown>;
 
 /** Every numeric leaf of a report, by dotted path. */
@@ -130,12 +143,7 @@ export function runNeutralityReport(baselineDirectory: string): void {
         for (const [path, value] of after) {
             const previous = before.get(path);
             if (previous === undefined || previous === value) continue;
-            const wobbling = wobbleScenes.get(scene);
-            const backends = cellBackends(path);
-            if (
-                wobbling &&
-                backends.some((backend) => wobbling.has(backend))
-            ) {
+            if (isWobblingCell(scene, path)) {
                 expected++;
                 continue;
             }

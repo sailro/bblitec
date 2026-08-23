@@ -683,7 +683,7 @@ test("the native-support block flows from the pin's own declarations", async () 
             },
         ],
         uvTransform: false,
-            renderableMeshFeatures: [0, 0, 4],
+        renderableMeshFeatures: [0, 0, 4],
         runtimeMeshFeatures: 0,
     });
     // The pinned values, evaluated from their own declarations rather than

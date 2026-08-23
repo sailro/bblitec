@@ -1695,25 +1695,23 @@ export function pinnedStandardSupportBlock(
     // The mesh-phase extension's own uniform block, emitted only for a scene
     // that reached the pin's enabler -- the same gate the derivation line
     // above takes, and the same one upstream's registration takes.
+    // The extension's own block, emitted only for a scene that reached the
+    // pin's enabler -- the same gate the derivation line above takes, and
+    // the same one upstream's registration takes. The record
+    // correspondences come from the table the feature derivation already
+    // reads, so a channel and its feature bit cannot disagree about whether
+    // the slot carries a texture.
     const uvTransform = options.uvTransform
-        ? lowerStandardUvTransformWriter(context)
+        ? lowerStandardUvTransformWriter(context, {
+            presence: standardFeatureRecordSources,
+            coordIndex: standardFeatureRecordSources,
+        })
         : undefined;
-    const uvTransformBlock = uvTransform
-        ? `
-// src/material/standard/fragments/std-uv-transform-fragment.ts
-// stdUvTxUniforms -- the vertex-stage block the extension declares, one
-// 2x2 matrix plus a translation per Standard texture channel.
-struct StandardUvTxUniforms {
-    std::array<float, ${uvTransform.floatsPerChannel * uvTransform.channelCount}> data{};
-};
-static_assert(
-    sizeof(StandardUvTxUniforms) ==
-        ${uvTransform.floatsPerChannel * uvTransform.channelCount * 4},
-    "The pinned Standard UV transform block is "
-    "${uvTransform.channelCount} channels of "
-    "${uvTransform.floatsPerChannel} floats.");
-${uvTransform.source}`
-        : "";
+    // Spliced onto the end of the preceding comment line rather than onto a
+    // line of its own: an empty branch on its own line still emits the line,
+    // which put a blank one into every Standard scene's header and broke the
+    // generated-tree byte diff for scenes that reach nothing here.
+    const uvTransformBlock = uvTransform ? uvTransform.source : "";
     const selectorRows = options.selectors.map((selector) =>
         `    {${selector.features}u, ${selector.meshFeatures}u, ` +
         `${
@@ -1823,8 +1821,7 @@ inline bool standard_uv_inverted(
 //    rCm lane the composed fragment forks on (rCm < 1.5 -> spherical).
 //  - lightmap_level: no record field exists and no generated loader fills
 //    the pin's input, so the pin's own default in StandardMaterialProps
-//    stands.
-${uvTransformBlock}
+//    stands.${uvTransformBlock}
 inline StandardMaterialProps standard_material_props(
     const MaterialRecord& material) {
     StandardMaterialProps props{};

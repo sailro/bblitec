@@ -3079,36 +3079,38 @@ MaterialHandle create_grid_material(
         pixels: boolean,
         uvTransform: boolean,
     ): LoweredSource {
-        const rttModule = "src/texture/rtt.ts";
+        // The material module that owns `diffuseTexture` -- the property
+        // every arm below writes. `rtt.ts` is where only ONE of the sources
+        // comes from, so naming it here attributed the pixels setter and the
+        // enabler to a module that contains neither.
+        const materialModule = "src/material/standard/standard-material.ts";
         if (uvTransform) {
             // The pin's enabler is a mark plus a lazy module preload; the
             // preload has no native counterpart, so the assignment is the
             // whole of it and its shape is asserted before it is restated
             // as a record write.
+            const marks = this.context
+                .functionDeclaration(
+                    "src/material/enable-material-uv-transform.ts",
+                    "enableMaterialUvTransform",
+                )
+                .declaration.body!.statements.filter((statement) =>
+                    ts.isExpressionStatement(statement),
+                );
+            if (marks.length !== 1) {
+                throw new Error(
+                    "Pinned enableMaterialUvTransform no longer marks the " +
+                        "material with exactly one statement.",
+                );
+            }
             this.context.assertExpressionShape(
-                this.context
-                    .functionDeclaration(
-                        "src/material/enable-material-uv-transform.ts",
-                        "enableMaterialUvTransform",
-                    )
-                    .declaration.body!.statements.filter(
-                        (statement) => ts.isExpressionStatement(statement),
-                    )
-                    .map((statement) => statement.expression)
-                    .find(
-                        (expression) =>
-                            ts.isBinaryExpression(expression) &&
-                            expression.operatorToken.kind ===
-                                ts.SyntaxKind.EqualsToken &&
-                            ts.isPropertyAccessExpression(expression.left) &&
-                            expression.left.name.text === "_hasUvTx",
-                    )!,
+                marks[0]!.expression,
                 "std._hasUvTx = true",
                 "enableMaterialUvTransform mark",
             );
         }
         return {
-            modulePath: rttModule,
+            modulePath: materialModule,
             symbolName: [
                 ...(diffuse ? ["material.diffuseTexture"] : []),
                 ...(emissive ? ["setStandardEmissiveTexture"] : []),
@@ -3117,9 +3119,28 @@ MaterialHandle create_grid_material(
             ].join(","),
             header: "",
             source: `// ${this.context.provenance(
-                rttModule,
-                "createRenderTargetTexture",
-                "src/material/standard/standard-material.ts#diffuseTexture and src/material/standard/set-std-emissive.ts#setStandardEmissiveTexture",
+                materialModule,
+                "diffuseTexture",
+                [
+                    ...(diffuse || emissive
+                        ? ["src/texture/rtt.ts#createRenderTargetTexture"]
+                        : []),
+                    ...(emissive
+                        ? [
+                            "src/material/standard/set-std-emissive.ts" +
+                            "#setStandardEmissiveTexture",
+                        ]
+                        : []),
+                    ...(pixels
+                        ? ["src/texture/pixels-texture.ts"]
+                        : []),
+                    ...(uvTransform
+                        ? [
+                            "src/material/enable-material-uv-transform.ts" +
+                            "#enableMaterialUvTransform",
+                        ]
+                        : []),
+                ].join(" and "),
             )}
 #include <bblite/runtime.hpp>
 
@@ -3129,7 +3150,7 @@ namespace bbl {
 
 namespace {
 
-MaterialRecord& render_texture_material(
+MaterialRecord& standard_slot_material(
     Engine& engine,
     MaterialHandle material) {
     if (material.value >= engine.materials.size()) {
@@ -3152,7 +3173,7 @@ void set_standard_diffuse_render_texture(
     Engine& engine,
     MaterialHandle material,
     RenderTextureRef texture) {
-    MaterialRecord& record = render_texture_material(engine, material);
+    MaterialRecord& record = standard_slot_material(engine, material);
     record.diffuse_render_texture = texture;
     record.has_diffuse_render_texture = true;
     record.base_color_texture.uv_invert_y = true;
@@ -3166,7 +3187,7 @@ void set_standard_emissive_texture(
     Engine& engine,
     MaterialHandle material,
     RenderTextureRef texture) {
-    MaterialRecord& record = render_texture_material(engine, material);
+    MaterialRecord& record = standard_slot_material(engine, material);
     record.emissive_render_texture = texture;
     record.has_emissive_render_texture = true;
 }
@@ -3181,7 +3202,7 @@ void set_standard_diffuse_pixels_texture(
     Engine& engine,
     MaterialHandle material,
     const PixelsTexture& texture) {
-    MaterialRecord& record = render_texture_material(engine, material);
+    MaterialRecord& record = standard_slot_material(engine, material);
     TextureData& slot = record.base_color_texture;
     slot.bytes = texture.rgba;
     slot.rgba_width = texture.width;
@@ -3201,7 +3222,7 @@ void set_standard_diffuse_pixels_texture(
 void enable_material_uv_transform(
     Engine& engine,
     MaterialHandle material) {
-    render_texture_material(engine, material).has_uv_transform = true;
+    standard_slot_material(engine, material).has_uv_transform = true;
 }
 ` : ""}
 } // namespace bbl

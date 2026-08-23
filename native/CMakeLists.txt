@@ -412,12 +412,12 @@ endif()
 if("material:standard-uv-transform" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
         bblite_native
-        PRIVATE BBLITE_STANDARD_UV_TRANSFORM=1
+        PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=1
     )
 else()
     target_compile_definitions(
         bblite_native
-        PRIVATE BBLITE_STANDARD_UV_TRANSFORM=0
+        PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=0
     )
 endif()
 

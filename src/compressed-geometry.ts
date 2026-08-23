@@ -63,6 +63,38 @@ function numberValue(value: unknown, fallback = 0): number {
     return typeof value === "number" ? value : fallback;
 }
 
+/**
+ * Drops one resolved extension from the document's own lists.
+ *
+ * A pass that rewrites the bytes the extension described leaves a document
+ * that no longer needs it, and `extensionsRequired` naming it would make the
+ * packaged asset declare a requirement its accessors no longer express. The
+ * specializer reads both lists to decide what the pinned loader would do with
+ * the asset it is handed.
+ */
+function dropExtension(json: JsonRecord, name: string): void {
+    json.extensionsUsed = declaredExtensions(json).filter(
+        (declared) => declared !== name,
+    );
+    if (Array.isArray(json.extensionsRequired)) {
+        const required = (json.extensionsRequired as string[]).filter(
+            (declared) => declared !== name,
+        );
+        if (required.length === 0) {
+            delete json.extensionsRequired;
+        } else {
+            json.extensionsRequired = required;
+        }
+    }
+}
+
+/** The extensions a document declares, as the two passes below read them. */
+function declaredExtensions(json: JsonRecord): string[] {
+    return Array.isArray(json.extensionsUsed)
+        ? (json.extensionsUsed as string[])
+        : [];
+}
+
 /** Splits a GLB into its JSON and binary chunks, or undefined if not a GLB. */
 function readGlb(bytes: Uint8Array): GlbChunks | undefined {
     const buffer = Buffer.from(
@@ -347,9 +379,7 @@ export async function decompressGeometry(
 ): Promise<Uint8Array> {
     const glb = readGlb(bytes);
     if (!glb) return bytes;
-    const used = Array.isArray(glb.json.extensionsUsed)
-        ? (glb.json.extensionsUsed as string[])
-        : [];
+    const used = declaredExtensions(glb.json);
     if (used.includes(MESHOPT_EXTENSION)) {
         throw new Error(
             `${label} uses ${MESHOPT_EXTENSION}, which generation-time ` +
@@ -492,17 +522,7 @@ export async function decompressGeometry(
 
     json.accessors = accessors;
     json.bufferViews = bufferViews;
-    json.extensionsUsed = used.filter(
-        (name) => name !== DRACO_EXTENSION,
-    );
-    if (Array.isArray(json.extensionsRequired)) {
-        json.extensionsRequired = (
-            json.extensionsRequired as string[]
-        ).filter((name) => name !== DRACO_EXTENSION);
-        if ((json.extensionsRequired as string[]).length === 0) {
-            delete json.extensionsRequired;
-        }
-    }
+    dropExtension(json, DRACO_EXTENSION);
     const built = binary.build();
     json.buffers = [{ byteLength: built.length }];
     console.log(
@@ -564,15 +584,13 @@ async function loadQuantizationFeature(): Promise<
  * is ordered after `EXT_meshopt_compression`'s, because a meshopt-filtered
  * animation output is itself quantized data the hook has to see.
  */
-export async function dequantizeGeometry(
+async function dequantizeGeometry(
     bytes: Uint8Array,
     label: string,
 ): Promise<Uint8Array> {
     const glb = readGlb(bytes);
     if (!glb) return bytes;
-    const used = Array.isArray(glb.json.extensionsUsed)
-        ? (glb.json.extensionsUsed as string[])
-        : [];
+    const used = declaredExtensions(glb.json);
     if (!used.includes(QUANTIZATION_EXTENSION)) {
         return bytes;
     }
@@ -599,22 +617,25 @@ export async function dequantizeGeometry(
         rewritten.byteLength,
     );
     json.buffers = [{ byteLength: built.length }];
-    // The bytes no longer carry the extension, so neither may the document:
-    // leaving it in `extensionsRequired` would make the packaged asset
-    // declare a requirement its own accessors no longer express, and the
-    // specializer reads these lists to decide what the pinned loader would do
-    // with the asset it is handed.
-    json.extensionsUsed = used.filter(
-        (name) => name !== QUANTIZATION_EXTENSION,
-    );
-    if (Array.isArray(json.extensionsRequired)) {
-        json.extensionsRequired = (
-            json.extensionsRequired as string[]
-        ).filter((name) => name !== QUANTIZATION_EXTENSION);
-        if ((json.extensionsRequired as string[]).length === 0) {
-            delete json.extensionsRequired;
-        }
-    }
+    dropExtension(json, QUANTIZATION_EXTENSION);
     console.log(`Dequantized ${label} through the pinned feature.`);
     return writeGlb(json, built);
+}
+
+/**
+ * Every geometry extension this port resolves at generation, in the pin's
+ * own order.
+ *
+ * The order is a contract rather than a convenience: upstream runs
+ * `KHR_mesh_quantization`'s `preParse` *after* `EXT_meshopt_compression`'s,
+ * because a meshopt-filtered animation output is itself quantized data the
+ * hook has to see. Expressing it here rather than at each call site is what
+ * keeps a caller from getting it backwards -- which would produce a
+ * plausible wrong mesh rather than an error.
+ */
+export async function resolveGeometryExtensions(
+    bytes: Uint8Array,
+    label: string,
+): Promise<Uint8Array> {
+    return dequantizeGeometry(await decompressGeometry(bytes, label), label);
 }

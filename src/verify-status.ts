@@ -13,7 +13,7 @@
 // as when it keeps the old number.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { cellBackends, wobbleScenes } from "./scene-neutrality.js";
+import { isWobblingCell } from "./scene-neutrality.js";
 
 interface ParityReport {
     full: { mad: number };
@@ -178,13 +178,8 @@ export function verifyStatus(statusPath = "docs/status.md"): string[] {
         // per run would publish whichever side of the coin the last matrix
         // landed on, so the value is not compared there. The severity colour
         // still is: the wobble is one level, never a band.
-        const wobblingCell = (index: number): boolean => {
-            const wobbling = wobbleScenes.get(row.sceneId);
-            if (!wobbling) return false;
-            return cellBackends(columns[index]!).some(
-                (backend) => wobbling.has(backend),
-            );
-        };
+        const wobblingCell = (index: number): boolean =>
+            isWobblingCell(row.sceneId, columns[index]!);
         result.values.forEach((value, index) => {
             const rendered = value.toFixed(3);
             if (

@@ -1612,7 +1612,7 @@ inline upstream::StandardUvTransformUniforms standard_uv_block(
     return block;
 }
 
-#if BBLITE_STANDARD_UV_TRANSFORM
+#if defined(BBLITE_HAS_STANDARD_UV_TRANSFORM) && BBLITE_HAS_STANDARD_UV_TRANSFORM
 /**
  * `stdUvTransformExt`'s own block, by the pin's own per-channel writer.
  *
