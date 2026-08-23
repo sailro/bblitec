@@ -1460,12 +1460,20 @@ ${composed.wgsl}`,
             const emissive = features.includes(
                 "material:standard-emissive-render-texture",
             );
-            if (diffuse || emissive) {
+            const pixels = features.includes(
+                "material:standard-diffuse-pixels-texture",
+            );
+            const uvTransform = features.includes(
+                "material:standard-uv-transform",
+            );
+            if (diffuse || emissive || pixels || uvTransform) {
                 this.writeSource(
-                    "upstream/src/material_render_textures.cpp",
+                    "upstream/src/material_texture_setters.cpp",
                     factories.lowerStandardTextureSetters(
                         diffuse,
                         emissive,
+                        pixels,
+                        uvTransform,
                     ),
                     generated,
                 );
@@ -1607,6 +1615,9 @@ ${composed.wgsl}`,
                     options.pinnedStandardVariants!,
                 ) + sharedMirrors + pinnedStandardSupportBlock(context, {
                     selectors: options.pinnedStandardSelectors ?? [],
+                    uvTransform: features.includes(
+                        "material:standard-uv-transform",
+                    ),
                     renderableMeshFeatures:
                         options.standardRenderableMeshFeatures ?? [],
                     runtimeMeshFeatures:

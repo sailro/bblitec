@@ -1839,6 +1839,10 @@ void draw_standard_variant(
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block =
         standard_uv_block(material, features);
+#if defined(BBLITE_HAS_STANDARD_UV_TRANSFORM) && BBLITE_HAS_STANDARD_UV_TRANSFORM
+    const upstream::StandardUvTxUniforms uv_transform_block =
+        standard_uv_transform_block(material);
+#endif
     const auto resolve = [&](
                              const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
@@ -1850,6 +1854,11 @@ void draw_standard_variant(
         if (block == "mesh") return {&pinned_mesh, sizeof(pinned_mesh)};
         if (block == "mat") return {&material_block, sizeof(material_block)};
         if (block == "up") return {&uv_block, sizeof(uv_block)};
+#if defined(BBLITE_HAS_STANDARD_UV_TRANSFORM) && BBLITE_HAS_STANDARD_UV_TRANSFORM
+        if (block == "stdUvTx") {
+            return {&uv_transform_block, sizeof(uv_transform_block)};
+        }
+#endif
         if (block == "gp") {
             if (!geometry_params) {
                 gpu_error(

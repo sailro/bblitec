@@ -646,6 +646,52 @@ line rasterization only — triangle coverage is per-sample on a multisampled
 target either way — which the corpus-wide neutrality run measures rather
 than assumes.
 
+**A quantized glTF is dequantized by the pin's own hook, at generation.**
+`KHR_mesh_quantization` is implemented upstream as a single `preParse` that
+rewrites every quantized accessor into a freshly appended tightly-packed
+FLOAT bufferView, so the rest of the loader never learns the asset was
+quantized. It reads nothing but the document and its binary chunk, which is
+what makes running the pinned module at generation the same answer rather
+than a second implementation of it: `dequantizeGeometry` hands it the
+packaged GLB's own chunks and writes back what it returned, then drops the
+extension from `extensionsUsed`/`extensionsRequired` because the bytes no
+longer carry it. The conversion rule is role-agnostic and the pin states why:
+unnormalized unsigned VEC2/VEC3 storage must be rewritten tight or strided,
+because the core loader's UV paths always divide unsigned integer data by
+65535. Scene 220's Duck reaches all three arms — a normalized BYTE normal, an
+unnormalized strided USHORT position, and an unnormalized USHORT UV the
+material's `KHR_texture_transform` rescales.
+
+**The Standard UV transform is a mesh-phase extension, and its bit joins the
+variant key from a hook rather than from a detector.** `stdUvTransformExt`
+carries no `_detect` at all: `enableMaterialUvTransform` marks the material
+and `_meshFeatures(meshFeatures, material)` turns that mark into
+`STD_HAS_UV_TRANSFORM`, which `buildStandardMeshRenderables` ORs onto the
+material's own word before composing and before keying its caches. So the
+generated selector is keyed by that ORed word too, and the runtime derivation
+lowers the hook beside the eight `_detect` bodies — refusing one that reads
+its mesh-feature parameter, because the record-side derivation carries only
+the material. Registering the extension is free for every other scene (an
+unmarked material contributes nothing and `_computeStandardMaterialFeatures`
+skips an extension with no `_detect`), so it registers unconditionally and
+keeps the process-global registry independent of which scene composes first;
+what is gated on reach is the emitted derivation line, where the pin's own
+opt-in lives.
+
+The block itself is lowered from `writeChannel`'s own AST, and two things are
+folded because their shape is the contract: the `CHANNELS` table, read out of
+the pinned module and unrolled into its seven calls, and the first conjunct
+of `legacyFlipV`, which that same table decides. The pin computes in
+JavaScript doubles and rounds once at its `Float32Array` store, so the
+emitted writer's locals are doubles and the store is the single
+`static_cast<float>` — the same rule the camera scalars and the pinned
+matrices take. `material.uvOffset` reads its `?? 0` arm, because
+`enableStandardUvOffset()` installs the resolver and no reached scene calls
+it. Scene 282 measures the composed stages byte-identical to the browser's
+and every uploaded lane bit-identical; its one differing pixel of 921600 sits
+4.0e-6 from a texel boundary, where nearest filtering takes the neighbouring
+checker row.
+
 **A render target sampled as a Standard diffuse texture flips V in the UV
 block, not at upload.** `createRenderTargetTexture` returns its colour
 attachment as a `Texture2D` carrying `invertY: true`, and

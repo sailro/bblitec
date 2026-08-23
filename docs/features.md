@@ -62,7 +62,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Program compilation](#program-compilation) | Compile | the TypeScript subset, the plain-data model, browser erasure, AOT promises |
 | [Feature and capability selection](#feature-and-capability-selection) | Compile | which generated modules, shader variants, codecs, and capability defines exist at all |
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
-| [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded to ordinary geometry |
+| [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, to ordinary geometry |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
 | [Drawn and computed assets](#drawn-and-computed-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
 | [Shader pipeline](#shader-pipeline) | Compile → Run | composed and specialized at generation; compiled offline for SDL_GPU, in-process by Dawn |
@@ -205,6 +205,16 @@ of a decompression dependency, and because the pinned artifacts are part of
 the upstream pin, the browser reference and this pass run *the same decoder
 build over the same bytes* — the vertices agree by construction rather than by
 argument.
+
+`KHR_mesh_quantization` resolves in the same pass and for the same reason, by
+an easier route: the extension *is* one pinned `preParse` hook, which rewrites
+every quantized accessor — signed, normalized, strided, or the unnormalized
+unsigned POSITION/TEXCOORD storage gltfpack emits — into a freshly appended
+tightly-packed FLOAT bufferView. It touches only the document and its binary
+chunk, with no browser API in it, so generation runs the pin's own module
+rather than reimplementing the conversion and the packaged asset drops the
+extension. Upstream imports that module only when `extensionsUsed` lists it,
+which is the boundary this pass keeps.
 
 ### Environment compilation
 
@@ -535,12 +545,26 @@ which is how one pass displays another's output. The pin hands that
 attachment back carrying `invertY: true` and reads exactly that property to
 build the material's UV block, so the slot samples V-flipped — where a
 loaded image carries no such property and is flipped at upload instead.
-Only that source is lowered. Three others refuse by name with a source
-location, on the two axes a render texture has: an image texture is the
-wrong kind; a depth-only render target is the wrong *aspect*, because the
-pin gives that arm the opposite flip and a different sampler; and a
-geometry task's attachment is the wrong *source*, owned by a pass rather
-than by the scene.
+A `createTexture2DFromPixels` texture is the second source the slot takes:
+upstream has one `Texture2D` whatever built it, so the record copies the
+texels, the sampler and the texture-object properties across, and the
+already-decoded arm of the shared upload reads them straight through. Three
+sources still refuse by name with a source location, on the two axes a
+render texture has: an image texture is the wrong kind; a depth-only render
+target is the wrong *aspect*, because the pin gives that arm the opposite
+flip and a different sampler; and a geometry task's attachment is the wrong
+*source*, owned by a pass rather than by the scene.
+
+`enableMaterialUvTransform(material)` marks a hand-built Standard material
+for independent per-texture transforms, which is the pin's own opt-in for its
+ninth Standard extension. The mark is the whole native contract: it is what
+`stdUvTransformExt._meshFeatures` reads back, so it joins the composed
+variant key, and the extension's own uniform block — one 2x2 matrix plus a
+translation per texture channel, in the pin's fixed diffuse/emissive/bump/
+specular/ambient/lightmap/opacity order — is filled by that module's own
+writer over the `uScale`, `vScale`, `uOffset`, `vOffset`, `uAng` and
+`invertY` the scene wrote on each texture. A material nothing marks composes
+exactly what it always did.
 
 A shader material also takes the two remaining halves of its own program.
 Its `samplers` become the pin's own `<name>` / `<name>Sampler` pair, every

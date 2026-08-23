@@ -162,10 +162,12 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["loader:splat"],
     },
     {
-        source: "upstream/src/material_render_textures.cpp",
+        source: "upstream/src/material_texture_setters.cpp",
         features: [
             "material:standard-diffuse-render-texture",
             "material:standard-emissive-render-texture",
+            "material:standard-diffuse-pixels-texture",
+            "material:standard-uv-transform",
         ],
     },
     {

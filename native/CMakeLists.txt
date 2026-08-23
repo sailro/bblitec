@@ -406,6 +406,21 @@ else()
     )
 endif()
 
+# The pin's mesh-phase Standard extension: reached only through
+# enableMaterialUvTransform(), which is what emits its uniform block and the
+# writer that fills it into standard_variants.hpp.
+if("material:standard-uv-transform" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=0
+    )
+endif()
+
 if("effect:task" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
         bblite_native

@@ -77,21 +77,24 @@ to one LSB puts the cause on the CPU side — this port's values, plan and
 loader. Disagreement puts it on the GPU side — a pipeline state, a shader
 translation, a format. One command separates the two.
 
-Scenes 9, 37 and 120 are not bit-stable on Dawn from run to run, so a moved
-Dawn cell for those three means nothing on its own — `scene -- neutrality`
-knows that and reports them as expected wobble. The scope is measured rather
-than assumed: SDL_GPU is bit-identical across runs and so is Dawn under
-`BBLITE_MSAA=1`, and only 4x Dawn moves. The wobble is the multisampled path;
-nothing else about those scenes is in question. That pair of `stability` runs
-is the entry fee, because a whitelist row excuses a scene's Dawn cells
-permanently: scene 120's wobble spans 0.002 against a 0.004 Dawn foreground,
-so a Dawn regression smaller than that would hide behind it.
+Scenes 9, 37 and 120 are not bit-stable from run to run, so a moved cell for
+those three means nothing on its own — `scene -- neutrality` knows that and
+reports them as expected wobble. The scope is measured rather than assumed,
+per scene and per backend: every one of them is bit-identical under
+`BBLITE_MSAA=1`, so the wobble is the multisampled path, and it is not
+Dawn's alone — scene 9 wobbles on Dawn while measuring bit-stable on
+SDL_GPU across four runs, and scenes 37 and 120 wobble on both (peak
+run-to-run MAD 0.000059 and 0.000250 on SDL_GPU). That pair of `stability`
+runs is the entry fee, because a whitelist row excuses those cells
+permanently: scene 120's Dawn wobble spans 0.002 against a 0.004 foreground,
+so a regression smaller than that would hide behind it.
 
 That check is a command for any scene:
 
 ```powershell
 npm run scene -- stability scene9 --backend dawn
 npm run scene -- stability scene9 --backend dawn --single-sample
+npm run scene -- stability scene120 --backend sdl_gpu
 ```
 
 It renders the native side N times (default 5, `--runs N`) and prints every
@@ -496,10 +499,10 @@ well, which makes the assertion print and the run continue.
 
 **`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
 backend against *itself* at one sample separates multisampling from
-everything else — it is what places the scenes 9/37 run-to-run wobble in the
-multisampled path, since SDL_GPU and single-sampled Dawn are both
-bit-identical across runs and only 4x Dawn is not, which excludes the scene,
-the assets and the shading math. Compare backend-to-backend or run-to-run
+everything else — it is what places the scenes 9/37/120 run-to-run wobble
+in the multisampled path, since every one of the three is bit-identical
+across runs at one sample on the backend that moves at 4x, which excludes the
+scene, the assets and the shading math. Compare backend-to-backend or run-to-run
 when you do this — the goldens are multisampled, so every scene looks worse
 against them at one sample and that number means nothing.
 

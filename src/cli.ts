@@ -34,7 +34,7 @@ import {
 } from "./feature-activation.js";
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
-import { decompressGeometry } from "./compressed-geometry.js";
+import { resolveGeometryExtensions } from "./compressed-geometry.js";
 import { glbJsonText } from "./gltf-document.js";
 import { packageDdsEnvironment } from "./dds-packager.js";
 import { packageHdrEnvironment } from "./hdr-packager.js";
@@ -215,7 +215,7 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     if (asset.kind === "gltf" && /\.gltf(?:[?#]|$)/i.test(source)) {
         writeFileSync(
             destination,
-            await decompressGeometry(
+            await resolveGeometryExtensions(
                 await packageGltf(source, dirname(inputPath)),
                 source,
             ),
@@ -256,7 +256,7 @@ async function materializeAsset(asset: CompileAsset, inputPath: string, outputPa
     // predicates in this file rather than one.
     writeFileSync(
         destination,
-        await decompressGeometry(
+        await resolveGeometryExtensions(
             await assetBytes(source, inputPath),
             source,
         ),

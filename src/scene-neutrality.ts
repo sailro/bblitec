@@ -9,28 +9,76 @@
  * was a command, so the comparison kept being retyped as a throwaway script,
  * and a throwaway script does not know which movement is already understood.
  *
- * This one does. Scenes 9, 37 and 120 are not bit-stable on Dawn from run to
- * run (SDL_GPU and single-sampled Dawn both are, only 4x Dawn is not), so
- * their Dawn cells are reported as expected wobble rather than as movement,
- * and the exit status ignores them. Every other moved cell is a finding.
+ * This one does. Three scenes are not bit-stable from run to run, and the
+ * mover is multisampling rather than a backend: at one sample every one of
+ * them is byte-identical across runs. Their wobbling cells are reported as
+ * expected rather than as movement and the exit status ignores them; every
+ * other moved cell is a finding.
  *
- * A scene earns a place here by measurement, never by one surprising
- * neutrality run: `scene -- stability <id> --backend dawn` has to show the
- * re-runs differing, and `--single-sample` has to show them stop. Scene 120
- * was added on exactly that pair -- 2 of 2 re-runs differ at 4x, every run
- * byte-identical at one sample and on SDL_GPU. What the entry costs is real:
- * it excuses that scene's Dawn cells permanently, and scene 120's Dawn
- * foreground sits at 0.004 with the wobble spanning 0.002, so a Dawn
- * regression smaller than that would hide here.
+ * A scene earns a place here per backend and by measurement, never by one
+ * surprising neutrality run: `scene -- stability <id> --backend <b>` has to
+ * show the re-runs differing, and `--single-sample` has to show them stop.
+ * The table below is that pair for each entry. What it costs is real -- an
+ * entry excuses those cells permanently, and scene 120's Dawn foreground
+ * sits at 0.004 with the wobble spanning 0.002, so a regression smaller than
+ * the wobble would hide here.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-/** Scenes whose Dawn cells move between runs with no code change at all. */
-export const dawnWobbleScenes = new Set(["scene9", "scene37", "scene120"]);
+/**
+ * The backends whose cells move between runs with no code change at all,
+ * per scene, each measured with `stability` at 4x and again at one sample.
+ *
+ * | Scene | Backend | 4x re-runs vs run 1 | at one sample |
+ * | --- | --- | --- | --- |
+ * | 9 | Dawn | differ | byte-identical |
+ * | 37 | Dawn | differ | byte-identical |
+ * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
+ * | 120 | Dawn | differ | byte-identical |
+ * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
+ *
+ * Scene 9 is measured bit-stable on SDL_GPU across four runs and is
+ * deliberately absent from that column: the wobble is per scene AND per
+ * backend, not a property of either alone.
+ */
+export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+    ["scene9", new Set(["dawn"])],
+    ["scene37", new Set(["dawn", "sdl_gpu"])],
+    ["scene120", new Set(["dawn", "sdl_gpu"])],
+]);
 
-/** A cell that names a Dawn measurement, which is the wobbling half. */
-export const isDawnCell = (path: string): boolean => /dawn/i.test(path);
+/**
+ * The backends a cell's measurement involves.
+ *
+ * Takes both spellings the two callers hold: a report's dotted path
+ * (`goldenVersusSdlGpu`, `sdlGpuVersusDawn`) and the published table's own
+ * column label (`SDL_GPU full`). `sdlGpuVersusDawn` names both backends and
+ * its value moves when EITHER side does, so one wobbling backend excuses it;
+ * scene 9 is the case -- its Dawn side wobbles, its SDL_GPU side is measured
+ * bit-stable, and the cross-backend cell moves anyway. Nothing is lost by
+ * excusing it, because that scene's own `goldenVersusSdlGpu` cells stay
+ * compared and are where an SDL_GPU regression would show.
+ */
+export function cellBackends(path: string): string[] {
+    const backends: string[] = [];
+    if (/sdl_?gpu/i.test(path)) backends.push("sdl_gpu");
+    if (/dawn/i.test(path)) backends.push("dawn");
+    return backends;
+}
+
+/**
+ * Whether one cell's movement is the measured wobble rather than a finding.
+ *
+ * Both the neutrality run and the published-table check ask this, so they ask
+ * it once: this module exists because the comparison kept being retyped, and
+ * a predicate spelled twice is the same failure one level down.
+ */
+export function isWobblingCell(scene: string, path: string): boolean {
+    const wobbling = wobbleScenes.get(scene);
+    if (!wobbling) return false;
+    return cellBackends(path).some((backend) => wobbling.has(backend));
+}
 
 type Json = Record<string, unknown>;
 
@@ -95,7 +143,7 @@ export function runNeutralityReport(baselineDirectory: string): void {
         for (const [path, value] of after) {
             const previous = before.get(path);
             if (previous === undefined || previous === value) continue;
-            if (dawnWobbleScenes.has(scene) && isDawnCell(path)) {
+            if (isWobblingCell(scene, path)) {
                 expected++;
                 continue;
             }
@@ -106,7 +154,11 @@ export function runNeutralityReport(baselineDirectory: string): void {
         if (differences.length > 0) {
             moved.push(`  ${scene}\n${differences.join("\n")}`);
         } else if (expected > 0) {
-            wobbled.push(`  ${scene}: ${expected} Dawn cell(s), known wobble`);
+            wobbled.push(
+                `  ${scene}: ${expected} cell(s) on ${
+                    [...(wobbleScenes.get(scene) ?? [])].join(", ")
+                }, known wobble`,
+            );
         } else {
             unchanged++;
         }
@@ -118,8 +170,9 @@ export function runNeutralityReport(baselineDirectory: string): void {
     );
     if (wobbled.length > 0) {
         console.log(
-            "\nExpected Dawn wobble (not a regression — scenes 9, 37 and " +
-                "120 are not bit-stable on Dawn between runs):",
+            "\nExpected multisampling wobble (not a regression — scenes" +
+                " 9, 37 and 120 are not bit-stable between runs at 4x;" +
+                " every one is byte-identical at a single sample):",
         );
         for (const line of wobbled) console.log(line);
     }

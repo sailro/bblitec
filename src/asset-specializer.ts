@@ -191,6 +191,11 @@ const supportedExtensions = new Set<string>([
     // specializeGltf call over a pre-decompression asset.
     "KHR_draco_mesh_compression",
     "EXT_meshopt_compression",
+    // Resolved away by the same module, running the pin's own preParse hook:
+    // every quantized accessor is rewritten to tightly-packed floats and the
+    // packaged document drops the extension, so the loader that ships sees an
+    // ordinary asset. Listed for the same reason as the two above.
+    "KHR_mesh_quantization",
 ]);
 
 /** Metadata-only extensions with no rendering effect on either side. */

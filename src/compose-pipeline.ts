@@ -283,6 +283,12 @@ export async function composeScenePipeline({
                 diffuseRenderTexture: result.manifest.features.includes(
                     "material:standard-diffuse-render-texture",
                 ),
+                diffusePixelsTexture: result.manifest.features.includes(
+                    "material:standard-diffuse-pixels-texture",
+                ),
+                uvTransform: result.manifest.features.includes(
+                    "material:standard-uv-transform",
+                ),
                 thinInstances:
                     result.manifest.features.includes(
                         "mesh:thin-instances",

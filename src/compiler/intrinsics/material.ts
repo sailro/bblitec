@@ -860,6 +860,28 @@ export function compileMaterialIntrinsic(
             };
         }
 
+        case "enableMaterialUvTransform": {
+            // src/material/enable-material-uv-transform.ts marks the
+            // material and preloads the extension's fragment module. The
+            // preload is a bundling concern with no native counterpart --
+            // generation composes against the extension either way -- so
+            // what reaches the record is the mark, which is exactly what
+            // `stdUvTransformExt._meshFeatures` reads back.
+            context.expectArgumentCount(call, 1, 1);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            context.reachFeature("material:standard", call);
+            context.reachFeature("material:standard-uv-transform", call);
+            context.reachFeature("renderer:pbr", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::enable_material_uv_transform(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp})`,
+            };
+        }
+
         case "enableStandardVertexColors": {
             // src/material/standard/enable-standard-vertex-colors.ts
             // installs the vertex-colour fragment factory globally, and
