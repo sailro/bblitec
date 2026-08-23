@@ -362,9 +362,10 @@ that does to the deferred lane by default.
   built in the entry file, 272 `cloneTransformNode` and
   `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scene 26: its first blocker is a non-literal string argument;
-  image-processing `toneMapping` shipped with scene 87 and `AcesToneMapping`
-  is one of the three records `src/pinned-tone-mapping.ts` already reads.
+- [ ] Scene 26: support the reached scene-code PBR `enableSpecularAA` option.
+  Its static asset-root concatenations now fold, image-processing `toneMapping`
+  shipped with scene 87, and `AcesToneMapping` is one of the three records
+  `src/pinned-tone-mapping.ts` already reads.
 - [ ] Scenes 38, 43: support `createCylinder` and `createTube`.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails

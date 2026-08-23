@@ -680,6 +680,16 @@ export class StaticEvaluator {
                 return value.staticString;
             }
         }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.PlusToken
+        ) {
+            return (
+                this.compileStringLiteral(unwrapped.left) +
+                this.compileStringLiteral(unwrapped.right)
+            );
+        }
         if (ts.isTemplateExpression(unwrapped)) {
             let result = unwrapped.head.text;
             for (const span of unwrapped.templateSpans) {

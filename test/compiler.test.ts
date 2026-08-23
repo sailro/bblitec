@@ -2113,6 +2113,31 @@ test("materializes direct browser primitive call arms", () => {
     assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
 });
 
+test("folds static string concatenation in asset arguments", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+            loadTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const root = "https://example.com/assets/";
+            await loadGltf(engine, root + "model.glb");
+            await loadTexture2D(engine, root + "texture.png");
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.assets.map(({ source }) => source),
+        [
+            "https://example.com/assets/model.glb",
+            "https://example.com/assets/texture.png",
+        ],
+    );
+});
+
 test("prunes browser-selected typed data branches", () => {
     const result = compileSource(`
         interface Pick { value: number; }
