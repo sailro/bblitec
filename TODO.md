@@ -324,9 +324,9 @@ that does to the deferred lane by default.
   slot, so the table folds that conjunct to false), and `rebuildMaterial`,
   which is what upstream requires to move a transform after the renderable is
   built — a scene writing one after binding refuses instead.
-- [ ] Scene 12: lower the reached top-level `void scene12(canvas)` expression.
-  Its browser canvas-existence guard now folds true in the native reference
-  environment.
+- [ ] Scene 12: support the reached `setEnvironmentRotation` intrinsic. Its
+  browser canvas-existence guard and top-level `void scene12(canvas)` auto-run
+  now lower in the native reference environment.
 - [ ] Scenes 158, 171, 174, 175, 226, 251: lower `??` over an operand that is
   not a static record property — 226 `container._gaussianSplats ?? []`, 158
   and 251 `xbot.animationGroups ?? []`. Splats, animation groups and the

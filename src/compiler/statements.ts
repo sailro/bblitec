@@ -1218,6 +1218,16 @@ export class StatementLowerer {
         expression: ts.Expression,
     ): void {
         const unwrapped = context.unwrap(expression);
+        if (ts.isVoidExpression(unwrapped)) {
+            // `void call()` preserves the call's side effects and discards
+            // only its value. At a statement boundary the value was already
+            // unused, so lower the operand through the same statement path.
+            this.emitExpression(
+                context,
+                unwrapped.expression,
+            );
+            return;
+        }
         if (
             ts.isBinaryExpression(unwrapped) &&
             [

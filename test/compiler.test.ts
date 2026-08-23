@@ -2023,7 +2023,7 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
-test("folds the browser canvas auto-run guard", () => {
+test("folds the browser canvas guard around a void-wrapped auto-run", () => {
     const result = compileSource(`
         import {
             createBox,
@@ -2037,7 +2037,7 @@ test("folds the browser canvas auto-run guard", () => {
 
         const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
         if (canvas) {
-            scene(canvas);
+            void scene(canvas);
         }
     `);
 
@@ -2052,6 +2052,11 @@ test("folds the browser canvas auto-run guard", () => {
                 }
             `),
         /Browser-dependent condition cannot be determined/,
+    );
+
+    assert.throws(
+        () => compileSource(`void 1;`),
+        /Unsupported expression statement/,
     );
 });
 
