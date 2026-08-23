@@ -20,6 +20,15 @@ test("uses TypeScript semantic symbols instead of import-name text matching", ()
     );
 });
 
+test("delegates default-library identity to the TypeScript program", () => {
+    const compiler = source("src/compiler.ts");
+    assert.match(
+        compiler,
+        /this\.program\.isSourceFileDefaultLibrary/,
+    );
+    assert.doesNotMatch(compiler, /hasNoDefaultLib/);
+});
+
 test("keeps migrated upstream contracts AST-driven", () => {
     const lowerers = readdirSync("src/lowering")
         .filter(

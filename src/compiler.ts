@@ -1587,15 +1587,11 @@ class Compiler
             this.symbols.valueSymbol(identifier)?.declarations;
         return Boolean(
             declarations?.length &&
-                declarations.some((declaration) => {
-                    const source = declaration.getSourceFile();
-                    return (
-                        source.hasNoDefaultLib &&
-                        /(?:^|[\\/])lib\.[^\\/]+\.d\.ts$/i.test(
-                            source.fileName,
-                        )
-                    );
-                }),
+                declarations.some((declaration) =>
+                    this.program.isSourceFileDefaultLibrary(
+                        declaration.getSourceFile(),
+                    ),
+                ),
         );
     }
 
