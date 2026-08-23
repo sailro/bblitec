@@ -559,6 +559,20 @@ export function compileAssetIntrinsic(
                 !skyboxAsset &&
                 !skyboxUsesEnvironment &&
                 !options.skipSkybox;
+            const hasEnvironmentSkybox = Boolean(
+                skyboxAsset || skyboxUsesEnvironment,
+            );
+            if (
+                hasEnvironmentSkybox &&
+                scene.sceneEnvironmentState!.rotationSet
+            ) {
+                context.fail(
+                    call,
+                    "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.",
+                );
+            }
+            scene.sceneEnvironmentState!
+                .hasTexturedSkybox ||= hasEnvironmentSkybox;
             if (solidSkybox) {
                 context.reachFeature("background:solid-skybox", call);
             }
@@ -660,6 +674,18 @@ export function compileAssetIntrinsic(
                     "Reached HDR environment lowering currently requires skipGround: true.",
                 );
             }
+            if (
+                options.useCubemapSkybox &&
+                scene.sceneEnvironmentState!.rotationSet
+            ) {
+                context.fail(
+                    call,
+                    "Loading a visible HDR environment skybox after setEnvironmentRotation requires native skybox rotation support.",
+                );
+            }
+            scene.sceneEnvironmentState!
+                .hasTexturedSkybox ||=
+                options.useCubemapSkybox;
             const environmentAsset =
                 context.registerAsset(
                     source,

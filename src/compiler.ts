@@ -480,6 +480,10 @@ class Compiler
             (expression) => this.compileValue(expression),
             (expression) =>
                 this.compileCondition(expression),
+            (expression) =>
+                this.evaluateBrowserValue(expression),
+            (expression) =>
+                this.isBrowserOnlyExpression(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
@@ -726,7 +730,6 @@ class Compiler
                 this.evaluateBrowserValue(
                     declaration.initializer,
                 );
-            this.erasedBrowserExpressions.add(declaration.initializer.pos);
             this.defineVariable(declaration.name, {
                 kind: "browser",
                 cpp: "",
@@ -1576,6 +1579,18 @@ class Compiler
         return this.options.search;
     }
 
+    public isDefaultLibraryIdentifier(
+        identifier: ts.Identifier,
+    ): boolean {
+        const declarations =
+            this.symbols.valueSymbol(identifier)?.declarations;
+        return declarations?.some((declaration) =>
+            this.program.isSourceFileDefaultLibrary(
+                declaration.getSourceFile(),
+            ),
+        ) ?? false;
+    }
+
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean {
@@ -1616,6 +1631,17 @@ class Compiler
 
     public compileCondition(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (this.isBrowserOnlyExpression(unwrapped)) {
+            const condition =
+                this.evaluateBrowserCondition(unwrapped);
+            if (condition === undefined) {
+                this.fail(
+                    unwrapped,
+                    "Browser-dependent condition cannot be determined for native AOT lowering.",
+                );
+            }
+            return condition ? "true" : "false";
+        }
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.ExclamationToken) {
             const operand = this.compileCondition(unwrapped.operand);
             if (operand === "true") return "false";
@@ -2799,16 +2825,29 @@ class Compiler
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
-        return this.browserErasure.evaluateBrowserCondition(
-            expression,
-        );
+        const condition =
+            this.browserErasure.evaluateBrowserCondition(
+                expression,
+            );
+        this.recordBrowserExpression(expression);
+        return condition;
     }
 
     public evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
-        return this.browserErasure.evaluateBrowserValue(
+        const value = this.browserErasure.evaluateBrowserValue(
             expression,
+        );
+        this.recordBrowserExpression(expression);
+        return value;
+    }
+
+    private recordBrowserExpression(
+        expression: ts.Expression,
+    ): void {
+        this.erasedBrowserExpressions.add(
+            this.unwrap(expression).pos,
         );
     }
 

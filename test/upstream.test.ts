@@ -504,6 +504,15 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 
+test("generated animated world bounds do not shadow the node-world cache", () => {
+    const source = new GltfLowerer(new LoweringContext())
+        .lowerLoaderAdapter({ animatedWorldBounds: true })
+        .source;
+    assert.match(source, /std::vector<Matrix> world\(node_json\.size\(\)\)/);
+    assert.match(source, /const Vec3 world_corner = transform_point\(/);
+    assert.doesNotMatch(source, /const Vec3 world = transform_point\(/);
+});
+
 test("generates the Babylon loader adapter from pinned scene semantics", () => {
     const lowered = new BabylonLowerer(
         new LoweringContext(),

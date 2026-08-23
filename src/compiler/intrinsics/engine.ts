@@ -113,6 +113,10 @@ export function compileEngineIntrinsic(
             return {
                 kind: "scene",
                 cpp: `bbl::create_scene_context(${engine.cpp})`,
+                sceneEnvironmentState: {
+                    rotationSet: false,
+                    hasTexturedSkybox: false,
+                },
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
                 ...(engine.msaaSamples

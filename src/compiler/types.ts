@@ -810,10 +810,16 @@ export interface Value {
     >;
     defaultRenderTask?: boolean;
     defaultRenderTaskEmitted?: boolean;
+    /** Shared across compiler aliases of one native scene. */
+    sceneEnvironmentState?: {
+        rotationSet: boolean;
+        hasTexturedSkybox: boolean;
+    };
     browserValue?:
         | { kind: "boolean"; value: boolean }
         | { kind: "number"; value: number }
         | { kind: "null" }
+        | { kind: "object" }
         | { kind: "search-params"; search: string }
         | { kind: "string"; value: string };
     cameraKind?: "arc-rotate" | "free";

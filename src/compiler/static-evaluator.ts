@@ -28,6 +28,12 @@ type ResolveValue = (expression: ts.Expression) => Value;
 type CompileCondition = (
     expression: ts.Expression,
 ) => string;
+type EvaluateBrowserValue = (
+    expression: ts.Expression,
+) => Value["browserValue"] | undefined;
+type IsBrowserOnlyExpression = (
+    expression: ts.Expression,
+) => boolean;
 
 export class StaticEvaluator {
     public constructor(
@@ -41,6 +47,8 @@ export class StaticEvaluator {
         private readonly resolveCall: ResolveCall,
         private readonly resolveValue: ResolveValue,
         private readonly compileCondition: CompileCondition,
+        private readonly evaluateBrowserValue: EvaluateBrowserValue,
+        private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -317,6 +325,28 @@ export class StaticEvaluator {
     ): string {
         const unwrapped =
             this.resolveStaticExpression(expression);
+        const browserValue = this.isBrowserOnlyExpression(
+            unwrapped,
+        )
+            ? this.evaluateBrowserValue(unwrapped)
+            : undefined;
+        if (browserValue?.kind === "number") {
+            const type = precision === "float"
+                ? "float"
+                : "double";
+            if (Number.isNaN(browserValue.value)) {
+                return `std::numeric_limits<${type}>::quiet_NaN()`;
+            }
+            if (browserValue.value === Infinity) {
+                return `std::numeric_limits<${type}>::infinity()`;
+            }
+            if (browserValue.value === -Infinity) {
+                return `-std::numeric_limits<${type}>::infinity()`;
+            }
+            return precision === "float"
+                ? this.floatLiteral(browserValue.value)
+                : this.doubleLiteral(browserValue.value);
+        }
         if (ts.isNumericLiteral(unwrapped)) {
             const value = Number(unwrapped.text);
             if (!Number.isFinite(value)) {
@@ -480,9 +510,18 @@ export class StaticEvaluator {
                 : value.cpp;
         }
         if (ts.isConditionalExpression(unwrapped)) {
-            const compiled = `(${this.compileCondition(
+            const condition = this.compileCondition(
                 unwrapped.condition,
-            )} ? ${this.compileNumber(
+            );
+            if (condition === "true" || condition === "false") {
+                return this.compileNumber(
+                    condition === "true"
+                        ? unwrapped.whenTrue
+                        : unwrapped.whenFalse,
+                    precision,
+                );
+            }
+            const compiled = `(${condition} ? ${this.compileNumber(
                 unwrapped.whenTrue,
                 "double",
             )} : ${this.compileNumber(
@@ -640,6 +679,16 @@ export class StaticEvaluator {
             ) {
                 return value.staticString;
             }
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.PlusToken
+        ) {
+            return (
+                this.compileStringLiteral(unwrapped.left) +
+                this.compileStringLiteral(unwrapped.right)
+            );
         }
         if (ts.isTemplateExpression(unwrapped)) {
             let result = unwrapped.head.text;

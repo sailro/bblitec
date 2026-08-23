@@ -2023,6 +2023,265 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("folds the browser canvas guard around a void-wrapped auto-run", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function scene(canvas: HTMLCanvasElement) {
+            const engine = await createEngine(canvas);
+            createBox(engine);
+        }
+
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        if (canvas) {
+            void scene(canvas);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::create_box/);
+    assert.doesNotMatch(result.cpp, /document|getElementById/);
+
+    assert.throws(
+        () =>
+            compileSource(`
+                if (document.getElementById("definitelyMissing")) {
+                    console.log("unreachable");
+                }
+            `),
+        /Browser-dependent condition cannot be determined/,
+    );
+
+    assert.throws(
+        () => compileSource(`void 1;`),
+        /Unsupported expression statement/,
+    );
+});
+
+test("uses JavaScript truthiness for browser query values in conditions", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const params = new URLSearchParams(window.location.search);
+            if (params.get("enabled")) {
+                createBox(engine);
+            }
+        }
+    `;
+
+    assert.doesNotMatch(compileSource(source).cpp, /bbl::create_box/);
+    assert.match(
+        compileSource(source, { search: "?enabled=yes" }).cpp,
+        /bbl::create_box/,
+    );
+});
+
+test("preserves falsy browser values selected by logical and", () => {
+    const result = compileSource(
+        `
+            import {
+                createBox,
+                createEngine,
+            } from "@babylonjs/lite";
+
+            async function main() {
+                const engine = await createEngine({});
+                const box = createBox(engine);
+                const params = new URLSearchParams(window.location.search);
+                const missing = params.get("missing") && true;
+                const empty = params.get("empty") && true;
+                const zero = parseFloat(params.get("zero") || "") && true;
+                box.position.x = missing === null ? 1 : 2;
+                box.position.y = empty === "" ? 3 : 4;
+                box.position.z = zero === 0 ? 5 : 6;
+            }
+        `,
+        { search: "?empty=&zero=0" },
+    );
+
+    assert.match(result.cpp, /\.position\.x = 1\.0f;/);
+    assert.match(result.cpp, /\.position\.y = 3\.0f;/);
+    assert.match(result.cpp, /\.position\.z = 5\.0f;/);
+});
+
+test("folds browser numeric predicates in conditional values", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            box.position.x = Number.isFinite(seek) ? seek : 3;
+            box.position.y = isNaN(seek) ? 4 : seek;
+        }
+    `;
+    const result = compileSource(source);
+
+    assert.match(result.cpp, /\.position\.x = 3\.0f/);
+    assert.match(result.cpp, /\.position\.y = 4\.0f/);
+    assert.doesNotMatch(result.cpp, /Number\.isFinite|isNaN|\? 0\.0/);
+
+    const queried = compileSource(source, {
+        search: "?seekTime=1.5",
+    });
+    assert.match(queried.cpp, /\.position\.x = 1\.5f/);
+    assert.match(queried.cpp, /\.position\.y = 1\.5f/);
+});
+
+test("does not fold shadowed browser predicate names", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        const isNaN = (_value: number): boolean => false;
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            box.position.x = isNaN(seek) ? 4 : 5;
+        }
+    `);
+
+    assert.match(result.cpp, /\.position\.x = 5\.0f/);
+});
+
+test("does not browser-fold ordinary parseFloat calls", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createBox,
+                    createEngine,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const box = createBox(engine);
+                    const numeric = 1.5;
+                    box.position.x = parseFloat(numeric as any);
+                }
+            `),
+        /Call 'parseFloat' does not resolve/,
+    );
+});
+
+test("materializes direct browser primitive call arms", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const params = new URLSearchParams(window.location.search);
+            const selected = params.has("value")
+                ? params.get("value")!
+                : "fallback.glb";
+            await loadGltf(engine, selected);
+        }
+    `, { search: "?value=chosen.glb" });
+
+    assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
+});
+
+test("records direct browser primitive materialization", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.position.x = parseFloat(
+                new URLSearchParams(window.location.search).get("x") || "3"
+            );
+        }
+    `);
+
+    assert.match(result.cpp, /\.position\.x = 3\.0f;/);
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
+test("records erased browser declarations without primitive values", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const started = performance.now();
+            await createEngine({});
+        }
+    `);
+
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
+test("folds static string concatenation in asset arguments", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+            loadTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const root = "https://example.com/assets/";
+            await loadGltf(engine, root + "model.glb");
+            await loadTexture2D(engine, root + "texture.png");
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.assets.map(({ source }) => source),
+        [
+            "https://example.com/assets/model.glb",
+            "https://example.com/assets/texture.png",
+        ],
+    );
+});
+
+test("prunes browser-selected typed data branches", () => {
+    const result = compileSource(`
+        interface Pick { value: number; }
+
+        const params = new URLSearchParams(window.location.search);
+        const seek = parseFloat(params.get("seekTime") || "");
+        const picked: Pick = isNaN(seek)
+            ? { value: 3 }
+            : { value: document.title.length };
+    `);
+
+    assert.match(result.cpp, /Pick v_picked = .*\{3\.0\}/);
+    assert.doesNotMatch(result.cpp, /document|title/);
+});
+
 test("reads the query the reference pose is captured at", () => {
     const source = `
         import {
@@ -3222,6 +3481,154 @@ test("compiles Babylon Lite scene 3 Standard fog and image skybox", () => {
         /bbl::set_scene_fog\(v_scene, 1\.0f, 0\.02f, 0\.0f, 1000\.0f, bbl::Color3\{0\.9f, 0\.9f, 0\.85f\}\)/,
     );
     assert.match(result.cpp, /bbl::load_image_skybox\(v_scene, /);
+});
+
+test("writes lighting-only environment rotation into native scene state", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            loadEnvironment,
+            setEnvironmentRotation,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            await loadEnvironment(scene, "/studio.env", {
+                skipSkybox: true,
+                skipGround: true,
+                brdfUrl: "/brdf-lut.png",
+            });
+            setEnvironmentRotation(scene, 1.9);
+        }
+    `);
+
+    assert.ok(result.manifest.features.includes("environment:ibl"));
+    assert.match(
+        result.cpp,
+        /v_scene\.environment\.rotation_y = 1\.9f;/,
+    );
+});
+
+test("does not activate IBL from environment rotation alone", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            setEnvironmentRotation,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            setEnvironmentRotation(scene, 1.9);
+        }
+    `);
+
+    assert.ok(!result.manifest.features.includes("environment:ibl"));
+    assert.match(
+        result.cpp,
+        /v_scene\.environment\.rotation_y = 1\.9f;/,
+    );
+});
+
+test("rejects rotating a visible environment skybox in either call order", () => {
+    const prelude = `
+        import {
+            createEngine,
+            createSceneContext,
+            loadEnvironment,
+            setEnvironmentRotation,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+    `;
+    const visibleSkybox = `
+        await loadEnvironment(scene, "/studio.env", {
+            skyboxUrl: "/studio.env",
+            skipGround: true,
+        });
+    `;
+
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude}${visibleSkybox}
+                    setEnvironmentRotation(scene, 1.9);
+                }`,
+            ),
+        /rotating one requires native skybox rotation support/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude}
+                    setEnvironmentRotation(scene, 1.9);
+                    ${visibleSkybox}
+                }`,
+            ),
+        /Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support/,
+    );
+});
+
+test("tracks environment rotation boundaries through scene parameters", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createSceneContext,
+                    loadEnvironment,
+                    setEnvironmentRotation,
+                } from "babylon-lite";
+                import type { SceneContext } from "babylon-lite";
+
+                async function addSkybox(scene: SceneContext) {
+                    await loadEnvironment(scene, "/studio.env", {
+                        skyboxUrl: "/studio.env",
+                        skipGround: true,
+                    });
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    await addSkybox(scene);
+                    setEnvironmentRotation(scene, 1.9);
+                }
+            `),
+        /rotating one requires native skybox rotation support/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createSceneContext,
+                    loadEnvironment,
+                    setEnvironmentRotation,
+                } from "babylon-lite";
+                import type { SceneContext } from "babylon-lite";
+
+                function rotate(scene: SceneContext) {
+                    setEnvironmentRotation(scene, 1.9);
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    rotate(scene);
+                    await loadEnvironment(scene, "/studio.env", {
+                        skyboxUrl: "/studio.env",
+                        skipGround: true,
+                    });
+                }
+            `),
+        /Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support/,
+    );
 });
 
 test("rejects setFog with a runtime fog mode", () => {

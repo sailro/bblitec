@@ -20,6 +20,9 @@ export interface BrowserErasureContext {
     lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined;
+    isDefaultLibraryIdentifier(
+        identifier: ts.Identifier,
+    ): boolean;
     /** The query string the reference pose is captured at. */
     referenceSearch(): string;
 }
@@ -41,7 +44,10 @@ export class BrowserErasure {
                     "document",
                     "performance",
                     "window",
-                ].includes(unwrapped.text)
+                ].includes(unwrapped.text) &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped,
+                )
             ) {
                 return true;
             }
@@ -58,7 +64,10 @@ export class BrowserErasure {
         if (
             ts.isNewExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
+            unwrapped.expression.text === "URLSearchParams" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            )
         ) {
             return true;
         }
@@ -104,6 +113,9 @@ export class BrowserErasure {
                 ts.isIdentifier(unwrapped.expression) &&
                 ["isNaN", "parseFloat"].includes(
                     unwrapped.expression.text,
+                ) &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
                 )
             ) {
                 return browserArgument;
@@ -117,7 +129,10 @@ export class BrowserErasure {
                 ) &&
                 unwrapped.expression.expression.text ===
                     "Number" &&
-                unwrapped.expression.name.text === "isFinite"
+                unwrapped.expression.name.text === "isFinite" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression.expression,
+                )
             ) {
                 return browserArgument;
             }
@@ -131,9 +146,7 @@ export class BrowserErasure {
     ): boolean | undefined {
         const value =
             this.evaluateBrowserValue(expression);
-        return value?.kind === "boolean"
-            ? value.value
-            : undefined;
+        return this.browserTruthy(value);
     }
 
     public evaluateBrowserValue(
@@ -168,7 +181,10 @@ export class BrowserErasure {
         if (
             ts.isNewExpression(unwrapped) &&
             ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "URLSearchParams"
+            unwrapped.expression.text === "URLSearchParams" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            )
         ) {
             const argument = unwrapped.arguments?.[0];
             const over = argument
@@ -189,7 +205,10 @@ export class BrowserErasure {
             ts.isIdentifier(
                 unwrapped.expression.expression,
             ) &&
-            unwrapped.expression.expression.text === "window"
+            unwrapped.expression.expression.text === "window" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression.expression,
+            )
         ) {
             return {
                 kind: "string",
@@ -219,10 +238,9 @@ export class BrowserErasure {
             ) {
                 const truthy = this.browserTruthy(left);
                 if (truthy === false) {
-                    return {
-                        kind: "boolean",
-                        value: false,
-                    };
+                    // JavaScript's value-selecting `&&` returns its left
+                    // operand unchanged when that operand is falsy.
+                    return left;
                 }
                 return truthy
                     ? this.evaluateBrowserValue(
@@ -296,6 +314,36 @@ export class BrowserErasure {
                     unwrapped.expression,
                 )
             ) {
+                if (
+                    ts.isIdentifier(
+                        unwrapped.expression.expression,
+                    ) &&
+                    unwrapped.expression.expression.text ===
+                        "document" &&
+                    unwrapped.expression.name.text ===
+                        "getElementById" &&
+                    this.context.isDefaultLibraryIdentifier(
+                        unwrapped.expression.expression,
+                    ) &&
+                    unwrapped.arguments.length === 1
+                ) {
+                    const elementId =
+                        this.evaluateBrowserValue(
+                            unwrapped.arguments[0]!,
+                        );
+                    if (
+                        elementId?.kind !== "string" ||
+                        elementId.value !== "renderCanvas"
+                    ) {
+                        return undefined;
+                    }
+                    // The generated native executable is launched with the
+                    // canvas its scene entry point expects. The browser page's
+                    // auto-run guard therefore selects the same branch in the
+                    // native reference environment; keep it as an object so
+                    // truthiness folds without pretending it equals `true`.
+                    return { kind: "object" };
+                }
                 // The receiver is evaluated rather than looked up, because
                 // the corpus writes the query read both ways: bound to a
                 // local first, and read straight off the constructor.
@@ -331,7 +379,10 @@ export class BrowserErasure {
             }
             if (
                 ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "parseFloat"
+                unwrapped.expression.text === "parseFloat" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
+                )
             ) {
                 const argument =
                     this.evaluateBrowserValue(
@@ -348,7 +399,10 @@ export class BrowserErasure {
             }
             if (
                 ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "isNaN"
+                unwrapped.expression.text === "isNaN" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
+                )
             ) {
                 const argument =
                     this.evaluateBrowserValue(
@@ -372,7 +426,10 @@ export class BrowserErasure {
                 ) &&
                 unwrapped.expression.expression.text ===
                     "Number" &&
-                unwrapped.expression.name.text === "isFinite"
+                unwrapped.expression.name.text === "isFinite" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression.expression,
+                )
             ) {
                 const argument =
                     this.evaluateBrowserValue(
@@ -407,6 +464,7 @@ export class BrowserErasure {
                     value.value !== 0 &&
                     !Number.isNaN(value.value)
                 );
+            case "object":
             case "search-params":
                 return true;
             case "string":
@@ -515,17 +573,22 @@ function relationalOperator(
 
 /**
  * `===` over two folded browser values, or undefined when either side is
- * unknown or is the search-params object (which compares by identity).
+ * unknown or is an object (which compares by identity).
  */
 function strictlyEqualBrowserValues(
     left: Value["browserValue"] | undefined,
     right: Value["browserValue"] | undefined,
 ): boolean | undefined {
     if (!left || !right) return undefined;
-    if (left.kind === "search-params" || right.kind === "search-params") {
+    if (left.kind !== right.kind) return false;
+    if (
+        left.kind === "object" ||
+        right.kind === "object" ||
+        left.kind === "search-params" ||
+        right.kind === "search-params"
+    ) {
         return undefined;
     }
-    if (left.kind !== right.kind) return false;
     if (left.kind === "null" || right.kind === "null") return true;
     if (left.kind === "boolean" && right.kind === "boolean") {
         return left.value === right.value;

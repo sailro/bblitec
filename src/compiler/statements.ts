@@ -130,12 +130,6 @@ export interface StatementLoweringContext {
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
-    isBrowserOnlyExpression(
-        expression: ts.Expression,
-    ): boolean;
-    evaluateBrowserCondition(
-        expression: ts.Expression,
-    ): boolean | undefined;
     eraseBrowserInstrumentation(position: number): void;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
@@ -552,37 +546,6 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.IfStatement,
     ): void {
-        if (
-            context.isBrowserOnlyExpression(
-                statement.expression,
-            )
-        ) {
-            const condition =
-                context.evaluateBrowserCondition(
-                    statement.expression,
-                );
-            if (condition === undefined) {
-                context.fail(
-                    statement.expression,
-                    "Browser-dependent condition cannot be determined for native AOT lowering.",
-                );
-            }
-            context.eraseBrowserInstrumentation(
-                statement.pos,
-            );
-            if (condition) {
-                this.emitScopedBody(
-                    context,
-                    statement.thenStatement,
-                );
-            } else if (statement.elseStatement) {
-                this.emitScopedBody(
-                    context,
-                    statement.elseStatement,
-                );
-            }
-            return;
-        }
         const condition = context.compileCondition(
             statement.expression,
         );
@@ -1255,6 +1218,16 @@ export class StatementLowerer {
         expression: ts.Expression,
     ): void {
         const unwrapped = context.unwrap(expression);
+        if (ts.isVoidExpression(unwrapped)) {
+            // `void call()` preserves the call's side effects and discards
+            // only its value. At a statement boundary the value was already
+            // unused, so lower the operand through the same statement path.
+            this.emitExpression(
+                context,
+                unwrapped.expression,
+            );
+            return;
+        }
         if (
             ts.isBinaryExpression(unwrapped) &&
             [
