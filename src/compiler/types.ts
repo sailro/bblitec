@@ -814,6 +814,7 @@ export interface Value {
         | { kind: "boolean"; value: boolean }
         | { kind: "number"; value: number }
         | { kind: "null" }
+        | { kind: "object" }
         | { kind: "search-params"; search: string }
         | { kind: "string"; value: string };
     cameraKind?: "arc-rotate" | "free";

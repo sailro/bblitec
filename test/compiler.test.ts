@@ -2023,6 +2023,61 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("folds the browser canvas auto-run guard", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function scene(canvas: HTMLCanvasElement) {
+            const engine = await createEngine(canvas);
+            createBox(engine);
+        }
+
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        if (canvas) {
+            scene(canvas);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::create_box/);
+    assert.doesNotMatch(result.cpp, /document|getElementById/);
+
+    assert.throws(
+        () =>
+            compileSource(`
+                if (document.getElementById("definitelyMissing")) {
+                    console.log("unreachable");
+                }
+            `),
+        /Browser-dependent condition cannot be determined/,
+    );
+});
+
+test("uses JavaScript truthiness for browser query values in conditions", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const params = new URLSearchParams(window.location.search);
+            if (params.get("enabled")) {
+                createBox(engine);
+            }
+        }
+    `;
+
+    assert.doesNotMatch(compileSource(source).cpp, /bbl::create_box/);
+    assert.match(
+        compileSource(source, { search: "?enabled=yes" }).cpp,
+        /bbl::create_box/,
+    );
+});
+
 test("folds browser numeric predicates in conditional values", () => {
     const source = `
         import {

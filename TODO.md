@@ -324,8 +324,9 @@ that does to the deferred lane by default.
   slot, so the table folds that conjunct to false), and `rebuildMaterial`,
   which is what upstream requires to move a transform after the renderable is
   built — a scene writing one after binding refuses instead.
-- [ ] Scene 12: fold or explicitly lower the reached browser-dependent
-  condition.
+- [ ] Scene 12: lower the reached top-level `void scene12(canvas)` expression.
+  Its browser canvas-existence guard now folds true in the native reference
+  environment.
 - [ ] Scenes 158, 171, 174, 175, 226, 251: lower `??` over an operand that is
   not a static record property — 226 `container._gaussianSplats ?? []`, 158
   and 251 `xbot.animationGroups ?? []`. Splats, animation groups and the
@@ -395,8 +396,9 @@ that does to the deferred lane by default.
     needs `marker.name`; scene 59 wants the sprite animation manager; scene
     206 is a cutout system behind large-world rendering.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
-  - Scene 51: a browser-derived numeric value, with the premultiplied atlas and
-    blend behind it.
+  - Scene 51: accept the reached explicit `msaaSamples: 1`; its browser-derived
+    `1 | 4` selection now folds to `1` for the bare reference query, with the
+    premultiplied atlas and blend behind it.
   - Scene 52: `onSceneDispose`, then the HUD-over-scene composition the native
     renderers refuse.
   - Scene 53: depth-hosted layers, then `spriteBlendOpaque`.
@@ -517,7 +519,8 @@ that does to the deferred lane by default.
 - [ ] Scenes 113, 129: support mesh names.
 - [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
 - [ ] Scene 149: support the reached constructor expression.
-- [ ] Scene 140: fold the reached browser-derived boolean.
+- [ ] Scene 140: support the reached `ground.receiveShadows` assignment. Its
+  browser-derived booleans now fold for the bare reference query.
 - [ ] Scene 144: support `createBloomPostProcessTask`. Its chain is four
   passes over the composite machinery scene 148 shipped, but its merge is
   built by calling `createPostProcessTask` directly with an inline `_shader`,

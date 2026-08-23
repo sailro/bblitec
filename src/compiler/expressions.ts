@@ -594,6 +594,7 @@ export class ExpressionLowerer {
                     staticString: value.browserValue.value,
                 };
             case "null":
+            case "object":
             case "search-params":
                 return value;
         }
