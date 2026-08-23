@@ -192,6 +192,38 @@ export function compileSceneIntrinsic(
             };
         }
 
+        case "setEnvironmentRotation": {
+            // src/scene/set-environment-rotation.ts stores the Y rotation on
+            // the scene and registers the environment uniform/skybox patch.
+            // Native carries the same scalar in EnvironmentState; its shared
+            // scene block and composed IBL shader already consume it.
+            context.expectArgumentCount(call, 2, 2);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            if (
+                scene.sceneEnvironmentState!
+                    .hasTexturedSkybox
+            ) {
+                context.fail(
+                    call,
+                    "setEnvironmentRotation is currently lowered without a textured environment skybox; rotating one requires native skybox rotation support.",
+                );
+            }
+            scene.sceneEnvironmentState!.rotationSet =
+                true;
+            return {
+                kind: "void",
+                cpp:
+                    `${scene.cpp}.environment.rotation_y = ` +
+                    context.compileNumber(call.arguments[1]!),
+            };
+        }
+
         case "setFog": {
             context.expectArgumentCount(call, 2, 2);
             const scene =

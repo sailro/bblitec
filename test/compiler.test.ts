@@ -3414,6 +3414,154 @@ test("compiles Babylon Lite scene 3 Standard fog and image skybox", () => {
     assert.match(result.cpp, /bbl::load_image_skybox\(v_scene, /);
 });
 
+test("writes lighting-only environment rotation into native scene state", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            loadEnvironment,
+            setEnvironmentRotation,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            await loadEnvironment(scene, "/studio.env", {
+                skipSkybox: true,
+                skipGround: true,
+                brdfUrl: "/brdf-lut.png",
+            });
+            setEnvironmentRotation(scene, 1.9);
+        }
+    `);
+
+    assert.ok(result.manifest.features.includes("environment:ibl"));
+    assert.match(
+        result.cpp,
+        /v_scene\.environment\.rotation_y = 1\.9f;/,
+    );
+});
+
+test("does not activate IBL from environment rotation alone", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            setEnvironmentRotation,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            setEnvironmentRotation(scene, 1.9);
+        }
+    `);
+
+    assert.ok(!result.manifest.features.includes("environment:ibl"));
+    assert.match(
+        result.cpp,
+        /v_scene\.environment\.rotation_y = 1\.9f;/,
+    );
+});
+
+test("rejects rotating a visible environment skybox in either call order", () => {
+    const prelude = `
+        import {
+            createEngine,
+            createSceneContext,
+            loadEnvironment,
+            setEnvironmentRotation,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+    `;
+    const visibleSkybox = `
+        await loadEnvironment(scene, "/studio.env", {
+            skyboxUrl: "/studio.env",
+            skipGround: true,
+        });
+    `;
+
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude}${visibleSkybox}
+                    setEnvironmentRotation(scene, 1.9);
+                }`,
+            ),
+        /rotating one requires native skybox rotation support/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude}
+                    setEnvironmentRotation(scene, 1.9);
+                    ${visibleSkybox}
+                }`,
+            ),
+        /Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support/,
+    );
+});
+
+test("tracks environment rotation boundaries through scene parameters", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createSceneContext,
+                    loadEnvironment,
+                    setEnvironmentRotation,
+                } from "babylon-lite";
+                import type { SceneContext } from "babylon-lite";
+
+                async function addSkybox(scene: SceneContext) {
+                    await loadEnvironment(scene, "/studio.env", {
+                        skyboxUrl: "/studio.env",
+                        skipGround: true,
+                    });
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    await addSkybox(scene);
+                    setEnvironmentRotation(scene, 1.9);
+                }
+            `),
+        /rotating one requires native skybox rotation support/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createSceneContext,
+                    loadEnvironment,
+                    setEnvironmentRotation,
+                } from "babylon-lite";
+                import type { SceneContext } from "babylon-lite";
+
+                function rotate(scene: SceneContext) {
+                    setEnvironmentRotation(scene, 1.9);
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    rotate(scene);
+                    await loadEnvironment(scene, "/studio.env", {
+                        skyboxUrl: "/studio.env",
+                        skipGround: true,
+                    });
+                }
+            `),
+        /Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support/,
+    );
+});
+
 test("rejects setFog with a runtime fog mode", () => {
     assert.throws(
         () =>

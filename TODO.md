@@ -302,13 +302,13 @@ that does to the deferred lane by default.
   `let resolveFrozen!: () => void`; query-derived `Number.isFinite` conditions
   now fold to the native reference environment before the selected value arm
   lowers.
-- [ ] Scenes 158, 218, 269: the loader-returned-collection shapes still
+- [ ] Scenes 12, 158, 218, 269: the loader-returned-collection shapes still
   unreached. Iterating `entities` and `animationGroups`, `?? []` over one and
   `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
   and `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
   a collection passed to a user function (158's `requireGroup`) and `[0]`
-  (218). Each is the same value travelling further than a call argument, so
-  they belong together. Scene 269 is past the axis — its first blocker is
+  (12 and 218). Each is the same value travelling further than a call argument,
+  so they belong together. Scene 269 is past the axis — its first blocker is
   `createTransformNode`, with 270 — as is 144, whose first blocker is
   `goToFrame`'s three-argument form, and 250's is `enableGltfCameras` alone.
 - [ ] Scene 229: lower the reached spread element.
@@ -324,9 +324,11 @@ that does to the deferred lane by default.
   slot, so the table folds that conjunct to false), and `rebuildMaterial`,
   which is what upstream requires to move a transform after the renderable is
   built — a scene writing one after binding refuses instead.
-- [ ] Scene 12: support the reached `setEnvironmentRotation` intrinsic. Its
-  browser canvas-existence guard and top-level `void scene12(canvas)` auto-run
-  now lower in the native reference environment.
+- [ ] Extend `setEnvironmentRotation` to textured DDS/ENV and HDR environment
+  skyboxes. Scene 12's lighting-only environment now lowers, and solid-colour
+  or image skyboxes are rotation-invariant or unrelated; the remaining
+  textured environment skybox arms need the pin's skybox rotation patch in the
+  native background shaders.
 - [ ] Scenes 158, 171, 174, 175, 226, 251: lower `??` over an operand that is
   not a static record property — 226 `container._gaussianSplats ?? []`, 158
   and 251 `xbot.animationGroups ?? []`. Splats, animation groups and the
