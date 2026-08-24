@@ -2201,6 +2201,98 @@ test("materializes direct browser primitive call arms", () => {
     assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
 });
 
+test("exposes only the pinned glTF container root entity", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+        } from "@babylonjs/lite";
+
+        function keepRoot(_root: unknown): void {}
+
+        async function main() {
+            const engine = await createEngine({});
+            const container = await loadGltf(engine, "model.glb");
+            const root = container.entities[0];
+            keepRoot(root);
+        }
+    `);
+
+    assert.equal(result.manifest.assets[0]?.kind, "gltf");
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createArcRotateCamera, createEngine, loadGltf } from "@babylonjs/lite";
+
+                function keepRoot(_root: unknown): void {}
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });
+                    keepRoot(container.entities[camera.alpha]);
+                }
+            `),
+        /entities are indexed only at static index 0/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, loadGltf } from "@babylonjs/lite";
+
+                function keepRoot(_root: unknown): void {}
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    keepRoot(container.entities[1]);
+                }
+            `),
+        /entities are indexed only at static index 0/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, loadBabylon } from "@babylonjs/lite";
+
+                function keepRoot(_root: unknown): void {}
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadBabylon(engine, "scene.babylon", {
+                        loadCamera: false,
+                        loadTextures: false,
+                    });
+                    keepRoot(container.entities[0]);
+                }
+            `),
+        /Indexing entities is lowered for a glTF container/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    addToScene,
+                    createEngine,
+                    createSceneContext,
+                    loadGltf,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    const container = await loadGltf(engine, "model.glb");
+                    addToScene(scene, container.entities[0]);
+                }
+            `),
+        /received asset-root/,
+    );
+});
+
 test("records direct browser primitive materialization", () => {
     const result = compileSource(`
         import {

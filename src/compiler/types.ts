@@ -570,6 +570,7 @@ export type ValueKind =
     | "animation-group"
     | "animation-manager"
     | "asset-entity"
+    | "asset-root"
     | "asset"
     | "boolean"
     | "browser"

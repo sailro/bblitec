@@ -302,14 +302,14 @@ that does to the deferred lane by default.
   `let resolveFrozen!: () => void`; query-derived `Number.isFinite` conditions
   now fold to the native reference environment before the selected value arm
   lowers.
-- [ ] Scenes 12, 158, 218, 269: the loader-returned-collection shapes still
-  unreached. Iterating `entities` and `animationGroups`, `?? []` over one and
-  `.find(pred)` with an arrow shipped with scenes 152 and 157; what remains is
-  a collection passed to a user function (158's `requireGroup`) and `[0]`
-  (12 and 218). Each is the same value travelling further than a call argument,
-  so they belong together. Scene 269 is past the axis — its first blocker is
-  `createTransformNode`, with 270 — as is 144, whose first blocker is
-  `goToFrame`'s three-argument form, and 250's is `enableGltfCameras` alone.
+- [ ] Scene 158: pass a loader-returned `animationGroups` collection to the
+  user function `requireGroup`. Iteration, `?? []`, `.find(pred)` with an arrow,
+  and static glTF-root indexing now lower; this is the remaining shape where
+  the collection itself travels beyond a compiler-owned call argument.
+- [ ] Scene 12: support the scene-code `_metallicF0Factor` option to
+  `createPbrMaterial`. The pinned material input and native PBR record already
+  carry the field; this scene writes it directly before its imported-root
+  clone and recursive material walk.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in
@@ -627,7 +627,7 @@ that does to the deferred lane by default.
   `updateFloatingOriginOffset`, which the pinned `floating-origin.ts` says it
   deleted as net cost without value, deriving the offset live from
   `scene.camera.worldMatrix` instead. Lower from the source.
-- [ ] Scene 219: recursion (`findSkinned`) carries the reported non-final
+- [ ] Scenes 218, 219: recursion (`findSkinned`) carries the reported non-final
   return, and vertex-animation textures (`VatHandle`/`VatClip`) sit behind it.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath

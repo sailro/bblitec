@@ -106,6 +106,9 @@ export interface ExpressionContext
     handleCollectionIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
+    assetRootElementAccess(
+        expression: ts.ElementAccessExpression,
+    ): Value | undefined;
     compileRegisteredConstant(importedName: string): Value | undefined;
     compileRegisteredIntrinsic(
         importedName: string,
@@ -216,6 +219,11 @@ export class ExpressionLowerer {
             );
             if (data) {
                 return data;
+            }
+            const assetRoot =
+                this.context.assetRootElementAccess(unwrapped);
+            if (assetRoot) {
+                return assetRoot;
             }
             const owner = this.compileValue(
                 unwrapped.expression,

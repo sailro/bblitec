@@ -409,8 +409,13 @@ double-advance them. The pin seeds a glTF container with its root node and
 lets each loader feature append its own entities, so adding them one by one
 adds the loader's meshes and its lights — which is what the generated call
 adds in one step, the entity value being accepted by `addToScene` alone.
-Generation refuses a container of any other shape. Scenes 152 and 157
-measure it.
+That iteration value deliberately represents the complete entity walk. An
+indexed value is different: only static `entities[0]` on a glTF container
+lowers, as an opaque imported-root identity, because the pin guarantees the
+synthetic transform root at index zero before features append lights or other
+entities. A dynamic/nonzero index and every `.babylon` container refuse rather
+than conflating one root with the complete walk. Scenes 152 and 157 measure the
+iteration contract; compiler regressions pin the indexed boundary.
 
 **A manager owns animation time for the groups attached to it, and the
 measured seek has to reach it.** Upstream has no seek — the reference

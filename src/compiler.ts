@@ -2597,6 +2597,55 @@ class Compiler
         };
     }
 
+    /**
+     * `<gltf container>.entities[0]`, the synthetic root transform the pin
+     * creates before any loader feature appends further entities.
+     *
+     * Native loading resolves the root hierarchy into the asset's mesh
+     * records rather than allocating a transform-node handle for that
+     * synthetic wrapper. The value therefore stays an opaque asset-root
+     * identity: later operations must prove how they act on the whole
+     * imported hierarchy instead of mistaking the asset handle for a mesh.
+     */
+    public assetRootElementAccess(
+        expression: ts.ElementAccessExpression,
+    ): Value | undefined {
+        const collection = this.unwrap(expression.expression);
+        if (
+            !ts.isPropertyAccessExpression(collection) ||
+            collection.name.text !== "entities"
+        ) {
+            return undefined;
+        }
+        const owner = this.compileValue(collection.expression);
+        if (owner.kind !== "asset") {
+            return undefined;
+        }
+        if (owner.asset?.kind !== "gltf") {
+            this.fail(
+                collection,
+                "Indexing entities is lowered for a glTF container, whose first entity is its synthetic root transform; another container's roots are not.",
+            );
+        }
+        const index = this.compileValue(
+            expression.argumentExpression,
+        );
+        if (
+            index.kind !== "number" ||
+            index.staticNumber !== 0
+        ) {
+            this.fail(
+                expression.argumentExpression,
+                "A glTF container's entities are indexed only at static index 0, which is its synthetic root transform.",
+            );
+        }
+        return {
+            ...owner,
+            kind: "asset-root",
+            engineCpp: this.requireEngine(owner, collection),
+        };
+    }
+
     public handleCollectionIterationTarget(
         expression: ts.Expression,
     ):
