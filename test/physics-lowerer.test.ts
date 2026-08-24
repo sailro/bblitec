@@ -149,6 +149,52 @@ test("the material carries the pin's own per-channel combine modes", () => {
     );
 });
 
+test("mesh bounds helpers are translated from the pinned AST", () => {
+    assert.match(
+        lowered.source,
+        /havok\.ts#_boundingCenter, _boundingExtents, _boundingRadius/,
+    );
+    assert.match(
+        lowered.source,
+        /Vec3d bounding_center[\s\S]*bounds\.minimum\.x\) \+ static_cast<double>\(bounds\.maximum\.x\)[\s\S]*return Vec3d\{0\.0, 0\.0, 0\.0\}/,
+    );
+    assert.match(
+        lowered.source,
+        /Vec3d bounding_extents[\s\S]*bounds\.maximum\.z\) - static_cast<double>\(bounds\.minimum\.z\)[\s\S]*return Vec3d\{1\.0, 1\.0, 1\.0\}/,
+    );
+    assert.match(
+        lowered.source,
+        /double bounding_radius[\s\S]*std::max<double>\(\{dx, dy, dz\}\) \* 0\.5[\s\S]*return 0\.5/,
+    );
+    // `_boundingRadius` owns the three extent differences in the pin; it no
+    // longer calls the separately transcribed extents helper.
+    const radius = lowered.source.slice(
+        lowered.source.indexOf("double bounding_radius"),
+        lowered.source.indexOf("/** `_syncBodyToNode`"),
+    );
+    assert.doesNotMatch(radius, /bounding_extents\(/);
+});
+
+test("mesh bounds apply scene-code overrides before sizing an aggregate", () => {
+    const helper = lowered.source.slice(
+        lowered.source.indexOf("MeshBounds mesh_bounds"),
+        lowered.source.indexOf("// havok.ts#_boundingCenter"),
+    );
+    assert.match(
+        helper,
+        /MeshBounds bounds\{true, geometry\.bounds_min, geometry\.bounds_max\};/,
+    );
+    assert.match(
+        helper,
+        /if \(mesh\.has_bounds_min_override\) \{\n        bounds\.minimum = mesh\.bounds_min_override;/,
+    );
+    assert.match(
+        helper,
+        /if \(mesh\.has_bounds_max_override\) \{\n        bounds\.maximum = mesh\.bounds_max_override;/,
+    );
+    assert.match(helper, /return bounds;/);
+});
+
 test("a body's integrated pose writes the two fields the pin writes", () => {
     assert.match(lowered.source, /mesh\.position = Vec3\{/);
     assert.match(lowered.source, /mesh\.rotation_quaternion = Vec4\{/);

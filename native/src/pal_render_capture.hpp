@@ -31,6 +31,9 @@
 
 #include <bblite/upstream/build_stamp.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
+#if BBLITE_HAS_SPLATS
+#include <bblite/upstream/splat_sort.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -986,6 +989,63 @@ inline void write_draw_list(
     }
 }
 
+#if BBLITE_HAS_SPLATS
+/**
+ * The Gaussian-splat renderable lives beside the render plan rather than in
+ * either mesh draw list. Capture it at that same boundary so a splat-only
+ * scene reports the indexed instanced draw and the exact UBO its pass writes.
+ */
+inline void write_splat_draw_list(
+    JsonWriter& json,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    int width,
+    int height) {
+    const double aspect =
+        static_cast<double>(width) / static_cast<double>(height);
+    const std::array<float, 16> view = upstream::build_view_matrix(
+        upstream::camera_world_matrix(camera));
+    const std::array<float, 16> projection =
+        upstream::build_projection(camera, aspect);
+
+    for (const SplatMeshHandle handle : scene.splat_meshes) {
+        if (handle.value >= engine.splat_meshes.size()) continue;
+        const SplatMeshRecord& splat = engine.splat_meshes[handle.value];
+        if (splat.vertex_count == 0) continue;
+
+        upstream::SplatUniforms uniforms;
+        upstream::write_splat_uniforms(
+            uniforms,
+            splat.world,
+            view,
+            projection,
+            static_cast<double>(width),
+            static_cast<double>(height),
+            splat.texture_width,
+            splat.texture_height);
+
+        json.begin_object();
+        json.field("stage", "transparent");
+        json.field("pipeline", "splat");
+        json.field("materialKind", "splat");
+        json.field("bucket", "alphaBlend");
+        json.handle("mesh", invalid_handle);
+        json.handle("material", invalid_handle);
+        json.handle("geometry", invalid_handle);
+        json.field("splat", handle.value);
+        json.field("indexCount", 6u);
+        json.field("vertexCount", 4u);
+        json.field("instanceCount", splat.vertex_count);
+        json.key("uniforms");
+        json.begin_array();
+        write_uniform_block(json, "vertex", 0, "SplatUniforms", uniforms);
+        json.end_array();
+        json.end_object();
+    }
+}
+#endif
+
 /**
  * Write the whole frame.
  *
@@ -1098,6 +1158,9 @@ inline void write_render_capture(
         engine,
         camera,
         view_projection);
+#if BBLITE_HAS_SPLATS
+    write_splat_draw_list(json, scene, engine, camera, width, height);
+#endif
     json.end_array();
 
     json.key("backgroundUniforms");

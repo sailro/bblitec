@@ -328,3 +328,16 @@ test("preserves multisampling across the transmission scene-color copy", () => {
         /capture_frame \|\| transmission_enabled\s*\?\s*state\.color/,
     );
 });
+
+test("captures splat renderables beside the render-plan draw lists", () => {
+    const capture = source("native/src/pal_render_capture.hpp");
+    assert.match(capture, /write_splat_draw_list/);
+    assert.match(capture, /for \(const SplatMeshHandle handle : scene\.splat_meshes\)/);
+    assert.match(capture, /upstream::write_splat_uniforms\(/);
+    assert.match(capture, /json\.field\("indexCount", 6u\)/);
+    assert.match(capture, /json\.field\("instanceCount", splat\.vertex_count\)/);
+    assert.match(
+        capture,
+        /write_splat_draw_list\(json, scene, engine, camera, width, height\)/,
+    );
+});

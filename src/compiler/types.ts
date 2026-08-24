@@ -159,29 +159,44 @@ export interface SceneMeshManifest {
  * presence. Recorded by `compilePbrMaterialOptions`, which already resolves
  * every option to a static value.
  */
-/** The `setPbrSheen` options a scene stamps on a material, verbatim. */
+/** The `setPbrSheen` options a scene stamps on a material. Values the scene
+ *  computes at runtime stay in emitted C++ and are absent here, so composition
+ *  replays the pinned writer's own defaults instead of inventing a number. */
 export interface ScenePbrSheenManifest {
     isEnabled: boolean;
-    color: readonly number[];
-    roughness: number;
-    intensity: number;
+    color?: readonly [number, number, number];
+    roughness?: number;
+    intensity?: number;
     hasTexture: boolean;
     albedoScaling: boolean;
 }
 
-/** The `setPbrClearCoat` options a scene stamps on a material, verbatim. */
+/** The `setPbrClearCoat` options a scene stamps on a material. Runtime-computed
+ *  numbers are absent for the same pinned-default convention as anisotropy. */
 export interface ScenePbrClearCoatManifest {
     isEnabled: boolean;
-    intensity: number;
-    roughness: number;
-    indexOfRefraction: number;
+    intensity?: number;
+    roughness?: number;
+    indexOfRefraction?: number;
 }
 
-/** The `setPbrIridescence` options a scene stamps on a material, verbatim. */
+/** The `setPbrIridescence` options a scene stamps on a material. Runtime-
+ *  computed numbers are absent for the pinned writer to default. */
 export interface ScenePbrIridescenceManifest {
     isEnabled: boolean;
+    intensity?: number;
+    indexOfRefraction?: number;
+    minimumThickness?: number;
+    maximumThickness?: number;
+}
+
+/** The reached `setPbrSubsurface` translucency slice. Texture presence is
+ *  enough for composition; the static values feed the pin's own UBO writer. */
+export interface ScenePbrSubsurfaceManifest {
     intensity: number;
-    indexOfRefraction: number;
+    color: readonly [number, number, number];
+    diffusionDistance: readonly [number, number, number];
+    hasThicknessTexture: boolean;
     minimumThickness: number;
     maximumThickness: number;
 }
@@ -237,6 +252,8 @@ export interface ScenePbrMaterialManifest {
     clearCoat?: ScenePbrClearCoatManifest;
     /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
     iridescence?: ScenePbrIridescenceManifest;
+    /** Stamped by `setPbrSubsurface`: `mat._subsurface = subsurface`. */
+    subsurface?: ScenePbrSubsurfaceManifest;
     /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
     anisotropy?: ScenePbrAnisotropyManifest;
     /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
@@ -267,6 +284,8 @@ export interface ScenePbrMaterialManifest {
     occlusionStrength?: number;
     /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
     metallicF0Factor?: number;
+    /** The pin's opt-in geometric-normal derivative roughness floor. */
+    enableSpecularAA?: boolean;
     doubleSided: boolean;
     transmission: number;
     ior: number;
@@ -553,6 +572,18 @@ export interface CompileResult {
     cpp: string;
     cmake: string;
     manifest: CompileManifest;
+    /**
+     * Asset sources needed only while generation materializes the tree.
+     *
+     * A `data:` URL is the asset's whole payload, so recording it as the
+     * manifest source duplicates the bytes from the scene module into
+     * `manifest.json`. The manifest carries a content-addressed opaque source
+     * instead, and this in-process map keeps the materializer's lookup out of
+     * the generated tree. This is the same boundary as `nodeParticles` below:
+     * generation consumes the full value, while the manifest retains only
+     * the identity a reader needs.
+     */
+    assetPayloads: Map<string, string>;
     /**
      * The scene's node-particle program, when it built one.
      *

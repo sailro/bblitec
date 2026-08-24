@@ -10,11 +10,15 @@ import type {
     ScenePbrIridescenceManifest,
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
+    ScenePbrSubsurfaceManifest,
 } from "../types.js";
 import type {
-    CompiledLayerOptions,
+    CompiledClearCoatOptions,
+    CompiledIridescenceOptions,
     CompiledMetallicReflectanceOptions,
     CompiledPbrMaterialOptions,
+    CompiledSheenOptions,
+    CompiledSubsurfaceOptions,
 } from "./material-options.js";
 
 export interface MaterialIntrinsicContext
@@ -47,6 +51,10 @@ export interface MaterialIntrinsicContext
         reflectance: ScenePbrMetallicReflectanceManifest,
         index: number | undefined,
     ): void;
+    recordScenePbrSubsurface(
+        subsurface: ScenePbrSubsurfaceManifest,
+        index: number | undefined,
+    ): void;
     expectSameEngine(
         left: Value,
         right: Value,
@@ -77,21 +85,17 @@ export interface MaterialIntrinsicContext
     ): string[];
     compileClearCoatOptions(
         expression: ts.Expression,
-    ): CompiledLayerOptions;
+    ): CompiledClearCoatOptions;
     compileIridescenceOptions(
         expression: ts.Expression,
-    ): CompiledLayerOptions;
+    ): CompiledIridescenceOptions;
     compileAnisotropyOptions(
         expression: ts.Expression,
     ): CompiledAnisotropyOptions;
-    compileSheenOptions(expression: ts.Expression): {
-        enabled: string;
-        color: string;
-        roughness: string;
-        intensity: string;
-        texture: ts.Expression | undefined;
-        albedoScaling: boolean;
-    };
+    compileSheenOptions(expression: ts.Expression): CompiledSheenOptions;
+    compileSubsurfaceOptions(
+        expression: ts.Expression,
+    ): CompiledSubsurfaceOptions;
     compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number };
@@ -217,6 +221,7 @@ export function compileMaterialIntrinsic(
                 reflectance,
                 unlit,
                 doubleSided,
+                enableSpecularAA,
                 skyboxMode,
                 transmission,
                 ior,
@@ -272,7 +277,7 @@ export function compileMaterialIntrinsic(
                 `${orm.cpp}, ${metallic}, ${roughness}, ` +
                 `${direct}, ${environment}, ${alpha}, ` +
                 `${reflectance}, ${unlit}, ${doubleSided}, ` +
-                `${skyboxMode}, ${transmission}, ${ior}, ` +
+                `${enableSpecularAA}, ${skyboxMode}, ${transmission}, ${ior}, ` +
                  `${thickness}, ${useThicknessAsDepth}, ` +
                  `${hasVolume}, ${attenuationColor}, ` +
                  `${attenuationDistance}, ${occlusionStrength}, ` +
@@ -709,6 +714,37 @@ export function compileMaterialIntrinsic(
             };
         }
 
+        case "setPbrSubsurface": {
+            context.expectArgumentCount(call, 2, 2);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const subsurface = context.compileSubsurfaceOptions(
+                call.arguments[1]!,
+            );
+            if (subsurface.thicknessTexture) {
+                context.expectSameEngine(
+                    material,
+                    subsurface.thicknessTexture,
+                    call,
+                );
+            }
+            context.recordScenePbrSubsurface(
+                subsurface.manifest,
+                material.scenePbrMaterialIndex,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_subsurface(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${subsurface.intensity}, ` +
+                    `${subsurface.color}, ${subsurface.diffusionDistance}, ` +
+                    `${subsurface.minimumThickness}, ` +
+                    `${subsurface.maximumThickness}, ` +
+                    `${subsurface.thicknessTexture?.cpp ?? "bbl::FileTexture{}"})`,
+            };
+        }
+
         case "setPbrClearCoat": {
             // src/material/pbr/set-clearcoat.ts assigns the props onto the
             // material and registers the clearcoat fragment extension. The
@@ -728,14 +764,7 @@ export function compileMaterialIntrinsic(
                 call.arguments[1]!,
             );
             context.recordScenePbrClearCoat(
-                {
-                    isEnabled: clearCoat[0] === "true",
-                    intensity: Number.parseFloat(clearCoat[1]!),
-                    roughness: Number.parseFloat(clearCoat[2]!),
-                    indexOfRefraction: Number.parseFloat(
-                        clearCoat[3]!,
-                    ),
-                },
+                clearCoat.manifest,
                 material.scenePbrMaterialIndex,
             );
             context.reachFeature("material:clearcoat", call);
@@ -748,7 +777,10 @@ export function compileMaterialIntrinsic(
                 cpp:
                     `bbl::set_pbr_clearcoat(` +
                     `${context.requireEngine(material, call)}, ` +
-                    `${material.cpp}, ${clearCoat.join(", ")})`,
+                    `${material.cpp}, ${clearCoat.enabled}, ` +
+                    `${clearCoat.intensity}, ${clearCoat.roughness}, ` +
+                    `${clearCoat.indexOfRefraction}, ` +
+                    `${clearCoat.bumpTextureScale})`,
             };
         }
 
@@ -771,19 +803,7 @@ export function compileMaterialIntrinsic(
                 call.arguments[1]!,
             );
             context.recordScenePbrIridescence(
-                {
-                    isEnabled: iridescence[0] === "true",
-                    intensity: Number.parseFloat(iridescence[1]!),
-                    indexOfRefraction: Number.parseFloat(
-                        iridescence[2]!,
-                    ),
-                    minimumThickness: Number.parseFloat(
-                        iridescence[3]!,
-                    ),
-                    maximumThickness: Number.parseFloat(
-                        iridescence[4]!,
-                    ),
-                },
+                iridescence.manifest,
                 material.scenePbrMaterialIndex,
             );
             context.reachFeature("material:iridescence", call);
@@ -792,7 +812,11 @@ export function compileMaterialIntrinsic(
                 cpp:
                     `bbl::set_pbr_iridescence(` +
                     `${context.requireEngine(material, call)}, ` +
-                    `${material.cpp}, ${iridescence.join(", ")})`,
+                    `${material.cpp}, ${iridescence.enabled}, ` +
+                    `${iridescence.intensity}, ` +
+                    `${iridescence.indexOfRefraction}, ` +
+                    `${iridescence.minimumThickness}, ` +
+                    `${iridescence.maximumThickness})`,
             };
         }
 
@@ -868,24 +892,8 @@ export function compileMaterialIntrinsic(
             const sheen = context.compileSheenOptions(
                 call.arguments[1]!,
             );
-            const sheenColor = sheen.color.match(
-                /([0-9.eE+-]+)f, ([0-9.eE+-]+)f, ([0-9.eE+-]+)f/,
-            );
             context.recordScenePbrSheen(
-                {
-                    isEnabled: sheen.enabled === "true",
-                    color: sheenColor
-                        ? [
-                              Number.parseFloat(sheenColor[1]!),
-                              Number.parseFloat(sheenColor[2]!),
-                              Number.parseFloat(sheenColor[3]!),
-                          ]
-                        : [1, 1, 1],
-                    roughness: Number.parseFloat(sheen.roughness),
-                    intensity: Number.parseFloat(sheen.intensity),
-                    hasTexture: sheen.texture !== undefined,
-                    albedoScaling: sheen.albedoScaling,
-                },
+                sheen.manifest,
                 material.scenePbrMaterialIndex,
             );
             const engine = context.requireEngine(material, call);

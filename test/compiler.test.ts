@@ -140,7 +140,7 @@ test("lowers a light vector set to its own kind's entry point", () => {
 
         async function main() {
             const engine = await createEngine({});
-            const spot = createSpotLight([0, 0, 0], [0, 1, 0], 1.5, 10);
+            const spot = createSpotLight([0, 0, 0], [0, 1, 0], 1.2, 10);
             spot.position.set(1, 2, 3);
             spot.direction.set(0, -1, 0);
         }
@@ -150,24 +150,83 @@ test("lowers a light vector set to its own kind's entry point", () => {
         /bbl::set_spot_light_position\([^;]*bbl::Vec3\{1\.0f, 2\.0f, 3\.0f\}\);/,
     );
     assert.match(result.cpp, /bbl::set_spot_light_direction\(/);
-    // A vector the kind carries upstream but no reached scene writes stays
-    // unlowered and refuses by name, the way the scalar table's unreached
-    // spot properties do.
-    assert.throws(
-        () =>
-            compileSource(`
-                import {
-                    createEngine,
-                    createPointLight,
-                } from "@babylonjs/lite";
+    assert.match(
+        result.cpp,
+        /bbl::create_spot_light\([^;]*, 1\.2, 10\.0f, 1\.0f\)/,
+    );
+    const point = compileSource(`
+        import {
+            createEngine,
+            createPointLight,
+        } from "@babylonjs/lite";
 
-                async function main() {
-                    const engine = await createEngine({});
-                    const point = createPointLight([0, 1, 0]);
-                    point.position.set(1, 2, 3);
-                }
-            `),
-        /A point light has no 'position' to set\./,
+        async function main() {
+            const engine = await createEngine({});
+            const point = createPointLight([0, 1, 0]);
+            point.position.x = 2;
+            point.position.z = 4;
+        }
+    `);
+    assert.match(
+        point.cpp,
+        /bbl::set_point_light_position\([^;]*bbl::Vec3\{2\.0f, [^,]*\.position\.y, [^}]*\.position\.z\}\);/,
+    );
+    assert.match(
+        point.cpp,
+        /bbl::set_point_light_position\([^;]*bbl::Vec3\{[^,]*\.position\.x, [^,]*\.position\.y, 4\.0f\}\);/,
+    );
+});
+
+test("keeps scene mesh bound overrides on the camera's object-local path", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createDefaultCamera,
+            createEngine,
+            createSceneContext,
+            createSphere,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const marker = createSphere(engine, { diameter: 0.005 });
+            marker.boundMin = [0, 0.0175, -0.2025];
+            marker.boundMax = [0, 0.0225, -0.1975];
+            addToScene(scene, marker);
+            createDefaultCamera(scene);
+        }
+    `);
+    assert.match(result.cpp, /\.bounds_min_override = bbl::Vec3\{/);
+    assert.match(result.cpp, /\.has_bounds_min_override = true/);
+    assert.match(result.cpp, /\.bounds_max_override = bbl::Vec3\{/);
+    assert.match(result.cpp, /\.has_bounds_max_override = true/);
+});
+
+test("keeps Scene 40 mesh bound overrides on the physics aggregate path", () => {
+    const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene40.ts";
+    const anchor =
+        "const sphere = createSphere(engine, { diameter: 2, segments: 32 });";
+    const source = readFileSync(resolve(sourcePath), "utf8").replace(
+        anchor,
+        `${anchor}\n    sphere.boundMin = [-2, -3, -4];\n    sphere.boundMax = [2, 3, 4];`,
+    );
+    assert.notEqual(source, readFileSync(resolve(sourcePath), "utf8"));
+
+    const result = compileSource(source, { fileName: sourcePath });
+    const minimumStore = result.cpp.indexOf(".bounds_min_override =");
+    const maximumStore = result.cpp.indexOf(".bounds_max_override =");
+    const aggregate = result.cpp.indexOf(
+        "bbl::upstream::create_physics_aggregate(",
+    );
+    assert.ok(minimumStore >= 0);
+    assert.ok(maximumStore > minimumStore);
+    assert.ok(aggregate > maximumStore);
+    assert.ok(result.manifest.features.includes("physics:aggregate"));
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/physics.cpp",
+        ),
     );
 });
 
@@ -1389,6 +1448,28 @@ test("compiles generated mesh data and the file-texture contract", () => {
     );
 });
 
+test("keeps data URL asset payloads out of the generated manifest", () => {
+    const dataUrl = "data:image/png;base64,iVBORw0KGgo=";
+    const result = compileSource(`
+        import { createEngine, loadTexture2D } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            await loadTexture2D(engine, "${dataUrl}", { mipMaps: false });
+        }
+    `);
+    const asset = result.manifest.assets[0];
+
+    assert.ok(asset);
+    assert.match(
+        asset.source,
+        /^generated:data-url:[0-9a-f]{64}$/,
+    );
+    assert.equal(result.assetPayloads.get(asset.source), dataUrl);
+    assert.doesNotMatch(JSON.stringify(result.manifest), /base64/);
+    assert.match(asset.output, /^[0-9a-f]{8}-inline\.png$/);
+});
+
 test("requires srgb base-color file textures", () => {
     assert.throws(
         () =>
@@ -1513,6 +1594,183 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
             /occlusionStrength must be a finite static number/,
         );
     }
+});
+
+test("carries scene-code PBR specular AA into composition and runtime", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                enableSpecularAA: true,
+            });
+        }
+    `);
+
+    assert.equal(
+        result.manifest.scenePbrMaterials[0]?.enableSpecularAA,
+        true,
+    );
+    assert.match(
+        result.cpp,
+        /PbrMaterialOptions\{[^\n]+, false, false, true, false, 0\.0f/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createArcRotateCamera,
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });
+                    createPbrMaterial({
+                        baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                        ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                        enableSpecularAA: camera.alpha > 0,
+                    });
+                }
+            `),
+        /Expected a boolean literal/,
+    );
+});
+
+test("lowers Scene 26's static translucency and thickness map", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrSubsurface,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const thickness = await loadTexture2D(
+                engine,
+                "data:image/png;base64,iVBORw0KGgo=",
+                { invertY: false },
+            );
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.16, 0),
+                enableSpecularAA: true,
+            });
+            setPbrSubsurface(material, {
+                translucency: {
+                    intensity: 1,
+                    color: [1, 0.5, 0.25],
+                    diffusionDistance: [1, 2, 3],
+                },
+                thickness: { texture: thickness, min: 0, max: 2.2 },
+            });
+        }
+    `);
+
+    assert.deepEqual(result.manifest.scenePbrMaterials[0]?.subsurface, {
+        intensity: 1,
+        color: [1, 0.5, 0.25],
+        diffusionDistance: [1, 2, 3],
+        hasThicknessTexture: true,
+        minimumThickness: 0,
+        maximumThickness: 2.2,
+    });
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_subsurface\([^;]*1\.0f, bbl::Color3\{1\.0f, 0\.5f, 0\.25f\}, bbl::Color3\{1\.0f, 2\.0f, 3\.0f\}, 0\.0f, 2\.2f, v_thickness\);/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                    setPbrSubsurface,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const material = createPbrMaterial({
+                        baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                        ormTexture: createSolidTexture2D(engine, 1, 1, 0),
+                    });
+                    setPbrSubsurface(material, {
+                        translucency: { diffusionDistance: [1, 1 / 0, 1] },
+                        thickness: {
+                            texture: createSolidTexture2D(engine, 1, 1, 1),
+                        },
+                    });
+                }
+            `),
+        /diffusionDistance must be a finite static RGB tuple/,
+    );
+});
+
+test("derives PBR layer manifests from source values, not emitted C++", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            setPbrClearCoat,
+            setPbrIridescence,
+            setPbrSheen,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+            const computed = Math.sqrt(0.25);
+            setPbrClearCoat(material, {
+                isEnabled: true,
+                intensity: computed,
+                roughness: computed,
+                indexOfRefraction: computed,
+            });
+            setPbrIridescence(material, {
+                isEnabled: true,
+                intensity: computed,
+                indexOfRefraction: computed,
+                minimumThickness: computed,
+                maximumThickness: computed,
+            });
+            setPbrSheen(material, {
+                isEnabled: true,
+                color: [computed, computed, computed],
+                roughness: computed,
+                intensity: computed,
+            });
+        }
+    `);
+
+    const material = result.manifest.scenePbrMaterials[0];
+    assert.deepEqual(material?.clearCoat, { isEnabled: true });
+    assert.deepEqual(material?.iridescence, { isEnabled: true });
+    assert.deepEqual(material?.sheen, {
+        isEnabled: true,
+        hasTexture: false,
+        albedoScaling: false,
+    });
+    assert.match(result.cpp, /std::sqrt\(0\.25\)/);
+    assert.doesNotMatch(JSON.stringify(result.manifest), /null/);
 });
 
 test("preserves scene-code internal metallic F0 creation state", () => {
@@ -3321,7 +3579,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     assert.match(result.cpp, /\.environment\.contrast = 1\.66f/);
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.0f, 0\.7f, 0\.5f, 0\.2f, false, false, false, 0\.0f, 1\.5f/,
+        /PbrMaterialOptions\{[^}]*0\.0f, 0\.7f, 0\.5f, 0\.2f, false, false, false, false, 0\.0f, 1\.5f/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -3411,7 +3669,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     );
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false, false, false, 0\.0f, 1\.5f/,
+        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false, false, false, false, 0\.0f, 1\.5f/,
     );
     assert.match(
         result.cpp,

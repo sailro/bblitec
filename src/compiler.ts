@@ -51,9 +51,13 @@ import {
     compileClearCoatOptions,
     compileAnisotropyOptions,
     type CompiledAnisotropyOptions,
+    type CompiledClearCoatOptions,
     compileIridescenceOptions,
+    type CompiledIridescenceOptions,
     compileSheenOptions,
-    type CompiledLayerOptions,
+    type CompiledSheenOptions,
+    compileSubsurfaceOptions,
+    type CompiledSubsurfaceOptions,
     type CompiledPbrMaterialOptions,
     type CompiledMetallicReflectanceOptions,
     type MaterialOptionContext,
@@ -161,6 +165,7 @@ import type {
     ScenePbrMaterialManifest,
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
+    ScenePbrSubsurfaceManifest,
     SpriteCustomShaderManifest,
     EffectManifest,
     Value,
@@ -410,6 +415,7 @@ class Compiler
     private readonly features = new Set<Feature>(["core"]);
     private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
+    public readonly assetPayloads = new Map<string, string>();
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
     public readonly reachedNodeParticles: CompiledNodeParticles = {
@@ -545,6 +551,7 @@ class Compiler
         return {
             cpp: this.renderCpp(features),
             cmake: this.renderCmake(features, runtimeSources, generatedSources),
+            assetPayloads: this.assetPayloads,
             ...(this.reachedNodeParticles.sets.length > 0
                 ? { nodeParticles: this.reachedNodeParticles }
                 : {}),
@@ -1400,13 +1407,13 @@ class Compiler
 
     public compileClearCoatOptions(
         expression: ts.Expression,
-    ): CompiledLayerOptions {
+    ): CompiledClearCoatOptions {
         return compileClearCoatOptions(this, expression);
     }
 
     public compileIridescenceOptions(
         expression: ts.Expression,
-    ): CompiledLayerOptions {
+    ): CompiledIridescenceOptions {
         return compileIridescenceOptions(this, expression);
     }
 
@@ -1418,15 +1425,14 @@ class Compiler
 
     public compileSheenOptions(
         expression: ts.Expression,
-    ): {
-        enabled: string;
-        color: string;
-        roughness: string;
-        intensity: string;
-        texture: ts.Expression | undefined;
-        albedoScaling: boolean;
-    } {
+    ): CompiledSheenOptions {
         return compileSheenOptions(this, expression);
+    }
+
+    public compileSubsurfaceOptions(
+        expression: ts.Expression,
+    ): CompiledSubsurfaceOptions {
+        return compileSubsurfaceOptions(this, expression);
     }
 
     public compileShaderMaterialOptions(
@@ -3666,6 +3672,16 @@ class Compiler
             "setPbrIridescence",
             index,
         ).iridescence = iridescence;
+    }
+
+    public recordScenePbrSubsurface(
+        subsurface: ScenePbrSubsurfaceManifest,
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter(
+            "setPbrSubsurface",
+            index,
+        ).subsurface = subsurface;
     }
 
     public recordScenePbrAnisotropy(

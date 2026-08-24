@@ -11,12 +11,17 @@ import ts from "typescript";
 import type {
     CompileAsset,
     ScenePbrAnisotropyManifest,
+    ScenePbrClearCoatManifest,
+    ScenePbrIridescenceManifest,
     ScenePbrMetallicReflectanceManifest,
     ScenePbrMaterialManifest,
+    ScenePbrSheenManifest,
+    ScenePbrSubsurfaceManifest,
     Value,
     ValueKind,
 } from "../types.js";
 import {
+    compileOptionalStaticBoolean,
     staticNumberPair,
     staticNumberValue,
     validateObjectProperties,
@@ -57,7 +62,7 @@ export interface MaterialOptionContext
 
 /**
  * `createPbrMaterial`'s resolved options: the two texture values, the
- * sixteen native scalar/flag literals in constructor order, the resolved
+ * nineteen native scalar/flag literals in constructor order, the resolved
  * scene-code occlusion strength and internal metallic F0 factor, and the
  * appended `scenePbrMaterials` index that is this material's compile-time
  * identity.
@@ -65,6 +70,7 @@ export interface MaterialOptionContext
 export type CompiledPbrMaterialOptions = [
     Value,
     Value,
+    string,
     string,
     string,
     string,
@@ -105,14 +111,220 @@ export interface CompiledMetallicReflectanceOptions {
     manifest: ScenePbrMetallicReflectanceManifest;
 }
 
-/** The reached slice of the extension option objects the setters take. */
-export type CompiledLayerOptions = [
-    string,
-    string,
-    string,
-    string,
-    string,
-];
+/** A reached layer setter's emitted arguments and its AST-derived composition
+ *  input. Keeping both here prevents the manifest from parsing C++ text. */
+export interface CompiledClearCoatOptions {
+    enabled: string;
+    intensity: string;
+    roughness: string;
+    indexOfRefraction: string;
+    bumpTextureScale: string;
+    manifest: ScenePbrClearCoatManifest;
+}
+
+export interface CompiledIridescenceOptions {
+    enabled: string;
+    intensity: string;
+    indexOfRefraction: string;
+    minimumThickness: string;
+    maximumThickness: string;
+    manifest: ScenePbrIridescenceManifest;
+}
+
+export interface CompiledSheenOptions {
+    enabled: string;
+    color: string;
+    roughness: string;
+    intensity: string;
+    texture: ts.Expression | undefined;
+    albedoScaling: boolean;
+    manifest: ScenePbrSheenManifest;
+}
+
+export interface CompiledSubsurfaceOptions {
+    intensity: string;
+    color: string;
+    diffusionDistance: string;
+    thicknessTexture?: Value;
+    minimumThickness: string;
+    maximumThickness: string;
+    manifest: ScenePbrSubsurfaceManifest;
+}
+
+/** A static RGB tuple in either source shape `compileColor3` accepts. */
+function staticColor3Value(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): readonly [number, number, number] | undefined {
+    const node = context.resolveStaticExpression(expression);
+    let channelValues: readonly (ts.Expression | undefined)[] | undefined;
+    if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
+        channelValues = node.elements;
+    } else if (ts.isObjectLiteralExpression(node)) {
+        channelValues = ["r", "g", "b"].map((name) =>
+            context.objectProperty(node, name)
+        );
+    }
+    if (!channelValues || channelValues.some((value) => value === undefined)) {
+        return undefined;
+    }
+    const [r, g, b] = channelValues.map((value) =>
+        staticNumberValue(context, value!)
+    );
+    return r === undefined || g === undefined || b === undefined
+        ? undefined
+        : [r, g, b];
+}
+
+function requiredStaticFiniteNumber(
+    context: MaterialOptionContext,
+    expression: ts.Expression | undefined,
+    fallback: number,
+    label: string,
+): { cpp: string; value: number } {
+    if (!expression) return { cpp: `${fallback}.0f`, value: fallback };
+    const value = staticNumberValue(context, expression);
+    if (value === undefined || !Number.isFinite(value)) {
+        context.fail(
+            expression,
+            `${label} must be a finite static number; the pinned material block is composed at generation.`,
+        );
+    }
+    return { cpp: context.compileNumber(expression), value };
+}
+
+/**
+ * Scene 26's public subsurface setter: thin-surface translucency plus one
+ * thickness texture. The pin's color/intensity texture arms and their live UV
+ * transforms remain explicit refusals until a reached scene measures them.
+ */
+export function compileSubsurfaceOptions(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): CompiledSubsurfaceOptions {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["translucency", "thickness"],
+        "Reached subsurface options support translucency and a thickness texture with static min/max.",
+    );
+    const translucencyExpression = context.objectProperty(
+        object,
+        "translucency",
+    );
+    if (!translucencyExpression) {
+        context.fail(
+            object,
+            "Reached setPbrSubsurface requires translucency; refraction uses setPbrTransmission.",
+        );
+    }
+    const translucency = context.expectObjectLiteral(translucencyExpression);
+    validateObjectProperties(
+        context,
+        translucency,
+        ["intensity", "color", "diffusionDistance"],
+        "Reached translucency supports static intensity, color, and diffusionDistance values.",
+    );
+    const intensity = requiredStaticFiniteNumber(
+        context,
+        context.objectProperty(translucency, "intensity"),
+        1,
+        "Translucency intensity",
+    );
+    const colorExpression = context.objectProperty(translucency, "color");
+    const color = colorExpression
+        ? staticColor3Value(context, colorExpression)
+        : ([1, 1, 1] as const);
+    if (!color || color.some((channel) => !Number.isFinite(channel))) {
+        context.fail(
+            colorExpression!,
+            "Translucency color must be a finite static RGB tuple.",
+        );
+    }
+    const diffusionExpression = context.objectProperty(
+        translucency,
+        "diffusionDistance",
+    );
+    const diffusionDistance = diffusionExpression
+        ? staticColor3Value(context, diffusionExpression)
+        : ([1, 1, 1] as const);
+    if (
+        !diffusionDistance ||
+        diffusionDistance.some((channel) => !Number.isFinite(channel))
+    ) {
+        context.fail(
+            diffusionExpression!,
+            "Translucency diffusionDistance must be a finite static RGB tuple.",
+        );
+    }
+
+    const thicknessExpression = context.objectProperty(object, "thickness");
+    let thicknessTexture: Value | undefined;
+    let minimum = { cpp: "0.0f", value: 0 };
+    let maximum = { cpp: "1.0f", value: 1 };
+    if (thicknessExpression) {
+        const thickness = context.expectObjectLiteral(thicknessExpression);
+        validateObjectProperties(
+            context,
+            thickness,
+            ["texture", "min", "max"],
+            "Reached thickness options support one file texture and static min/max values.",
+        );
+        const textureExpression = context.objectProperty(thickness, "texture");
+        if (textureExpression) {
+            thicknessTexture = context.compileValue(textureExpression);
+            if (
+                thicknessTexture.kind !== "texture" ||
+                !thicknessTexture.textureFile
+            ) {
+                context.fail(
+                    textureExpression,
+                    "Reached subsurface thickness maps must come from loadTexture2D.",
+                );
+            }
+            if (thicknessTexture.textureFile.srgb) {
+                context.fail(
+                    textureExpression,
+                    "Subsurface thickness maps must be linear textures.",
+                );
+            }
+        }
+        minimum = requiredStaticFiniteNumber(
+            context,
+            context.objectProperty(thickness, "min"),
+            0,
+            "Minimum thickness",
+        );
+        maximum = requiredStaticFiniteNumber(
+            context,
+            context.objectProperty(thickness, "max"),
+            1,
+            "Maximum thickness",
+        );
+    }
+
+    return {
+        intensity: intensity.cpp,
+        color: colorExpression
+            ? context.compileColor3(colorExpression)
+            : "bbl::Color3{1.0f, 1.0f, 1.0f}",
+        diffusionDistance: diffusionExpression
+            ? context.compileColor3(diffusionExpression)
+            : "bbl::Color3{1.0f, 1.0f, 1.0f}",
+        ...(thicknessTexture ? { thicknessTexture } : {}),
+        minimumThickness: minimum.cpp,
+        maximumThickness: maximum.cpp,
+        manifest: {
+            intensity: intensity.value,
+            color,
+            diffusionDistance,
+            hasThicknessTexture: thicknessTexture !== undefined,
+            minimumThickness: minimum.value,
+            maximumThickness: maximum.value,
+        },
+    };
+}
 
 export function compilePbrMaterialOptions(
     context: MaterialOptionContext,
@@ -133,11 +345,12 @@ export function compilePbrMaterialOptions(
             "reflectance",
             "occlusionStrength",
             "_metallicF0Factor",
+            "enableSpecularAA",
             "doubleSided",
             "transmissive",
             "subsurface",
         ],
-        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, the internal metallic F0 factor, lighting intensities, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, skybox mode, and transmission subsurface fields.",
     );
     const baseColorExpression = context.objectProperty(object, "baseColorTexture");
     const ormExpression = context.objectProperty(object, "ormTexture");
@@ -164,6 +377,10 @@ export function compilePbrMaterialOptions(
     const metallicF0Factor = context.objectProperty(
         object,
         "_metallicF0Factor",
+    );
+    const enableSpecularAA = context.objectProperty(
+        object,
+        "enableSpecularAA",
     );
     const doubleSided = context.objectProperty(object, "doubleSided");
     const transmissive = context.objectProperty(object, "transmissive");
@@ -275,6 +492,13 @@ export function compilePbrMaterialOptions(
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
         : "false";
+    const staticEnableSpecularAA = compileOptionalStaticBoolean(
+        context,
+        enableSpecularAA,
+        false,
+        "PBR enableSpecularAA",
+    );
+    const enableSpecularAACpp = staticEnableSpecularAA ? "true" : "false";
     // The resolved option values, in creation order, for the pinned
     // composer: the pin's `createPbrMaterial` is `{...props}`, so these
     // ARE the material record its feature derivation reads. Every value
@@ -299,6 +523,7 @@ export function compilePbrMaterialOptions(
         ...(staticMetallicF0Factor === 1
             ? {}
             : { metallicF0Factor: staticMetallicF0Factor }),
+        ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
         doubleSided: doubleSidedCpp === "true",
         transmission: Number.parseFloat(transmission),
         ior: Number.parseFloat(ior),
@@ -315,6 +540,7 @@ export function compilePbrMaterialOptions(
         reflectanceCpp,
         "false",
         doubleSidedCpp,
+        enableSpecularAACpp,
         "false",
         transmission,
         ior,
@@ -548,7 +774,7 @@ export function compileGridMaterialOptions(
 export function compileClearCoatOptions(
     context: MaterialOptionContext,
     expression: ts.Expression,
-): CompiledLayerOptions {
+): CompiledClearCoatOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -573,17 +799,39 @@ export function compileClearCoatOptions(
         object,
         "bumpTextureScale",
     );
-    return [
-        isEnabled ? context.compileBoolean(isEnabled) : "false",
-        intensity ? context.compileNumber(intensity) : "1.0f",
-        roughness ? context.compileNumber(roughness) : "0.0f",
-        indexOfRefraction
+    const enabled = isEnabled ? context.compileBoolean(isEnabled) : "false";
+    const staticIntensity = intensity
+        ? staticNumberValue(context, intensity)
+        : 1;
+    const staticRoughness = roughness
+        ? staticNumberValue(context, roughness)
+        : 0;
+    const staticIndexOfRefraction = indexOfRefraction
+        ? staticNumberValue(context, indexOfRefraction)
+        : 1.5;
+    return {
+        enabled,
+        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
+        roughness: roughness ? context.compileNumber(roughness) : "0.0f",
+        indexOfRefraction: indexOfRefraction
             ? context.compileNumber(indexOfRefraction)
             : "1.5f",
-        bumpTextureScale
+        bumpTextureScale: bumpTextureScale
             ? context.compileNumber(bumpTextureScale)
             : "1.0f",
-    ];
+        manifest: {
+            isEnabled: enabled === "true",
+            ...(staticIntensity !== undefined
+                ? { intensity: staticIntensity }
+                : {}),
+            ...(staticRoughness !== undefined
+                ? { roughness: staticRoughness }
+                : {}),
+            ...(staticIndexOfRefraction !== undefined
+                ? { indexOfRefraction: staticIndexOfRefraction }
+                : {}),
+        },
+    };
 }
 
 /**
@@ -599,7 +847,7 @@ export function compileClearCoatOptions(
 export function compileIridescenceOptions(
     context: MaterialOptionContext,
     expression: ts.Expression,
-): CompiledLayerOptions {
+): CompiledIridescenceOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -627,19 +875,47 @@ export function compileIridescenceOptions(
         object,
         "maximumThickness",
     );
-    return [
-        isEnabled ? context.compileBoolean(isEnabled) : "false",
-        intensity ? context.compileNumber(intensity) : "1.0f",
-        indexOfRefraction
+    const enabled = isEnabled ? context.compileBoolean(isEnabled) : "false";
+    const staticIntensity = intensity
+        ? staticNumberValue(context, intensity)
+        : 1;
+    const staticIndexOfRefraction = indexOfRefraction
+        ? staticNumberValue(context, indexOfRefraction)
+        : 1.3;
+    const staticMinimumThickness = minimumThickness
+        ? staticNumberValue(context, minimumThickness)
+        : 100;
+    const staticMaximumThickness = maximumThickness
+        ? staticNumberValue(context, maximumThickness)
+        : 400;
+    return {
+        enabled,
+        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
+        indexOfRefraction: indexOfRefraction
             ? context.compileNumber(indexOfRefraction)
             : "1.3f",
-        minimumThickness
+        minimumThickness: minimumThickness
             ? context.compileNumber(minimumThickness)
             : "100.0f",
-        maximumThickness
+        maximumThickness: maximumThickness
             ? context.compileNumber(maximumThickness)
             : "400.0f",
-    ];
+        manifest: {
+            isEnabled: enabled === "true",
+            ...(staticIntensity !== undefined
+                ? { intensity: staticIntensity }
+                : {}),
+            ...(staticIndexOfRefraction !== undefined
+                ? { indexOfRefraction: staticIndexOfRefraction }
+                : {}),
+            ...(staticMinimumThickness !== undefined
+                ? { minimumThickness: staticMinimumThickness }
+                : {}),
+            ...(staticMaximumThickness !== undefined
+                ? { maximumThickness: staticMaximumThickness }
+                : {}),
+        },
+    };
 }
 
 /**
@@ -709,14 +985,7 @@ export function compileAnisotropyOptions(
 export function compileSheenOptions(
     context: MaterialOptionContext,
     expression: ts.Expression,
-): {
-    enabled: string;
-    color: string;
-    roughness: string;
-    intensity: string;
-    texture: ts.Expression | undefined;
-    albedoScaling: boolean;
-} {
+): CompiledSheenOptions {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -751,10 +1020,22 @@ export function compileSheenOptions(
             "Sheen albedoScaling must be a static boolean; it selects the composed fragment.",
         );
     }
+    const enabled = isEnabled
+        ? context.compileBoolean(isEnabled)
+        : "false";
+    const staticColor = color
+        ? staticColor3Value(context, color)
+        : ([1, 1, 1] as const);
+    const staticRoughness = roughness
+        ? staticNumberValue(context, roughness)
+        : 0;
+    const staticIntensity = intensity
+        ? staticNumberValue(context, intensity)
+        : 1;
+    const texture = context.objectProperty(object, "texture");
+    const albedoScalingEnabled = albedoScalingValue === "true";
     return {
-        enabled: isEnabled
-            ? context.compileBoolean(isEnabled)
-            : "false",
+        enabled,
         color: color
             ? context.compileColor3(color)
             : "bbl::Color3{1.0f, 1.0f, 1.0f}",
@@ -764,7 +1045,19 @@ export function compileSheenOptions(
         intensity: intensity
             ? context.compileNumber(intensity)
             : "1.0f",
-        texture: context.objectProperty(object, "texture"),
-        albedoScaling: albedoScalingValue === "true",
+        texture,
+        albedoScaling: albedoScalingEnabled,
+        manifest: {
+            isEnabled: enabled === "true",
+            ...(staticColor !== undefined ? { color: staticColor } : {}),
+            ...(staticRoughness !== undefined
+                ? { roughness: staticRoughness }
+                : {}),
+            ...(staticIntensity !== undefined
+                ? { intensity: staticIntensity }
+                : {}),
+            hasTexture: texture !== undefined,
+            albedoScaling: albedoScalingEnabled,
+        },
     };
 }

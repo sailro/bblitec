@@ -314,9 +314,9 @@ export function directPropertyAssignment(
  * properties.
  */
 const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
-    // No reached scene writes a hemispheric direction or a point position.
+    // No reached scene writes a hemispheric direction.
     hemispheric: [],
-    point: [],
+    point: ["position"],
     directional: ["position"],
     spot: ["position", "direction"],
 };
@@ -1006,6 +1006,28 @@ export function emitPropertyAssignment(
 
         if (
             target.kind === "mesh" &&
+            (property === "boundMin" || property === "boundMax")
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                `mesh ${property}`,
+            );
+            const engine = context.requireEngine(target, expression);
+            const nativeProperty =
+                property === "boundMin" ? "bounds_min" : "bounds_max";
+            const side = property === "boundMin" ? "min" : "max";
+            context.emit(
+                `${engine}.meshes[${target.cpp}.value].${nativeProperty}_override = ${context.compileVec3(expression.right)};`,
+            );
+            context.emit(
+                `${engine}.meshes[${target.cpp}.value].has_bounds_${side}_override = true;`,
+            );
+            return;
+        }
+
+        if (
+            target.kind === "mesh" &&
             property === "morphTargets"
         ) {
             requireSimpleAssignment(
@@ -1394,6 +1416,39 @@ export function emitPropertyAssignment(
                     `${context.requireEngine(mesh, expression)}, ` +
                     `${mesh.cpp}, ${axis}u, ` +
                     `${context.compileNumber(expression.right)});`,
+            );
+            return;
+        }
+        if (mesh.kind === "light") {
+            const vector = left.expression.name.text;
+            const setter = lightVectorSetter(mesh, vector);
+            if (!setter) {
+                context.fail(
+                    left.expression,
+                    `A ${mesh.lightKind ?? "generic"} light has no '${vector}' to set.`,
+                );
+            }
+            requireSimpleAssignment(
+                context,
+                expression,
+                `light ${vector} component`,
+            );
+            const engine = context.requireEngine(mesh, expression);
+            const component = ["x", "y", "z"][axis]!;
+            // A component store on the pin's ObservableVec3 invalidates the
+            // light-local matrix just like `.set(...)`. Preserve the other
+            // two live lanes, then take the same generated setter route so
+            // the field write and matrix refresh cannot drift apart.
+            context.emit(
+                `bbl::${setter}(${engine}, ${mesh.cpp}, bbl::Vec3{` +
+                    ["x", "y", "z"]
+                        .map((lane) =>
+                            lane === component
+                                ? context.compileNumber(expression.right)
+                                : `${engine}.lights[${mesh.cpp}.value].${vector}.${lane}`,
+                        )
+                        .join(", ") +
+                    `});`,
             );
             return;
         }

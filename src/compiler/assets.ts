@@ -7,6 +7,7 @@
 // URL. The intrinsic lowerers in asset.ts and sprite.ts call these
 // through their contexts.
 import ts from "typescript";
+import { createHash } from "node:crypto";
 import { dirname, relative, resolve, sep } from "node:path";
 import {
     findRepositoryRoot,
@@ -30,6 +31,7 @@ import type {
 
 export interface AssetRegistryContext {
     readonly assets: Map<string, CompileAsset>;
+    readonly assetPayloads: Map<string, string>;
     readonly symbols: CompilerSymbols;
     readonly options: ResolvedCompileOptions;
     unwrap(expression: ts.Expression): ts.Expression;
@@ -57,7 +59,12 @@ export function registerAsset(
     if (existing) {
         return existing;
     }
-    const asset = assetRecord(source, kind, faceSize);
+    const asset = assetRecord(
+        source,
+        kind,
+        context.assetPayloads,
+        faceSize,
+    );
     context.assets.set(key, asset);
     return asset;
 }
@@ -74,15 +81,18 @@ export function registerAsset(
 export function assetRecord(
     source: string,
     kind: CompileAsset["kind"],
+    assetPayloads: Map<string, string>,
     faceSize?: number,
 ): CompileAsset {
     source = resolveBundledAsset(source);
+    const materializationSource = source;
     const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
     // A data URL's text IS the payload, so it names nothing; the media type
     // does the naming instead, which keeps the packaged file's extension --
     // and with it the reached image codec -- derivable as it is for every
     // other asset.
-    const sourceName = isDataUrl(source)
+    const inline = isDataUrl(source);
+    const sourceName = inline
         ? dataUrlAssetName(source)
         : sourcePath.split(/[\\/]/).pop() || `${kind}.bin`;
     const packagedName =
@@ -115,6 +125,23 @@ export function assetRecord(
         kind === "babylon"
             ? `${hash(source)}-${basenameWithoutExtension(safeName)}/${safeName}`
             : `${hash(source)}-${safeName}`;
+    if (inline) {
+        source =
+            "generated:data-url:" +
+            createHash("sha256")
+                .update(materializationSource)
+                .digest("hex");
+        const existing = assetPayloads.get(source);
+        if (
+            existing !== undefined &&
+            existing !== materializationSource
+        ) {
+            throw new Error(
+                `Data URL asset identity collision for '${source}'.`,
+            );
+        }
+        assetPayloads.set(source, materializationSource);
+    }
     return {
         source,
         output,

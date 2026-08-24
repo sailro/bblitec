@@ -92,47 +92,6 @@ act on it — not what was tried.
   it. Diff the primary directional block against the pinned
   `singlelight-directional-wgsl.ts` term by term.
 
-- [ ] Lower the procedural mesh builders through `PinnedNumericLowerer` instead
-  of hand-typing their precision. `factory-lowerer.ts` emits
-  `build_sphere_geometry`, `build_ground_geometry` and `build_torus_geometry`
-  as template strings whose `double` chain and per-store `static_cast<float>`
-  are written by hand and checked only by regex snapshots in
-  `test/lowerer-anchors.test.ts` and `test/upstream.test.ts`.
-  `src/lowering/pinned-numeric-lowerer.ts` already states the same two rules
-  structurally -- a JS number is an f64, a `Float32Array` store rounds to f32
-  -- and derives them from the pinned AST; `splat-lowerer.ts` and
-  `standard-uv-transform-lowerer.ts` already share it. `createSphereData` and
-  `createFlatGroundData` are its shape: `new F32(...)` buffers, a double vertex
-  chain, `Math.sin`/`Math.cos`, indexed stores. Until then nothing enforces the
-  contract `docs/fidelity.md` states -- the existing gates assert expression
-  shape, never store width, which is why the float chain survived until scene
-  23 measured it. If the whole lowering is too large in one pass, the
-  intermediate is a gate that reads the pinned builder's `new F32(...)`
-  declarations and asserts every emitted `static_cast<float>` corresponds to
-  one of its stores and no other rounding appears.
-
-- [ ] Give the three older PBR extension manifests their numbers rather than
-  parsing them back out of emitted C++. `setPbrClearCoat`, `setPbrSheen` and
-  `setPbrIridescence` still build their composition input with
-  `Number.parseFloat` over the text they just emitted (twelve sites in
-  `src/compiler/intrinsics/material.ts`), which reads `NaN` for a value the
-  scene computes. `setPbrAnisotropy` no longer does: it reads the pinned AST
-  through `staticNumberValue` / `staticNumberPair`
-  (`src/compiler/option-helpers.ts`) and omits what the scene computes, so the
-  pin's own default applies. Do the same for the other three. It is inert
-  today -- no corpus scene passes a computed value to them, and no pinned arm
-  selects a variant on those numbers -- but it is one convention where there
-  should be one. The blocker is that `CompiledLayerOptions` is a fixed tuple
-  of emitted strings with no room for the value beside it.
-
-- [ ] Carry a spot light's cone angle at the pin's precision. The pinned factory
-  computes `Math.cos(angle * 0.5)` in doubles into a float UBO; the compiler
-  passes scalars as `static_cast<float>(<double expression>)`, so the cosine is
-  computed from an already-rounded angle. The two orders disagree by one ULP for
-  35% of plausible cone angles at 1e-4 spacing, and the cone test is a hard `>=`
-  threshold, so one ULP flips boundary pixels. Scenes 18, 22, and 203 pass 1.2,
-  1.5, and 0.8; measure one before deciding whether the intrinsic boundary needs
-  a double-valued scalar path.
 - [ ] Extend scene-code spot lights past the reached colour pair: the pinned
   light also exposes `angle`, `exponent`, and `range` as settable properties,
   whose setters fail explicitly. One composition stays out: a spot landing in
@@ -360,10 +319,6 @@ that does to the deferred lane by default.
   `applyGsFragments` mangles field names for). `loadSOG` (122) needs a ZIP and
   a WebP decoder; `loadSPZ` (123) needs gzip. 127/128 add
   `createLinearDepthMaterial`, 129 adds `.name`.
-- [ ] The native render capture records no splat draw, so `scene -- diff` on a
-  splat scene reports "0 draws" and its shader/uniform comparison is empty
-  even though the render is correct. The draw list the capture walks is the
-  render plan's; a splat is a scene renderable outside it.
 - [ ] `renderer:pbr` is the feature that names the SCENE RENDER LOOP, not the
   PBR material family: `featureSources` maps it to `src/pal_sdl_gpu.cpp`, and
   `addBillboardSystem` and `loadSplat` both reach it for scenes with no PBR
@@ -383,10 +338,6 @@ that does to the deferred lane by default.
   built in the entry file, 272 `cloneTransformNode` and
   `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scene 26: support the reached scene-code PBR `enableSpecularAA` option.
-  Its static asset-root concatenations now fold, image-processing `toneMapping`
-  shipped with scene 87, and `AcesToneMapping` is one of the three records
-  `src/pinned-tone-mapping.ts` already reads.
 - [ ] Scenes 38, 43: support `createCylinder` and `createTube`.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
@@ -461,16 +412,6 @@ that does to the deferred lane by default.
   uniform-only frame-graph path — is unreached: it is `createEffectWrapper`
   with one uniform binding at zero and no texture machinery, so it would
   compose onto the same table rather than needing a second one.
-
-- [ ] Keep a `data:` asset's payload out of the generated manifest. An asset's
-  `source` is its URL, and for a data URL the URL *is* the base64 payload, so
-  it rides `registerAsset`'s key, `hash(source)` and `manifest.json` verbatim
-  — scene 81's manifest is 6.3 KB, nearly all of it the inline atlas, and the
-  generated-tree byte diff the neutrality proof compares carries it. The
-  repository already has the shape: `"generated:pinned-ibl-brdf-lut"` and the
-  executed-module markers are opaque source strings only `materializeAsset`
-  resolves. Registering a data URL the same way keeps the bytes in one place.
-  Nothing is wrong today; it stops scaling at the first large inline texture.
 
 - [ ] Three per-frame costs the scene-less drivers share with their siblings,
   filed together because fixing one family alone would make the tree less
@@ -787,18 +728,6 @@ earlier compiler error.
     every body control past creation (impulse, velocity, motion-type
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
-  - **Lower the three bounding helpers from the pinned AST.**
-    `_boundingCenter`, `_boundingExtents` and `_boundingRadius` are
-    hand-typed as C++ in `physics-lowerer.ts`, the one place the physics
-    port restates pinned arithmetic rather than reading it, and it restates
-    five constants with it. `PinnedNumericLowerer` is the mechanism and
-    `PinnedBinding.optional` already models the `mesh.boundMin &&
-    mesh.boundMax` read; the blocker is the return shape, since the
-    translator handles no `ObjectLiteralExpression` and two of the three
-    return `{x, y, z}`. They need the per-component `returnObject` +
-    `propertyInitializer` route `light-lowerer.ts#lowerMatrix` uses.
-    `_boundingRadius` returns a scalar and is a direct fit today.
-
 - [ ] Scenes 170-175: add Recast navigation behind an explicit dependency
   boundary. First blockers: `createNavigationPluginAsync` (170, 172, 173) and
   `??` over a non-static-record operand (171, 174, 175).

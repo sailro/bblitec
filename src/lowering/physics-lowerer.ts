@@ -39,6 +39,10 @@
  */
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 export const havokModule = "src/physics/havok.ts";
 
@@ -167,6 +171,93 @@ export class PhysicsLowerer {
             );
         }
         return members;
+    }
+
+    /**
+     * Translate one of the pin's three mesh-bound helpers from its own AST.
+     * The optional bound arrays specialize onto `MeshBounds`: their truthy
+     * reads become `present`, while each indexed numeric read widens the
+     * stored f32 component back to the JavaScript-number double the pin sees.
+     */
+    private lowerBoundingHelper(
+        symbolName: "_boundingCenter" | "_boundingExtents" | "_boundingRadius",
+        cppName: string,
+        returnsVector: boolean,
+    ): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            havokModule,
+            symbolName,
+        );
+        if (!declaration.body) {
+            this.context.contractError(
+                declaration,
+                `Expected ${symbolName} to have a body.`,
+            );
+        }
+        const bindings = new Map<string, PinnedBinding>([
+            ["mesh.boundMin", { cpp: "bounds.present", type: "bool" }],
+            ["mesh.boundMax", { cpp: "bounds.present", type: "bool" }],
+            ...(["x", "y", "z"] as const).flatMap((axis, index) => [
+                [
+                    `mesh.boundMin[${index}]`,
+                    {
+                        cpp: `static_cast<double>(bounds.minimum.${axis})`,
+                        type: "scalar",
+                    } as PinnedBinding,
+                ] as [string, PinnedBinding],
+                [
+                    `mesh.boundMax[${index}]`,
+                    {
+                        cpp: `static_cast<double>(bounds.maximum.${axis})`,
+                        type: "scalar",
+                    } as PinnedBinding,
+                ] as [string, PinnedBinding],
+            ]),
+        ]);
+        let lowerer: PinnedNumericLowerer;
+        const returnValue = (
+            expression: ts.Expression | undefined,
+        ): string => {
+            if (!expression) {
+                return this.context.contractError(
+                    declaration,
+                    `Expected ${symbolName} to return a value.`,
+                );
+            }
+            if (!returnsVector) return lowerer.expression(expression);
+            if (!ts.isObjectLiteralExpression(expression)) {
+                return this.context.contractError(
+                    expression,
+                    `Expected ${symbolName} to return { x, y, z }.`,
+                );
+            }
+            return `Vec3d{${["x", "y", "z"]
+                .map((axis) =>
+                    lowerer.expression(
+                        this.context.propertyInitializer(expression, axis),
+                    ),
+                )
+                .join(", ")}}`;
+        };
+        lowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: new Map([
+                [
+                    "Math.max",
+                    (args: readonly string[]) =>
+                        `std::max<double>({${args.join(", ")}})`,
+                ],
+            ]),
+            returnValue,
+            booleanAnd: true,
+        });
+        const returnType = returnsVector ? "Vec3d" : "double";
+        const body = declaration.body.statements
+            .flatMap((statement) => lowerer.statement(statement, "    "))
+            .join("\n");
+        return `${returnType} ${cppName}(const MeshBounds& bounds) {
+${body}
+}`;
     }
 
     /**
@@ -354,6 +445,21 @@ export class PhysicsLowerer {
         const shapeTypes = this.enumMembers("PhysicsShapeType");
         const motionTypes = this.enumMembers("PhysicsMotionType");
         const prestepTypes = this.enumMembers("PhysicsPrestepType");
+        const boundingCenter = this.lowerBoundingHelper(
+            "_boundingCenter",
+            "bounding_center",
+            true,
+        );
+        const boundingExtents = this.lowerBoundingHelper(
+            "_boundingExtents",
+            "bounding_extents",
+            true,
+        );
+        const boundingRadius = this.lowerBoundingHelper(
+            "_boundingRadius",
+            "bounding_radius",
+            false,
+        );
 
         const enumeratorList = (
             members: Map<string, number>,
@@ -556,9 +662,12 @@ PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
  * fills them from \`computeAabb(positions)\` over the generated vertices,
  * which is the same box the generated factories already record on the
  * geometry -- so the physics shape is sized from the geometry the renderer
- * draws rather than from a second derivation. A mesh with no geometry has
- * no box, exactly as the pin's optional pair is absent, and each helper
- * falls back to the pin's own literal.
+ * draws rather than from a second derivation. Scene code may replace either
+ * public bound after the factory created it; those object-local overrides
+ * replace the corresponding geometry side here just as they do during
+ * default-camera framing. A mesh with no geometry has no box, exactly as the
+ * pin's optional pair is absent, and each helper falls back to the pin's own
+ * literal.
  */
 struct MeshBounds {
     bool present = false;
@@ -571,53 +680,26 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
         return MeshBounds{};
     }
     const ModelGeometry& geometry = engine.geometries[mesh.geometry];
-    return MeshBounds{true, geometry.bounds_min, geometry.bounds_max};
+    MeshBounds bounds{true, geometry.bounds_min, geometry.bounds_max};
+    if (mesh.has_bounds_min_override) {
+        bounds.minimum = mesh.bounds_min_override;
+    }
+    if (mesh.has_bounds_max_override) {
+        bounds.maximum = mesh.bounds_max_override;
+    }
+    return bounds;
 }
 
-/** \`_boundingCenter\`, including its \`{ x: 0, y: 0, z: 0 }\` fallback. */
-Vec3d bounding_center(const MeshBounds& bounds) {
-    if (!bounds.present) {
-        return Vec3d{0.0, 0.0, 0.0};
-    }
-    return Vec3d{
-        (static_cast<double>(bounds.minimum.x) +
-         static_cast<double>(bounds.maximum.x)) *
-            0.5,
-        (static_cast<double>(bounds.minimum.y) +
-         static_cast<double>(bounds.maximum.y)) *
-            0.5,
-        (static_cast<double>(bounds.minimum.z) +
-         static_cast<double>(bounds.maximum.z)) *
-            0.5,
-    };
-}
+// ${this.context.provenance(
+            havokModule,
+            "_boundingCenter, _boundingExtents, _boundingRadius",
+            "typed-array reads specialized onto MeshBounds",
+        )}
+${boundingCenter}
 
-/** \`_boundingExtents\`, including its \`{ x: 1, y: 1, z: 1 }\` fallback. */
-Vec3d bounding_extents(const MeshBounds& bounds) {
-    if (!bounds.present) {
-        return Vec3d{1.0, 1.0, 1.0};
-    }
-    return Vec3d{
-        static_cast<double>(bounds.maximum.x) -
-            static_cast<double>(bounds.minimum.x),
-        static_cast<double>(bounds.maximum.y) -
-            static_cast<double>(bounds.minimum.y),
-        static_cast<double>(bounds.maximum.z) -
-            static_cast<double>(bounds.minimum.z),
-    };
-}
+${boundingExtents}
 
-/**
- * \`_boundingRadius\`: half the LARGEST extent, not half the diagonal,
- * with the pin's own \`0.5\` fallback.
- */
-double bounding_radius(const MeshBounds& bounds) {
-    if (!bounds.present) {
-        return 0.5;
-    }
-    const Vec3d extents = bounding_extents(bounds);
-    return std::max({extents.x, extents.y, extents.z}) * 0.5;
-}
+${boundingRadius}
 
 /** \`_syncBodyToNode\`: the integrated pose written back onto the node. */
 void sync_body_to_node(Engine& engine, const PhysicsBody& body) {

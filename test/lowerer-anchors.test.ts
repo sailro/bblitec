@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
@@ -15,9 +16,8 @@ import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.j
  */
 
 test("mesh factory tables flow from the pinned builders", () => {
-    const lowered = new FactoryLowerer(
-        new LoweringContext(),
-    ).lowerMeshFactories();
+    const context = new LoweringContext();
+    const lowered = new FactoryLowerer(context).lowerMeshFactories();
     // Box: the first face decoded from the pinned BOX_POSITION_SIGNS
     // words, and one face per pinned table group.
     assert.match(
@@ -38,10 +38,11 @@ test("mesh factory tables flow from the pinned builders", () => {
         lowered.source,
         /Vec2\{1\.0f, 1\.0f\}\},\n\s*ModelVertex\{b/,
     );
-    // Ground: the pinned winding order, name by name.
+    // Ground: the pinned winding order, name by name, now inside the body
+    // PinnedNumericLowerer translated rather than an interpolated list.
     assert.match(
         lowered.source,
-        /\{\n                    bottom_right,\n                    top_right,\n                    top_left,\n                    bottom_left,\n                    bottom_right,\n                    top_left,\n                \}/,
+        /static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomLeft\)[\s\S]*static_cast<std::uint32_t>\(bottomRight\)[\s\S]*static_cast<std::uint32_t>\(topLeft\)/,
     );
     // Plane: the table-driven quad.
     assert.match(
@@ -55,28 +56,118 @@ test("mesh factory tables flow from the pinned builders", () => {
     // Sphere: the tessellation constants extracted from the pinned
     // arithmetic (2 + segments, 2 * z_steps, the 3-segment clamp) and the
     // pinned triangulation order.
-    assert.match(lowered.source, /z_steps = 2 \+ segments;/);
-    assert.match(lowered.source, /y_steps = 2 \* z_steps;/);
     assert.match(
         lowered.source,
-        /std::max<std::uint32_t>\(3, options\.segments\)/,
+        /totalZRotationSteps = \(2\.0 \+ segments\)/,
     );
     assert.match(
         lowered.source,
-        /\{a, a \+ 1, b, b, a \+ 1, b \+ 1\}/,
+        /totalYRotationSteps = \(2\.0 \* totalZRotationSteps\)/,
+    );
+    assert.match(
+        lowered.source,
+        /std::max<double>\(3\.0, options\.segments\)/,
+    );
+    assert.match(
+        lowered.source,
+        /static_cast<std::uint32_t>\(a\)[\s\S]*static_cast<std::uint32_t>\(\(a \+ 1\.0\)\)[\s\S]*static_cast<std::uint32_t>\(b\)/,
     );
     // Torus: TWO_PI's factor, the reciprocal of the pinned Math.PI / 2
     // phase, and the pinned triangulation order. The whole chain is the
     // pin's own precision, so the constants are doubles with it.
     assert.match(
         lowered.source,
-        /static_cast<double>\(outer_index\) \* 2\.0 \*\s+pi_double/,
+        /const double TWO_PI = \(pi_double \* 2\.0\)/,
     );
-    assert.match(lowered.source, /pi_double \* 0\.5;/);
+    assert.match(lowered.source, /\(pi_double \/ 2\.0\)/);
     assert.match(
         lowered.source,
-        /\{\n                    outer_index \* stride \+ inner_index,\n                    outer_index \* stride \+ next_inner,\n                    next_outer \* stride \+ inner_index,/,
+        /static_cast<std::uint32_t>\(\(\(i \* stride\) \+ j\)\)[\s\S]*static_cast<std::uint32_t>\(\(\(i \* stride\) \+ nextJ\)\)[\s\S]*static_cast<std::uint32_t>\(\(\(nextI \* stride\) \+ j\)\)/,
     );
+
+    // Store-width gate: each helper's float narrowing must be an indexed
+    // store that corresponds one-for-one with an assignment to a buffer the
+    // pinned body allocated with `new F32(...)`. This is derived from that
+    // body rather than a hand-maintained count.
+    const pinnedF32StoreCount = (
+        modulePath: string,
+        symbolName: string,
+    ): number => {
+        const { declaration } = context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        const buffers = new Set(
+            context
+                .findNodes(
+                    declaration,
+                    (node): node is ts.VariableDeclaration =>
+                        ts.isVariableDeclaration(node),
+                )
+                .filter((declaration) => {
+                    const initializer = declaration.initializer;
+                    return (
+                        ts.isIdentifier(declaration.name) &&
+                        !!initializer &&
+                        ts.isNewExpression(initializer) &&
+                        ts.isIdentifier(initializer.expression) &&
+                        initializer.expression.text === "F32"
+                    );
+                })
+                .map((declaration) =>
+                    (declaration.name as ts.Identifier).text,
+                ),
+        );
+        return context
+            .findNodes(
+                declaration,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node),
+            )
+            .filter(
+                (assignment) =>
+                    assignment.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isElementAccessExpression(assignment.left) &&
+                    ts.isIdentifier(assignment.left.expression) &&
+                    buffers.has(assignment.left.expression.text),
+            ).length;
+    };
+    for (const [modulePath, symbolName, emittedName, nextName] of [
+        [
+            "src/mesh/create-ground.ts",
+            "createFlatGroundData",
+            "pinned_create_flat_ground_data",
+            "MeshHandle create_ground",
+        ],
+        [
+            "src/mesh/create-sphere.ts",
+            "createSphereData",
+            "pinned_create_sphere_data",
+            "static ModelGeometry build_sphere_geometry",
+        ],
+        [
+            "src/mesh/create-torus.ts",
+            "createTorusData",
+            "pinned_create_torus_data",
+            "MeshHandle create_torus",
+        ],
+    ] as const) {
+        const start = lowered.source.indexOf(emittedName);
+        const end = lowered.source.indexOf(nextName, start);
+        assert.notEqual(start, -1);
+        assert.notEqual(end, -1);
+        const helper = lowered.source.slice(start, end);
+        const casts = helper.match(/static_cast<float>\(/g)?.length ?? 0;
+        const stores =
+            helper.match(/\] = static_cast<float>\(/g)?.length ?? 0;
+        assert.equal(casts, stores, `${emittedName} narrows only at stores`);
+        assert.equal(
+            stores,
+            pinnedF32StoreCount(modulePath, symbolName),
+            `${emittedName} lowers every pinned F32 store`,
+        );
+    }
 });
 
 test("environment sizing constants flow slot by slot", () => {

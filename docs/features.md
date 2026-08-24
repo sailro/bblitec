@@ -195,8 +195,11 @@ A `data:` URL is the one source that names no location: its bytes are in the
 scene's own text, so materializing it is a decode rather than a download, and
 what it packages under is derived from its media type. Upstream draws no
 distinction — `fetch` serves a data URL from the string — which is why nothing
-in the pinned loaders marks the case. Only the base64 form is read; a
-percent-encoded body refuses rather than decoding through a second path.
+in the pinned loaders marks the case. The generated manifest records a
+content-addressed opaque source identity rather than duplicating the base64
+payload; generation keeps the URL in-process until the asset is decoded. Only
+the base64 form is read; a percent-encoded body refuses rather than decoding
+through a second path.
 
 **Why compile time:** the native runtime has no network stack and no
 asynchronous scheduler, while every Babylon Lite loader is `fetch`-based. A
@@ -584,10 +587,13 @@ loop over the same lights buffer.
 Standard, PBR, and GridMaterial records, no-color material views, Standard
 cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones
 behind `enableStandardVertexColors`, the opt-in `setPbrUnlit`, `setPbrSkybox`,
-`setPbrEmissive`, `setPbrClearCoat`, `setPbrSheen` and `setPbrIridescence`
-setters, and scene-local custom shader variants driven through their reflected
-uniform offsets. A setter stamps the material the call names, so a scene
-carrying several scene-code materials reaches each of them independently.
+`setPbrEmissive`, `setPbrClearCoat`, `setPbrSheen`, `setPbrIridescence`,
+`setPbrAnisotropy`, and the reached `setPbrSubsurface` translucency/thickness
+shape, plus scene-local custom shader variants driven through their reflected
+uniform offsets. Scene-code PBR also carries the static `enableSpecularAA`
+creation option into the pin's derivative roughness arm. A setter stamps the
+material the call names, so a scene carrying several scene-code materials
+reaches each of them independently.
 
 A Standard material's `diffuseTexture` also takes a colour render target,
 which is how one pass displays another's output. The pin hands that
@@ -1093,7 +1099,9 @@ wait for submitted work before rebuilding the mesh set.
 
 Screenshot and benchmark modes, draw-ID and triangle-cluster buffers,
 deformation dumps, the render capture that writes the
-frame's whole CPU-side description for diffing against the browser
+frame's whole CPU-side description for diffing against the browser — mesh
+draw lists and independent scene renderables such as Gaussian splats both
+carry their indexed shape and exact uniform block —
 ([debugging](debugging.md)), and the build stamp the parity harness checks
 before it trusts a measurement.
 
@@ -1171,15 +1179,17 @@ build error with a source location, not a silently different image.
 - direct `createMorphTargets` covers one target attached to one mesh
 - a spot light created in scene code carries its colors and intensity; its
   `angle`, `exponent`, and `range` setters fail explicitly
-- a directional light's `position` and a spot light's `position` and
-  `direction` are settable after creation through the pin's own
-  `ObservableVec3.set`, which rebuilds that kind's local matrix; the vectors
-  no reached scene writes stay unlowered and fail by name
+- a point or directional light's `position`, and a spot light's `position`
+  and `direction`, are settable after creation through the pin's own
+  `ObservableVec3` semantics. Whole-vector and reached point component writes
+  both rebuild that kind's local matrix; vectors no reached scene writes stay
+  unlowered and fail by name
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
 - PBR material extensions cover clearcoat, sheen, iridescence, anisotropy,
-  dispersion, and the spec-gloss workflow replacement with one shared UV
+  Scene 26's translucency plus linear thickness map, dispersion, and the
+  spec-gloss workflow replacement with one shared UV
   transform. Anisotropy carries the layer's own parameters; its per-layer
   texture and its UV transform are not reached, and the pinned writer's own
   early return drops that arm from the emitted writer rather than leaving it

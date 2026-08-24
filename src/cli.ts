@@ -186,9 +186,23 @@ async function assetBytes(
     return downloadCached(source);
 }
 
-async function materializeAsset(asset: CompileAsset, inputPath: string, outputPath: string): Promise<void> {
+async function materializeAsset(
+    asset: CompileAsset,
+    inputPath: string,
+    outputPath: string,
+    assetPayloads: ReadonlyMap<string, string>,
+): Promise<void> {
+    const inlineSource = assetPayloads.get(asset.source);
+    if (
+        asset.source.startsWith("generated:data-url:") &&
+        inlineSource === undefined
+    ) {
+        throw new Error(
+            `Missing materialization payload for '${asset.source}'.`,
+        );
+    }
     const source = materializedAssetSource(
-        asset.source,
+        inlineSource ?? asset.source,
         inputPath,
     );
     const destination = resolve(outputPath, "assets", asset.output);
@@ -420,6 +434,7 @@ function materializedAssetSource(
  */
 async function bakeNodeParticleSystems(
     program: CompiledNodeParticles,
+    assetPayloads: Map<string, string>,
 ): Promise<{
     systems: NodeParticleSystemEmit[];
     sprite2d: NodeParticleSprite2DEmit[];
@@ -432,7 +447,11 @@ async function bakeNodeParticleSystems(
         // own loaded image is packaged from its URL here.
         const asset =
             system.texture && !system.texture.sceneAssigned
-                ? assetRecord(system.texture.url, "texture")
+                ? assetRecord(
+                      system.texture.url,
+                      "texture",
+                      assetPayloads,
+                  )
                 : undefined;
         const assigned = program.textures.find(
             (entry) =>
@@ -515,7 +534,10 @@ async function main(): Promise<void> {
     // tree as the browser spends simulating, and the two overlap. It is
     // joined below, before the first consumer of what it produces.
     const bakingNodeParticles = result.nodeParticles
-        ? bakeNodeParticleSystems(result.nodeParticles)
+        ? bakeNodeParticleSystems(
+              result.nodeParticles,
+              result.assetPayloads,
+          )
         : undefined;
 
     mkdirSync(outputPath, { recursive: true });
@@ -524,7 +546,16 @@ async function main(): Promise<void> {
     // and prunes what this run no longer emits.
     rmSync(resolve(outputPath, "assets"), { recursive: true, force: true });
     const tree = new GeneratedTree(outputPath);
-    await Promise.all(result.manifest.assets.map((asset) => materializeAsset(asset, inputPath, outputPath)));
+    await Promise.all(
+        result.manifest.assets.map((asset) =>
+            materializeAsset(
+                asset,
+                inputPath,
+                outputPath,
+                result.assetPayloads,
+            ),
+        ),
+    );
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
     if (specializationFeatures.eightInfluenceSkinning) {
@@ -583,7 +614,12 @@ async function main(): Promise<void> {
             )
         ) {
             result.manifest.assets.push(system.asset);
-            await materializeAsset(system.asset, inputPath, outputPath);
+            await materializeAsset(
+                system.asset,
+                inputPath,
+                outputPath,
+                result.assetPayloads,
+            );
         }
     }
 
