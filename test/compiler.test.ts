@@ -1437,7 +1437,11 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
     );
     assert.match(
         result.cpp,
-        /\.materials\[[^\]]+\.value\]\.occlusion_strength = 0\.0f;/,
+        /PbrMaterialOptions\{[^\n]+, 0\.0f, 1\.0f\}\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /\.materials\[[^\]]+\.value\]\.occlusion_strength =/,
     );
 
     const defaultResult = compileSource(`
@@ -1459,7 +1463,10 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
         defaultResult.manifest.scenePbrMaterials[0]?.occlusionStrength,
         undefined,
     );
-    assert.doesNotMatch(defaultResult.cpp, /occlusion_strength =/);
+    assert.match(
+        defaultResult.cpp,
+        /PbrMaterialOptions\{[^\n]+, 1\.0f, 1\.0f\}\)/,
+    );
 
     assert.throws(
         () =>
@@ -1539,11 +1546,11 @@ test("preserves scene-code internal metallic F0 creation state", () => {
     );
     assert.match(
         result.cpp,
-        /\.materials\[[^\]]+\.value\]\.metallic_f0_factor = 0\.95f;/,
+        /PbrMaterialOptions\{[^\n]+, 1\.0f, 0\.95f\}\)/,
     );
-    assert.match(
+    assert.doesNotMatch(
         result.cpp,
-        /\.materials\[[^\]]+\.value\]\.specular_weight = 0\.95f;/,
+        /\.materials\[[^\]]+\.value\]\.(?:metallic_f0_factor|specular_weight) =/,
     );
 
     const defaultResult = compileMaterial("");
@@ -1551,9 +1558,9 @@ test("preserves scene-code internal metallic F0 creation state", () => {
         defaultResult.manifest.scenePbrMaterials[0]?.metallicF0Factor,
         undefined,
     );
-    assert.doesNotMatch(
+    assert.match(
         defaultResult.cpp,
-        /\.materials\[[^\]]+\.value\]\.(?:metallic_f0_factor|specular_weight) =/,
+        /PbrMaterialOptions\{[^\n]+, 1\.0f, 1\.0f\}\)/,
     );
 
     assert.throws(
@@ -2372,6 +2379,44 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("folds browser query predicates inside a runtime condition", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            let frameCount = 0;
+            if (!isNaN(seek) && seek > 0 && frameCount === 10) {
+                box.position.x = 3;
+            }
+        }
+    `;
+
+    assert.doesNotMatch(compileSource(source).cpp, /\.position\.x = 3\.0f/);
+    const queried = compileSource(source, { search: "?seekTime=0.5" });
+    assert.match(queried.cpp, /if \(\(v_frameCount == 10\.0\)\)/);
+    assert.match(queried.cpp, /\.position\.x = 3\.0f/);
+});
+
+test("does not lower an unreachable logical right operand", () => {
+    assert.doesNotThrow(() =>
+        compileSource(`
+            if (false && document.getElementById("definitelyMissing")) {
+                throw new Error("unreachable");
+            }
+            if (true || document.getElementById("definitelyMissing")) {
+                const reached = 1;
+            }
+        `),
+    );
+});
+
 test("folds the browser canvas guard around a void-wrapped auto-run", () => {
     const result = compileSource(`
         import {
@@ -2474,6 +2519,8 @@ test("folds browser numeric predicates in conditional values", () => {
             const seek = parseFloat(params.get("seekTime") || "");
             box.position.x = Number.isFinite(seek) ? seek : 3;
             box.position.y = isNaN(seek) ? 4 : seek;
+            const seekFrame = seek * 60;
+            box.position.z = seekFrame;
         }
     `;
     const result = compileSource(source);
@@ -2487,6 +2534,7 @@ test("folds browser numeric predicates in conditional values", () => {
     });
     assert.match(queried.cpp, /\.position\.x = 1\.5f/);
     assert.match(queried.cpp, /\.position\.y = 1\.5f/);
+    assert.match(queried.cpp, /\.position\.z = 90\.0f/);
 });
 
 test("does not fold shadowed browser predicate names", () => {
@@ -2639,6 +2687,189 @@ test("exposes only the pinned glTF container root entity", () => {
                 }
             `),
         /received asset-root/,
+    );
+});
+
+test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene12.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        {
+            fileName: sourcePath,
+            search: "?seekTime=0.5",
+        },
+    );
+
+    assert.equal(
+        result.cpp.match(
+            /for \(const bbl::MeshHandle .*?\.assets\[.*?\.value\]\.meshes\)/g,
+        )?.length,
+        3,
+    );
+    assert.equal(
+        result.cpp.match(/bbl::clone_asset_root\(/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /set_asset_root_position_component\([^;]+1u, 3\.0f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /set_asset_root_position_component\([^;]+1u, \(-3\.0f\)\)/,
+    );
+    assert.equal(
+        result.cpp.match(/bbl::add_asset_entities\(/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::go_to_frame\([^;]+30\.0f\)/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignImmediateChildren(
+                    node: TransformNode,
+                    material: ReturnType<typeof createStandardMaterial>,
+                ): void {
+                    for (const child of node.children) {
+                        (child as any).material = material;
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    const material = createStandardMaterial();
+                    assignImmediateChildren(
+                        container.entities[0] as TransformNode,
+                        material,
+                    );
+                }
+            `),
+        /only for the effect-only recursive TransformNode material walk/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignMaterial(
+                    node: TransformNode,
+                    material: ReturnType<typeof createPbrMaterial>,
+                ): void {
+                    for (const assignMaterial of node.children) {
+                        if ("children" in assignMaterial && "rotationQuaternion" in assignMaterial && !("_gpu" in assignMaterial)) {
+                            assignMaterial(assignMaterial as TransformNode, material);
+                        } else {
+                            (assignMaterial as any).material = material;
+                        }
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    const base = createSolidTexture2D(engine, 1, 1, 1);
+                    const orm = createSolidTexture2D(engine, 1, 0.5, 0);
+                    assignMaterial(
+                        container.entities[0] as TransformNode,
+                        createPbrMaterial({
+                            baseColorTexture: base,
+                            ormTexture: orm,
+                        }),
+                    );
+                }
+            `),
+        /only for the effect-only recursive TransformNode material walk/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignMaterial(
+                    node: TransformNode,
+                    material: ReturnType<typeof createStandardMaterial>,
+                ): void {
+                    for (const child of node.children) {
+                        if ("children" in child && "rotationQuaternion" in child && !("_gpu" in child)) {
+                            assignMaterial(child as TransformNode, material);
+                        } else {
+                            (child as any).material = material;
+                        }
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    assignMaterial(
+                        container.entities[0] as TransformNode,
+                        createStandardMaterial(),
+                    );
+                }
+            `),
+        /currently accepts only a scene-created PBR material/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignMaterial(
+                    node: TransformNode,
+                    material: ReturnType<typeof createStandardMaterial>,
+                ): void {
+                    material.alpha = 0.5;
+                    for (const child of node.children) {
+                        if ("children" in child && "rotationQuaternion" in child && !("_gpu" in child)) {
+                            assignMaterial(child as TransformNode, material);
+                        } else {
+                            (child as any).material = material;
+                        }
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    assignMaterial(
+                        container.entities[0] as TransformNode,
+                        createStandardMaterial(),
+                    );
+                }
+            `),
+        /only for the effect-only recursive TransformNode material walk/,
     );
 });
 

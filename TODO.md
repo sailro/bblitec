@@ -209,7 +209,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-111 corpus scenes remain unregistered; measured scenes are in
+110 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -281,7 +281,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (76 scenes):** 4, 12, 16-18, 20, 22, 26, 38, 43,
+**Integrate first (75 scenes):** 4, 16-18, 20, 22, 26, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.
@@ -306,16 +306,28 @@ that does to the deferred lane by default.
   user function `requireGroup`. Iteration, `?? []`, `.find(pred)` with an arrow,
   and static glTF-root indexing now lower; this is the remaining shape where
   the collection itself travels beyond a compiler-owned call argument.
-- [x] Scene 12: support `setPbrMetallicReflectance`. Its computed colour stays
-  a native expression, both optional file maps bind through linear texture
-  views because the pinned fragment performs its own RGB decode, and the
-  alpha-only metallic-map fork composes per material. Empty calls preserve
-  the pin's process-global registration semantics, including making an
-  otherwise dormant creation-time `_metallicF0Factor` visible.
-- [ ] Scene 12: iterate the imported `TransformNode.children` collection in
-  its recursive material walk. The setter now lowers all three call shapes;
-  compilation advances to line 102 and refuses that handle collection as
-  `Expected a static array literal` before the clone operations.
+- [x] Scene 12: support its reached `setPbrMetallicReflectance` options. Its
+  computed colour stays a native expression, both optional file maps bind
+  through linear texture views because the pinned fragment performs its own
+  RGB decode, and the alpha-only metallic-map fork composes per material.
+  Empty calls preserve the pin's process-global registration semantics,
+  including making an otherwise dormant creation-time `_metallicF0Factor`
+  visible.
+- [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
+  `f0Factor` and `specularWeight` options still refuse explicitly.
+- [x] Scene 12: lower its imported hierarchy walk and root clones. The compiler
+  proves the exact recursive `TransformNode.children` leaf walk before mapping
+  it to the loader's flat mesh handles. Root clones retain geometry/material
+  features and the shared skinned animation pose, apply translation after
+  deformation, and add only their cloned entities to the scene.
+- [ ] Extend imported hierarchy/root clones beyond Scene 12's exact slice.
+  The flattened visitor accepts only an effect-free recursive assignment of a
+  scene-created PBR material; order-sensitive effects and other material
+  families refuse. Roots with imported light or camera descendants refuse
+  rather than truncating them. Root rotation/scaling need a full
+  post-deformation outer matrix; animated morph clones need shared weights
+  with an independent node world; and direct mesh/other transform-node clone
+  shapes remain explicitly refused.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in

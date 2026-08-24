@@ -14,6 +14,7 @@ import {
     materialTextureSlotsHeader,
     type MaterialTextureSlotFeatures,
 } from "../src/pinned-pbr-variant-cpp.js";
+import { metallicReflectanceCapabilityDefines } from "../src/upstream-lower.js";
 
 const noFeatures: MaterialTextureSlotFeatures = {
     transmission: false,
@@ -209,6 +210,61 @@ test("the reflectance rows serve the pin's two composed bindings", () => {
 
     assert.match(header, /MaterialTextureSource::metallic_reflectance/);
     assert.match(header, /MaterialTextureSource::reflectance/);
+});
+
+test("each metallic-reflectance map adds exactly its own slot", () => {
+    for (const [feature, binding, source, absent] of [
+        [
+            "metallicReflectanceMap",
+            "metallicReflectanceMap",
+            "metallic_reflectance",
+            "MaterialTextureSource::reflectance",
+        ],
+        [
+            "reflectanceMap",
+            "reflectanceMap",
+            "reflectance",
+            "MaterialTextureSource::metallic_reflectance",
+        ],
+    ] as const) {
+        const header = materialTextureSlotsHeader(
+            { ...noFeatures, [feature]: true },
+            [
+                variantWith([
+                    [binding, "texture_2d<f32>"],
+                    [`${binding}Sampler`, "sampler"],
+                ]),
+            ],
+            "test",
+        );
+        assert.match(
+            header,
+            /inline constexpr std::size_t material_texture_mesh_slots = 6;/,
+        );
+        assert.match(header, new RegExp(`MaterialTextureSource::${source}`));
+        assert.ok(!header.includes(absent));
+    }
+});
+
+test("each metallic-reflectance map defines only its own native capability", () => {
+    for (const [binding, expected, absent] of [
+        [
+            "metallicReflectanceMap",
+            "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP 1",
+            "BBLITE_MATERIAL_REFLECTANCE_MAP 1",
+        ],
+        [
+            "reflectanceMap",
+            "BBLITE_MATERIAL_REFLECTANCE_MAP 1",
+            "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP 1",
+        ],
+    ] as const) {
+        const defines = metallicReflectanceCapabilityDefines(
+            new Set([binding]),
+        );
+        assert.match(defines, new RegExp(expected));
+        assert.doesNotMatch(defines, new RegExp(absent));
+    }
 });
 
 test("a scene-37-shaped scene appends occlusion straight after the base five", () => {

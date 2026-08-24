@@ -59,6 +59,16 @@
 
 namespace bbl::pal {
 
+/** Apply a cloned imported root after the mesh's own/deformation world. */
+inline std::array<float, 16> outer_draw_world(
+    std::array<float, 16> world,
+    const MeshRecord& record) {
+    world[12] += record.outer_position.x;
+    world[13] += record.outer_position.y;
+    world[14] += record.outer_position.z;
+    return world;
+}
+
 /**
  * Whether another task binds this geometry task's depth.
  *
@@ -970,12 +980,22 @@ inline std::array<float, 16> pinned_draw_world(
     bool world_from_palette,
     bool uses_local_position,
     const MeshRecord& record) {
-    if (skeleton_draw) return pinned_identity_world();
-    if (world_from_palette) return record.bone_matrices[0];
-    if (uses_local_position || pinned_record_instanced(record)) {
-        return pinned_instanced_world(record);
+    if (skeleton_draw) {
+        return outer_draw_world(
+            pinned_identity_world(),
+            record);
     }
-    return pinned_mesh_world();
+    if (world_from_palette) {
+        return outer_draw_world(
+            record.bone_matrices[0],
+            record);
+    }
+    if (uses_local_position || pinned_record_instanced(record)) {
+        return outer_draw_world(
+            pinned_instanced_world(record),
+            record);
+    }
+    return outer_draw_world(pinned_mesh_world(), record);
 }
 #endif
 
@@ -1291,10 +1311,18 @@ inline std::size_t pinned_variant_for_draw(
     // entry per runtime mesh handle in the loader's own creation order, so a
     // material drawn under two attribute sets resolves each mesh's own
     // variant instead of collapsing to the per-material ambiguity.
+    std::uint32_t feature_mesh = draw.item.mesh.value;
+    if (
+        draw.item.mesh.value < engine.meshes.size() &&
+        engine.meshes[draw.item.mesh.value]
+                .feature_source_mesh != invalid_handle) {
+        feature_mesh = engine.meshes[draw.item.mesh.value]
+            .feature_source_mesh;
+    }
     const std::size_t mesh_features =
-        draw.item.mesh.value <
+        feature_mesh <
             upstream::pbr_renderable_mesh_features.size()
-            ? upstream::pbr_renderable_mesh_features[draw.item.mesh.value]
+            ? upstream::pbr_renderable_mesh_features[feature_mesh]
             // Scene code can keep creating meshes after registration, all
             // from the fixed-set builders; a scene whose builders disagree
             // publishes npos here and such a draw refuses.
@@ -1466,11 +1494,19 @@ inline StandardVariantKey standard_variant_key(
     if (material.no_color) {
         key.features |= upstream::standard_no_color_output_flag;
     }
+    std::uint32_t feature_mesh = draw.item.mesh.value;
+    if (
+        draw.item.mesh.value < engine.meshes.size() &&
+        engine.meshes[draw.item.mesh.value]
+                .feature_source_mesh != invalid_handle) {
+        feature_mesh = engine.meshes[draw.item.mesh.value]
+            .feature_source_mesh;
+    }
     key.mesh_features =
-        draw.item.mesh.value <
+        feature_mesh <
             upstream::standard_renderable_mesh_features.size()
             ? upstream::standard_renderable_mesh_features[
-                  draw.item.mesh.value]
+                  feature_mesh]
             : upstream::standard_runtime_mesh_features;
     if (key.mesh_features == std::numeric_limits<std::size_t>::max()) {
         return key;
@@ -1557,7 +1593,9 @@ inline std::array<float, 16> standard_draw_world(
     bool uses_local_position) {
 #if BBLITE_GPU_INSTANCING
     if (pinned_record_instanced(record)) {
-        return upstream::build_instance_parent_world(record);
+        return outer_draw_world(
+            upstream::build_instance_parent_world(record),
+            record);
     }
 #endif
     if (uses_local_position) {
@@ -1575,14 +1613,16 @@ inline std::array<float, 16> standard_draw_world(
                 "Standard mesh is not wired: the baked vertices and the "
                 "raw position attribute disagree.");
         }
-        return record.instance_parent_matrix;
+        return outer_draw_world(
+            record.instance_parent_matrix,
+            record);
     }
-    return std::array<float, 16>{
+    return outer_draw_world(std::array<float, 16>{
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
-    };
+    }, record);
 }
 
 /**

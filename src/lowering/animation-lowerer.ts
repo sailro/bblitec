@@ -18,9 +18,9 @@ export class AnimationLowerer {
      * it — isPlaying to set_clip_playing, _stopped to set_clip_stopped,
      * currentTime to set_clip_time — so the emitted body IS the pin's
      * statement list, and a pin that grows an operation a new write refuses
-     * generation instead of keeping a stale transcription. goToFrame is
-     * deliberately not lowered: the intrinsic serves the property-animation
-     * overload, and no reached scene calls it on a glTF group.
+     * generation instead of keeping a stale transcription. goToFrame keeps
+     * the pin's frame-rate conversion and applies exactly the selected clip's
+     * pose through the owning asset runtime.
      */
     public lowerGroupOperations(): LoweredSource {
         const groupModule = "src/animation/animation-group.ts";
@@ -182,6 +182,74 @@ export class AnimationLowerer {
                 );
             }
         }
+        const { declaration: goToFrame } =
+            this.context.functionDeclaration(
+                groupModule,
+                "goToFrame",
+            );
+        const seekAssignments = this.context
+            .findNodes(
+                goToFrame,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken,
+            )
+            .filter(
+                (expression) =>
+                    this.context
+                        .propertyPath(expression.left)
+                        ?.join(".") === "group.currentTime" &&
+                    this.context.expressionMatchesShape(
+                        expression.right,
+                        "frame / (group.frameRate || DEFAULT_FRAME_RATE)",
+                    ),
+            );
+        if (seekAssignments.length !== 1) {
+            this.context.contractError(
+                goToFrame,
+                "Expected one glTF frame-to-time seek conversion.",
+            );
+        }
+        this.context.assertExpressionShape(
+            seekAssignments[0]!.right,
+            "frame / (group.frameRate || DEFAULT_FRAME_RATE)",
+            "glTF animation seek conversion",
+        );
+        const seekGuards = this.context.findNodes(
+            goToFrame,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node),
+        );
+        if (seekGuards.length !== 2) {
+            this.context.contractError(
+                goToFrame,
+                "Expected the controller and stopped-group goToFrame guards.",
+            );
+        }
+        this.context.assertExpressionShape(
+            seekGuards[1]!.expression,
+            "engine || !group._stopped || !group._gltfMixer",
+            "glTF stopped-group seek guard",
+        );
+        const defaultFrameRateDeclaration =
+            this.context.findNodes(
+                groupFile,
+                (node): node is ts.VariableDeclaration =>
+                    ts.isVariableDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "DEFAULT_FRAME_RATE",
+            )[0];
+        if (!defaultFrameRateDeclaration?.initializer) {
+            this.context.contractError(
+                goToFrame,
+                "Expected DEFAULT_FRAME_RATE for glTF seeking.",
+            );
+        }
+        const defaultFrameRate = this.context.numericValue(
+            defaultFrameRateDeclaration.initializer,
+            groupFile,
+        );
         const loopWriter =
             `void set_animation_loop(
     Engine& engine,
@@ -194,20 +262,41 @@ export class AnimationLowerer {
         asset.set_clip_loop(record.clip, loop);
     }
 }`;
+        const seekWriter =
+            `void go_to_frame(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float frame) {
+    const AnimationGroupRecord& record =
+        group_record(engine, group);
+    AssetRecord& asset = group_asset(engine, record);
+    if (asset.set_clip_time) {
+        asset.set_clip_time(
+            record.clip,
+            frame / ${floatLiteral(defaultFrameRate)}f);
+    }
+    if (asset.set_clip_playing) {
+        asset.set_clip_playing(record.clip, false);
+    }
+    if (asset.apply_clip_pose) {
+        asset.apply_clip_pose(record.clip);
+    }
+}`;
         const operations = [
             operation("playAnimation", "play_animation"),
             operation("pauseAnimation", "pause_animation"),
             operation("stopAnimation", "stop_animation"),
             loopWriter,
+            seekWriter,
         ].join("\n\n");
         return {
             modulePath: groupModule,
             symbolName:
-                "playAnimation,pauseAnimation,stopAnimation,loopAnimation",
+                "playAnimation,pauseAnimation,stopAnimation,loopAnimation,goToFrame",
             header: "",
             source: `// ${this.context.provenance(
                 groupModule,
-                "playAnimation,pauseAnimation,stopAnimation",
+                "playAnimation,pauseAnimation,stopAnimation,goToFrame",
             )}
 #include <bblite/runtime.hpp>
 

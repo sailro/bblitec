@@ -441,7 +441,8 @@ test("a plain stamp with no literal transparency to classify it refuses", () => 
 test("adopts the pinned transparent sort center: the draw world's translation", () => {
     // The pinned families store sortCenter = worldMatrix[12..14]; the
     // record carries that world as instance_parent_matrix composed with
-    // the live TRS position. The pinned lines are anchored inside
+    // the live TRS position and, for imported root clones, the outer
+    // post-deformation translation. The pinned lines are anchored inside
     // lowerRenderPlan, so drift throws there.
     for (const [modulePath, marker] of [
         [
@@ -468,8 +469,10 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
     );
     assert.match(
         plan.source,
-        /parent\[0\] \* mesh\.position\.x \+ parent\[4\] \* mesh\.position\.y \+\s*\r?\n\s*parent\[8\] \* mesh\.position\.z \+ parent\[12\],/,
+        /parent\[0\] \* mesh\.position\.x \+ parent\[4\] \* mesh\.position\.y \+\s*\r?\n\s*parent\[8\] \* mesh\.position\.z \+ parent\[12\] \+\s*\r?\n\s*mesh\.outer_position\.x,/,
     );
+    assert.match(plan.source, /parent\[13\] \+\s*\r?\n\s*mesh\.outer_position\.y,/);
+    assert.match(plan.source, /parent\[14\] \+\s*\r?\n\s*mesh\.outer_position\.z,/);
     // The bounds-center derivation and its euler helper are gone; the
     // anchored comparator and view-forward distance stay.
     assert.ok(!plan.source.includes("rotate_euler"));

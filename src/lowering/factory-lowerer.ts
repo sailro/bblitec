@@ -2989,6 +2989,9 @@ MaterialHandle create_pbr_material(
     material.use_thickness_as_depth = options.use_thickness_as_depth;
     material.attenuation_color = options.attenuation_color;
     material.attenuation_distance = options.attenuation_distance;
+    material.occlusion_strength = options.occlusion_strength;
+    material.metallic_f0_factor = options.metallic_f0_factor;
+    material.specular_weight = options.metallic_f0_factor;
     material.has_ior = false;
     material.has_volume = options.has_volume;
     if (material.transmission_factor > 0.0f) {

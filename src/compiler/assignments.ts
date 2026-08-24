@@ -1362,11 +1362,6 @@ export function emitPropertyAssignment(
         const mesh = context.compileValue(
             left.expression.expression,
         );
-        context.expectKind(
-            mesh,
-            "mesh",
-            left.expression.expression,
-        );
         const axis = { x: 0, y: 1, z: 2 }[
             left.name.text as "x" | "y" | "z"
         ];
@@ -1376,6 +1371,37 @@ export function emitPropertyAssignment(
                 `Unsupported rotation axis '${left.name.text}'.`,
             );
         }
+        if (mesh.kind === "asset-root") {
+            if (!mesh.assetRootClone) {
+                context.fail(
+                    left.expression.expression,
+                    "Only a cloned imported root exposes a writable transform.",
+                );
+            }
+            if (left.expression.name.text !== "position") {
+                context.fail(
+                    left.expression,
+                    "An imported root clone currently exposes position; rotation and scaling require a retained outer matrix.",
+                );
+            }
+            requireSimpleAssignment(
+                context,
+                expression,
+                "imported root clone position",
+            );
+            context.emit(
+                `bbl::set_asset_root_position_component(` +
+                    `${context.requireEngine(mesh, expression)}, ` +
+                    `${mesh.cpp}, ${axis}u, ` +
+                    `${context.compileNumber(expression.right)});`,
+            );
+            return;
+        }
+        context.expectKind(
+            mesh,
+            "mesh",
+            left.expression.expression,
+        );
         const component = ["x", "y", "z"][axis]!;
         const engine = context.requireEngine(
             mesh,

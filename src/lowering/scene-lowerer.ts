@@ -30,6 +30,66 @@ export class SceneLowerer {
                 modulePath,
                 addName,
             );
+        const transformNodeModulePath =
+            "src/scene/transform-node.ts";
+        const { declaration: cloneTransformNode } =
+            this.context.functionDeclaration(
+                transformNodeModulePath,
+                "cloneTransformNode",
+            );
+        if (
+            !this.context.hasNode(
+                cloneTransformNode,
+                (node) =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.InKeyword &&
+                    ts.isStringLiteral(node.left) &&
+                    node.left.text === "_gpu" &&
+                    ts.isIdentifier(node.right) &&
+                    node.right.text === "src",
+            ) ||
+            !this.context.hasNode(
+                cloneTransformNode,
+                (node) =>
+                    ts.isForOfStatement(node) &&
+                    this.context
+                        .propertyPath(node.expression)
+                        ?.join(".") === "src.children",
+            ) ||
+            !this.context.hasCall(
+                cloneTransformNode,
+                "cloneTransformNode",
+            )
+        ) {
+            this.context.contractError(
+                cloneTransformNode,
+                "Expected cloneTransformNode to route meshes and recursively clone children.",
+            );
+        }
+        const { declaration: cloneMeshNode } =
+            this.context.functionDeclaration(
+                transformNodeModulePath,
+                "cloneMeshNode",
+            );
+        if (
+            !this.context.hasNode(
+                cloneMeshNode,
+                (node) =>
+                    ts.isPropertyAssignment(node) &&
+                    this.context.propertyName(node.name) ===
+                        "_gpu" &&
+                    this.context
+                        .propertyPath(node.initializer)
+                        ?.join(".") === "mesh._gpu",
+            ) ||
+            !this.context.hasCall(cloneMeshNode, "retain")
+        ) {
+            this.context.contractError(
+                cloneMeshNode,
+                "Expected mesh clones to retain and share their GPU-backed resources.",
+            );
+        }
         for (const property of [
             "entities",
             "_gpu",
@@ -247,9 +307,9 @@ void set_scene_fog(
             : "";
         return {
             modulePath,
-            symbolName: `${createName},${addName},removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
+            symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
             header: "",
-            source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`)}
+            source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
@@ -341,6 +401,79 @@ AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {
 }
 
 }  // namespace
+
+/**
+ * src/scene/transform-node.ts cloneTransformNode/cloneMeshNode over the
+ * imported synthetic root. Native loading has flattened the hierarchy, so
+ * the clone is a mesh-only AssetRecord: distinct mesh wrappers sharing the
+ * source geometry/material state, without the container's animation groups,
+ * tick, camera, lights or scene setup. The source runtime callback mirrors
+ * the retained skeleton resource by registering each skinned wrapper against
+ * the same pose evaluator.
+ */
+AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
+    const AssetRecord& source = asset_record(engine, asset.value);
+    if (!source.lights.empty() || source.has_camera) {
+        throw std::runtime_error(
+            "Cloning an imported root with light or camera descendants is not supported.");
+    }
+    const std::vector<MeshHandle> source_meshes = source.meshes;
+    const auto clone_animation = source.clone_mesh_animation;
+    AssetRecord clone;
+    clone.root_position = source.root_position;
+    clone.clone_mesh_animation = clone_animation;
+    clone.meshes.reserve(source_meshes.size());
+    for (const MeshHandle source_mesh : source_meshes) {
+        if (source_mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord record = engine.meshes[source_mesh.value];
+        record.feature_source_mesh =
+            record.feature_source_mesh != invalid_handle
+                ? record.feature_source_mesh
+                : source_mesh.value;
+        const MeshHandle cloned_mesh{
+            static_cast<std::uint32_t>(engine.meshes.size())};
+        engine.meshes.push_back(std::move(record));
+        clone.meshes.push_back(cloned_mesh);
+        if (clone_animation) {
+            clone_animation(source_mesh, cloned_mesh);
+        }
+    }
+    const AssetHandle cloned_asset{
+        static_cast<std::uint32_t>(engine.assets.size())};
+    engine.assets.push_back(std::move(clone));
+    return cloned_asset;
+}
+
+void set_asset_root_position_component(
+    Engine& engine,
+    AssetHandle asset,
+    std::size_t component,
+    float value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const auto component_ref = [component](Vec3& vector) -> float& {
+        switch (component) {
+            case 0: return vector.x;
+            case 1: return vector.y;
+            case 2: return vector.z;
+            default:
+                throw std::runtime_error(
+                    "Imported root position component is out of range.");
+        }
+    };
+    float& root_component = component_ref(root.root_position);
+    const float delta = value - root_component;
+    root_component = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        component_ref(record.outer_position) += delta;
+        ++record.transform_version;
+    }
+}
 
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);

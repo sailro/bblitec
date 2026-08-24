@@ -696,6 +696,14 @@ export interface Value {
      */
     asset?: CompileAsset;
     /**
+     * Set on the hierarchy `cloneTransformNode` returned for a glTF root.
+     * Both values use the asset handle as their native identity, but only
+     * the clone is an entity the source may add on its own: the original
+     * root is already owned by its container and adding it must not pull in
+     * the container-level animation/camera wiring a second time.
+     */
+    assetRootClone?: true;
+    /**
      * The graph a `node-particle-graph` value carries, and — on a set, its
      * systems and one of them — which recorded set it names. The program
      * those calls append to is the scene's, not the value's, so only the

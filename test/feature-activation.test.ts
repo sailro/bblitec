@@ -94,6 +94,35 @@ function variants(count: number): PinnedVariantManifestEntry[] {
     }));
 }
 
+function metallicReflectanceMapInputs(
+    binding: "metallicReflectanceMap" | "reflectanceMap",
+): FeatureActivationInputs {
+    const sampler = `${binding}Sampler`;
+    return {
+        features: ["material:metallic-reflectance"],
+        assetJoinedFeatures: new Map(),
+        specialization: specialization(),
+        emit: emitOptions({
+            pinnedVariants: [
+                {
+                    ...variants(1)[0]!,
+                    fragmentWgsl:
+                        `@group(1) @binding(2) var ${binding}: texture_2d<f32>;\n` +
+                        `@group(1) @binding(3) var ${sampler}: sampler;`,
+                },
+            ],
+        }),
+        transmission: false,
+        imageCodecs: [],
+        gltfAssetNames: [],
+        composition: {
+            lightKinds: [],
+            toneMappingArms: false,
+            linearImageProcessing: false,
+        },
+    };
+}
+
 /**
  * Inputs shaped like scene33's measured generation: a KHR_lights_punctual
  * lamp GLB with 5 light nodes and a transmissive material, joining
@@ -352,6 +381,27 @@ test("capability rows carry the specializer's activation", () => {
     assert.equal(transmission.active, true);
     assert.match(transmission.activatedBy, /transmissionFactor > 0/);
     assert.doesNotMatch(transmission.activatedBy, /scene source/);
+});
+
+test("metallic-reflectance map capabilities stay independent", () => {
+    for (const [binding, activeName, inactiveName] of [
+        [
+            "metallicReflectanceMap",
+            "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP",
+            "BBLITE_MATERIAL_REFLECTANCE_MAP",
+        ],
+        [
+            "reflectanceMap",
+            "BBLITE_MATERIAL_REFLECTANCE_MAP",
+            "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP",
+        ],
+    ] as const) {
+        const rows = featureActivationRows(
+            metallicReflectanceMapInputs(binding),
+        );
+        assert.equal(named(rows, activeName).active, true);
+        assert.equal(named(rows, inactiveName).active, false);
+    }
 });
 
 test("dispersion keys on the evaluated pinned predicate", () => {

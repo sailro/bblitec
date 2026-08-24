@@ -50,6 +50,10 @@ export function compileSceneIntrinsic(
             if (
                 resource.kind !== "asset" &&
                 resource.kind !== "asset-entity" &&
+                !(
+                    resource.kind === "asset-root" &&
+                    resource.assetRootClone
+                ) &&
                 resource.kind !== "mesh" &&
                 resource.kind !== "light"
             ) {
@@ -66,7 +70,8 @@ export function compileSceneIntrinsic(
             return {
                 kind: "void",
                 cpp:
-                    resource.kind === "asset-entity"
+                    resource.kind === "asset-entity" ||
+                    resource.kind === "asset-root"
                         ? `bbl::add_asset_entities(` +
                           `${scene.cpp}, ${resource.cpp})`
                         : `bbl::add_to_scene(` +

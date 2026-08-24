@@ -55,6 +55,27 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "cloneTransformNode": {
+            context.expectArgumentCount(call, 1, 1);
+            const source = context.compileValue(
+                call.arguments[0]!,
+            );
+            if (source.kind !== "asset-root") {
+                context.fail(
+                    call.arguments[0]!,
+                    "cloneTransformNode is lowered for an imported glTF root hierarchy; another node shape has no native hierarchy representation.",
+                );
+            }
+            const engine = context.requireEngine(source, call);
+            return {
+                ...source,
+                cpp:
+                    `bbl::clone_asset_root(${engine}, ` +
+                    `${source.cpp})`,
+                assetRootClone: true,
+            };
+        }
+
         case "createMeshFromData": {
             context.expectArgumentCount(call, 5, 9);
             const engine =

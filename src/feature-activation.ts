@@ -157,7 +157,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "animation:gltf-groups": {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +
-            "stopAnimation) + src/loader-gltf/gltf-feature-animations.ts",
+            "stopAnimation, goToFrame) + src/loader-gltf/gltf-feature-animations.ts",
         consumers: ["features.cmake"],
     },
     "animation:property": {
@@ -706,6 +706,18 @@ function capabilityRows(
                 variant.fragmentWgsl,
             ).some((binding) => binding.name === "rT")
         );
+    const pbrBindingNames = new Set(
+        (emit.pinnedVariants ?? []).flatMap((variant) =>
+            variantBindings(
+                variant.vertexWgsl,
+                variant.fragmentWgsl,
+            ).map((binding) => binding.name)
+        ),
+    );
+    const metallicReflectanceMap = pbrBindingNames.has(
+        "metallicReflectanceMap",
+    );
+    const reflectanceMap = pbrBindingNames.has("reflectanceMap");
     return [
         checkedRow(
             "BBLITE_RENDERER_TRANSMISSION",
@@ -870,6 +882,50 @@ function capabilityRows(
                 "KHR_materials_iridescence); scene half " +
                 "src/material/pbr/set-iridescence.ts; fragment " +
                 "src/material/pbr/fragments/iridescence-fragment.ts",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
+            "BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP",
+            "capability",
+            metallicReflectanceMap,
+            [
+                [
+                    has("material:metallic-reflectance") &&
+                        metallicReflectanceMap,
+                    "scene source reached material:metallic-reflectance " +
+                        "and a composed variant binds metallicReflectanceMap",
+                ],
+            ],
+            "no composed PBR variant binds metallicReflectanceMap",
+            "src/material/pbr/set-metallic-reflectance.ts; fragments/" +
+                "metallic-reflectance-fragment.ts binds the optional " +
+                "metallicReflectanceMap pair",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
+            "BBLITE_MATERIAL_REFLECTANCE_MAP",
+            "capability",
+            reflectanceMap,
+            [
+                [
+                    has("material:metallic-reflectance") &&
+                        reflectanceMap,
+                    "scene source reached material:metallic-reflectance " +
+                        "and a composed variant binds reflectanceMap",
+                ],
+            ],
+            "no composed PBR variant binds reflectanceMap",
+            "src/material/pbr/set-metallic-reflectance.ts; fragments/" +
+                "metallic-reflectance-fragment.ts binds the optional " +
+                "reflectanceMap pair",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

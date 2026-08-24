@@ -273,14 +273,11 @@ export function compileMaterialIntrinsic(
                 `${direct}, ${environment}, ${alpha}, ` +
                 `${reflectance}, ${unlit}, ${doubleSided}, ` +
                 `${skyboxMode}, ${transmission}, ${ior}, ` +
-                `${thickness}, ${useThicknessAsDepth}, ` +
-                `${hasVolume}, ${attenuationColor}, ` +
-                `${attenuationDistance}})`;
-            if (
-                baseColor.textureFile ||
-                occlusionStrength !== "1.0f" ||
-                metallicF0Factor !== "1.0f"
-            ) {
+                 `${thickness}, ${useThicknessAsDepth}, ` +
+                 `${hasVolume}, ${attenuationColor}, ` +
+                 `${attenuationDistance}, ${occlusionStrength}, ` +
+                 `${metallicF0Factor}})`;
+            if (baseColor.textureFile) {
                 const temporary =
                     context.allocateTemporaryCppName(
                         "material",
@@ -288,24 +285,9 @@ export function compileMaterialIntrinsic(
                 context.emit(
                     `auto ${temporary} = ${creation};`,
                 );
-                if (baseColor.textureFile) {
-                    context.emit(
-                        `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
-                    );
-                }
-                if (occlusionStrength !== "1.0f") {
-                    context.emit(
-                        `${engine}.materials[${temporary}.value].occlusion_strength = ${occlusionStrength};`,
-                    );
-                }
-                if (metallicF0Factor !== "1.0f") {
-                    context.emit(
-                        `${engine}.materials[${temporary}.value].metallic_f0_factor = ${metallicF0Factor};`,
-                    );
-                    context.emit(
-                        `${engine}.materials[${temporary}.value].specular_weight = ${metallicF0Factor};`,
-                    );
-                }
+                context.emit(
+                    `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
+                );
                 return {
                     kind: "material",
                     cpp: temporary,

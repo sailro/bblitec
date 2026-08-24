@@ -1641,6 +1641,33 @@ class Compiler
 
     public compileCondition(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.BarBarToken)
+        ) {
+            const left = this.compileCondition(unwrapped.left);
+            // Fold browser-derived constants before lowering the remaining
+            // runtime condition. Scene 12 deliberately combines its pinned
+            // query pose with a frame counter in one conjunction.
+            const isAnd =
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken;
+            const identity = isAnd ? "true" : "false";
+            const absorbing = isAnd ? "false" : "true";
+            // Preserve JavaScript short circuiting: an unreachable right
+            // operand may itself be outside the lowering contract.
+            if (left === absorbing) {
+                return absorbing;
+            }
+            const right = this.compileCondition(unwrapped.right);
+            if (right === absorbing) return absorbing;
+            if (left === identity) return right;
+            if (right === identity) return left;
+            return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
+        }
         if (this.isBrowserOnlyExpression(unwrapped)) {
             const condition =
                 this.evaluateBrowserCondition(unwrapped);
@@ -1673,39 +1700,12 @@ class Compiler
                 [ts.SyntaxKind.LessThanEqualsToken, "<="],
                 [ts.SyntaxKind.GreaterThanToken, ">"],
                 [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-                [ts.SyntaxKind.AmpersandAmpersandToken, "&&"],
-                [ts.SyntaxKind.BarBarToken, "||"],
             ]).get(unwrapped.operatorToken.kind);
             if (!operator) {
                 this.fail(
                     unwrapped.operatorToken,
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
-            }
-            if (
-                unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
-                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken
-            ) {
-                const left = this.compileCondition(unwrapped.left);
-                const right = this.compileCondition(unwrapped.right);
-                // Short-circuit over a settled operand: the surviving side
-                // is the whole condition, and where both settled the
-                // condition itself is a constant `emitIf` drops the branch
-                // for. Only a side-effect-free operand reaches here --
-                // `compileCondition` refuses anything else -- so dropping
-                // one is dropping nothing.
-                const identity =
-                    unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.AmpersandAmpersandToken
-                        ? "true"
-                        : "false";
-                const absorbing = identity === "true" ? "false" : "true";
-                if (left === absorbing || right === absorbing) {
-                    return absorbing;
-                }
-                if (left === identity) return right;
-                if (right === identity) return left;
-                return `(${left} ${operator} ${right})`;
             }
             return `(${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
         }
@@ -2653,6 +2653,47 @@ class Compiler
             ...owner,
             kind: "asset-root",
             engineCpp: this.requireEngine(owner, collection),
+        };
+    }
+
+    /**
+     * The flattened renderable descendants of an imported glTF root.
+     * `StatementLowerer` admits this target only after proving the source is
+     * the recursive TransformNode mesh-leaf visitor; arbitrary immediate
+     * child iteration is deliberately not exposed as this collection.
+     */
+    public assetRootChildrenIterationTarget(
+        expression: ts.Expression,
+    ):
+        | {
+              property: string;
+              temporaryLabel: string;
+              containerCpp: string;
+              elementKind: ValueKind;
+              elementCppType: string;
+              engineCpp: string;
+          }
+        | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            unwrapped.name.text !== "children"
+        ) {
+            return undefined;
+        }
+        const owner = this.compileValue(unwrapped.expression);
+        if (owner.kind !== "asset-root") {
+            return undefined;
+        }
+        const engineCpp = this.requireEngine(owner, unwrapped);
+        return {
+            property: "children",
+            temporaryLabel: "asset_descendant_mesh",
+            containerCpp:
+                `${engineCpp}.assets[${owner.cpp}.value].meshes`,
+            elementKind: "mesh",
+            elementCppType: "bbl::MeshHandle",
+            engineCpp,
         };
     }
 

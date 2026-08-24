@@ -621,9 +621,9 @@ Vec3 transform_bounds_point(Vec3 point, const MeshRecord& mesh) {
     };
     point = rotate_bounds_point(point, mesh.rotation);
     return Vec3{
-        point.x + mesh.position.x,
-        point.y + mesh.position.y,
-        point.z + mesh.position.z,
+        point.x + mesh.position.x + mesh.outer_position.x,
+        point.y + mesh.position.y + mesh.outer_position.y,
+        point.z + mesh.position.z + mesh.outer_position.z,
     };
 }
 
