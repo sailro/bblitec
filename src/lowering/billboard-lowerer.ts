@@ -221,18 +221,7 @@ export class BillboardLowerer {
             [10, "pivotX"],
             [11, "pivotY"],
         ];
-        const writes = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(node.left) &&
-                    ts.isIdentifier(node.left.expression) &&
-                    node.left.expression.text === "data",
-            )
-            .map((node) => node as ts.BinaryExpression);
+        const writes = this.elementAssignments(declaration, "data");
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) =>
@@ -392,17 +381,6 @@ export class BillboardLowerer {
         );
     }
 
-    /**
-     * The pin's blend descriptors, read as the pure data they are: every
-     * exported `billboardBlend*` that names a colour blend becomes a native
-     * factory. Walking the module rather than naming two descriptors here is
-     * what keeps a blend the pin adds from needing a compiler change, and
-     * what makes a blend it CHANGES change what we emit.
-     *
-     * `cutout` carries no `_descriptor` and drives an alpha-test depth-write
-     * path this slice does not render, so it is skipped here and refused at
-     * the intrinsic.
-     */
     /** The transparent arm draws without writing depth. */
     private assertDepthMode(): void {
         const file = this.context.sourceFile(pipelineModule);
@@ -419,18 +397,7 @@ export class BillboardLowerer {
             pipelineModule,
             "buildBillboardSystemUbo",
         );
-        const writes = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(node.left) &&
-                    ts.isIdentifier(node.left.expression) &&
-                    node.left.expression.text === "ubo",
-            )
-            .map((node) => node as ts.BinaryExpression);
+        const writes = this.elementAssignments(declaration, "ubo");
         // Slots 0..3 are written twice (premultiplied and straight arms);
         // the straight arm is the one this path reaches.
         for (const slot of [0, 1, 2, 3]) {
@@ -479,18 +446,7 @@ export class BillboardLowerer {
             pipelineModule,
             "uploadSortedBillboardInstances",
         );
-        const write = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(node.left) &&
-                    ts.isIdentifier(node.left.expression) &&
-                    node.left.expression.text === "depths",
-            )
-            .map((node) => node as ts.BinaryExpression)[0];
+        const write = this.elementAssignments(declaration, "depths")[0];
         if (!write) {
             this.context.contractError(
                 declaration,
@@ -601,33 +557,7 @@ export class BillboardLowerer {
             ]),
         );
         return {
-            vertexReadsSystemBlock: basis.includes("billboards."),
-            systemStructFields: this.shaderText.braced(
-                full,
-                "struct S {",
-                "billboard system uniform struct",
-            ),
-            basisFunction: basis,
-            instanceStructFields: this.shaderText.braced(
-                full,
-                "struct I {",
-                "billboard instance struct",
-            ),
-            varyingStructFields: this.shaderText.braced(
-                full,
-                "struct O {",
-                "billboard varying struct",
-            ),
-            vertexBody: this.shaderText.braced(
-                full,
-                "fn vs(in: I) -> O {",
-                "billboard vertex stage",
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                "fn fs(in: O) -> @location(0) vec4f {",
-                "billboard fragment stage",
-            ),
+            ...this.bracedShaderSections(full, basis, "billboard"),
             fxStructFields: composed
                 ? this.shaderText.braced(
                       composed,
@@ -638,6 +568,52 @@ export class BillboardLowerer {
             extraTextureBindings: extraTextureBindingsWgsl(
                 this.shaderText,
                 extraTextures,
+            ),
+        };
+    }
+
+    /**
+     * The six pieces every billboard-family program splits into, extracted
+     * from one composed module under a family's own error labels. Both
+     * composers emit the same struct and stage markers, so the extraction
+     * is stated once and each caller adds only what its family declares
+     * beyond it.
+     */
+    private bracedShaderSections(
+        full: string,
+        basis: string,
+        labelPrefix: string,
+    ): Omit<
+        BillboardShaderSource,
+        "fxStructFields" | "extraTextureBindings"
+    > {
+        return {
+            vertexReadsSystemBlock: basis.includes("billboards."),
+            systemStructFields: this.shaderText.braced(
+                full,
+                "struct S {",
+                `${labelPrefix} system uniform struct`,
+            ),
+            basisFunction: basis,
+            instanceStructFields: this.shaderText.braced(
+                full,
+                "struct I {",
+                `${labelPrefix} instance struct`,
+            ),
+            varyingStructFields: this.shaderText.braced(
+                full,
+                "struct O {",
+                `${labelPrefix} varying struct`,
+            ),
+            vertexBody: this.shaderText.braced(
+                full,
+                "fn vs(in: I) -> O {",
+                `${labelPrefix} vertex stage`,
+            ),
+            fragmentBody: this.shaderText.braced(
+                full,
+                "fn fs(in: O) -> @location(0) vec4f {",
+                `${labelPrefix} fragment stage`,
             ),
         };
     }
@@ -671,35 +647,26 @@ export class BillboardLowerer {
             ]),
         );
         return {
-            vertexReadsSystemBlock: basis.includes("billboards."),
-            systemStructFields: this.shaderText.braced(
-                full,
-                "struct S {",
-                "particle multiply system uniform struct",
-            ),
-            basisFunction: basis,
-            instanceStructFields: this.shaderText.braced(
-                full,
-                "struct I {",
-                "particle multiply instance struct",
-            ),
-            varyingStructFields: this.shaderText.braced(
-                full,
-                "struct O {",
-                "particle multiply varying struct",
-            ),
-            vertexBody: this.shaderText.braced(
-                full,
-                "fn vs(in: I) -> O {",
-                "particle multiply vertex stage",
-            ),
-            fragmentBody: this.shaderText.braced(
-                full,
-                "fn fs(in: O) -> @location(0) vec4f {",
-                "particle multiply fragment stage",
-            ),
+            ...this.bracedShaderSections(full, basis, "particle multiply"),
             extraTextureBindings: "",
         };
+    }
+
+    /** Every `<arrayName>[...] = ...` store in a declaration, in order. */
+    private elementAssignments(
+        declaration: ts.Node,
+        arrayName: string,
+    ): ts.BinaryExpression[] {
+        return this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                ts.isIdentifier(node.left.expression) &&
+                node.left.expression.text === arrayName,
+        );
     }
 
     private elementIndexText(

@@ -119,17 +119,12 @@ export class SplatLowerer {
      */
     private lowerTextureSize(): string {
         const file = this.context.sourceFile(DATA_MODULE);
-        let found: ts.FunctionDeclaration | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
+        const found = this.context.findNodes(
+            file,
+            (node): node is ts.FunctionDeclaration =>
                 ts.isFunctionDeclaration(node) &&
-                node.name?.text === "chooseTextureSize"
-            ) {
-                found = node;
-            }
-            ts.forEachChild(node, visit);
-        };
-        ts.forEachChild(file, visit);
+                node.name?.text === "chooseTextureSize",
+        )[0];
         if (!found?.body || found.parameters.length !== 1) {
             this.context.contractError(
                 file,
@@ -490,20 +485,20 @@ ${body}
         const modulePath =
             "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
         const file = this.context.sourceFile(modulePath);
-        let update: ts.ArrowFunction | undefined;
-        const visit = (node: ts.Node): void => {
-            if (
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === "update" &&
-                node.initializer &&
-                ts.isArrowFunction(node.initializer)
-            ) {
-                update = node.initializer;
-            }
-            ts.forEachChild(node, visit);
-        };
-        ts.forEachChild(file, visit);
+        const update = this.context
+            .findNodes(
+                file,
+                (
+                    node,
+                ): node is ts.VariableDeclaration & {
+                    initializer: ts.ArrowFunction;
+                } =>
+                    ts.isVariableDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "update" &&
+                    node.initializer !== undefined &&
+                    ts.isArrowFunction(node.initializer),
+            )[0]?.initializer;
         if (!update || !ts.isBlock(update.body)) {
             return this.context.contractError(
                 file,
@@ -544,7 +539,7 @@ ${body}
 
     public lowerLoader(): LoweredSource {
         const symbolName = "attachParsedSplat";
-        const { file, declaration } = this.declaration(
+        const { declaration } = this.declaration(
             "src/loader-splat/load-splat.ts",
             symbolName,
         );
@@ -574,7 +569,6 @@ ${body}
                     "spherical-harmonic pipeline is not lowered.",
             );
         }
-        void file;
         return {
             modulePath: "src/loader-splat/load-splat.ts",
             symbolName,
@@ -646,24 +640,19 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
         const sortDirty = this.lowerSortDirty();
         const uniformWriter = this.lowerUniformWriter();
 
-        const bucketLowerer = new PinnedNumericLowerer(bits.file, {
-            bindings: new Map<string, PinnedBinding>([
-                ["vertexCount", { cpp: "vertex_count", type: "scalar" }],
-            ]),
-            calls: MATH_CALLS,
-            returnValue: (expression) =>
-                expression
-                    ? new PinnedNumericLowerer(bits.file, {
-                          bindings: new Map<string, PinnedBinding>([
-                              [
-                                  "vertexCount",
-                                  { cpp: "vertex_count", type: "scalar" },
-                              ],
-                          ]),
-                          calls: MATH_CALLS,
-                      }).expression(expression)
-                    : "0.0",
-        });
+        const bucketLowerer: PinnedNumericLowerer = new PinnedNumericLowerer(
+            bits.file,
+            {
+                bindings: new Map<string, PinnedBinding>([
+                    ["vertexCount", { cpp: "vertex_count", type: "scalar" }],
+                ]),
+                calls: MATH_CALLS,
+                returnValue: (expression) =>
+                    expression
+                        ? bucketLowerer.expression(expression)
+                        : "0.0",
+            },
+        );
         const bucketBody = bits.declaration
             .body!.statements.flatMap((statement) =>
                 bucketLowerer.statement(statement, "    "),

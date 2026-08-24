@@ -272,7 +272,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/light/point-light.ts; asset-joined via " +
             "KHR_lights_punctual " +
-            "(src/loader-gltf/gltf-feature-lights-punctual.ts)",
+            "(src/loader-gltf/gltf-feature-lights-punctual.ts) or a " +
+            ".babylon document's point lights " +
+            "(src/loader-babylon/load-babylon.ts)",
         consumers: ["features.cmake", "variant table"],
     },
     "light:spot": {
@@ -675,8 +677,16 @@ function runtimeFeatureRows(
             : joinedBy !== undefined
                 ? name === "environment:ibl"
                     ? `asset-joined: ${joinedBy} carries EXT_lights_image_based`
-                    : `asset-joined: ${joinedBy} carries KHR_lights_punctual ` +
-                      `kind "${name.slice("light:".length)}"`
+                    // The CLI performs the light join from two loaders and
+                    // records the asset output either way; a `.babylon`
+                    // document's own lights are load-babylon.ts's, not a
+                    // glTF extension's.
+                    : joinedBy.endsWith(".babylon")
+                        ? `asset-joined: ${joinedBy} carries a .babylon ` +
+                          `${name.slice("light:".length)} light ` +
+                          "(src/loader-babylon/load-babylon.ts)"
+                        : `asset-joined: ${joinedBy} carries KHR_lights_punctual ` +
+                          `kind "${name.slice("light:".length)}"`
                 : site !== undefined
                     ? `scene source: reached at ${site}`
                     : "scene source: reached by the compiled scene TypeScript";
@@ -710,6 +720,8 @@ function capabilityRows(
     const { specialization: spec, emit, features } = inputs;
     const has = (feature: Feature): boolean => features.includes(feature);
     const variantCount = (emit.pinnedVariants ?? []).length;
+    const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
+    const nodeVariantCount = (emit.nodeVariants ?? []).length;
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
     const standardReflection = (emit.pinnedStandardVariants ?? [])
@@ -827,6 +839,24 @@ function capabilityRows(
             "src/loader-gltf/gltf-feature-registry.ts: " +
                 "EXT_mesh_gpu_instancing -> gltf-feature-gpu-instancing.js; " +
                 "scene half src/mesh/thin-instance.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_GPU_INSTANCE_COLORS",
+            "capability",
+            emit.gpuInstanceColors,
+            [
+                [
+                    has("mesh:thin-instance-colors"),
+                    "scene source reached mesh:thin-instance-colors " +
+                        "(a per-instance RGBA stream widens the instance " +
+                        "vertex layout)",
+                ],
+            ],
+            "no thin-instance colour stream",
+            "src/mesh/thin-instance.ts setThinInstanceColors: the pin " +
+                "appends its own per-instance colour lane to the instance " +
+                "layout when a material reads it",
             ["render_capabilities.hpp"],
         ),
         checkedRow(
@@ -1076,6 +1106,80 @@ function capabilityRows(
                 "file per distinct variant, replacing the transcribed " +
                 "per-scene fragment",
             ["render_capabilities.hpp", "variant table"],
+        ),
+        row(
+            "BBLITE_STANDARD_VARIANTS",
+            "capability",
+            standardVariantCount > 0,
+            standardVariantCount > 0
+                ? `${standardVariantCount} Standard variant(s) composed ` +
+                    "by the pin over the scene's .babylon and scene-code " +
+                    "Standard materials"
+                : "no Standard materials compose variants",
+            "the pin's own composed Standard stages " +
+                "(src/material/standard/standard-template.ts and its " +
+                "fragments), emitted as standard_variants.hpp beside the " +
+                "composed stages",
+            ["render_capabilities.hpp", "variant table"],
+        ),
+        row(
+            "BBLITE_NODE_VARIANTS",
+            "capability",
+            nodeVariantCount > 0,
+            nodeVariantCount > 0
+                ? `${nodeVariantCount} node graph(s) compiled by the ` +
+                    "pin's own node-material emitter for this scene"
+                : "no node materials compile graphs",
+            "the pin's own node-material emitter " +
+                "(src/material/node/node-material.ts " +
+                "parseNodeMaterialFromSnippet), one module per graph, " +
+                "emitted as node_variants.hpp beside the two stages each " +
+                "deploys",
+            ["render_capabilities.hpp", "variant table"],
+        ),
+        // The two derived defines. `render_capabilities.hpp` states each as
+        // a preprocessor expression over the three counts above; the rows
+        // derive the same disjunctions from the same emit options, so the
+        // inventory names which family switched the shared machinery on.
+        row(
+            "BBLITE_PINNED_MATERIALS",
+            "capability",
+            variantCount > 0 ||
+                standardVariantCount > 0 ||
+                nodeVariantCount > 0,
+            variantCount > 0 ||
+                standardVariantCount > 0 ||
+                nodeVariantCount > 0
+                ? "derived: a composed family " +
+                    `(${[
+                        ...(variantCount > 0 ? ["PBR"] : []),
+                        ...(standardVariantCount > 0 ? ["Standard"] : []),
+                        ...(nodeVariantCount > 0 ? ["node"] : []),
+                    ].join(", ")}) draws through the pin's own group scheme`
+                : "no composed family reaches the pinned group scheme",
+            "native-architecture: the derived define " +
+                "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 " +
+                "|| BBLITE_NODE_VARIANTS > 0` gates the shared per-pass " +
+                "scene/lights frame state the three composed families bind",
+            ["render_capabilities.hpp"],
+        ),
+        row(
+            "BBLITE_PINNED_MATERIAL_VARIANTS",
+            "capability",
+            variantCount > 0 || standardVariantCount > 0,
+            variantCount > 0 || standardVariantCount > 0
+                ? "derived: a material family " +
+                    `(${[
+                        ...(variantCount > 0 ? ["PBR"] : []),
+                        ...(standardVariantCount > 0 ? ["Standard"] : []),
+                    ].join(", ")}) reaches the thin-instance arm and the ` +
+                    "geometry contract"
+                : "no material family composes variants",
+            "native-architecture: the derived define " +
+                "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0` " +
+                "gates the two material families' thin-instance arm and " +
+                "geometry contract, which a node graph does not reach",
+            ["render_capabilities.hpp"],
         ),
     ];
 }

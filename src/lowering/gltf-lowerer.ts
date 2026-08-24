@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { PINNED_MATH_FUNCTIONS } from "./pinned-operators.js";
 import {
     GltfExtensionDefaults,
     GltfFactorBake,
@@ -649,12 +650,6 @@ const cppBinaryOperators: ReadonlyMap<
     ],
 ]);
 
-const pinnedMathFunctions: Readonly<Record<string, string>> = {
-    sqrt: "std::sqrt",
-    acos: "std::acos",
-    sin: "std::sin",
-};
-
 function refuseNode(
     symbol: string,
     file: ts.SourceFile,
@@ -771,7 +766,7 @@ function renderCppExpression(
             ts.isIdentifier(callee.expression) &&
             callee.expression.text === "Math"
         ) {
-            const mapped = pinnedMathFunctions[callee.name.text];
+            const mapped = PINNED_MATH_FUNCTIONS[callee.name.text];
             if (!mapped) {
                 refuseNode(
                     scope.symbol,

@@ -16,6 +16,7 @@
  * field or total the pin places elsewhere is a generation failure.
  */
 import ts from "typescript";
+import { floatLiteral } from "./cpp-literals.js";
 import type { LoweringContext } from "./lowering/context.js";
 import {
     lowerPinnedUboWriter,
@@ -23,6 +24,15 @@ import {
 } from "./lowering/pinned-ubo-writer-lowerer.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
+
+/**
+ * The float lanes a scalar or vector UBO field spans, shared by the PBR and
+ * Standard slot builders. Anything that is neither `f32` nor `vec3<f32>` is
+ * the four-lane `vec4<f32>`, exactly as both builders spelled it.
+ */
+function laneCount(wgslType: string): number {
+    return wgslType === "f32" ? 1 : wgslType === "vec3<f32>" ? 3 : 4;
+}
 
 /**
  * The pinned extension writers, and how each reads our record.
@@ -1083,11 +1093,7 @@ export function pinnedPbrVariantsHeader(
         const slots: UboFieldSlot[] = fields.map((field, index) => ({
             name: field.name,
             offset: offsets[index]!,
-            lanes: field.wgslType === "f32"
-                ? 1
-                : field.wgslType === "vec3<f32>"
-                ? 3
-                : 4,
+            lanes: laneCount(field.wgslType),
         }));
         // Every pinned extension writer whose base field this variant declares,
         // lowered from that declaration's own AST. The arithmetic is the pin's.
@@ -2131,12 +2137,6 @@ function pinnedStandardMaterialFloats(context: LoweringContext): number {
     return Number.parseInt(initializer.arguments[0].text, 10);
 }
 
-/** A pinned default, formatted as the C++ float literal it becomes. */
-function cppFloat(value: number): string {
-    const text = `${value}`;
-    return /[.e]/i.test(text) ? `${text}f` : `${text}.0f`;
-}
-
 /**
  * The pin's own Standard material defaults, from `createStandardMaterial`.
  *
@@ -2326,11 +2326,7 @@ export function pinnedStandardVariantsHeader(
     const slots: UboFieldSlot[] = fields.map((field, index) => ({
         name: field.name,
         offset: offsets[index]!,
-        lanes: field.wgslType === "f32"
-            ? 1
-            : field.wgslType === "vec3<f32>"
-            ? 3
-            : 4,
+        lanes: laneCount(field.wgslType),
     }));
     const mirrored = mirroredMembers(
         "StandardMaterialUniforms",
@@ -2418,7 +2414,7 @@ export function pinnedStandardVariantsHeader(
                 );
             }
             return `    Color3 ${field.cppName}{${
-                value.map(cppFloat).join(", ")
+                value.map(floatLiteral).join(", ")
             }};`;
         }
         if (field.kind === "float2") {
@@ -2429,7 +2425,7 @@ export function pinnedStandardVariantsHeader(
                 );
             }
             return `    std::array<float, 2> ${field.cppName}{${
-                value.map(cppFloat).join(", ")
+                value.map(floatLiteral).join(", ")
             }};`;
         }
         if (typeof value !== "number") {
@@ -2437,7 +2433,7 @@ export function pinnedStandardVariantsHeader(
                 `Pinned Standard default '${field.pinName}' is not a number.`,
             );
         }
-        return `    float ${field.cppName} = ${cppFloat(value)};`;
+        return `    float ${field.cppName} = ${floatLiteral(value)};`;
     });
     const table: string[] = [];
     const bindingRows: string[] = [];

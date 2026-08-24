@@ -56,6 +56,31 @@ test("isolates remaining source-text contracts to the renderer", () => {
     assert.match(renderer, /store\.getSource/);
 });
 
+test("keeps the pin-import family in the shader composer", () => {
+    // The pinned-library resolution and the relative-specifier anchoring
+    // each exist exactly once, in pinned-shader-composer.ts. A second copy
+    // is how they drifted before: the mirror in pinned-material-input.ts
+    // resolved the same path without the missing-install refusal.
+    const files = readdirSync("src", { recursive: true })
+        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
+        .filter((path) => path.endsWith(".ts"));
+    for (const marker of [
+        "function pinnedLibraryRoot",
+        // The specifier-anchoring character class, as spelled in the one
+        // rewrite regex.
+        "(\\.\\.?\\/",
+    ]) {
+        const owners = files.filter((path) =>
+            source(path).includes(marker),
+        );
+        assert.deepEqual(
+            owners,
+            ["src/pinned-shader-composer.ts"],
+            `'${marker}' must live only in pinned-shader-composer.ts`,
+        );
+    }
+});
+
 test("routes extracted intrinsic families through the registry", () => {
     const registry = source(
         "src/compiler/intrinsics/registry.ts",

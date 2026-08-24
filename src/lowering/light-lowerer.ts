@@ -1,5 +1,9 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    PINNED_ARITHMETIC_OPERATORS,
+    PINNED_ASSIGNMENT_OPERATORS,
+} from "./pinned-operators.js";
 
 interface HemisphericDefaults {
     diffuseColor: [number, number, number];
@@ -775,14 +779,9 @@ ${this.lightVectorSetters(modulePath, symbolName, "spot", ["position", "directio
         }
         if (ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression)) {
             const expression = statement.expression;
-            const operators = new Map<ts.SyntaxKind, string>([
-                [ts.SyntaxKind.EqualsToken, "="],
-                [ts.SyntaxKind.SlashEqualsToken, "/="],
-                [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-                [ts.SyntaxKind.PlusEqualsToken, "+="],
-                [ts.SyntaxKind.MinusEqualsToken, "-="],
-            ]);
-            const operator = operators.get(expression.operatorToken.kind);
+            const operator = PINNED_ASSIGNMENT_OPERATORS.get(
+                expression.operatorToken.kind,
+            );
             if (!operator) throw new Error(`Unsupported upstream assignment: ${statement.getText(file)}.`);
             return [
                 `    ${this.emitExpression(expression.left, file)} ${operator} ` +
@@ -830,13 +829,9 @@ ${this.lightVectorSetters(modulePath, symbolName, "spot", ["position", "directio
                 return `nonzero_or(${this.emitExpression(expression.left, file)}, ` +
                     `${this.emitExpression(expression.right, file)})`;
             }
-            const operators = new Map<ts.SyntaxKind, string>([
-                [ts.SyntaxKind.PlusToken, "+"],
-                [ts.SyntaxKind.MinusToken, "-"],
-                [ts.SyntaxKind.AsteriskToken, "*"],
-                [ts.SyntaxKind.SlashToken, "/"],
-            ]);
-            const operator = operators.get(expression.operatorToken.kind);
+            const operator = PINNED_ARITHMETIC_OPERATORS.get(
+                expression.operatorToken.kind,
+            );
             if (operator) {
                 return `(${this.emitExpression(expression.left, file)} ${operator} ` +
                     `${this.emitExpression(expression.right, file)})`;

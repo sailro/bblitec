@@ -23,6 +23,20 @@ export const PINNED_ARITHMETIC_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
     ]);
 
 /**
+ * The assignment forms a pinned body states: `=` plus the compound
+ * operators, each meaning in C++ exactly what it means in TypeScript over
+ * the scalars these lowerers emit.
+ */
+export const PINNED_ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+    new Map<ts.SyntaxKind, string>([
+        [ts.SyntaxKind.EqualsToken, "="],
+        [ts.SyntaxKind.PlusEqualsToken, "+="],
+        [ts.SyntaxKind.MinusEqualsToken, "-="],
+        [ts.SyntaxKind.AsteriskEqualsToken, "*="],
+        [ts.SyntaxKind.SlashEqualsToken, "/="],
+    ]);
+
+/**
  * The arithmetic set plus the comparisons and boolean joins a writer guards
  * with. `==` covers both `==` and `===`: every operand a pinned writer
  * compares has already lowered to a native scalar, so the two are one operator
@@ -50,6 +64,7 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     max: "std::max",
     min: "std::min",
     cos: "std::cos",
+    acos: "std::acos",
     sin: "std::sin",
     sqrt: "std::sqrt",
     abs: "std::abs",

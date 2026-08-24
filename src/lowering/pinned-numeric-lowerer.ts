@@ -24,8 +24,10 @@
  * keeps a changed pinned body visible instead of silently stale.
  */
 import ts from "typescript";
+import { doubleLiteral } from "../cpp-literals.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
+    PINNED_ASSIGNMENT_OPERATORS,
 } from "./pinned-operators.js";
 
 /** How one pinned identifier is spelled and typed in the emitted C++. */
@@ -109,14 +111,6 @@ const BINARY_OPERATORS = new Map<ts.SyntaxKind, string>([
     [ts.SyntaxKind.GreaterThanToken, ">"],
     [ts.SyntaxKind.LessThanEqualsToken, "<="],
     [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-]);
-
-const ASSIGNMENT_OPERATORS = new Map<ts.SyntaxKind, string>([
-    [ts.SyntaxKind.EqualsToken, "="],
-    [ts.SyntaxKind.PlusEqualsToken, "+="],
-    [ts.SyntaxKind.MinusEqualsToken, "-="],
-    [ts.SyntaxKind.AsteriskEqualsToken, "*="],
-    [ts.SyntaxKind.SlashEqualsToken, "/="],
 ]);
 
 export class PinnedNumericLowerer {
@@ -397,7 +391,7 @@ export class PinnedNumericLowerer {
 
     private expressionStatement(expression: ts.Expression): string {
         if (ts.isBinaryExpression(expression)) {
-            const operator = ASSIGNMENT_OPERATORS.get(
+            const operator = PINNED_ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
             );
             if (operator) {
@@ -510,10 +504,7 @@ export class PinnedNumericLowerer {
     public expression(expression: ts.Expression): string {
         const node = this.unwrap(expression);
         if (ts.isNumericLiteral(node)) {
-            const value = Number(node.text);
-            return Number.isInteger(value) && Math.abs(value) < 1e15
-                ? `${value}.0`
-                : `${value}`;
+            return doubleLiteral(Number(node.text));
         }
         if (ts.isIdentifier(node)) {
             if (node.text === "Infinity") {

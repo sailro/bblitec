@@ -25,6 +25,7 @@
  */
 import { relative, resolve, sep } from "node:path";
 import { createSuiteSceneServer } from "./capture-suite-reference.js";
+import { parseDataUrl } from "./data-url.js";
 import {
     pageBase64Script,
     runPageGlobal,
@@ -158,13 +159,13 @@ export async function drawSpriteAtlasPng(
     source: ExecutedModuleSource,
 ): Promise<Uint8Array> {
     const dataUrl = await evaluateModuleExport(source);
-    const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
-    if (!match?.[1]) {
+    const payload = parseDataUrl(dataUrl);
+    if (!payload || payload.mediaType !== "image/png") {
         throw new Error(
             "A drawn sprite atlas must return a base64 image/png data URL.",
         );
     }
-    return new Uint8Array(Buffer.from(match[1], "base64"));
+    return payload.bytes;
 }
 
 /**

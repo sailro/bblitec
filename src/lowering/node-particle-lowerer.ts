@@ -13,6 +13,7 @@
 // What the bake supplies is only the values: the particle columns, the
 // texture the graph loaded and the mode the system block set.
 import ts from "typescript";
+import { floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
     blendFactorySymbol,
@@ -466,6 +467,27 @@ export class NodeParticleLowerer {
     }
 
     /**
+     * The pinned grid-atlas cell rule, stated once for the two factories
+     * that both declare it: a sprite sheet's positive cell size wins,
+     * otherwise the whole texture is one cell.
+     */
+    private assertAtlasCellRule(
+        atlasOptions: ts.ObjectLiteralExpression,
+        labelPrefix: string,
+    ): void {
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(atlasOptions, "cellWidthPx"),
+            "sheet && sheet.cellWidth > 0 ? sheet.cellWidth : texture.width",
+            `${labelPrefix} cell width`,
+        );
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(atlasOptions, "cellHeightPx"),
+            "sheet && sheet.cellHeight > 0 ? sheet.cellHeight : texture.height",
+            `${labelPrefix} cell height`,
+        );
+    }
+
+    /**
      * `createParticleSprite2DBridge`'s own rules: the atlas it grids, and
      * the layer it makes.
      *
@@ -491,16 +513,7 @@ export class NodeParticleLowerer {
         }
         // The same cell rule the billboard bridge states, which is what lets
         // one baked cell size serve both.
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellWidthPx"),
-            "sheet && sheet.cellWidth > 0 ? sheet.cellWidth : texture.width",
-            "pure-2D bridge atlas cell width",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellHeightPx"),
-            "sheet && sheet.cellHeight > 0 ? sheet.cellHeight : texture.height",
-            "pure-2D bridge atlas cell height",
-        );
+        this.assertAtlasCellRule(atlasOptions, "pure-2D bridge atlas");
         const layerOptions = call("createSprite2DLayer").arguments[1];
         if (!layerOptions || !ts.isObjectLiteralExpression(layerOptions)) {
             this.context.contractError(
@@ -676,22 +689,8 @@ export class NodeParticleLowerer {
             billboardModule,
             "createParticleBillboard",
         );
-        const call = (name: string): ts.CallExpression => {
-            const found = this.context
-                .findNodes(declaration.body!, ts.isCallExpression)
-                .find(
-                    (candidate) =>
-                        ts.isIdentifier(candidate.expression) &&
-                        candidate.expression.text === name,
-                );
-            if (!found) {
-                this.context.contractError(
-                    declaration,
-                    `createParticleBillboard no longer calls '${name}'.`,
-                );
-            }
-            return found;
-        };
+        const call = (name: string): ts.CallExpression =>
+            this.context.callExpression(declaration, name);
         const atlasOptions = call("createGridSpriteAtlas").arguments[1];
         if (!atlasOptions || !ts.isObjectLiteralExpression(atlasOptions)) {
             this.context.contractError(
@@ -699,16 +698,7 @@ export class NodeParticleLowerer {
                 "createParticleBillboard's atlas options changed.",
             );
         }
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellWidthPx"),
-            "sheet && sheet.cellWidth > 0 ? sheet.cellWidth : texture.width",
-            "particle atlas cell width",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellHeightPx"),
-            "sheet && sheet.cellHeight > 0 ? sheet.cellHeight : texture.height",
-            "particle atlas cell height",
-        );
+        this.assertAtlasCellRule(atlasOptions, "particle atlas");
         const systemOptions =
             call("createFacingBillboardSystem").arguments[1];
         if (!systemOptions || !ts.isObjectLiteralExpression(systemOptions)) {
@@ -1332,7 +1322,7 @@ void register_node_particle_set_2d(
         if (bridge.has_opacity) options.opacity = bridge.opacity;
         if (bridge.has_visible) options.visible = bridge.visible;
         if (bridge.has_order) options.order = bridge.order;
-        options.pivot = Vec2{${floatLiteral(sprite2dPivot[0])}, ${floatLiteral(sprite2dPivot[1])}};
+        options.pivot = Vec2{${bakedFloatLiteral(sprite2dPivot[0])}, ${bakedFloatLiteral(sprite2dPivot[1])}};
         // Modes 3 and 4 draw the pin's own Multiply fragment on the primary
         // layer; mode 4's second layer keeps the stock one.
         options.custom_shader = options.blend_mode.particle_passes >= 1;
@@ -1427,10 +1417,20 @@ function pixelsTextureCpp(texture: PixelsTextureSource): string {
     );
 }
 
-/** Every baked float carries a decimal point: `1f` does not compile. */
-function floatLiteral(value: number): string {
-    if (!Number.isFinite(value)) return "0.0f";
-    return `${Number.isInteger(value) ? value.toFixed(1) : value}f`;
+/**
+ * A baked value as the shared C++ float literal, refusing a non-finite one
+ * by name: the node-particle bake is the only producer here, and a NaN or
+ * Infinity in its columns is a broken bake, not a value to silently emit
+ * as `0.0f`.
+ */
+function bakedFloatLiteral(value: number): string {
+    if (!Number.isFinite(value)) {
+        throw new Error(
+            `The node-particle bake produced a non-finite float ` +
+                `(${value}); the frozen particle table cannot carry it.`,
+        );
+    }
+    return floatLiteral(value);
 }
 
 /** One system's live particles, as the table the sync walks. */
@@ -1442,17 +1442,17 @@ function particleRowsCpp(
     const rows: string[] = [];
     for (let i = 0; i < bake.alive; i += 1) {
         rows.push(
-            `    {{${floatLiteral(bake.positions[i * 3]!)}, ` +
-                `${floatLiteral(bake.positions[i * 3 + 1]!)}, ` +
-                `${floatLiteral(bake.positions[i * 3 + 2]!)}}, ` +
-                `{${floatLiteral(bake.sizes[i * 2]!)}, ` +
-                `${floatLiteral(bake.sizes[i * 2 + 1]!)}}, ` +
-                `{${floatLiteral(bake.colors[i * 4]!)}, ` +
-                `${floatLiteral(bake.colors[i * 4 + 1]!)}, ` +
-                `${floatLiteral(bake.colors[i * 4 + 2]!)}, ` +
-                `${floatLiteral(bake.colors[i * 4 + 3]!)}}, ` +
-                `${floatLiteral(bake.rotations[i]!)}, ` +
-                `${floatLiteral(bake.frames ? bake.frames[i]! : 0)}},`,
+            `    {{${bakedFloatLiteral(bake.positions[i * 3]!)}, ` +
+                `${bakedFloatLiteral(bake.positions[i * 3 + 1]!)}, ` +
+                `${bakedFloatLiteral(bake.positions[i * 3 + 2]!)}}, ` +
+                `{${bakedFloatLiteral(bake.sizes[i * 2]!)}, ` +
+                `${bakedFloatLiteral(bake.sizes[i * 2 + 1]!)}}, ` +
+                `{${bakedFloatLiteral(bake.colors[i * 4]!)}, ` +
+                `${bakedFloatLiteral(bake.colors[i * 4 + 1]!)}, ` +
+                `${bakedFloatLiteral(bake.colors[i * 4 + 2]!)}, ` +
+                `${bakedFloatLiteral(bake.colors[i * 4 + 3]!)}}, ` +
+                `${bakedFloatLiteral(bake.rotations[i]!)}, ` +
+                `${bakedFloatLiteral(bake.frames ? bake.frames[i]! : 0)}},`,
         );
     }
     if (rows.length === 0) rows.push("    {}");
@@ -1469,7 +1469,7 @@ function sprite2dBridgeRowCpp(
     const optional = (value: number | boolean | undefined, fallback: string) =>
         value === undefined
             ? `${fallback}, false`
-            : `${typeof value === "boolean" ? value : floatLiteral(value)}, true`;
+            : `${typeof value === "boolean" ? value : bakedFloatLiteral(value)}, true`;
     return (
         `    {${request}, ${entry.set}, ${entry.system}, ${binding.exact}, ` +
         `${binding.pixelsPerUnit}, ${binding.originPx[0]}, ` +

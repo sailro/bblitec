@@ -40,15 +40,16 @@ import {
     type JsonObject,
 } from "./gltf-document.js";
 import {
+    assertPinnedSync,
     importPinnedModule,
-    readPinnedLibraryModule,
+    importPinnedModuleUnasynced,
+    pinnedLibraryRoot,
 } from "./pinned-shader-composer.js";
 import {
     registeredPbrExtensionIds,
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
-import { dirname, join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
@@ -335,98 +336,6 @@ interface PinnedLoaderExecution {
             | ((material: PinnedMaterialInput, options: JsonObject) => void)
             | null,
     ) => void;
-}
-
-/** The composer's resolution of the pin, mirrored from `pinned-shader-composer.ts`. */
-function pinnedLibraryRoot(): string {
-    const repositoryRoot = findRepositoryRoot();
-    const upstream = readUpstreamPin(repositoryRoot);
-    return join(
-        repositoryRoot,
-        "node_modules",
-        ...upstream.package.split("/"),
-        "lib",
-    );
-}
-
-/**
- * Imports a pinned module with its `async`/`await` erased.
- *
- * The loader's `applyMaterial` hooks are `async` because the real `ctx`
- * decodes images; the stub `ctx` here produces every awaited value
- * synchronously, so the awaits are inert and the pin's text runs unchanged
- * with the keywords stripped. Three mechanical rewrites make that executable:
- *
- * - dynamic `import('…')` expressions are hoisted into eager namespace
- *   imports (`gltf-ext-dielectric.ts` lazy-loads its three `setPbrX`
- *   modules; eager loading is the same modules, which define functions and
- *   nothing else at load);
- * - the remaining relative specifiers are anchored to absolute URLs against
- *   the module's own directory, exactly as `importPinnedModuleWithExports`
- *   does, so the dependencies are the same instances the composer imports;
- * - `Promise.all` is shadowed by the identity it reduces to once nothing in
- *   the array is a promise.
- *
- * Everything that executes is still the pin's text. If the pin ever grows a
- * genuinely asynchronous step, a promise surfaces where a value is expected
- * and `assertPinnedSync` throws at generation time instead of drifting.
- */
-async function importPinnedModuleUnasynced(
-    relativePath: string,
-    extraExports: readonly string[] = [],
-    redirects: ReadonlyMap<string, string> = new Map(),
-): Promise<Record<string, unknown>> {
-    const modulePath = join(pinnedLibraryRoot(), relativePath);
-    const anchor = (specifier: string): string =>
-        redirects.get(specifier) ??
-            pathToFileURL(resolve(dirname(modulePath), specifier)).href;
-    const hoisted: string[] = [];
-    let dynamicIndex = 0;
-    const text = readPinnedLibraryModule(relativePath)
-        .replace(
-            /\bimport\((["'])([^"']+)\1\)/g,
-            (_match, _quote: string, specifier: string) => {
-                const name = `__pinnedDynamicImport${dynamicIndex++}`;
-                hoisted.push(
-                    `import * as ${name} from ${
-                        JSON.stringify(anchor(specifier))
-                    };`,
-                );
-                return name;
-            },
-        )
-        .replace(
-            /(from\s*)(["'])(\.\.?\/[^"']+)\2/g,
-            (_match, keyword: string, quote: string, specifier: string) =>
-                `${keyword}${quote}${anchor(specifier)}${quote}`,
-        )
-        .replace(/\basync\s+/g, "")
-        .replace(/\bawait\s+/g, "");
-    const augmented = [
-        ...hoisted,
-        "const Promise = { all: (values) => values };",
-        text,
-        ...(extraExports.length > 0
-            ? [`export { ${extraExports.join(", ")} };`]
-            : []),
-    ].join("\n");
-    const url = javascriptModuleUrl(augmented);
-    return (await import(url)) as Record<string, unknown>;
-}
-
-/** Trips if an unasynced pinned function still produced a promise. */
-function assertPinnedSync<T>(value: T, what: string): T {
-    if (
-        typeof value === "object" &&
-        value !== null &&
-        typeof (value as { then?: unknown }).then === "function"
-    ) {
-        throw new Error(
-            `Pinned ${what} returned a promise under the unasync transform; ` +
-                `the pin's shape changed and the transform needs re-reading.`,
-        );
-    }
-    return value;
 }
 
 /**

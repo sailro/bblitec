@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { AssetSpecializationFeatures } from "../src/asset-specializer.js";
 import type { PinnedVariantManifestEntry } from "../src/pinned-pbr-variant-output.js";
@@ -272,7 +273,10 @@ function everythingOnInputs(): FeatureActivationInputs {
             textureTransform: true,
             imageBasedLighting: true,
             gpuInstancing: true,
-            gpuInstanceColors: false,
+            // Derived the way cli.ts derives it: the feature list above
+            // includes mesh:thin-instance-colors, so the emitted define is
+            // on and the new capability row's cross-check must agree.
+            gpuInstanceColors: true,
             punctualLights: true,
             clearcoat: true,
             sheen: true,
@@ -457,6 +461,34 @@ test("composition and refusal rows report this scene's facts", () => {
     assert.equal(skinning.active, true);
     assert.match(skinning.activatedBy, /four-influence-skinning/);
     assert.deepEqual(skinning.consumers, ["fidelity.json"]);
+});
+
+test("every render-capability define has a capability row", () => {
+    // The emitter's own source is the authority on which #define names
+    // `render_capabilities.hpp` can carry (upstream-lower.ts holds every
+    // one, including the pair metallicReflectanceCapabilityDefines emits
+    // and the two derived expressions). Each must have a capability row,
+    // so the next define cannot land without naming its activation.
+    const emitter = readFileSync("src/upstream-lower.ts", "utf8");
+    const defines = new Set(
+        [...emitter.matchAll(/#define (BBLITE_[A-Z0-9_]+)/g)].map(
+            (match) => match[1]!,
+        ),
+    );
+    assert.ok(defines.size > 0, "the define scan found the emitter");
+    const rows = featureActivationRows(everythingOnInputs());
+    for (const define of defines) {
+        assert.ok(
+            rows.some(
+                (row) =>
+                    row.name === define &&
+                    row.mechanism === "capability",
+            ),
+            `render_capabilities.hpp can emit ${define} with no ` +
+                "capability row; add it to capabilityRows in " +
+                "src/feature-activation.ts",
+        );
+    }
 });
 
 test("no inventoried row is unmapped, and the order is deterministic", () => {

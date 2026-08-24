@@ -2,11 +2,6 @@ import ts from "typescript";
 import { propertyAnimationPaths } from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
-/** A JavaScript number as the C++ float literal the templates emit. */
-function floatLiteral(value: number): string {
-    return Number.isInteger(value) ? `${value}.0` : `${value}`;
-}
-
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
@@ -86,7 +81,7 @@ export class AnimationLowerer {
                         : right.kind === ts.SyntaxKind.FalseKeyword
                           ? "false"
                           : ts.isNumericLiteral(right)
-                            ? floatLiteral(
+                            ? this.context.doubleLiteral(
                                   this.context.numericValue(right, file),
                               )
                             : undefined;
@@ -153,7 +148,7 @@ export class AnimationLowerer {
                 return "true";
             }
             if (ts.isNumericLiteral(initializer)) {
-                return floatLiteral(
+                return this.context.doubleLiteral(
                     this.context.numericValue(
                         initializer,
                         groupFile,
@@ -273,7 +268,7 @@ export class AnimationLowerer {
     if (asset.set_clip_time) {
         asset.set_clip_time(
             record.clip,
-            frame / ${floatLiteral(defaultFrameRate)}f);
+            frame / ${this.context.floatLiteral(defaultFrameRate)});
     }
     if (asset.set_clip_playing) {
         asset.set_clip_playing(record.clip, false);

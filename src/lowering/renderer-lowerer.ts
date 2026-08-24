@@ -58,6 +58,7 @@ import {
     splitWgslStatements,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { PINNED_ARITHMETIC_OPERATORS } from "./pinned-operators.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -503,6 +504,14 @@ export function lowerOpaqueOrderStamp(
     }
     return String(first);
 }
+
+/**
+ * The compiled scene-uniform WGSL per resolved module path. The pinned file
+ * cannot change within a process, and `compiledSceneUniformsWgsl` is asked
+ * for by every family that binds the scene block, so the read and the parse
+ * happen once.
+ */
+const compiledSceneUniformsWgslCache = new Map<string, string>();
 
 export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -2798,6 +2807,10 @@ ${lifted.fragmentBody}
             this.context.store.packageRoot,
             "lib/shader/scene-uniforms.js",
         );
+        const cached = compiledSceneUniformsWgslCache.get(path);
+        if (cached !== undefined) {
+            return cached;
+        }
         const file = ts.createSourceFile(
             path,
             readFileSync(path, "utf8"),
@@ -2821,6 +2834,7 @@ ${lifted.fragmentBody}
                 "Expected compiled scene-uniform WGSL text.",
             );
         }
+        compiledSceneUniformsWgslCache.set(path, initializer.text);
         return initializer.text;
     }
 
@@ -3164,16 +3178,9 @@ ${lifted.fragmentBody}
             return this.context.doubleLiteral(Number(expression.text));
         }
         if (ts.isBinaryExpression(expression)) {
-            const operator =
-                expression.operatorToken.kind === ts.SyntaxKind.PlusToken
-                    ? "+"
-                    : expression.operatorToken.kind ===
-                            ts.SyntaxKind.MinusToken
-                        ? "-"
-                        : expression.operatorToken.kind ===
-                                ts.SyntaxKind.AsteriskToken
-                            ? "*"
-                            : undefined;
+            const operator = PINNED_ARITHMETIC_OPERATORS.get(
+                expression.operatorToken.kind,
+            );
             if (operator === undefined) {
                 this.context.contractError(
                     expression.operatorToken,
