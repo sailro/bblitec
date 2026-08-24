@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { AssetSpecializationFeatures } from "../src/asset-specializer.js";
+import type { CompiledShaderProgram } from "../src/compiler/types.js";
+import type { NodeParticleSystemEmit } from "../src/lowering/node-particle-lowerer.js";
+import type { NodeVariantManifestEntry } from "../src/pinned-node-material-cpp.js";
 import type { PinnedVariantManifestEntry } from "../src/pinned-pbr-variant-output.js";
+import type { PinnedStandardVariantManifestEntry } from "../src/pinned-standard-variants.js";
 import type { UpstreamEmitOptions } from "../src/upstream-lower.js";
 import {
     featureActivationRows,
@@ -308,6 +312,121 @@ function everythingOnInputs(): FeatureActivationInputs {
     };
 }
 
+/**
+ * A scene shaped like the sprite/effect/particle families: custom sprite
+ * shaders, effect wrappers, a frozen node-particle system, shader-material
+ * programs, and both non-PBR composed material families — the mechanisms
+ * the FA-2 backfill rows cover, active all at once.
+ */
+function familyInputs(): FeatureActivationInputs {
+    const frozen: NodeParticleSystemEmit = {
+        bake: {
+            set: 0,
+            system: 0,
+            capacity: 16,
+            blendMode: 0,
+            updateSpeed: 0,
+            stepIsIdentity: true,
+            texture: {
+                url: "textures/flare.png",
+                invertY: false,
+                sceneAssigned: false,
+                width: 128,
+                height: 128,
+            },
+            spriteSheet: null,
+            alive: 0,
+            positions: [],
+            sizes: [],
+            colors: [],
+            rotations: [],
+            frames: null,
+        },
+        exactBlend: false,
+        textureAsset: "flare.png",
+    };
+    const shaderProgram: CompiledShaderProgram = {
+        name: "lines",
+        vertexSource: "",
+        fragmentSource: "",
+        attributes: [],
+        uniforms: [],
+        uniformDefaults: [],
+        samplers: [],
+        defines: [],
+        needAlphaBlending: false,
+        needAlphaTesting: false,
+        backFaceCulling: true,
+        depthWrite: true,
+    };
+    const standardVariant: PinnedStandardVariantManifestEntry = {
+        fragmentKey: "std-base",
+        features: 0,
+        meshFeatures: 0,
+        vertex: "std-base.vert.wgsl",
+        fragment: "std-base.frag.wgsl",
+        vertexWgsl: "",
+        fragmentWgsl: "",
+    };
+    const nodeVariant: NodeVariantManifestEntry = {
+        index: 0,
+        vertexStem: "node-0.vert",
+        fragmentStem: "node-0.frag",
+        composed: {
+            wgsl: "",
+            uboBytes: 0,
+            uboBinding: null,
+            uboFloats: [],
+            attributes: [],
+            textures: [],
+            backFaceCulling: true,
+            envBindings: null,
+        },
+    };
+    return {
+        features: [
+            "core",
+            "renderer:sprite",
+            "sprite:2d",
+            "sprite:billboard",
+            "sprite:custom-shader",
+            "particle:node",
+            "physics:world",
+            "physics:aggregate",
+            "texture:compressed",
+            "loader:splat",
+            "material:shader",
+            "material:standard",
+            "material:node",
+            "mesh:lines",
+            "effect:wrapper",
+        ],
+        assetJoinedFeatures: new Map(),
+        specialization: specialization(),
+        emit: emitOptions({
+            spriteCustomShaders: [
+                { family: "sprite", fragment: "", extraTextures: [] },
+            ],
+            effects: [{ name: "glow", fragment: "", bindings: [] }],
+            plainSpriteLayer: false,
+            plainBillboardSystem: false,
+            pinnedSkeletonPalette: true,
+            nodeParticles: [frozen],
+            shaderPrograms: [shaderProgram],
+            pinnedStandardVariants: [standardVariant],
+            nodeVariants: [nodeVariant],
+        }),
+        transmission: false,
+        imageCodecs: ["png"],
+        gltfAssetNames: [],
+        composition: {
+            lightKinds: [],
+            toneMappingArms: false,
+            linearImageProcessing: false,
+        },
+    };
+}
+
 function named(
     rows: FeatureActivationRow[],
     name: string,
@@ -498,6 +617,7 @@ test("no inventoried row is unmapped, and the order is deterministic", () => {
         scene33Inputs(),
         dispersiveInputs(),
         everythingOnInputs(),
+        familyInputs(),
     ]) {
         const rows = featureActivationRows(inputs);
         assert.deepEqual(
@@ -637,6 +757,137 @@ test("the max-lights refusal row records the pinned constant's value", () => {
                 pinnedMaxLights: 4,
             }),
         /refusal:max-lights/,
+    );
+});
+
+test("emit-option rows cover the sprite, effect and particle options", () => {
+    const rows = featureActivationRows(familyInputs());
+
+    const custom = named(rows, "spriteCustomShaders");
+    assert.equal(custom.active, true);
+    assert.equal(custom.mechanism, "emit-option");
+    assert.match(custom.activatedBy, /1 scene-code custom/);
+    assert.match(custom.activatedBy, /sprite$/);
+    assert.match(custom.upstreamProvenance, /sprite-custom-shader\.ts/);
+
+    const effects = named(rows, "effects");
+    assert.equal(effects.active, true);
+    assert.match(effects.activatedBy, /^1 createEffectWrapper/);
+    assert.match(effects.upstreamProvenance, /effect-renderer\.ts/);
+
+    // The plain flags record why a stock stage was NOT deployed.
+    const plain = named(rows, "plainSpriteLayer");
+    assert.equal(plain.active, false);
+    assert.match(plain.activatedBy, /opts into a custom shader/);
+    assert.equal(named(rows, "plainBillboardSystem").active, false);
+
+    const palette = named(rows, "pinnedSkeletonPalette");
+    assert.equal(palette.active, true);
+    assert.match(palette.activatedBy, /per-bone\s+texture/);
+    assert.match(palette.upstreamProvenance, /gltf-feature-skeleton\.ts/);
+
+    // The derived colour-lane option cross-checks its feature, like its
+    // capability twin.
+    const colors = named(
+        featureActivationRows(everythingOnInputs()),
+        "gpuInstanceColors",
+    );
+    assert.equal(colors.active, true);
+    assert.match(colors.activatedBy, /mesh:thin-instance-colors/);
+
+    // The inactive arms on a scene that reaches none of the families.
+    const off = featureActivationRows(scene33Inputs());
+    assert.equal(named(off, "spriteCustomShaders").active, false);
+    assert.equal(named(off, "effects").active, false);
+    assert.equal(named(off, "plainSpriteLayer").active, true);
+    assert.equal(named(off, "pinnedSkeletonPalette").active, false);
+});
+
+test("composition rows cover the six backfilled shader families", () => {
+    const rows = featureActivationRows(familyInputs());
+
+    assert.match(
+        named(rows, "standard-variants:stages").activatedBy,
+        /^1 Standard variant\(s\)/,
+    );
+    assert.match(
+        named(rows, "node-variants:stages").activatedBy,
+        /^1 node graph\(s\)/,
+    );
+    assert.equal(named(rows, "splat:stages").active, true);
+    assert.match(
+        named(rows, "shader-material:programs").activatedBy,
+        /lines$/,
+    );
+    assert.match(
+        named(rows, "sprite-billboard:stages").activatedBy,
+        /2D sprite, billboard/,
+    );
+    assert.match(
+        named(rows, "effect-wrapper:stages").activatedBy,
+        /^1 composed effect module\(s\)/,
+    );
+
+    // Every family stays an inactive row for a scene that reaches none.
+    const off = featureActivationRows(scene33Inputs());
+    for (const name of [
+        "standard-variants:stages",
+        "node-variants:stages",
+        "splat:stages",
+        "shader-material:programs",
+        "sprite-billboard:stages",
+        "effect-wrapper:stages",
+    ]) {
+        const row = named(off, name);
+        assert.equal(row.active, false, `${name} should be inactive`);
+        assert.equal(row.mechanism, "composition");
+    }
+});
+
+test("the new families' generation refusals are inventoried", () => {
+    const rows = featureActivationRows(familyInputs());
+
+    const physics = named(rows, "refusal:physics-shapes");
+    assert.equal(physics.active, false);
+    assert.equal(physics.mechanism, "generation-refusal");
+    assert.match(
+        physics.activatedBy,
+        /^checked: every reached physics aggregate/,
+    );
+    assert.match(physics.upstreamProvenance, /havok\.ts/);
+
+    assert.match(
+        named(rows, "refusal:ktx-format").activatedBy,
+        /block-compression suffix/,
+    );
+    assert.match(
+        named(rows, "refusal:splat-format").activatedBy,
+        /plain PLY/,
+    );
+    const liveSet = named(rows, "refusal:node-particle-live-set");
+    assert.match(liveSet.activatedBy, /^checked 1 frozen/);
+    assert.match(
+        liveSet.upstreamProvenance,
+        /particle-scene\.ts registerNodeParticleSet/,
+    );
+
+    // The nothing-to-check arms.
+    const off = featureActivationRows(scene33Inputs());
+    assert.equal(
+        named(off, "refusal:physics-shapes").activatedBy,
+        "no physics aggregates to check",
+    );
+    assert.equal(
+        named(off, "refusal:ktx-format").activatedBy,
+        "no compressed-texture loads to check",
+    );
+    assert.equal(
+        named(off, "refusal:splat-format").activatedBy,
+        "no splat assets to check",
+    );
+    assert.equal(
+        named(off, "refusal:node-particle-live-set").activatedBy,
+        "no frozen node-particle systems to check",
     );
 });
 

@@ -49,6 +49,7 @@ import {
     reachedDiffuseUv2,
     reachedStandardBump,
 } from "./babylon-asset-features.js";
+import { refusalReachedFrom } from "./upstream-lower.js";
 
 /** What the moved orchestration reads from `main`, under `main`'s names. */
 export interface ComposePipelineContext {
@@ -384,13 +385,18 @@ export async function composeScenePipeline({
         // it supplies; only here are both known. Upstream raises the mismatch
         // at the first render, so raising it at generation is the same
         // contract moved to the moment that can carry a source-free message
-        // naming the binding.
+        // naming the binding — plus the scene call site that first reached
+        // the node-material family, from the manifest's featureSites record.
+        const nodeSite = refusalReachedFrom(
+            result.manifest.featureSites,
+            "material:node",
+        );
         for (const binding of composed.textures) {
             if (material.textureNames.includes(binding.name)) continue;
             throw new Error(
                 `Node material '${label}' samples the texture binding ` +
                     `'${binding.name}', which the scene's 'textures' record ` +
-                    "does not supply.",
+                    `does not supply.${nodeSite}`,
             );
         }
         for (const name of material.textureNames) {
@@ -399,7 +405,8 @@ export async function composeScenePipeline({
             }
             throw new Error(
                 `Node material '${label}' is given a texture named ` +
-                    `'${name}', which its graph declares no binding for.`,
+                    `'${name}', which its graph declares no binding for.` +
+                    nodeSite,
             );
         }
         nodeVariants.push({

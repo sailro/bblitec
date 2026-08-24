@@ -308,6 +308,22 @@ export class BillboardLowerer {
                 `createBillboardSystem ${name}`,
             );
         }
+        // The capacity shape above anchors DEFAULT_CAPACITY by name only;
+        // the VALUE is what the intrinsic and runtime.hpp restate, so it is
+        // read and checked the way the 2D lane checks sprite-2d's own
+        // constant (they are independent pinned constants that both happen
+        // to be 16 today).
+        const file = this.context.sourceFile(systemModule);
+        const defaultCapacity = this.context.numericValue(
+            this.context.variableInitializer(file, "DEFAULT_CAPACITY"),
+            file,
+        );
+        if (defaultCapacity !== 16) {
+            this.context.contractError(
+                file,
+                `Pinned billboard DEFAULT_CAPACITY changed: ${defaultCapacity}.`,
+            );
+        }
         // The slot each depth mode draws in. Nothing stores this number --
         // the record carries the mode and both backends select on it -- but
         // the mapping it states is what the two draw slots ARE, so a pin

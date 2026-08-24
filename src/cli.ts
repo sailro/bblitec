@@ -829,6 +829,10 @@ async function main(): Promise<void> {
     }
     const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
+        // The compiler's first-reach record, threaded so late refusals in
+        // the composition/lowering layer can name the scene call site that
+        // pulled the owning feature in.
+        featureSites: result.manifest.featureSites,
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,

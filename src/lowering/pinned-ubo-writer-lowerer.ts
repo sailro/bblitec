@@ -13,10 +13,17 @@
  * the field the composer placed at that offset, `x ?? default` becomes the
  * record field (which always carries a value natively), and `Math.*` becomes
  * `std::*`. Anything else in the pinned body fails generation, which is what
- * keeps a changed writer visible instead of silently stale.
+ * keeps a changed writer visible instead of silently stale. The discarded
+ * `?? default` is not thrown away blind: it is folded and asserted against
+ * `pinned-material-defaults.ts`, the table the intrinsics seed the record
+ * from, so a pin that moves a default fails generation by name.
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import {
+    pinnedDefaultForDiscard,
+    type PinnedMaterialDefault,
+} from "./pinned-material-defaults.js";
 import {
     PINNED_BOOLEAN_OPERATORS,
     PINNED_MATH_FUNCTIONS,
@@ -505,6 +512,196 @@ function vectorOriginProperty(
         : undefined;
 }
 
+/**
+ * The pin-side property a mapped `?? default` guards: the left-most read's
+ * terminal name. A chained fallback (`a ?? b ?? c`) parses left-associated,
+ * so descending the left spine lands on the property the whole chain guards.
+ */
+function discardedProperty(
+    state: WriterState,
+    expression: ts.Expression,
+): string | undefined {
+    let node = expression;
+    while (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        node = node.left;
+    }
+    if (ts.isNonNullExpression(node)) node = node.expression;
+    if (
+        ts.isPropertyAccessExpression(node) ||
+        ts.isPropertyAccessChain(node)
+    ) {
+        return node.name.getText();
+    }
+    if (
+        ts.isIdentifier(node) &&
+        typeof state.request.propertySources[node.text] === "string"
+    ) {
+        return node.text;
+    }
+    return undefined;
+}
+
+/** A discarded pinned default, folded to what the pin would evaluate. */
+type FoldedDefault =
+    | { kind: "number"; value: number }
+    | { kind: "vector"; value: number[] }
+    /** The fallback reads another mapped record value — the same
+     *  always-carried argument that lets the outer read discard it. */
+    | { kind: "record" };
+
+/**
+ * Evaluates a discarded `?? default` right-hand side.
+ *
+ * The pin's defaults are numeric literals, small vectors of them, or — the
+ * reflectance writer's `_specularWeight ?? _metallicF0Factor ?? 1.0` — a
+ * chain over further record-carried properties; a chained fallback folds to
+ * its all-absent ground state, which is the constant the chain terminates
+ * in. Anything else returns undefined and fails at the assert.
+ */
+function foldDiscardedDefault(
+    state: WriterState,
+    expression: ts.Expression,
+): FoldedDefault | undefined {
+    let node = expression;
+    if (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (ts.isNumericLiteral(node)) {
+        return { kind: "number", value: Number(node.text) };
+    }
+    if (
+        ts.isPrefixUnaryExpression(node) &&
+        node.operator === ts.SyntaxKind.MinusToken
+    ) {
+        const operand = foldDiscardedDefault(state, node.operand);
+        return operand?.kind === "number"
+            ? { kind: "number", value: -operand.value }
+            : undefined;
+    }
+    if (ts.isArrayLiteralExpression(node)) {
+        const lanes: number[] = [];
+        for (const element of node.elements) {
+            const lane = foldDiscardedDefault(state, element);
+            if (lane?.kind !== "number") return undefined;
+            lanes.push(lane.value);
+        }
+        return { kind: "vector", value: lanes };
+    }
+    if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        return foldDiscardedDefault(state, node.right);
+    }
+    // A fallback that is itself a MAPPED property read: `_specularWeight ??
+    // _metallicF0Factor` discards a value the record carries either way. An
+    // unmapped read stays unfoldable — the always-carried argument does not
+    // hold for a property our records do not name.
+    const property = discardedProperty(state, node);
+    if (
+        property !== undefined &&
+        typeof state.request.propertySources[property] === "string"
+    ) {
+        return { kind: "record" };
+    }
+    return undefined;
+}
+
+/** Whether a folded default is a plain `?? 0`/`?? 1` (per lane). */
+function isZeroOrOne(folded: FoldedDefault): boolean {
+    if (folded.kind === "number") {
+        return folded.value === 0 || folded.value === 1;
+    }
+    if (folded.kind === "vector") {
+        return folded.value.every((lane) => lane === 0 || lane === 1);
+    }
+    return false;
+}
+
+function foldedText(folded: FoldedDefault | undefined): string {
+    if (folded === undefined) return "<unfoldable>";
+    if (folded.kind === "number") return String(folded.value);
+    if (folded.kind === "vector") {
+        return `[${folded.value.join(", ")}]`;
+    }
+    return "<another record property>";
+}
+
+function defaultText(value: PinnedMaterialDefault["value"]): string {
+    return Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
+}
+
+/** Whether the fold agrees with one of the entry's pinned values. */
+function matchesEntry(
+    entry: PinnedMaterialDefault,
+    folded: FoldedDefault,
+): boolean {
+    const candidates = [entry.value, ...(entry.alsoPinned ?? [])];
+    return candidates.some((candidate) => {
+        if (folded.kind === "number") return candidate === folded.value;
+        if (folded.kind === "vector") {
+            return (
+                Array.isArray(candidate) &&
+                candidate.length === folded.value.length &&
+                candidate.every(
+                    (lane, index) => lane === folded.value[index],
+                )
+            );
+        }
+        return false;
+    });
+}
+
+/**
+ * The RD-4 guard: a mapped property's `?? default` lowers to the record
+ * field alone, so the pin's fallback is discarded here — and the record's
+ * seed (the intrinsics' defaults, the loader's) restates the same number
+ * with nothing tying the copies together. Before discarding, the pin's own
+ * default expression is evaluated and asserted against
+ * `PINNED_MATERIAL_DEFAULTS`, the table the intrinsics read: a pin bump
+ * that moves a default fails generation naming the property and both
+ * values instead of silently splitting the reference from the record.
+ *
+ * Properties the table does not carry keep the silent discard only for the
+ * plain `?? 0`/`?? 1` texture-transform and flag lanes with no
+ * intrinsic-side twin; any other unlisted default demands a table entry.
+ */
+function assertDiscardedPinnedDefault(
+    state: WriterState,
+    node: ts.BinaryExpression,
+): void {
+    const folded = foldDiscardedDefault(state, node.right);
+    if (folded?.kind === "record") return;
+    const property = discardedProperty(state, node.left);
+    const key = `${state.request.modulePath}#${state.request.symbolName}#${
+        property ?? "<unnamed>"
+    }`;
+    const entry = pinnedDefaultForDiscard(key);
+    if (entry === undefined) {
+        if (folded !== undefined && isZeroOrOne(folded)) return;
+        throw new Error(
+            `Pinned ${state.request.symbolName} discards the default of ` +
+                `'${property ?? node.left.getText(state.file)}' ` +
+                `(${node.getText(state.file)}), which ` +
+                "PINNED_MATERIAL_DEFAULTS does not anchor and which is " +
+                "not a plain `?? 0`/`?? 1` fallback. Add the entry under " +
+                `'${key}' in src/lowering/pinned-material-defaults.ts so ` +
+                "the record seed and the pin cannot drift apart.",
+        );
+    }
+    if (folded === undefined || !matchesEntry(entry, folded)) {
+        throw new Error(
+            `Pinned ${state.request.symbolName} defaults '${property}' to ` +
+                `${foldedText(folded)}, but PINNED_MATERIAL_DEFAULTS ` +
+                `carries ${defaultText(entry.value)} for '${key}'. The ` +
+                "pin moved a discarded default; update the table (and the " +
+                "record seed it feeds) rather than letting the reference " +
+                "and the native record split.",
+        );
+    }
+}
+
 /** Colour members, in the order the pin indexes them. */
 const colourMembers = ["r", "g", "b", "a"] as const;
 
@@ -573,6 +770,10 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         if (readsAbsentProperty(state, node.left)) {
             return emitExpression(state, node.right);
         }
+        // The discarded fallback is the pin's default for this property;
+        // assert it against the one table the intrinsics seed the record
+        // from before throwing it away.
+        assertDiscardedPinnedDefault(state, node);
         return emitExpression(state, node.left);
     }
     if (ts.isBinaryExpression(node)) {

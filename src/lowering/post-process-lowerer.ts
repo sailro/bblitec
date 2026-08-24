@@ -41,6 +41,12 @@ export class PostProcessLowerer {
         private readonly context: LoweringContext,
         private readonly tasks: readonly PostProcessTaskManifest[],
         private readonly composites: readonly ComposedComposite[] = [],
+        /**
+         * A preformatted " (reached from <file:line>)" suffix naming the
+         * scene call site that pulled the post-process family in, appended
+         * to the composite refusals; empty when the caller has no site.
+         */
+        private readonly refusalSite: string = "",
     ) {
         this.passes = postProcessPassOrder(tasks, composites);
     }
@@ -713,7 +719,11 @@ ${this.compositeFactories()}
             if (target.format) {
                 lines.push(
                     `    ${intermediate(slot)}_options.format = ` +
-                        `${nativeTextureFormat(target.format, target.label)};`,
+                        `${nativeTextureFormat(
+                            target.format,
+                            target.label,
+                            this.refusalSite,
+                        )};`,
                     `    ${intermediate(slot)}_options.has_format = true;`,
                 );
             }
@@ -744,7 +754,8 @@ ${this.compositeFactories()}
             if (texture.option === "targetTexture") {
                 if (!asTarget) {
                     throw new Error(
-                        "A composite pass reads the task's own output target.",
+                        "A composite pass reads the task's own output " +
+                            `target.${this.refusalSite}`,
                     );
                 }
                 return "inputs.target";
@@ -752,6 +763,7 @@ ${this.compositeFactories()}
             const slot = compositeExtraIndex(
                 composite,
                 texture.option,
+                this.refusalSite,
             );
             return `inputs.extra_textures[${slot}]`;
         };
@@ -761,13 +773,14 @@ ${this.compositeFactories()}
                 .join(", ");
             return (
                 `        PostProcessPassOptions{\n` +
-                `            ${passName(pass.name)},\n` +
+                `            ${passName(pass.name, this.refusalSite)},\n` +
                 `            ${firstShaderIndex + slot}u,\n` +
                 `            ${reference(pass.source, false)},\n` +
                 `            ${reference(pass.target, true)},\n` +
                 `            PostProcessSampling::${nativeSampling(
                     pass.sampling,
                     pass.name,
+                    this.refusalSite,
                 )},\n` +
                 `            ${pass.alphaMode}u,\n` +
                 `            ${pass.viewport ? "true" : "false"},\n` +
@@ -1041,11 +1054,15 @@ ${this.uniformWriterBody(effect)}
 }
 
 /** The sampler a pass asked for, refusing a mode this port does not carry. */
-function nativeSampling(mode: string, name: string): string {
+function nativeSampling(
+    mode: string,
+    name: string,
+    refusalSite = "",
+): string {
     if (mode !== "nearest" && mode !== "linear") {
         throw new Error(
             `A composite's pass '${name}' samples in '${mode}', which is ` +
-                "neither of the two modes the pass carries.",
+                `neither of the two modes the pass carries.${refusalSite}`,
         );
     }
     return mode;
@@ -1056,11 +1073,11 @@ function nativeSampling(mode: string, name: string): string {
  * suffix. The composite's name is the scene's, known only at run time, so the
  * suffix is what generation carries.
  */
-function passName(name: string): string {
+function passName(name: string, refusalSite = ""): string {
     if (!name.startsWith(COMPOSITION_NAME)) {
         throw new Error(
             `A composite named a pass '${name}', which does not derive from ` +
-                "the name it was given.",
+                `the name it was given.${refusalSite}`,
         );
     }
     return `inputs.name + ${stringLiteral(
@@ -1081,13 +1098,14 @@ function intermediate(index: number): string {
 function compositeExtraIndex(
     composite: ComposedComposite,
     option: string,
+    refusalSite = "",
 ): number {
     const descriptor = postProcessComposite(composite.intrinsic);
     const slot = descriptor?.extraTextures.indexOf(option) ?? -1;
     if (slot < 0) {
         throw new Error(
             `${composite.intrinsic} builds a pass reading '${option}', ` +
-                "which its descriptor does not name as a texture.",
+                `which its descriptor does not name as a texture.${refusalSite}`,
         );
     }
     return slot;
@@ -1102,7 +1120,11 @@ function compositeExtraIndex(
  * a swapchain-shaped format arriving here would mean the composite named one,
  * which it does not, and is refused with everything else unlisted.
  */
-function nativeTextureFormat(format: string, label: string): string {
+function nativeTextureFormat(
+    format: string,
+    label: string,
+    refusalSite = "",
+): string {
     const native: Readonly<Record<string, string>> = {
         r16float: "TextureFormatClass::r16_float",
         r32float: "TextureFormatClass::r32_float",
@@ -1113,7 +1135,7 @@ function nativeTextureFormat(format: string, label: string): string {
     if (!name) {
         throw new Error(
             `A composite sizes '${label}' in '${format}', which this port's ` +
-                "two backends do not both express.",
+                `two backends do not both express.${refusalSite}`,
         );
     }
     return name;

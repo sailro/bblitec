@@ -217,6 +217,14 @@ import type {
 export interface UpstreamEmitOptions {
     idDiagnostics: boolean;
     /**
+     * feature -> "file:line" of the first scene-source call site that
+     * reached it, from the manifest's `featureSites` record. Threaded here
+     * so the generation-time refusals below can name the scene call site
+     * that pulled the owning feature in; optional, and refusal text is
+     * unchanged when a caller does not pass it.
+     */
+    featureSites?: Readonly<Record<string, string>>;
+    /**
      * The largest per-asset `KHR_lights_punctual` light-node count. The pin
      * grows `MAX_LIGHTS` past its constant at run time (`setMaxLights` in
      * `gltf-feature-lights-punctual.ts`); this port freezes the constant and
@@ -404,6 +412,22 @@ const SHADER_FAMILIES = {
 } as const;
 
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
+
+/**
+ * The " (reached from <file:line>)" suffix a late refusal appends, naming
+ * the scene call site that first reached the feature owning the refused
+ * mechanism. The compiler records only first-reach sites, so this is the
+ * closest scene-source anchor a composition/lowering-time error can carry;
+ * empty when no site was recorded (a caller without the record, an
+ * asset-joined feature), which keeps the message exactly as it was.
+ */
+export function refusalReachedFrom(
+    featureSites: Readonly<Record<string, string>> | undefined,
+    feature: string,
+): string {
+    const site = featureSites?.[feature];
+    return site === undefined ? "" : ` (reached from ${site})`;
+}
 
 /** The two optional metallic-reflectance pairs are independent slots. */
 export function metallicReflectanceCapabilityDefines(
@@ -934,7 +958,11 @@ ${wgsl}`,
                     "A scene-code Sprite2D custom shader and an exact " +
                         "node-particle Multiply bridge both compose the " +
                         "one custom sprite program; this port carries a " +
-                        "single program per family.",
+                        "single program per family." +
+                        refusalReachedFrom(
+                            options.featureSites,
+                            "sprite:custom-shader",
+                        ),
                 );
             }
             const custom = particlePrograms.sprite2dMultiply
@@ -1045,6 +1073,10 @@ ${wgsl}`,
                     nodeParticles,
                     options.nodeParticleSprite2d ?? [],
                     options.nodeParticleRegistrations ?? [],
+                    refusalReachedFrom(
+                        options.featureSites,
+                        "particle:node",
+                    ),
                 ),
                 generated,
                 "upstream/include/bblite/upstream/node_particles.hpp",
@@ -1378,6 +1410,10 @@ ${wgsl}`,
                     context,
                     options.postProcessTasks,
                     options.postProcessComposites,
+                    refusalReachedFrom(
+                        options.featureSites,
+                        "renderer:post-process",
+                    ),
                 ).lowerTaskRecords(),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_post_process.hpp",
@@ -1583,7 +1619,12 @@ ${composed.wgsl}`,
                         `${maxLights} and this port freezes it where the pin ` +
                         `grows the lights buffer (setMaxLights). Lights past ` +
                         `the constant would not shade; integrate the grown ` +
-                        `constant or reduce the asset's light nodes.`,
+                        `constant or reduce the asset's light nodes.` +
+                        // The loadAsset call that brought the asset in.
+                        refusalReachedFrom(
+                            options.featureSites,
+                            "loader:gltf",
+                        ),
                 );
             }
         }
@@ -1654,7 +1695,12 @@ ${composed.wgsl}`,
                     "A composed Standard velocity variant extends " +
                         "MeshUniforms past the PBR header's mirror; " +
                         "hoisting the widest struct for a scene that also " +
-                        "emits pbr_variants.hpp is not wired yet.",
+                        "emits pbr_variants.hpp is not wired yet." +
+                        // The velocity arm rides a geometry-output task.
+                        refusalReachedFrom(
+                            options.featureSites,
+                            "renderer:geometry-output",
+                        ),
                 );
             }
             const sharedMirrors = (options.pinnedVariants ?? []).length > 0

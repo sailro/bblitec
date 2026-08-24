@@ -12,6 +12,8 @@
  * factors, and it is what the projection half of this convention already gets
  * from `assertPinnedPerspectiveWriter`.
  */
+import ts from "typescript";
+import { floatLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
 
 /**
@@ -43,6 +45,48 @@ export function nativeDepthCompare(compare: string): string {
 }
 
 const renderTargetModule = "src/engine/render-target.ts";
+const renderPassModule = "src/frame-graph/render-pass.ts";
+
+/**
+ * The pin's own depth-clear fallback, read from its declaration.
+ *
+ * `render-target.ts` declares `_depthClearValue` as an optional descriptor
+ * field ("Defaults to reverse-Z far depth `0`") with no named constant, so
+ * the readable authority is where the pin applies the default:
+ * `render-pass.ts` builds every depth attachment with
+ * `_depthClearValue ?? 0`. Every such fallback in the module must agree —
+ * a second site with another value would mean the convention forked.
+ */
+function pinnedDepthClearValue(context: LoweringContext): number {
+    const file = context.sourceFile(renderPassModule);
+    const fallbacks = context
+        .findNodes(
+            file,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                (ts.isPropertyAccessExpression(node.left) ||
+                    ts.isPropertyAccessChain(node.left)) &&
+                node.left.name.text === "_depthClearValue",
+        )
+        .map((node) => context.numericValue(node.right, file));
+    if (fallbacks.length === 0) {
+        context.contractError(
+            file,
+            "Pinned render-pass no longer defaults _depthClearValue.",
+        );
+    }
+    const value = fallbacks[0]!;
+    if (fallbacks.some((candidate) => candidate !== value)) {
+        context.contractError(
+            file,
+            "Pinned render-pass defaults _depthClearValue inconsistently: " +
+                `${fallbacks.join(", ")}.`,
+        );
+    }
+    return value;
+}
 
 /**
  * The pin's reverse-depth compare, read from its own declaration.
@@ -61,6 +105,18 @@ export function pinnedDepthStateHeader(context: LoweringContext): string {
         renderTargetModule,
         "REVERSE_DEPTH_COMPARE",
     );
+    // The pin's own clear value, read like the compare above. The reached
+    // slice is reverse-Z — the projection writer, the dither arms and the
+    // near-plane handling are all keyed to a far plane of 0 — so a pin
+    // that moves it needs those consumers revisited, not a silently
+    // different emitted constant.
+    const depthClear = pinnedDepthClearValue(context);
+    if (depthClear !== 0) {
+        throw new Error(
+            `Pinned _depthClearValue default is ${depthClear}; this port's ` +
+                "reverse-Z consumers assume the far plane clears to 0.",
+        );
+    }
     return `#pragma once
 
 // ${provenance}
@@ -86,7 +142,7 @@ inline constexpr DepthCompare pinned_depth_compare =
     DepthCompare::${nativeDepthCompare(compare)};
 
 /** The far plane under that convention, which is what a pass clears to. */
-inline constexpr float pinned_depth_clear = 0.0f;
+inline constexpr float pinned_depth_clear = ${floatLiteral(depthClear)};
 
 } // namespace bbl::upstream
 `;

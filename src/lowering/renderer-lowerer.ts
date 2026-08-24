@@ -339,6 +339,7 @@ const backgroundSolidModule =
 const rgbdDecodeModule = "src/loader-env/rgbd-decode.ts";
 const surfaceModule = "src/engine/surface.ts";
 const sceneUniformsSourceModule = "src/shader/scene-uniforms.ts";
+const gridModule = "src/material/grid/grid-material.ts";
 
 interface LoweredShader {
     output: string;
@@ -528,6 +529,86 @@ export class RendererLowerer {
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
     } = {}): LoweredSource {
+        this.assertRenderPlanPins(options);
+        this.assertPinnedTransparentSort();
+        const sampleCount = this.pinnedSampleCount();
+        const reachedShaderPrograms =
+            options.shaderPrograms ?? [];
+        const { shaderVariantTable, shaderVariantEntries } =
+            this.loweredShaderVariants(reachedShaderPrograms);
+        // The camera matrix chain the source below emits is anchored
+        // per-term against its pinned writers before anything is returned:
+        // the perspective stores, the multiply accumulation order, and the
+        // view transpose (whose emission is derived from the pinned store
+        // map rather than asserted against it).
+        this.assertPinnedPerspectiveWriter();
+        this.assertPinnedMultiplyWriter();
+        this.assertPinnedDrawListRules();
+        this.assertPinnedLightSlotPacking();
+        const opaqueOrderStamp =
+            this.provedOpaqueOrderStamp();
+        // Emitted from the compiler's own table so the generated enum's
+        // order and the enumerators the variant rows name cannot disagree.
+        const systemMatrixEnumerators = shaderSystemMatrixTable
+            .map(({ enumerator }) => "    " + enumerator + ",")
+            .join("\n");
+        const backgroundGeometry = this.pinnedBackgroundGeometry();
+        const viewMatrixBody = this.pinnedViewMatrixBody();
+        if (options.fog) {
+            // PBR and Standard fog ride the PAL's pinned scene block; its
+            // {mode, start, end, density} packing is the same WGSL_FOG
+            // contract, asserted here so a pin retune fails generation.
+            assertPinnedFogInfosOrder();
+        }
+        const instancingTrs = options.gpuInstancing
+            ? this.pinnedTrsComposition()
+            : { quaternionProducts: "", basisLocals: "", basisStores: "" };
+        // Under multi-light the pinned lights block owns every light past
+        // the primary slot, so the legacy capture block keeps its second
+        // analytic slot empty there exactly as the retired uploader did.
+        const secondAnalyticLightFill =
+            options.punctualLights
+                ? ""
+                : `    if (scene.lights.size() > 1) {
+        write_pbr_light(
+            scene.lights[1],
+            result.light_direction_2,
+            result.light_color_2,
+            result.ground_color_2);
+    }
+`;
+
+        return {
+            modulePath: renderTaskModule,
+            symbolName: "buildBindings",
+            header: this.renderPlanHeaderCpp(
+                options,
+                systemMatrixEnumerators,
+            ),
+            source: this.renderPlanSourceCpp(options, {
+                viewMatrixBody,
+                opaqueOrderStamp,
+                shaderVariantTable,
+                shaderVariantEntries,
+                sampleCount,
+                instancingTrs,
+                secondAnalyticLightFill,
+                backgroundGeometry,
+            }),
+        };
+    }
+
+    /**
+     * The render-plan preconditions: the adopted render-task symbols must
+     * still exist, GPU instancing requires its composed matrix pins, and
+     * an orthographic scene refuses environment backgrounds while its
+     * off-center reverse-Z writer is anchored marker for marker.
+     */
+    private assertRenderPlanPins(options: {
+        gpuInstancing?: boolean;
+        orthographicCamera?: boolean;
+        background?: boolean;
+    }): void {
         for (const symbol of ["buildBindings", "sortTransparentBindings", "drawList"]) {
             this.context.functionDeclaration(
                 renderTaskModule,
@@ -585,6 +666,14 @@ export class RendererLowerer {
                 }
             }
         }
+    }
+
+    /**
+     * The adopted `sortTransparentBindings` contract: the view-space
+     * depth stamp and the draw-order comparator, shape-asserted term for
+     * term so the emitted sort stays the pin's.
+     */
+    private assertPinnedTransparentSort(): void {
         const { declaration: sortTransparentBindings } =
             this.context.functionDeclaration(
                 renderTaskModule,
@@ -637,6 +726,14 @@ export class RendererLowerer {
             "b._sortDistance - a._sortDistance || a.renderable.order - b.renderable.order",
             "Transparent draw ordering",
         );
+    }
+
+    /**
+     * The pinned default MSAA selection
+     * (`options?.msaaSamples === 1 ? 1 : 4`); the emitted
+     * `preferred_sample_count` is its non-1 arm.
+     */
+    private pinnedSampleCount(): number {
         const { file: surfaceFile, declaration: buildSurface } =
             this.context.functionDeclaration(
                 surfaceModule,
@@ -664,8 +761,18 @@ export class RendererLowerer {
             msaaExpression.whenFalse,
             surfaceFile,
         );
-        const reachedShaderPrograms =
-            options.shaderPrograms ?? [];
+        return sampleCount;
+    }
+
+    /**
+     * The per-scene shader-variant metadata: pipeline state from the
+     * pinned shader-pipeline mapping and the reflected per-stage uniform
+     * blocks, projected once into the table the emitted
+     * `shader_variants` array is rendered from.
+     */
+    private loweredShaderVariants(
+        reachedShaderPrograms: readonly CompiledShaderProgram[],
+    ) {
         const uniformComponentCount = (type: string): number =>
             type === "f32"
                 ? 1
@@ -779,18 +886,13 @@ export class RendererLowerer {
         {${info.samplers.map((name) => `"${name}"`).join(", ")}},
     },`,
         ).join("\n");
-        // The camera matrix chain the source below emits is anchored
-        // per-term against its pinned writers before anything is returned:
-        // the perspective stores, the multiply accumulation order, and the
-        // view transpose (whose emission is derived from the pinned store
-        // map rather than asserted against it).
-        this.assertPinnedPerspectiveWriter();
-        this.assertPinnedMultiplyWriter();
-        this.assertPinnedDrawListRules();
-        this.assertPinnedLightSlotPacking();
-        // The adopted buildBindings opaque sort: prove every reachable
-        // family still stamps one shared non-transparent order, so the
-        // emitted lists can stay in append order (see order_draw_lists).
+        return { shaderVariantTable, shaderVariantEntries };
+    }
+
+    // The adopted buildBindings opaque sort: prove every reachable
+    // family still stamps one shared non-transparent order, so the
+    // emitted lists can stay in append order (see order_draw_lists).
+    private provedOpaqueOrderStamp(): string {
         const opaqueOrderStamp = lowerOpaqueOrderStamp(
             [
                 "src/material/pbr/pbr-renderable.ts",
@@ -801,41 +903,19 @@ export class RendererLowerer {
                 "src/material/shader/shader-thin-instance.ts",
             ].map((modulePath) => this.context.sourceFile(modulePath)),
         );
-        // Emitted from the compiler's own table so the generated enum's
-        // order and the enumerators the variant rows name cannot disagree.
-        const systemMatrixEnumerators = shaderSystemMatrixTable
-            .map(({ enumerator }) => "    " + enumerator + ",")
-            .join("\n");
-        const backgroundGeometry = this.pinnedBackgroundGeometry();
-        const viewMatrixBody = this.pinnedViewMatrixBody();
-        if (options.fog) {
-            // PBR and Standard fog ride the PAL's pinned scene block; its
-            // {mode, start, end, density} packing is the same WGSL_FOG
-            // contract, asserted here so a pin retune fails generation.
-            assertPinnedFogInfosOrder();
-        }
-        const instancingTrs = options.gpuInstancing
-            ? this.pinnedTrsComposition()
-            : { quaternionProducts: "", basisLocals: "", basisStores: "" };
-        // Under multi-light the pinned lights block owns every light past
-        // the primary slot, so the legacy capture block keeps its second
-        // analytic slot empty there exactly as the retired uploader did.
-        const secondAnalyticLightFill =
-            options.punctualLights
-                ? ""
-                : `    if (scene.lights.size() > 1) {
-        write_pbr_light(
-            scene.lights[1],
-            result.light_direction_2,
-            result.light_color_2,
-            result.ground_color_2);
+        return opaqueOrderStamp;
     }
-`;
 
-        return {
-            modulePath: renderTaskModule,
-            symbolName: "buildBindings",
-            header: `#pragma once
+    /** The emitted renderer_plan.hpp, verbatim from the adopted plan. */
+    private renderPlanHeaderCpp(
+        options: {
+            solidSkybox?: boolean;
+            imageSkybox?: boolean;
+            gpuInstancing?: boolean;
+        },
+        systemMatrixEnumerators: string,
+    ): string {
+        return `#pragma once
 
 #include <bblite/runtime.hpp>
 
@@ -1190,8 +1270,52 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
     : ""}\
 
 } // namespace bbl::upstream
-`,
-            source: `// ${this.context.provenance(
+`;
+    }
+
+    /** The emitted renderer_plan.cpp, verbatim from the adopted plan. */
+    private renderPlanSourceCpp(
+        options: {
+            nodeVisibility?: boolean;
+            orthographicCamera?: boolean;
+            gpuInstancing?: boolean;
+            environmentRotation?: boolean;
+            solidSkybox?: boolean;
+            imageSkybox?: boolean;
+        },
+        inputs: {
+            viewMatrixBody: string;
+            opaqueOrderStamp: string;
+            shaderVariantTable: { readonly length: number };
+            shaderVariantEntries: string;
+            sampleCount: number;
+            instancingTrs: {
+                quaternionProducts: string;
+                basisLocals: string;
+                basisStores: string;
+            };
+            secondAnalyticLightFill: string;
+            backgroundGeometry: {
+                groundVertexRows: string;
+                groundIndexRow: string;
+                groundAlpha: string;
+                skyboxVertexRows: string;
+                skyboxCornerRows: string;
+                skyboxIndexRows: string;
+            };
+        },
+    ): string {
+        const {
+            viewMatrixBody,
+            opaqueOrderStamp,
+            shaderVariantTable,
+            shaderVariantEntries,
+            sampleCount,
+            instancingTrs,
+            secondAnalyticLightFill,
+            backgroundGeometry,
+        } = inputs;
+        return `// ${this.context.provenance(
                 renderTaskModule,
                 "buildBindings",
                 `${renderTaskModule}#sortTransparentBindings`,
@@ -2216,8 +2340,7 @@ ${pinnedFogInfosPacking()}    };
     : ""}\
 
 } // namespace bbl::upstream
-`,
-        };
+`;
     }
 
     public lowerShaders(options: {
@@ -2257,233 +2380,7 @@ ${pinnedFogInfosPacking()}    };
         iridescence: false,
         dispersion: false,
     }): LoweredShader[] {
-        const pbr = this.context.store.getSource(pbrTemplateModule);
-        const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
-        const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
-        const ibl = this.context.store.getSource(iblFragmentModule);
-        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
-        const refraction = this.context.store.getSource(refractionModule);
-        const dielectric = this.context.store.getSource(
-            dielectricLoaderModule,
-        );
-        const transmissionFrameGraph = this.context.store.getSource(
-            transmissionFrameGraphModule,
-        );
-        const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
-        const backgroundGround = this.context.store.getSource(backgroundGroundModule);
-        const backgroundDds = this.context.store.getSource(backgroundDdsModule);
-        const backgroundHdr = this.context.store.getSource(backgroundHdrModule);
-        const pbrGeometryModule =
-            "src/material/pbr/pbr-geometry-output-shader.ts";
-        const pbrGeometry = this.context.store.getSource(pbrGeometryModule);
-        const gridModule = "src/material/grid/grid-material.ts";
-        const clearcoatFragment = this.context.store.getSource(
-            clearcoatFragmentModule,
-        );
-        const sheenFragment = this.context.store.getSource(
-            sheenFragmentModule,
-        );
-        const iridescenceFragment = this.context.store.getSource(
-            iridescenceFragmentModule,
-        );
-        const dispersionWgsl = this.context.store.getSource(
-            dispersionWgslModule,
-        );
-        const clearcoatLoader = this.context.store.getSource(
-            clearcoatLoaderModule,
-        );
-        const sheenLoader = this.context.store.getSource(
-            sheenLoaderModule,
-        );
-        const iridescenceLoader = this.context.store.getSource(
-            iridescenceLoaderModule,
-        );
-        const shaderPipeline = this.context.store.getSource(shaderPipelineModule);
-        const sceneUniformsSource = this.context.store.getSource(
-            sceneUniformsSourceModule,
-        );
-        const requiredUpstreamFormulas: Array<
-            readonly [string, string, string]
-        > = [
-            [pbr, "roughness*roughness+0.0005", "GGX roughness"],
-            [pbr, "0.5/(gl+gv)", "Smith geometry"],
-            [pbr, "luminanceOverAlpha+=dot", "transparent alpha luminance"],
-            [pbr, "finalAlpha=saturate", "transparent alpha fold"],
-            [pbrExt, "baseColor *= input.vColor.rgb", "vertex color base color"],
-            [pbrExt, "alpha *= input.vColor.a", "vertex color alpha"],
-            [pbrHelper, "1.590579", "image-processing calibration"],
-            [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
-            [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
-            [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
-            [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
-            [ibl, "let seo = clamp", "IBL specular occlusion"],
-            [ibl, "vec2<f32>(NdotV, roughness)", "BRDF LUT coordinates"],
-            [ibl, "let R = rotateY(R_raw", "environment cubemap rotation"],
-            [iblSkybox, "let R = input.worldPos - scene.vEyePosition.xyz", "PBR skybox view ray"],
-            [iblSkybox, "let skyboxAlphaG = max(roughness * roughness, 0.000001)", "PBR skybox LOD alphaG"],
-            [refraction, "let rd=refract(-V,N,material.refractionParams.y)", "scene-color refraction ray"],
-            [refraction, "let ab=exp(material.volumeParams.rgb*th)", "Beer-Lambert attenuation"],
-            [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
-            [dielectric, "((ior - 1) / (ior + 1)) ** 2 / 0.04", "glTF IOR Fresnel"],
-            [transmissionFrameGraph, "updateTransmissionTexture(state, engine)", "scene-color copy ordering"],
-            [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
-            // The ground/skybox fragment *formulas* are no longer asserted
-            // here: they are lifted from the modules' own literals, and the
-            // lift throws naming the missing literal itself.
-            [backgroundGround, "ground renders last", "background ordering"],
-            [backgroundDds, "GPUTextureFormat = \"rgba16float\"", "DDS cubemap format"],
-            [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
-            [backgroundDds, "order: 0", "DDS skybox ordering"],
-            [backgroundHdr, "order: 0", "HDR skybox ordering"],
-            [backgroundHdr, "buildHdrSkyboxRenderable", "HDR skybox renderable"],
-            [pbrGeometry, "directDiffuse + finalIrradiance", "geometry irradiance"],
-            [pbrGeometry, "colorF0, 1.0 - roughness", "geometry reflectivity"],
-            [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
-        ];
-        if (options.morphStorage) {
-            const morphCoreModule =
-                "src/shader/fragments/morph-fragment-core.ts";
-            const morphCore = this.context.store.getSource(morphCoreModule);
-            const morphTargetsModule = "src/morph/create-morph-targets.ts";
-            const morphTargets =
-                this.context.store.getSource(morphTargetsModule);
-            requiredUpstreamFormulas.push(
-                [
-                    morphCore,
-                    "for (var i = 0u; i < morph.count; i = i + 1u)",
-                    "storage morph accumulation loop",
-                ],
-                [
-                    morphCore,
-                    "let b = (i * morph.vertexCount + vertexIndex) * 6u;",
-                    "storage morph delta indexing",
-                ],
-                [
-                    morphCore,
-                    "var<storage, read>",
-                    "storage morph binding rewrite",
-                ],
-                [
-                    morphTargets,
-                    "MORPH_WEIGHTS_HEADER_BYTES = 16",
-                    "morph weights header ABI",
-                ],
-            );
-        }
-        // The GridMaterial WGSL needs no marker rows: both stages are built
-        // by evaluating the pinned template functions, which throws on any
-        // shape the evaluator cannot fold.
-        if (options.clearcoat) {
-            requiredUpstreamFormulas.push(
-                [
-                    clearcoatFragment,
-                    "return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);",
-                    "clearcoat Kelemen visibility",
-                ],
-                [
-                    clearcoatFragment,
-                    "return f0 + (1.0 - f0) * (t2 * t2 * t);",
-                    "clearcoat Schlick Fresnel",
-                ],
-                [
-                    clearcoatFragment,
-                    "ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;",
-                    "clearcoat direct conservation",
-                ],
-                [
-                    clearcoatFragment,
-                    "let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;",
-                    "clearcoat IBL conservation",
-                ],
-                [
-                    clearcoatLoader,
-                    "useF0Remap: false",
-                    "glTF clearcoat F0 remap opt-out",
-                ],
-            );
-        }
-        if (options.sheen) {
-            requiredUpstreamFormulas.push(
-                [
-                    sheenFragment,
-                    "return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);",
-                    "sheen Charlie distribution",
-                ],
-                [
-                    sheenFragment,
-                    "return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));",
-                    "sheen Ashikhmin visibility",
-                ],
-                [
-                    sheenFragment,
-                    "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
-                    "sheen albedo scaling",
-                ],
-                [
-                    sheenLoader,
-                    "albedoScaling: true",
-                    "glTF sheen albedo scaling",
-                ],
-            );
-        }
-        if (options.iridescence) {
-            requiredUpstreamFormulas.push(
-                [
-                    iridescenceFragment,
-                    "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
-                    "iridescence optical path difference",
-                ],
-                [
-                    iridescenceFragment,
-                    "colorF0=mix(colorF0,iriF0,iriIntensity);",
-                    "iridescence base reflectance blend",
-                ],
-                [
-                    iridescenceLoader,
-                    "iridescenceThicknessMaximum ?? 400",
-                    "glTF iridescence thickness range",
-                ],
-            );
-        }
-        if (options.dispersion) {
-            requiredUpstreamFormulas.push(
-                [
-                    dispersionWgsl,
-                    "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
-                    "dispersion chromatic spread",
-                ],
-                [
-                    dielectric,
-                    "20.0 / dispersion",
-                    "glTF dispersion Abbe mapping",
-                ],
-            );
-        }
-        for (const [source, formula, label] of requiredUpstreamFormulas) {
-            if (!source.includes(formula)) {
-                throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
-            }
-            if (options.shaderPrograms.length > 0) {
-                for (const marker of [
-                    "function buildShaderPrelude",
-                    "@group(1) @binding(0) var<uniform> shaderSystem",
-                    "@group(1) @binding(1) var<uniform> shaderUniforms",
-                    "@location(${i}) ${attr}: ${attributeWgslType(attr)}",
-                ]) {
-                    if (!shaderPipeline.includes(marker)) {
-                        throw new Error(
-                            `Pinned custom shader composition changed: ${marker}.`,
-                        );
-                    }
-                }
-                if (!sceneUniformsSource.includes(
-                    'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
-                )) {
-                    throw new Error("Pinned scene uniform WGSL import changed.");
-                }
-            }
-        }
-
+        this.assertPinnedShaderFormulas(options);
         const result: Array<{ output: string; data: string }> = [];
         result.push({
             output: "upstream/shaders/pbr.vert.native.wgsl",
@@ -2800,6 +2697,246 @@ ${lifted.fragmentBody}
             );
         }
         return result;
+    }
+
+    /**
+     * Every pinned WGSL formula the emitted shaders transcribe or lift,
+     * asserted before any file is rendered so a retuned pin fails
+     * generation with the formula's own name.
+     */
+    private assertPinnedShaderFormulas(options: {
+        morphStorage?: boolean;
+        clearcoat?: boolean;
+        sheen?: boolean;
+        iridescence?: boolean;
+        dispersion?: boolean;
+        shaderPrograms: CompiledShaderProgram[];
+    }): void {
+        const pbr = this.context.store.getSource(pbrTemplateModule);
+        const pbrExt = this.context.store.getSource(pbrTemplateExtModule);
+        const pbrHelper = this.context.store.getSource(pbrHelperCoreModule);
+        const ibl = this.context.store.getSource(iblFragmentModule);
+        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
+        const refraction = this.context.store.getSource(refractionModule);
+        const dielectric = this.context.store.getSource(
+            dielectricLoaderModule,
+        );
+        const transmissionFrameGraph = this.context.store.getSource(
+            transmissionFrameGraphModule,
+        );
+        const sceneUniforms = this.context.store.getSource(sceneUniformsModule);
+        const backgroundGround = this.context.store.getSource(backgroundGroundModule);
+        const backgroundDds = this.context.store.getSource(backgroundDdsModule);
+        const backgroundHdr = this.context.store.getSource(backgroundHdrModule);
+        const pbrGeometryModule =
+            "src/material/pbr/pbr-geometry-output-shader.ts";
+        const pbrGeometry = this.context.store.getSource(pbrGeometryModule);
+        const clearcoatFragment = this.context.store.getSource(
+            clearcoatFragmentModule,
+        );
+        const sheenFragment = this.context.store.getSource(
+            sheenFragmentModule,
+        );
+        const iridescenceFragment = this.context.store.getSource(
+            iridescenceFragmentModule,
+        );
+        const dispersionWgsl = this.context.store.getSource(
+            dispersionWgslModule,
+        );
+        const clearcoatLoader = this.context.store.getSource(
+            clearcoatLoaderModule,
+        );
+        const sheenLoader = this.context.store.getSource(
+            sheenLoaderModule,
+        );
+        const iridescenceLoader = this.context.store.getSource(
+            iridescenceLoaderModule,
+        );
+        const shaderPipeline = this.context.store.getSource(shaderPipelineModule);
+        const sceneUniformsSource = this.context.store.getSource(
+            sceneUniformsSourceModule,
+        );
+        const requiredUpstreamFormulas: Array<
+            readonly [string, string, string]
+        > = [
+            [pbr, "roughness*roughness+0.0005", "GGX roughness"],
+            [pbr, "0.5/(gl+gv)", "Smith geometry"],
+            [pbr, "luminanceOverAlpha+=dot", "transparent alpha luminance"],
+            [pbr, "finalAlpha=saturate", "transparent alpha fold"],
+            [pbrExt, "baseColor *= input.vColor.rgb", "vertex color base color"],
+            [pbrExt, "alpha *= input.vColor.a", "vertex color alpha"],
+            [pbrHelper, "1.590579", "image-processing calibration"],
+            [ibl, "log2(cubemapDim * alphaG) * scene.vImageInfos.z", "IBL mip selection"],
+            [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
+            [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
+            [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
+            [ibl, "let seo = clamp", "IBL specular occlusion"],
+            [ibl, "vec2<f32>(NdotV, roughness)", "BRDF LUT coordinates"],
+            [ibl, "let R = rotateY(R_raw", "environment cubemap rotation"],
+            [iblSkybox, "let R = input.worldPos - scene.vEyePosition.xyz", "PBR skybox view ray"],
+            [iblSkybox, "let skyboxAlphaG = max(roughness * roughness, 0.000001)", "PBR skybox LOD alphaG"],
+            [refraction, "let rd=refract(-V,N,material.refractionParams.y)", "scene-color refraction ray"],
+            [refraction, "let ab=exp(material.volumeParams.rgb*th)", "Beer-Lambert attenuation"],
+            [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
+            [dielectric, "((ior - 1) / (ior + 1)) ** 2 / 0.04", "glTF IOR Fresnel"],
+            [transmissionFrameGraph, "updateTransmissionTexture(state, engine)", "scene-color copy ordering"],
+            [sceneUniforms, "lodGenerationScale ?? 0.8", "environment LOD scale"],
+            // The ground/skybox fragment *formulas* are no longer asserted
+            // here: they are lifted from the modules' own literals, and the
+            // lift throws naming the missing literal itself.
+            [backgroundGround, "ground renders last", "background ordering"],
+            [backgroundDds, "GPUTextureFormat = \"rgba16float\"", "DDS cubemap format"],
+            [backgroundDds, "pass.drawIndexed(36)", "DDS skybox draw"],
+            [backgroundDds, "order: 0", "DDS skybox ordering"],
+            [backgroundHdr, "order: 0", "HDR skybox ordering"],
+            [backgroundHdr, "buildHdrSkyboxRenderable", "HDR skybox renderable"],
+            [pbrGeometry, "directDiffuse + finalIrradiance", "geometry irradiance"],
+            [pbrGeometry, "colorF0, 1.0 - roughness", "geometry reflectivity"],
+            [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
+        ];
+        if (options.morphStorage) {
+            const morphCoreModule =
+                "src/shader/fragments/morph-fragment-core.ts";
+            const morphCore = this.context.store.getSource(morphCoreModule);
+            const morphTargetsModule = "src/morph/create-morph-targets.ts";
+            const morphTargets =
+                this.context.store.getSource(morphTargetsModule);
+            requiredUpstreamFormulas.push(
+                [
+                    morphCore,
+                    "for (var i = 0u; i < morph.count; i = i + 1u)",
+                    "storage morph accumulation loop",
+                ],
+                [
+                    morphCore,
+                    "let b = (i * morph.vertexCount + vertexIndex) * 6u;",
+                    "storage morph delta indexing",
+                ],
+                [
+                    morphCore,
+                    "var<storage, read>",
+                    "storage morph binding rewrite",
+                ],
+                [
+                    morphTargets,
+                    "MORPH_WEIGHTS_HEADER_BYTES = 16",
+                    "morph weights header ABI",
+                ],
+            );
+        }
+        // The GridMaterial WGSL needs no marker rows: both stages are built
+        // by evaluating the pinned template functions, which throws on any
+        // shape the evaluator cannot fold.
+        if (options.clearcoat) {
+            requiredUpstreamFormulas.push(
+                [
+                    clearcoatFragment,
+                    "return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);",
+                    "clearcoat Kelemen visibility",
+                ],
+                [
+                    clearcoatFragment,
+                    "return f0 + (1.0 - f0) * (t2 * t2 * t);",
+                    "clearcoat Schlick Fresnel",
+                ],
+                [
+                    clearcoatFragment,
+                    "ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;",
+                    "clearcoat direct conservation",
+                ],
+                [
+                    clearcoatFragment,
+                    "let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;",
+                    "clearcoat IBL conservation",
+                ],
+                [
+                    clearcoatLoader,
+                    "useF0Remap: false",
+                    "glTF clearcoat F0 remap opt-out",
+                ],
+            );
+        }
+        if (options.sheen) {
+            requiredUpstreamFormulas.push(
+                [
+                    sheenFragment,
+                    "return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);",
+                    "sheen Charlie distribution",
+                ],
+                [
+                    sheenFragment,
+                    "return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));",
+                    "sheen Ashikhmin visibility",
+                ],
+                [
+                    sheenFragment,
+                    "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                    "sheen albedo scaling",
+                ],
+                [
+                    sheenLoader,
+                    "albedoScaling: true",
+                    "glTF sheen albedo scaling",
+                ],
+            );
+        }
+        if (options.iridescence) {
+            requiredUpstreamFormulas.push(
+                [
+                    iridescenceFragment,
+                    "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                    "iridescence optical path difference",
+                ],
+                [
+                    iridescenceFragment,
+                    "colorF0=mix(colorF0,iriF0,iriIntensity);",
+                    "iridescence base reflectance blend",
+                ],
+                [
+                    iridescenceLoader,
+                    "iridescenceThicknessMaximum ?? 400",
+                    "glTF iridescence thickness range",
+                ],
+            );
+        }
+        if (options.dispersion) {
+            requiredUpstreamFormulas.push(
+                [
+                    dispersionWgsl,
+                    "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                    "dispersion chromatic spread",
+                ],
+                [
+                    dielectric,
+                    "20.0 / dispersion",
+                    "glTF dispersion Abbe mapping",
+                ],
+            );
+        }
+        for (const [source, formula, label] of requiredUpstreamFormulas) {
+            if (!source.includes(formula)) {
+                throw new Error(`Pinned Babylon Lite source is missing ${label}: ${formula}.`);
+            }
+            if (options.shaderPrograms.length > 0) {
+                for (const marker of [
+                    "function buildShaderPrelude",
+                    "@group(1) @binding(0) var<uniform> shaderSystem",
+                    "@group(1) @binding(1) var<uniform> shaderUniforms",
+                    "@location(${i}) ${attr}: ${attributeWgslType(attr)}",
+                ]) {
+                    if (!shaderPipeline.includes(marker)) {
+                        throw new Error(
+                            `Pinned custom shader composition changed: ${marker}.`,
+                        );
+                    }
+                }
+                if (!sceneUniformsSource.includes(
+                    'import sceneUniformsWgsl from "../../shaders/scene-uniforms.wgsl?raw"',
+                )) {
+                    throw new Error("Pinned scene uniform WGSL import changed.");
+                }
+            }
+        }
     }
 
     public compiledSceneUniformsWgsl(): string {
