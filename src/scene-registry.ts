@@ -1204,6 +1204,43 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene40",
+        name: "Scene 40 - Havok Sphere Drop",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene40.ts",
+        title: "Babylon Lite Native - Physics Sphere Drop",
+        parity: {
+            // The pin's own spec (`tests/lite/parity/scenes/
+            // scene40-physics.spec.ts`) serves this scene at
+            // `?captureFrame=120` and waits for the `captureReady` flag
+            // the scene raises when its 120th physics step lands. Both
+            // sides read the same query, and both freeze themselves: the
+            // browser through `stopEngine` in a zero-delay `setTimeout`,
+            // and the native run through the same lowered call.
+            referenceSearch: "?captureFrame=120",
+            // MEASURED, and the number is a solver difference rather than
+            // a port defect -- see docs/fidelity.md#physics-contract. This
+            // is the one gate in the repository whose threshold does not
+            // assert agreement with the pinned engine: Bullet and Havok
+            // integrate different contact models, so at a moving pose
+            // they place the sphere differently by construction. The
+            // ceiling is set just above what was measured, which makes it
+            // a REGRESSION gate on this port's own solver -- it catches
+            // the sphere landing somewhere new -- and nothing more.
+            maxFullMad: 0.333,
+            maxForegroundMad: 0.778,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                // The scene stops its own engine at step 120, so this only
+                // has to name a frame after the freeze: the run reaches it
+                // with nothing advancing, captures, and ends. The parity
+                // runner derives the frame limit from this, so there is no
+                // BBLITE_MAX_FRAMES to set beside it.
+                BBLITE_SCREENSHOT_FRAME: "130",
+            },
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",

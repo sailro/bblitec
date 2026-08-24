@@ -31,9 +31,11 @@
  * engine the golden runs in. A different solver is neither: Bullet and
  * Havok integrate different contact models, so a body's pose after N steps
  * is a different number, not a rounding of the same one. It is recorded as
- * `substituted-physics-solver` in the scene's `fidelity.json` and it is the
- * reason no physics scene can carry a pixel threshold against a Havok
- * golden. See `docs/fidelity.md`.
+ * `substituted-physics-solver` in the scene's `fidelity.json`, and it is
+ * why a physics scene's threshold cannot be driven toward zero: scene 40
+ * carries one, but it gates this port's own solver against a measured
+ * distance rather than asserting agreement with the pinned one. See
+ * `docs/fidelity.md#physics-contract`.
  */
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";

@@ -270,10 +270,13 @@ export function compileAdaptations(
                 "bit-faithful by construction: two rigid-body solvers " +
                 "integrate different contact models, so a body's pose " +
                 "after N steps is a different number rather than a " +
-                "rounding of the same one. A physics scene therefore " +
-                "cannot carry a pixel threshold against a Havok golden " +
-                "and is measured by trajectory instead " +
-                "(`BBLITE_PHYSICS_TRACE`).",
+                "rounding of the same one. A physics scene's threshold " +
+                "therefore cannot be driven toward zero: scene 40 carries " +
+                "one set just above the measured distance between the two " +
+                "solvers, which gates this port's own solver rather than " +
+                "asserting agreement with the pinned one. The trajectory " +
+                "(`BBLITE_PHYSICS_TRACE`) is what grades the simulation " +
+                "itself.",
             risk: "high",
             validation: [
                 "free fall is exact: the measured pose after N steps " +

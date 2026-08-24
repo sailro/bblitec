@@ -17,6 +17,7 @@ import {
     compileImmediatePromise,
     type PromiseLoweringContext,
 } from "./promises.js";
+import { staticNumberValue } from "./option-helpers.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
@@ -100,6 +101,12 @@ export interface ExpressionContext
     isBrowserOnlyExpression(
         expression: ts.Expression,
     ): boolean;
+    isDeferredCallbackCall(call: ts.CallExpression): boolean;
+    compileFrameCallback(
+        expression: ts.Expression,
+        signature?: "delta" | "void",
+    ): string;
+    requireDefaultEngine(node: ts.Node): string;
     evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined;
@@ -609,6 +616,45 @@ export class ExpressionLowerer {
     }
 
     /**
+     * `setTimeout(callback, 0)`, as the deferred callback the engine runs
+     * at the next frame boundary.
+     *
+     * The delay is read at generation and must be zero. Babylon Native --
+     * which embeds a JavaScript engine and so must serve any delay -- pays
+     * for a whole timer thread here; the reached slice needs none of it,
+     * and a non-zero delay refuses rather than silently becoming "next
+     * frame", which would be a different scene.
+     */
+    private compileDeferredCallback(
+        call: ts.CallExpression,
+    ): Value {
+        this.context.expectArgumentCount(call, 2, 2);
+        const delay = staticNumberValue(
+            this.context,
+            call.arguments[1]!,
+        );
+        if (delay !== 0) {
+            this.context.fail(
+                call.arguments[1]!,
+                "Only a zero-delay setTimeout is lowered: it means " +
+                    "\"after the current turn\", which the frame " +
+                    "conductor already has. A real delay needs a timer " +
+                    "this runtime does not carry, and rounding one to " +
+                    "the next frame would be a different scene.",
+            );
+        }
+        const engine = this.context.requireDefaultEngine(call);
+        const callback = this.context.compileFrameCallback(
+            call.arguments[0]!,
+            "void",
+        );
+        return {
+            kind: "void",
+            cpp: `bbl::defer_callback(${engine}, ${callback})`,
+        };
+    }
+
+    /**
      * `condition ? whenTrue : whenFalse` for two already-compiled values.
      * Both branches must name the same kind of native expression, since
      * the result has to be one expression the caller can use.
@@ -818,6 +864,14 @@ export class ExpressionLowerer {
         );
         if (promise) {
             return promise;
+        }
+        // `setTimeout(callback, 0)`: run once, after the current turn.
+        // Every other browser call erases; this one is implemented,
+        // because the frame conductor already has that boundary and the
+        // corpus reaches `stopEngine` through it -- the freeze a physics
+        // scene pins its measured pose with.
+        if (this.context.isDeferredCallbackCall(call)) {
+            return this.compileDeferredCallback(call);
         }
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {

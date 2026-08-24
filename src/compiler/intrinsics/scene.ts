@@ -313,6 +313,25 @@ export function compileSceneIntrinsic(
             };
         }
 
+        // `stopEngine` is the pin's own end of the render loop, and the
+        // corpus reaches it from inside a zero-delay `setTimeout` -- the
+        // freeze every physics scene pins its measured pose with. What it
+        // means here is a flag the frame conductor reads.
+        case "stopEngine": {
+            context.expectArgumentCount(call, 1, 1);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "void",
+                cpp: `bbl::stop_engine(${engine.cpp})`,
+            };
+        }
+
         default:
             return undefined;
     }

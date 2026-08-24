@@ -526,6 +526,21 @@ export class StatementLowerer {
             ts.isReturnStatement(statement) &&
             !statement.expression
         ) {
+            // A bare `return` at the very end of a body is the statement
+            // it would have emitted anyway, so it drops. Anywhere else it
+            // is control flow -- an early exit guarding what follows --
+            // and dropping it keeps the guarded statements while removing
+            // the guard. That reads as a working scene and is not one:
+            // a `if (x === null) { return; }` ahead of a narrowed `*x`
+            // becomes an empty `if` and an unguarded dereference.
+            if (!isTrailingStatement(statement)) {
+                context.fail(
+                    statement,
+                    "An early `return` is not lowered: the statements " +
+                        "after it would still run. Write the remainder " +
+                        "under an `else`, or invert the condition.",
+                );
+            }
             return;
         }
         if (ts.isThrowStatement(statement)) {
@@ -1977,4 +1992,64 @@ function terminatesFlow(statement: ts.Statement): boolean {
         return last ? terminatesFlow(last) : false;
     }
     return false;
+}
+
+/**
+ * Whether nothing would run after this statement anyway.
+ *
+ * A bare `return` that trails its whole body is the statement the body
+ * would have ended with, so it drops. Anywhere else it is control flow --
+ * an early exit guarding what follows -- and dropping it keeps the
+ * guarded statements while removing the guard. That reads as a working
+ * scene and is not one.
+ *
+ * The walk climbs out of every construct, not just blocks: a `return`
+ * that is last inside an `if` is NOT last in the body, because the
+ * statements after the `if` still run. A `return` anywhere inside a loop
+ * is control flow whatever its position, since it exits the loop as well.
+ */
+function isTrailingStatement(statement: ts.Statement): boolean {
+    let node: ts.Node = statement;
+    for (;;) {
+        const parent: ts.Node | undefined = node.parent;
+        if (!parent) {
+            return true;
+        }
+        if (
+            ts.isFunctionDeclaration(parent) ||
+            ts.isFunctionExpression(parent) ||
+            ts.isArrowFunction(parent) ||
+            ts.isMethodDeclaration(parent) ||
+            ts.isSourceFile(parent)
+        ) {
+            return true;
+        }
+        if (ts.isBlock(parent)) {
+            const statements = parent.statements;
+            if (statements[statements.length - 1] !== node) {
+                return false;
+            }
+            node = parent;
+            continue;
+        }
+        // Leaving a loop early is control flow at any position.
+        if (ts.isIterationStatement(parent, false)) {
+            return false;
+        }
+        if (
+            ts.isIfStatement(parent) ||
+            ts.isLabeledStatement(parent) ||
+            ts.isTryStatement(parent) ||
+            ts.isCaseClause(parent) ||
+            ts.isDefaultClause(parent) ||
+            ts.isCaseBlock(parent) ||
+            ts.isSwitchStatement(parent)
+        ) {
+            node = parent;
+            continue;
+        }
+        // An enclosing construct this walk does not model: refuse rather
+        // than assume the return is inert.
+        return false;
+    }
 }

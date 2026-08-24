@@ -912,6 +912,32 @@ frame's. A body's integrated position and rotation are written onto the same
 `MeshRecord` fields property animation writes, and bump the same
 `transform_version` the renderer re-reads.
 
+**A physics scene freezes itself, and that is what makes it measurable.**
+Every one in the corpus pins its measured pose the same way: it counts
+steps in `onPhysicsAfterStep`, and at the step its `?captureFrame=` query
+names it calls `stopEngine` from a zero-delay `setTimeout`. Both halves are
+reached rather than erased, because both have a native meaning:
+
+- **`stopEngine`** is a flag the frame conductor reads. The pin cancels its
+  animation frame and clears `_renderFn`, so nothing further submits; here
+  nothing further *advances* — the conductor stops running the scene's
+  callbacks and keeps presenting the frozen frame only while a capture is
+  still pending, which is how a screenshot lands on it exactly as the
+  browser harness takes one off the frozen canvas.
+- **`setTimeout(callback, 0)`** is a one-shot deferred callback the
+  conductor drains after the frame's own callbacks — the same boundary a
+  browser runs a zero-delay timeout at. Seventeen of the corpus's
+  twenty-one call sites pass a delay of exactly 0, which is the reached
+  slice; the four real waits (scenes 44, 48, 156 and 173) refuse rather
+  than being rounded to the next frame, which would be a different scene.
+  Babylon Native, which embeds a JavaScript engine and must serve any
+  delay, needs a timer thread and a time-ordered queue for this; none of
+  that applies where the frame conductor is the only thread.
+
+Without those two the scene runs free and the two sides are at different
+steps, which makes any pixel comparison meaningless. With them, both sides
+stop at the same physics step.
+
 Everything else in the pinned physics layer refuses at generation naming
 what it reached: mesh and convex-hull shapes (the pin's own mesh
 accumulator), containers, heightfields, constraints, queries, triggers,

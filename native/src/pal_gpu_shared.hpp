@@ -2602,15 +2602,79 @@ inline std::vector<float> shader_stage_block_floats(
  * bounded grace period, and both used to carry their own copy of the
  * rule -- including the comment saying it matched the other one.
  */
+/**
+ * Everything a frame does before anything is drawn, for every loop that
+ * has a scene: resolve the delta, run the scene's own callbacks, then
+ * drain what `setTimeout` queued.
+ *
+ * A stopped engine advances none of it -- the pin's `stopEngine` clears
+ * `_renderFn`, so no further frame runs at all and the canvas keeps what
+ * it last drew. Here the loop keeps presenting that unchanged frame while
+ * `CaptureGate` still has something pending, so a screenshot lands on the
+ * frozen frame exactly as the browser harness takes one off the frozen
+ * canvas.
+ *
+ * The drain sits after the scene's callbacks because that is where a
+ * browser runs a zero-delay timeout: after the current turn, before the
+ * next frame. A `stopEngine` queued from one therefore takes effect on
+ * this frame's boundary, where the browser's does.
+ *
+ * Returns the frame's delta, because the frame body needs the same value
+ * the before-render callbacks were given -- an animated billboard pass
+ * advances by it. A stopped engine returns zero rather than the measured
+ * wall-clock gap: the loop keeps presenting the frame it last drew, and a
+ * frozen frame advances nothing.
+ */
+[[nodiscard]] inline float advance_frame(
+    Engine& engine,
+    Scene& scene,
+    FrameClock& frame_clock) {
+    if (engine.stopped) {
+        return 0.0f;
+    }
+    const float delta_ms =
+        frame_clock.advance(scene.fixed_delta_ms);
+    for (const auto& callback : scene.before_render) {
+        callback(delta_ms);
+    }
+    run_deferred_callbacks(engine);
+    return delta_ms;
+}
+
+/**
+ * The same boundary for a loop with no scene. A `SpriteRenderer` or an
+ * `EffectRenderer` is its own rendering context on the engine, so it has
+ * no before-render list to run -- but a scene-less driver can still queue
+ * a timeout, and one that queued `stopEngine` and never drained would
+ * simply never stop.
+ */
+inline void advance_frame(Engine& engine) {
+    if (engine.stopped) {
+        return;
+    }
+    run_deferred_callbacks(engine);
+}
+
 class CaptureGate {
 public:
-    CaptureGate(const FrameOptions& options, long limit)
-        : options_(&options), limit_(limit) {}
+    CaptureGate(
+        const FrameOptions& options,
+        long limit,
+        const Engine* engine = nullptr)
+        : options_(&options), limit_(limit), engine_(engine) {}
 
     bool screenshot_saved = false;
     bool id_buffer_saved = false;
     bool cluster_buffer_saved = false;
     bool render_capture_saved = false;
+
+    /** Whether this run was asked for any capture at all. */
+    [[nodiscard]] bool requested() const {
+        return !options_->screenshot_path.empty() ||
+            !options_->id_buffer_path.empty() ||
+            !options_->cluster_buffer_path.empty() ||
+            !options_->render_capture_path.empty();
+    }
 
     [[nodiscard]] bool pending() const {
         return (!options_->screenshot_path.empty() &&
@@ -2623,8 +2687,36 @@ public:
              !render_capture_saved);
     }
 
+    /**
+     * Whether the engine's own `stopEngine` has ended the run.
+     *
+     * The pin cancels its animation frame and clears `_renderFn`, so no
+     * further frame submits and the canvas keeps what it last drew. Here
+     * the loop keeps presenting that unchanged frame only while a capture
+     * is still pending, so a screenshot lands on the frozen frame exactly
+     * as the browser harness takes one off the frozen canvas -- and stops
+     * the moment nothing is waiting for it.
+     *
+     * It lives here rather than at each call site for the reason this
+     * class exists at all: there are six frame loops, and a rule spelled
+     * six times is a rule that diverges. A loop with no engine to consult
+     * (none today) is simply never stopped.
+     */
+    [[nodiscard]] bool engine_stopped() const {
+        return engine_ != nullptr && engine_->stopped;
+    }
+
     /** Whether the loop should run another frame. */
     [[nodiscard]] bool keep_running(bool running, long frame) const {
+        // A measured run ends the moment a stopped engine has nothing
+        // left to capture. An INTERACTIVE one does not: the browser's
+        // `stopEngine` freezes the canvas and leaves the page up, so the
+        // window stays, input keeps working and the frozen scene can
+        // still be orbited -- which is the manual check every integration
+        // owes before it is called done.
+        if (engine_stopped() && requested() && !pending()) {
+            return false;
+        }
         return running &&
             (limit_ <= 0 || frame < limit_ ||
              (pending() && frame < limit_ + grace_frames));
@@ -2635,6 +2727,7 @@ public:
 private:
     const FrameOptions* options_;
     long limit_;
+    const Engine* engine_;
 };
 
 /**

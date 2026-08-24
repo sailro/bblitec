@@ -1118,8 +1118,10 @@ Bullet resolve contacts and converge their constraint solvers differently,
 so a body's pose after N steps is a *different number* rather than a
 rounding of the same one, and the difference compounds with every bounce.
 It is recorded per scene as `substituted-physics-solver`, at `high` risk,
-and it means a physics scene cannot carry a pixel threshold against a Havok
-golden at all.
+and it means a physics scene's threshold can never be driven toward zero.
+Scene 40 carries one, measured just above the distance between the two
+solvers: it gates this port's own solver against that distance rather than
+asserting agreement with the pinned one.
 
 **Why the substitution, and why at this seam.** `createHavokWorld(scene,
 hknp)` takes the solver module as a parameter and the pinned layer calls
@@ -1179,7 +1181,29 @@ That comparison is also what validates the degenerate-box sink below: the
 resting height is not merely analytically plausible, it is the height the
 reference puts the sphere at.
 
-Measured at rest, Bullet against the Havok golden, `examples/physics-drop.ts`:
+**Measured at a moving pose, which is the number that matters.** Scene 40 is
+the corpus scene this lane starts at, and the pin's own parity spec freezes
+it at `?captureFrame=120` — mid-flight, after two bounces. Both sides stop
+themselves at that step, so the comparison is controlled. Measured:
+
+| | Scene 40 at step 120 |
+| --- | --- |
+| Full / region MAD | 0.332 / 0.777 |
+| Pixels exactly equal | 97.74% of the image, 95.07% of the foreground region |
+| Where the difference is | edges 11.803, interior 0.559, background 0.032 |
+| Displacement | the sphere sits **5 px lower** than the golden's |
+| SDL_GPU versus Dawn | 0.000, byte-identical |
+
+Read that as one fact: after 120 steps and two bounces the two solvers put
+the sphere a few pixels apart, the silhouette is where the difference lives,
+and the shading and both GPU backends agree. It is a solver difference and
+nothing else — the backends agreeing to zero puts all of it on the CPU side.
+No threshold on this scene can be driven toward zero, and the one it carries
+is a regression gate on *this port's* solver rather than a claim about
+agreement with the pinned one.
+
+**Measured at rest**, where the configuration is static and phase drops out,
+Bullet against the Havok golden, `examples/physics-drop.ts`:
 **921,584 of 921,600 pixels exactly identical** — full MAD 0.000056, region
 MAD 0.000127, 15 of the 16 differing pixels within one byte and the last a
 single antialiased silhouette pixel at 37. The non-background extent, pixel
@@ -1215,6 +1239,21 @@ right for a ground and wrong for a thin ceiling, and a scene has no way to
 say which it meant. No reached scene builds one; a corpus scene that does
 should make the anchor face explicit at the seam rather than inherit this
 default.
+
+**A scene freezes itself, and both sides honour the same freeze.** Every
+corpus physics scene counts its own steps and calls `stopEngine` from a
+zero-delay `setTimeout` at the step its `?captureFrame=` query names, so
+what pins the pose is the scene rather than the harness. Both are lowered
+rather than erased: `stopEngine` is a flag the frame conductor reads, and
+`setTimeout(cb, 0)` is a one-shot callback it drains after the frame's own
+callbacks — the boundary a browser runs a zero-delay timeout at. Once
+stopped the conductor advances nothing and keeps presenting the frozen
+frame while a capture is pending, which is the native equivalent of the
+browser harness screenshotting a canvas whose render loop has been
+cancelled. Seventeen of the corpus's twenty-one `setTimeout` call sites
+pass a delay of 0, which is the reached slice; the four real waits (scenes
+44, 48, 156 and 173) refuse rather than becoming "next frame", which would
+be a different scene.
 
 **Two ordering repairs belong to the PAL, not to the semantics.** The pin
 configures a body in Havok's order — create, motion type, add to world,

@@ -7349,7 +7349,7 @@ bool run_dawn_engine(Engine& engine) {
             static_cast<std::size_t>(benchmark_frames));
     }
 
-    CaptureGate captures(frame_options, limit);
+    CaptureGate captures(frame_options, limit, &engine);
     FrameClock frame_clock;
     bool running = true;
     long frame = 0;
@@ -7374,11 +7374,10 @@ bool run_dawn_engine(Engine& engine) {
         // and a bracket that began at each backend's acquisition would then
         // cover a different span on each.
         const double benchmark_start = monotonic_milliseconds();
-        const float delta_ms =
-            frame_clock.advance(scene.fixed_delta_ms);
-        for (const auto& callback : scene.before_render) {
-            callback(delta_ms);
-        }
+        // Only an animated billboard pass reads it, so the frame's own
+        // delta is unused in a build that reaches no billboards.
+        [[maybe_unused]] const float delta_ms =
+            advance_frame(engine, scene, frame_clock);
         bool topology_updated = false;
         if (
             scene.mesh_membership_version !=

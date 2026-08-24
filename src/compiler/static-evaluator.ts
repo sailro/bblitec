@@ -34,6 +34,14 @@ type EvaluateBrowserValue = (
 type IsBrowserOnlyExpression = (
     expression: ts.Expression,
 ) => boolean;
+/**
+ * A nullable the source guarded, as the value it narrowed to; unchanged
+ * when it did not. `DataLowerer.narrowOptional` owns the rule.
+ */
+type NarrowOptional = (
+    value: Value,
+    expression: ts.Expression,
+) => Value;
 
 export class StaticEvaluator {
     public constructor(
@@ -49,6 +57,7 @@ export class StaticEvaluator {
         private readonly compileCondition: CompileCondition,
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
+        private readonly narrowOptional: NarrowOptional,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -534,6 +543,17 @@ export class StaticEvaluator {
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
+            // A nullable number the source has already guarded reads as
+            // the number it was narrowed to -- the unwrap, not a refusal.
+            // An UNguarded read narrows to nothing and still fails by
+            // name below rather than dereferencing an empty optional.
+            const narrowed = this.narrowOptional(value, unwrapped);
+            if (
+                narrowed !== value &&
+                narrowed.dataType?.kind === "number"
+            ) {
+                return this.castNumber(narrowed, precision);
+            }
             if (value.kind !== "number") {
                 this.fail(
                     unwrapped,

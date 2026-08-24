@@ -5215,7 +5215,7 @@ bool run_gpu_engine(Engine& engine) {
         const bool benchmark = frame_options.benchmarking();
         const long warmup = frame_options.benchmark_warmup();
         const long limit = frame_options.frame_budget();
-        CaptureGate captures(frame_options, limit);
+        CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples;
         bool running = true;
         long frame = 0;
@@ -5262,11 +5262,10 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_CancelGPUCommandBuffer(command);
                 continue;
             }
-            const float delta_ms =
-                frame_clock.advance(scene.fixed_delta_ms);
-            for (const auto& callback : scene.before_render) {
-                callback(delta_ms);
-            }
+            // Only an animated billboard pass reads it, so the frame's own
+            // delta is unused in a build that reaches no billboards.
+            [[maybe_unused]] const float delta_ms =
+                advance_frame(engine, scene, frame_clock);
             for (
                 std::size_t index = 0;
                 index < render_plan.items.size() &&
