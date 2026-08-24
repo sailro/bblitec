@@ -21,6 +21,7 @@
  */
 
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 
 /** The pin's own parse result. `sh` rides along for the SH-capable arms. */
 interface ParsedSplat {
@@ -61,7 +62,7 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
                   bytes.byteOffset + bytes.byteLength,
               ) as ArrayBuffer);
 
-    let rowBuffer: ArrayBuffer;
+    let rowBuffer: ArrayBuffer | Uint8Array;
     if (pinnedPlyParser.isPly(data)) {
         if (pinnedPlyParser.isPlyCompressedOrSH(data)) {
             throw new Error(
@@ -69,13 +70,29 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
                     "the reached slice is the plain PLY and .splat row layout.",
             );
         }
-        const parsed = pinnedPlyParser.convertPlyToSplat(data);
-        if (parsed.data.byteLength === 0) {
-            throw new Error(
-                "Splat PLY parsed to an empty row buffer (unsupported property layout).",
-            );
-        }
-        rowBuffer = parsed.data;
+        // The pin's text parse over a multi-megabyte PLY is deterministic
+        // in (asset bytes, pin); a repeat compile replays the row buffer.
+        // The `.splat` fast path below stays uncached — caching a copy of
+        // the input would only spend disk on a no-op.
+        rowBuffer = cachedBakeSync(
+            {
+                kind: "splat-ply",
+                version: "1",
+                module: moduleIdentity(import.meta.url),
+                browser: false,
+                parameters: {},
+                inputs: [bytes],
+            },
+            () => {
+                const parsed = pinnedPlyParser.convertPlyToSplat(data);
+                if (parsed.data.byteLength === 0) {
+                    throw new Error(
+                        "Splat PLY parsed to an empty row buffer (unsupported property layout).",
+                    );
+                }
+                return new Uint8Array(parsed.data);
+            },
+        );
     } else {
         // A pre-converted `.splat` is already the row layout; the pin takes
         // this same fast path.
@@ -89,5 +106,10 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
     if (rowBuffer.byteLength === 0) {
         throw new Error("Splat asset carries no splats.");
     }
-    return { rows: new Uint8Array(rowBuffer) };
+    return {
+        rows:
+            rowBuffer instanceof Uint8Array
+                ? rowBuffer
+                : new Uint8Array(rowBuffer),
+    };
 }

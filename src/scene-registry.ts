@@ -226,9 +226,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -279,9 +276,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.02,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -295,9 +289,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -335,9 +326,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "2",
-            },
         },
     },
     {
@@ -351,9 +339,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.02,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -419,9 +404,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.011,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -447,9 +429,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.002,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "2",
-            },
         },
     },
     {
@@ -674,9 +653,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.002,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -783,9 +759,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.2,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -803,9 +776,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.2,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.75",
-            },
         },
     },
     {
@@ -831,9 +801,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.3,
             backgroundColor: [36, 36, 36],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -848,9 +815,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -868,9 +832,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -884,9 +845,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.5",
-            },
         },
     },
     {
@@ -910,9 +868,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [9, 11, 18],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "3",
-            },
         },
     },
     {
@@ -1008,9 +963,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -1144,9 +1096,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "0.75",
-            },
         },
     },
     {
@@ -1176,9 +1125,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "6.5",
-            },
         },
     },
     {
@@ -1293,9 +1239,6 @@ const sceneInputs: readonly SceneInput[] = [
             dawnThresholds: { maxFullMad: 0.002, maxForegroundMad: 0.015 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1.0",
-            },
         },
     },
     {
@@ -1340,9 +1283,6 @@ const sceneInputs: readonly SceneInput[] = [
             dawnThresholds: { maxFullMad: 0.005, maxForegroundMad: 0.035 },
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1.0",
-            },
         },
     },
     {
@@ -1356,9 +1296,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1.0",
-            },
         },
     },
     {
@@ -1568,9 +1505,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.006,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -1659,9 +1593,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.3,
             backgroundColor: [36, 36, 36],
             backgroundThreshold: 30,
-            nativeEnvironment: {
-                BBLITE_ANIMATION_SEEK_SECONDS: "1",
-            },
         },
     },
     {
@@ -2192,6 +2123,7 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
         ...resolved,
         parity: {
             ...parity,
+            ...derivedSeekEnvironment(scene.id, parity),
             reference: parity.reference ?? {
                 kind: "source",
                 path: `reference/${scene.id}/babylon-lite-golden.png`,
@@ -2199,6 +2131,49 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
             outputDirectory:
                 parity.outputDirectory ??
                 `artifacts/parity/${scene.id}`,
+        },
+    };
+}
+
+/**
+ * The measured pose, spelled once. `referenceTimeSeconds` is where the
+ * registry pins it (the browser capture and `capture --native`/`diff`
+ * read it), and the native parity run reads
+ * `nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS` — 23 entries used to
+ * hand-pair the two with nothing enforcing the pairing, and drift would
+ * have split rung 1 from rung 3 silently. The env var is derived here;
+ * an entry that still spells it must agree numerically (a different
+ * spelling of the same number, `"1.0"` for 1, is kept as written) and a
+ * disagreement refuses loudly rather than letting either copy win.
+ */
+function derivedSeekEnvironment(
+    sceneId: string,
+    parity: NonNullable<SceneInput["parity"]>,
+): { nativeEnvironment?: Record<string, string> } {
+    const pose = parity.referenceTimeSeconds;
+    const explicit =
+        parity.nativeEnvironment?.BBLITE_ANIMATION_SEEK_SECONDS;
+    if (pose === undefined) {
+        if (explicit !== undefined) {
+            throw new Error(
+                `Scene '${sceneId}' sets BBLITE_ANIMATION_SEEK_SECONDS=${explicit} ` +
+                    "with no referenceTimeSeconds: the native side would render a pose " +
+                    "the browser capture never sees. Pin referenceTimeSeconds instead.",
+            );
+        }
+        return {};
+    }
+    if (explicit !== undefined && Number(explicit) !== pose) {
+        throw new Error(
+            `Scene '${sceneId}' spells its pose twice and they disagree: ` +
+                `referenceTimeSeconds=${pose} but ` +
+                `BBLITE_ANIMATION_SEEK_SECONDS='${explicit}'. One pose, one spelling.`,
+        );
+    }
+    return {
+        nativeEnvironment: {
+            ...parity.nativeEnvironment,
+            BBLITE_ANIMATION_SEEK_SECONDS: explicit ?? String(pose),
         },
     };
 }

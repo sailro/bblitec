@@ -96,6 +96,43 @@ test("registers unique generated scene targets", () => {
     assert.throws(() => getScene("missing"), /Unknown scene/);
 });
 
+test("spells the measured pose once: the native seek derives from referenceTimeSeconds", () => {
+    // 23 entries used to hand-pair referenceTimeSeconds with
+    // nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS; drift would have
+    // split rung 1 (the env var, read by the parity run) from rung 3
+    // (referenceTimeSeconds, read by capture --native and diff)
+    // silently. The registry now derives the env var, and this asserts
+    // the pairing holds for every entry in both directions.
+    let derived = 0;
+    for (const scene of scenes) {
+        const pose = scene.parity?.referenceTimeSeconds;
+        const seek =
+            scene.parity?.nativeEnvironment
+                ?.BBLITE_ANIMATION_SEEK_SECONDS;
+        if (pose === undefined) {
+            assert.equal(
+                seek,
+                undefined,
+                `${scene.id} carries a native seek with no referenceTimeSeconds.`,
+            );
+            continue;
+        }
+        assert.ok(
+            seek !== undefined,
+            `${scene.id} pins referenceTimeSeconds=${pose} but derives no native seek.`,
+        );
+        assert.equal(
+            Number(seek),
+            pose,
+            `${scene.id}: BBLITE_ANIMATION_SEEK_SECONDS='${seek}' disagrees with referenceTimeSeconds=${pose}.`,
+        );
+        derived += 1;
+    }
+    // The derivation is live, not vacuous: the registry holds animated
+    // scenes.
+    assert.ok(derived >= 20, `only ${derived} scenes derive a seek.`);
+});
+
 test("derives defaults for an unregistered scene source", () => {
     const source = ".cache/adhoc-scene.ts";
     mkdirSync(".cache", { recursive: true });

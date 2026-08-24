@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import {
     captureNativePaths,
@@ -8,8 +9,11 @@ import {
     nativeCaptureFrameBudget,
     parseParityArguments,
     parseStabilityArguments,
+    readCaptureMeta,
+    readSeekMeta,
     seekBracketPlan,
     withoutVariable,
+    writeSeekMeta,
     type StabilityRunComparison,
 } from "../src/parity-scene.js";
 
@@ -141,10 +145,17 @@ test("stability arguments: five runs by default, strict overrides", () => {
         "--single-sample",
         "--backend",
         "gpu",
+        "--seek",
+        "0.75",
     ]);
     assert.equal(parsed.runs, 3);
     assert.equal(parsed.singleSample, true);
     assert.equal(parsed.backend, "sdl_gpu");
+    assert.equal(parsed.seekSeconds, 0.75);
+    assert.throws(
+        () => parseStabilityArguments(["--seek", "later"]),
+        /--seek must be a number/,
+    );
     assert.throws(
         () => parseStabilityArguments(["--runs", "1"]),
         /--runs must be an integer >= 2/,
@@ -183,6 +194,63 @@ test("stability always prints the run-to-run and golden columns together", () =>
     // other while all differing from the golden are a stable-but-wrong
     // image, which comparing runs only against each other would hide.
     assert.match(text, /Stable but not golden/);
+});
+
+test("stability at a seeked pose suppresses the golden columns and says why", () => {
+    // The golden holds the registry pose; a wobble check at any other
+    // pose keeps its run-to-run columns (the point of --seek) while the
+    // cross-pose golden comparison — the pair parity refuses — is
+    // suppressed rather than printed as if it measured something.
+    const runs: StabilityRunComparison[] = [
+        { run: 1 },
+        { run: 2, vsFirst: { mad: 0, maxDiff: 0 } },
+    ];
+    const text = formatStabilityReport("Scene 152", "dawn", false, runs, 0.75);
+    assert.match(text, /seeked to 0\.75s/);
+    assert.match(text, /run 2: vs run 1 MAD=0\.000 max=0/);
+    assert.match(
+        text,
+        /Seeked pose \(0\.75s\): golden columns suppressed/,
+    );
+    assert.doesNotMatch(text, /vs golden/);
+    assert.match(text, /Bit-stable/);
+});
+
+test("capture meta round-trips its provenance and stays readable to the seek reader", () => {
+    const directory = resolve(".cache", "capture-meta-roundtrip");
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "capture-meta.json");
+    try {
+        writeSeekMeta(path, 0.5, {
+            moduleSha256: "abc123",
+            goldenIdentity: "identical",
+        });
+        assert.deepEqual(readCaptureMeta(path), {
+            seekSeconds: 0.5,
+            moduleSha256: "abc123",
+            goldenIdentity: "identical",
+        });
+        // The native half writes the seek alone, and the pre-digest
+        // reader keeps reading both shapes.
+        assert.equal(readSeekMeta(path), 0.5);
+        writeSeekMeta(path, undefined);
+        assert.deepEqual(readCaptureMeta(path), { seekSeconds: null });
+        assert.equal(readSeekMeta(path), null);
+        // A draw filter marks the capture as an experiment.
+        writeSeekMeta(path, 1, {
+            moduleSha256: "def",
+            goldenIdentity: "not-checked",
+            drawFilter: 36,
+        });
+        assert.equal(readCaptureMeta(path)?.drawFilter, 36);
+        // No sidecar reads as unknown.
+        assert.equal(
+            readCaptureMeta(join(directory, "absent.json")),
+            undefined,
+        );
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
 });
 
 test("stability names wobble, and single-sample keeps the golden column as context", () => {

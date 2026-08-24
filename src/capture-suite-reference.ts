@@ -1,19 +1,49 @@
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
     extname,
     relative,
     resolve,
     sep,
 } from "node:path";
-import { physicsEngineModulePackage } from "./compiler/symbols.js";
-import { readUpstreamPin } from "./upstream-source.js";
-import {
-    screenshotCaptureBrowserArgs,
-    transpileForBrowser,
-    waitForSceneReady,
-    withBrowserPage,
-} from "./browser-harness.js";
+
+// ---------------------------------------------------------------------------
+// Lazy module loads
+//
+// This module sits on the parity path's import chain, and the cached-
+// reference path — every parity child in a matrix run — used to pay 431 of
+// its 544 ms import cost loading playwright-core and typescript through the
+// static imports here (browser-harness, upstream-source, compiler/symbols)
+// without ever calling them: `captureSuiteReference` returns before touching
+// a browser when the golden is already on disk. Each module is loaded on
+// first use instead. The loads are synchronous (`require` of an ES module,
+// which Node supports unflagged from 22.12 — `package.json` pins the
+// engine) because the composers that need them (`suiteBrowserModule`,
+// the suite server's on-demand transpile) are synchronous exports with
+// callers outside this module.
+// ---------------------------------------------------------------------------
+
+const requireModule = createRequire(import.meta.url);
+
+function lazyModule<T>(specifier: string): () => T {
+    let loaded: T | undefined;
+    return () => (loaded ??= requireModule(specifier) as T);
+}
+
+const browserHarness =
+    lazyModule<typeof import("./browser-harness.js")>(
+        "./browser-harness.js",
+    );
+const upstreamSource =
+    lazyModule<typeof import("./upstream-source.js")>(
+        "./upstream-source.js",
+    );
+const compilerSymbols =
+    lazyModule<typeof import("./compiler/symbols.js")>(
+        "./compiler/symbols.js",
+    );
 
 
 /** The types this table is confident about, or undefined. */
@@ -104,7 +134,7 @@ export function suiteBrowserModule(
     const source = pinnedPackageSpecifiers(framed)
         .replaceAll(
             '"/brdf-lut.png"',
-            `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
+            `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${upstreamSource().readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
         );
     const readySource = source.includes("dataset.ready")
         ? source
@@ -112,7 +142,33 @@ export function suiteBrowserModule(
               "await startEngine(engine);",
               'await startEngine(engine); canvas.dataset.ready = "true";',
           );
-    return transpileForBrowser(readySource, sourcePath);
+    return browserHarness().transpileForBrowser(readySource, sourcePath);
+}
+
+/**
+ * The sha256 hex digest of the module `suiteBrowserModule` composes for
+ * these inputs — the identity of "the scene as the browser runs it": the
+ * scene source, the injected pose, and the pinned package the transpile
+ * resolves against. The golden-provenance manifest records the same
+ * digest (`corpus-scenes.test.ts` checks it), and the instrumented
+ * capture writes it into `capture-meta.json` so a reuse path can refuse
+ * a capture taken from a scene module that has since moved.
+ */
+export function suiteBrowserModuleDigest(
+    sourcePath: string,
+    captureTimeSeconds?: number,
+    captureAnimationGroups?: string[],
+): string {
+    return createHash("sha256")
+        .update(
+            suiteBrowserModule(
+                sourcePath,
+                undefined,
+                captureTimeSeconds,
+                captureAnimationGroups,
+            ),
+        )
+        .digest("hex");
 }
 
 /**
@@ -130,6 +186,7 @@ export function suiteBrowserModule(
  * asserts every name in that list is rewritten, so the two cannot drift.
  */
 export function pinnedPackageSpecifiers(source: string): string {
+    const { physicsEngineModulePackage } = compilerSymbols();
     return source
         .replace(
             /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
@@ -256,7 +313,10 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
                 );
                 response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
                 response.end(
-                    transpileForBrowser(moduleText, typescriptPath),
+                    browserHarness().transpileForBrowser(
+                        moduleText,
+                        typescriptPath,
+                    ),
                 );
                 return;
             }
@@ -276,7 +336,7 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
                     response.end(cached.bytes);
                     return;
                 }
-                const pin = readUpstreamPin();
+                const pin = upstreamSource().readUpstreamPin();
                 const assetUrl =
                     "https://raw.githubusercontent.com/" +
                     `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
@@ -342,6 +402,10 @@ export async function captureSuiteReference(
     options: SuiteCaptureOptions = {},
 ): Promise<void> {
     if (existsSync(referencePath) && !force) return;
+    // Past the cached-reference early return, the browser is genuinely
+    // needed; only now does the harness (playwright + typescript) load.
+    const { screenshotCaptureBrowserArgs, waitForSceneReady, withBrowserPage } =
+        browserHarness();
     const moduleSource = suiteBrowserModule(
         sourcePath,
         transform,

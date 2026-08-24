@@ -30,6 +30,11 @@ import {
     pageBase64Script,
     runPageGlobal,
 } from "./browser-harness.js";
+import {
+    cachedBake,
+    moduleClosureBytes,
+    moduleIdentity,
+} from "./bake-cache.js";
 
 /** The module that produces an asset, and the factory that returns it. */
 export interface ExecutedModuleSource {
@@ -116,6 +121,43 @@ async function evaluateModuleExport(
                 "repository, so its siblings cannot be served.",
         );
     }
+    // The bake is deterministic in the module's transitive text (that
+    // sibling included), the export, the pin, and the Chrome that runs
+    // it; a repeat compile replays the produced text from the bake
+    // cache instead of launching Chromium. An unresolvable closure
+    // bakes uncached — uncertain inputs mean bake, never guess.
+    const closure = moduleClosureBytes([source.modulePath]);
+    if (closure !== undefined) {
+        const replayed = await cachedBake(
+            {
+                kind: "executed-module",
+                version: "1",
+                module: moduleIdentity(import.meta.url),
+                browser: true,
+                parameters: {
+                    module: relativePath,
+                    exportName: source.exportName,
+                },
+                inputs: closure,
+            },
+            async () =>
+                Buffer.from(
+                    await evaluateModuleExportInChromium(
+                        source,
+                        relativePath,
+                    ),
+                    "utf8",
+                ),
+        );
+        return Buffer.from(replayed).toString("utf8");
+    }
+    return evaluateModuleExportInChromium(source, relativePath);
+}
+
+async function evaluateModuleExportInChromium(
+    source: ExecutedModuleSource,
+    relativePath: string,
+): Promise<string> {
     const specifier = `/${relativePath.replace(/\.ts$/, ".js")}`;
     const server = createSuiteSceneServer(
         `${pageBase64Script}

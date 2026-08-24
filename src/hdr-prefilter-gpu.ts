@@ -13,6 +13,7 @@ import {
     findRepositoryRoot,
     readUpstreamPin,
 } from "./upstream-source.js";
+import { cachedBake, moduleIdentity } from "./bake-cache.js";
 
 export function getHdrGgxPrefilterProvenance() {
     const repositoryRoot = findRepositoryRoot(
@@ -98,6 +99,60 @@ function decodeMip(base64: string): Uint16Array[] {
     return result;
 }
 
+/** The levels as one replayable payload: a u32 mip count, then per mip
+ *  a u32 per-face byte length followed by the six faces' bytes. */
+function encodePrefilterLevels(levels: Uint16Array[][]): Uint8Array {
+    let total = 4;
+    for (const mip of levels) {
+        total += 4 + mip.reduce((sum, face) => sum + face.byteLength, 0);
+    }
+    const out = new Uint8Array(total);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, levels.length, true);
+    let offset = 4;
+    for (const mip of levels) {
+        view.setUint32(offset, mip[0]?.byteLength ?? 0, true);
+        offset += 4;
+        for (const face of mip) {
+            out.set(
+                new Uint8Array(
+                    face.buffer,
+                    face.byteOffset,
+                    face.byteLength,
+                ),
+                offset,
+            );
+            offset += face.byteLength;
+        }
+    }
+    return out;
+}
+
+function decodePrefilterLevels(bytes: Uint8Array): Uint16Array[][] {
+    const view = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+    );
+    const mipCount = view.getUint32(0, true);
+    let offset = 4;
+    const levels: Uint16Array[][] = [];
+    for (let mip = 0; mip < mipCount; mip += 1) {
+        const faceBytes = view.getUint32(offset, true);
+        offset += 4;
+        const faces: Uint16Array[] = [];
+        for (let face = 0; face < 6; face += 1) {
+            const copy = Uint8Array.from(
+                bytes.subarray(offset, offset + faceBytes),
+            );
+            faces.push(new Uint16Array(copy.buffer));
+            offset += faceBytes;
+        }
+        levels.push(faces);
+    }
+    return levels;
+}
+
 export async function prefilterCubemapGgx(
     faceSize: number,
     mipCount: number,
@@ -113,6 +168,55 @@ export async function prefilterCubemapGgx(
     // its level zero, so it always launches.
     if (faces && mipCount === 1) return [faces];
 
+    const sourceBytes = equirect
+        ? new Uint8Array(
+              equirect.data.buffer,
+              equirect.data.byteOffset,
+              equirect.data.byteLength,
+          )
+        : concatenateFaces(faces!);
+    // The GGX chain is the pin's own compute run in the reference
+    // Chromium, deterministic in (source, faceSize, mipCount, pin,
+    // browser) — the bake-cache key — so a repeat compile replays the
+    // levels instead of launching Chromium (~1.6 s per HDR scene).
+    const replayed = await cachedBake(
+        {
+            kind: "hdr-prefilter",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: {
+                faceSize,
+                mipCount,
+                source: equirect
+                    ? {
+                          kind: "equirect",
+                          width: equirect.width,
+                          height: equirect.height,
+                      }
+                    : { kind: "faces" },
+            },
+            inputs: [sourceBytes],
+        },
+        async () =>
+            encodePrefilterLevels(
+                await runPrefilterInChromium(
+                    faceSize,
+                    mipCount,
+                    equirect,
+                    sourceBytes,
+                ),
+            ),
+    );
+    return decodePrefilterLevels(replayed);
+}
+
+async function runPrefilterInChromium(
+    faceSize: number,
+    mipCount: number,
+    equirect: HdrPrefilterSource | undefined,
+    sourceBytes: Uint8Array,
+): Promise<Uint16Array[][]> {
     const server = createServer((_request, response) => {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end("<!doctype html><title>HDR GGX prefilter</title>");
@@ -124,13 +228,6 @@ export async function prefilterCubemapGgx(
         browserArgs: webgpuComputeBrowserArgs,
     }, async (page, origin) => {
         await page.goto(origin);
-        const sourceBytes = equirect
-            ? new Uint8Array(
-                  equirect.data.buffer,
-                  equirect.data.byteOffset,
-                  equirect.data.byteLength,
-              )
-            : concatenateFaces(faces!);
         await page.evaluate(
             (source) => {
                 (

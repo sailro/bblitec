@@ -122,8 +122,11 @@ export function runNeutralityReport(baselineDirectory: string): void {
     const current = reportsIn(join("artifacts", "parity"));
     if (baseline.size === 0) {
         throw new Error(
-            `No differential reports under ${baselineDirectory}. Snapshot ` +
-                "artifacts/parity before the change, then run the matrix.",
+            `No differential reports under ${baselineDirectory}. The ` +
+                "comparison covers report-differential.json only — a " +
+                "single-backend sweep produces nothing comparable, so run " +
+                "the matrix with 'scene -- parity all --differential'. " +
+                "Snapshot artifacts/parity before the change, then run it again after.",
         );
     }
 

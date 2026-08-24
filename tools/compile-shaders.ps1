@@ -110,6 +110,80 @@ function Get-ShaderCacheKey {
     return Get-StringSha256 $payload
 }
 
+# ---------------------------------------------------------------------------
+# The Tint half of the cache, content-addressed exactly like the DXC half.
+#
+# Tint used to run twice per deployed stage on every invocation — a
+# measured 1m50 corpus no-op. A stage's four Tint-derived artifacts
+# (.hlsl after the register compaction, .msl, .tint-reflection.txt and
+# the .slots sidecar the compaction publishes) are pure functions of:
+#   - the pinned Tint binary,
+#   - THIS SCRIPT (the compaction, demotion and slot-publication passes
+#     live here, so the whole script's hash keys the entry — any edit to
+#     the script recompiles everything once, which is the
+#     rebuild-more-on-doubt direction),
+#   - the stage's WGSL bytes,
+#   - the declared entry point, the pinned-bindings declaration (it
+#     selects the remap-vs-normalize pass), the stage kind (the remap's
+#     register spaces differ per stage), and the fixed output-format set.
+# The binding cross-check and the uniform-buffer cap run at fill time;
+# the cap is additionally re-checked on every deployed .hlsl below, so a
+# cache hit never lets it sleep.
+# ---------------------------------------------------------------------------
+
+$scriptIdentityHash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash
+$tintIdentityHash = if ($Tint) {
+    (Get-FileHash $Tint -Algorithm SHA256).Hash
+} else {
+    ""
+}
+$tintArtifactExtensions = @(
+    ".hlsl", ".msl", ".tint-reflection.txt", ".slots"
+)
+
+function Get-TintCacheBase {
+    param(
+        [System.IO.FileInfo]$Source,
+        [string]$EntryPoint,
+        [bool]$PinnedBindings,
+        [bool]$IsVertex
+    )
+
+    $sourceHash = (Get-FileHash $Source.FullName -Algorithm SHA256).Hash
+    $payload = (
+        "tint:$tintIdentityHash|script:$scriptIdentityHash|" +
+        "entry:$EntryPoint|pinned:$PinnedBindings|vertex:$IsVertex|" +
+        "formats:hlsl,msl,reflection,slots|wgsl:$sourceHash"
+    )
+    return Join-Path $cacheRoot "tint-$(Get-StringSha256 $payload)"
+}
+
+function Test-TintCacheEntry {
+    param([string]$CacheBase)
+
+    foreach ($extension in $tintArtifactExtensions) {
+        if (-not (Test-Path -LiteralPath "$CacheBase$extension")) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Save-TintCacheEntry {
+    param([string]$CacheBase, [string]$OutputBase)
+
+    foreach ($extension in $tintArtifactExtensions) {
+        $temporary =
+            "$CacheBase$extension.$PID-$([Guid]::NewGuid().ToString('N')).tmp"
+        Copy-Item -LiteralPath "$OutputBase$extension" `
+            -Destination $temporary
+        # The rename publishes the entry whole, so a concurrent script
+        # filling the same key never exposes a half-written artifact.
+        Move-Item -LiteralPath $temporary `
+            -Destination "$CacheBase$extension" -Force
+    }
+}
+
 function Test-ShaderCacheBinary {
     param(
         [string]$Path,
@@ -149,6 +223,27 @@ function Test-ShaderCacheBinary {
     }
 }
 
+# One byte-exact file comparison for the publish helpers below.
+# SequenceEqual rather than Compare-Object: the Tint cache runs this four
+# times per stage across the whole corpus, and Compare-Object's
+# set-difference semantics box every byte.
+function Test-SameContent {
+    param([string]$Left, [string]$Right)
+
+    if (
+        -not (Test-Path -LiteralPath $Left) -or
+        -not (Test-Path -LiteralPath $Right)
+    ) {
+        return $false
+    }
+    $leftBytes = [System.IO.File]::ReadAllBytes($Left)
+    $rightBytes = [System.IO.File]::ReadAllBytes($Right)
+    return [System.Linq.Enumerable]::SequenceEqual(
+        [byte[]]$leftBytes,
+        [byte[]]$rightBytes
+    )
+}
+
 # Publish a freshly produced file only when it differs from what is
 # already there. Tint rewrites its HLSL, MSL and reflection dumps on every
 # run; replacing an identical file makes the shader directory newer than
@@ -157,18 +252,22 @@ function Test-ShaderCacheBinary {
 function Move-IfDifferent {
     param([string]$Temporary, [string]$Destination)
 
-    if (Test-Path -LiteralPath $Destination) {
-        $current = [System.IO.File]::ReadAllBytes($Destination)
-        $produced = [System.IO.File]::ReadAllBytes($Temporary)
-        if (
-            $current.Length -eq $produced.Length -and
-            -not (Compare-Object $current $produced)
-        ) {
-            Remove-Item -LiteralPath $Temporary -Force
-            return
-        }
+    if (Test-SameContent $Destination $Temporary) {
+        Remove-Item -LiteralPath $Temporary -Force
+        return
     }
     Move-Item -LiteralPath $Temporary -Destination $Destination -Force
+}
+
+# `Move-IfDifferent` for cached bytes that must stay in the cache: the
+# hit path publishes the same artifact into many stages' directories.
+function Copy-IfDifferent {
+    param([string]$Source, [string]$Destination)
+
+    if (Test-SameContent $Destination $Source) {
+        return
+    }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
 function Remap-PinnedVariantRegisters {
@@ -371,13 +470,53 @@ function Get-ShaderComposition {
     return $declared
 }
 
-function Get-HlslUniformBufferCount {
+function Get-HlslUniformBufferNames {
+    <#
+    .SYNOPSIS
+    The uniform blocks an emitted HLSL stage binds, by name.
+
+    .DESCRIPTION
+    The count that binds against SDL_GPU's four-per-stage cap is the
+    emitted HLSL's, not the WGSL's (Tint strips a block a stage declares
+    but never reads), and a refusal has to NAME the blocks or the fix
+    starts with re-deriving this list by hand.
+    #>
     param([string]$Path)
 
-    return ([regex]::Matches(
-        (Get-Content $Path -Raw),
-        "cbuffer\s+\w+\s*:\s*register\(b"
-    )).Count
+    return @(
+        [regex]::Matches(
+            (Get-Content $Path -Raw),
+            "cbuffer\s+(\w+)\s*:\s*register\(b"
+        ) |
+            ForEach-Object { $_.Groups[1].Value }
+    )
+}
+
+function Assert-UniformBufferCap {
+    <#
+    .SYNOPSIS
+    Refuses an HLSL stage that binds more than four uniform buffers.
+
+    .DESCRIPTION
+    SDL_GPU caps uniform buffers at four per stage
+    (MAX_UNIFORM_BUFFERS_PER_STAGE) and its release build skips the
+    validation: a fifth block corrupts the D3D12 command buffer's
+    fixed-size slot arrays instead of failing. This check runs on EVERY
+    compiled stage — it used to be gated on the `variant-` filename
+    prefix, which left node and effect stages (the families most likely
+    to grow blocks) uncounted against a silent-corruption failure.
+    #>
+    param([string]$Path, [string]$StageName)
+
+    $names = Get-HlslUniformBufferNames $Path
+    if ($names.Count -gt 4) {
+        throw (
+            "$StageName binds $($names.Count) uniform buffers " +
+            "($($names -join ', ')); SDL_GPU caps a stage at 4 and its " +
+            "release build corrupts the D3D12 command buffer instead of " +
+            "failing on the fifth."
+        )
+    }
 }
 
 function Demote-PinnedVariantGpBlock {
@@ -547,7 +686,15 @@ function Normalize-TintHlslBindings {
 
 $compiled = 0
 $reused = 0
+$tintCompiled = 0
+$tintReused = 0
 $usedTint = $false
+# The per-directory loop stays sequential on purpose. With both halves
+# content-addressed the warm pass is hashing plus byte compares, and
+# `ForEach-Object -Parallel` would have to marshal every helper function
+# and script-scope variable into each runspace ($using: has no function
+# form) — real restructuring risk for seconds of gain on a stage that no
+# longer dominates.
 foreach ($shaderDirectory in $shaderDirectories) {
     $directoryNativeWgsl = @(
         Get-ChildItem $shaderDirectory -Filter "*.native.wgsl"
@@ -571,11 +718,25 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     "generation must name every module's family."
                 )
             }
-            # Only the material variants can overflow the uniform cap, and
-            # they are the only family that needs the gp demotion below.
-            $isPinnedVariant = $source.Name.StartsWith("variant-")
             $isPinnedComposed = [bool]$declared.pinnedBindings
             $entryPoint = [string]$declared.entryPoint
+            # The Tint half is content-addressed like the DXC half: on a
+            # hit the four Tint-derived artifacts come from the cache
+            # byte-for-byte, published through the same no-churn compare
+            # as a fresh run.
+            $tintCacheBase = Get-TintCacheBase `
+                -Source $source `
+                -EntryPoint $entryPoint `
+                -PinnedBindings $isPinnedComposed `
+                -IsVertex ($outputBase.EndsWith(".vert"))
+            if (Test-TintCacheEntry $tintCacheBase) {
+                foreach ($extension in $tintArtifactExtensions) {
+                    Copy-IfDifferent "$tintCacheBase$extension" `
+                        "$outputBase$extension"
+                }
+                $tintReused += 1
+                continue
+            }
             $pendingHlsl = "$outputBase.pending-hlsl"
             $reflection = & $Tint $source.FullName `
                 --entry-point $entryPoint `
@@ -633,17 +794,22 @@ foreach ($shaderDirectory in $shaderDirectories) {
             # SDL_GPU caps uniform buffers at four per stage. The count that
             # binds is the emitted HLSL's, not the WGSL's -- Tint strips a
             # block a stage declares but never reads -- so the overflow check
-            # reads the first compile and, when it trips, recompiles every
-            # SDL-facing artifact from a source whose gp block is demoted to
-            # a read-only storage buffer. Dawn keeps the pin's uniform
-            # declaration in the `.native.wgsl` it consumes.
-            # Only the material variants reach five: a post-process stage
-            # carries one uniform block, and this repository's own shaders are
-            # laid out against the cap.
+            # reads the first compile of EVERY stage and, when it trips,
+            # recompiles every SDL-facing artifact from a source whose gp
+            # block is demoted to a read-only storage buffer. Dawn keeps
+            # the pin's uniform declaration in the `.native.wgsl` it
+            # consumes.
+            # Demotion eligibility is the semantic fact itself: the stage
+            # declares the frame-graph `gp` uniform block (the exact
+            # declaration the demotion rewrites). composition.json carries
+            # no family field to key this on -- its rows declare
+            # `entryPoint` and `pinnedBindings` only -- so the WGSL
+            # declaration is the authority; a stage over the cap without a
+            # gp block has nothing demotable and refuses by name.
             $sdlSource = $source.FullName
-            if ($isPinnedVariant) {
-                $uniformCount = Get-HlslUniformBufferCount $pendingHlsl
-                if ($uniformCount -gt 4) {
+            $uniformCount = (Get-HlslUniformBufferNames $pendingHlsl).Count
+            if ($uniformCount -gt 4) {
+                if ($wgsl -match "var\s*<\s*uniform\s*>\s*gp\s*:") {
                     $sdlSource = Demote-PinnedVariantGpBlock `
                         $source.FullName `
                         $outputBase `
@@ -655,14 +821,11 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     if ($LASTEXITCODE -ne 0) {
                         throw "Tint HLSL generation failed for $sdlSource."
                     }
-                    $demotedCount = Get-HlslUniformBufferCount $pendingHlsl
-                    if ($demotedCount -gt 4) {
-                        throw (
-                            "$($source.FullName) still emits $demotedCount " +
-                            "uniform blocks after demoting gp; SDL_GPU caps " +
-                            "a stage at 4."
-                        )
-                    }
+                    Assert-UniformBufferCap `
+                        $pendingHlsl `
+                        "$($source.FullName) (after demoting gp)"
+                } else {
+                    Assert-UniformBufferCap $pendingHlsl $source.FullName
                 }
             }
             if ($isPinnedComposed) {
@@ -682,6 +845,8 @@ foreach ($shaderDirectory in $shaderDirectories) {
             if ($sdlSource -ne $source.FullName) {
                 Remove-Item $sdlSource
             }
+            Save-TintCacheEntry $tintCacheBase $outputBase
+            $tintCompiled += 1
         }
     }
     foreach ($source in Get-ChildItem $shaderDirectory -Filter "*.hlsl") {
@@ -700,6 +865,13 @@ foreach ($shaderDirectory in $shaderDirectories) {
         } else {
             "main"
         }
+        # The four-uniform-buffer cap on EVERY compiled stage, cache hit
+        # or not: Tint-produced HLSL was checked (and possibly demoted)
+        # at fill time, and this is where a hand-authored stage — carried
+        # verbatim with no native WGSL beside it — meets the check at
+        # all. A deployed stage over the cap is corrupting D3D12 command
+        # buffers today regardless of what the binary cache holds.
+        Assert-UniformBufferCap $source.FullName $source.FullName
         $cacheKey = Get-ShaderCacheKey -Source $source -Profile $profile -EntryPoint $entryPoint
         $cachedDxil = Join-Path $cacheRoot "$cacheKey.dxil"
         $cachedSpirv = Join-Path $cacheRoot "$cacheKey.spv"
@@ -772,3 +944,9 @@ foreach ($shaderDirectory in $shaderDirectories) {
 
 $backend = if ($usedTint) { "Tint WGSL plus DXC" } else { "DXC HLSL" }
 Write-Output "$backend compiled $compiled shader variants; reused $reused cached variants."
+if ($usedTint) {
+    Write-Output (
+        "Tint stages: $tintCompiled transpiled, " +
+        "$tintReused replayed from artifacts\shader-cache."
+    )
+}

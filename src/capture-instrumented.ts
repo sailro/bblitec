@@ -7,11 +7,18 @@
 // scene 247 shading contracts; hooks cover render-bundle encoders
 // because Babylon Lite records mesh draws into bundles, so
 // pass-encoder hooks alone would miss every mesh draw.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
     createSuiteSceneServer,
     suiteBrowserModule,
+    suiteBrowserModuleDigest,
 } from "./capture-suite-reference.js";
 import {
     screenshotCaptureBrowserArgs,
@@ -25,15 +32,73 @@ import {
     captureShadersDirectory,
     captureTextureUploadsPath,
     defaultCaptureDirectory,
+    readCaptureMeta,
     usesSeededRandom,
     writeSeekMeta,
+    type CaptureMeta,
 } from "./parity-scene.js";
-import { resolveScene } from "./scene-registry.js";
+import { resolveScene, type SceneDefinition } from "./scene-registry.js";
 
 export interface InstrumentedCaptureOptions {
     seekSeconds?: number;
     skipDrawIndexCount?: number;
     outputDirectory?: string;
+}
+
+/**
+ * Why a browser capture on disk is NOT reusable as evidence for `scene`,
+ * or `undefined` when it is. One reader for every reuse path — `diff`
+ * recaptures on a reason, `compose` auto-captures on one, `uniforms`
+ * refuses with one — so the tools cannot disagree about what stale means.
+ *
+ * The classes, in the order they are cheapest to check:
+ *   - no capture at all;
+ *   - no provenance sidecar (a pre-meta capture);
+ *   - a draw filter (`--skip-draw`): a filtered capture is an
+ *     experiment, not evidence;
+ *   - a different pose than requested (`requireSeek`, `null` = "no
+ *     seek"; omit the property to accept the capture's own pose — the
+ *     uniforms reader does, because decoded uploads are evidence at
+ *     whatever pose they were taken);
+ *   - a scene module that has since moved: the sidecar records the
+ *     sha256 of the module the capture served, and it is recomputed
+ *     here at the capture's own pose, so a scene-source or
+ *     pinned-package change refuses even when the pixels still look
+ *     plausible.
+ */
+export function browserCaptureStaleness(
+    scene: SceneDefinition,
+    captureDirectory: string,
+    options: { requireSeek?: number | null } = {},
+): string | undefined {
+    if (!existsSync(captureBuffersPath(captureDirectory))) {
+        return "missing";
+    }
+    const meta = readCaptureMeta(captureMetaPath(captureDirectory));
+    if (meta === undefined) {
+        return "carries no provenance sidecar";
+    }
+    if (meta.drawFilter !== undefined) {
+        return `was captured with a draw filter (--skip-draw ${meta.drawFilter})`;
+    }
+    if (
+        "requireSeek" in options &&
+        meta.seekSeconds !== (options.requireSeek ?? null)
+    ) {
+        return "was captured at a different seek";
+    }
+    if (meta.moduleSha256 === undefined) {
+        return "carries no scene-module provenance";
+    }
+    const current = suiteBrowserModuleDigest(
+        scene.source,
+        meta.seekSeconds ?? undefined,
+        scene.parity?.referenceAnimationGroups,
+    );
+    if (meta.moduleSha256 !== current) {
+        return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
+    }
+    return undefined;
 }
 
 // Runs inside the page before any scene script. Written as source
@@ -216,6 +281,10 @@ export async function runInstrumentedCapture(
     const outputDirectory = resolve(
         options.outputDirectory ?? defaultCaptureDirectory(scene.id),
     );
+    // A failed or interrupted capture must not leave the previous run's
+    // provenance describing this run's partial files; the sidecar is
+    // written last, so its absence marks the directory unreliable.
+    rmSync(captureMetaPath(outputDirectory), { force: true });
     const moduleSource = suiteBrowserModule(
         scene.source,
         undefined,
@@ -304,17 +373,18 @@ export async function runInstrumentedCapture(
                 join(outputDirectory, "buffers-summary.txt"),
                 summary,
             );
-            // The capture's provenance, so a reuse path can tell whether
-            // this directory describes the pose it is about to be diffed
-            // at.
-            writeSeekMeta(captureMetaPath(outputDirectory), seekSeconds);
             console.log(`Instrumented capture written to ${outputDirectory}`);
             console.log(`Draw calls: ${JSON.stringify(draws)}`);
             console.log(summary);
 
             // Non-perturbation check: with no draw filter, the hooked
             // render must stay byte-identical to the committed golden.
+            // The verdict is recorded in the sidecar rather than only
+            // printed and discarded.
             const referencePath = scene.parity?.reference.path;
+            let goldenIdentity: NonNullable<
+                CaptureMeta["goldenIdentity"]
+            > = "not-checked";
             if (
                 skipDrawIndexCount === 0 &&
                 referencePath &&
@@ -324,12 +394,29 @@ export async function runInstrumentedCapture(
                     join(outputDirectory, "screenshot.png"),
                 );
                 const golden = readFileSync(resolve(referencePath));
+                goldenIdentity = captured.equals(golden)
+                    ? "identical"
+                    : "differs";
                 console.log(
-                    captured.equals(golden)
+                    goldenIdentity === "identical"
                         ? "Screenshot is byte-identical to the committed golden."
                         : "Screenshot DIFFERS from the committed golden — the pose, environment, or pinned package changed.",
                 );
             }
+            // The capture's provenance, so a reuse path can tell whether
+            // this directory describes the pose AND the scene module it
+            // is about to be read as evidence for.
+            writeSeekMeta(captureMetaPath(outputDirectory), seekSeconds, {
+                moduleSha256: suiteBrowserModuleDigest(
+                    scene.source,
+                    seekSeconds,
+                    animationGroups,
+                ),
+                goldenIdentity,
+                ...(skipDrawIndexCount !== 0
+                    ? { drawFilter: skipDrawIndexCount }
+                    : {}),
+            });
         },
     );
 }
