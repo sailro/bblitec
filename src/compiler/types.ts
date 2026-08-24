@@ -199,6 +199,22 @@ export interface ScenePbrAnisotropyManifest {
     direction: readonly [number, number];
 }
 
+/**
+ * The options one reached `setPbrMetallicReflectance` call stamps. Presence
+ * of this object is also the pin's global reflectance-extension registration;
+ * an empty setter call is therefore distinct from no call.
+ */
+export interface ScenePbrMetallicReflectanceManifest {
+    /** Whether the setter supplied a colour. The exact tuple is optional:
+     *  mapped materials compose from texture presence alone, while their
+     *  runtime colour expression is preserved in emitted C++. */
+    hasColor: boolean;
+    color?: readonly [number, number, number];
+    hasMetallicTexture: boolean;
+    hasReflectanceTexture: boolean;
+    useOnlyMetallicFromTexture?: boolean;
+}
+
 export interface ScenePbrMaterialManifest {
     /**
      * How many scene-code materials of any family the program had created
@@ -223,6 +239,8 @@ export interface ScenePbrMaterialManifest {
     iridescence?: ScenePbrIridescenceManifest;
     /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
     anisotropy?: ScenePbrAnisotropyManifest;
+    /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
+    metallicReflectance?: ScenePbrMetallicReflectanceManifest;
     /**
      * The linear RGB `setPbrEmissive` passes. Its presence is what the
      * emissive extension's `detect` reads, so a material that never
@@ -872,6 +890,7 @@ export type Feature =
     | "material:clearcoat-f0-remap"
     | "material:iridescence"
     | "material:anisotropy"
+    | "material:metallic-reflectance"
     | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"

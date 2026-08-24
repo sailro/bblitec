@@ -341,6 +341,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         // slot, so its whole arm rides the composed variant.
         consumers: ["features.cmake", "variant table"],
     },
+    "material:metallic-reflectance": {
+        provenance: "src/material/pbr/set-metallic-reflectance.ts",
+        consumers: [
+            "features.cmake",
+            "material_texture_slots.hpp",
+            "variant table",
+        ],
+    },
     "material:tracking": {
         provenance: "src/material/tracking/pbr-tracking.ts",
         // Nothing is emitted for it, so the only consumer is the record of

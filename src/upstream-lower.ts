@@ -463,6 +463,14 @@ class GeneratedSourceWriter {
                     variant.fragmentWgsl,
                 ).some((binding) => binding.name === "rT")
             );
+        const pbrBindingNames = new Set(
+            (options.pinnedVariants ?? []).flatMap((variant) =>
+                variantBindings(
+                    variant.vertexWgsl,
+                    variant.fragmentWgsl,
+                ).map((binding) => binding.name)
+            ),
+        );
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -534,6 +542,10 @@ class GeneratedSourceWriter {
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
+                    metallicReflectanceMap:
+                        pbrBindingNames.has("metallicReflectanceMap"),
+                    reflectanceMap:
+                        pbrBindingNames.has("reflectanceMap"),
                     specularGlossiness: options.specularGlossiness,
                     occlusionUv2: options.occlusionUv2,
                     standardBump: options.standardBump,

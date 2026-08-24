@@ -20,6 +20,8 @@ const noFeatures: MaterialTextureSlotFeatures = {
     clearcoat: false,
     sheen: false,
     iridescence: false,
+    metallicReflectanceMap: false,
+    reflectanceMap: false,
     specularGlossiness: false,
     occlusionUv2: false,
     standardBump: false,
@@ -110,6 +112,8 @@ test("extension rows append in the pinned registration order", () => {
             clearcoat: true,
             sheen: true,
             iridescence: true,
+            metallicReflectanceMap: true,
+            reflectanceMap: true,
             specularGlossiness: true,
             occlusionUv2: true,
             standardBump: true,
@@ -120,7 +124,7 @@ test("extension rows append in the pinned registration order", () => {
     );
     assert.ok(
         header.includes(
-            "inline constexpr std::size_t material_texture_mesh_slots = 18;",
+            "inline constexpr std::size_t material_texture_mesh_slots = 20;",
         ),
     );
     rowOrder(header, [
@@ -149,23 +153,31 @@ test("extension rows append in the pinned registration order", () => {
         `MaterialTextureSrgb::srgb, `,
         `    {13, MaterialTextureSource::iridescence_thickness, ` +
         `MaterialTextureSrgb::srgb, `,
+        // ...the two reflectance maps, whose fragment performs its own RGB
+        // decode and therefore binds linear texture views...
+        `    {14, MaterialTextureSource::metallic_reflectance, ` +
+        `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
+        `"metallicReflectanceMap", "metallicReflectanceMapSampler"},`,
+        `    {15, MaterialTextureSource::reflectance, ` +
+        `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
+        `"reflectanceMap", "reflectanceMapSampler"},`,
         // ...the spec-gloss map, appended after the layered extensions so a
         // scene compiling it shifts no index above...
-        `    {14, MaterialTextureSource::spec_gloss, ` +
+        `    {16, MaterialTextureSource::spec_gloss, ` +
         `MaterialTextureSrgb::srgb, MaterialTextureFallback::white, ` +
         `"specGlossTexture", "specGlossSampler"},`,
         // ...the dedicated uv2 occlusion...
-        `    {15, MaterialTextureSource::occlusion_uv2, ` +
+        `    {17, MaterialTextureSource::occlusion_uv2, ` +
         `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
         `"occlusionTexture", "occlusionSampler_"},`,
         // ...then the Standard bump pair, so no index above moves...
-        `    {16, MaterialTextureSource::standard_bump, ` +
+        `    {18, MaterialTextureSource::standard_bump, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::flat_normal, ` +
         `"", ""},`,
         // ...and the Standard 2D reflection pair after bump, the same
         // append-only contract.
-        `    {17, MaterialTextureSource::standard_reflection, ` +
+        `    {19, MaterialTextureSource::standard_reflection, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::white, ` +
         `"", ""},`,
@@ -175,6 +187,28 @@ test("extension rows append in the pinned registration order", () => {
         `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
         `"refractionTexture", "refractionSampler_"},`,
     ]);
+});
+
+test("the reflectance rows serve the pin's two composed bindings", () => {
+    const header = materialTextureSlotsHeader(
+        {
+            ...noFeatures,
+            metallicReflectanceMap: true,
+            reflectanceMap: true,
+        },
+        [
+            variantWith([
+                ["metallicReflectanceMap", "texture_2d<f32>"],
+                ["metallicReflectanceMapSampler", "sampler"],
+                ["reflectanceMap", "texture_2d<f32>"],
+                ["reflectanceMapSampler", "sampler"],
+            ]),
+        ],
+        "test",
+    );
+
+    assert.match(header, /MaterialTextureSource::metallic_reflectance/);
+    assert.match(header, /MaterialTextureSource::reflectance/);
 });
 
 test("a scene-37-shaped scene appends occlusion straight after the base five", () => {

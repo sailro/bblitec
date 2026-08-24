@@ -2794,7 +2794,7 @@ SolidTexture create_solid_texture(
         }
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence",
+            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrMetallicReflectance",
             header: "",
             source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
@@ -2828,6 +2828,32 @@ void set_pbr_emissive(
     MaterialHandle material,
     Color3 color) {
     engine.materials[material.value].emissive_factor = color;
+}
+
+// set-metallic-reflectance.ts conditionally copies the supplied fields and
+// always registers the reflectance fragment. Registration is represented in
+// the scene-material manifest; the native record holds the fields its pinned
+// UBO writer and texture bindings read.
+void set_pbr_metallic_reflectance(
+    Engine& engine,
+    MaterialHandle material,
+    bool has_color,
+    Color3 color,
+    FileTexture metallic_texture,
+    FileTexture reflectance_texture) {
+    MaterialRecord& record = engine.materials[material.value];
+    record.has_metallic_reflectance = true;
+    if (has_color) {
+        record.metallic_reflectance_color = color;
+    }
+    if (metallic_texture.data.has_image()) {
+        record.metallic_reflectance_texture =
+            std::move(metallic_texture.data);
+    }
+    if (reflectance_texture.data.has_image()) {
+        record.reflectance_texture =
+            std::move(reflectance_texture.data);
+    }
 }
 
 void set_pbr_skybox(Engine& engine, MaterialHandle material) {

@@ -227,6 +227,14 @@ inline const TextureData* material_slot_texture(
             return standard_material
                 ? nullptr
                 : &material.iridescence_thickness_texture;
+        case Source::metallic_reflectance:
+            return standard_material
+                ? nullptr
+                : &material.metallic_reflectance_texture;
+        case Source::reflectance:
+            return standard_material
+                ? nullptr
+                : &material.reflectance_texture;
         case Source::occlusion_uv2:
             return !standard_material && material.occlusion_texture_uv2
                 ? &material.occlusion_texture

@@ -6,6 +6,7 @@ import {
     assertArmsCovered,
     composeGltfMaterials,
     composeScenePbrVariants,
+    materialSubjects,
     unionArms,
     type PinnedMaterialArms,
 } from "../src/pinned-material-arms.js";
@@ -236,4 +237,151 @@ test("creation-only metallic F0 does not register the reflectance arm", async ()
     );
 
     assert.doesNotMatch(variants[0]!.fragmentWgsl, /metallicF0Factor/);
+});
+
+test("a metallic-reflectance setter globally registers dormant F0", async () => {
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: false,
+        fog: false,
+    });
+    const material = {
+        materialsBefore: 0,
+        gltfAssetsBefore: 0,
+        hasBaseColorTexture: true,
+        hasOrmTexture: true,
+        metallicFactor: 1,
+        roughnessFactor: 1,
+        directIntensity: 1,
+        environmentIntensity: 1,
+        alpha: 1,
+        reflectance: 0.04,
+        occlusionStrength: 0,
+        doubleSided: false,
+        transmission: 0,
+        ior: 1.5,
+        thickness: 0,
+    };
+    const variants = await composeScenePbrVariants(
+        [
+            {
+                ...material,
+                metallicReflectance: {
+                    hasColor: false,
+                    hasMetallicTexture: false,
+                    hasReflectanceTexture: false,
+                },
+            },
+            { ...material, metallicF0Factor: 0.95 },
+        ],
+        arms,
+    );
+
+    assert.doesNotMatch(variants[0]!.fragmentWgsl, /metallicF0Factor/);
+    assert.match(variants[1]!.fragmentWgsl, /metallicF0Factor/);
+});
+
+test("a glTF dielectric globally registers scene-material F0", async () => {
+    // The asset's non-default IOR calls the same pinned setter before scene
+    // materials are composed. Its process-global registration therefore
+    // exposes a later creation-time F0 even when scene code never calls the
+    // setter itself.
+    const subjects = await materialSubjects({
+        materials: [{
+            extensions: {
+                KHR_materials_ior: { ior: 1.209 },
+                // This clears the IOR-seeded setter options, deliberately
+                // exercising registration by an otherwise empty call.
+                KHR_materials_specular: { specularFactor: 1 },
+            },
+        }],
+    });
+    assert.equal(subjects[0]!.metallicReflectanceRegistered, true);
+    assert.equal(subjects[0]!.input["_metallicF0Factor"], undefined);
+
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: false,
+        fog: false,
+    });
+    const variants = await composeScenePbrVariants(
+        [{
+            materialsBefore: 0,
+            gltfAssetsBefore: 1,
+            hasBaseColorTexture: true,
+            hasOrmTexture: true,
+            metallicFactor: 1,
+            roughnessFactor: 1,
+            directIntensity: 1,
+            environmentIntensity: 1,
+            alpha: 1,
+            reflectance: 0.04,
+            occlusionStrength: 0,
+            metallicF0Factor: 0.95,
+            doubleSided: false,
+            transmission: 0,
+            ior: 1.5,
+            thickness: 0,
+        }],
+        arms,
+        1,
+        undefined,
+        {
+            metallicReflectanceRegistered: subjects.some(
+                (subject) => subject.metallicReflectanceRegistered,
+            ),
+        },
+    );
+
+    assert.match(variants[0]!.fragmentWgsl, /metallicF0Factor/);
+});
+
+test("scene metallic-reflectance maps compose both linear bindings", async () => {
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: false,
+        fog: false,
+    });
+    const variants = await composeScenePbrVariants(
+        [{
+            materialsBefore: 0,
+            gltfAssetsBefore: 0,
+            hasBaseColorTexture: true,
+            hasOrmTexture: true,
+            metallicFactor: 1,
+            roughnessFactor: 1,
+            directIntensity: 1,
+            environmentIntensity: 1,
+            alpha: 1,
+            reflectance: 0.04,
+            occlusionStrength: 0,
+            metallicF0Factor: 0.95,
+            doubleSided: false,
+            transmission: 0,
+            ior: 1.5,
+            thickness: 0,
+            metallicReflectance: {
+                hasColor: true,
+                hasMetallicTexture: true,
+                hasReflectanceTexture: true,
+                useOnlyMetallicFromTexture: true,
+            },
+        }],
+        arms,
+    );
+
+    const fragment = variants[0]!.fragmentWgsl;
+    assert.match(fragment, /var metallicReflectanceMap\s*:\s*texture_2d<f32>/);
+    assert.match(fragment, /var reflectanceMap\s*:\s*texture_2d<f32>/);
+    assert.match(fragment, /let rLinear = pow\(rSample\.rgb/);
+    assert.doesNotMatch(fragment, /let mrLinear = pow\(mrSample\.rgb/);
 });

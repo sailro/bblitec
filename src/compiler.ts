@@ -46,6 +46,7 @@ import {
 } from "./compiler/intrinsics/engine-options.js";
 import {
     compilePbrMaterialOptions,
+    compileMetallicReflectanceOptions,
     compileGridMaterialOptions,
     compileClearCoatOptions,
     compileAnisotropyOptions,
@@ -54,6 +55,7 @@ import {
     compileSheenOptions,
     type CompiledLayerOptions,
     type CompiledPbrMaterialOptions,
+    type CompiledMetallicReflectanceOptions,
     type MaterialOptionContext,
 } from "./compiler/intrinsics/material-options.js";
 import {
@@ -157,6 +159,7 @@ import type {
     ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
     ScenePbrMaterialManifest,
+    ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
     SpriteCustomShaderManifest,
     EffectManifest,
@@ -221,6 +224,7 @@ const featureSources: Record<Feature, string[]> = {
     "material:clearcoat-f0-remap": [],
     "material:iridescence": [],
     "material:anisotropy": [],
+    "material:metallic-reflectance": [],
     "material:tracking": [],
     "material:emissive": [],
     "material:no-color-view": [],
@@ -1384,6 +1388,12 @@ class Compiler
         expression: ts.Expression,
     ): CompiledPbrMaterialOptions {
         return compilePbrMaterialOptions(this, expression);
+    }
+
+    public compileMetallicReflectanceOptions(
+        expression: ts.Expression,
+    ): CompiledMetallicReflectanceOptions {
+        return compileMetallicReflectanceOptions(this, expression);
     }
 
     public compileGridMaterialOptions(expression: ts.Expression): string[] {
@@ -3544,6 +3554,44 @@ class Compiler
             "setPbrAnisotropy",
             index,
         ).anisotropy = anisotropy;
+    }
+
+    public recordScenePbrMetallicReflectance(
+        reflectance: ScenePbrMetallicReflectanceManifest,
+        index: number | undefined,
+    ): void {
+        const material = this.sceneMaterialForSetter(
+            "setPbrMetallicReflectance",
+            index,
+        );
+        const previous = material.metallicReflectance;
+        material.metallicReflectance = {
+            hasColor: previous?.hasColor === true || reflectance.hasColor,
+            hasMetallicTexture:
+                previous?.hasMetallicTexture === true ||
+                reflectance.hasMetallicTexture,
+            hasReflectanceTexture:
+                previous?.hasReflectanceTexture === true ||
+                reflectance.hasReflectanceTexture,
+            ...(reflectance.hasColor
+                ? (reflectance.color
+                    ? { color: reflectance.color }
+                    : {})
+                : previous?.color
+                    ? { color: previous.color }
+                    : {}),
+            ...(reflectance.useOnlyMetallicFromTexture !== undefined
+                ? {
+                    useOnlyMetallicFromTexture:
+                        reflectance.useOnlyMetallicFromTexture,
+                }
+                : previous?.useOnlyMetallicFromTexture !== undefined
+                    ? {
+                        useOnlyMetallicFromTexture:
+                            previous.useOnlyMetallicFromTexture,
+                    }
+                    : {}),
+        };
     }
 
     /** One layer or system built without a custom shader, so with the stock program. */

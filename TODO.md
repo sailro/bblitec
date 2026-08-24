@@ -306,11 +306,16 @@ that does to the deferred lane by default.
   user function `requireGroup`. Iteration, `?? []`, `.find(pred)` with an arrow,
   and static glTF-root indexing now lower; this is the remaining shape where
   the collection itself travels beyond a compiler-owned call argument.
-- [ ] Scene 12: support `setPbrMetallicReflectance`. Its preceding
-  `occlusionStrength` and internal `_metallicF0Factor` creation values now
-  reach the scene-material manifest and native record; the setter next stamps
-  the reflectance color and optional texture fields before the imported-root
-  clone and recursive material walk.
+- [x] Scene 12: support `setPbrMetallicReflectance`. Its computed colour stays
+  a native expression, both optional file maps bind through linear texture
+  views because the pinned fragment performs its own RGB decode, and the
+  alpha-only metallic-map fork composes per material. Empty calls preserve
+  the pin's process-global registration semantics, including making an
+  otherwise dormant creation-time `_metallicF0Factor` visible.
+- [ ] Scene 12: iterate the imported `TransformNode.children` collection in
+  its recursive material walk. The setter now lowers all three call shapes;
+  compilation advances to line 102 and refuses that handle collection as
+  `Expected a static array literal` before the clone operations.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in

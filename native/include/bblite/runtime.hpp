@@ -1339,6 +1339,8 @@ struct MaterialRecord {
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
     TextureData metallic_roughness_texture;
+    TextureData metallic_reflectance_texture;
+    TextureData reflectance_texture;
     TextureData normal_texture;
     /** KHR_materials_pbrSpecularGlossiness: RGB specular, A glossiness. */
     TextureData spec_gloss_texture;
@@ -1901,6 +1903,13 @@ void set_pbr_emissive(
     Engine& engine,
     MaterialHandle material,
     Color3 color);
+void set_pbr_metallic_reflectance(
+    Engine& engine,
+    MaterialHandle material,
+    bool has_color,
+    Color3 color,
+    FileTexture metallic_texture,
+    FileTexture reflectance_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 FileTexture load_file_texture(
     Engine& engine,

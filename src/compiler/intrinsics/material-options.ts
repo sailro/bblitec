@@ -11,6 +11,7 @@ import ts from "typescript";
 import type {
     CompileAsset,
     ScenePbrAnisotropyManifest,
+    ScenePbrMetallicReflectanceManifest,
     ScenePbrMaterialManifest,
     Value,
     ValueKind,
@@ -95,6 +96,13 @@ export interface CompiledAnisotropyOptions {
     intensity: string;
     direction: string;
     manifest: ScenePbrAnisotropyManifest;
+}
+
+export interface CompiledMetallicReflectanceOptions {
+    colorCpp?: string;
+    texture?: Value;
+    reflectanceTexture?: Value;
+    manifest: ScenePbrMetallicReflectanceManifest;
 }
 
 /** The reached slice of the extension option objects the setters take. */
@@ -319,6 +327,138 @@ export function compilePbrMaterialOptions(
         metallicF0FactorCpp,
         sceneMaterialIndex,
     ];
+}
+
+/** A setter option that is absent through an inlined optional record field. */
+function optionalRecordOption(
+    context: MaterialOptionContext,
+    expression: ts.Expression | undefined,
+): Value | undefined {
+    if (!expression) return undefined;
+    const resolved = context.resolveStaticExpression(expression);
+    if (
+        ts.isIdentifier(resolved) &&
+        resolved.text === "undefined" &&
+        !context.lookupOptional(resolved)
+    ) {
+        return undefined;
+    }
+    if (
+        ts.isPropertyAccessExpression(resolved) &&
+        ts.isIdentifier(resolved.expression)
+    ) {
+        const owner = context.lookupOptional(resolved.expression);
+        if (owner?.kind === "record") {
+            return owner.recordProperties?.[resolved.name.text];
+        }
+    }
+    return context.compileValue(resolved);
+}
+
+export function compileMetallicReflectanceOptions(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): CompiledMetallicReflectanceOptions {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        [
+            "color",
+            "texture",
+            "reflectanceTexture",
+            "useOnlyMetallicFromTexture",
+        ],
+        "Reached metallic-reflectance lowering supports color, the two file-texture slots, and useOnlyMetallicFromTexture.",
+    );
+    const colorExpression = context.objectProperty(object, "color");
+    let colorCpp: string | undefined;
+    let color: readonly [number, number, number] | undefined;
+    if (colorExpression) {
+        const resolved = context.resolveStaticExpression(colorExpression);
+        if (
+            !ts.isArrayLiteralExpression(resolved) ||
+            resolved.elements.length !== 3
+        ) {
+            context.fail(
+                colorExpression,
+                "setPbrMetallicReflectance color must be a static RGB tuple.",
+            );
+        }
+        const values = resolved.elements.map((element) =>
+            staticNumberValue(context, element),
+        );
+        if (
+            values.every((value) =>
+                value !== undefined && Number.isFinite(value)
+            )
+        ) {
+            color = values as [number, number, number];
+        }
+        colorCpp = context.compileColor3(colorExpression);
+    }
+    const texture = optionalRecordOption(
+        context,
+        context.objectProperty(object, "texture"),
+    );
+    const reflectanceTexture = optionalRecordOption(
+        context,
+        context.objectProperty(object, "reflectanceTexture"),
+    );
+    for (const value of [texture, reflectanceTexture]) {
+        if (!value) continue;
+        if (value.kind !== "texture" || !value.textureFile) {
+            context.fail(
+                expression,
+                "Reached metallic-reflectance maps must come from loadTexture2D.",
+            );
+        }
+        if (value.textureFile.srgb) {
+            context.fail(
+                expression,
+                "Metallic-reflectance maps must be linear textures; the pinned fragment performs its own RGB decode.",
+            );
+        }
+    }
+    const useOnly = optionalRecordOption(
+        context,
+        context.objectProperty(object, "useOnlyMetallicFromTexture"),
+    );
+    if (
+        useOnly &&
+        (useOnly.kind !== "boolean" ||
+            (useOnly.cpp !== "true" && useOnly.cpp !== "false"))
+    ) {
+        context.fail(
+            expression,
+            "useOnlyMetallicFromTexture must be a static boolean.",
+        );
+    }
+    if (
+        colorCpp &&
+        !color &&
+        !texture &&
+        !reflectanceTexture
+    ) {
+        context.fail(
+            colorExpression!,
+            "A color-only metallic-reflectance setter requires finite static RGB values so its fragment arm can be determined.",
+        );
+    }
+    return {
+        ...(colorCpp ? { colorCpp } : {}),
+        ...(texture ? { texture } : {}),
+        ...(reflectanceTexture ? { reflectanceTexture } : {}),
+        manifest: {
+            hasColor: colorCpp !== undefined,
+            ...(color ? { color } : {}),
+            hasMetallicTexture: texture !== undefined,
+            hasReflectanceTexture: reflectanceTexture !== undefined,
+            ...(useOnly
+                ? { useOnlyMetallicFromTexture: useOnly.cpp === "true" }
+                : {}),
+        },
+    };
 }
 
 export function compileGridMaterialOptions(

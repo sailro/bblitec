@@ -377,6 +377,16 @@ the public base `reflectance`: a reached non-default is recorded and writes
 both native `metallic_f0_factor` and the writer's fallback `specular_weight`,
 but stays dormant in shader composition until the later
 `setPbrMetallicReflectance` call registers the reflectance extension.
+That setter preserves a computed scene colour as native arithmetic, moves its
+two optional file images into dedicated material slots, and composes the pin's
+metallic-reflectance, reflectance, and alpha-only feature bits per material.
+Both images use linear texture views because Babylon's reflectance fragment
+applies its own `pow(rgb, 2.2)` decode; their alpha channels remain linear.
+Registration is process-global in the pin, so even an empty setter call makes
+a non-default creation-time F0 on another material participate in composition;
+the same applies when the registering call came from a previously loaded glTF
+dielectric rather than from scene code. Repeated scene setter calls accumulate
+their conditionally supplied fields exactly as the pinned material object does.
 `KHR_materials_variants` is folded to the one selection a scene makes.
 `selectVariant` restores every original material and then applies the chosen
 variant's mapped entries, so with one static selection the end state is a

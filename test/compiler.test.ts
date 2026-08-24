@@ -1574,6 +1574,194 @@ test("preserves scene-code internal metallic F0 creation state", () => {
     );
 });
 
+test("lowers Scene 12 metallic-reflectance setter shapes", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrMetallicReflectance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const metallic = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const reflectance = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const base = createSolidTexture2D(engine, 1, 1, 1);
+            const orm = createSolidTexture2D(engine, 1, 0.5, 0);
+            const r = Math.pow(255 / 255, 2.2);
+            const g = Math.pow(250 / 255, 2.2);
+
+            function makeMaterial(options: {
+                metallic?: typeof metallic;
+                reflectance?: typeof reflectance;
+                alphaOnly?: boolean;
+            }) {
+                const material = createPbrMaterial({
+                    baseColorTexture: base,
+                    ormTexture: orm,
+                    _metallicF0Factor: 0.95,
+                });
+                setPbrMetallicReflectance(material, {
+                    color: [r, g, g],
+                    texture: options.metallic,
+                    reflectanceTexture: options.reflectance,
+                    useOnlyMetallicFromTexture: options.alphaOnly,
+                });
+                return material;
+            }
+
+            makeMaterial({ metallic });
+            makeMaterial({ reflectance });
+            makeMaterial({ metallic, reflectance, alphaOnly: true });
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials.map(
+            (material) => material.metallicReflectance,
+        ),
+        [
+            {
+                hasColor: true,
+                hasMetallicTexture: true,
+                hasReflectanceTexture: false,
+            },
+            {
+                hasColor: true,
+                hasMetallicTexture: false,
+                hasReflectanceTexture: true,
+            },
+            {
+                hasColor: true,
+                hasMetallicTexture: true,
+                hasReflectanceTexture: true,
+                useOnlyMetallicFromTexture: true,
+            },
+        ],
+    );
+    assert.equal(
+        result.cpp.match(/bbl::set_pbr_metallic_reflectance\(/g)?.length,
+        3,
+    );
+    assert.ok(
+        result.manifest.features.includes("material:metallic-reflectance"),
+    );
+});
+
+test("accumulates repeated metallic-reflectance setter fields", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrMetallicReflectance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const metallic = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const reflectance = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+            setPbrMetallicReflectance(material, {
+                texture: metallic,
+                useOnlyMetallicFromTexture: true,
+            });
+            setPbrMetallicReflectance(material, {
+                reflectanceTexture: reflectance,
+            });
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials[0]?.metallicReflectance,
+        {
+            hasColor: false,
+            hasMetallicTexture: true,
+            hasReflectanceTexture: true,
+            useOnlyMetallicFromTexture: true,
+        },
+    );
+    assert.equal(
+        result.cpp.match(/bbl::set_pbr_metallic_reflectance\(/g)?.length,
+        2,
+    );
+});
+
+test("refuses unsupported metallic-reflectance setter inputs", () => {
+    const compileSetter = (
+        textureSetup: string,
+        options: string,
+    ) => compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrMetallicReflectance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+            ${textureSetup}
+            setPbrMetallicReflectance(material, { ${options} });
+        }
+    `);
+
+    assert.throws(
+        () => compileSetter(
+            `const map = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+                { srgb: true },
+            );`,
+            "texture: map",
+        ),
+        /Metallic-reflectance maps must be linear textures/,
+    );
+    assert.throws(
+        () => compileSetter(
+            "const map = createSolidTexture2D(engine, 1, 1, 1);",
+            "texture: map",
+        ),
+        /must come from loadTexture2D/,
+    );
+    for (const option of ["f0Factor: 0.5", "specularWeight: 0.5"]) {
+        assert.throws(
+            () => compileSetter("", option),
+            /Reached metallic-reflectance lowering supports/,
+        );
+    }
+    assert.throws(
+        () => compileSetter(
+            "const value = Math.pow(0.5, 2.2);",
+            "color: [value, value, value]",
+        ),
+        /color-only metallic-reflectance setter requires finite static RGB values/,
+    );
+});
+
 test("supports lexical block shadowing and if/else", () => {
     const result = compileSource(
         readFileSync(
