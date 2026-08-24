@@ -58,7 +58,10 @@ import {
     splitWgslStatements,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { PINNED_ARITHMETIC_OPERATORS } from "./pinned-operators.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -531,7 +534,6 @@ export class RendererLowerer {
     } = {}): LoweredSource {
         this.assertRenderPlanPins(options);
         this.assertPinnedTransparentSort();
-        const sampleCount = this.pinnedSampleCount();
         const reachedShaderPrograms =
             options.shaderPrograms ?? [];
         const { shaderVariantTable, shaderVariantEntries } =
@@ -590,7 +592,6 @@ export class RendererLowerer {
                 opaqueOrderStamp,
                 shaderVariantTable,
                 shaderVariantEntries,
-                sampleCount,
                 instancingTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
@@ -726,42 +727,6 @@ export class RendererLowerer {
             "b._sortDistance - a._sortDistance || a.renderable.order - b.renderable.order",
             "Transparent draw ordering",
         );
-    }
-
-    /**
-     * The pinned default MSAA selection
-     * (`options?.msaaSamples === 1 ? 1 : 4`); the emitted
-     * `preferred_sample_count` is its non-1 arm.
-     */
-    private pinnedSampleCount(): number {
-        const { file: surfaceFile, declaration: buildSurface } =
-            this.context.functionDeclaration(
-                surfaceModule,
-                "_buildSurface",
-            );
-        const msaaExpression =
-            this.context.unwrapExpression(
-                this.context.variableInitializer(
-                    buildSurface,
-                    "msaaSamples",
-                ),
-            );
-        this.context.assertExpressionShape(
-            msaaExpression,
-            "options?.msaaSamples === 1 ? 1 : 4",
-            "Default MSAA selection",
-        );
-        if (!ts.isConditionalExpression(msaaExpression)) {
-            this.context.contractError(
-                msaaExpression,
-                "Expected conditional MSAA selection.",
-            );
-        }
-        const sampleCount = this.context.numericValue(
-            msaaExpression.whenFalse,
-            surfaceFile,
-        );
-        return sampleCount;
     }
 
     /**
@@ -918,6 +883,10 @@ export class RendererLowerer {
         return `#pragma once
 
 #include <bblite/runtime.hpp>
+// preferred_sample_count() lives in the always-emitted pinned_surface.hpp
+// (an effect-only scene compiles no render plan); included here so every
+// TU that renders through the plan still sees the one definition.
+#include <bblite/upstream/pinned_surface.hpp>
 
 #include <array>
 #include <vector>
@@ -1203,7 +1172,6 @@ RenderItem bind_render_item(
     RenderItem item,
     const Engine& engine,
     MaterialHandle material);
-std::uint32_t preferred_sample_count();
 // The aspect ratio is a JavaScript number in
 // src/camera/camera.ts getEffectiveAspectRatio, and the pinned
 // projection writer divides by it before its single float32 store.
@@ -1288,7 +1256,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp: string;
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
-            sampleCount: number;
             instancingTrs: {
                 quaternionProducts: string;
                 basisLocals: string;
@@ -1310,7 +1277,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp,
             shaderVariantTable,
             shaderVariantEntries,
-            sampleCount,
             instancingTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
@@ -1740,10 +1706,6 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
     result.draw_lists =
         build_render_draw_lists(result.items, engine);
     return result;
-}
-
-std::uint32_t preferred_sample_count() {
-    return ${sampleCount}u;
 }
 
 // src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in the
@@ -3282,60 +3244,27 @@ ${lifted.fragmentBody}
      * Prints one pinned arithmetic expression as C++, renaming identifiers
      * through a required map. This is how the TRS and Euler emissions below
      * pair term for term with the pinned writers: the C++ text flows from
-     * the pinned AST, and an identifier or operator the map does not know
-     * fails generation instead of drifting.
+     * the pinned AST through the shared `PinnedNumericLowerer` — double
+     * operands, explicit parenthesization — and an identifier or operator
+     * the map does not know fails generation instead of drifting.
      */
-    private printPinnedCppExpression(
+    private pinnedNumericExpression(
+        file: ts.SourceFile,
         expression: ts.Expression,
         rename: ReadonlyMap<string, string>,
     ): string {
-        if (ts.isParenthesizedExpression(expression)) {
-            return `(${this.printPinnedCppExpression(
-                expression.expression,
-                rename,
-            )})`;
-        }
-        if (ts.isNonNullExpression(expression)) {
-            return this.printPinnedCppExpression(
-                expression.expression,
-                rename,
-            );
-        }
-        if (ts.isIdentifier(expression)) {
-            const renamed = rename.get(expression.text);
-            if (renamed === undefined) {
-                this.context.contractError(
-                    expression,
-                    `Pinned math term reads '${expression.text}', which the emission does not map.`,
-                );
-            }
-            return renamed;
-        }
-        if (ts.isNumericLiteral(expression)) {
-            return this.context.doubleLiteral(Number(expression.text));
-        }
-        if (ts.isBinaryExpression(expression)) {
-            const operator = PINNED_ARITHMETIC_OPERATORS.get(
-                expression.operatorToken.kind,
-            );
-            if (operator === undefined) {
-                this.context.contractError(
-                    expression.operatorToken,
-                    "Pinned math term uses an operator the emission does not lower.",
-                );
-            }
-            return `${this.printPinnedCppExpression(
-                expression.left,
-                rename,
-            )} ${operator} ${this.printPinnedCppExpression(
-                expression.right,
-                rename,
-            )}`;
-        }
-        return this.context.contractError(
-            expression,
-            "Pinned math term has a shape the emission does not lower.",
-        );
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map(
+                [...rename].map(
+                    ([name, cpp]): [string, PinnedBinding] => [
+                        name,
+                        { cpp, type: "scalar" },
+                    ],
+                ),
+            ),
+            calls: new Map(),
+        });
+        return lowerer.expression(expression);
     }
 
     /** A literal element read `base[<n>]`, or a contract error. */
@@ -4543,7 +4472,8 @@ ${lifted.fragmentBody}
         const quaternionProducts = tuple.elements
             .map(
                 (component, index) =>
-                    `        ${quaternionSlots[index]} = ${this.printPinnedCppExpression(
+                    `        ${quaternionSlots[index]} = ${this.pinnedNumericExpression(
+                        euler.file,
                         component,
                         eulerRename,
                     )};\n`,
@@ -4574,7 +4504,8 @@ ${lifted.fragmentBody}
         const basisLocals = productNames
             .map(
                 (name) =>
-                    `    const double ${name} = ${this.printPinnedCppExpression(
+                    `    const double ${name} = ${this.pinnedNumericExpression(
+                        compose.file,
                         this.context.variableInitializer(
                             compose.declaration,
                             name,
@@ -4633,7 +4564,8 @@ ${lifted.fragmentBody}
                 basisStores += `    local[${offset}] = ${translation};\n`;
                 continue;
             }
-            basisStores += `    local[${offset}] = ${this.printPinnedCppExpression(
+            basisStores += `    local[${offset}] = ${this.pinnedNumericExpression(
+                compose.file,
                 rhs,
                 storeRename,
             )};\n`;

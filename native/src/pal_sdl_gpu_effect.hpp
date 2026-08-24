@@ -52,6 +52,9 @@ struct EffectPass {
      * surviving means slot zero.
      */
     bool has_uniform_block = false;
+    /** The declared block's byte size from the variant table, so a push
+     *  that would underfill it refuses instead (the Dawn twin's check). */
+    std::uint32_t uniform_bytes = 0;
 };
 
 /**
@@ -106,6 +109,16 @@ inline EffectPass create_effect_pass(
     const std::uint32_t uniform_count =
         static_cast<std::uint32_t>(slots.uniforms.size());
     pass.has_uniform_block = !slots.uniforms.empty();
+    // The declared block's size, from the same variant table the Dawn
+    // side sizes its buffer with.
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::EffectVariantBinding& binding =
+            upstream::effect_variant_bindings.at(
+                entry.first_binding + index);
+        if (binding.kind == upstream::EffectBindingKind::uniform) {
+            pass.uniform_bytes = binding.uniform_bytes;
+        }
+    }
 
     // The vertex stage is the pin's own fullscreen triangle: no vertex
     // buffers, no samplers, no uniforms.
@@ -132,9 +145,10 @@ inline EffectPass create_effect_pass(
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.multisample_state.sample_count = samples > 1
-        ? SDL_GPU_SAMPLECOUNT_4
-        : SDL_GPU_SAMPLECOUNT_1;
+    // The caller's actual count, translated — not collapsed to 4: the
+    // Dawn twin passes the value through, and a gated task count must
+    // match the texture it renders into.
+    info.multisample_state.sample_count = gpu_sample_count_from(samples);
     info.target_info.num_color_targets = 1;
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
@@ -145,21 +159,13 @@ inline EffectPass create_effect_pass(
 
     // The textures the caller set, in the order the sidecar kept them: the
     // fragment names each binding, and a texture the body never samples does
-    // not survive to the compiled stage.
+    // not survive to the compiled stage. The lookup and its not-set
+    // refusal are the shared `effect_texture_for_binding`.
     for (const std::string& name : slots.textures) {
-        const EffectTextureSlot* slot = nullptr;
-        for (const EffectTextureSlot& candidate : wrapper.textures) {
-            if (candidate.name != name) continue;
-            slot = &candidate;
-            break;
-        }
-        if (!slot || !slot->set) {
-            throw std::runtime_error(
-                "Effect texture binding '" + name +
-                "' was not set before the first render.");
-        }
         pass.textures.push_back(
-            upload_solid_texture(device, slot->texture));
+            upload_solid_texture(
+                device,
+                effect_texture_for_binding(wrapper, name)));
     }
     return pass;
 }
@@ -181,6 +187,9 @@ inline void record_effect_pass(
     const EffectWrapperRecord& wrapper =
         engine.effect_wrappers.at(handle.value);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {
+        // The symmetric size validation (pal_gpu_shared.hpp): a short
+        // push leaves a stale tail behind the declared size.
+        require_effect_uniform_size(wrapper, pass.uniform_bytes);
         push_stage_uniform(
             command,
             0,

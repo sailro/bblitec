@@ -72,6 +72,32 @@ inline WGPUCompareFunction dawn_depth_compare(
     return WGPUCompareFunction_GreaterEqual;
 }
 
+inline WGPUBlendFactor dawn_blend_factor(BlendFactor factor) {
+    switch (factor) {
+        case BlendFactor::one:
+            return WGPUBlendFactor_One;
+        case BlendFactor::src_alpha:
+            return WGPUBlendFactor_SrcAlpha;
+        case BlendFactor::one_minus_src_alpha:
+            return WGPUBlendFactor_OneMinusSrcAlpha;
+    }
+    return WGPUBlendFactor_One;
+}
+
+// A shared blend tuple in this API's state; the operation is always add
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Beside the
+// depth-compare translator so the family headers can call it too.
+inline WGPUBlendState blend_state_from(const BlendFactors& factors) {
+    WGPUBlendState blend{};
+    blend.color.operation = WGPUBlendOperation_Add;
+    blend.color.srcFactor = dawn_blend_factor(factors.src_color);
+    blend.color.dstFactor = dawn_blend_factor(factors.dst_color);
+    blend.alpha.operation = WGPUBlendOperation_Add;
+    blend.alpha.srcFactor = dawn_blend_factor(factors.src_alpha);
+    blend.alpha.dstFactor = dawn_blend_factor(factors.dst_alpha);
+    return blend;
+}
+
 inline std::string view_text(WGPUStringView view) {
     if (!view.data) return {};
     return view.length == WGPU_STRLEN
@@ -207,6 +233,10 @@ struct DawnDeviceOptions {
     bool hidden_test_pass = false;
     /** Benchmarks present immediately; everything else keeps vsync. */
     bool immediate_present = false;
+    // There is no gpu_debug option on this backend, and none of its three
+    // drivers reads BBLITE_GPU_DEBUG: Dawn's validation is always on, so
+    // the flag is a documented no-op here rather than a refusal — parity
+    // passes the same environment to both backends.
     /** Zero leaves the WebGPU default in place. */
     std::uint32_t max_vertex_attributes = 0;
     std::uint32_t max_color_attachment_bytes_per_sample = 0;

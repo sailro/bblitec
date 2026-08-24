@@ -74,6 +74,32 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * `PINNED_MATH_FUNCTIONS` as the spelling map `PinnedNumericLowerer` takes:
+ * `Math.x` to its `<cmath>` call over doubles. `std::max`/`std::min` pin the
+ * template argument, or a mixed-width call is ambiguous. Callers that need a
+ * member with different semantics (`Math.round`, `Math.hypot`) layer it on
+ * top of this map and say why.
+ */
+export function pinnedNumericMathCalls(): Map<
+    string,
+    (args: readonly string[]) => string
+> {
+    return new Map(
+        Object.entries(PINNED_MATH_FUNCTIONS).map(
+            ([name, spelling]): [
+                string,
+                (args: readonly string[]) => string,
+            ] => [
+                `Math.${name}`,
+                name === "max" || name === "min"
+                    ? (args) => `${spelling}<double>(${args.join(", ")})`
+                    : (args) => `${spelling}(${args.join(", ")})`,
+            ],
+        ),
+    );
+}
+
+/**
  * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the
  * node is not such a call.
  */

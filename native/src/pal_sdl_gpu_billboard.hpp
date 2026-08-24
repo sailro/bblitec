@@ -28,6 +28,9 @@
 #include <stdexcept>
 #include <vector>
 
+// billboard_draw_plan / billboard_needs_upload: the program ladder and
+// the upload gate, decided once for both backends.
+#include "pal_gpu_shared.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 // sprite_blend_factor: one translation of the pinned blend enum, shared
 // with the 2D layer's pass.
@@ -52,8 +55,10 @@ struct BillboardPass {
     BillboardSystemHandle system{};
     // The reordered upload, kept so an unchanged view re-uploads nothing.
     std::vector<float> sorted;
-    std::array<float, 16> uploaded_view{};
-    bool uploaded = false;
+    // What the buffer holds — the view it was sorted for and the count it
+    // carried — so `billboard_needs_upload` can gate the re-upload and a
+    // post-frame append invalidates it (pal_gpu_shared.hpp).
+    BillboardUploadStamp upload_stamp;
     // Where this system's fragment stage kept its two uniform blocks, from
     // the sidecar the shader step wrote beside it. A custom body that reads
     // neither leaves both at -1.
@@ -109,55 +114,25 @@ inline BillboardPass create_billboard_pass(
         upstream::billboard_index_data.size() *
             sizeof(std::uint16_t));
 
-    const bool axis_locked =
-        system.orientation == BillboardOrientation::axis_locked;
-    // The particle family's Multiply program is a module of the pin's own,
-    // outside both sprite composers: it declares no fx block, and its vertex
-    // stage travels with its fragment because the pin writes them together.
-    const bool particle_multiply = system.blend.particle_passes >= 1;
-    // That pairing is exactly why it is exclusive: the program carries the
-    // FACING basis and the pin's own body, so an axis-locked or custom
-    // system reaching it would silently draw neither. The registrar upstream
-    // only ever builds facing particle systems with no custom shader, so
-    // this says so rather than picking a program that would be wrong.
-    if (particle_multiply && (axis_locked || system.custom_shader)) {
-        throw std::runtime_error(
-            "A node-particle Multiply blend draws the pin's own facing "
-            "program; it has no axis-locked or custom-shader arm.");
-    }
-    // Unlike the 2D layer, a custom billboard program brings its own vertex
-    // stage: the pin's composer exposes the view distance and the world
-    // position to a custom body, which the stock stage does not write.
+    // The program ladder and the pass rules, decided once for both
+    // backends (`billboard_draw_plan`, pal_gpu_shared.hpp); this side
+    // keeps only its API mechanics.
+    const BillboardDrawPlan plan = billboard_draw_plan(system);
     SDL_GPUShader* vertex_shader = load_shader(
         device,
-        particle_multiply
-            ? "billboard_particle_multiply.vert"
-            : system.custom_shader
-                ? "billboard_custom.vert"
-                : axis_locked ? "billboard_axis_locked.vert"
-                              : "billboard.vert",
+        plan.vertex_stem,
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         // The axis-locked basis reads the system block for its lock axis.
-        axis_locked ? 2u : 1u,
+        plan.vertex_reads_system_block ? 2u : 1u,
         "mainVertex");
-    // The cutout arm discards below the cutoff; with alpha-to-coverage the
-    // pin drops the discard and lets sample coverage carry the edge, so that
-    // permutation shares the transparent stage.
-    const bool cutout =
-        system.depth_mode == BillboardDepthMode::cutout;
-    const char* fragment_name = particle_multiply
-        ? "billboard_particle_multiply.frag"
-        : system.custom_shader
-            ? "billboard_custom.frag"
-            : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
-                                                  : "billboard.frag";
-    const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
+    const PinnedStageSlots slots =
+        read_pinned_stage_slots(plan.fragment_stem);
     pass.system_block_slot = stage_uniform_slot(slots, "billboards");
     pass.fx_block_slot = stage_uniform_slot(slots, "fx");
     SDL_GPUShader* fragment_shader = load_shader(
         device,
-        fragment_name,
+        plan.fragment_stem,
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         static_cast<std::uint32_t>(slots.textures.size()),
         static_cast<std::uint32_t>(slots.uniforms.size()),
@@ -220,15 +195,19 @@ inline BillboardPass create_billboard_pass(
     // The quad is expanded around a camera basis, so a billboard has no
     // consistent winding to cull against.
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    // The pinned depth table pairs `transparent` with writes off, which is
-    // what makes the sorted draw order the composite, and `cutout` with
-    // writes on, which is what lets the GPU resolve overlap instead.
+    // The depth pairing comes with the plan: writes iff cutout.
     info.depth_stencil_state.compare_op =
         gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
-    info.depth_stencil_state.enable_depth_write = cutout;
+    info.depth_stencil_state.enable_depth_write =
+        plan.cutout_writes_depth;
+    // The one a2c rule (pal_gpu_shared.hpp): at one sample the Dawn twin's
+    // pipeline validation would reject it, and this API would quantize
+    // coverage to a ~0.5 cutoff — different pixels per backend.
     info.multisample_state.enable_alpha_to_coverage =
-        system.alpha_to_coverage;
+        alpha_to_coverage_enabled(
+            system.alpha_to_coverage,
+            gpu_sample_count_value(sample_count));
     info.multisample_state.sample_count = sample_count;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
@@ -239,7 +218,7 @@ inline BillboardPass create_billboard_pass(
     SDL_ReleaseGPUShader(device, vertex_shader);
     SDL_ReleaseGPUShader(device, fragment_shader);
 
-    if (system.blend.particle_passes == 2) {
+    if (plan.particle_passes == 2) {
         // The mode-4 second pass: the STOCK program, the Add blend the
         // generated builder resolved, and everything else identical -- the
         // pin builds it as a copy of the system with its custom shader
@@ -332,21 +311,12 @@ inline void upload_billboard_pass(
     if (system.custom_shader) {
         pass.elapsed_ms += delta_ms;
     }
-    if (system.count == 0) {
-        return;
-    }
-    // A cutout system is not sorted: it writes depth, so the GPU resolves
-    // overlap and the pin uploads in logical insertion order. Its buffer
-    // therefore never depends on the view and is uploaded once.
-    const bool cutout =
-        system.depth_mode == BillboardDepthMode::cutout;
-    // The sorted order depends on the view alone: the lowered permutation
-    // adds instances and never updates or removes them, so an unchanged view
-    // means an unchanged buffer. `update_buffer` creates a transfer buffer
-    // and submits a command buffer of its own, so re-uploading an identical
-    // buffer every frame is the one real per-frame cost here -- every other
-    // upload in this renderer is version-gated the same way.
-    if (pass.uploaded && (cutout || pass.uploaded_view == view)) {
+    // One gating rule for both backends (`billboard_needs_upload`):
+    // `update_buffer` creates a transfer buffer and submits a command
+    // buffer of its own, so re-uploading an identical buffer every frame
+    // is the one real per-frame cost here -- every other upload in this
+    // renderer is version-gated the same way.
+    if (!billboard_needs_upload(system, pass.upload_stamp, view)) {
         return;
     }
     upstream::billboard_upload_instances(system, view, pass.sorted);
@@ -355,8 +325,7 @@ inline void upload_billboard_pass(
         pass.instances,
         pass.sorted.data(),
         pass.sorted.size() * sizeof(float));
-    pass.uploaded_view = view;
-    pass.uploaded = true;
+    stamp_billboard_upload(pass.upload_stamp, system, view);
 }
 
 /** Records the billboard draw into a pass the scene renderer already began. */
@@ -387,7 +356,7 @@ inline void record_billboard_pass(
     // decides by reading it or not. The axis-locked vertex stage reads the
     // system block too, so it is built whenever either stage wants it.
     const bool axis_locked =
-        system.orientation == BillboardOrientation::axis_locked;
+        billboard_draw_plan(system).vertex_reads_system_block;
     std::array<float, upstream::billboard_system_ubo_bytes / 4>
         system_ubo{};
     if (pass.system_block_slot >= 0 || axis_locked) {

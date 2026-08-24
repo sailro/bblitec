@@ -125,6 +125,11 @@ endif()
 add_executable(
     bblite_native
     "${BBLITE_GENERATED_DIR}/main.cpp"
+    # The one TU that includes the generated build stamp
+    # (bblite_build_stamp): unconditional and scene-dependent by design,
+    # so ONLY it recompiles when the stamp changes and every other PAL
+    # object stays byte-identical across scenes.
+    "${BBLITE_NATIVE_ROOT}/src/pal_build_stamp.cpp"
     ${BBLITE_RUNTIME_SOURCES}
     ${BBLITE_GENERATED_SOURCES}
 )

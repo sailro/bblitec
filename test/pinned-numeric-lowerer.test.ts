@@ -79,6 +79,29 @@ test("lowers a boolean local as a bool rather than a number", () => {
     assert.match(emitted, /bool dirty = false;/);
 });
 
+test("copies a scalar named by another local instead of aliasing it", () => {
+    // `let rz = fx; rz /= rlen;` -- the light-matrix shape. Aliasing rz to
+    // fx would leak the mutation into fx; only a BUFFER binding aliases.
+    const emitted = lower("let rz = fx;\nrz /= rlen;", [
+        ["fx", { cpp: "fx", type: "scalar" }],
+        ["rlen", { cpp: "rlen", type: "scalar" }],
+    ]);
+    assert.match(emitted, /double rz = fx;/);
+    assert.match(emitted, /rz \/= rlen;/);
+    assert.doesNotMatch(emitted, /fx \/=/);
+});
+
+test("still aliases a buffer bound under the initializer's own text", () => {
+    const emitted = lower("const depths = scratch[0];\ndepths[0] = 1;", [
+        ["scratch[0]", { cpp: "scratch.depths", type: "f32" }],
+    ]);
+    assert.doesNotMatch(emitted, /double depths/);
+    assert.match(
+        emitted,
+        /scratch\.depths\[static_cast<std::size_t>\(0\.0\)\] = /,
+    );
+});
+
 test("lowers the truncating bitwise-or the pin uses as a cast", () => {
     const emitted = lower("const key = value | 0;", [
         ["value", { cpp: "value", type: "scalar" }],

@@ -13,6 +13,8 @@ import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
+import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
+import { pinnedToneMappingHeader } from "./lowering/pinned-tone-mapping.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
@@ -567,6 +569,22 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_depth_state.hpp",
             pinnedDepthStateHeader(new LoweringContext(this.store)),
+        );
+        // The pinned default sample count, the same way: the one inline
+        // definition of `preferred_sample_count()`, for every scene shape —
+        // the render plan's TU no longer defines it, and an effect-only
+        // scene compiles no render plan at all.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_surface.hpp",
+            pinnedSurfaceHeader(new LoweringContext(this.store)),
+        );
+        // The pin's exponential tone-mapping constant, read from its own
+        // inverse and cross-checked against the forward curve, so the PAL's
+        // clear-color inverse names a generated symbol instead of a typed
+        // literal.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_tone_mapping.hpp",
+            pinnedToneMappingHeader(new LoweringContext(this.store)),
         );
         // The texture-slot table both render backends execute. Emitted for
         // every scene beside the capability defines above (the base slots

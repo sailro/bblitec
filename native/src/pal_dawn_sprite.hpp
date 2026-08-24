@@ -498,7 +498,11 @@ inline void record_dawn_sprite_pass(
         engine.sprite_renderers[pass.renderer.value];
 
     wgpuRenderPassEncoderSetIndexBuffer(
-        encoder, pass.index_buffer, WGPUIndexFormat_Uint16, 0, 12);
+        encoder,
+        pass.index_buffer,
+        WGPUIndexFormat_Uint16,
+        0,
+        6u * sizeof(std::uint16_t));
 
     // The per-frame layer order (pal_gpu_shared.hpp): the pinned
     // by-`order` stable sort both backends draw with.

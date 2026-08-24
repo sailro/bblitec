@@ -1,6 +1,5 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
-#include <bblite/upstream/build_stamp.hpp>
 
 #include <chrono>
 #include <cstdlib>
@@ -64,7 +63,9 @@ static void report_build_stamp() {
         throw std::runtime_error(
             "Unable to write the build stamp to '" + path + "'.");
     }
-    stream << BBLITE_BUILD_STAMP;
+    // Through the one stamp-owning TU (pal_build_stamp.cpp), so this
+    // object too stays byte-identical across scenes.
+    stream << bblite_build_stamp();
 }
 
 Engine create_engine(EngineOptions options) {

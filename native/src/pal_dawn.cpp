@@ -71,29 +71,15 @@ struct DawnMeshBindings {
 #endif
 };
 
-WGPUBlendFactor dawn_blend_factor(BlendFactor factor) {
-    switch (factor) {
-        case BlendFactor::one:
-            return WGPUBlendFactor_One;
-        case BlendFactor::src_alpha:
-            return WGPUBlendFactor_SrcAlpha;
-        case BlendFactor::one_minus_src_alpha:
-            return WGPUBlendFactor_OneMinusSrcAlpha;
-    }
-    return WGPUBlendFactor_One;
-}
+// dawn_blend_factor / blend_state_from moved to pal_dawn_shared.hpp so
+// the family headers can translate the shared blend tuples too.
 
-// A shared blend tuple in this API's state; the operation is always add
-// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp).
-WGPUBlendState blend_state_from(const BlendFactors& factors) {
-    WGPUBlendState blend{};
-    blend.color.operation = WGPUBlendOperation_Add;
-    blend.color.srcFactor = dawn_blend_factor(factors.src_color);
-    blend.color.dstFactor = dawn_blend_factor(factors.dst_color);
-    blend.alpha.operation = WGPUBlendOperation_Add;
-    blend.alpha.srcFactor = dawn_blend_factor(factors.src_alpha);
-    blend.alpha.dstFactor = dawn_blend_factor(factors.dst_alpha);
-    return blend;
+/** The shared cull enum in this API's; the pipeline-kind facts come from
+ *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
+    return cull == upstream::RenderCullMode::none
+        ? WGPUCullMode_None
+        : WGPUCullMode_Back;
 }
 
 // Vertex uniform bindings in group 1 mirror the SDL vertex uniform
@@ -2104,62 +2090,32 @@ struct PipelineKindTraits {
     bool shader_a2c = false;
 };
 
+// The API-enum residue of the shared `pipeline_kind_traits` decode
+// (pal_gpu_shared.hpp): the facts exist once for both backends; what
+// stays here is the WGPU translation and this mesh path's node refusal
+// -- node draws bind their own compiled graphs and never take the mesh
+// pipeline paths that ask for these traits.
 PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
-    using Kind = upstream::RenderPipelineKind;
-    switch (kind) {
-        case Kind::standard_opaque_back:
-            return {true, false, WGPUCullMode_Back, WGPUFrontFace_CCW};
-        case Kind::standard_opaque_none:
-            return {true, false, WGPUCullMode_None, WGPUFrontFace_CCW};
-        case Kind::pbr_opaque_back:
-            return {false, false, WGPUCullMode_Back, WGPUFrontFace_CCW};
-        case Kind::pbr_opaque_none:
-            return {false, false, WGPUCullMode_None, WGPUFrontFace_CCW};
-        case Kind::pbr_opaque_none_clockwise:
-            return {false, false, WGPUCullMode_None, WGPUFrontFace_CW};
-        case Kind::standard_transparent_back:
-            return {true, true, WGPUCullMode_Back, WGPUFrontFace_CCW};
-        case Kind::standard_transparent_none:
-            return {true, true, WGPUCullMode_None, WGPUFrontFace_CCW};
-        case Kind::pbr_transparent_back:
-            return {false, true, WGPUCullMode_Back, WGPUFrontFace_CCW};
-        case Kind::pbr_transparent_none:
-            return {false, true, WGPUCullMode_None, WGPUFrontFace_CCW};
-        case Kind::pbr_transparent_none_clockwise:
-            return {false, true, WGPUCullMode_None, WGPUFrontFace_CW};
-        case Kind::grid_opaque_back:
-            return {
-                false, false, WGPUCullMode_Back, WGPUFrontFace_CCW,
-                true};
-        case Kind::grid_opaque_none:
-            return {
-                false, false, WGPUCullMode_None, WGPUFrontFace_CCW,
-                true};
-        case Kind::grid_transparent_back:
-            return {
-                false, true, WGPUCullMode_Back, WGPUFrontFace_CCW,
-                true};
-        case Kind::grid_transparent_none:
-            return {
-                false, true, WGPUCullMode_None, WGPUFrontFace_CCW,
-                true};
-        case Kind::shader: {
-            PipelineKindTraits traits;
-            traits.shader = true;
-            return traits;
-        }
-        case Kind::shader_a2c: {
-            PipelineKindTraits traits;
-            traits.shader = true;
-            traits.shader_a2c = true;
-            return traits;
-        }
-        default:
-            dawn_error(
-                "render pipeline kind " +
-                std::to_string(static_cast<int>(kind)) +
-                " is not implemented yet.");
+    const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    if (traits.family == upstream::RenderMaterialKind::node) {
+        dawn_error(
+            "render pipeline kind " +
+            std::to_string(static_cast<int>(kind)) +
+            " is not implemented yet.");
     }
+    PipelineKindTraits result;
+    result.standard =
+        traits.family == upstream::RenderMaterialKind::standard;
+    result.transparent = traits.transparent;
+    result.cull = dawn_cull_mode(traits.cull);
+    result.front = traits.clockwise_front_face
+        ? WGPUFrontFace_CW
+        : WGPUFrontFace_CCW;
+    result.grid = traits.family == upstream::RenderMaterialKind::grid;
+    result.shader =
+        traits.family == upstream::RenderMaterialKind::shader;
+    result.shader_a2c = pipeline_kind_wants_a2c(kind);
+    return result;
 }
 
 #if BBLITE_PINNED_MATERIALS
@@ -3892,10 +3848,10 @@ DawnPipeline& pipeline_for(
 
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
-    // Alpha-to-coverage needs samples to spread coverage across; at one
-    // sample WebGPU rejects the pipeline outright.
+    // The one a2c rule (pal_gpu_shared.hpp): coverage needs samples to
+    // spread across; at one sample WebGPU rejects the pipeline outright.
     descriptor.multisample.alphaToCoverageEnabled =
-        traits.shader_a2c && samples > 1;
+        alpha_to_coverage_enabled(traits.shader_a2c, samples);
 
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = state.frame_color_format;
@@ -4089,32 +4045,30 @@ WGPURenderPipeline pinned_variant_pipeline(
     fragment.targetCount = entry.no_color_output ? 0 : 1;
     fragment.targets = entry.no_color_output ? nullptr : &color_target;
     // A geometry-output MRT variant draws into its task's own attachments:
-    // one target per attachment in the task's formats plus the optional
-    // trailing colour, with depth writes forced on.
+    // one target per attachment in the shared class list plus the
+    // optional trailing colour, with depth writes forced on. The list and
+    // its count assertion come from `geometry_target_classes`; only the
+    // API structs are built here.
     std::vector<WGPUColorTargetState> geometry_targets;
     if (geometry_task) {
-        geometry_targets.reserve(
-            geometry_task->geometry.attachments.size() + 1u);
-        for (const GeometryTextureDescription& description :
-             geometry_task->geometry.attachments) {
+        const GeometryTargetClasses classes =
+            geometry_target_classes(*geometry_task);
+        require_geometry_target_count(
+            classes,
+            entry.color_target_count,
+            "pinned");
+        geometry_targets.reserve(classes.attachments.size() + 1u);
+        for (const TextureFormatClass format_class : classes.attachments) {
             WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = geometry_texture_format(description);
+            target.format = texture_format(format_class);
             if (traits.transparent) target.blend = &blend;
             geometry_targets.push_back(target);
         }
-        if (geometry_task->geometry.target.value != invalid_handle) {
+        if (classes.trailing_output) {
             WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
             target.format = state.frame_color_format;
             if (traits.transparent) target.blend = &blend;
             geometry_targets.push_back(target);
-        }
-        if (geometry_targets.size() != entry.color_target_count) {
-            dawn_error(
-                ("pinned geometry variant writes " +
-                 std::to_string(entry.color_target_count) +
-                 " targets where its task carries " +
-                 std::to_string(geometry_targets.size()) + ".")
-                    .c_str());
         }
         fragment.targetCount = geometry_targets.size();
         fragment.targets = geometry_targets.data();
@@ -4236,30 +4190,28 @@ WGPURenderPipeline standard_variant_pipeline(
     fragment.entryPoint = string_view("main");
     fragment.targetCount = entry.no_color_output ? 0 : 1;
     fragment.targets = entry.no_color_output ? nullptr : &color_target;
+    // The Standard sibling of the pinned MRT assembly above, over the
+    // same shared class list and count assertion.
     std::vector<WGPUColorTargetState> geometry_targets;
     if (geometry_task) {
-        geometry_targets.reserve(
-            geometry_task->geometry.attachments.size() + 1u);
-        for (const GeometryTextureDescription& description :
-             geometry_task->geometry.attachments) {
+        const GeometryTargetClasses classes =
+            geometry_target_classes(*geometry_task);
+        require_geometry_target_count(
+            classes,
+            entry.color_target_count,
+            "standard");
+        geometry_targets.reserve(classes.attachments.size() + 1u);
+        for (const TextureFormatClass format_class : classes.attachments) {
             WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = geometry_texture_format(description);
+            target.format = texture_format(format_class);
             if (traits.transparent) target.blend = &blend;
             geometry_targets.push_back(target);
         }
-        if (geometry_task->geometry.target.value != invalid_handle) {
+        if (classes.trailing_output) {
             WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
             target.format = state.frame_color_format;
             if (traits.transparent) target.blend = &blend;
             geometry_targets.push_back(target);
-        }
-        if (geometry_targets.size() != entry.color_target_count) {
-            dawn_error(
-                ("standard geometry variant writes " +
-                 std::to_string(entry.color_target_count) +
-                 " targets where its task carries " +
-                 std::to_string(geometry_targets.size()) + ".")
-                    .c_str());
         }
         fragment.targetCount = geometry_targets.size();
         fragment.targets = geometry_targets.data();
@@ -4478,13 +4430,11 @@ WGPURenderPipeline node_variant_pipeline(
     descriptor.vertex.buffers = &vertex_layout;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-    // The backFaceCulling the graph declared, which is the whole of its
-    // fixed-function state: the reached slice composes no blend, so the
-    // kind carries nothing else.
+    // The backFaceCulling the graph declared, through the same shared
+    // decode as the other families: the reached slice composes no blend,
+    // so the kind carries nothing else.
     descriptor.primitive.cullMode =
-        kind == upstream::RenderPipelineKind::node_opaque_none
-            ? WGPUCullMode_None
-            : WGPUCullMode_Back;
+        dawn_cull_mode(pipeline_kind_traits(kind).cull);
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
@@ -6002,8 +5952,13 @@ bool run_dawn_engine(Engine& engine) {
         frame_options.ground_enabled(scene.environment);
     DawnState state;
     // Every attachment and pipeline reads this, so it is settled before
-    // any of them is created.
-    state.sample_count = frame_options.single_sample ? 1u : 4u;
+    // any of them is created. The count is the generated read of the
+    // pin's own surface declaration, not a re-typed 4; there is no
+    // capability probe here because WebGPU guarantees 4x support on the
+    // surface formats this backend renders to, where SDL_GPU must ask.
+    state.sample_count = frame_options.single_sample
+        ? 1u
+        : upstream::preferred_sample_count();
     const bool hidden_test_pass = frame_options.test_pass;
 
     DawnDeviceOptions device_options;
@@ -6273,38 +6228,16 @@ bool run_dawn_engine(Engine& engine) {
     upstream::RenderPlan render_plan;
     std::uint64_t synced_mesh_membership_version =
         scene.mesh_membership_version;
+    // For the post-registration family guard the topology update runs,
+    // exactly as the SDL backend tracks it.
+    std::uint32_t synced_material_family_mask =
+        scene.material_family_mask;
     const auto rebuild_meshes = [&] {
     render_plan = upstream::build_render_plan(scene, engine);
+    // Every item's kind and variant against the generated tables before
+    // anything uploads — the shared walk the SDL backend now runs too.
+    validate_render_plan_items(render_plan);
     for (const upstream::RenderItem& item : render_plan.items) {
-        if (
-            item.material_kind ==
-            upstream::RenderMaterialKind::shader) {
-            if (
-                item.shader_variant >=
-                upstream::shader_variant_count()) {
-                dawn_error(
-                    "this shader material variant is not implemented "
-                    "yet.");
-            }
-        } else if (
-            item.material_kind == upstream::RenderMaterialKind::node) {
-#if BBLITE_NODE_VARIANTS > 0
-            if (item.shader_variant >= upstream::node_variants.size()) {
-                dawn_error("this node material graph was not composed.");
-            }
-#else
-            dawn_error(
-                "a node material in a build with no composed graphs.");
-#endif
-        } else if (
-            item.material_kind !=
-                upstream::RenderMaterialKind::standard &&
-            item.material_kind != upstream::RenderMaterialKind::pbr &&
-            item.material_kind != upstream::RenderMaterialKind::grid) {
-            dawn_error(
-                "only Standard, PBR, Grid, node and shader-variant "
-                "materials are implemented yet.");
-        }
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
         const std::vector<GpuVertex> vertices =
@@ -6559,6 +6492,10 @@ bool run_dawn_engine(Engine& engine) {
     state.release_render_tasks();
     state.render_tasks.resize(engine.frame_tasks.size());
     for (const TaskHandle handle : scene.tasks) {
+        if (handle.value >= engine.frame_tasks.size()) {
+            throw std::runtime_error(
+                "Scene frame task handle is invalid.");
+        }
         const FrameTaskRecord& task = engine.frame_tasks[handle.value];
         if (
             task.kind != FrameTaskKind::render &&
@@ -7398,10 +7335,17 @@ bool run_dawn_engine(Engine& engine) {
                 wgpuQueueOnSubmittedWorkDone(
                     state.queue,
                     done_callback));
+            // The table half of the SDL backend's post-registration
+            // family guard; this backend loads its modules lazily, so
+            // the tables are its whole answer.
+            reject_uncomposed_family_growth(
+                scene.material_family_mask &
+                ~synced_material_family_mask);
             state.release_meshes();
             rebuild_meshes();
             synced_mesh_membership_version =
                 scene.mesh_membership_version;
+            synced_material_family_mask = scene.material_family_mask;
             topology_updated = true;
         }
         // One mesh-sync pass per frame over the plan's items, the same
@@ -7840,6 +7784,12 @@ bool run_dawn_engine(Engine& engine) {
                             write_stage_block(
                                 shader_info.fragment,
                                 draw_mesh.material_uniforms);
+                        } else {
+                            // The SDL backend's named refusal: encoding
+                            // the draw with stale or zero uniforms is
+                            // the silent alternative.
+                            dawn_error(
+                                "Shader draw has an invalid material.");
                         }
                     } else {
 #if BBLITE_PBR_VARIANTS > 0
@@ -7989,6 +7939,10 @@ bool run_dawn_engine(Engine& engine) {
         if (!scene.tasks.empty()) {
             create_frame_graph_textures(state, engine, width, height);
             for (const TaskHandle handle : scene.tasks) {
+                if (handle.value >= engine.frame_tasks.size()) {
+                    throw std::runtime_error(
+                        "Scene frame task handle is invalid.");
+                }
                 const FrameTaskRecord& task =
                     engine.frame_tasks[handle.value];
                 if (task.kind == FrameTaskKind::geometry) {
@@ -8028,6 +7982,12 @@ bool run_dawn_engine(Engine& engine) {
                 if (task.kind != FrameTaskKind::render) continue;
                 DawnRenderTask& render_task =
                     state.render_tasks[handle.value];
+                if (
+                    task.render.target.value >=
+                    engine.render_targets.size()) {
+                    throw std::runtime_error(
+                        "Render task target is invalid.");
+                }
                 const RenderTargetRecord& target_record =
                     engine.render_targets[task.render.target.value];
                 const DawnRenderTarget& target =
@@ -8765,9 +8725,19 @@ bool run_dawn_engine(Engine& engine) {
             };
         };
         for (const TaskHandle handle : scene.tasks) {
+            if (handle.value >= engine.frame_tasks.size()) {
+                throw std::runtime_error(
+                    "Scene frame task handle is invalid.");
+            }
             const FrameTaskRecord& task =
                 engine.frame_tasks[handle.value];
             if (task.kind == FrameTaskKind::render) {
+                if (
+                    task.render.target.value >=
+                    engine.render_targets.size()) {
+                    throw std::runtime_error(
+                        "Render task target is invalid.");
+                }
                 const RenderTargetRecord& target_record =
                     engine.render_targets[task.render.target.value];
                 DawnRenderTarget& target =

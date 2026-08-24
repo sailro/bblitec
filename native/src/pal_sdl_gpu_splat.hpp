@@ -95,24 +95,11 @@ inline SplatPass create_splat_pass(
     buffers[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
     buffers[1].instance_step_rate = 0;
 
-    // BJS GS material uses ALPHA_COMBINE, which the pinned descriptor spells
-    // src-alpha / one-minus-src-alpha with a one / one-minus-src-alpha alpha
-    // pair.
+    // BJS GS material uses ALPHA_COMBINE, which is exactly the shared
+    // `transparent_blend` tuple; only this API's enum residue is local.
     SDL_GPUColorTargetDescription target{};
     target.format = target_format;
-    target.blend_state.enable_blend = true;
-    target.blend_state.src_color_blendfactor =
-        SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-    target.blend_state.dst_color_blendfactor =
-        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
-    target.blend_state.dst_alpha_blendfactor =
-        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    target.blend_state.color_write_mask =
-        SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
-        SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+    target.blend_state = blend_state_from(transparent_blend);
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
@@ -141,21 +128,20 @@ inline SplatPass create_splat_pass(
     SDL_ReleaseGPUShader(device, vertex_shader);
     SDL_ReleaseGPUShader(device, fragment_shader);
 
-    // The pin's own quad: two triangles over [-2, 2], the extent the
-    // fragment stage's `exp(-dot(k, k))` cutoff is written against.
-    const std::array<float, 8> quad{
-        -2.0f, -2.0f, 2.0f, -2.0f, 2.0f, 2.0f, -2.0f, 2.0f};
-    const std::array<std::uint16_t, 6> indices{0, 1, 2, 0, 2, 3};
+    // The pin's own quad and indices, emitted as data from
+    // gaussian-splatting-mesh.ts: the [-2, 2] half-extent is the domain
+    // of the fragment's `exp(-dot(k, k))` kernel, so it travels from the
+    // pin rather than being re-typed here.
     pass.quad = upload_buffer(
         device,
         SDL_GPU_BUFFERUSAGE_VERTEX,
-        quad.data(),
-        quad.size() * sizeof(float));
+        upstream::splat_quad_vertices.data(),
+        upstream::splat_quad_vertices.size() * sizeof(float));
     pass.indices = upload_buffer(
         device,
         SDL_GPU_BUFFERUSAGE_INDEX,
-        indices.data(),
-        indices.size() * sizeof(std::uint16_t));
+        upstream::splat_quad_indices.data(),
+        upstream::splat_quad_indices.size() * sizeof(std::uint16_t));
 
     SDL_GPUBufferCreateInfo order_info{};
     order_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -164,23 +150,14 @@ inline SplatPass create_splat_pass(
     pass.order = SDL_CreateGPUBuffer(device, &order_info);
     if (!pass.order) gpu_error("SDL_CreateGPUBuffer splat order");
 
-    // A point fetch at level 0, so nothing here filters. The pin declares
-    // the pair non-filtering for the same reason.
-    SDL_GPUSamplerCreateInfo sampler_info{};
-    sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
-    sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
-    sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-    sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-    pass.sampler = SDL_CreateGPUSampler(device, &sampler_info);
-    if (!pass.sampler) gpu_error("SDL_CreateGPUSampler splat");
+    // The pin's nearest/clamp data sampler, emitted as data beside the
+    // quad: a point fetch at level 0, so nothing here filters.
+    pass.sampler =
+        create_texture_sampler(device, upstream::splat_data_sampler);
 
-    const std::array<const std::vector<float>*, 4> payloads{
-        &record.centers_rgba,
-        &record.cov_a_rgba,
-        &record.cov_b_rgba,
-        &record.colors_rgba};
+    // The payload order {centers, cov_a, cov_b, colors} is the pin's,
+    // published by the generated splat unit both backends consume.
+    const auto payloads = upstream::splat_texture_payloads(record);
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
         pass.textures[slot].texture = upload_2d_texture(
             device,
@@ -283,7 +260,12 @@ inline void record_splat_pass(
         static_cast<Uint32>(pass.textures.size()));
 
     SDL_DrawGPUIndexedPrimitives(
-        render_pass, 6, pass.vertex_count, 0, 0, 0);
+        render_pass,
+        static_cast<Uint32>(upstream::splat_quad_indices.size()),
+        pass.vertex_count,
+        0,
+        0,
+        0);
 }
 
 inline void release_splat_pass(SDL_GPUDevice* device, SplatPass& pass) {

@@ -69,9 +69,12 @@ bool run_effect_gpu_engine(Engine& engine) {
 
         // The surface's own sample count: `createEffectRenderer` renders into
         // an MSAA target and resolves into the swapchain when the surface is
-        // multisampled, and straight into it when it is not. The pinned
-        // surface default is 4.
-        const std::uint32_t samples = frame_options.single_sample ? 1u : 4u;
+        // multisampled, and straight into it when it is not. The count is
+        // the generated read of the pin's own surface declaration
+        // (`msaaSamples === 1 ? 1 : 4`), not a re-typed 4.
+        const std::uint32_t samples = frame_options.single_sample
+            ? 1u
+            : upstream::preferred_sample_count();
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.
@@ -153,7 +156,7 @@ bool run_effect_gpu_engine(Engine& engine) {
                 if (samples > 1) {
                     SDL_GPUTextureCreateInfo msaa = info;
                     msaa.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
-                    msaa.sample_count = SDL_GPU_SAMPLECOUNT_4;
+                    msaa.sample_count = gpu_sample_count_from(samples);
                     color = SDL_CreateGPUTexture(device, &msaa);
                     if (!color) gpu_error("SDL_CreateGPUTexture effect color");
                 }

@@ -198,13 +198,9 @@ inline WGPURenderPipeline create_dawn_splat_pipeline(
     const std::array<WGPUVertexBufferLayout, 2> buffers{
         quad_layout, order_layout};
 
-    WGPUBlendState blend{};
-    blend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
-    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-    blend.color.operation = WGPUBlendOperation_Add;
-    blend.alpha.srcFactor = WGPUBlendFactor_One;
-    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
-    blend.alpha.operation = WGPUBlendOperation_Add;
+    // ALPHA_COMBINE is exactly the shared `transparent_blend` tuple; only
+    // this API's enum residue is local.
+    const WGPUBlendState blend = blend_state_from(transparent_blend);
 
     WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
     target.format = color_format;
@@ -274,11 +270,9 @@ inline DawnSplatPass create_dawn_splat_pass(
         depth_format,
         samples);
 
-    const std::array<const std::vector<float>*, 4> payloads{
-        &record.centers_rgba,
-        &record.cov_a_rgba,
-        &record.cov_b_rgba,
-        &record.colors_rgba};
+    // The payload order {centers, cov_a, cov_b, colors} is the pin's,
+    // published by the generated splat unit both backends consume.
+    const auto payloads = upstream::splat_texture_payloads(record);
     for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
         pass.textures[slot] = upload_dawn_splat_texture(
             device,
@@ -292,17 +286,15 @@ inline DawnSplatPass create_dawn_splat_pass(
         if (!pass.views[slot]) dawn_error("splat data texture view");
     }
 
-    WGPUSamplerDescriptor sampler = WGPU_SAMPLER_DESCRIPTOR_INIT;
-    pass.sampler = wgpuDeviceCreateSampler(device, &sampler);
-    if (!pass.sampler) dawn_error("splat sampler");
+    // The pin's nearest/clamp data sampler, emitted as data beside the
+    // quad; the layout above declares the pair non-filtering.
+    pass.sampler =
+        create_texture_sampler(device, upstream::splat_data_sampler);
 
-    // The pin's own quad: two triangles over [-2, 2], which the vertex stage
-    // scales by the projected axes. `k` is the corner, and `exp(-dot(k, k))`
-    // in the fragment stage is why the half-extent is 2.
-    const std::array<float, 8> quad{
-        -2.0f, -2.0f, 2.0f, -2.0f, 2.0f, 2.0f, -2.0f, 2.0f};
-    const std::array<std::uint16_t, 6> indices{0, 1, 2, 0, 2, 3};
-
+    // The pin's own quad and indices, emitted as data from
+    // gaussian-splatting-mesh.ts: the [-2, 2] half-extent is the domain
+    // of the fragment's `exp(-dot(k, k))` kernel, so it travels from the
+    // pin rather than being re-typed here.
     const auto buffer = [&](WGPUBufferUsage usage,
                             const void* data,
                             std::uint64_t bytes) {
@@ -314,10 +306,14 @@ inline DawnSplatPass create_dawn_splat_pass(
         if (data) wgpuQueueWriteBuffer(queue, created, 0, data, bytes);
         return created;
     };
-    pass.quad =
-        buffer(WGPUBufferUsage_Vertex, quad.data(), quad.size() * 4ull);
-    pass.indices =
-        buffer(WGPUBufferUsage_Index, indices.data(), indices.size() * 2ull);
+    pass.quad = buffer(
+        WGPUBufferUsage_Vertex,
+        upstream::splat_quad_vertices.data(),
+        upstream::splat_quad_vertices.size() * sizeof(float));
+    pass.indices = buffer(
+        WGPUBufferUsage_Index,
+        upstream::splat_quad_indices.data(),
+        upstream::splat_quad_indices.size() * sizeof(std::uint16_t));
     pass.order = buffer(
         WGPUBufferUsage_Vertex,
         nullptr,
@@ -426,7 +422,13 @@ inline void record_dawn_splat_pass(
         WGPUIndexFormat_Uint16,
         0,
         WGPU_WHOLE_SIZE);
-    wgpuRenderPassEncoderDrawIndexed(encoder, 6, pass.vertex_count, 0, 0, 0);
+    wgpuRenderPassEncoderDrawIndexed(
+        encoder,
+        static_cast<std::uint32_t>(upstream::splat_quad_indices.size()),
+        pass.vertex_count,
+        0,
+        0,
+        0);
 }
 
 inline void release_dawn_splat_pass(DawnSplatPass& pass) {

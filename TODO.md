@@ -59,6 +59,12 @@ separately in [AUDIT](AUDIT.md) until fixed.
   is ~4,600. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
   are the mechanisms to reuse. Each leaf is its own measurement: lower or
   execute it, then prove the generated tree moved only where intended.
+- [ ] Lower the pinned `inverseImageProcessedChannel` whole: the pin carries
+  the full inverse — `src/frame-graph/transmission.ts`, contrast bisection
+  included — and the PAL's `inverse_image_processed_channel` is a float-width
+  transcription of it that today consumes only the lifted
+  `pinned_tone_mapping_scale`. Lowering the body needs a `**` arm in the
+  shared pinned-body translator.
 
 ## P1 — Assets and materials
 
@@ -448,13 +454,6 @@ that does to the deferred lane by default.
   ascending order, so each clip's are one contiguous run — record
   `[first, last)` per clip beside the vectors and iterate that, keeping
   the `track.clip` test so correctness never depends on the grouping.
-- [ ] Build the pinned lights block once per frame rather than once per draw.
-  `pinned_lights_block` value-initializes 16 `LightEntry` (1 KB) and copies it
-  into a second vector on every call; SDL_GPU calls it from all three composed
-  draw paths, where the bytes are identical for every draw in a frame. Dawn
-  already treats it as per-frame state in `write_pinned_frame_blocks`. The
-  push has to stay per draw, but the build does not. One hoist covering all
-  three families, not a per-family change.
 - [ ] Scenes 65, 66, 72, 214, 215, 271: support `receiveShadows`.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function

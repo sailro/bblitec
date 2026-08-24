@@ -4,7 +4,7 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "../pinned-numeric-lowerer.js";
-import { PINNED_MATH_FUNCTIONS } from "../pinned-operators.js";
+import { pinnedNumericMathCalls } from "../pinned-operators.js";
 
 /**
  * The mesh-builder half of the factory unit: the pinned CreateBox /
@@ -67,21 +67,7 @@ export class MeshBuilderLowerer {
                 torusModule,
                 "createTorusData",
             );
-        const meshMathCalls = new Map<
-            string,
-            (args: readonly string[]) => string
-        >(
-            Object.entries(PINNED_MATH_FUNCTIONS).map(
-                ([name, spelling]) => [
-                    `Math.${name}`,
-                    name === "max" || name === "min"
-                        ? (args: readonly string[]) =>
-                              `${spelling}<double>(${args.join(", ")})`
-                        : (args: readonly string[]) =>
-                              `${spelling}(${args.join(", ")})`,
-                ],
-            ),
-        );
+        const meshMathCalls = pinnedNumericMathCalls();
         /**
          * Lower one pinned generator body into the shared native array
          * record. The four arrays and their indexed stores come from the

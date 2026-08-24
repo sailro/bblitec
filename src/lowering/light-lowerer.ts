@@ -1,9 +1,10 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
-    PINNED_ARITHMETIC_OPERATORS,
-    PINNED_ASSIGNMENT_OPERATORS,
-} from "./pinned-operators.js";
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 interface HemisphericDefaults {
     diffuseColor: [number, number, number];
@@ -108,8 +109,70 @@ void set_${kind}_light_${vector}(
         const modulePath = "src/light/light-matrix.ts";
         const symbolName = "localMatrixFromDirection";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
+        // The pinned parameter list, in order. The emitted signature keeps
+        // float parameters (the record fields the factories pass are f32),
+        // so a pin that renames or reorders them regenerates rather than
+        // silently pairing a direction with a position.
+        const parameterNames = ["dx", "dy", "dz", "px", "py", "pz", "out"];
+        if (
+            declaration.parameters.length !== parameterNames.length ||
+            declaration.parameters.some(
+                (parameter, index) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.name.text !== parameterNames[index],
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Pinned localMatrixFromDirection changed its parameter list.",
+            );
+        }
+        // A JavaScript number is an f64: every pinned local computes at that
+        // width and only the `Float32Array` stores round, so the direction
+        // and position widen once in the prologue and the translator emits
+        // double locals with `static_cast<float>` at each `m[i] =` store.
+        const bindings = new Map<string, PinnedBinding>(
+            ["dx", "dy", "dz", "px", "py", "pz"].map((name) => [
+                name,
+                { cpp: name, type: "scalar" } as PinnedBinding,
+            ]),
+        );
+        // The two statements this port specializes instead of translating,
+        // registered by their exact pinned spelling so a changed pin fails
+        // generation:
+        //  - `const out4: Mat4 = out ?? (new F32(16) as unknown as Mat4)`:
+        //    the F32 fallback serves callers that pass no `out`, and every
+        //    reached factory passes one, so `out4` IS the caller's array.
+        //  - `const m = out4 as unknown as Mat4Storage`: the storage view
+        //    over the same array.
+        const outBinding: PinnedBinding = { cpp: "out", type: "f32" };
+        bindings.set(
+            "out ?? (new F32(16) as unknown as Mat4)",
+            outBinding,
+        );
+        bindings.set("out4 as unknown as Mat4Storage", outBinding);
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: pinnedNumericMathCalls(),
+            returnValue: (expression): string => {
+                const returned = expression
+                    ? this.context.unwrapExpression(expression)
+                    : undefined;
+                if (
+                    !returned ||
+                    !ts.isIdentifier(returned) ||
+                    returned.text !== "out4"
+                ) {
+                    this.context.contractError(
+                        expression ?? declaration,
+                        "Expected localMatrixFromDirection to return out4.",
+                    );
+                }
+                return "out";
+            },
+        });
         const body = declaration.body!.statements
-            .flatMap((statement) => this.emitStatement(statement, file))
+            .flatMap((statement) => lowerer.statement(statement, "    "))
             .join("\n");
         return {
             modulePath,
@@ -121,38 +184,40 @@ void set_${kind}_light_${vector}(
 namespace bbl::upstream {
 
 std::array<float, 16>& local_matrix_from_direction(
-    float dx,
-    float dy,
-    float dz,
-    float px,
-    float py,
-    float pz,
+    float dx_f32,
+    float dy_f32,
+    float dz_f32,
+    float px_f32,
+    float py_f32,
+    float pz_f32,
     std::array<float, 16>& out);
 
 } // namespace bbl::upstream
 `,
             source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/js_data.hpp>
 #include <bblite/upstream/light_matrix.hpp>
 
 #include <cmath>
 
 namespace bbl::upstream {
-namespace {
-
-float nonzero_or(float value, float fallback) {
-    return value != 0.0f ? value : fallback;
-}
-
-} // namespace
 
 std::array<float, 16>& local_matrix_from_direction(
-    float dx,
-    float dy,
-    float dz,
-    float px,
-    float py,
-    float pz,
+    float dx_f32,
+    float dy_f32,
+    float dz_f32,
+    float px_f32,
+    float py_f32,
+    float pz_f32,
     std::array<float, 16>& out) {
+    // The pin computes in JavaScript numbers and rounds only at the
+    // Float32Array stores, so the f32 inputs widen once here.
+    const double dx = static_cast<double>(dx_f32);
+    const double dy = static_cast<double>(dy_f32);
+    const double dz = static_cast<double>(dz_f32);
+    const double px = static_cast<double>(px_f32);
+    const double py = static_cast<double>(py_f32);
+    const double pz = static_cast<double>(pz_f32);
 ${body}
 }
 
@@ -757,86 +822,4 @@ ${this.lightVectorSetters(modulePath, symbolName, "spot", ["position", "directio
         };
     }
 
-    private emitStatement(statement: ts.Statement, file: ts.SourceFile): string[] {
-        if (ts.isVariableStatement(statement)) {
-            const isConst = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
-            const lines: string[] = [];
-            for (const declaration of statement.declarationList.declarations) {
-                if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
-                    throw new Error(`Unsupported upstream declaration: ${declaration.getText(file)}.`);
-                }
-                if (declaration.name.text === "out4") continue;
-                if (declaration.name.text === "m") {
-                    lines.push("    auto& m = out;");
-                    continue;
-                }
-                lines.push(
-                    `    ${isConst ? "const " : ""}float ${declaration.name.text} = ` +
-                        `${this.emitExpression(declaration.initializer, file)};`,
-                );
-            }
-            return lines;
-        }
-        if (ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression)) {
-            const expression = statement.expression;
-            const operator = PINNED_ASSIGNMENT_OPERATORS.get(
-                expression.operatorToken.kind,
-            );
-            if (!operator) throw new Error(`Unsupported upstream assignment: ${statement.getText(file)}.`);
-            return [
-                `    ${this.emitExpression(expression.left, file)} ${operator} ` +
-                    `${this.emitExpression(expression.right, file)};`,
-            ];
-        }
-        if (ts.isReturnStatement(statement) && statement.expression) {
-            return [`    return ${this.emitExpression(statement.expression, file)};`];
-        }
-        throw new Error(`Unsupported upstream statement: ${statement.getText(file)}.`);
-    }
-
-    private emitExpression(expression: ts.Expression, file: ts.SourceFile): string {
-        if (
-            ts.isParenthesizedExpression(expression) ||
-            ts.isAsExpression(expression) ||
-            ts.isTypeAssertionExpression(expression) ||
-            ts.isNonNullExpression(expression)
-        ) {
-            return this.emitExpression(expression.expression, file);
-        }
-        if (ts.isNumericLiteral(expression)) return this.context.floatLiteral(Number(expression.text));
-        if (ts.isIdentifier(expression)) return expression.text === "out4" ? "out" : expression.text;
-        if (ts.isPrefixUnaryExpression(expression)) {
-            const operator = expression.operator === ts.SyntaxKind.MinusToken ? "-" : "+";
-            return `(${operator}${this.emitExpression(expression.operand, file)})`;
-        }
-        if (ts.isElementAccessExpression(expression) && expression.argumentExpression) {
-            const index = ts.isNumericLiteral(expression.argumentExpression)
-                ? expression.argumentExpression.text
-                : this.emitExpression(expression.argumentExpression, file);
-            return `${this.emitExpression(expression.expression, file)}[${index}]`;
-        }
-        if (
-            ts.isCallExpression(expression) &&
-            ts.isPropertyAccessExpression(expression.expression) &&
-            ts.isIdentifier(expression.expression.expression) &&
-            expression.expression.expression.text === "Math" &&
-            expression.expression.name.text === "sqrt"
-        ) {
-            return `std::sqrt(${expression.arguments.map((argument) => this.emitExpression(argument, file)).join(", ")})`;
-        }
-        if (ts.isBinaryExpression(expression)) {
-            if (expression.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
-                return `nonzero_or(${this.emitExpression(expression.left, file)}, ` +
-                    `${this.emitExpression(expression.right, file)})`;
-            }
-            const operator = PINNED_ARITHMETIC_OPERATORS.get(
-                expression.operatorToken.kind,
-            );
-            if (operator) {
-                return `(${this.emitExpression(expression.left, file)} ${operator} ` +
-                    `${this.emitExpression(expression.right, file)})`;
-            }
-        }
-        throw new Error(`Unsupported upstream expression: ${expression.getText(file)}.`);
-    }
 }

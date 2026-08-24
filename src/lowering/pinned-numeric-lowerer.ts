@@ -286,11 +286,20 @@ export class PinnedNumericLowerer {
             // `const counts = scratch[1]` -- an alias for a buffer the
             // caller pre-registered under the initializer's own text. Bound
             // to the same storage rather than copied, which is what the pin
-            // means and what keeps the stores visible to the caller.
+            // means and what keeps the stores visible to the caller. Only a
+            // BUFFER aliases: a scalar initializer that names another local
+            // (`let rz = fx`) copies the number the way JavaScript does --
+            // aliasing it would leak a later mutation into the original.
             const alias = this.scope.bindings.get(
                 declaration.initializer.getText(this.file),
             );
-            if (alias) {
+            if (
+                alias &&
+                (alias.type === "f32" ||
+                    alias.type === "u32" ||
+                    alias.type === "f32-view" ||
+                    alias.type === "u8-view")
+            ) {
                 this.scope.bindings.set(name, alias);
                 continue;
             }

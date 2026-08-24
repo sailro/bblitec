@@ -126,21 +126,12 @@ inline DawnEffectPass create_dawn_effect_pass(
         } else if (binding.kind == upstream::EffectBindingKind::texture) {
             layout.texture.sampleType = WGPUTextureSampleType_Float;
             layout.texture.viewDimension = WGPUTextureViewDimension_2D;
-            const EffectTextureSlot* slot = nullptr;
-            for (const EffectTextureSlot& candidate : wrapper.textures) {
-                if (candidate.name != std::string(binding.name)) continue;
-                slot = &candidate;
-                break;
-            }
-            if (!slot || !slot->set) {
-                throw std::runtime_error(
-                    "Effect texture binding '" + std::string(binding.name) +
-                    "' was not set before the first render.");
-            }
+            // The lookup and its not-set refusal are the shared
+            // `effect_texture_for_binding`.
             const DawnSampledTexture sampled = upload_dawn_solid_texture(
                 device_state.device,
                 device_state.queue,
-                slot->texture);
+                effect_texture_for_binding(wrapper, binding.name));
             pass.textures.push_back(sampled);
             WGPUBindGroupEntry group = WGPU_BIND_GROUP_ENTRY_INIT;
             group.binding = binding.binding;
@@ -234,6 +225,9 @@ inline void upload_dawn_effect_pass(
     if (!pass.uniforms || pass.uniform_bytes == 0) return;
     EffectWrapperRecord& wrapper = engine.effect_wrappers.at(handle.value);
     if (!wrapper.uniforms_dirty || wrapper.uniform_values.empty()) return;
+    // The symmetric size validation (pal_gpu_shared.hpp): a short write
+    // leaves a stale tail behind the declared size.
+    require_effect_uniform_size(wrapper, pass.uniform_bytes);
     wgpuQueueWriteBuffer(
         queue,
         pass.uniforms,

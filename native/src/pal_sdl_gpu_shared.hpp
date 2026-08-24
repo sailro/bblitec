@@ -14,6 +14,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_depth_state.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -289,12 +290,22 @@ inline void bind_stage_textures(
     SDL_GPURenderPass* pass,
     const PinnedStageSlots& slots,
     bool fragment,
+    const char* what,
     Resolve resolve) {
     if (slots.textures.empty()) return;
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
     bindings.reserve(slots.textures.size());
     for (const std::string& name : slots.textures) {
-        bindings.push_back(resolve(name));
+        const SDL_GPUTextureSamplerBinding binding = resolve(name);
+        // The refusal its storage and uniform siblings carry: a resolver
+        // that produced no texture must fail by name here, not bind null.
+        if (!binding.texture) {
+            gpu_error(
+                (std::string(what) + " declares an unresolved texture '" +
+                 name + "'.")
+                    .c_str());
+        }
+        bindings.push_back(binding);
     }
     if (fragment) {
         SDL_BindGPUFragmentSamplers(
@@ -338,6 +349,67 @@ inline SDL_GPUCompareOp gpu_depth_compare(DepthCompare compare) {
             return SDL_GPU_COMPAREOP_ALWAYS;
     }
     return SDL_GPU_COMPAREOP_GREATER_OR_EQUAL;
+}
+
+inline SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
+    switch (factor) {
+        case BlendFactor::one:
+            return SDL_GPU_BLENDFACTOR_ONE;
+        case BlendFactor::src_alpha:
+            return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        case BlendFactor::one_minus_src_alpha:
+            return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    }
+    return SDL_GPU_BLENDFACTOR_ONE;
+}
+
+// A shared blend tuple in this API's state; the operation is always add
+// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp). Beside the
+// depth-compare translator so the family headers can call it too.
+inline SDL_GPUColorTargetBlendState blend_state_from(
+    const BlendFactors& factors) {
+    SDL_GPUColorTargetBlendState blend{};
+    blend.enable_blend = true;
+    blend.color_blend_op = SDL_GPU_BLENDOP_ADD;
+    blend.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+    blend.src_color_blendfactor = gpu_blend_factor(factors.src_color);
+    blend.dst_color_blendfactor = gpu_blend_factor(factors.dst_color);
+    blend.src_alpha_blendfactor = gpu_blend_factor(factors.src_alpha);
+    blend.dst_alpha_blendfactor = gpu_blend_factor(factors.dst_alpha);
+    return blend;
+}
+
+/** A numeric sample count in this API's enum; counts outside the API's
+ *  set are refused rather than rounded. */
+inline SDL_GPUSampleCount gpu_sample_count_from(std::uint32_t samples) {
+    switch (samples) {
+        case 1u:
+            return SDL_GPU_SAMPLECOUNT_1;
+        case 2u:
+            return SDL_GPU_SAMPLECOUNT_2;
+        case 4u:
+            return SDL_GPU_SAMPLECOUNT_4;
+        case 8u:
+            return SDL_GPU_SAMPLECOUNT_8;
+    }
+    throw std::runtime_error(
+        "No SDL_GPU sample count for " + std::to_string(samples) + ".");
+}
+
+/** The enum back as a number, for the shared rules that reason about
+ *  counts (`alpha_to_coverage_enabled`). */
+inline std::uint32_t gpu_sample_count_value(SDL_GPUSampleCount samples) {
+    switch (samples) {
+        case SDL_GPU_SAMPLECOUNT_1:
+            return 1u;
+        case SDL_GPU_SAMPLECOUNT_2:
+            return 2u;
+        case SDL_GPU_SAMPLECOUNT_4:
+            return 4u;
+        case SDL_GPU_SAMPLECOUNT_8:
+            return 8u;
+    }
+    return 1u;
 }
 
 /** One block a stage's resolver named: its bytes, or none. */
@@ -616,9 +688,14 @@ inline SDL_GPUSampler* create_texture_sampler(
             : SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
     info.address_mode_u = address(sampler.address_u);
     info.address_mode_v = address(sampler.address_v);
-    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    // Mirror the pinned descriptor exactly, as the Dawn twin does: the
+    // pin never sets addressModeW, so W stays at the WebGPU clamp
+    // default, and only the noMip path overrides the LOD clamp
+    // (gltf-sampler-desc.ts leaves lodMaxClamp at the default 32
+    // otherwise).
+    info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     info.max_anisotropy = sampler.max_anisotropy;
-    info.max_lod = sampler.max_lod;
+    info.max_lod = std::min(sampler.max_lod, 32.0f);
     info.enable_anisotropy = sampler.max_anisotropy > 1.0f;
     SDL_GPUSampler* result = SDL_CreateGPUSampler(device, &info);
     if (!result) gpu_error("SDL_CreateGPUSampler material texture");

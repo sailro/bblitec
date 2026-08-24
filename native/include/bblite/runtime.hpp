@@ -1705,11 +1705,14 @@ struct Scene {
     Color3 fog_color{};
 };
 
+// No member defaults: generation fills every field from the pin's own
+// factory defaults, so a second copy here could only drift. (The same
+// holds for SphereOptions and TorusOptions below.)
 struct GroundOptions {
-    double width = 1.0;
-    double height = 1.0;
-    std::uint32_t subdivisions = 1;
-    Vec2 uv_scale{1.0f, 1.0f};
+    double width;
+    double height;
+    std::uint32_t subdivisions;
+    Vec2 uv_scale;
 };
 
 struct BoxOptions {
@@ -1726,10 +1729,10 @@ struct PlaneOptions {
 // The pin halves these as JavaScript numbers before its vertex chain rounds,
 // so they are doubles here for the same reason `CameraRecord`'s scalars are.
 struct SphereOptions {
-    std::uint32_t segments = 32;
-    double diameter_x = 1.0;
-    double diameter_y = 1.0;
-    double diameter_z = 1.0;
+    std::uint32_t segments;
+    double diameter_x;
+    double diameter_y;
+    double diameter_z;
 };
 
 struct SphereMeshData {
@@ -1742,9 +1745,9 @@ struct SphereMeshData {
 };
 
 struct TorusOptions {
-    double diameter = 1.0;
-    double thickness = 0.5;
-    std::uint32_t tessellation = 16;
+    double diameter;
+    double thickness;
+    std::uint32_t tessellation;
 };
 
 struct EnvironmentOptions {
@@ -1781,15 +1784,18 @@ struct DdsEnvironmentOptions {
     std::string brdf_url;
 };
 
-Engine create_engine(EngineOptions options = {});
+// No defaulted option parameters below: generation always passes a full
+// options literal, so an omitted-argument arm would be a dead second
+// copy of the pin's defaults waiting for a caller to trust it.
+Engine create_engine(EngineOptions options);
 Scene create_scene_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
 
-MeshHandle create_box(Engine& engine, BoxOptions options = {});
-MeshHandle create_ground(Engine& engine, GroundOptions options = {});
-MeshHandle create_plane(Engine& engine, PlaneOptions options = {});
-MeshHandle create_sphere(Engine& engine, SphereOptions options = {});
-SphereMeshData create_sphere_data(SphereOptions options = {});
+MeshHandle create_box(Engine& engine, BoxOptions options);
+MeshHandle create_ground(Engine& engine, GroundOptions options);
+MeshHandle create_plane(Engine& engine, PlaneOptions options);
+MeshHandle create_sphere(Engine& engine, SphereOptions options);
+SphereMeshData create_sphere_data(SphereOptions options);
 void attach_morph_target(
     Engine& engine,
     MeshHandle mesh,
@@ -1801,16 +1807,16 @@ void set_morph_target_weights(
     Engine& engine,
     MeshHandle mesh,
     const std::vector<float>& weights);
-MeshHandle create_torus(Engine& engine, TorusOptions options = {});
+MeshHandle create_torus(Engine& engine, TorusOptions options);
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::vector<float>& positions,
     const std::vector<float>& normals,
     const std::vector<std::uint32_t>& indices,
-    const std::vector<float>& uvs = {},
-    const std::vector<float>& uvs2 = {},
-    const std::vector<float>& tangents = {},
-    const std::vector<float>& colors = {});
+    const std::vector<float>& uvs,
+    const std::vector<float>& uvs2,
+    const std::vector<float>& tangents,
+    const std::vector<float>& colors);
 // The matrices parameter is a non-const lvalue reference on purpose: the
 // record keeps aliasing the caller's array for later per-frame updates
 // (the pinned setThinInstances adopts the array by reference), so a
@@ -1858,7 +1864,7 @@ void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
 MaterialHandle create_grid_material(
     Engine& engine,
-    GridMaterialOptions options = {});
+    GridMaterialOptions options);
 MaterialHandle create_shader_material(
     Engine& engine,
     std::uint32_t variant);
@@ -1879,7 +1885,7 @@ struct NodeMaterialTexture {
 MaterialHandle create_node_material(
     Engine& engine,
     std::uint32_t variant,
-    std::vector<NodeMaterialTexture> textures = {});
+    std::vector<NodeMaterialTexture> textures);
 void set_shader_uniform_values(
     Engine& engine,
     MaterialHandle material,
@@ -2356,7 +2362,7 @@ void set_effect_texture(
 EffectRendererHandle create_effect_renderer(
     Engine& engine,
     EffectWrapperHandle effect,
-    EffectRendererOptions options = {});
+    EffectRendererOptions options);
 void register_effect_renderer(
     Engine& engine,
     EffectRendererHandle renderer);

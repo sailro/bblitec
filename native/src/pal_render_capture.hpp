@@ -29,7 +29,9 @@
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 
-#include <bblite/upstream/build_stamp.hpp>
+// The build stamp is read through `bblite_build_stamp()` (pal.hpp) rather
+// than the generated header: including the digest here would put it in
+// both GPU TUs' preprocessed text and force them to recompile per scene.
 #include <bblite/upstream/renderer_plan.hpp>
 #if BBLITE_HAS_SPLATS
 #include <bblite/upstream/splat_sort.hpp>
@@ -1072,7 +1074,7 @@ inline void write_render_capture(
     JsonWriter json(stream);
     json.begin_object();
     json.field("backend", backend);
-    json.field("buildStamp", BBLITE_BUILD_STAMP);
+    json.field("buildStamp", bblite_build_stamp());
     json.field("frame", static_cast<int>(frame));
     json.key("viewport");
     json.begin_object();

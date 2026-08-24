@@ -2517,8 +2517,7 @@ using bbl::Color3;
 //
 // The pin's own StandardMaterialProps, with the pin's own defaults — the
 // values the two writers below read. Wave D fills it from MaterialRecord
-// (diffuse_color, specular_power, ... are one-to-one; bump_level is the
-// authored level where MaterialRecord::bump_scale stores its inverse, and
+// (diffuse_color, specular_power, bump_level, ... are one-to-one, and
 // lightmap_level / reflection_coord_mode have no record field yet).
 struct StandardMaterialProps {
 ${propsMembers.join("\n")}

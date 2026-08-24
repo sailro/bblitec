@@ -30,17 +30,59 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { PINNED_MATH_FUNCTIONS } from "./pinned-operators.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
 const SORT_MODULE_MESH =
     "src/mesh/GaussianSplatting/gaussian-splatting-mesh.ts";
+const PIPELINE_MODULE =
+    "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
+
+/**
+ * The pinned splat texture views, in the record-field spelling the runtime
+ * stores each payload under. The pipeline's bind-group entries name the
+ * views; a view outside this table means the pin grew a payload this port
+ * does not carry, which refuses below.
+ */
+const PAYLOAD_VIEWS: ReadonlyMap<string, string> = new Map([
+    ["_centersView", "centers"],
+    ["_covAView", "cov_a"],
+    ["_covBView", "cov_b"],
+    ["_colorsView", "colors"],
+]);
+
+/** A WebGPU filter mode as this runtime's own `TextureFilter` enumerator. */
+function nativeFilter(mode: string): string {
+    if (mode !== "nearest" && mode !== "linear") {
+        throw new Error(
+            `Pinned splat sampler filters with '${mode}', which this ` +
+                "runtime has no enumerator for.",
+        );
+    }
+    return `TextureFilter::${mode}`;
+}
+
+/** A WebGPU address mode as this runtime's own enumerator. */
+function nativeAddressMode(mode: string): string {
+    const mapped = new Map([
+        ["clamp-to-edge", "clamp"],
+        ["repeat", "repeat"],
+        ["mirror-repeat", "mirror"],
+    ]).get(mode);
+    if (!mapped) {
+        throw new Error(
+            `Pinned splat sampler addresses with '${mode}', which this ` +
+                "runtime has no enumerator for.",
+        );
+    }
+    return `TextureAddressMode::${mapped}`;
+}
 
 /**
  * `Math.*` as the pinned splat bodies reach it.
  *
- * The one-to-one names come from `PINNED_MATH_FUNCTIONS`, so a member one
+ * The one-to-one names come from `pinnedNumericMathCalls`, so a member one
  * lowerer learns is a member all of them know. Only the two that are NOT a
  * `<cmath>` call of the same meaning are stated here, and each says why.
  */
@@ -48,16 +90,7 @@ const MATH_CALLS: ReadonlyMap<
     string,
     (args: readonly string[]) => string
 > = new Map<string, (args: readonly string[]) => string>([
-    ...Object.entries(PINNED_MATH_FUNCTIONS).map(
-        ([name, spelling]): [string, (a: readonly string[]) => string] => [
-            `Math.${name}`,
-            // std::max/min need the template argument pinned to double, or a
-            // mixed-width call is ambiguous.
-            name === "max" || name === "min"
-                ? (a) => `${spelling}<double>(${a.join(", ")})`
-                : (a) => `${spelling}(${a.join(", ")})`,
-        ],
-    ),
+    ...pinnedNumericMathCalls(),
     // JS rounds a half toward +Infinity; std::round rounds it away from zero,
     // so the two disagree at -0.5, -1.5, ...
     ["Math.round", (a) => `bbl::js::round_number(${a[0]})`],
@@ -219,6 +252,218 @@ ${body}
         });
     }
 
+    /**
+     * The pin's own GPU constants, emitted once for both PALs to consume:
+     * the quad the vertex stage expands, its index list, the non-filtering
+     * sampler over the four data textures, and the order those textures bind
+     * in. Each was a per-backend literal tied to the pin by comment alone;
+     * here every value flows from the pinned statement that states it, the
+     * way `billboard-lowerer.ts` emits `billboard_index_data`.
+     */
+    private pinnedGpuConstants(): string {
+        const { file, declaration } = this.declaration(
+            SORT_MODULE_MESH,
+            "createGaussianSplattingMesh",
+        );
+        // `new F32(quadBuffer.getMappedRange()).set([...])` and the U16 twin:
+        // the one store each buffer receives, found by its receiver's own
+        // pinned spelling.
+        const pinnedArrayStore = (
+            receiverShape: string,
+            label: string,
+            expectedLength: number,
+        ): number[] => {
+            const call = this.context.findNodes(
+                declaration,
+                (node): node is ts.CallExpression =>
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.name.text === "set" &&
+                    node.arguments.length === 1 &&
+                    this.context.expressionMatchesShape(
+                        node.expression.expression,
+                        receiverShape,
+                    ),
+            )[0];
+            const stored = call
+                ? this.context.unwrapExpression(call.arguments[0]!)
+                : undefined;
+            if (!stored || !ts.isArrayLiteralExpression(stored)) {
+                return this.context.contractError(
+                    declaration,
+                    `Expected the pinned ${label} store ` +
+                        `'${receiverShape}.set([...])'.`,
+                );
+            }
+            const values = stored.elements.map((element) =>
+                this.context.numericValue(element, file),
+            );
+            if (values.length !== expectedLength) {
+                this.context.contractError(
+                    stored,
+                    `Expected ${expectedLength} pinned ${label} values, ` +
+                        `found ${values.length}.`,
+                );
+            }
+            return values;
+        };
+        const quad = pinnedArrayStore(
+            "new F32(quadBuffer.getMappedRange())",
+            "quad",
+            8,
+        );
+        const indices = pinnedArrayStore(
+            "new U16(indexBuffer.getMappedRange())",
+            "index",
+            6,
+        );
+        // The non-filtering sampler the four data textures share. Every
+        // property the pin declares must be one this desc carries, so a pin
+        // that starts filtering or mipping fails generation instead of
+        // leaving the emitted desc silently partial.
+        const samplerObject = this.context.callObjectArgument(
+            declaration,
+            "createSampler",
+        );
+        const samplerProperties = [
+            "magFilter",
+            "minFilter",
+            "addressModeU",
+            "addressModeV",
+        ];
+        for (const property of samplerObject.properties) {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !ts.isIdentifier(property.name) ||
+                !samplerProperties.includes(property.name.text)
+            ) {
+                this.context.contractError(
+                    property,
+                    "Pinned splat sampler gained a property this " +
+                        "emission does not carry.",
+                );
+            }
+        }
+        const samplerMode = (name: string): string =>
+            this.context.stringValue(
+                this.context.propertyInitializer(samplerObject, name),
+                file,
+            );
+        // The payload order, from the pipeline's own bind-group entries:
+        // the texture views bind in the order the WGSL reads them, and the
+        // uploads a PAL performs must land slot for slot on that order.
+        const pipelineFile = this.context.sourceFile(PIPELINE_MODULE);
+        const payloadEntries = this.context
+            .findNodes(
+                pipelineFile,
+                (node): node is ts.ObjectLiteralExpression =>
+                    ts.isObjectLiteralExpression(node) &&
+                    ["binding", "resource"].every((name) =>
+                        node.properties.some(
+                            (property) =>
+                                ts.isPropertyAssignment(property) &&
+                                ts.isIdentifier(property.name) &&
+                                property.name.text === name,
+                        ),
+                    ),
+            )
+            .flatMap((entry) => {
+                const resource = this.context.unwrapExpression(
+                    this.context.propertyInitializer(entry, "resource"),
+                );
+                if (
+                    !ts.isPropertyAccessExpression(resource) ||
+                    !resource.name.text.endsWith("View")
+                ) {
+                    // The UBO and sampler entries beside the views.
+                    return [];
+                }
+                return [
+                    {
+                        binding: this.context.numericValue(
+                            this.context.propertyInitializer(
+                                entry,
+                                "binding",
+                            ),
+                            pipelineFile,
+                        ),
+                        view: resource.name.text,
+                    },
+                ];
+            })
+            .sort((left, right) => left.binding - right.binding);
+        const payloads = payloadEntries.map(({ binding, view }, index) => {
+            const field = PAYLOAD_VIEWS.get(view);
+            if (field === undefined) {
+                throw new Error(
+                    `Pinned splat pipeline binds '${view}', which this ` +
+                        "port has no payload for.",
+                );
+            }
+            if (
+                index > 0 &&
+                binding !== payloadEntries[index - 1]!.binding + 1
+            ) {
+                throw new Error(
+                    "Pinned splat pipeline no longer binds its data " +
+                        "textures contiguously.",
+                );
+            }
+            return field;
+        });
+        if (payloads.length !== PAYLOAD_VIEWS.size) {
+            throw new Error(
+                `Expected ${PAYLOAD_VIEWS.size} pinned splat data ` +
+                    `textures, found ${payloads.length}.`,
+            );
+        }
+        return `// ${this.context.provenance(
+            SORT_MODULE_MESH,
+            "createGaussianSplattingMesh",
+        )}
+// The pin's own GPU constants, each flowed from the statement that states
+// it so a changed pin regenerates both PALs instead of drifting past a
+// comment.
+
+/** The quad the vertex stage expands: two triangles over [-2, 2], the
+ *  domain the fragment stage's \`exp(-dot(k, k))\` kernel is written
+ *  against. */
+inline constexpr std::array<float, 8> splat_quad_vertices{
+    {${quad
+        .map((value) => this.context.floatLiteral(value))
+        .join(", ")}}};
+
+/** One draw: the quad's six indices. */
+inline constexpr std::array<std::uint16_t, 6> splat_quad_indices{
+    {${indices.map((value) => `${value}u`).join(", ")}}};
+
+/** The pin's non-filtering point sampler for the four data textures, on
+ *  the shared sampler record both backends already translate. The pin
+ *  declares no mipmap filter, so the WebGPU default \`nearest\` stands --
+ *  the payloads carry a single level either way. */
+inline constexpr TextureSamplerState splat_data_sampler{
+    .min_filter = ${nativeFilter(samplerMode("minFilter"))},
+    .mag_filter = ${nativeFilter(samplerMode("magFilter"))},
+    .mipmap_mode = TextureMipmapMode::nearest,
+    .address_u = ${nativeAddressMode(samplerMode("addressModeU"))},
+    .address_v = ${nativeAddressMode(samplerMode("addressModeV"))},
+};
+
+/** One cloud's four RGBA32F payloads, slot for slot in the pin's own
+ *  bind-group order (gaussian-splatting-pipeline.ts bindings ${
+        payloadEntries[0]!.binding
+    }..${payloadEntries[payloadEntries.length - 1]!.binding}): what the
+ *  pinned bind group hands the WGSL is what a backend must upload. */
+inline std::array<const std::vector<float>*, ${payloads.length}>
+splat_texture_payloads(const SplatMeshRecord& record) {
+    return {
+${payloads
+    .map((field) => `        &record.${field}_rgba,`)
+    .join("\n")}
+    };
+}`;
+    }
+
     public lowerGeometry(): LoweredSource {
         const symbolName = "buildSplatGeometry";
         const { file, declaration } = this.declaration(
@@ -227,6 +472,7 @@ ${body}
         );
         const rowLength = this.rowLength();
         const textureSize = this.lowerTextureSize();
+        const gpuConstants = this.pinnedGpuConstants();
 
         const bindings = new Map<string, PinnedBinding>([
             // The pin's parameter is an ArrayBuffer; ours is the packaged
@@ -306,6 +552,10 @@ ${body}
             symbolName,
             header: `#pragma once
 
+#include <bblite/runtime.hpp>
+
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -334,6 +584,8 @@ struct SplatGeometry {
 
 /** Bytes per splat in the packaged row buffer. */
 inline constexpr std::size_t splat_row_length = ${rowLength}u;
+
+${gpuConstants}
 
 SplatGeometry build_splat_geometry(const std::vector<std::uint8_t>& rows);
 
@@ -482,8 +734,7 @@ ${body}
      * order buffer, and posting the sort. Those arrive here as parameters.
      */
     private lowerUniformWriter(): string {
-        const modulePath =
-            "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
+        const modulePath = PIPELINE_MODULE;
         const file = this.context.sourceFile(modulePath);
         const update = this.context
             .findNodes(

@@ -83,6 +83,12 @@ bool run_sprite_dawn_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.width);
         const std::uint32_t height =
             static_cast<std::uint32_t>(engine.options.height);
+        // The extent is pinned to the engine options for the whole run
+        // (no per-frame resize on this driver), so a zero extent cannot
+        // be skipped like the SDL twin skips a minimized frame — refuse.
+        if (width == 0 || height == 0) {
+            dawn_error("sprite surface has a zero extent.");
+        }
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
         const long warmup = frame_options.benchmark_warmup();
