@@ -111,6 +111,9 @@ export interface PinnedComposedMaterial {
     vertexWgsl: string;
     fragmentWgsl: string;
     materialUboSpec: unknown;
+    /** Loading this material called the pinned metallic-reflectance setter,
+     *  including one of its meaningful empty-options paths. */
+    metallicReflectanceRegistered: boolean;
 }
 
 type GltfDocument = {
@@ -137,6 +140,7 @@ export interface MaterialSubject {
      * distinct attribute set instead (`composeRenderableVariants`).
      */
     meshFeatures: number;
+    metallicReflectanceRegistered: boolean;
 }
 
 /**
@@ -290,6 +294,7 @@ export async function materialSubjects(
     }
     const subjects: MaterialSubject[] = [];
     for (const [index, material] of materials.entries()) {
+        let metallicReflectanceRegistered = false;
         const input = pinnedMaterialInputFromGltf(material, {
             imageOf,
             ...scene,
@@ -299,6 +304,9 @@ export async function materialSubjects(
             ...(animatedExtensions.has(index)
                 ? { animatedExtensionTargets: animatedExtensions.get(index)! }
                 : {}),
+            recordMetallicReflectanceRegistration: () => {
+                metallicReflectanceRegistered = true;
+            },
         });
         const drawn = primitiveOf.get(index);
         subjects.push({
@@ -313,6 +321,7 @@ export async function materialSubjects(
                     skinned: skinned.has(drawn.mesh),
                 })
                 : 0,
+            metallicReflectanceRegistered,
         });
     }
     if (documentHasDefaultMaterial(view)) {
@@ -332,6 +341,7 @@ export async function materialSubjects(
             input,
             uv2Mask: 0,
             meshFeatures: 0,
+            metallicReflectanceRegistered: false,
         });
     }
     return subjects;
@@ -362,7 +372,12 @@ export async function composeGltfMaterials(
             PBR_HAS_SHEEN_ALBEDO_SCALING: number;
         }>("material/pbr/pbr-flag-bits.js");
     const composed: PinnedComposedMaterial[] = [];
-    for (const { name, input, uv2Mask } of await materialSubjects(
+    for (const {
+        name,
+        input,
+        uv2Mask,
+        metallicReflectanceRegistered,
+    } of await materialSubjects(
         document!,
         scene,
     )) {
@@ -411,6 +426,7 @@ export async function composeGltfMaterials(
             // authority on where each field sits — carry it as an object rather
             // than recomputing the layout from alignment rules here.
             materialUboSpec: plainMaterialUboSpec(variant.materialUboSpec),
+            metallicReflectanceRegistered,
         });
     }
     return composed;
@@ -659,7 +675,7 @@ type PinnedLayerSetter<TProps> = (
  * compiler's intrinsics agree by construction instead of through a field
  * name restated here — the failure that leaves a composed fragment
  * missing an arm rather than failing. Resolved once and shared, since
- * every material in the sweep wants the same four.
+ * every material in the sweep wants the same setter implementations.
  */
 interface ScenePbrSetters {
     setPbrSheen: PinnedLayerSetter<Record<string, unknown>>;
@@ -667,13 +683,21 @@ interface ScenePbrSetters {
     setPbrIridescence: PinnedLayerSetter<Record<string, unknown>>;
     setPbrAnisotropy: PinnedLayerSetter<Record<string, unknown>>;
     setPbrEmissive: PinnedLayerSetter<readonly number[]>;
+    setPbrMetallicReflectance: PinnedLayerSetter<Record<string, unknown>>;
 }
 
 let scenePbrSettersPromise: Promise<ScenePbrSetters> | undefined;
 
 function scenePbrSetters(): Promise<ScenePbrSetters> {
     scenePbrSettersPromise ??= (async () => {
-        const [sheen, clearCoat, iridescence, anisotropy, emissive] =
+        const [
+            sheen,
+            clearCoat,
+            iridescence,
+            anisotropy,
+            emissive,
+            reflectance,
+        ] =
             await Promise.all([
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
                     "material/pbr/set-sheen.js",
@@ -690,6 +714,9 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
                     "material/pbr/set-emissive.js",
                 ),
+                importPinnedModule<
+                    Pick<ScenePbrSetters, "setPbrMetallicReflectance">
+                >("material/pbr/set-metallic-reflectance.js"),
             ]);
         return {
             setPbrSheen: sheen.setPbrSheen,
@@ -697,6 +724,8 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             setPbrIridescence: iridescence.setPbrIridescence,
             setPbrAnisotropy: anisotropy.setPbrAnisotropy,
             setPbrEmissive: emissive.setPbrEmissive,
+            setPbrMetallicReflectance:
+                reflectance.setPbrMetallicReflectance,
         };
     })();
     return scenePbrSettersPromise;
@@ -707,7 +736,10 @@ export async function composeScenePbrVariants(
     arms: readonly PinnedSceneArm[],
     materialIndexBase = 0,
     meshFeatureSets?: readonly number[],
-    scene: { linearImageProcessing?: boolean } = {},
+    scene: {
+        linearImageProcessing?: boolean;
+        metallicReflectanceRegistered?: boolean;
+    } = {},
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
     // Scene code can assign its material to any renderable the scene has --
@@ -717,15 +749,22 @@ export async function composeScenePbrVariants(
     const featureSets = meshFeatureSets && meshFeatureSets.length > 0
         ? meshFeatureSets
         : [await proceduralRenderableFeatures()];
+    const setters = await scenePbrSetters();
+    // Extension registration is process-global in the pin. A setter on any
+    // material makes a dormant creation-time F0 visible to detect on every
+    // material, including one whose own setter options were empty.
+    const reflectanceRegistered =
+        scene.metallicReflectanceRegistered === true ||
+        materials.some(
+            (material) => material.metallicReflectance !== undefined,
+        );
     const variants: PinnedRenderableVariant[] = [];
     for (const material of materials) {
-        // `createPbrMaterial` is `{...props}` and no reached option names
-        // occlusionStrength, so the field is absent and
-        // `_computePbrMaterialFeatures`'s own `(mat.occlusionStrength ?? 1) > 0`
-        // sets PBR_HAS_OCCLUSION -- a scene-code material samples `orm.r`. The
-        // glTF input builder's `_occlusionImage ? 1 : 0` is the loader's rule
-        // and does not reach here, so nothing is stamped: the pin's default is
-        // the answer.
+        // `createPbrMaterial` is `{...props}`. Carry the resolved scene option
+        // back under its own name so `_computePbrMaterialFeatures` applies the
+        // pin's `(mat.occlusionStrength ?? 1) > 0` gate. The glTF input
+        // builder's separate `_occlusionImage ? 1 : 0` rule does not reach
+        // this scene-code path.
         const input: PinnedMaterialInput = {};
         // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
         // stamps `mat._skyboxMode = true`.
@@ -736,6 +775,13 @@ export async function composeScenePbrVariants(
         if (material.skyboxMode) input["_skyboxMode"] = true;
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.hasOrmTexture) input["ormTexture"] = {};
+        input.occlusionStrength = material.occlusionStrength ?? 1;
+        if (
+            reflectanceRegistered &&
+            material.metallicF0Factor !== undefined
+        ) {
+            input["_metallicF0Factor"] = material.metallicF0Factor;
+        }
         if (material.doubleSided) input.doubleSided = true;
         // The resolved alpha, whatever it is: `_computePbrMaterialFeatures`
         // owns the `mat.alpha < 1` blend test, so restating the threshold
@@ -750,7 +796,35 @@ export async function composeScenePbrVariants(
         // arm. `useF0Remap` stays absent from the coat's props: only the
         // glTF loader turns the pin's remap default off. Textures ride as
         // presence, which is all `detect` asks of them.
-        const setters = await scenePbrSetters();
+        if (material.metallicReflectance) {
+            setters.setPbrMetallicReflectance(input, {
+                ...(material.metallicReflectance.hasColor
+                    ? {
+                        // A map decides the fragment flags without consulting
+                        // the colour. Preserve a computed runtime colour in
+                        // native C++, and use neutral white only to replay the
+                        // setter's property-presence shape for composition.
+                        color:
+                            material.metallicReflectance.color ??
+                            [1, 1, 1],
+                    }
+                    : {}),
+                ...(material.metallicReflectance.hasMetallicTexture
+                    ? { texture: {} }
+                    : {}),
+                ...(material.metallicReflectance.hasReflectanceTexture
+                    ? { reflectanceTexture: {} }
+                    : {}),
+                ...(material.metallicReflectance
+                        .useOnlyMetallicFromTexture !== undefined
+                    ? {
+                        useOnlyMetallicFromTexture:
+                            material.metallicReflectance
+                                .useOnlyMetallicFromTexture,
+                    }
+                    : {}),
+            });
+        }
         if (material.sheen) {
             setters.setPbrSheen(input, {
                 isEnabled: material.sheen.isEnabled,

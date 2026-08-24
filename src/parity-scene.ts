@@ -822,6 +822,22 @@ export function spawnNativeMeasured(
     }
 }
 
+/**
+ * A measured capture must run through the requested screenshot frame. The
+ * frame number is zero-based, so frame 10 needs an eleven-frame budget.
+ */
+export function nativeCaptureFrameBudget(
+    nativeEnvironment?: Record<string, string>,
+): number {
+    const screenshotFrame = Number.parseInt(
+        nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "0",
+        10,
+    );
+    return Number.isFinite(screenshotFrame) && screenshotFrame >= 0
+        ? screenshotFrame + 1
+        : 1;
+}
+
 export function runNative(
     executable: string,
     screenshot: string,
@@ -841,13 +857,7 @@ export function runNative(
         verifyDeployedPayload(executable, generatedDirectory);
     }
     mkdirSync(resolve(screenshot, ".."), { recursive: true });
-    const screenshotFrame = Number.parseInt(
-        nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "0",
-        10,
-    );
-    const maxFrames = Number.isFinite(screenshotFrame) && screenshotFrame >= 0
-        ? screenshotFrame + 1
-        : 1;
+    const maxFrames = nativeCaptureFrameBudget(nativeEnvironment);
     spawnNativeMeasured(executable, {
         ...nativeEnvironment,
         ...(idBufferPath

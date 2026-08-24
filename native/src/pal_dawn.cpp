@@ -126,6 +126,8 @@ constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_CLEARCOAT ? 3 : 0) +
     (BBLITE_MATERIAL_SHEEN ? 2 : 0) +
     (BBLITE_MATERIAL_IRIDESCENCE ? 2 : 0) +
+    (BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ? 1 : 0) +
+    (BBLITE_MATERIAL_REFLECTANCE_MAP ? 1 : 0) +
     (BBLITE_MATERIAL_SPEC_GLOSS ? 1 : 0) +
     (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0);
 constexpr std::size_t material_extension_slot_base =

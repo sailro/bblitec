@@ -420,21 +420,28 @@ export function compileAnimationIntrinsic(
                 "animation-group",
                 call.arguments[0]!,
             );
-            requireGroupSource(
-                context,
-                group,
-                call.arguments[0]!,
-                "goToFrame",
-                "property",
+            const frame = context.compileNumber(
+                call.arguments[1]!,
             );
+            if (group.animationGroupSource !== "property") {
+                context.reachFeature(
+                    "animation:gltf-groups",
+                    call,
+                );
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::go_to_frame(` +
+                        `${context.requireEngine(group, call)}, ` +
+                        `${group.cpp}, ${frame})`,
+                };
+            }
             return {
                 kind: "void",
                 cpp:
                     `bbl::go_to_frame(${group.cpp}, ` +
                     `${context.requireEngine(group, call)}, ` +
-                    `${context.compileNumber(
-                        call.arguments[1]!,
-                    )})`,
+                    `${frame})`,
             };
         }
 

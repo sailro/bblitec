@@ -404,6 +404,20 @@ const SHADER_FAMILIES = {
 
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
 
+/** The two optional metallic-reflectance pairs are independent slots. */
+export function metallicReflectanceCapabilityDefines(
+    pbrBindingNames: ReadonlySet<string>,
+): string {
+    return (
+        `#define BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ${
+            pbrBindingNames.has("metallicReflectanceMap") ? 1 : 0
+        }\n` +
+        `#define BBLITE_MATERIAL_REFLECTANCE_MAP ${
+            pbrBindingNames.has("reflectanceMap") ? 1 : 0
+        }`
+    );
+}
+
 /** The declaration one emitted module carries into `composition.json`. */
 function shaderDeclaration(
     output: string,
@@ -463,6 +477,14 @@ class GeneratedSourceWriter {
                     variant.fragmentWgsl,
                 ).some((binding) => binding.name === "rT")
             );
+        const pbrBindingNames = new Set(
+            (options.pinnedVariants ?? []).flatMap((variant) =>
+                variantBindings(
+                    variant.vertexWgsl,
+                    variant.fragmentWgsl,
+                ).map((binding) => binding.name)
+            ),
+        );
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -476,6 +498,7 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
+${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
@@ -534,6 +557,10 @@ class GeneratedSourceWriter {
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
+                    metallicReflectanceMap:
+                        pbrBindingNames.has("metallicReflectanceMap"),
+                    reflectanceMap:
+                        pbrBindingNames.has("reflectanceMap"),
                     specularGlossiness: options.specularGlossiness,
                     occlusionUv2: options.occlusionUv2,
                     standardBump: options.standardBump,

@@ -59,6 +59,9 @@ export interface StatementLoweringContext {
     assetEntitiesIterationTarget(
         expression: ts.Expression,
     ): Value | undefined;
+    assetRootChildrenIterationTarget(
+        expression: ts.Expression,
+    ): HandleCollectionTarget | undefined;
     handleCollectionIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
@@ -177,6 +180,223 @@ function bodyStatements(
     return ts.isBlock(statement.statement)
         ? statement.statement.statements
         : [statement.statement];
+}
+
+/** Type-only wrappers do not change the object a hierarchy walk tests. */
+function unwrapWalkExpression(
+    expression: ts.Expression,
+): ts.Expression {
+    let current = expression;
+    while (
+        ts.isParenthesizedExpression(current) ||
+        ts.isAsExpression(current) ||
+        ts.isTypeAssertionExpression(current) ||
+        ts.isNonNullExpression(current) ||
+        ts.isSatisfiesExpression(current)
+    ) {
+        current = current.expression;
+    }
+    return current;
+}
+
+function logicalAndOperands(
+    expression: ts.Expression,
+): ts.Expression[] {
+    const current = unwrapWalkExpression(expression);
+    if (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind ===
+            ts.SyntaxKind.AmpersandAmpersandToken
+    ) {
+        return [
+            ...logicalAndOperands(current.left),
+            ...logicalAndOperands(current.right),
+        ];
+    }
+    return [current];
+}
+
+function isPropertyPresenceProbe(
+    expression: ts.Expression,
+    binding: ts.Identifier,
+    property: string,
+): boolean {
+    const current = unwrapWalkExpression(expression);
+    const right = ts.isBinaryExpression(current)
+        ? unwrapWalkExpression(current.right)
+        : undefined;
+    return (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+        ts.isStringLiteral(current.left) &&
+        current.left.text === property &&
+        !!right &&
+        ts.isIdentifier(right) &&
+        right.text === binding.text
+    );
+}
+
+function singleExpressionStatement(
+    statement: ts.Statement,
+): ts.Expression | undefined {
+    const statements = ts.isBlock(statement)
+        ? statement.statements
+        : [statement];
+    return statements.length === 1 &&
+        ts.isExpressionStatement(statements[0]!)
+        ? statements[0]!.expression
+        : undefined;
+}
+
+/**
+ * Proves the exact Scene 12 hierarchy visitor that flattening preserves:
+ * the function contains only this loop, the transform arm only recurses into
+ * that function with the material parameter unchanged, and the mesh arm only
+ * assigns that material. The assignment is order-independent, so the native
+ * loader's flat mesh order need not claim to be the hierarchy's DFS order.
+ */
+function isRecursiveImportedMeshWalk(
+    statement: ts.ForOfStatement,
+    binding: ts.Identifier,
+): ts.BinaryExpression | undefined {
+    const statements = bodyStatements(statement);
+    if (
+        statements.length !== 1 ||
+        !ts.isIfStatement(statements[0]!) ||
+        !statements[0]!.elseStatement
+    ) {
+        return undefined;
+    }
+    const branch = statements[0]!;
+    const operands = logicalAndOperands(branch.expression);
+    if (operands.length !== 3) {
+        return undefined;
+    }
+    let children = false;
+    let rotationQuaternion = false;
+    let gpuNegated = false;
+    for (const operand of operands) {
+        if (isPropertyPresenceProbe(operand, binding, "children")) {
+            children = true;
+            continue;
+        }
+        if (
+            isPropertyPresenceProbe(
+                operand,
+                binding,
+                "rotationQuaternion",
+            )
+        ) {
+            rotationQuaternion = true;
+            continue;
+        }
+        const current = unwrapWalkExpression(operand);
+        if (
+            ts.isPrefixUnaryExpression(current) &&
+            current.operator === ts.SyntaxKind.ExclamationToken &&
+            isPropertyPresenceProbe(
+                current.operand,
+                binding,
+                "_gpu",
+            )
+        ) {
+            gpuNegated = true;
+            continue;
+        }
+        return undefined;
+    }
+    if (!children || !rotationQuaternion || !gpuNegated) {
+        return undefined;
+    }
+
+    let owner: ts.Node | undefined = statement.parent;
+    while (owner && !ts.isFunctionLike(owner)) {
+        owner = owner.parent;
+    }
+    if (
+        !owner ||
+        !ts.isFunctionDeclaration(owner) ||
+        !owner.name ||
+        !owner.body ||
+        owner.body.statements.length !== 1 ||
+        owner.body.statements[0] !== statement ||
+        owner.parameters.length !== 2 ||
+        owner.parameters.some(
+            (parameter) => !ts.isIdentifier(parameter.name),
+        )
+    ) {
+        return undefined;
+    }
+    const nodeParameter = owner.parameters[0]!.name as ts.Identifier;
+    const materialParameter = owner.parameters[1]!.name as ts.Identifier;
+    if (
+        [binding, nodeParameter, materialParameter].some(
+            (identifier) => identifier.text === owner.name!.text,
+        )
+    ) {
+        return undefined;
+    }
+    const walked = unwrapWalkExpression(statement.expression);
+    if (
+        !ts.isPropertyAccessExpression(walked) ||
+        walked.name.text !== "children" ||
+        !ts.isIdentifier(unwrapWalkExpression(walked.expression)) ||
+        (unwrapWalkExpression(walked.expression) as ts.Identifier).text !==
+            nodeParameter.text
+    ) {
+        return undefined;
+    }
+    const recursive = singleExpressionStatement(
+        branch.thenStatement,
+    );
+    if (
+        !recursive ||
+        !ts.isCallExpression(recursive) ||
+        !ts.isIdentifier(recursive.expression) ||
+        recursive.expression.text !== owner.name.text ||
+        recursive.arguments.length !== owner.parameters.length
+    ) {
+        return undefined;
+    }
+    const first = unwrapWalkExpression(recursive.arguments[0]!);
+    if (!ts.isIdentifier(first) || first.text !== binding.text) {
+        return undefined;
+    }
+    const recursiveMaterial = unwrapWalkExpression(
+        recursive.arguments[1]!,
+    );
+    if (
+        !ts.isIdentifier(recursiveMaterial) ||
+        recursiveMaterial.text !== materialParameter.text
+    ) {
+        return undefined;
+    }
+    const leaf = singleExpressionStatement(branch.elseStatement!);
+    const assignment = leaf && unwrapWalkExpression(leaf);
+    if (
+        !assignment ||
+        !ts.isBinaryExpression(assignment) ||
+        assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+    ) {
+        return undefined;
+    }
+    const target = unwrapWalkExpression(assignment.left);
+    const targetOwner = ts.isPropertyAccessExpression(target)
+        ? unwrapWalkExpression(target.expression)
+        : undefined;
+    const material = unwrapWalkExpression(assignment.right);
+    if (
+        !ts.isPropertyAccessExpression(target) ||
+        target.name.text !== "material" ||
+        !targetOwner ||
+        !ts.isIdentifier(targetOwner) ||
+        targetOwner.text !== binding.text ||
+        !ts.isIdentifier(material) ||
+        material.text !== materialParameter.text
+    ) {
+        return undefined;
+    }
+    return assignment;
 }
 
 /**
@@ -985,6 +1205,15 @@ export class StatementLowerer {
             return;
         }
         if (
+            this.emitAssetRootChildrenForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
+        if (
             this.emitHandleCollectionForOf(
                 context,
                 statement,
@@ -1052,6 +1281,71 @@ export class StatementLowerer {
             }
             context.emit("}");
         }
+    }
+
+    /**
+     * Lowers the pin's recursive `TransformNode.children` mesh walk over an
+     * imported glTF root.
+     *
+     * Native loading has already flattened renderable descendants into the
+     * asset's mesh handles. Flattening an arbitrary immediate-children loop
+     * would be observably different, so this path accepts only the precise
+     * recursive leaf walk the pin encourages: transform children recurse
+     * with the same remaining arguments, mesh children take the `else` arm.
+     * Under that proof, one native loop over all descendant meshes executes
+     * exactly the source leaf arm once per renderable.
+     */
+    private emitAssetRootChildrenForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const target = context.assetRootChildrenIterationTarget(
+            statement.expression,
+        );
+        if (!target) {
+            return false;
+        }
+        if (!ts.isIdentifier(declaration.name)) {
+            context.fail(
+                declaration.name,
+                "Walking an imported root's children requires an identifier binding.",
+            );
+        }
+        const materialAssignment = isRecursiveImportedMeshWalk(
+            statement,
+            declaration.name,
+        );
+        if (!materialAssignment) {
+            context.fail(
+                statement,
+                "An imported root's children are lowered only for the effect-only recursive TransformNode material walk.",
+            );
+        }
+        const material = context.compileValue(
+            materialAssignment.right,
+        );
+        if (material.scenePbrMaterialIndex === undefined) {
+            context.fail(
+                materialAssignment.right,
+                "The imported hierarchy material walk currently accepts only a scene-created PBR material; other families do not all consume clone-root outer transforms.",
+            );
+        }
+        emitHandleCollectionLoop(
+            context,
+            target,
+            declaration.name,
+            (loopContext) => {
+                const branch = bodyStatements(
+                    statement,
+                )[0] as ts.IfStatement;
+                this.emitScopedBody(
+                    loopContext,
+                    branch.elseStatement!,
+                );
+            },
+        );
+        return true;
     }
 
     /**

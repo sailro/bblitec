@@ -4136,9 +4136,13 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
         // weights, and the pose pass. Split out so a manager can advance
         // only the clips it owns and then run the same evaluation.
         const auto apply_animation_state =
-            [animation_runtime, &engine, apply_animation_pose]() {${animationPointer ? `
+            [animation_runtime, &engine, apply_animation_pose](
+                std::size_t only_clip) {${animationPointer ? `
             for (const VisibilityTrack& track :
                  animation_runtime->visibility_tracks) {
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4171,6 +4175,9 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
             }` : ""}
 ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                  animation_runtime->material_tracks) {
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4288,6 +4295,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
 ` : ""}${animationPointer ? `            for (const LightTrack& track :
                  animation_runtime->light_tracks) {
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4348,6 +4358,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
 ` : ""}            for (const RotationTrack& track :
                  animation_runtime->rotation_tracks) {
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4362,6 +4375,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
             for (const TranslationTrack& track :
                  animation_runtime->translation_tracks) {
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4376,6 +4392,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             }
             for (const TranslationTrack& track :
                  animation_runtime->scale_tracks) {
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4398,6 +4417,9 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                 ++track_iterator) {
                 const WeightTrack& track =
                     *track_iterator;
+                if (
+                    only_clip != invalid_handle &&
+                    track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
                 if (clip.stopped) continue;
@@ -4458,9 +4480,46 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     clip.playing = false;
                 }
             }
-            apply_animation_state();
+            apply_animation_state(invalid_handle);
         };
         apply_animation_time(0.0f, false);
+        // cloneTransformNode gives every mesh wrapper its own transform and
+        // material, but retains the exact skeleton resource. Native mesh
+        // records hold the evaluated palette themselves, so a skinned clone
+        // subscribes another record to this same evaluator. Ordinary
+        // node-animation bindings deliberately do not subscribe: the pin
+        // deep-clones those TransformNodes and its controller continues to
+        // target only the originals. A morph clone would need the same split
+        // (shared weights, independent node world), which this bounded path
+        // refuses rather than accidentally animating both halves.
+        asset.clone_mesh_animation =
+            [animation_runtime, &engine](
+                MeshHandle source,
+                MeshHandle clone) {
+            const auto found = std::find_if(
+                animation_runtime->meshes.begin(),
+                animation_runtime->meshes.end(),
+                [source](const AnimatedMeshBinding& binding) {
+                    return binding.mesh == source.value;
+                });
+            if (found == animation_runtime->meshes.end()) return;
+            if (
+                found->skin ==
+                std::numeric_limits<std::size_t>::max()) {
+                if (
+                    found->geometry < engine.geometries.size() &&
+                    !engine.geometries[found->geometry]
+                         .morph_positions.empty()) {
+                    throw std::runtime_error(
+                        "Cloning an animated morph hierarchy requires "
+                        "shared morph weights with an independent node world.");
+                }
+                return;
+            }
+            AnimatedMeshBinding binding = *found;
+            binding.mesh = clone.value;
+            animation_runtime->meshes.push_back(binding);
+        };
         // The clips scene code addresses, in the document's animation order,
         // plus the writers the group operations need — one per field the
         // pin's operations assign. The clip state stays inside this runtime;
@@ -4490,6 +4549,15 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             [animation_runtime](std::size_t clip, float time) {
             if (clip >= animation_runtime->clips.size()) return;
             animation_runtime->clips[clip].time = std::max(time, 0.0f);
+        };
+        asset.apply_clip_pose =
+            [animation_runtime, apply_animation_state](std::size_t clip) {
+            if (clip >= animation_runtime->clips.size()) return;
+            AnimationClip& selected = animation_runtime->clips[clip];
+            // This is the pin's two-argument goToFrame slice: a stopped glTF
+            // group has no engine argument, so its controller is not ticked.
+            if (selected.stopped) return;
+            apply_animation_state(clip);
         };
         asset.animation_seek =
             [animation_runtime, apply_animation_time](float time) {
@@ -4529,7 +4597,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
                     clip.time = std::min(clip.time, clip.duration);
                 }
             }
-            apply_animation_state();
+            apply_animation_state(invalid_handle);
         };
 ` : ""}        asset.set_clip_loop =
             [animation_runtime](std::size_t clip, bool loop) {

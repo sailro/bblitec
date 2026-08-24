@@ -215,14 +215,29 @@ export class BrowserErasure {
                 value: this.context.referenceSearch(),
             };
         }
-        if (
-            ts.isPrefixUnaryExpression(unwrapped) &&
-            unwrapped.operator ===
-                ts.SyntaxKind.ExclamationToken
-        ) {
+        if (ts.isPrefixUnaryExpression(unwrapped)) {
             const operand = this.evaluateBrowserValue(
                 unwrapped.operand,
             );
+            if (
+                (unwrapped.operator === ts.SyntaxKind.PlusToken ||
+                    unwrapped.operator === ts.SyntaxKind.MinusToken) &&
+                operand?.kind === "number"
+            ) {
+                return {
+                    kind: "number",
+                    value:
+                        unwrapped.operator === ts.SyntaxKind.MinusToken
+                            ? -operand.value
+                            : operand.value,
+                };
+            }
+            if (
+                unwrapped.operator !==
+                ts.SyntaxKind.ExclamationToken
+            ) {
+                return undefined;
+            }
             const truthy = this.browserTruthy(operand);
             return truthy === undefined
                 ? undefined
@@ -261,6 +276,28 @@ export class BrowserErasure {
                           unwrapped.right,
                       )
                     : undefined;
+            }
+            const numeric = new Map<
+                ts.SyntaxKind,
+                (a: number, b: number) => number
+            >([
+                [ts.SyntaxKind.PlusToken, (a, b) => a + b],
+                [ts.SyntaxKind.MinusToken, (a, b) => a - b],
+                [ts.SyntaxKind.AsteriskToken, (a, b) => a * b],
+                [ts.SyntaxKind.SlashToken, (a, b) => a / b],
+                [ts.SyntaxKind.PercentToken, (a, b) => a % b],
+            ]).get(unwrapped.operatorToken.kind);
+            if (numeric) {
+                const right = this.evaluateBrowserValue(
+                    unwrapped.right,
+                );
+                if (left?.kind !== "number" || right?.kind !== "number") {
+                    return undefined;
+                }
+                return {
+                    kind: "number",
+                    value: numeric(left.value, right.value),
+                };
             }
             // A browser-derived value compared against a literal is how the
             // corpus reads an opt-out switch: `params.get("noise") !== "off"`

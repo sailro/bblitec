@@ -465,6 +465,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene12",
+        name: "Scene 12 - PBR Shader Balls",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene12.ts",
+        title: "Babylon Lite Native - PBR Shader Balls",
+        parity: {
+            referenceSearch: "?seekTime=0.5",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
+            backgroundColor: [20, 20, 25],
+            backgroundThreshold: 30,
+            // The query branch seeks on its tenth before-render callback.
+            // Hold native capture until that branch has applied the pose.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "10",
+            },
+        },
+    },
+    {
         id: "scene13",
         name: "Scene 13 - PBR Spheres Grid",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene13.ts",

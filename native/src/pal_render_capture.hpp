@@ -693,6 +693,11 @@ inline void write_material(
     write_texture_slot(json, "iridescence", material.iridescence_texture);
     write_texture_slot(
         json, "iridescenceThickness", material.iridescence_thickness_texture);
+    write_texture_slot(
+        json,
+        "metallicReflectance",
+        material.metallic_reflectance_texture);
+    write_texture_slot(json, "reflectance", material.reflectance_texture);
     write_texture_slot(json, "emissive", material.emissive_texture);
     write_texture_slot(json, "opacity", material.opacity_texture);
     write_texture_slot(json, "specular", material.specular_texture);

@@ -5,6 +5,7 @@ import {
     captureNativePaths,
     captureSeekBracketDirectory,
     formatStabilityReport,
+    nativeCaptureFrameBudget,
     parseParityArguments,
     parseStabilityArguments,
     seekBracketPlan,
@@ -29,6 +30,18 @@ test("spells the native-capture path trio once for writer and reader", () => {
     assert.equal(
         captureNativePaths(directory, "sdl_gpu").capture,
         join(directory, "native-sdl_gpu.json"),
+    );
+});
+
+test("runs a measured capture through its registered screenshot frame", () => {
+    assert.equal(nativeCaptureFrameBudget(), 1);
+    assert.equal(
+        nativeCaptureFrameBudget({ BBLITE_SCREENSHOT_FRAME: "10" }),
+        11,
+    );
+    assert.equal(
+        nativeCaptureFrameBudget({ BBLITE_SCREENSHOT_FRAME: "invalid" }),
+        1,
     );
 });
 

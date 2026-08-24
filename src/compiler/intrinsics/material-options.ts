@@ -11,6 +11,7 @@ import ts from "typescript";
 import type {
     CompileAsset,
     ScenePbrAnisotropyManifest,
+    ScenePbrMetallicReflectanceManifest,
     ScenePbrMaterialManifest,
     Value,
     ValueKind,
@@ -56,13 +57,16 @@ export interface MaterialOptionContext
 
 /**
  * `createPbrMaterial`'s resolved options: the two texture values, the
- * sixteen native scalar/flag literals in constructor order, and the
+ * sixteen native scalar/flag literals in constructor order, the resolved
+ * scene-code occlusion strength and internal metallic F0 factor, and the
  * appended `scenePbrMaterials` index that is this material's compile-time
  * identity.
  */
 export type CompiledPbrMaterialOptions = [
     Value,
     Value,
+    string,
+    string,
     string,
     string,
     string,
@@ -94,6 +98,13 @@ export interface CompiledAnisotropyOptions {
     manifest: ScenePbrAnisotropyManifest;
 }
 
+export interface CompiledMetallicReflectanceOptions {
+    colorCpp?: string;
+    texture?: Value;
+    reflectanceTexture?: Value;
+    manifest: ScenePbrMetallicReflectanceManifest;
+}
+
 /** The reached slice of the extension option objects the setters take. */
 export type CompiledLayerOptions = [
     string,
@@ -120,11 +131,13 @@ export function compilePbrMaterialOptions(
             "environmentIntensity",
             "alpha",
             "reflectance",
+            "occlusionStrength",
+            "_metallicF0Factor",
             "doubleSided",
             "transmissive",
             "subsurface",
         ],
-        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, the internal metallic F0 factor, lighting intensities, skybox mode, and transmission subsurface fields.",
     );
     const baseColorExpression = context.objectProperty(object, "baseColorTexture");
     const ormExpression = context.objectProperty(object, "ormTexture");
@@ -144,6 +157,14 @@ export function compilePbrMaterialOptions(
     );
     const alpha = context.objectProperty(object, "alpha");
     const reflectance = context.objectProperty(object, "reflectance");
+    const occlusionStrength = context.objectProperty(
+        object,
+        "occlusionStrength",
+    );
+    const metallicF0Factor = context.objectProperty(
+        object,
+        "_metallicF0Factor",
+    );
     const doubleSided = context.objectProperty(object, "doubleSided");
     const transmissive = context.objectProperty(object, "transmissive");
     const subsurfaceExpression = context.objectProperty(object, "subsurface");
@@ -221,6 +242,36 @@ export function compilePbrMaterialOptions(
     const reflectanceCpp = reflectance
         ? context.compileNumber(reflectance)
         : "0.04f";
+    const staticOcclusionStrength = occlusionStrength
+        ? staticNumberValue(context, occlusionStrength)
+        : 1;
+    if (
+        staticOcclusionStrength === undefined ||
+        !Number.isFinite(staticOcclusionStrength)
+    ) {
+        context.fail(
+            occlusionStrength!,
+            "PBR occlusionStrength must be a finite static number: generation composes the occlusion shader arm from it.",
+        );
+    }
+    const occlusionStrengthCpp = occlusionStrength
+        ? context.compileNumber(occlusionStrength)
+        : "1.0f";
+    const staticMetallicF0Factor = metallicF0Factor
+        ? staticNumberValue(context, metallicF0Factor)
+        : 1;
+    if (
+        staticMetallicF0Factor === undefined ||
+        !Number.isFinite(staticMetallicF0Factor)
+    ) {
+        context.fail(
+            metallicF0Factor!,
+            "PBR _metallicF0Factor must be a finite static number: generation composes the reflectance-factor shader arm from it when the pinned extension is registered.",
+        );
+    }
+    const metallicF0FactorCpp = metallicF0Factor
+        ? context.compileNumber(metallicF0Factor)
+        : "1.0f";
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
         : "false";
@@ -242,6 +293,12 @@ export function compilePbrMaterialOptions(
         environmentIntensity: Number.parseFloat(environmentCpp),
         alpha: Number.parseFloat(alphaCpp),
         reflectance: Number.parseFloat(reflectanceCpp),
+        ...(staticOcclusionStrength === 1
+            ? {}
+            : { occlusionStrength: staticOcclusionStrength }),
+        ...(staticMetallicF0Factor === 1
+            ? {}
+            : { metallicF0Factor: staticMetallicF0Factor }),
         doubleSided: doubleSidedCpp === "true",
         transmission: Number.parseFloat(transmission),
         ior: Number.parseFloat(ior),
@@ -266,8 +323,142 @@ export function compilePbrMaterialOptions(
         hasVolume,
         attenuationColor,
         attenuationDistance,
+        occlusionStrengthCpp,
+        metallicF0FactorCpp,
         sceneMaterialIndex,
     ];
+}
+
+/** A setter option that is absent through an inlined optional record field. */
+function optionalRecordOption(
+    context: MaterialOptionContext,
+    expression: ts.Expression | undefined,
+): Value | undefined {
+    if (!expression) return undefined;
+    const resolved = context.resolveStaticExpression(expression);
+    if (
+        ts.isIdentifier(resolved) &&
+        resolved.text === "undefined" &&
+        !context.lookupOptional(resolved)
+    ) {
+        return undefined;
+    }
+    if (
+        ts.isPropertyAccessExpression(resolved) &&
+        ts.isIdentifier(resolved.expression)
+    ) {
+        const owner = context.lookupOptional(resolved.expression);
+        if (owner?.kind === "record") {
+            return owner.recordProperties?.[resolved.name.text];
+        }
+    }
+    return context.compileValue(resolved);
+}
+
+export function compileMetallicReflectanceOptions(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): CompiledMetallicReflectanceOptions {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        [
+            "color",
+            "texture",
+            "reflectanceTexture",
+            "useOnlyMetallicFromTexture",
+        ],
+        "Reached metallic-reflectance lowering supports color, the two file-texture slots, and useOnlyMetallicFromTexture.",
+    );
+    const colorExpression = context.objectProperty(object, "color");
+    let colorCpp: string | undefined;
+    let color: readonly [number, number, number] | undefined;
+    if (colorExpression) {
+        const resolved = context.resolveStaticExpression(colorExpression);
+        if (
+            !ts.isArrayLiteralExpression(resolved) ||
+            resolved.elements.length !== 3
+        ) {
+            context.fail(
+                colorExpression,
+                "setPbrMetallicReflectance color must be a static RGB tuple.",
+            );
+        }
+        const values = resolved.elements.map((element) =>
+            staticNumberValue(context, element),
+        );
+        if (
+            values.every((value) =>
+                value !== undefined && Number.isFinite(value)
+            )
+        ) {
+            color = values as [number, number, number];
+        }
+        colorCpp = context.compileColor3(colorExpression);
+    }
+    const texture = optionalRecordOption(
+        context,
+        context.objectProperty(object, "texture"),
+    );
+    const reflectanceTexture = optionalRecordOption(
+        context,
+        context.objectProperty(object, "reflectanceTexture"),
+    );
+    for (const value of [texture, reflectanceTexture]) {
+        if (!value) continue;
+        if (value.kind !== "texture" || !value.textureFile) {
+            context.fail(
+                expression,
+                "Reached metallic-reflectance maps must come from loadTexture2D.",
+            );
+        }
+        if (value.textureFile.srgb) {
+            context.fail(
+                expression,
+                "Metallic-reflectance maps must be linear textures; the pinned fragment performs its own RGB decode.",
+            );
+        }
+    }
+    const useOnly = optionalRecordOption(
+        context,
+        context.objectProperty(object, "useOnlyMetallicFromTexture"),
+    );
+    if (
+        useOnly &&
+        (useOnly.kind !== "boolean" ||
+            (useOnly.cpp !== "true" && useOnly.cpp !== "false"))
+    ) {
+        context.fail(
+            expression,
+            "useOnlyMetallicFromTexture must be a static boolean.",
+        );
+    }
+    if (
+        colorCpp &&
+        !color &&
+        !texture &&
+        !reflectanceTexture
+    ) {
+        context.fail(
+            colorExpression!,
+            "A color-only metallic-reflectance setter requires finite static RGB values so its fragment arm can be determined.",
+        );
+    }
+    return {
+        ...(colorCpp ? { colorCpp } : {}),
+        ...(texture ? { texture } : {}),
+        ...(reflectanceTexture ? { reflectanceTexture } : {}),
+        manifest: {
+            hasColor: colorCpp !== undefined,
+            ...(color ? { color } : {}),
+            hasMetallicTexture: texture !== undefined,
+            hasReflectanceTexture: reflectanceTexture !== undefined,
+            ...(useOnly
+                ? { useOnlyMetallicFromTexture: useOnly.cpp === "true" }
+                : {}),
+        },
+    };
 }
 
 export function compileGridMaterialOptions(

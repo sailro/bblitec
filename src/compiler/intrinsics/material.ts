@@ -8,10 +8,12 @@ import type {
     ScenePbrClearCoatManifest,
     ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
+    ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
 } from "../types.js";
 import type {
     CompiledLayerOptions,
+    CompiledMetallicReflectanceOptions,
     CompiledPbrMaterialOptions,
 } from "./material-options.js";
 
@@ -41,6 +43,10 @@ export interface MaterialIntrinsicContext
         color: readonly number[],
         index: number | undefined,
     ): void;
+    recordScenePbrMetallicReflectance(
+        reflectance: ScenePbrMetallicReflectanceManifest,
+        index: number | undefined,
+    ): void;
     expectSameEngine(
         left: Value,
         right: Value,
@@ -61,6 +67,9 @@ export interface MaterialIntrinsicContext
     compilePbrMaterialOptions(
         expression: ts.Expression,
     ): CompiledPbrMaterialOptions;
+    compileMetallicReflectanceOptions(
+        expression: ts.Expression,
+    ): CompiledMetallicReflectanceOptions;
     allocateTemporaryCppName(label: string): string;
     emit(line: string): void;
     compileGridMaterialOptions(
@@ -216,6 +225,8 @@ export function compileMaterialIntrinsic(
                 hasVolume,
                 attenuationColor,
                 attenuationDistance,
+                occlusionStrength,
+                metallicF0Factor,
                 scenePbrMaterialIndex,
             ] = context.compilePbrMaterialOptions(
                 call.arguments[0]!,
@@ -262,9 +273,10 @@ export function compileMaterialIntrinsic(
                 `${direct}, ${environment}, ${alpha}, ` +
                 `${reflectance}, ${unlit}, ${doubleSided}, ` +
                 `${skyboxMode}, ${transmission}, ${ior}, ` +
-                `${thickness}, ${useThicknessAsDepth}, ` +
-                `${hasVolume}, ${attenuationColor}, ` +
-                `${attenuationDistance}})`;
+                 `${thickness}, ${useThicknessAsDepth}, ` +
+                 `${hasVolume}, ${attenuationColor}, ` +
+                 `${attenuationDistance}, ${occlusionStrength}, ` +
+                 `${metallicF0Factor}})`;
             if (baseColor.textureFile) {
                 const temporary =
                     context.allocateTemporaryCppName(
@@ -648,6 +660,52 @@ export function compileMaterialIntrinsic(
                         material,
                         call,
                     )}, ${material.cpp})`,
+            };
+        }
+
+        case "setPbrMetallicReflectance": {
+            // The setter conditionally stamps each supplied option, then
+            // registers the reflectance extension even for an empty object.
+            // Scene 12 reaches the colour, both linear file-map slots and the
+            // alpha-only metallic-map arm; setter-side F0/specular overrides
+            // stay outside this bounded slice.
+            context.expectArgumentCount(call, 2, 2);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            const reflectance =
+                context.compileMetallicReflectanceOptions(
+                    call.arguments[1]!,
+                );
+            for (const texture of [
+                reflectance.texture,
+                reflectance.reflectanceTexture,
+            ]) {
+                if (texture) {
+                    context.expectSameEngine(material, texture, call);
+                }
+            }
+            context.recordScenePbrMetallicReflectance(
+                reflectance.manifest,
+                material.scenePbrMaterialIndex,
+            );
+            context.reachFeature(
+                "material:metallic-reflectance",
+                call,
+            );
+            const engine = context.requireEngine(material, call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_metallic_reflectance(` +
+                    `${engine}, ${material.cpp}, ` +
+                    `${reflectance.colorCpp ? "true" : "false"}, ` +
+                    `${reflectance.colorCpp ?? "bbl::Color3{}"}, ` +
+                    `${reflectance.texture?.cpp ?? "bbl::FileTexture{}"}, ` +
+                    `${reflectance.reflectanceTexture?.cpp ?? "bbl::FileTexture{}"})`,
             };
         }
 

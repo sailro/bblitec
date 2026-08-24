@@ -110,6 +110,9 @@ export interface PinnedMaterialSceneContext {
      * both halves and its captured fragment declares `emissiveColor`.
      */
     animatedEmissive?: boolean;
+    /** Records a call to the pinned metallic-reflectance setter while this
+     *  material's loader and animation-pointer paths execute. */
+    recordMetallicReflectanceRegistration?: () => void;
 }
 
 /** The material indices a `KHR_animation_pointer` channel drives a pointer into. */
@@ -475,6 +478,11 @@ const reflectanceProperties = [
     "_useOnlyMetallicFromMetallicReflectanceTexture",
 ] as const;
 
+/** A non-enumerable observation stamped by the dielectric import shim when
+ *  the pin actually calls its setter, including with an empty options object. */
+const reflectanceRegistrationMarker =
+    "__bbliteMetallicReflectanceRegistered";
+
 /**
  * `gltf-ext-spec-gloss.ts` writes the base workflow rather than a layer, so
  * these five are the fields its returned fragment merges over the core
@@ -573,8 +581,36 @@ const pin = await (async (): Promise<PinnedLoaderExecution> => {
         id: string;
         applyMaterial: PinnedApplyMaterial;
     }> = [];
+    const reflectanceModuleUrl = pathToFileURL(
+        resolve(
+            pinnedLibraryRoot(),
+            "material/pbr/set-metallic-reflectance.js",
+        ),
+    ).href;
+    const reflectanceRegistrationShim = javascriptModuleUrl(
+        `import { setPbrMetallicReflectance as pinnedSetter } from ${
+            JSON.stringify(reflectanceModuleUrl)
+        };\n` +
+        `export function setPbrMetallicReflectance(material, options) {\n` +
+        `  pinnedSetter(material, options);\n` +
+        `  Object.defineProperty(material, ${
+            JSON.stringify(reflectanceRegistrationMarker)
+        }, { value: true, enumerable: false });\n` +
+        `}\n`,
+    );
     for (const path of loaderMaterialExtensionModules) {
-        const module = await importPinnedModuleUnasynced(path);
+        const module = await importPinnedModuleUnasynced(
+            path,
+            [],
+            path === "loader-gltf/gltf-ext-dielectric.js"
+                ? new Map([
+                    [
+                        "../material/pbr/set-metallic-reflectance.js",
+                        reflectanceRegistrationShim,
+                    ],
+                ])
+                : new Map(),
+        );
         materialExtensions.push(
             module["default"] as {
                 id: string;
@@ -697,20 +733,31 @@ function loaderMaterialState(
  * in registry order. The loop is mirrored (it holds no formulas); every value
  * inside the fragments came out of the pin.
  */
+interface PinnedExtensionLayerResult {
+    layers: JsonObject;
+    metallicReflectanceRegistered: boolean;
+}
+
 function pinnedExtensionLayers(
     mat: JsonObject,
     imageOf: (textureIndex: unknown) => number | undefined,
-): JsonObject {
+): PinnedExtensionLayerResult {
     const ctx: PinnedExtensionContext = {
         _texture: (texInfo, _sRGB) => builtExtensionTexture(imageOf, texInfo),
     };
     const layers: JsonObject = {};
+    let metallicReflectanceRegistered = false;
     for (const extension of pin.materialExtensions) {
         const fragment = assertPinnedSync(
             extension.applyMaterial(mat, ctx),
             `${extension.id}.applyMaterial`,
         );
-        if (fragment) Object.assign(layers, fragment);
+        if (fragment) {
+            if (fragment[reflectanceRegistrationMarker] === true) {
+                metallicReflectanceRegistered = true;
+            }
+            Object.assign(layers, fragment);
+        }
     }
     for (const name of Object.keys(layers)) {
         if (!knownLayerProperties.has(name)) {
@@ -720,7 +767,7 @@ function pinnedExtensionLayers(
             );
         }
     }
-    return layers;
+    return { layers, metallicReflectanceRegistered };
 }
 
 /**
@@ -749,7 +796,13 @@ export function pinnedMaterialInputFromGltf(
     // The pin's own loader steps, over this one material: the parsed state,
     // the extension fragments, the texture assembly, the props assembly.
     const mat = loaderMaterialState(material, imageOf);
-    const layers = pinnedExtensionLayers(mat, imageOf);
+    const {
+        layers,
+        metallicReflectanceRegistered,
+    } = pinnedExtensionLayers(mat, imageOf);
+    if (metallicReflectanceRegistered) {
+        scene.recordMetallicReflectanceRegistration?.();
+    }
     const textures = pin.buildDefaultPbrTexturesExt(
         stubEngine,
         mat,
@@ -912,6 +965,12 @@ export function pinnedMaterialInputFromGltf(
 
     if (scene.animatedExtensionTargets) {
         seedAnimatedExtensions(input, material, scene.animatedExtensionTargets);
+        if (
+            scene.animatedExtensionTargets.occlusionStrength ||
+            scene.animatedExtensionTargets.ior
+        ) {
+            scene.recordMetallicReflectanceRegistration?.();
+        }
     }
     return input;
 }

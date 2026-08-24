@@ -1545,18 +1545,21 @@ void sort_transparent_draws(
         // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
         // the draw world's translation -- never the bounds center. The
         // record splits that world into the loader-baked node world
-        // (instance_parent_matrix, identity for scene-code meshes) and the
-        // live TRS whose translation is mesh.position (identity for
-        // loader-baked meshes), so the pinned center is the parent matrix
-        // applied to the record position.
+        // (instance_parent_matrix, identity for scene-code meshes), the live
+        // TRS whose translation is mesh.position (identity for loader-baked
+        // meshes), and an imported clone root's post-deformation translation.
+        // The pinned center is their composed world translation.
         const std::array<float, 16>& parent = mesh.instance_parent_matrix;
         const Vec3 center{
             parent[0] * mesh.position.x + parent[4] * mesh.position.y +
-                parent[8] * mesh.position.z + parent[12],
+                parent[8] * mesh.position.z + parent[12] +
+                mesh.outer_position.x,
             parent[1] * mesh.position.x + parent[5] * mesh.position.y +
-                parent[9] * mesh.position.z + parent[13],
+                parent[9] * mesh.position.z + parent[13] +
+                mesh.outer_position.y,
             parent[2] * mesh.position.x + parent[6] * mesh.position.y +
-                parent[10] * mesh.position.z + parent[14],
+                parent[10] * mesh.position.z + parent[14] +
+                mesh.outer_position.z,
         };
         const Vec3 delta{
             center.x - eye.x,
@@ -3550,8 +3553,9 @@ ${lifted.fragmentBody}
      * mesh families store `sortCenter` = the world-matrix translation
      * (`pbr-renderable.ts` / `standard-renderable.ts`, anchored below),
      * which the record carries as `instance_parent_matrix` composed with
-     * the live TRS position — the retired scaled-rotated bounds center
-     * was an invention of this port.
+     * the live TRS position and an imported clone root's post-deformation
+     * translation — the retired scaled-rotated bounds center was an
+     * invention of this port.
      */
     private assertPinnedDrawListRules(): void {
         const { declaration: buildBindings } =

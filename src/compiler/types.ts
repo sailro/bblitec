@@ -199,6 +199,22 @@ export interface ScenePbrAnisotropyManifest {
     direction: readonly [number, number];
 }
 
+/**
+ * The options one reached `setPbrMetallicReflectance` call stamps. Presence
+ * of this object is also the pin's global reflectance-extension registration;
+ * an empty setter call is therefore distinct from no call.
+ */
+export interface ScenePbrMetallicReflectanceManifest {
+    /** Whether the setter supplied a colour. The exact tuple is optional:
+     *  mapped materials compose from texture presence alone, while their
+     *  runtime colour expression is preserved in emitted C++. */
+    hasColor: boolean;
+    color?: readonly [number, number, number];
+    hasMetallicTexture: boolean;
+    hasReflectanceTexture: boolean;
+    useOnlyMetallicFromTexture?: boolean;
+}
+
 export interface ScenePbrMaterialManifest {
     /**
      * How many scene-code materials of any family the program had created
@@ -223,6 +239,8 @@ export interface ScenePbrMaterialManifest {
     iridescence?: ScenePbrIridescenceManifest;
     /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
     anisotropy?: ScenePbrAnisotropyManifest;
+    /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
+    metallicReflectance?: ScenePbrMetallicReflectanceManifest;
     /**
      * The linear RGB `setPbrEmissive` passes. Its presence is what the
      * emissive extension's `detect` reads, so a material that never
@@ -245,6 +263,10 @@ export interface ScenePbrMaterialManifest {
     environmentIntensity: number;
     alpha: number;
     reflectance: number;
+    /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
+    occlusionStrength?: number;
+    /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
+    metallicF0Factor?: number;
     doubleSided: boolean;
     transmission: number;
     ior: number;
@@ -570,6 +592,7 @@ export type ValueKind =
     | "animation-group"
     | "animation-manager"
     | "asset-entity"
+    | "asset-root"
     | "asset"
     | "boolean"
     | "browser"
@@ -672,6 +695,14 @@ export interface Value {
      * `container.materialVariants`: through the object, not by name.
      */
     asset?: CompileAsset;
+    /**
+     * Set on the hierarchy `cloneTransformNode` returned for a glTF root.
+     * Both values use the asset handle as their native identity, but only
+     * the clone is an entity the source may add on its own: the original
+     * root is already owned by its container and adding it must not pull in
+     * the container-level animation/camera wiring a second time.
+     */
+    assetRootClone?: true;
     /**
      * The graph a `node-particle-graph` value carries, and — on a set, its
      * systems and one of them — which recorded set it names. The program
@@ -867,6 +898,7 @@ export type Feature =
     | "material:clearcoat-f0-remap"
     | "material:iridescence"
     | "material:anisotropy"
+    | "material:metallic-reflectance"
     | "material:tracking"
     | "material:emissive"
     | "material:no-color-view"

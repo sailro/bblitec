@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
     backendFileToken,
@@ -6,6 +6,7 @@ import {
     captureNativePaths,
     defaultCaptureDirectory,
     defaultExecutable,
+    nativeCaptureFrameBudget,
     spawnNativeMeasured,
     verifyBuildIdentity,
     verifyDeployedPayload,
@@ -75,13 +76,21 @@ export function runNativeCapture(
     // different pose than the one being diffed against.
     const seekSeconds =
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
+    const nativeEnvironment = scene.parity?.nativeEnvironment;
+    // A failed or too-short run must not make a previous same-build capture
+    // look current. These paths are this invocation's exact native outputs.
+    for (const path of [capturePath, screenshotPath, stampPath, paths.meta]) {
+        rmSync(path, { force: true });
+    }
     spawnNativeMeasured(
         executable,
         {
-            ...(scene.parity?.nativeEnvironment ?? {}),
+            ...(nativeEnvironment ?? {}),
             ...(backend === "dawn" ? { BBLITE_GPU_BACKEND: "dawn" } : {}),
             BBLITE_TEST_PASS: "1",
-            BBLITE_MAX_FRAMES: "1",
+            BBLITE_MAX_FRAMES: String(
+                nativeCaptureFrameBudget(nativeEnvironment),
+            ),
             BBLITE_SCREENSHOT: screenshotPath,
             BBLITE_RENDER_CAPTURE: capturePath,
             BBLITE_BUILD_STAMP_OUT: stampPath,

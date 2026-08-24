@@ -101,6 +101,27 @@ test("generates scene defaults, routing, and idempotent registration", () => {
         lowered.source,
         /scene\.meshes\.erase\(found\);\s*\r?\n\s*\+\+scene\.mesh_membership_version;/,
     );
+    assert.match(
+        lowered.source,
+        /AssetHandle clone_asset_root\(Engine& engine, AssetHandle asset\)/,
+    );
+    assert.match(
+        lowered.source,
+        /record\.feature_source_mesh =/,
+    );
+    assert.match(
+        lowered.source,
+        /component_ref\(record\.outer_position\) \+= delta;/,
+    );
+    assert.doesNotMatch(lowered.source, /&root\.root_position\.x/);
+    assert.match(
+        lowered.source,
+        /!source\.lights\.empty\(\) \|\| source\.has_camera/,
+    );
+    assert.match(
+        lowered.source,
+        /clone\.clone_mesh_animation = clone_animation;/,
+    );
 });
 
 test("generates property animation evaluation and seeking", () => {
@@ -117,6 +138,20 @@ test("generates property animation evaluation and seeking", () => {
     assert.match(
         lowered.source,
         /mesh\.has_rotation_quaternion = true/,
+    );
+});
+
+test("generates the pinned glTF animation-group seek", () => {
+    const lowered = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerGroupOperations();
+    assert.match(
+        lowered.source,
+        /frame \/ 60\.0f/,
+    );
+    assert.match(
+        lowered.source,
+        /asset\.apply_clip_pose\(record\.clip\)/,
     );
 });
 
@@ -350,6 +385,10 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /read_component/);
     assert.match(
         adapter.source,
+        /if \(selected\.stopped\) return;\s*apply_animation_state\(clip\);/,
+    );
+    assert.match(
+        adapter.source,
         /glTF accessor exceeds its bufferView/,
     );
     assert.match(
@@ -501,6 +540,18 @@ test("generates GLB framing validation from upstream constants", () => {
         /Skin exceeds the 64-matrix vertex-stage bone/,
     );
     assert.match(adapter.source, /\.gpu_deformation = true;/);
+    assert.match(
+        adapter.source,
+        /asset\.clone_mesh_animation =/,
+    );
+    assert.match(
+        adapter.source,
+        /found->skin ==\s*std::numeric_limits<std::size_t>::max\(\)/,
+    );
+    assert.match(
+        adapter.source,
+        /AnimatedMeshBinding binding = \*found;/,
+    );
     assert.doesNotMatch(adapter.source, /pal::load_glb/);
 });
 

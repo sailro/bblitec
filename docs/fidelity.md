@@ -365,12 +365,28 @@ metallic-roughness image. Distinct occlusion and metallic-roughness images
 (upstream's canvas composite) and occlusion on TEXCOORD_1 alongside a
 metallic-roughness texture stay unreached and fail explicitly. Scene 243
 gates the uv2 pair through MorphStressTest's baked-AO platform.
-A scene-code material has no occlusion image and still samples occlusion:
-`createPbrMaterial` is `{...props}`, no reached option names
-`occlusionStrength`, and `_computePbrMaterialFeatures` reads
-`(mat.occlusionStrength ?? 1) > 0`, so the composed fragment takes `orm.r`.
-The glTF `_occlusionImage ? 1 : 0` rule belongs to the loader's own input
-builder and does not reach the scene-code path.
+A scene-code material has no separate occlusion image and samples `orm.r` when
+its resolved `occlusionStrength` is nonzero. `createPbrMaterial` is
+`{...props}`, and `_computePbrMaterialFeatures` owns the
+`(mat.occlusionStrength ?? 1) > 0` gate; generation carries the option into
+both that pinned feature input and the native material record, defaulting it to
+one only when absent. The glTF `_occlusionImage ? 1 : 0` rule belongs to the
+loader's own input builder and does not reach the scene-code path. The pin's
+internal `_metallicF0Factor` creation property likewise stays distinct from
+the public base `reflectance`: a reached non-default is recorded and writes
+both native `metallic_f0_factor` and the writer's fallback `specular_weight`,
+but stays dormant in shader composition until the later
+`setPbrMetallicReflectance` call registers the reflectance extension.
+That setter preserves a computed scene colour as native arithmetic, moves its
+two optional file images into dedicated material slots, and composes the pin's
+metallic-reflectance, reflectance, and alpha-only feature bits per material.
+Both images use linear texture views because Babylon's reflectance fragment
+applies its own `pow(rgb, 2.2)` decode; their alpha channels remain linear.
+Registration is process-global in the pin, so even an empty setter call makes
+a non-default creation-time F0 on another material participate in composition;
+the same applies when the registering call came from a previously loaded glTF
+dielectric rather than from scene code. Repeated scene setter calls accumulate
+their conditionally supplied fields exactly as the pinned material object does.
 `KHR_materials_variants` is folded to the one selection a scene makes.
 `selectVariant` restores every original material and then applies the chosen
 variant's mapped entries, so with one static selection the end state is a
@@ -409,8 +425,13 @@ double-advance them. The pin seeds a glTF container with its root node and
 lets each loader feature append its own entities, so adding them one by one
 adds the loader's meshes and its lights — which is what the generated call
 adds in one step, the entity value being accepted by `addToScene` alone.
-Generation refuses a container of any other shape. Scenes 152 and 157
-measure it.
+That iteration value deliberately represents the complete entity walk. An
+indexed value is different: only static `entities[0]` on a glTF container
+lowers, as an opaque imported-root identity, because the pin guarantees the
+synthetic transform root at index zero before features append lights or other
+entities. A dynamic/nonzero index and every `.babylon` container refuse rather
+than conflating one root with the complete walk. Scenes 152 and 157 measure the
+iteration contract; compiler regressions pin the indexed boundary.
 
 **A manager owns animation time for the groups attached to it, and the
 measured seek has to reach it.** Upstream has no seek — the reference

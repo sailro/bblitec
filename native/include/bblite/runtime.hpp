@@ -530,6 +530,8 @@ struct PbrMaterialOptions {
     bool has_volume = false;
     Color3 attenuation_color{1.0f, 1.0f, 1.0f};
     float attenuation_distance = 1.0f;
+    float occlusion_strength = 1.0f;
+    float metallic_f0_factor = 1.0f;
 };
 
 struct GridMaterialOptions {
@@ -751,6 +753,16 @@ struct MeshRecord {
     Vec3 dimensions{1.0f, 1.0f, 1.0f};
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
+    // A clone shares its source mesh's pinned shader composition. Generated
+    // variant tables are creation-ordered and therefore end at the meshes
+    // known during generation; this indirection keeps a later clone on the
+    // exact attribute row its source uses instead of falling through to the
+    // unrelated scene-builder fallback.
+    std::uint32_t feature_source_mesh = invalid_handle;
+    // A cloned imported root remains an outer scene-node transform. Unlike
+    // ordinary mesh TRS this is applied by the draw world after deformation,
+    // matching a clone whose mesh retains the source skeleton/morph resource.
+    Vec3 outer_position{};
     float baked_world_scale = 1.0f;
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
@@ -1339,6 +1351,8 @@ struct MaterialRecord {
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
     TextureData metallic_roughness_texture;
+    TextureData metallic_reflectance_texture;
+    TextureData reflectance_texture;
     TextureData normal_texture;
     /** KHR_materials_pbrSpecularGlossiness: RGB specular, A glossiness. */
     TextureData spec_gloss_texture;
@@ -1494,12 +1508,22 @@ struct AnimationGroupRecord {
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
+    // The synthetic root's own position for a hierarchy clone. The cloned
+    // mesh records carry it as `outer_position`; this value preserves
+    // absolute assignment and clone-of-clone semantics.
+    Vec3 root_position{};
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
     bool has_clear_color = false;
     std::function<void(float)> animation_tick;
     std::function<void(float)> animation_seek;
+    /**
+     * Registers a cloned mesh with the source asset's animation runtime.
+     * Babylon Lite clones retain the same skeleton/morph resources, so a
+     * hierarchy clone continues to receive the original controller's pose.
+     */
+    std::function<void(MeshHandle, MeshHandle)> clone_mesh_animation;
     /**
      * The weighted pass over the clips a manager attached, present only
      * when the scene reached `enableAnimationBlending`. Returns whether
@@ -1524,6 +1548,8 @@ struct AssetRecord {
     std::function<void(std::size_t, bool)> set_clip_stopped;
     /** Sets one clip's currentTime in seconds. */
     std::function<void(std::size_t, float)> set_clip_time;
+    /** Applies one non-stopped clip at its stored time. */
+    std::function<void(std::size_t)> apply_clip_pose;
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
 };
@@ -1901,6 +1927,13 @@ void set_pbr_emissive(
     Engine& engine,
     MaterialHandle material,
     Color3 color);
+void set_pbr_metallic_reflectance(
+    Engine& engine,
+    MaterialHandle material,
+    bool has_color,
+    Color3 color,
+    FileTexture metallic_texture,
+    FileTexture reflectance_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 FileTexture load_file_texture(
     Engine& engine,
@@ -2021,6 +2054,12 @@ void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
 void add_asset_entities(Scene& scene, AssetHandle asset);
+AssetHandle clone_asset_root(Engine& engine, AssetHandle asset);
+void set_asset_root_position_component(
+    Engine& engine,
+    AssetHandle asset,
+    std::size_t component,
+    float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void on_before_render(
     Scene& scene,
@@ -2066,6 +2105,10 @@ void seek_animation_manager(
 void go_to_frame(
     PropertyAnimationGroup group,
     Engine& engine,
+    float frame);
+void go_to_frame(
+    Engine& engine,
+    AnimationGroupHandle group,
     float frame);
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);

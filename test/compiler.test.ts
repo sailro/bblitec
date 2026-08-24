@@ -1413,6 +1413,362 @@ test("requires srgb base-color file textures", () => {
     );
 });
 
+test("carries scene-code PBR occlusion strength into composition and runtime", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                occlusionStrength: 0,
+            });
+        }
+    `);
+
+    assert.equal(
+        result.manifest.scenePbrMaterials[0]?.occlusionStrength,
+        0,
+    );
+    assert.match(
+        result.cpp,
+        /PbrMaterialOptions\{[^\n]+, 0\.0f, 1\.0f\}\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /\.materials\[[^\]]+\.value\]\.occlusion_strength =/,
+    );
+
+    const defaultResult = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+        }
+    `);
+    assert.equal(
+        defaultResult.manifest.scenePbrMaterials[0]?.occlusionStrength,
+        undefined,
+    );
+    assert.match(
+        defaultResult.cpp,
+        /PbrMaterialOptions\{[^\n]+, 1\.0f, 1\.0f\}\)/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createArcRotateCamera,
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });
+                    createPbrMaterial({
+                        baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                        ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                        occlusionStrength: camera.alpha,
+                    });
+                }
+            `),
+        /occlusionStrength must be a finite static number/,
+    );
+
+    for (const nonfinite of ["1 / 0", "0 / 0"]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    import {
+                        createEngine,
+                        createPbrMaterial,
+                        createSolidTexture2D,
+                    } from "@babylonjs/lite";
+
+                    async function main() {
+                        const engine = await createEngine({});
+                        createPbrMaterial({
+                            baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                            ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                            occlusionStrength: ${nonfinite},
+                        });
+                    }
+                `),
+            /occlusionStrength must be a finite static number/,
+        );
+    }
+});
+
+test("preserves scene-code internal metallic F0 creation state", () => {
+    const compileMaterial = (
+        extraOption: string,
+        setup = "",
+    ) =>
+        compileSource(`
+            import {
+                createArcRotateCamera,
+                createEngine,
+                createPbrMaterial,
+                createSolidTexture2D,
+            } from "@babylonjs/lite";
+
+            async function main() {
+                const engine = await createEngine({});
+                ${setup}
+                createPbrMaterial({
+                    baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                    ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                    ${extraOption}
+                });
+            }
+        `);
+
+    const result = compileMaterial("_metallicF0Factor: 0.95,");
+    assert.equal(
+        result.manifest.scenePbrMaterials[0]?.metallicF0Factor,
+        0.95,
+    );
+    assert.match(
+        result.cpp,
+        /PbrMaterialOptions\{[^\n]+, 1\.0f, 0\.95f\}\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /\.materials\[[^\]]+\.value\]\.(?:metallic_f0_factor|specular_weight) =/,
+    );
+
+    const defaultResult = compileMaterial("");
+    assert.equal(
+        defaultResult.manifest.scenePbrMaterials[0]?.metallicF0Factor,
+        undefined,
+    );
+    assert.match(
+        defaultResult.cpp,
+        /PbrMaterialOptions\{[^\n]+, 1\.0f, 1\.0f\}\)/,
+    );
+
+    assert.throws(
+        () =>
+            compileMaterial(
+                "_metallicF0Factor: camera.alpha,",
+                "const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });",
+            ),
+        /_metallicF0Factor must be a finite static number/,
+    );
+    assert.throws(
+        () => compileMaterial("_metallicF0Factor: 1 / 0,"),
+        /_metallicF0Factor must be a finite static number/,
+    );
+    assert.throws(
+        () => compileMaterial("_specularWeight: 0.5,"),
+        /Reached PBR lowering supports/,
+    );
+});
+
+test("lowers Scene 12 metallic-reflectance setter shapes", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrMetallicReflectance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const metallic = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const reflectance = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const base = createSolidTexture2D(engine, 1, 1, 1);
+            const orm = createSolidTexture2D(engine, 1, 0.5, 0);
+            const r = Math.pow(255 / 255, 2.2);
+            const g = Math.pow(250 / 255, 2.2);
+
+            function makeMaterial(options: {
+                metallic?: typeof metallic;
+                reflectance?: typeof reflectance;
+                alphaOnly?: boolean;
+            }) {
+                const material = createPbrMaterial({
+                    baseColorTexture: base,
+                    ormTexture: orm,
+                    _metallicF0Factor: 0.95,
+                });
+                setPbrMetallicReflectance(material, {
+                    color: [r, g, g],
+                    texture: options.metallic,
+                    reflectanceTexture: options.reflectance,
+                    useOnlyMetallicFromTexture: options.alphaOnly,
+                });
+                return material;
+            }
+
+            makeMaterial({ metallic });
+            makeMaterial({ reflectance });
+            makeMaterial({ metallic, reflectance, alphaOnly: true });
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials.map(
+            (material) => material.metallicReflectance,
+        ),
+        [
+            {
+                hasColor: true,
+                hasMetallicTexture: true,
+                hasReflectanceTexture: false,
+            },
+            {
+                hasColor: true,
+                hasMetallicTexture: false,
+                hasReflectanceTexture: true,
+            },
+            {
+                hasColor: true,
+                hasMetallicTexture: true,
+                hasReflectanceTexture: true,
+                useOnlyMetallicFromTexture: true,
+            },
+        ],
+    );
+    assert.equal(
+        result.cpp.match(/bbl::set_pbr_metallic_reflectance\(/g)?.length,
+        3,
+    );
+    assert.ok(
+        result.manifest.features.includes("material:metallic-reflectance"),
+    );
+});
+
+test("accumulates repeated metallic-reflectance setter fields", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrMetallicReflectance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const metallic = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const reflectance = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+            );
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+            setPbrMetallicReflectance(material, {
+                texture: metallic,
+                useOnlyMetallicFromTexture: true,
+            });
+            setPbrMetallicReflectance(material, {
+                reflectanceTexture: reflectance,
+            });
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials[0]?.metallicReflectance,
+        {
+            hasColor: false,
+            hasMetallicTexture: true,
+            hasReflectanceTexture: true,
+            useOnlyMetallicFromTexture: true,
+        },
+    );
+    assert.equal(
+        result.cpp.match(/bbl::set_pbr_metallic_reflectance\(/g)?.length,
+        2,
+    );
+});
+
+test("refuses unsupported metallic-reflectance setter inputs", () => {
+    const compileSetter = (
+        textureSetup: string,
+        options: string,
+    ) => compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            loadTexture2D,
+            setPbrMetallicReflectance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+            ${textureSetup}
+            setPbrMetallicReflectance(material, { ${options} });
+        }
+    `);
+
+    assert.throws(
+        () => compileSetter(
+            `const map = await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+                { srgb: true },
+            );`,
+            "texture: map",
+        ),
+        /Metallic-reflectance maps must be linear textures/,
+    );
+    assert.throws(
+        () => compileSetter(
+            "const map = createSolidTexture2D(engine, 1, 1, 1);",
+            "texture: map",
+        ),
+        /must come from loadTexture2D/,
+    );
+    for (const option of ["f0Factor: 0.5", "specularWeight: 0.5"]) {
+        assert.throws(
+            () => compileSetter("", option),
+            /Reached metallic-reflectance lowering supports/,
+        );
+    }
+    assert.throws(
+        () => compileSetter(
+            "const value = Math.pow(0.5, 2.2);",
+            "color: [value, value, value]",
+        ),
+        /color-only metallic-reflectance setter requires finite static RGB values/,
+    );
+});
+
 test("supports lexical block shadowing and if/else", () => {
     const result = compileSource(
         readFileSync(
@@ -2023,6 +2379,44 @@ test("folds browser query conditions for the native default environment", () => 
     );
 });
 
+test("folds browser query predicates inside a runtime condition", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") || "");
+            let frameCount = 0;
+            if (!isNaN(seek) && seek > 0 && frameCount === 10) {
+                box.position.x = 3;
+            }
+        }
+    `;
+
+    assert.doesNotMatch(compileSource(source).cpp, /\.position\.x = 3\.0f/);
+    const queried = compileSource(source, { search: "?seekTime=0.5" });
+    assert.match(queried.cpp, /if \(\(v_frameCount == 10\.0\)\)/);
+    assert.match(queried.cpp, /\.position\.x = 3\.0f/);
+});
+
+test("does not lower an unreachable logical right operand", () => {
+    assert.doesNotThrow(() =>
+        compileSource(`
+            if (false && document.getElementById("definitelyMissing")) {
+                throw new Error("unreachable");
+            }
+            if (true || document.getElementById("definitelyMissing")) {
+                const reached = 1;
+            }
+        `),
+    );
+});
+
 test("folds the browser canvas guard around a void-wrapped auto-run", () => {
     const result = compileSource(`
         import {
@@ -2125,6 +2519,8 @@ test("folds browser numeric predicates in conditional values", () => {
             const seek = parseFloat(params.get("seekTime") || "");
             box.position.x = Number.isFinite(seek) ? seek : 3;
             box.position.y = isNaN(seek) ? 4 : seek;
+            const seekFrame = seek * 60;
+            box.position.z = seekFrame;
         }
     `;
     const result = compileSource(source);
@@ -2138,6 +2534,7 @@ test("folds browser numeric predicates in conditional values", () => {
     });
     assert.match(queried.cpp, /\.position\.x = 1\.5f/);
     assert.match(queried.cpp, /\.position\.y = 1\.5f/);
+    assert.match(queried.cpp, /\.position\.z = 90\.0f/);
 });
 
 test("does not fold shadowed browser predicate names", () => {
@@ -2199,6 +2596,281 @@ test("materializes direct browser primitive call arms", () => {
     `, { search: "?value=chosen.glb" });
 
     assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
+});
+
+test("exposes only the pinned glTF container root entity", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+        } from "@babylonjs/lite";
+
+        function keepRoot(_root: unknown): void {}
+
+        async function main() {
+            const engine = await createEngine({});
+            const container = await loadGltf(engine, "model.glb");
+            const root = container.entities[0];
+            keepRoot(root);
+        }
+    `);
+
+    assert.equal(result.manifest.assets[0]?.kind, "gltf");
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createArcRotateCamera, createEngine, loadGltf } from "@babylonjs/lite";
+
+                function keepRoot(_root: unknown): void {}
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });
+                    keepRoot(container.entities[camera.alpha]);
+                }
+            `),
+        /entities are indexed only at static index 0/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, loadGltf } from "@babylonjs/lite";
+
+                function keepRoot(_root: unknown): void {}
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    keepRoot(container.entities[1]);
+                }
+            `),
+        /entities are indexed only at static index 0/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, loadBabylon } from "@babylonjs/lite";
+
+                function keepRoot(_root: unknown): void {}
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadBabylon(engine, "scene.babylon", {
+                        loadCamera: false,
+                        loadTextures: false,
+                    });
+                    keepRoot(container.entities[0]);
+                }
+            `),
+        /Indexing entities is lowered for a glTF container/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    addToScene,
+                    createEngine,
+                    createSceneContext,
+                    loadGltf,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    const container = await loadGltf(engine, "model.glb");
+                    addToScene(scene, container.entities[0]);
+                }
+            `),
+        /received asset-root/,
+    );
+});
+
+test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene12.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        {
+            fileName: sourcePath,
+            search: "?seekTime=0.5",
+        },
+    );
+
+    assert.equal(
+        result.cpp.match(
+            /for \(const bbl::MeshHandle .*?\.assets\[.*?\.value\]\.meshes\)/g,
+        )?.length,
+        3,
+    );
+    assert.equal(
+        result.cpp.match(/bbl::clone_asset_root\(/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /set_asset_root_position_component\([^;]+1u, 3\.0f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /set_asset_root_position_component\([^;]+1u, \(-3\.0f\)\)/,
+    );
+    assert.equal(
+        result.cpp.match(/bbl::add_asset_entities\(/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::go_to_frame\([^;]+30\.0f\)/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignImmediateChildren(
+                    node: TransformNode,
+                    material: ReturnType<typeof createStandardMaterial>,
+                ): void {
+                    for (const child of node.children) {
+                        (child as any).material = material;
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    const material = createStandardMaterial();
+                    assignImmediateChildren(
+                        container.entities[0] as TransformNode,
+                        material,
+                    );
+                }
+            `),
+        /only for the effect-only recursive TransformNode material walk/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignMaterial(
+                    node: TransformNode,
+                    material: ReturnType<typeof createPbrMaterial>,
+                ): void {
+                    for (const assignMaterial of node.children) {
+                        if ("children" in assignMaterial && "rotationQuaternion" in assignMaterial && !("_gpu" in assignMaterial)) {
+                            assignMaterial(assignMaterial as TransformNode, material);
+                        } else {
+                            (assignMaterial as any).material = material;
+                        }
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    const base = createSolidTexture2D(engine, 1, 1, 1);
+                    const orm = createSolidTexture2D(engine, 1, 0.5, 0);
+                    assignMaterial(
+                        container.entities[0] as TransformNode,
+                        createPbrMaterial({
+                            baseColorTexture: base,
+                            ormTexture: orm,
+                        }),
+                    );
+                }
+            `),
+        /only for the effect-only recursive TransformNode material walk/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignMaterial(
+                    node: TransformNode,
+                    material: ReturnType<typeof createStandardMaterial>,
+                ): void {
+                    for (const child of node.children) {
+                        if ("children" in child && "rotationQuaternion" in child && !("_gpu" in child)) {
+                            assignMaterial(child as TransformNode, material);
+                        } else {
+                            (child as any).material = material;
+                        }
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    assignMaterial(
+                        container.entities[0] as TransformNode,
+                        createStandardMaterial(),
+                    );
+                }
+            `),
+        /currently accepts only a scene-created PBR material/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createStandardMaterial,
+                    loadGltf,
+                } from "@babylonjs/lite";
+                import type { TransformNode } from "@babylonjs/lite";
+
+                function assignMaterial(
+                    node: TransformNode,
+                    material: ReturnType<typeof createStandardMaterial>,
+                ): void {
+                    material.alpha = 0.5;
+                    for (const child of node.children) {
+                        if ("children" in child && "rotationQuaternion" in child && !("_gpu" in child)) {
+                            assignMaterial(child as TransformNode, material);
+                        } else {
+                            (child as any).material = material;
+                        }
+                    }
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const container = await loadGltf(engine, "model.glb");
+                    assignMaterial(
+                        container.entities[0] as TransformNode,
+                        createStandardMaterial(),
+                    );
+                }
+            `),
+        /only for the effect-only recursive TransformNode material walk/,
+    );
 });
 
 test("records direct browser primitive materialization", () => {

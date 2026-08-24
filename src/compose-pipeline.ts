@@ -173,11 +173,15 @@ export async function composeScenePipeline({
         renderableMeshFeatures.push(await proceduralRenderableFeatures());
     }
     let materialIndexBase = 0;
+    let assetMetallicReflectanceRegistered = false;
     for (const asset of gltfAssets) {
         const path = resolve(outputPath, "assets", asset.output);
         const composed = await composeGltfMaterials(path, {
             linearImageProcessing,
         });
+        assetMetallicReflectanceRegistered ||= composed.some(
+            (material) => material.metallicReflectanceRegistered,
+        );
         assertArmsCovered(composed, emittedArms, asset.output);
         const variants = await composeRenderableVariants(
             path,
@@ -221,7 +225,11 @@ export async function composeScenePipeline({
                         await proceduralRenderableFeatures(),
                     ]),
                 ],
-                { linearImageProcessing },
+                {
+                    linearImageProcessing,
+                    metallicReflectanceRegistered:
+                        assetMetallicReflectanceRegistered,
+                },
             )),
         );
     }

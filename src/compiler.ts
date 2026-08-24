@@ -46,6 +46,7 @@ import {
 } from "./compiler/intrinsics/engine-options.js";
 import {
     compilePbrMaterialOptions,
+    compileMetallicReflectanceOptions,
     compileGridMaterialOptions,
     compileClearCoatOptions,
     compileAnisotropyOptions,
@@ -54,6 +55,7 @@ import {
     compileSheenOptions,
     type CompiledLayerOptions,
     type CompiledPbrMaterialOptions,
+    type CompiledMetallicReflectanceOptions,
     type MaterialOptionContext,
 } from "./compiler/intrinsics/material-options.js";
 import {
@@ -157,6 +159,7 @@ import type {
     ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
     ScenePbrMaterialManifest,
+    ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
     SpriteCustomShaderManifest,
     EffectManifest,
@@ -221,6 +224,7 @@ const featureSources: Record<Feature, string[]> = {
     "material:clearcoat-f0-remap": [],
     "material:iridescence": [],
     "material:anisotropy": [],
+    "material:metallic-reflectance": [],
     "material:tracking": [],
     "material:emissive": [],
     "material:no-color-view": [],
@@ -1386,6 +1390,12 @@ class Compiler
         return compilePbrMaterialOptions(this, expression);
     }
 
+    public compileMetallicReflectanceOptions(
+        expression: ts.Expression,
+    ): CompiledMetallicReflectanceOptions {
+        return compileMetallicReflectanceOptions(this, expression);
+    }
+
     public compileGridMaterialOptions(expression: ts.Expression): string[] {
         return compileGridMaterialOptions(this, expression);
     }
@@ -1631,6 +1641,33 @@ class Compiler
 
     public compileCondition(expression: ts.Expression): string {
         const unwrapped = this.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.BarBarToken)
+        ) {
+            const left = this.compileCondition(unwrapped.left);
+            // Fold browser-derived constants before lowering the remaining
+            // runtime condition. Scene 12 deliberately combines its pinned
+            // query pose with a frame counter in one conjunction.
+            const isAnd =
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken;
+            const identity = isAnd ? "true" : "false";
+            const absorbing = isAnd ? "false" : "true";
+            // Preserve JavaScript short circuiting: an unreachable right
+            // operand may itself be outside the lowering contract.
+            if (left === absorbing) {
+                return absorbing;
+            }
+            const right = this.compileCondition(unwrapped.right);
+            if (right === absorbing) return absorbing;
+            if (left === identity) return right;
+            if (right === identity) return left;
+            return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
+        }
         if (this.isBrowserOnlyExpression(unwrapped)) {
             const condition =
                 this.evaluateBrowserCondition(unwrapped);
@@ -1663,39 +1700,12 @@ class Compiler
                 [ts.SyntaxKind.LessThanEqualsToken, "<="],
                 [ts.SyntaxKind.GreaterThanToken, ">"],
                 [ts.SyntaxKind.GreaterThanEqualsToken, ">="],
-                [ts.SyntaxKind.AmpersandAmpersandToken, "&&"],
-                [ts.SyntaxKind.BarBarToken, "||"],
             ]).get(unwrapped.operatorToken.kind);
             if (!operator) {
                 this.fail(
                     unwrapped.operatorToken,
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
-            }
-            if (
-                unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
-                unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken
-            ) {
-                const left = this.compileCondition(unwrapped.left);
-                const right = this.compileCondition(unwrapped.right);
-                // Short-circuit over a settled operand: the surviving side
-                // is the whole condition, and where both settled the
-                // condition itself is a constant `emitIf` drops the branch
-                // for. Only a side-effect-free operand reaches here --
-                // `compileCondition` refuses anything else -- so dropping
-                // one is dropping nothing.
-                const identity =
-                    unwrapped.operatorToken.kind ===
-                    ts.SyntaxKind.AmpersandAmpersandToken
-                        ? "true"
-                        : "false";
-                const absorbing = identity === "true" ? "false" : "true";
-                if (left === absorbing || right === absorbing) {
-                    return absorbing;
-                }
-                if (left === identity) return right;
-                if (right === identity) return left;
-                return `(${left} ${operator} ${right})`;
             }
             return `(${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
         }
@@ -2597,6 +2607,96 @@ class Compiler
         };
     }
 
+    /**
+     * `<gltf container>.entities[0]`, the synthetic root transform the pin
+     * creates before any loader feature appends further entities.
+     *
+     * Native loading resolves the root hierarchy into the asset's mesh
+     * records rather than allocating a transform-node handle for that
+     * synthetic wrapper. The value therefore stays an opaque asset-root
+     * identity: later operations must prove how they act on the whole
+     * imported hierarchy instead of mistaking the asset handle for a mesh.
+     */
+    public assetRootElementAccess(
+        expression: ts.ElementAccessExpression,
+    ): Value | undefined {
+        const collection = this.unwrap(expression.expression);
+        if (
+            !ts.isPropertyAccessExpression(collection) ||
+            collection.name.text !== "entities"
+        ) {
+            return undefined;
+        }
+        const owner = this.compileValue(collection.expression);
+        if (owner.kind !== "asset") {
+            return undefined;
+        }
+        if (owner.asset?.kind !== "gltf") {
+            this.fail(
+                collection,
+                "Indexing entities is lowered for a glTF container, whose first entity is its synthetic root transform; another container's roots are not.",
+            );
+        }
+        const index = this.compileValue(
+            expression.argumentExpression,
+        );
+        if (
+            index.kind !== "number" ||
+            index.staticNumber !== 0
+        ) {
+            this.fail(
+                expression.argumentExpression,
+                "A glTF container's entities are indexed only at static index 0, which is its synthetic root transform.",
+            );
+        }
+        return {
+            ...owner,
+            kind: "asset-root",
+            engineCpp: this.requireEngine(owner, collection),
+        };
+    }
+
+    /**
+     * The flattened renderable descendants of an imported glTF root.
+     * `StatementLowerer` admits this target only after proving the source is
+     * the recursive TransformNode mesh-leaf visitor; arbitrary immediate
+     * child iteration is deliberately not exposed as this collection.
+     */
+    public assetRootChildrenIterationTarget(
+        expression: ts.Expression,
+    ):
+        | {
+              property: string;
+              temporaryLabel: string;
+              containerCpp: string;
+              elementKind: ValueKind;
+              elementCppType: string;
+              engineCpp: string;
+          }
+        | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) ||
+            unwrapped.name.text !== "children"
+        ) {
+            return undefined;
+        }
+        const owner = this.compileValue(unwrapped.expression);
+        if (owner.kind !== "asset-root") {
+            return undefined;
+        }
+        const engineCpp = this.requireEngine(owner, unwrapped);
+        return {
+            property: "children",
+            temporaryLabel: "asset_descendant_mesh",
+            containerCpp:
+                `${engineCpp}.assets[${owner.cpp}.value].meshes`,
+            elementKind: "mesh",
+            elementCppType: "bbl::MeshHandle",
+            engineCpp,
+        };
+    }
+
     public handleCollectionIterationTarget(
         expression: ts.Expression,
     ):
@@ -3495,6 +3595,44 @@ class Compiler
             "setPbrAnisotropy",
             index,
         ).anisotropy = anisotropy;
+    }
+
+    public recordScenePbrMetallicReflectance(
+        reflectance: ScenePbrMetallicReflectanceManifest,
+        index: number | undefined,
+    ): void {
+        const material = this.sceneMaterialForSetter(
+            "setPbrMetallicReflectance",
+            index,
+        );
+        const previous = material.metallicReflectance;
+        material.metallicReflectance = {
+            hasColor: previous?.hasColor === true || reflectance.hasColor,
+            hasMetallicTexture:
+                previous?.hasMetallicTexture === true ||
+                reflectance.hasMetallicTexture,
+            hasReflectanceTexture:
+                previous?.hasReflectanceTexture === true ||
+                reflectance.hasReflectanceTexture,
+            ...(reflectance.hasColor
+                ? (reflectance.color
+                    ? { color: reflectance.color }
+                    : {})
+                : previous?.color
+                    ? { color: previous.color }
+                    : {}),
+            ...(reflectance.useOnlyMetallicFromTexture !== undefined
+                ? {
+                    useOnlyMetallicFromTexture:
+                        reflectance.useOnlyMetallicFromTexture,
+                }
+                : previous?.useOnlyMetallicFromTexture !== undefined
+                    ? {
+                        useOnlyMetallicFromTexture:
+                            previous.useOnlyMetallicFromTexture,
+                    }
+                    : {}),
+        };
     }
 
     /** One layer or system built without a custom shader, so with the stock program. */

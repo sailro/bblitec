@@ -1624,6 +1624,8 @@ export interface MaterialTextureSlotFeatures {
     clearcoat: boolean;
     sheen: boolean;
     iridescence: boolean;
+    metallicReflectanceMap: boolean;
+    reflectanceMap: boolean;
     /** A composed variant samples the spec-gloss pair, which replaces the
      *  metallic-roughness workflow rather than layering over it. */
     specularGlossiness: boolean;
@@ -1780,6 +1782,26 @@ function materialTextureSlotRows(
                 samplerName: "iridescenceThicknessSampler_",
             },
         );
+    }
+    if (features.metallicReflectanceMap) {
+        mesh.push({
+            source: "metallic_reflectance",
+            // The pinned fragment manually raises sampled RGB to 2.2; the
+            // texture itself is therefore uploaded through a linear view.
+            srgb: "linear",
+            fallback: "white",
+            textureName: "metallicReflectanceMap",
+            samplerName: "metallicReflectanceMapSampler",
+        });
+    }
+    if (features.reflectanceMap) {
+        mesh.push({
+            source: "reflectance",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "reflectanceMap",
+            samplerName: "reflectanceMapSampler",
+        });
     }
     // Appended after the layered extensions rather than beside the base
     // workflow it replaces, so a scene that compiles it shifts no existing
@@ -1979,6 +2001,8 @@ enum class MaterialTextureSource {
     sheen_roughness,
     iridescence,
     iridescence_thickness,
+    metallic_reflectance,
+    reflectance,
     /** The dedicated uv2 occlusion map, when the record flags it. */
     occlusion_uv2,
     /** Standard bump map; a PBR material leaves the fallback. */
