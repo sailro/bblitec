@@ -248,6 +248,53 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("physics:world")) {
+        adaptations.push({
+            id: "substituted-physics-solver",
+            category: "platform",
+            sourceSemantics:
+                "`createHavokWorld(scene, hknp)` drives Havok Physics V2: " +
+                "the scene loads the Havok WASM module and the pinned " +
+                "physics layer calls its `HP_*` entry points to build " +
+                "bodies and shapes and to integrate one step per frame.",
+            nativeSemantics:
+                "The pinned layer is generated unchanged -- the step " +
+                "gate, the four phases of a frame, the aggregate's " +
+                "ordering and the bounding-box shape sizing are lowered " +
+                "from `src/physics/havok.ts` -- but the `HP_*` surface " +
+                "behind it is implemented over Bullet in the PAL, " +
+                "because the Havok module is a proprietary binary this " +
+                "project cannot redistribute. The scene's own `await " +
+                "HavokPhysics(...)` reaches nothing and emits nothing. " +
+                "This is the one adaptation here that is not " +
+                "bit-faithful by construction: two rigid-body solvers " +
+                "integrate different contact models, so a body's pose " +
+                "after N steps is a different number rather than a " +
+                "rounding of the same one. A physics scene's threshold " +
+                "therefore cannot be driven toward zero: scene 40 carries " +
+                "one set just above the measured distance between the two " +
+                "solvers, which gates this port's own solver rather than " +
+                "asserting agreement with the pinned one. The trajectory " +
+                "(`BBLITE_PHYSICS_TRACE`) is what grades the simulation " +
+                "itself.",
+            risk: "high",
+            validation: [
+                "free fall is exact: the measured pose after N steps " +
+                    "matches the closed form of the semi-implicit Euler " +
+                    "integration both solvers use, to float32 precision " +
+                    "(examples/physics-drop.ts, 1e-7 at magnitude 4)",
+                "a resting body settles at its geometric height " +
+                    "(sphere radius 1 on a ground plane at y=0 rests at " +
+                    "y=1.0 exactly), which is what the degenerate-box " +
+                    "sink in pal_physics_bullet.cpp is measured against",
+                "restitution is within 0.3% of the analytic rebound " +
+                    "apex for the reached coefficient",
+                "both GPU backends render the byte-identical frame from " +
+                    "the identical simulated pose",
+            ],
+        });
+    }
+
     if (features.includes("backend:sdl")) {
         adaptations.push({
             id: "sdl-platform-boundary",

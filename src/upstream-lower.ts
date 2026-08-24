@@ -11,6 +11,7 @@ import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.js";
 import { LineLowerer } from "./lowering/line-lowerer.js";
+import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
@@ -1553,6 +1554,17 @@ ${composed.wgsl}`,
                 "upstream/src/mesh_lines.cpp",
                 new LineLowerer(context).lowerLineSystem(),
                 generated,
+            );
+        }
+        // The rigid-body family. Everything emitted is `havok.ts`'s own
+        // semantics; the solver behind it is the PAL's, which is the seam
+        // the pin itself draws by taking `hknp` as a parameter.
+        if (features.includes("physics:world")) {
+            this.writeSource(
+                "upstream/src/physics.cpp",
+                new PhysicsLowerer(context).lowerPhysics(),
+                generated,
+                "upstream/include/bblite/upstream/physics.hpp",
             );
         }
 

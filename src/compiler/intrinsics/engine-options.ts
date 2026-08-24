@@ -400,8 +400,28 @@ export function geometryEnumMember(type: GeometryTextureTypeName): string {
     return type.toLowerCase();
 }
 
+/**
+ * What reading a required numeric option needs, and nothing else.
+ *
+ * Narrowed from `EngineOptionContext` for the reason `intrinsics/context.ts`
+ * gives for the split it already makes: a family that never resolves an
+ * engine should not have to be handed one to read a number off an object.
+ * `EngineOptionContext` satisfies it, so every existing caller is unchanged.
+ */
+export interface RequiredObjectNumberContext {
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    fail(node: ts.Node, message: string): never;
+}
+
 export function requiredObjectNumber(
-    context: EngineOptionContext,
+    context: RequiredObjectNumberContext,
     object: ts.ObjectLiteralExpression,
     name: string,
     precision: "float" | "double" = "float",

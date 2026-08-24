@@ -177,7 +177,7 @@ export type {
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
-import { isNodeParticleValue } from "./compiler/types.js";
+import { isCompileTimeOnlyValue } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import {
     shaderMaterialPrograms,
@@ -262,6 +262,13 @@ const featureSources: Record<Feature, string[]> = {
     // simulation itself is baked at generation, so nothing of the pin's own
     // particle runtime compiles.
     "particle:node": [],
+    // The rigid-body solver. `havok.ts` itself is Babylon behaviour and is
+    // generated like every other pinned module; what this translation unit
+    // carries is the `HP_*` surface the pin calls on the `hknp` module it
+    // is handed -- a third-party library behind a fixed entry-point list,
+    // which is the same role SDL plays and so the same boundary.
+    "physics:world": ["src/pal_physics_bullet.cpp"],
+    "physics:aggregate": [],
     "sprite:billboard-axis-locked": [],
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
@@ -488,6 +495,8 @@ class Compiler
                 this.evaluateBrowserValue(expression),
             (expression) =>
                 this.isBrowserOnlyExpression(expression),
+            (value, expression) =>
+                this.dataLowerer.narrowOptional(value, expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
@@ -776,18 +785,7 @@ class Compiler
         if (value.kind === "void" || value.kind === "browser") {
             this.fail(declaration.initializer, `Expression assigned to '${sourceName}' does not produce a native value.`);
         }
-        if (
-            value.kind === "tuple" ||
-            value.kind === "record" ||
-            value.kind === "morph-targets" ||
-            // A custom-shader descriptor is compile-time data: the program
-            // it names is composed at generation and the layer it is passed
-            // to carries only that it has one, so there is nothing to
-            // declare natively.
-            value.kind === "sprite-custom-shader" ||
-            value.kind === "billboard-custom-shader" ||
-            isNodeParticleValue(value.kind)
-        ) {
+        if (isCompileTimeOnlyValue(value.kind)) {
             this.defineVariable(declaration.name, value);
             return;
         }
@@ -1751,9 +1749,28 @@ class Compiler
     /** Nonzero while a frame callback's statements are being lowered. */
     private frameCallbackDepth = 0;
 
-    public compileFrameCallback(expression: ts.Expression): string {
+    /**
+     * An inline callback, as the lambda the caller's entry point takes.
+     *
+     * `signature` is what that entry point declares: a before-render or
+     * after-step callback receives the frame delta, and a deferred
+     * (`setTimeout`) one receives nothing, because a timeout is not a
+     * frame. The body lowers identically either way -- only what the
+     * lambda is allowed to name differs, and a deferred callback naming a
+     * delta parameter has nowhere to get one, so it refuses.
+     */
+    public compileFrameCallback(
+        expression: ts.Expression,
+        signature: "delta" | "void" = "delta",
+    ): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
+            if (signature === "void") {
+                this.fail(
+                    unwrapped,
+                    "A deferred callback must be written inline.",
+                );
+            }
             return this.compileNamedFrameCallback(unwrapped);
         }
         if (!ts.isArrowFunction(unwrapped) && !ts.isFunctionExpression(unwrapped)) {
@@ -1761,6 +1778,13 @@ class Compiler
         }
         if (unwrapped.parameters.length > 1) {
             this.fail(unwrapped, "onBeforeRender callback supports at most one deltaMs parameter.");
+        }
+        if (signature === "void" && unwrapped.parameters.length > 0) {
+            this.fail(
+                unwrapped,
+                "A deferred callback takes no parameters: a timeout is " +
+                    "not a frame and carries no delta.",
+            );
         }
 
         const parameter = unwrapped.parameters[0];
@@ -1774,6 +1798,17 @@ class Compiler
         const start = this.body.length;
         const previousIndent = this.indentLevel;
         this.indentLevel = 0;
+        // Everything the outermost frame callback pushes lives on its own
+        // stack frame; a deferred body may not reach into it.
+        const previousFrameFloor = this.frameCallbackScopeFloor;
+        if (this.frameCallbackDepth === 0) {
+            this.frameCallbackScopeFloor =
+                this.variableScopes.length;
+        }
+        const previousDeferredFloor = this.deferredCaptureFloor;
+        this.deferredCaptureFloor = signature === "void"
+            ? this.frameCallbackScopeFloor
+            : undefined;
         this.pushScope(
             this.cppNamePrefixes.at(-1) ?? "",
         );
@@ -1806,13 +1841,17 @@ class Compiler
         } finally {
             this.frameCallbackDepth -= 1;
             this.popScope();
+            this.deferredCaptureFloor = previousDeferredFloor;
+            this.frameCallbackScopeFloor = previousFrameFloor;
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
         const cppParameter = parameterName
             ? `float ${this.cppIdentifier(parameterName)}`
             : "float";
-        return `[&](${cppParameter}) {\n${callbackBody.map((line) => `            ${line}`).join("\n")}\n        }`;
+        const lambdaParameter =
+            signature === "void" ? "" : cppParameter;
+        return `[&](${lambdaParameter}) {\n${callbackBody.map((line) => `            ${line}`).join("\n")}\n        }`;
     }
 
     private compileNamedFrameCallback(
@@ -2922,6 +2961,13 @@ class Compiler
         );
     }
 
+    /** See `BrowserErasure.isDeferredCallbackCall`. */
+    public isDeferredCallbackCall(
+        call: ts.CallExpression,
+    ): boolean {
+        return this.browserErasure.isDeferredCallbackCall(call);
+    }
+
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
@@ -2979,6 +3025,26 @@ class Compiler
             const binding =
                 this.variableScopes[index]!.get(symbol);
             if (binding) {
+                // A deferred callback runs after the frame that created
+                // it has returned, so a name bound inside that frame is
+                // dead storage by then. The emitted lambda captures by
+                // reference, so this would compile clean and read freed
+                // memory; it refuses instead. Escaping captures are
+                // unsolved generally (see TODO), and this is the one
+                // place the reached slice can walk into them.
+                if (
+                    this.deferredCaptureFloor !== undefined &&
+                    index >= this.deferredCaptureFloor
+                ) {
+                    this.fail(
+                        identifier,
+                        `A deferred callback cannot name '${identifier.text}': ` +
+                            "it is bound inside the callback that queued " +
+                            "the timeout, and that frame has returned by " +
+                            "the time the timeout runs. Bind it outside " +
+                            "the enclosing callback.",
+                    );
+                }
                 return binding.value;
             }
         }
@@ -3362,11 +3428,9 @@ class Compiler
             return;
         }
         if (
-            value.kind === "tuple" ||
-            value.kind === "record" ||
             value.kind === "string" ||
             value.kind === "callback" ||
-            isNodeParticleValue(value.kind)
+            isCompileTimeOnlyValue(value.kind)
         ) {
             this.defineVariable(identifier, value);
             return;
@@ -3430,6 +3494,23 @@ class Compiler
         }
         return result;
     }
+
+    /**
+     * The scope depth the outermost enclosing frame callback started at.
+     *
+     * Everything at or above it lives on that callback's own stack frame.
+     * A deferred (`setTimeout`) callback runs AFTER that frame has
+     * returned, so naming one of those locals would emit a reference to
+     * dead storage -- which is why `deferredCaptureFloor` refuses it.
+     */
+    private frameCallbackScopeFloor: number | undefined;
+
+    /**
+     * Set while a deferred callback's body is being compiled. A binding
+     * resolved at or above this depth belongs to a frame that will be
+     * gone when the callback runs.
+     */
+    private deferredCaptureFloor: number | undefined;
 
     public pushScope(cppPrefix: string): void {
         this.variableScopes.push(new Map());
@@ -3859,6 +3940,11 @@ class Compiler
         const nodeParticleInclude = features.includes("particle:node")
             ? "#include <bblite/upstream/node_particles.hpp>\n"
             : "";
+        // The rigid-body family: main.cpp calls the generated world and
+        // aggregate factories by name.
+        const physicsInclude = features.includes("physics:world")
+            ? "#include <bblite/upstream/physics.hpp>\n"
+            : "";
         const cameraMathInclude =
             features.some((feature) =>
                 feature.startsWith("camera:"),
@@ -3904,7 +3990,7 @@ class Compiler
             : "";
         return `// Generated by bblitec. Do not edit.
 #include <bblite/runtime.hpp>
-${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${nodeParticleInclude}${postProcessInclude}
+${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${nodeParticleInclude}${physicsInclude}${postProcessInclude}
 #include <cmath>
 #include <exception>
 #include <iostream>${this.throwReached ? "\n#include <stdexcept>" : ""}

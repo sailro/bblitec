@@ -32,8 +32,51 @@ export class BrowserErasure {
         private readonly context: BrowserErasureContext,
     ) {}
 
+    /**
+     * `setTimeout(callback, 0)` -- bare or through `window`.
+     *
+     * Every other `window.*` call erases, because the browser service
+     * behind it has no native counterpart. This one has: a zero-delay
+     * timeout is "run this once, after the current turn", and the frame
+     * conductor already has that boundary. So it is recognized here and
+     * lowered rather than erased -- which is what lets a scene's own
+     * freeze (`setTimeout(() => stopEngine(engine), 0)`) reach the native
+     * loop instead of being silently dropped.
+     *
+     * The reached slice is a zero delay. Seventeen of the corpus's
+     * twenty-one call sites pass exactly 0; the four that do not (scenes
+     * 44, 48, 156 and 173 -- a drop, a kick and two fades, all real
+     * waits) are a timer this runtime does not carry, and they refuse at
+     * the call rather than being rounded to the next frame, which would
+     * be a different scene.
+     */
+    public isDeferredCallbackCall(
+        call: ts.CallExpression,
+    ): boolean {
+        const callee = this.context.unwrap(call.expression);
+        const name = ts.isPropertyAccessExpression(callee)
+            ? (ts.isIdentifier(callee.expression) &&
+                    callee.expression.text === "window" &&
+                    this.context.isDefaultLibraryIdentifier(
+                        callee.expression,
+                    )
+                  ? callee.name
+                  : undefined)
+            : ts.isIdentifier(callee) &&
+                this.context.isDefaultLibraryIdentifier(callee)
+              ? callee
+              : undefined;
+        return name?.text === "setTimeout";
+    }
+
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isCallExpression(unwrapped) &&
+            this.isDeferredCallbackCall(unwrapped)
+        ) {
+            return false;
+        }
         if (this.context.canvasSizeProperty(unwrapped)) {
             return false;
         }
@@ -109,9 +152,13 @@ export class BrowserErasure {
                 unwrapped.arguments.some((argument) =>
                     this.isBrowserOnlyExpression(argument),
                 );
+            // `Number(x)` joins `isNaN` and `parseFloat` as a conversion
+            // over a browser-derived value: it is how every physics scene
+            // reads the step its capture is pinned at
+            // (`Number(params.get("captureFrame"))`).
             if (
                 ts.isIdentifier(unwrapped.expression) &&
-                ["isNaN", "parseFloat"].includes(
+                ["isNaN", "Number", "parseFloat"].includes(
                     unwrapped.expression.text,
                 ) &&
                 this.context.isDefaultLibraryIdentifier(
@@ -432,6 +479,43 @@ export class BrowserErasure {
                 return {
                     kind: "number",
                     value: Number.parseFloat(text),
+                };
+            }
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === "Number" &&
+                unwrapped.arguments.length === 1 &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression,
+                )
+            ) {
+                const argument =
+                    this.evaluateBrowserValue(
+                        unwrapped.arguments[0]!,
+                    );
+                // Only the kinds JavaScript converts to a NUMBER fold; an
+                // opaque browser object or the search-params record does
+                // not, and is listed by what it IS rather than by what it
+                // is not so a kind added later does not silently join.
+                if (
+                    argument === undefined ||
+                    !["boolean", "null", "number", "string"].includes(
+                        argument.kind,
+                    )
+                ) {
+                    return undefined;
+                }
+                // The conversion is the language's own, not a table
+                // restated here: `Number(null)` is 0, `Number("")` is 0
+                // and `Number("abc")` is NaN, which is exactly what the
+                // `Number.isFinite` guard beside it then reads.
+                return {
+                    kind: "number",
+                    value: Number(
+                        argument.kind === "null"
+                            ? null
+                            : (argument as { value: unknown }).value,
+                    ),
                 };
             }
             if (

@@ -26,6 +26,12 @@
         }
       ]
     },
+    "physics": {
+      "description": "Bullet rigid-body solver for scenes reaching physics:world. Zlib-licensed, and linked only where the scene's own source creates a physics world.",
+      "dependencies": [
+        "bullet3"
+      ]
+    },
     "webp": {
       "description": "WebP texture decoding for scenes whose materialized assets reach image/webp",
       "dependencies": [

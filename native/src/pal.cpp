@@ -5,12 +5,45 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <vector>
 #include <utility>
 
 #include <SDL3/SDL_filesystem.h>
+
+namespace bbl {
+
+/**
+ * `setTimeout(callback, 0)`: queue a callback to run once, at the next
+ * frame boundary.
+ *
+ * Not generated, because `setTimeout` is not a Babylon symbol -- there is
+ * no pinned declaration to lower from. It is a platform service the frame
+ * conductor provides, so it lives here beside the engine record that
+ * holds the queue, and only the scenes that reach it pay for it.
+ */
+void defer_callback(Engine& engine, std::function<void()> callback) {
+    engine.deferred_callbacks.push_back(std::move(callback));
+}
+
+void run_deferred_callbacks(Engine& engine) {
+    if (engine.deferred_callbacks.empty()) {
+        return;
+    }
+    // Moved out first: a callback that queues another is served on the
+    // NEXT frame, which is what a browser does with a zero-delay timeout
+    // queued from inside one. Draining in place would run it now.
+    std::vector<std::function<void()>> due;
+    due.swap(engine.deferred_callbacks);
+    for (const auto& callback : due) {
+        callback();
+    }
+}
+
+}  // namespace bbl
 
 namespace bbl::pal {
 

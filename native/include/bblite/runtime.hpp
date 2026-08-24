@@ -1557,6 +1557,29 @@ struct AssetRecord {
 struct Engine {
     EngineOptions options{};
     /**
+     * `stopEngine`: the pin cancels its animation frame and clears
+     * `_renderFn`, so no further frame submits. There is no
+     * `requestAnimationFrame` here -- the frame conductor IS the loop --
+     * so the same thing is a flag it checks, and a stopped engine is one
+     * the conductor leaves after finishing the frame in flight.
+     */
+    bool stopped = false;
+    /**
+     * `setTimeout(callback, 0)`: callbacks queued to run once, after the
+     * frame that queued them.
+     *
+     * Babylon Native, which embeds a JavaScript engine, needs a whole
+     * `TimeoutDispatcher` for this -- a timer thread with a time-ordered
+     * queue that marshals each due call back onto the JS thread. None of
+     * that applies here: there is no second thread to marshal to and the
+     * frame conductor is the only one. Seventeen of the corpus's
+     * twenty-one `setTimeout` call sites pass a delay of exactly 0, so
+     * the reached slice is a one-shot deferred queue the conductor drains
+     * once per frame; the four real waits refuse at generation rather
+     * than pretending this is a timer.
+     */
+    std::vector<std::function<void()>> deferred_callbacks;
+    /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
      * for the groups attached to it, so a measured seek has to reach it;
@@ -2342,5 +2365,17 @@ void set_scene_fog(
     float end,
     Color3 color);
 void start_engine(Engine& engine);
+/** `stopEngine`: no further frame submits. */
+void stop_engine(Engine& engine);
+/** `setTimeout(callback, 0)`; see `Engine::deferred_callbacks`. */
+void defer_callback(Engine& engine, std::function<void()> callback);
+/**
+ * Run and clear everything `setTimeout` queued. Called by the frame
+ * conductor after the frame's own callbacks, which is where the browser
+ * runs a zero-delay timeout: after the current turn, before the next
+ * frame. A callback that queues another is served on the following
+ * frame rather than in this drain, exactly as it would be in a browser.
+ */
+void run_deferred_callbacks(Engine& engine);
 
 } // namespace bbl

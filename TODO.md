@@ -229,9 +229,10 @@ the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
 **Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-23, after
-scenes 25 and 36): `Number(...)` as a call 9 (all deferred-lane physics),
+scenes 25 and 36; the physics lane re-swept after the prototype below):
+a folded value compared against a mutable counter 7 (all physics),
 engine options beyond msaaSamples/requiredLimits 7 (large-world),
-`receiveShadows` 6, `??` over a non-static-record operand 6, `HavokPhysics` 5,
+`receiveShadows` 6, `??` over a non-static-record operand 6,
 PBR options beyond the reached set 3, a four-argument call 3, an unsupported
 constructor expression 3, `createNavigationPluginAsync` 3.
 Node materials shipped twenty of the thirty-one scenes reaching
@@ -733,10 +734,71 @@ that does to the deferred lane by default.
 These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
-- [ ] Scenes 40-42, 44-49, 100-106, 209: add Havok behind an independent physics
-  dependency/PAL boundary. First blockers: `Number(...)` as a call (40-42,
-  44, 45, 47, 100, 101, 106), `HavokPhysics` (48, 102-105), a four-argument
-  call (49), engine options (209), and an unresolved variable (46).
+- [ ] Scenes 41-49, 100-106, 209: finish the physics lane. **Scene 40 is
+  integrated and published** -- the first corpus physics scene, frozen at
+  the pin's own `?captureFrame=120` and measured on both backends. What
+  remains is one capability per scene, and none of it is shared plumbing
+  any more.
+  - **What the lane no longer stops on.** The freeze every one of these
+    scenes pins its pose with is lowered: `stopEngine` is a flag the frame
+    conductor reads, `setTimeout(cb, 0)` is a one-shot deferred callback it
+    drains, and a nullable the source guarded with `!== null` reads as the
+    number the checker narrowed it to. Those three cleared the whole
+    seven-scene cluster at once.
+  - **First blockers, re-swept after that landed** -- each is now a scene
+    API rather than capture plumbing: a non-glTF container's entities (41);
+    an aggregate `radius`/`extents` (42, 45, and both want more besides --
+    `cloneTransformNode` and `applyPhysicsBodyForce`); `createTube` (43);
+    a Color3 shape (44); an unresolved variable (46);
+    `createGroundFromHeightMap` (47); `createPhysicsBody` (48); a
+    four-argument call (49); `setPhysicsBodyCollisionEventsEnabled` (100);
+    `createPhysicsShape` (101, 102); `mesh.pickable` (103); an unsupported
+    constructor expression (104, 105); `PhysicsMotionType` read as a value
+    into an array (106); and engine options (209, behind large-world
+    rendering).
+  - **Extend the aggregate options past the three that are lowered.** The
+    pin's own `_buildShapeParams` resolves `radius`, `extents`, `center`,
+    `pointA` and `pointB` as explicit overrides of the bounds-derived
+    value, each through the same `??` the lowered ones use. Swept across
+    the corpus: `mass` 18, `extents` 7, `restitution` 6, `radius` 4,
+    `friction` 4, `pointA`/`pointB`/`center` 1 each. Adding them is small
+    and faithful, and lands no scene on its own, which is why it is filed
+    rather than done -- every scene that passes one also wants something
+    else.
+  - **What a physics scene's threshold can and cannot mean.** Scene 40
+    measures 0.332/0.777 against the Havok golden, and that number is the
+    distance between two SOLVERS, not between this port and Babylon Lite
+    ([fidelity](docs/fidelity.md#physics-contract)). It cannot be driven to
+    zero. Worth knowing: Babylon Native faces the same problem -- it links
+    Ammo, which is Bullet compiled to WebAssembly -- and answers it by
+    generating its reference images from its own renderer and comparing
+    with a per-channel tolerance of 25 plus an allowed percentage of
+    differing pixels. That is a regression gate against itself rather than
+    a fidelity gate, and it is the alternative if the published browser
+    golden ever proves more misleading than useful here.
+  - **Bullet's own gaps before this is more than a prototype**: the
+    `double-precision` vcpkg feature is unevaluated (the transform chain
+    around it is double, the solver is float), and nothing yet measures a
+    stack or a constrained body, where the two solvers' convergence
+    differs most.
+  - **Beyond the reached slice**, each refusing by name: mesh and
+    convex-hull shapes (the pin's own `MeshAccumulator`), container shapes,
+    the `startAsleep` and `isTriggerShape` options, `disposePhysics`, and
+    every body control past creation (impulse, velocity, motion-type
+    switching, teleport). A capsule or cylinder whose segment is not
+    Y-aligned refuses in the PAL rather than standing upright.
+  - **Lower the three bounding helpers from the pinned AST.**
+    `_boundingCenter`, `_boundingExtents` and `_boundingRadius` are
+    hand-typed as C++ in `physics-lowerer.ts`, the one place the physics
+    port restates pinned arithmetic rather than reading it, and it restates
+    five constants with it. `PinnedNumericLowerer` is the mechanism and
+    `PinnedBinding.optional` already models the `mesh.boundMin &&
+    mesh.boundMax` read; the blocker is the return shape, since the
+    translator handles no `ObjectLiteralExpression` and two of the three
+    return `{x, y, z}`. They need the per-component `returnObject` +
+    `propertyInitializer` route `light-lowerer.ts#lowerMatrix` uses.
+    `_boundingRadius` returns a scalar and is a direct fit today.
+
 - [ ] Scenes 170-175: add Recast navigation behind an explicit dependency
   boundary. First blockers: `createNavigationPluginAsync` (170, 172, 173) and
   `??` over a non-static-record operand (171, 174, 175).

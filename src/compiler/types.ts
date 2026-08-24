@@ -627,6 +627,16 @@ export type ValueKind =
     | "node-particle-set"
     | "node-particle-system"
     | "number"
+    // The physics family. `physics-engine-module` is the `hknp` the pin
+    // takes as a parameter -- the WASM module a browser scene loads. It has
+    // no native representation at all: the solver is reached through the
+    // PAL, so the value exists only to be accepted by `createHavokWorld`
+    // and dropped, exactly as the tracking installers are accepted and emit
+    // nothing. A body and a shape have no compile-time value because
+    // `createPhysicsBody` and `createPhysicsShape` both refuse.
+    | "physics-engine-module"
+    | "physics-world"
+    | "physics-aggregate"
     | "render-target"
     | "render-target-texture"
     | "render-texture"
@@ -648,6 +658,34 @@ export type ValueKind =
     | "texture"
     | "tuple"
     | "void";
+
+/**
+ * A value that exists only at generation: it binds a name, and declares
+ * nothing native.
+ *
+ * The two binding paths -- a variable declaration and an assignment to an
+ * already-declared local -- both have to recognize the same set, and each
+ * used to carry its own list. They disagreed, which is the failure this
+ * exists to stop: a kind added to one silently fell through to the generic
+ * emit in the other and produced a declaration with no initializer.
+ */
+export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
+    return (
+        kind === "tuple" ||
+        kind === "record" ||
+        kind === "morph-targets" ||
+        // A custom-shader descriptor is compile-time data: the program it
+        // names is composed at generation and the layer it is passed to
+        // carries only that it has one.
+        kind === "sprite-custom-shader" ||
+        kind === "billboard-custom-shader" ||
+        // The solver module a physics scene loads. The pin hands it to
+        // `createHavokWorld`; a native build reaches its solver through
+        // the PAL, so the binding exists for that call to accept.
+        kind === "physics-engine-module" ||
+        isNodeParticleValue(kind)
+    );
+}
 
 /**
  * The node-particle values are compile-time records: a graph, the set built
@@ -919,6 +957,8 @@ export type Feature =
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
     | "particle:node"
+    | "physics:world"
+    | "physics:aggregate"
     | "scene:remove"
     | "sprite:2d"
     | "sprite:uv-scroll"

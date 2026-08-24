@@ -22,6 +22,15 @@ A scene that does not reach zero carries a recorded adaptation: every
 generated scene writes a `fidelity.json` giving the source and native
 semantics side by side, with its risk and validation.
 
+**One row measures something else.** Scene 40 is the physics lane's first
+scene, and the port links a different rigid-body solver than the golden ran
+([fidelity](fidelity.md#physics-contract)). Its number is the distance
+between two solvers at a moving pose, not the distance between this port and
+Babylon Lite, and no threshold on it can be driven to zero. It is published
+because the measurement is real and worth having -- and because the gate
+still catches this port's own solver moving -- but it should not be read
+beside the rows above it as if it meant the same thing.
+
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
 | 1 | <img src="images/scenes/scene1.png" alt="Scene 1 BoomBox rendering" width="160"> | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.007}}$ | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.007}}$ | BoomBox glTF, IBL environment, generated PBR diagnostics |
@@ -54,6 +63,7 @@ semantics side by side, with its risk and validation.
 | 36 | <img src="images/scenes/scene36.png" alt="Scene 36 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | a Basis Universal texture transcoded to BC7 by the pin's own loader at generation and packaged as KTX1, bound as both the diffuse and the emissive slot of one Standard material; its texture-object `invertY` is what flips the material's UV block |
 | 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.006}}$ | $\color{#1a7f37}{\textsf{0.001}} / \color{#1a7f37}{\textsf{0.006}}$ | `EXT_texture_webp` images, per-slot texture transforms, `KHR_materials_sheen` with `KHR_materials_specular`, occlusion UV set chosen per material |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.001}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.001}}$ | `KHR_animation_pointer` driving node rotation and `KHR_texture_transform` offset and scale across two scrolling water surfaces |
+| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | **Not a fidelity number.** Havok sphere drop, frozen at the pin's own `?captureFrame=120`. This row measures a DIFFERENT SOLVER: the port links Bullet where the golden ran Havok, so at a moving pose the two place the sphere differently by construction -- here 5 px lower after two bounces, 97.74% of the image still exactly equal (95.07% of the foreground region), and the residual sits at the silhouette (edges 11.803) rather than in the shading (interior 0.559). Both backends are byte-identical to each other, which puts all of it on the CPU side. The threshold is a regression gate on this port's own solver, not a claim about agreement ([fidelity](fidelity.md#physics-contract)) |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | 250 pure-2D sprites over a compile-time-drawn canvas2D atlas: grid frames, per-sprite tint, rotation and flip, straight-alpha blending through a SpriteRenderer with no scene |
 | 54 | <img src="images/scenes/scene54.png" alt="Scene 54 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | camera-facing world-space billboards drawn inside the scene pass, depth-tested against Standard-material boxes, with per-sprite pivot and flip |
 | 55 | <img src="images/scenes/scene55.png" alt="Scene 55 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | $\color{#1a7f37}{\textsf{0.000}} / \color{#1a7f37}{\textsf{0.000}}$ | three overlapping billboards under a free camera and no meshes: the back-to-front sort is the whole image, since a transparent billboard writes no depth |

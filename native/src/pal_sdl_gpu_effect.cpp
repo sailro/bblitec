@@ -95,7 +95,7 @@ bool run_effect_gpu_engine(Engine& engine) {
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
         const long warmup = frame_options.benchmark_warmup();
-        CaptureGate captures(frame_options, limit);
+        CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples_ms;
         bool running = true;
         long frame = 0;
@@ -104,6 +104,9 @@ bool run_effect_gpu_engine(Engine& engine) {
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
             }
+            // A scene-less driver still serves a queued timeout, so a
+            // `stopEngine` from one is not a silent no-op here.
+            advance_frame(engine);
             const double frame_start = monotonic_milliseconds();
 
             SDL_GPUCommandBuffer* command =

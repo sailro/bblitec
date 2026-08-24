@@ -26,6 +26,18 @@ export function isBabylonModule(specifier: string): boolean {
     );
 }
 
+/**
+ * The package a scene loads the physics solver's WASM module from.
+ *
+ * The pin takes that module as a parameter (`createHavokWorld(scene, hknp)`)
+ * and calls only `HP_*` entry points on it, so what this package names is
+ * the *browser's* back end. A native build reaches its own through the PAL
+ * and links nothing from here — the package is a devDependency serving the
+ * reference page alone, which is what lets a physics scene have a golden at
+ * all (`docs/fidelity.md#physics-contract`).
+ */
+export const physicsEngineModulePackage = "@babylonjs/havok";
+
 export class CompilerSymbols {
     public constructor(
         private readonly checker: ts.TypeChecker,
@@ -64,26 +76,55 @@ export class CompilerSymbols {
         return declaration?.getSourceFile().fileName;
     }
 
-    public importedName(
+    /**
+     * The module an identifier was imported from, or undefined when it is
+     * not an import. Both spellings resolve here: a NAMED import, whose
+     * specifier nests three levels under the declaration, and a DEFAULT
+     * import, whose clause is the declaration's direct child.
+     */
+    private importModuleSpecifier(
         identifier: ts.Identifier,
-    ): string | undefined {
-        const symbol = this.checker.getSymbolAtLocation(identifier);
-        const declaration = symbol?.declarations?.find(
-            ts.isImportSpecifier,
-        );
-        if (!symbol || !declaration) {
-            return undefined;
-        }
-        const importDeclaration =
-            declaration.parent.parent.parent;
+    ): { specifier: string; named?: ts.ImportSpecifier } | undefined {
+        const declarations =
+            this.checker.getSymbolAtLocation(identifier)?.declarations;
+        const named = declarations?.find(ts.isImportSpecifier);
+        const importDeclaration = named
+            ? named.parent.parent.parent
+            : declarations?.find(ts.isImportClause)?.parent;
         if (
+            !importDeclaration ||
             !ts.isImportDeclaration(importDeclaration) ||
-            !ts.isStringLiteral(importDeclaration.moduleSpecifier) ||
-            !isBabylonModule(importDeclaration.moduleSpecifier.text)
+            !ts.isStringLiteral(importDeclaration.moduleSpecifier)
         ) {
             return undefined;
         }
-        return declaration.propertyName?.text ??
-            declaration.name.text;
+        return {
+            specifier: importDeclaration.moduleSpecifier.text,
+            ...(named ? { named } : {}),
+        };
+    }
+
+    /** See {@link physicsEngineModulePackage}. */
+    public isPhysicsEngineModule(
+        identifier: ts.Identifier,
+    ): boolean {
+        return (
+            this.importModuleSpecifier(identifier)?.specifier ===
+            physicsEngineModulePackage
+        );
+    }
+
+    public importedName(
+        identifier: ts.Identifier,
+    ): string | undefined {
+        const imported = this.importModuleSpecifier(identifier);
+        if (
+            !imported?.named ||
+            !isBabylonModule(imported.specifier)
+        ) {
+            return undefined;
+        }
+        return imported.named.propertyName?.text ??
+            imported.named.name.text;
     }
 }

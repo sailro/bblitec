@@ -223,6 +223,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         source: "upstream/src/mesh_lines.cpp",
         features: ["mesh:lines"],
     },
+    {
+        source: "upstream/src/physics.cpp",
+        features: ["physics:world"],
+    },
 ];
 
 export function reachedGeneratedSources(

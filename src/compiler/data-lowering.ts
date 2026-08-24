@@ -362,7 +362,19 @@ export class DataLowerer {
         return value;
     }
 
-    private narrowOptional(
+    /**
+     * A nullable the source has already guarded, as the value it was
+     * narrowed to.
+     *
+     * The narrowing is the checker's, read through this repository's own
+     * type mapping rather than a `TypeFlags` test, so it holds for any
+     * inner type rather than for numbers alone. Shared with the static
+     * evaluator, which needs the same answer where a guarded optional
+     * reaches a numeric position -- `simulatedFrames >=
+     * captureAfterFrames` after `captureAfterFrames !== null` is how
+     * every physics scene compares its freeze counter.
+     */
+    public narrowOptional(
         value: Value,
         expression: ts.Expression,
     ): Value {

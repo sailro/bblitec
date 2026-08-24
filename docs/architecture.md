@@ -83,6 +83,8 @@ Primary source ownership:
 | `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's own parser lowered to C++, its block-compression format table, and the two folds generation needs from the same modules — which suffix a device's features select, and the URL rewrite that reaches it |
 | `src/basis-transcode.ts` | the one texture the browser produces: the pinned Basis loader run in headless Chromium, and the KTX1 container its transcode is packaged as |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
+| `src/lowering/physics-lowerer.ts` | the rigid-body family: `havok.ts`'s own step gate, its four frame phases in order, the aggregate's ordering and the bounding-box shape sizing, each emitted from the declaration that states it -- the solver behind the `HP_*` surface is the PAL's, which is the seam the pin itself draws by taking `hknp` as a parameter |
+| `src/compiler/intrinsics/physics.ts` | which physics calls a scene reached, and the erased solver module its `await HavokPhysics(...)` produced |
 | `src/lowering/line-lowerer.ts` | the line family: the polyline flatten emitted as C++ from its own pinned declaration, and the `ShaderMaterial` `createLineMaterial` composes -- its two stages folded out of that module's own text builders |
 | `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
 | `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation's seed: recorded for the executed bake, refused where lowered code would also answer it |
@@ -110,6 +112,8 @@ Primary source ownership:
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
+| `native/include/bblite/pal_physics.hpp` | the rigid-body solver contract: the `HP_*` surface the pinned physics layer calls on the module it is handed |
+| `native/src/pal_physics_bullet.cpp` | that surface over Bullet, plus the two ordering repairs Bullet needs and Havok does not ([fidelity](fidelity.md#physics-contract)) |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
@@ -253,6 +257,11 @@ The current generated slice includes:
 - generated infinite-distance solid and HDR skybox behavior
 - finite root-positioned DDS background cubes matching Babylon Lite's scene
   view-projection contract
+- rigid-body physics: the pinned `havok.ts` lowered whole -- world, bodies,
+  primitive shapes, the fixed step and its four phases -- over a solver the
+  PAL supplies, because the pin already takes that solver as a parameter.
+  The one deliberately non-bit-faithful family here
+  ([fidelity](fidelity.md#physics-contract))
 - polyline systems: the pin's own flatten into one indexed mesh, drawn by the
   `ShaderMaterial` its line material composes, at the `line-list` topology
   that material names -- with per-point colours, a fixed-topology update, and

@@ -1106,6 +1106,225 @@ native pipelines. Tint discard statements are lowered to `clip(-1.0)` to avoid
 a D3D12 command-list failure in multisampled pipelines while preserving
 fragment-kill semantics.
 
+## Physics contract
+
+**The pinned physics layer is generated; the solver under it is not the
+pin's, and that is the only divergence here a measurement cannot close.**
+
+Everything else this repository records is bit-faithful by construction — a
+fold whose shape is the contract, or a value executed in the engine the
+golden runs it in. A substituted rigid-body solver is neither. Havok V2 and
+Bullet resolve contacts and converge their constraint solvers differently,
+so a body's pose after N steps is a *different number* rather than a
+rounding of the same one, and the difference compounds with every bounce.
+It is recorded per scene as `substituted-physics-solver`, at `high` risk,
+and it means a physics scene's threshold can never be driven toward zero.
+Scene 40 carries one, measured just above the distance between the two
+solvers: it gates this port's own solver against that distance rather than
+asserting agreement with the pinned one.
+
+**Why the substitution, and why at this seam.** `createHavokWorld(scene,
+hknp)` takes the solver module as a parameter and the pinned layer calls
+only `HP_*` entry points on it, so upstream already separated its
+rigid-body *semantics* from the library that integrates them. The port
+keeps that line exactly: `src/physics/havok.ts` is lowered like any other
+pinned module, and the `HP_*` surface becomes
+`native/include/bblite/pal_physics.hpp`. No generated code names a solver.
+The Havok WASM module is a proprietary binary this project cannot
+redistribute; Bullet is Zlib and is the closest available relative of the
+reference, since Babylon's legacy `AmmoJSPlugin` is Bullet compiled to
+WebAssembly.
+
+**What IS pinned, and is emitted from the pinned declarations rather than
+restated:** the step gate `_fixedDeltaMs > 0 ? _fixedDeltaMs : deltaMs`, the
+non-finite/non-positive rejection, the `Math.min(stepMs, MAX_STEP_MS) /
+1000` tunnelling clamp with `MAX_STEP_MS` read from its own declaration, the
+`gravity ?? { x: 0, y: -9.81, z: 0 }` default, the `?? 0.2` friction and
+restitution defaults, all three motion/shape/prestep enumerations with the
+pin's own numbering, the aggregate's ordering (shape, body, shape
+assignment, material, then mass — upstream comments that ordering because
+mass derives from the shape), the `mass === 0` static rule, and the
+bounding-box shape sizing. `physics-lowerer.ts` asserts each of them against
+the declaration that states it, including the *order* of the four phases,
+which no single expression would catch.
+
+**What a substituted solver is measured by.** Two things, and the split
+matters because only one of them needs Havok.
+
+**Solver-independent properties, checkable with no reference at all.**
+`BBLITE_PHYSICS_TRACE` writes the per-step pose, and three properties follow
+from mechanics rather than from any implementation:
+
+- **Free fall is exact for the integrator this solver uses.** Bullet
+  integrates semi-implicit Euler, so the pose after `n` steps has a closed
+  form: `y = y0 - g·dt²·n(n+1)/2`. Measured on `examples/physics-drop.ts`,
+  the native run matches it to float32 precision (`1e-7` at magnitude 4) for
+  every step before contact. The pinned solver does *not* integrate that way,
+  which is the first of the two divergences measured below.
+- **A resting body settles at its geometric height.** A sphere of radius 1
+  on a ground plane at `y = 0` rests at exactly `y = 1.0`. That is what the
+  degenerate-box handling below is measured against.
+- **Restitution matches the analytic rebound.** The reached 0.75 coefficient
+  puts the first apex within 0.3% of `v²/2g`.
+
+**A pixel comparison against Havok, at a pose where phase does not matter.**
+`@babylonjs/havok` is a browser-only devDependency — it is never linked,
+never shipped, and reaches nothing in the native binary — so the reference
+page can run the pinned physics layer against the real solver and produce a
+golden. A *mid-flight* pose cannot be compared: the browser harness
+screenshots three seconds after `dataset.ready`, and a free-running
+simulation is at an arbitrary step by then, so the two sides are at
+different moments and the number means nothing (measured that way,
+`examples/physics-drop.ts` reports MAD 2.396, which is phase, not error).
+A **resting** pose has no phase: the configuration is static and any
+remaining difference is real.
+
+That comparison is also what validates the degenerate-box sink below: the
+resting height is not merely analytically plausible, it is the height the
+reference puts the sphere at.
+
+**Measured at a moving pose, which is the number that matters.** Scene 40 is
+the corpus scene this lane starts at, and the pin's own parity spec freezes
+it at `?captureFrame=120` — mid-flight, after two bounces. Both sides stop
+themselves at that step, so the comparison is controlled. Measured:
+
+| | Scene 40 at step 120 |
+| --- | --- |
+| Full / region MAD | 0.332 / 0.777 |
+| Pixels exactly equal | 97.74% of the image, 95.07% of the foreground region |
+| Where the difference is | edges 11.803, interior 0.559, background 0.032 |
+| Displacement | the sphere sits **5 px lower** than the golden's |
+| SDL_GPU versus Dawn | 0.000, byte-identical |
+
+Read that as one fact: after 120 steps and two bounces the two solvers put
+the sphere a few pixels apart, the silhouette is where the difference lives,
+and the shading and both GPU backends agree. It is a solver difference and
+nothing else — the backends agreeing to zero puts all of it on the CPU side.
+No threshold on this scene can be driven toward zero, and the one it carries
+is a regression gate on *this port's* solver rather than a claim about
+agreement with the pinned one.
+
+**Measured at rest**, where the configuration is static and phase drops out,
+Bullet against the Havok golden, `examples/physics-drop.ts`:
+**921,584 of 921,600 pixels exactly identical** — full MAD 0.000056, region
+MAD 0.000127, 15 of the 16 differing pixels within one byte and the last a
+single antialiased silhouette pixel at 37. The non-background extent, pixel
+count and mean RGB match the golden's exactly. Both GPU backends render the
+byte-identical frame. So the substitution costs nothing at all where the two
+solvers are both converged, and everything it costs is in the transient —
+which is where a future measurement should look, and which needs the scene
+to freeze itself at a step count (see [TODO](../TODO.md)).
+
+**Which of the two divergences is a setting, and which is not.** The
+difference from the pinned solver was decomposed on scene 40 by rendering the
+native scene frozen at the same step as the reference and comparing the
+sphere's top scanline directly, so no screen-to-world fit sits inside the
+measurement. Both sides bounce at the same step -- native step 46, reference
+`?captureFrame=47` -- and that one-frame index shift is the two harnesses'
+own counters rather than the solvers'.
+
+*The fall is an integrator-order difference, and no setting reaches it.*
+Every `btContactSolverInfo` value the Bullet community names for contact
+agreement was swept against the per-step trace, which is exact and needs no
+reference at all:
+
+| Perturbation | Steps changed | Mean distance from the golden |
+| --- | --- | --- |
+| none, Bullet's own defaults | — | **5.0 px** |
+| `m_restitutionVelocityThreshold` `0.2` to `0` or `0.01` | 0 of 120 | 5.0 px |
+| `m_numIterations` `10` to `50` or `200` | 0 of 120 | 5.0 px |
+| `m_numIterations` `10` to `1` | 73 of 120 | 5.0 px, sub-pixel |
+| `m_linearSlop` `0.005` to `0` | 0 of 120 | 5.0 px |
+| `m_linearSlop` `0.005` to `0.05` | 73 of 120 | 12.2 px |
+| `m_erp` `0.2` to `0.8` | 0 of 120 | 5.0 px |
+| `m_erp2` to `0.8` | 73 of 120 | 6.7 px |
+| `m_splitImpulse` off | 72 of 120 | 35.4 px |
+
+Three are *inert* at their defaults here: the impact is far above the
+restitution threshold, a single contact point converges in well under ten
+iterations, and `m_erp` is unused while split impulse is on. Every
+perturbation that *is* live moves away from the golden. The shipped
+configuration is Bullet's own defaults because they measured closest, not
+because they were selected against the image.
+
+*What the fall difference actually is.* Semi-implicit Euler advances the
+position by the already-updated velocity, so it lags the exact solution for a
+constant acceleration by `½·a·dt²` every step. Adding exactly that term back
+-- as a probe, never as shipped code -- moves the fall and first impact from
+`+2, +3, +4` px to `-1, -1, 0` px, and reproduces the whole bounce profile
+within one pixel across five consecutive frames. So the pinned solver
+integrates constant acceleration to second order and Bullet does not, and
+Bullet exposes no flag for it: it is a property of the integrator rather than
+a setting.
+
+*It stays unadopted.* The same probe makes the phase after the bounce
+markedly worse -- `-6, -13, -21, -28, -32` px against the defaults'
+`-2, -6, -10, -11` -- because the rebound impulse is a contact-solver
+difference that a position correction perturbs rather than fixes. It buys the
+phase already matched to a few pixels and pays for it in the phase that is
+not, so the residual stays characterised rather than tuned. Neither the pin
+nor upstream's own `ammoJSPlugin` sets anything on its solver beyond gravity
+and per-body friction and restitution, so there is no upstream-blessed
+configuration to adopt either.
+
+**The degenerate ground box is a real seam.** `createGround` builds a mesh
+with a zero-thickness Y extent, and `createPhysicsAggregate(ground, BOX)`
+sizes the shape from exactly that box — a plane in Havok's tolerance model
+and a zero-volume box in Bullet's, which cannot resolve a contact at all. The
+PAL grows any axis below Bullet's own `CONVEX_DISTANCE_MARGIN` to it and
+sinks the centre by the same amount, so the box's +axis face stays exactly
+where the mesh puts it. Measured: with the sink a unit sphere rests at
+`1.000`, without it at `1.040`.
+
+Two things this port does *not* do here, both because they were checked
+rather than assumed. It does not read the constructed shape's effective
+extent back to compute the sink: `btBoxShape` maintains
+`m_implicitShapeDimensions + margin == the constructor argument` (`setMargin`
+re-adds the old margin before subtracting the new one), so
+`getHalfExtentsWithMargin()` returns its own input and the read-back would be
+an identity dressed as a derivation. And it does not set a margin on any
+shape, because Bullet's per-shape margin is not one convention — a
+`btSphereShape`'s margin *is* its radius, so a single value applied across
+shape kinds moves surfaces rather than aligning them.
+
+The sink direction is the one scene assumption in the PAL: it always moves
+the centre along the -axis, so the +axis face is the contact surface. That is
+right for a ground and wrong for a thin ceiling, and a scene has no way to
+say which it meant. No reached scene builds one; a corpus scene that does
+should make the anchor face explicit at the seam rather than inherit this
+default.
+
+**A scene freezes itself, and both sides honour the same freeze.** Every
+corpus physics scene counts its own steps and calls `stopEngine` from a
+zero-delay `setTimeout` at the step its `?captureFrame=` query names, so
+what pins the pose is the scene rather than the harness. Both are lowered
+rather than erased: `stopEngine` is a flag the frame conductor reads, and
+`setTimeout(cb, 0)` is a one-shot callback it drains after the frame's own
+callbacks — the boundary a browser runs a zero-delay timeout at. Once
+stopped the conductor advances nothing and keeps presenting the frozen
+frame while a capture is pending, which is the native equivalent of the
+browser harness screenshotting a canvas whose render loop has been
+cancelled. Seventeen of the corpus's twenty-one `setTimeout` call sites
+pass a delay of 0, which is the reached slice; the four real waits (scenes
+44, 48, 156 and 173) refuse rather than becoming "next frame", which would
+be a different scene.
+
+**Two ordering repairs belong to the PAL, not to the semantics.** The pin
+configures a body in Havok's order — create, motion type, add to world,
+transform, shape, material, mass — and Havok reads each write live. Bullet
+takes a body's collision group, its broadphase proxy and its gravity from
+the state it had when it was *added*, and a shape's centre offset is not
+known when the transform is written. Both are absorbed in
+`pal_physics_bullet.cpp` by re-adding the body and re-applying the recorded
+transform; the pin's order is preserved above them. Neither is a semantic
+change, and each was found by measurement rather than by reading: without
+the first the sphere never falls, without the second it rests 0.04 high.
+
+**Havok's combine modes are applied, not approximated.** The pin passes
+`MaterialCombine.MINIMUM` for friction and `MAXIMUM` for restitution.
+Bullet's default is the product of the pair, so both rules are applied on
+the contact manifold callback instead.
+
 ## Parity reports
 
 Reports name the backend they measured and include:

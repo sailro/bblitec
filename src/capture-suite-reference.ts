@@ -6,6 +6,7 @@ import {
     resolve,
     sep,
 } from "node:path";
+import { physicsEngineModulePackage } from "./compiler/symbols.js";
 import { readUpstreamPin } from "./upstream-source.js";
 import {
     screenshotCaptureBrowserArgs,
@@ -15,12 +16,23 @@ import {
 } from "./browser-harness.js";
 
 
+/** The types this table is confident about, or undefined. */
+function knownMimeType(path: string): string | undefined {
+    const known = mimeType(path);
+    return known === "application/octet-stream" ? undefined : known;
+}
+
 function mimeType(path: string): string {
     switch (extname(path).toLowerCase()) {
         case ".html":
             return "text/html; charset=utf-8";
         case ".js":
             return "text/javascript; charset=utf-8";
+        case ".wasm":
+            // Emscripten instantiates through `WebAssembly.instantiateStreaming`,
+            // which requires this exact type and otherwise falls back to a
+            // buffered instantiate with a console warning.
+            return "application/wasm";
         default:
             return "application/octet-stream";
     }
@@ -108,15 +120,20 @@ export function suiteBrowserModule(
  * asserts every name in that list is rewritten, so the two cannot drift.
  */
 export function pinnedPackageSpecifiers(source: string): string {
-    return source.replace(
-        /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
-        (_match, subpath?: string) =>
-            subpath
-                ? `"/node_modules/@babylonjs/lite/lib${
-                      subpath.endsWith(".js") ? subpath : `${subpath}.js`
-                  }"`
-                : '"/node_modules/@babylonjs/lite/lib/index.js"',
-    );
+    return source
+        .replace(
+            /"(?:@babylonjs\/lite|babylon-lite)(\/[^"]*)?"/g,
+            (_match, subpath?: string) =>
+                subpath
+                    ? `"/node_modules/@babylonjs/lite/lib${
+                          subpath.endsWith(".js") ? subpath : `${subpath}.js`
+                      }"`
+                    : '"/node_modules/@babylonjs/lite/lib/index.js"',
+        )
+        .replaceAll(
+            `"${physicsEngineModulePackage}"`,
+            `"/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js"`,
+        );
 }
 
 /**
@@ -273,10 +290,16 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
                         bytes: new Uint8Array(
                             await fetched.arrayBuffer(),
                         ),
+                        // raw.githubusercontent.com serves every blob as
+                        // octet-stream, which `WebAssembly.instantiateStreaming`
+                        // refuses; the extension is the better authority
+                        // wherever this table knows the type.
                         contentType:
+                            knownMimeType(url.pathname) ??
                             fetched.headers.get(
                                 "content-type",
-                            ) ?? mimeType(url.pathname),
+                            ) ??
+                            mimeType(url.pathname),
                     };
                     pinnedAssets.set(
                         url.pathname,
