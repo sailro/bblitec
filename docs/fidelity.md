@@ -365,12 +365,13 @@ metallic-roughness image. Distinct occlusion and metallic-roughness images
 (upstream's canvas composite) and occlusion on TEXCOORD_1 alongside a
 metallic-roughness texture stay unreached and fail explicitly. Scene 243
 gates the uv2 pair through MorphStressTest's baked-AO platform.
-A scene-code material has no occlusion image and still samples occlusion:
-`createPbrMaterial` is `{...props}`, no reached option names
-`occlusionStrength`, and `_computePbrMaterialFeatures` reads
-`(mat.occlusionStrength ?? 1) > 0`, so the composed fragment takes `orm.r`.
-The glTF `_occlusionImage ? 1 : 0` rule belongs to the loader's own input
-builder and does not reach the scene-code path.
+A scene-code material has no separate occlusion image and samples `orm.r` when
+its resolved `occlusionStrength` is nonzero. `createPbrMaterial` is
+`{...props}`, and `_computePbrMaterialFeatures` owns the
+`(mat.occlusionStrength ?? 1) > 0` gate; generation carries the option into
+both that pinned feature input and the native material record, defaulting it to
+one only when absent. The glTF `_occlusionImage ? 1 : 0` rule belongs to the
+loader's own input builder and does not reach the scene-code path.
 `KHR_materials_variants` is folded to the one selection a scene makes.
 `selectVariant` restores every original material and then applies the chosen
 variant's mapped entries, so with one static selection the end state is a

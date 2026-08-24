@@ -56,13 +56,15 @@ export interface MaterialOptionContext
 
 /**
  * `createPbrMaterial`'s resolved options: the two texture values, the
- * sixteen native scalar/flag literals in constructor order, and the
+ * sixteen native scalar/flag literals in constructor order, the resolved
+ * scene-code occlusion strength, and the
  * appended `scenePbrMaterials` index that is this material's compile-time
  * identity.
  */
 export type CompiledPbrMaterialOptions = [
     Value,
     Value,
+    string,
     string,
     string,
     string,
@@ -120,11 +122,12 @@ export function compilePbrMaterialOptions(
             "environmentIntensity",
             "alpha",
             "reflectance",
+            "occlusionStrength",
             "doubleSided",
             "transmissive",
             "subsurface",
         ],
-        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, lighting intensities, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, lighting intensities, skybox mode, and transmission subsurface fields.",
     );
     const baseColorExpression = context.objectProperty(object, "baseColorTexture");
     const ormExpression = context.objectProperty(object, "ormTexture");
@@ -144,6 +147,10 @@ export function compilePbrMaterialOptions(
     );
     const alpha = context.objectProperty(object, "alpha");
     const reflectance = context.objectProperty(object, "reflectance");
+    const occlusionStrength = context.objectProperty(
+        object,
+        "occlusionStrength",
+    );
     const doubleSided = context.objectProperty(object, "doubleSided");
     const transmissive = context.objectProperty(object, "transmissive");
     const subsurfaceExpression = context.objectProperty(object, "subsurface");
@@ -221,6 +228,21 @@ export function compilePbrMaterialOptions(
     const reflectanceCpp = reflectance
         ? context.compileNumber(reflectance)
         : "0.04f";
+    const staticOcclusionStrength = occlusionStrength
+        ? staticNumberValue(context, occlusionStrength)
+        : 1;
+    if (
+        staticOcclusionStrength === undefined ||
+        !Number.isFinite(staticOcclusionStrength)
+    ) {
+        context.fail(
+            occlusionStrength!,
+            "PBR occlusionStrength must be a finite static number: generation composes the occlusion shader arm from it.",
+        );
+    }
+    const occlusionStrengthCpp = occlusionStrength
+        ? context.compileNumber(occlusionStrength)
+        : "1.0f";
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
         : "false";
@@ -242,6 +264,9 @@ export function compilePbrMaterialOptions(
         environmentIntensity: Number.parseFloat(environmentCpp),
         alpha: Number.parseFloat(alphaCpp),
         reflectance: Number.parseFloat(reflectanceCpp),
+        ...(staticOcclusionStrength === 1
+            ? {}
+            : { occlusionStrength: staticOcclusionStrength }),
         doubleSided: doubleSidedCpp === "true",
         transmission: Number.parseFloat(transmission),
         ior: Number.parseFloat(ior),
@@ -266,6 +291,7 @@ export function compilePbrMaterialOptions(
         hasVolume,
         attenuationColor,
         attenuationDistance,
+        occlusionStrengthCpp,
         sceneMaterialIndex,
     ];
 }

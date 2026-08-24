@@ -245,6 +245,8 @@ export interface ScenePbrMaterialManifest {
     environmentIntensity: number;
     alpha: number;
     reflectance: number;
+    /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
+    occlusionStrength?: number;
     doubleSided: boolean;
     transmission: number;
     ior: number;

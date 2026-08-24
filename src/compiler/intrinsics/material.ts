@@ -216,6 +216,7 @@ export function compileMaterialIntrinsic(
                 hasVolume,
                 attenuationColor,
                 attenuationDistance,
+                occlusionStrength,
                 scenePbrMaterialIndex,
             ] = context.compilePbrMaterialOptions(
                 call.arguments[0]!,
@@ -265,7 +266,10 @@ export function compileMaterialIntrinsic(
                 `${thickness}, ${useThicknessAsDepth}, ` +
                 `${hasVolume}, ${attenuationColor}, ` +
                 `${attenuationDistance}})`;
-            if (baseColor.textureFile) {
+            if (
+                baseColor.textureFile ||
+                occlusionStrength !== "1.0f"
+            ) {
                 const temporary =
                     context.allocateTemporaryCppName(
                         "material",
@@ -273,9 +277,16 @@ export function compileMaterialIntrinsic(
                 context.emit(
                     `auto ${temporary} = ${creation};`,
                 );
-                context.emit(
-                    `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
-                );
+                if (baseColor.textureFile) {
+                    context.emit(
+                        `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
+                    );
+                }
+                if (occlusionStrength !== "1.0f") {
+                    context.emit(
+                        `${engine}.materials[${temporary}.value].occlusion_strength = ${occlusionStrength};`,
+                    );
+                }
                 return {
                     kind: "material",
                     cpp: temporary,

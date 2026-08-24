@@ -1413,6 +1413,101 @@ test("requires srgb base-color file textures", () => {
     );
 });
 
+test("carries scene-code PBR occlusion strength into composition and runtime", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                occlusionStrength: 0,
+            });
+        }
+    `);
+
+    assert.equal(
+        result.manifest.scenePbrMaterials[0]?.occlusionStrength,
+        0,
+    );
+    assert.match(
+        result.cpp,
+        /\.materials\[[^\]]+\.value\]\.occlusion_strength = 0\.0f;/,
+    );
+
+    const defaultResult = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+            });
+        }
+    `);
+    assert.equal(
+        defaultResult.manifest.scenePbrMaterials[0]?.occlusionStrength,
+        undefined,
+    );
+    assert.doesNotMatch(defaultResult.cpp, /occlusion_strength =/);
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createArcRotateCamera,
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });
+                    createPbrMaterial({
+                        baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                        ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                        occlusionStrength: camera.alpha,
+                    });
+                }
+            `),
+        /occlusionStrength must be a finite static number/,
+    );
+
+    for (const nonfinite of ["1 / 0", "0 / 0"]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    import {
+                        createEngine,
+                        createPbrMaterial,
+                        createSolidTexture2D,
+                    } from "@babylonjs/lite";
+
+                    async function main() {
+                        const engine = await createEngine({});
+                        createPbrMaterial({
+                            baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                            ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                            occlusionStrength: ${nonfinite},
+                        });
+                    }
+                `),
+            /occlusionStrength must be a finite static number/,
+        );
+    }
+});
+
 test("supports lexical block shadowing and if/else", () => {
     const result = compileSource(
         readFileSync(

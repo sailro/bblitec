@@ -307,9 +307,10 @@ that does to the deferred lane by default.
   and static glTF-root indexing now lower; this is the remaining shape where
   the collection itself travels beyond a compiler-owned call argument.
 - [ ] Scene 12: support the scene-code `_metallicF0Factor` option to
-  `createPbrMaterial`. The pinned material input and native PBR record already
-  carry the field; this scene writes it directly before its imported-root
-  clone and recursive material walk.
+  `createPbrMaterial`. Its preceding `occlusionStrength` now reaches the
+  scene-material manifest and native record; the pinned material input and
+  native PBR record already carry the F0 field this scene writes next, before
+  its imported-root clone and recursive material walk.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in

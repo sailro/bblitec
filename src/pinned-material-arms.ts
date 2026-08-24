@@ -719,13 +719,11 @@ export async function composeScenePbrVariants(
         : [await proceduralRenderableFeatures()];
     const variants: PinnedRenderableVariant[] = [];
     for (const material of materials) {
-        // `createPbrMaterial` is `{...props}` and no reached option names
-        // occlusionStrength, so the field is absent and
-        // `_computePbrMaterialFeatures`'s own `(mat.occlusionStrength ?? 1) > 0`
-        // sets PBR_HAS_OCCLUSION -- a scene-code material samples `orm.r`. The
-        // glTF input builder's `_occlusionImage ? 1 : 0` is the loader's rule
-        // and does not reach here, so nothing is stamped: the pin's default is
-        // the answer.
+        // `createPbrMaterial` is `{...props}`. Carry the resolved scene option
+        // back under its own name so `_computePbrMaterialFeatures` applies the
+        // pin's `(mat.occlusionStrength ?? 1) > 0` gate. The glTF input
+        // builder's separate `_occlusionImage ? 1 : 0` rule does not reach
+        // this scene-code path.
         const input: PinnedMaterialInput = {};
         // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
         // stamps `mat._skyboxMode = true`.
@@ -736,6 +734,7 @@ export async function composeScenePbrVariants(
         if (material.skyboxMode) input["_skyboxMode"] = true;
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.hasOrmTexture) input["ormTexture"] = {};
+        input.occlusionStrength = material.occlusionStrength ?? 1;
         if (material.doubleSided) input.doubleSided = true;
         // The resolved alpha, whatever it is: `_computePbrMaterialFeatures`
         // owns the `mat.alpha < 1` blend test, so restating the threshold

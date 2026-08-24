@@ -5,10 +5,12 @@ import test from "node:test";
 import {
     assertArmsCovered,
     composeGltfMaterials,
+    composeScenePbrVariants,
     unionArms,
     type PinnedMaterialArms,
 } from "../src/pinned-material-arms.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
+import { pinnedSceneArms } from "../src/pinned-scene-arms.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 
 const armNames: (keyof PinnedMaterialArms)[] = [
@@ -162,4 +164,42 @@ test("a scene-code material composes what the scene built, not the asset", async
         normalize(readFileSync(captured, "utf8")),
         "composes byte-identically to the fragment the browser recorded",
     );
+});
+
+test("scene-code occlusion strength controls the pin's ORM arm", async () => {
+    const material = {
+        materialsBefore: 0,
+        gltfAssetsBefore: 0,
+        hasBaseColorTexture: true,
+        hasOrmTexture: true,
+        metallicFactor: 1,
+        roughnessFactor: 1,
+        directIntensity: 1,
+        environmentIntensity: 1,
+        alpha: 1,
+        reflectance: 0.04,
+        doubleSided: false,
+        transmission: 0,
+        ior: 1.5,
+        thickness: 0,
+    };
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: false,
+        fog: false,
+    });
+    const disabled = await composeScenePbrVariants(
+        [{ ...material, occlusionStrength: 0 }],
+        arms,
+    );
+    const enabled = await composeScenePbrVariants(
+        [{ ...material, occlusionStrength: 1 }],
+        arms,
+    );
+
+    assert.doesNotMatch(disabled[0]!.fragmentWgsl, /orm\.r/);
+    assert.match(enabled[0]!.fragmentWgsl, /orm\.r/);
 });
