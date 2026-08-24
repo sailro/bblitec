@@ -1216,6 +1216,145 @@ test("sprite layers and effect wrappers join the census, the pool and the family
     }
 });
 
+test("a standalone sprite-only capture pairs against the browser's sprite frame", () => {
+    // The scene-50 class: no scene renderer at all. The standalone loops
+    // (pal_*_sprite.cpp) write a document with empty mesh-family arrays, a
+    // family-count scene section and the spriteRenderers section, while
+    // the browser side records the layers' indexed quads, uploads their
+    // layer blocks and composes the sprite modules. Everything must pair
+    // with no finding — this shape used to refuse `capture --native`
+    // entirely, so a false finding here would re-open that gap as noise.
+    const root = mkdtempSync(join(tmpdir(), "render-diff-standalone-"));
+    try {
+        const capture = join(root, "capture");
+        const generated = join(root, "generated");
+        mkdirSync(join(capture, "shaders"), { recursive: true });
+        mkdirSync(join(generated, "upstream", "shaders"), {
+            recursive: true,
+        });
+        // The sixteen-float layer block build_sprite_layer_ubo writes,
+        // uploaded by the browser and reported by the native section.
+        const layerUbo = [
+            0, 0, 1, 0,
+            320, 180, 0.5, 0.5,
+            1, 1, 1, 1,
+            0, 0, 0, 0,
+        ];
+        const layerBytes = Buffer.alloc(64);
+        layerUbo.forEach((value, index) =>
+            layerBytes.writeFloatLE(value, index * 4),
+        );
+        writeFileSync(
+            join(capture, "buffers.json"),
+            JSON.stringify([
+                {
+                    id: 1,
+                    size: 64,
+                    usage: 0x40,
+                    writes: [
+                        { offset: 0, data: layerBytes.toString("base64") },
+                    ],
+                },
+            ]),
+        );
+        writeFileSync(
+            join(capture, "draws.json"),
+            JSON.stringify({ "pass.drawIndexed(6,4,0,0)": 12 }),
+        );
+        // The browser composes the sprite program; the deployed
+        // .native.wgsl twin is byte-equal, so the arm comparison pairs
+        // them instead of reporting a one-sided module.
+        const spriteModule =
+            "// sprite2d\n@fragment\nfn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\n";
+        writeFileSync(
+            join(capture, "shaders", "00-sprite.wgsl"),
+            spriteModule,
+        );
+        writeFileSync(
+            join(generated, "upstream", "shaders", "sprite.frag.native.wgsl"),
+            spriteModule,
+        );
+        const nativeCapture = join(capture, "native-gpu.json");
+        writeFileSync(
+            nativeCapture,
+            // The exact document write_standalone_render_capture emits for
+            // a sprite-only build: engine basics, family counts, empty
+            // mesh-family arrays, the spriteRenderers section.
+            JSON.stringify({
+                backend: "sdl_gpu",
+                buildStamp: "t",
+                frame: 0,
+                viewport: { width: 320, height: 180 },
+                scene: { spriteRendererCount: 1 },
+                draws: [],
+                backgroundUniforms: [],
+                spriteRenderers: [
+                    {
+                        index: 0,
+                        registered: true,
+                        layers: [
+                            {
+                                layer: 0,
+                                order: 0,
+                                visible: true,
+                                count: 4,
+                                indexCount: 6,
+                                instanceCount: 4,
+                                uniforms: [
+                                    {
+                                        stage: "vertex",
+                                        slot: 0,
+                                        type: "SpriteLayerUniforms",
+                                        floats: layerUbo,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }),
+        );
+        const report = buildRenderDiff(
+            "50",
+            capture,
+            nativeCapture,
+            generated,
+        );
+        // The layer's quad is the frame's only draw shape, carried by the
+        // spriteRenderers section alone — the draws array is empty.
+        assert.equal(report.summary.nativeDraws, 0);
+        assert.deepEqual(report.draws.shared, ["6x4"]);
+        assert.deepEqual(report.draws.onlyInNative, []);
+        assert.deepEqual(report.draws.onlyInBrowser, []);
+        assert.deepEqual(report.divergent, []);
+        assert.deepEqual(report.families, {
+            billboardDraws: 0,
+            splatDraws: 0,
+            spriteLayers: 1,
+            effectWrappers: 0,
+            effectTasks: 0,
+        });
+        // No false findings on a clean pairing: the all-clear line alone.
+        assert.equal(report.findings.length, 1);
+        assert.match(
+            report.findings[0]!,
+            /appears in the browser's uploads/,
+        );
+        assert.deepEqual(report.shaders.arms.matched, [
+            {
+                browser: ["00-sprite.wgsl"],
+                native: ["shaders/sprite.frag.native.wgsl"],
+            },
+        ]);
+        assert.match(
+            formatRenderDiff(report),
+            /Composed beyond the mesh lists: 1 sprite layer\(s\)/,
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("a capture without the family sections reports no family line", () => {
     // Captures from scenes that compile none of the families — and captures
     // predating the sections — must read exactly as before.

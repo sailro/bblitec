@@ -105,17 +105,18 @@ export function runNativeCapture(
     );
     verifyBuildIdentity(executable, scene.output, stampPath);
     if (!existsSync(capturePath)) {
-        // The capture is written by the scene frame loop, which describes
-        // every renderable family a scene composes (meshes, splats,
-        // billboards, effect tasks). A sprite-only or effect-renderer-only
-        // scene renders through a standalone loop (pal_*_sprite.cpp /
-        // pal_*_effect.cpp) that writes no capture yet, so the run
-        // completing without one is that gap, not a broken build.
+        // Every frame loop writes a capture now: the scene loops describe
+        // the families a scene composes, and the standalone sprite/effect
+        // loops (pal_*_sprite.cpp / pal_*_effect.cpp) write theirs through
+        // write_standalone_render_capture. A run that completed without
+        // one is a real failure — a stale executable predating the
+        // standalone writers, or a run that ended before the capture
+        // frame — never an expected shape.
         throw new Error(
-            `The native run wrote no capture to ${capturePath}. A scene with no scene renderer — ` +
-                `a sprite-only or effect-renderer-only scene — draws through a standalone frame ` +
-                `loop that does not write captures yet, so rung 3 has nothing to pair for it; ` +
-                `use the parity ladder's pixel rungs instead.`,
+            `The native run wrote no capture to ${capturePath}. Every frame loop writes one ` +
+                `(scene, sprite-only and effect-renderer-only alike), so this run either ended ` +
+                `before the capture frame or ran an executable predating the standalone capture ` +
+                `writers. Rebuild with 'scene -- process ${scene.id}' and recapture.`,
         );
     }
     // Seek provenance for the reuse path; the build stamp is already inside
