@@ -662,9 +662,12 @@ PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
  * fills them from \`computeAabb(positions)\` over the generated vertices,
  * which is the same box the generated factories already record on the
  * geometry -- so the physics shape is sized from the geometry the renderer
- * draws rather than from a second derivation. A mesh with no geometry has
- * no box, exactly as the pin's optional pair is absent, and each helper
- * falls back to the pin's own literal.
+ * draws rather than from a second derivation. Scene code may replace either
+ * public bound after the factory created it; those object-local overrides
+ * replace the corresponding geometry side here just as they do during
+ * default-camera framing. A mesh with no geometry has no box, exactly as the
+ * pin's optional pair is absent, and each helper falls back to the pin's own
+ * literal.
  */
 struct MeshBounds {
     bool present = false;
@@ -677,7 +680,14 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
         return MeshBounds{};
     }
     const ModelGeometry& geometry = engine.geometries[mesh.geometry];
-    return MeshBounds{true, geometry.bounds_min, geometry.bounds_max};
+    MeshBounds bounds{true, geometry.bounds_min, geometry.bounds_max};
+    if (mesh.has_bounds_min_override) {
+        bounds.minimum = mesh.bounds_min_override;
+    }
+    if (mesh.has_bounds_max_override) {
+        bounds.maximum = mesh.bounds_max_override;
+    }
+    return bounds;
 }
 
 // ${this.context.provenance(

@@ -175,6 +175,26 @@ test("mesh bounds helpers are translated from the pinned AST", () => {
     assert.doesNotMatch(radius, /bounding_extents\(/);
 });
 
+test("mesh bounds apply scene-code overrides before sizing an aggregate", () => {
+    const helper = lowered.source.slice(
+        lowered.source.indexOf("MeshBounds mesh_bounds"),
+        lowered.source.indexOf("// havok.ts#_boundingCenter"),
+    );
+    assert.match(
+        helper,
+        /MeshBounds bounds\{true, geometry\.bounds_min, geometry\.bounds_max\};/,
+    );
+    assert.match(
+        helper,
+        /if \(mesh\.has_bounds_min_override\) \{\n        bounds\.minimum = mesh\.bounds_min_override;/,
+    );
+    assert.match(
+        helper,
+        /if \(mesh\.has_bounds_max_override\) \{\n        bounds\.maximum = mesh\.bounds_max_override;/,
+    );
+    assert.match(helper, /return bounds;/);
+});
+
 test("a body's integrated pose writes the two fields the pin writes", () => {
     assert.match(lowered.source, /mesh\.position = Vec3\{/);
     assert.match(lowered.source, /mesh\.rotation_quaternion = Vec4\{/);

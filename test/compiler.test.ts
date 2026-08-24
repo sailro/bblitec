@@ -203,6 +203,33 @@ test("keeps scene mesh bound overrides on the camera's object-local path", () =>
     assert.match(result.cpp, /\.has_bounds_max_override = true/);
 });
 
+test("keeps Scene 40 mesh bound overrides on the physics aggregate path", () => {
+    const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene40.ts";
+    const anchor =
+        "const sphere = createSphere(engine, { diameter: 2, segments: 32 });";
+    const source = readFileSync(resolve(sourcePath), "utf8").replace(
+        anchor,
+        `${anchor}\n    sphere.boundMin = [-2, -3, -4];\n    sphere.boundMax = [2, 3, 4];`,
+    );
+    assert.notEqual(source, readFileSync(resolve(sourcePath), "utf8"));
+
+    const result = compileSource(source, { fileName: sourcePath });
+    const minimumStore = result.cpp.indexOf(".bounds_min_override =");
+    const maximumStore = result.cpp.indexOf(".bounds_max_override =");
+    const aggregate = result.cpp.indexOf(
+        "bbl::upstream::create_physics_aggregate(",
+    );
+    assert.ok(minimumStore >= 0);
+    assert.ok(maximumStore > minimumStore);
+    assert.ok(aggregate > maximumStore);
+    assert.ok(result.manifest.features.includes("physics:aggregate"));
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/physics.cpp",
+        ),
+    );
+});
+
 test("preserves reached box, ground, and sphere options", () => {
     const result = compileSource(`
         import {
