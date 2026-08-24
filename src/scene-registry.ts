@@ -1574,6 +1574,26 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene26",
+        name: "Scene 26 - PBR Subsurface",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene26.ts",
+        title: "Babylon Lite Native - PBR Subsurface",
+        parity: {
+            // The pin's parity test freezes the orbit at three seconds by
+            // serving this exact query. Compilation folds the same search
+            // string, so browser and native both execute updateOrbit once
+            // at the identical 180-step pose.
+            referenceSearch: "?seekTime=3",
+            // Measured 0.000107 / 0.000107 on SDL_GPU and 0.000104 /
+            // 0.000104 on Dawn; the two native backends differ by
+            // 0.000003 MAD and every cross-backend pixel is within one.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene27",
         name: "Scene 27 - Material Variants",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene27.ts",

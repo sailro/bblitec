@@ -167,6 +167,26 @@ const extensionWriters: ReadonlyArray<{
         nestedWriters: { writeReflUvTransform: uvTransformSources() },
     },
     {
+        modulePath: "src/material/pbr/fragments/subsurface-fragment.ts",
+        symbolName: "writeSubsurfaceUBO",
+        sourceLocal: "ss",
+        baseField: "subsurfaceParams",
+        propertySources: {
+            translucency: "material",
+            intensity: "material.subsurface_intensity",
+            color: "material.subsurface_color",
+            diffusionDistance:
+                "material.subsurface_diffusion_distance",
+            thickness: "material",
+            min: "material.subsurface_minimum_thickness",
+            max: "material.subsurface_maximum_thickness",
+            colorTexture: null,
+            intensityTexture: null,
+        },
+        vectorProperties: { color: 3, diffusionDistance: 3 },
+        nestedWriters: { writeSsUvTransform: uvTransformSources() },
+    },
+    {
         // Fills refractionParams, volumeParams and thicknessParams from three
         // separate offset lookups; the lowerer resolves each `data[x + n]`
         // against the field its own local names.

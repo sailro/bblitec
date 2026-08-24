@@ -122,8 +122,9 @@ reports where they part:
   encoders.
 - **Native side** (`scene -- capture <id> --native`): our runtime's
   description of the same frame — every uniform block it builds, the draw
-  list in submission order, and the scene, camera, light, mesh and
-  material records those are built from.
+  list in submission order, including scene renderables outside the mesh
+  render plan such as Gaussian splats, and the scene, camera, light, mesh
+  and material records those are built from.
 
 The report is ordered so that a difference appears above everything it
 can cause:

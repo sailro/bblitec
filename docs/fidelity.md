@@ -227,6 +227,13 @@ round one store early, and that is not a rounding-sized difference:
 `Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
 neighbour, which moves the whole second row of the view matrix.
 
+**A scene-code spot cone also crosses its factory boundary as a double.** The
+pinned factory computes `Math.cos(angle * 0.5)` from JavaScript numbers and
+only its `Float32Array` light-UBO store rounds the result. The native factory
+therefore keeps `angle` and the half-angle product as doubles, then assigns the
+cosine to the float light record once; rounding the angle at the call boundary
+would move the hard `cosAngle >= cosHalfAngle` edge by one ULP for some cones.
+
 **The procedural mesh builders are doubles, and each float32 store is one
 the pin performs.** The same rule as the camera's, one layer down.
 `create-sphere.ts`, `create-ground.ts` and `create-torus.ts` run their
@@ -387,6 +394,15 @@ a non-default creation-time F0 on another material participate in composition;
 the same applies when the registering call came from a previously loaded glTF
 dielectric rather than from scene code. Repeated scene setter calls accumulate
 their conditionally supplied fields exactly as the pinned material object does.
+Scene 26 adds the other scene-code PBR composition inputs without a parallel
+shader implementation: `enableSpecularAA` reaches the pin's own derivative
+roughness branch, while `setPbrSubsurface` is replayed through the pin's setter
+with static translucency intensity, colour, diffusion distance, thickness
+range, and one linear thickness image. The generated UBO writer is lowered
+from `writeSubsurfaceUBO`, and both backends bind the same thickness slot. At
+the pin's `?seekTime=3` pose, SDL_GPU measures 0.000107 full/region MAD and
+Dawn 0.000104; their cross-backend MAD is 0.000003 and every pixel is within
+one byte.
 `KHR_materials_variants` is folded to the one selection a scene makes.
 `selectVariant` restores every original material and then applies the chosen
 variant's mapped entries, so with one static selection the end state is a
@@ -579,10 +595,19 @@ generated from the reached Babylon Lite APIs.
 
 Direct `createMorphTargets` accepts one position target, nullable normal
 deltas, one initial weight, and one mesh attachment. It rides the same
-pinned storage-buffer morph path as glTF. `createSphereData` returns arrays derived
-from the generated sphere geometry, so procedural delta functions consume the
-same base positions the renderer draws. Scene 252 is the StandardMaterial
-parity gate for this contract.
+pinned storage-buffer morph path as glTF. `createSphereData` and the rendered
+sphere now consume the same arrays produced by an AST lowering of the pinned
+`createSphereData` body, so procedural delta functions consume exactly the
+base positions the renderer draws. The ground and torus builders use that
+same translation path for their pinned typed-array bodies. JavaScript-number
+locals remain doubles, `Math.sin`/`Math.cos` remain double calls, and each
+`static_cast<float>` or `static_cast<std::uint32_t>` is emitted only at the
+corresponding `F32` or `U32` indexed store. A structural gate derives the
+`F32` store count from each pinned function and requires it to match every
+emitted float narrowing. Scene 23 measures the sphere chain under a
+mirror-metal anisotropic material, Scene 15 gates ground, and Scene 162 gates
+torus on both native backends. Scene 252 remains the StandardMaterial morph
+contract gate.
 
 Scene 151 gates directional-plus-hemispheric Standard lighting and is
 pixel-exact. The supported light-count boundary is recorded in
@@ -1144,9 +1169,15 @@ restitution defaults, all three motion/shape/prestep enumerations with the
 pin's own numbering, the aggregate's ordering (shape, body, shape
 assignment, material, then mass — upstream comments that ordering because
 mass derives from the shape), the `mass === 0` static rule, and the
-bounding-box shape sizing. `physics-lowerer.ts` asserts each of them against
-the declaration that states it, including the *order* of the four phases,
-which no single expression would catch.
+bounding-box shape sizing. `_boundingCenter`, `_boundingExtents`, and
+`_boundingRadius` are translated statement by statement from their pinned
+ASTs: the optional bound pair specializes onto the native geometry record,
+array components widen from their stored floats into JavaScript-number
+doubles, and both `{ x, y, z }` return arms are emitted field by field from
+the object literals. `physics-lowerer.ts` asserts every remaining restated
+rule against the declaration that states it, including the *order* of the
+four phases, which no single expression would catch. Scene 40 directly gates
+the translated centre, ground extents, and sphere radius on both backends.
 
 **What a substituted solver is measured by.** Two things, and the split
 matters because only one of them needs Havok.
@@ -1480,6 +1511,12 @@ through the node matrix the way the pinned `expandWorldAabbForMesh` does, so
 that framing an animated asset with the default camera sizes it where the
 geometry actually is. Scene 7, the other scene composing the two, frames
 identically either way because its animated root sits at the origin.
+A public scene-code `boundMin` or `boundMax` assignment replaces that side of
+the mesh's object-local box before the same world transform is applied. It is
+not folded into procedural dimensions: doing so dropped Scene 26's tiny light
+sphere override from default-camera framing and made the dragon visibly too
+large. Keeping the two optional sides on `MeshRecord` reproduces the pinned
+frame before the sphere later moves with its point light.
 Orthographic cameras write the pinned reverse-Z off-center projection term by
 term, with the four planes derived from the half-extent and the render target's
 aspect ratio. The pinned writer runs in JavaScript doubles into a

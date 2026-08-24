@@ -631,10 +631,11 @@ export async function composeRenderableVariants(
  * The pin's `createPbrMaterial(props)` is `{...props}` — the props ARE the
  * material record its feature derivation and extension detects read — so the
  * composer input carries the recorded option values verbatim under the pin's
- * own names, textures as presence. Nothing loader-side is stamped: specular
- * AA, `_hasUvTx` and the per-loader option sets are glTF-loader properties a
- * scene-code material never sees, which is why this does not share the glTF
- * input builder.
+ * own names, textures as presence. Loader-only stamps such as `_hasUvTx` and
+ * the per-loader option sets stay absent; `enableSpecularAA` is also a public
+ * creation option, so the scene manifest carries it only when the call does.
+ * That is why this does not share the glTF input builder, which enables the
+ * flag unconditionally.
  */
 /** Whether any meshed primitive omits its material index, which makes the
  *  loader create the pin's default material after the document's. */
@@ -682,6 +683,7 @@ interface ScenePbrSetters {
     setPbrClearCoat: PinnedLayerSetter<Record<string, unknown>>;
     setPbrIridescence: PinnedLayerSetter<Record<string, unknown>>;
     setPbrAnisotropy: PinnedLayerSetter<Record<string, unknown>>;
+    setPbrSubsurface: PinnedLayerSetter<Record<string, unknown>>;
     setPbrEmissive: PinnedLayerSetter<readonly number[]>;
     setPbrMetallicReflectance: PinnedLayerSetter<Record<string, unknown>>;
 }
@@ -695,6 +697,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             clearCoat,
             iridescence,
             anisotropy,
+            subsurface,
             emissive,
             reflectance,
         ] =
@@ -711,6 +714,9 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrAnisotropy">>(
                     "material/pbr/set-anisotropy.js",
                 ),
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrSubsurface">>(
+                    "material/pbr/set-subsurface.js",
+                ),
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrEmissive">>(
                     "material/pbr/set-emissive.js",
                 ),
@@ -723,6 +729,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             setPbrClearCoat: clearCoat.setPbrClearCoat,
             setPbrIridescence: iridescence.setPbrIridescence,
             setPbrAnisotropy: anisotropy.setPbrAnisotropy,
+            setPbrSubsurface: subsurface.setPbrSubsurface,
             setPbrEmissive: emissive.setPbrEmissive,
             setPbrMetallicReflectance:
                 reflectance.setPbrMetallicReflectance,
@@ -775,6 +782,7 @@ export async function composeScenePbrVariants(
         if (material.skyboxMode) input["_skyboxMode"] = true;
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.hasOrmTexture) input["ormTexture"] = {};
+        if (material.enableSpecularAA) input.enableSpecularAA = true;
         input.occlusionStrength = material.occlusionStrength ?? 1;
         if (
             reflectanceRegistered &&
@@ -828,33 +836,79 @@ export async function composeScenePbrVariants(
         if (material.sheen) {
             setters.setPbrSheen(input, {
                 isEnabled: material.sheen.isEnabled,
-                color: material.sheen.color,
-                roughness: material.sheen.roughness,
-                intensity: material.sheen.intensity,
+                ...(material.sheen.color !== undefined
+                    ? { color: material.sheen.color }
+                    : {}),
+                ...(material.sheen.roughness !== undefined
+                    ? { roughness: material.sheen.roughness }
+                    : {}),
+                ...(material.sheen.intensity !== undefined
+                    ? { intensity: material.sheen.intensity }
+                    : {}),
                 ...(material.sheen.hasTexture ? { texture: {} } : {}),
                 ...(material.sheen.albedoScaling
                     ? { albedoScaling: true }
                     : {}),
             });
         }
+        if (material.subsurface) {
+            setters.setPbrSubsurface(input, {
+                translucency: {
+                    intensity: material.subsurface.intensity,
+                    color: material.subsurface.color,
+                    diffusionDistance:
+                        material.subsurface.diffusionDistance,
+                },
+                thickness: {
+                    ...(material.subsurface.hasThicknessTexture
+                        ? { texture: {} }
+                        : {}),
+                    min: material.subsurface.minimumThickness,
+                    max: material.subsurface.maximumThickness,
+                },
+            });
+        }
         if (material.clearCoat) {
             setters.setPbrClearCoat(input, {
                 isEnabled: material.clearCoat.isEnabled,
-                intensity: material.clearCoat.intensity,
-                roughness: material.clearCoat.roughness,
-                indexOfRefraction: material.clearCoat.indexOfRefraction,
+                ...(material.clearCoat.intensity !== undefined
+                    ? { intensity: material.clearCoat.intensity }
+                    : {}),
+                ...(material.clearCoat.roughness !== undefined
+                    ? { roughness: material.clearCoat.roughness }
+                    : {}),
+                ...(material.clearCoat.indexOfRefraction !== undefined
+                    ? {
+                          indexOfRefraction:
+                              material.clearCoat.indexOfRefraction,
+                      }
+                    : {}),
             });
         }
         if (material.iridescence) {
             setters.setPbrIridescence(input, {
                 isEnabled: material.iridescence.isEnabled,
-                intensity: material.iridescence.intensity,
-                indexOfRefraction:
-                    material.iridescence.indexOfRefraction,
-                minimumThickness:
-                    material.iridescence.minimumThickness,
-                maximumThickness:
-                    material.iridescence.maximumThickness,
+                ...(material.iridescence.intensity !== undefined
+                    ? { intensity: material.iridescence.intensity }
+                    : {}),
+                ...(material.iridescence.indexOfRefraction !== undefined
+                    ? {
+                          indexOfRefraction:
+                              material.iridescence.indexOfRefraction,
+                      }
+                    : {}),
+                ...(material.iridescence.minimumThickness !== undefined
+                    ? {
+                          minimumThickness:
+                              material.iridescence.minimumThickness,
+                      }
+                    : {}),
+                ...(material.iridescence.maximumThickness !== undefined
+                    ? {
+                          maximumThickness:
+                              material.iridescence.maximumThickness,
+                      }
+                    : {}),
             });
         }
         if (material.anisotropy) {

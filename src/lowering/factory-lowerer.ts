@@ -4,6 +4,11 @@ import {
     textureFilterByPin,
 } from "../pinned-address-modes.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
+import { PINNED_MATH_FUNCTIONS } from "./pinned-operators.js";
 
 /**
  * Which arms of the Standard material's texture slots a scene reached.
@@ -75,6 +80,159 @@ export class FactoryLowerer {
                 torusModule,
                 "createTorusData",
             );
+        const meshMathCalls = new Map<
+            string,
+            (args: readonly string[]) => string
+        >(
+            Object.entries(PINNED_MATH_FUNCTIONS).map(
+                ([name, spelling]) => [
+                    `Math.${name}`,
+                    name === "max" || name === "min"
+                        ? (args: readonly string[]) =>
+                              `${spelling}<double>(${args.join(", ")})`
+                        : (args: readonly string[]) =>
+                              `${spelling}(${args.join(", ")})`,
+                ],
+            ),
+        );
+        /**
+         * Lower one pinned generator body into the shared native array
+         * record. The four arrays and their indexed stores come from the
+         * function's own AST; only the option spellings are specialized to
+         * the native record that has already applied the same defaults.
+         */
+        const lowerPinnedMeshBuilder = (
+            file: ts.SourceFile,
+            declaration: ts.FunctionDeclaration,
+            optionBindings: ReadonlyMap<string, string>,
+        ): string => {
+            if (!declaration.body) {
+                this.context.contractError(
+                    declaration,
+                    "Expected the pinned mesh builder to have a body.",
+                );
+            }
+            const bindings = new Map<string, PinnedBinding>([
+                [
+                    "Math.PI",
+                    { cpp: "pi_double", type: "scalar" },
+                ],
+                ...Array.from(optionBindings, ([name, cpp]) => [
+                    name,
+                    { cpp, type: "scalar" } as PinnedBinding,
+                ] as [string, PinnedBinding]),
+            ]);
+            let lowerer: PinnedNumericLowerer;
+            const returnValue = (
+                expression: ts.Expression | undefined,
+            ): string => {
+                if (!expression || !ts.isObjectLiteralExpression(expression)) {
+                    return this.context.contractError(
+                        declaration,
+                        "Expected the pinned mesh builder to return an object literal.",
+                    );
+                }
+                const members = new Map<string, ts.Expression>();
+                for (const property of expression.properties) {
+                    if (
+                        ts.isShorthandPropertyAssignment(property) &&
+                        ts.isIdentifier(property.name)
+                    ) {
+                        members.set(property.name.text, property.name);
+                    } else if (
+                        ts.isPropertyAssignment(property) &&
+                        ts.isIdentifier(property.name)
+                    ) {
+                        members.set(property.name.text, property.initializer);
+                    } else {
+                        this.context.contractError(
+                            property,
+                            "Expected named mesh-data return fields.",
+                        );
+                    }
+                }
+                const required = (
+                    name: string,
+                ): ts.Expression => {
+                    const value = members.get(name);
+                    if (!value) {
+                        return this.context.contractError(
+                            expression,
+                            `Expected mesh-data return field '${name}'.`,
+                        );
+                    }
+                    return value;
+                };
+                const arrays = [
+                    "positions",
+                    "normals",
+                    "uvs",
+                    "indices",
+                ].map((name) =>
+                    `std::move(${lowerer.expression(required(name))})`,
+                );
+                const vertexCount = members.has("vertexCount")
+                    ? lowerer.expression(required("vertexCount"))
+                    : bindings.get("vertexCount")?.cpp;
+                const indexCount = members.has("indexCount")
+                    ? lowerer.expression(required("indexCount"))
+                    : bindings.get("indexCount")?.cpp;
+                if (!vertexCount || !indexCount) {
+                    return this.context.contractError(
+                        expression,
+                        "Expected mesh-data vertexCount and indexCount locals.",
+                    );
+                }
+                return (
+                    `PinnedMeshData{${arrays.join(", ")}, ` +
+                    `static_cast<std::uint32_t>(${vertexCount}), ` +
+                    `static_cast<std::uint32_t>(${indexCount})}`
+                );
+            };
+            lowerer = new PinnedNumericLowerer(file, {
+                bindings,
+                calls: meshMathCalls,
+                returnValue,
+                booleanOr: true,
+                maybeUnusedConst: true,
+            });
+            return declaration.body.statements
+                .flatMap((statement) =>
+                    lowerer.statement(statement, "    "),
+                )
+                .join("\n");
+        };
+        const groundBuilderBody = lowerPinnedMeshBuilder(
+            groundFile,
+            ground,
+            new Map([
+                ["opts.width", "options.width"],
+                ["opts.height", "options.height"],
+                ["opts.subdivisions", "options.subdivisions"],
+                ["opts.uvScale?.[0]", "options.uv_scale.x"],
+                ["opts.uvScale?.[1]", "options.uv_scale.y"],
+            ]),
+        );
+        const sphereBuilderBody = lowerPinnedMeshBuilder(
+            sphereFile,
+            sphere,
+            new Map([
+                ["options.segments", "options.segments"],
+                ["options.diameter", "options.diameter_x"],
+                ["options.diameterX", "options.diameter_x"],
+                ["options.diameterY", "options.diameter_y"],
+                ["options.diameterZ", "options.diameter_z"],
+            ]),
+        );
+        const torusBuilderBody = lowerPinnedMeshBuilder(
+            torusFile,
+            torus,
+            new Map([
+                ["opts.diameter", "options.diameter"],
+                ["opts.thickness", "options.thickness"],
+                ["opts.tessellation", "options.tessellation"],
+            ]),
+        );
         const assertVariable = (
             root: ts.Node,
             name: string,
@@ -1304,6 +1462,22 @@ export class FactoryLowerer {
         const torusTessellation = numericNullishFallback(
             torusTessellationExpression,
         );
+        // These values remain validation-only anchors around the AST-driven
+        // bodies. Reading them still makes a reshaped pin fail by name; the
+        // emitted arithmetic now comes from PinnedNumericLowerer instead.
+        void groundNormal;
+        void sphereMinSegments;
+        void spherePolarBase;
+        void sphereAzimuthFactor;
+        void sphereTurnFactor;
+        void torusTurnFactor;
+        void torusPhaseDivisor;
+        void torusUvUnit;
+        void torusDiameter;
+        void torusThickness;
+        void torusTessellation;
+        void groundWinding;
+        void torusTriangulation;
         const modulePath = "src/mesh/mesh-factories.ts";
         const { declaration: meshFromData } =
             this.context.functionDeclaration(
@@ -1363,10 +1537,6 @@ void set_thin_instance_colors(
 `
             : "";
         const value = (input: number): string => this.context.floatLiteral(input);
-        // The builders that run the pin's chain in doubles take double
-        // literals with it, so no constant rounds to float mid-expression.
-        const scalar = (input: number): string =>
-            this.context.doubleLiteral(input);
         // The emitted fragments the decoded tables above compose. Each is
         // plain text interpolation: the byte-for-byte C++ is unchanged as
         // long as the pin is, and moves with the pin when it moves.
@@ -1390,12 +1560,6 @@ void set_thin_instance_colors(
                         .map((corner) => `        ${corner},`)
                         .join("\n")}\n        ${boxFaceNormals[face]});`,
             )
-            .join("\n");
-        const groundWindingList = groundWinding
-            .map((corner) => `                    ${corner},`)
-            .join("\n");
-        const torusTriangulationList = torusTriangulation
-            .map((term) => `                    ${term},`)
             .join("\n");
         return {
             modulePath,
@@ -1459,76 +1623,51 @@ ${boxAddFaceCalls}
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
+// The common return shape of the three pinned typed-array builders. Their
+// bodies below are translated from the pinned AST by PinnedNumericLowerer;
+// this record is only the native carrier used to pack those arrays into the
+// runtime's interleaved ModelVertex representation.
+struct PinnedMeshData {
+    std::vector<float> positions;
+    std::vector<float> normals;
+    std::vector<float> uvs;
+    std::vector<std::uint32_t> indices;
+    std::uint32_t vertex_count = 0;
+    std::uint32_t index_count = 0;
+};
+
+static PinnedMeshData pinned_create_flat_ground_data(
+    GroundOptions options) {
+${groundBuilderBody}
+}
+
 MeshHandle create_ground(Engine& engine, GroundOptions options) {
-    const double width = options.width;
-    const double height = options.height;
-    const std::uint32_t subdivisions =
-        std::max<std::uint32_t>(1, options.subdivisions);
-    const std::uint32_t columns = subdivisions + 1;
-    const float half_width = static_cast<float>(width * 0.5);
-    const float half_height = static_cast<float>(height * 0.5);
+    PinnedMeshData data =
+        pinned_create_flat_ground_data(options);
     ModelGeometry geometry;
-    geometry.vertices.reserve(
-        static_cast<std::size_t>(columns) * columns);
-    geometry.indices.reserve(
-        static_cast<std::size_t>(subdivisions) *
-        subdivisions *
-        6);
-    // Doubles through, rounded where the pin's Float32Array stores are --
-    // see build_sphere_geometry. The UV scale multiplies the stored float
-    // because the pin's second pass reads its own UV array back before
-    // scaling it, which is why the stored value is named here.
-    for (std::uint32_t row = 0; row <= subdivisions; ++row) {
-        const double normalized_row =
-            static_cast<double>(row) /
-            static_cast<double>(subdivisions);
-        for (
-            std::uint32_t column = 0;
-            column <= subdivisions;
-            ++column) {
-            const double normalized_column =
-                static_cast<double>(column) /
-                static_cast<double>(subdivisions);
-            const float stored_u = static_cast<float>(normalized_column);
-            const float stored_v = static_cast<float>(1.0 - normalized_row);
-            geometry.vertices.push_back(ModelVertex{
-                Vec3{
-                    static_cast<float>(
-                        -width / 2.0 + normalized_column * width),
-                    0.0f,
-                    static_cast<float>(
-                        -height / 2.0 + (1.0 - normalized_row) * height),
-                },
-                ${groundNormal},
-                Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-                Vec2{
-                    static_cast<float>(
-                        stored_u * static_cast<double>(options.uv_scale.x)),
-                    static_cast<float>(
-                        stored_v * static_cast<double>(options.uv_scale.y)),
-                },
-            });
-        }
+    geometry.vertices.reserve(data.vertex_count);
+    for (std::size_t vertex = 0; vertex < data.vertex_count; ++vertex) {
+        geometry.vertices.push_back(ModelVertex{
+            Vec3{
+                data.positions[vertex * 3],
+                data.positions[vertex * 3 + 1],
+                data.positions[vertex * 3 + 2],
+            },
+            Vec3{
+                data.normals[vertex * 3],
+                data.normals[vertex * 3 + 1],
+                data.normals[vertex * 3 + 2],
+            },
+            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
+            Vec2{
+                data.uvs[vertex * 2],
+                data.uvs[vertex * 2 + 1],
+            },
+        });
     }
-    for (std::uint32_t row = 0; row < subdivisions; ++row) {
-        for (
-            std::uint32_t column = 0;
-            column < subdivisions;
-            ++column) {
-            const std::uint32_t top_left =
-                row * columns + column;
-            const std::uint32_t top_right = top_left + 1;
-            const std::uint32_t bottom_left =
-                (row + 1) * columns + column;
-            const std::uint32_t bottom_right =
-                bottom_left + 1;
-            geometry.indices.insert(
-                geometry.indices.end(),
-                {
-${groundWindingList}
-                });
-        }
-    }
+    geometry.indices = std::move(data.indices);
+    const float half_width = static_cast<float>(options.width * 0.5);
+    const float half_height = static_cast<float>(options.height * 0.5);
     geometry.bounds_min = Vec3{-half_width, 0.0f, -half_height};
     geometry.bounds_max = Vec3{half_width, 0.0f, half_height};
     for (ModelVertex& vertex : geometry.vertices) {
@@ -1538,9 +1677,9 @@ ${groundWindingList}
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::ground;
     mesh.dimensions = Vec3{
-        static_cast<float>(width),
+        static_cast<float>(options.width),
         0.0f,
-        static_cast<float>(height),
+        static_cast<float>(options.height),
     };
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
@@ -1569,69 +1708,40 @@ ${planeVertices}
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
+static PinnedMeshData pinned_create_sphere_data(
+    SphereOptions options) {
+${sphereBuilderBody}
+}
+
 static ModelGeometry build_sphere_geometry(SphereOptions options) {
-    const std::uint32_t segments =
-        std::max<std::uint32_t>(${sphereMinSegments}, options.segments);
+    PinnedMeshData data = pinned_create_sphere_data(options);
+    ModelGeometry geometry;
+    geometry.vertices.reserve(data.vertex_count);
+    for (std::size_t vertex = 0; vertex < data.vertex_count; ++vertex) {
+        geometry.vertices.push_back(ModelVertex{
+            Vec3{
+                data.positions[vertex * 3],
+                data.positions[vertex * 3 + 1],
+                data.positions[vertex * 3 + 2],
+            },
+            Vec3{
+                data.normals[vertex * 3],
+                data.normals[vertex * 3 + 1],
+                data.normals[vertex * 3 + 2],
+            },
+            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
+            Vec2{
+                data.uvs[vertex * 2],
+                data.uvs[vertex * 2 + 1],
+            },
+        });
+    }
+    geometry.indices = std::move(data.indices);
     const Vec3d radius{
         options.diameter_x * 0.5,
         options.diameter_y * 0.5,
         options.diameter_z * 0.5,
     };
-    const std::uint32_t z_steps = ${spherePolarBase} + segments;
-    const std::uint32_t y_steps = ${sphereAzimuthFactor} * z_steps;
-    ModelGeometry geometry;
-    geometry.vertices.reserve(
-        static_cast<std::size_t>(z_steps + 1) * (y_steps + 1));
-    geometry.indices.reserve(
-        static_cast<std::size_t>(z_steps) * y_steps * ${sphereIndicesPerQuad});
-    // The pin runs this whole chain in JavaScript numbers and rounds only
-    // where its Float32Arrays store, so the angles, the trig, and the
-    // radius products stay double here and each store does its own
-    // conversion. Rounding earlier -- a float angle, or a position built
-    // from the already-rounded normal -- moves the normals by a few ulps,
-    // which a mirror-metal material resolves as a visibly different
-    // reflection.
-    for (std::uint32_t z_step = 0; z_step <= z_steps; ++z_step) {
-        const double normalized_z =
-            static_cast<double>(z_step) / static_cast<double>(z_steps);
-        const double angle_z = normalized_z * pi_double;
-        for (std::uint32_t y_step = 0; y_step <= y_steps; ++y_step) {
-            const double normalized_y =
-                static_cast<double>(y_step) / static_cast<double>(y_steps);
-            const double angle_y =
-                normalized_y * pi_double * ${scalar(sphereTurnFactor)};
-            const double nx = std::sin(angle_z) * std::cos(angle_y);
-            const double ny = std::cos(angle_z);
-            const double nz = -std::sin(angle_z) * std::sin(angle_y);
-            geometry.vertices.push_back(ModelVertex{
-                Vec3{
-                    static_cast<float>(radius.x * nx),
-                    static_cast<float>(radius.y * ny),
-                    static_cast<float>(radius.z * nz),
-                },
-                Vec3{
-                    static_cast<float>(nx),
-                    static_cast<float>(ny),
-                    static_cast<float>(nz),
-                },
-                Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-                Vec2{
-                    static_cast<float>(normalized_y),
-                    static_cast<float>(normalized_z),
-                },
-            });
-        }
-
-    }
-    for (std::uint32_t z_step = 0; z_step < z_steps; ++z_step) {
-        for (std::uint32_t y_step = 0; y_step < y_steps; ++y_step) {
-            const std::uint32_t a = z_step * (y_steps + 1) + y_step;
-            const std::uint32_t b = a + y_steps + 1;
-            geometry.indices.insert(
-                geometry.indices.end(),
-                {${sphereQuadPattern.join(", ")}});
-        }
-    }
     geometry.bounds_min = Vec3{
         static_cast<float>(-radius.x),
         static_cast<float>(-radius.y),
@@ -1649,39 +1759,14 @@ static ModelGeometry build_sphere_geometry(SphereOptions options) {
 }
 
 SphereMeshData create_sphere_data(SphereOptions options) {
-    const ModelGeometry geometry =
-        build_sphere_geometry(options);
+    PinnedMeshData data = pinned_create_sphere_data(options);
     SphereMeshData result;
-    result.positions.reserve(
-        geometry.vertices.size() * 3);
-    result.normals.reserve(
-        geometry.vertices.size() * 3);
-    result.uvs.reserve(
-        geometry.vertices.size() * 2);
-    for (const ModelVertex& vertex : geometry.vertices) {
-        result.positions.insert(
-            result.positions.end(),
-            {
-                vertex.position.x,
-                vertex.position.y,
-                vertex.position.z,
-            });
-        result.normals.insert(
-            result.normals.end(),
-            {
-                vertex.normal.x,
-                vertex.normal.y,
-                vertex.normal.z,
-            });
-        result.uvs.insert(
-            result.uvs.end(),
-            {vertex.uv.x, vertex.uv.y});
-    }
-    result.indices = geometry.indices;
-    result.vertex_count = static_cast<std::uint32_t>(
-        geometry.vertices.size());
-    result.index_count = static_cast<std::uint32_t>(
-        geometry.indices.size());
+    result.positions = std::move(data.positions);
+    result.normals = std::move(data.normals);
+    result.uvs = std::move(data.uvs);
+    result.indices = std::move(data.indices);
+    result.vertex_count = data.vertex_count;
+    result.index_count = data.index_count;
     return result;
 }
 
@@ -1800,80 +1885,40 @@ void set_morph_target_weights(
     ++record.morph_weights_version;
 }
 
+static PinnedMeshData pinned_create_torus_data(
+    TorusOptions options) {
+${torusBuilderBody}
+}
+
 MeshHandle create_torus(Engine& engine, TorusOptions options) {
-    const double diameter =
-        options.diameter > 0.0 ? options.diameter : ${scalar(torusDiameter)};
-    const double thickness =
-        options.thickness > 0.0 ? options.thickness : ${scalar(torusThickness)};
-    const std::uint32_t tessellation = std::max<std::uint32_t>(
-        3,
-        options.tessellation > 0 ? options.tessellation : ${torusTessellation}u);
-    const double major_radius = diameter * 0.5;
-    const double minor_radius = thickness * 0.5;
-    const std::uint32_t stride = tessellation + 1;
+    PinnedMeshData data = pinned_create_torus_data(options);
     ModelGeometry geometry;
-    geometry.vertices.reserve(
-        static_cast<std::size_t>(stride) * stride);
-    geometry.indices.reserve(
-        static_cast<std::size_t>(stride) * stride * ${torusTriangulation.length});
-    for (std::uint32_t outer_index = 0;
-         outer_index <= tessellation;
-         ++outer_index) {
-        const double outer_angle =
-            static_cast<double>(outer_index) * ${scalar(torusTurnFactor)} *
-                    pi_double /
-                static_cast<double>(tessellation) -
-            pi_double * ${scalar(1 / torusPhaseDivisor)};
-        const double cos_outer = std::cos(outer_angle);
-        const double sin_outer = std::sin(outer_angle);
-        for (std::uint32_t inner_index = 0;
-             inner_index <= tessellation;
-             ++inner_index) {
-            const double inner_angle =
-                static_cast<double>(inner_index) * ${scalar(torusTurnFactor)} *
-                        pi_double /
-                    static_cast<double>(tessellation) +
-                pi_double;
-            const double dx = std::cos(inner_angle);
-            const double dy = std::sin(inner_angle);
-            const Vec3 position{
-                static_cast<float>(
-                    (dx * minor_radius + major_radius) * cos_outer),
-                static_cast<float>(dy * minor_radius),
-                static_cast<float>(
-                    -(dx * minor_radius + major_radius) * sin_outer),
-            };
-            geometry.vertices.push_back(ModelVertex{
-                position,
-                Vec3{
-                    static_cast<float>(dx * cos_outer),
-                    static_cast<float>(dy),
-                    static_cast<float>(-dx * sin_outer),
-                },
-                Vec4{1.0f, 0.0f, 0.0f, 1.0f},
-                Vec2{
-                    static_cast<float>(
-                        static_cast<double>(outer_index) /
-                        static_cast<double>(tessellation)),
-                    static_cast<float>(
-                        ${scalar(torusUvUnit)} -
-                        static_cast<double>(inner_index) /
-                            static_cast<double>(tessellation)),
-                },
-                {},
-                position,
-            });
-            const std::uint32_t next_outer =
-                (outer_index + 1) % stride;
-            const std::uint32_t next_inner =
-                (inner_index + 1) % stride;
-            geometry.indices.insert(
-                geometry.indices.end(),
-                {
-${torusTriangulationList}
-                });
-        }
+    geometry.vertices.reserve(data.vertex_count);
+    for (std::size_t vertex = 0; vertex < data.vertex_count; ++vertex) {
+        const Vec3 position{
+            data.positions[vertex * 3],
+            data.positions[vertex * 3 + 1],
+            data.positions[vertex * 3 + 2],
+        };
+        geometry.vertices.push_back(ModelVertex{
+            position,
+            Vec3{
+                data.normals[vertex * 3],
+                data.normals[vertex * 3 + 1],
+                data.normals[vertex * 3 + 2],
+            },
+            Vec4{1.0f, 0.0f, 0.0f, 1.0f},
+            Vec2{
+                data.uvs[vertex * 2],
+                data.uvs[vertex * 2 + 1],
+            },
+            {},
+            position,
+        });
     }
+    geometry.indices = std::move(data.indices);
+    const double major_radius = options.diameter * 0.5;
+    const double minor_radius = options.thickness * 0.5;
     const float outer_radius =
         static_cast<float>(major_radius + minor_radius);
     const float minor_extent = static_cast<float>(minor_radius);
@@ -2794,7 +2839,7 @@ SolidTexture create_solid_texture(
         }
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrMetallicReflectance",
+            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrMetallicReflectance,setPbrSubsurface",
             header: "",
             source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
@@ -2853,6 +2898,30 @@ void set_pbr_metallic_reflectance(
     if (reflectance_texture.data.has_image()) {
         record.reflectance_texture =
             std::move(reflectance_texture.data);
+    }
+}
+
+// set-subsurface.ts assigns the nested record and registers its fragment.
+// This reached slice carries the scalar translucency inputs and the one
+// linear thickness map Scene 26 supplies.
+void set_pbr_subsurface(
+    Engine& engine,
+    MaterialHandle material,
+    float intensity,
+    Color3 color,
+    Color3 diffusion_distance,
+    float minimum_thickness,
+    float maximum_thickness,
+    FileTexture thickness_texture) {
+    MaterialRecord& record = engine.materials[material.value];
+    record.has_subsurface = true;
+    record.subsurface_intensity = intensity;
+    record.subsurface_color = color;
+    record.subsurface_diffusion_distance = diffusion_distance;
+    record.subsurface_minimum_thickness = minimum_thickness;
+    record.subsurface_maximum_thickness = maximum_thickness;
+    if (thickness_texture.data.has_image()) {
+        record.thickness_texture = std::move(thickness_texture.data);
     }
 }
 
@@ -2982,6 +3051,7 @@ MaterialHandle create_pbr_material(
             : MaterialAlphaMode::opaque;
     material.unlit = options.unlit;
     material.double_sided = options.double_sided;
+    material.specular_aa = options.specular_aa;
     material.skybox_mode = options.skybox_mode;
     material.transmission_factor = options.transmission_factor;
     material.index_of_refraction = options.index_of_refraction;

@@ -297,6 +297,20 @@ LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float inten
 
 namespace bbl {
 
+namespace {
+
+// The point-light pin keeps its identity basis and rebuilds only the
+// translation column from the observable position. Creation and every
+// reached position write share this helper so the cached local matrix is
+// always the one the pin's closure would expose on its next read.
+void refresh_point_light_matrix(LightRecord& light) {
+    light.local_matrix[${translationIndex("x")}] = light.position.x;
+    light.local_matrix[${translationIndex("y")}] = light.position.y;
+    light.local_matrix[${translationIndex("z")}] = light.position.z;
+}
+
+} // namespace
+
 LightHandle create_point_light(
     Engine& engine,
     Vec3 position,
@@ -311,14 +325,14 @@ LightHandle create_point_light(
     light.local_matrix[0] = ${identityStore(0)};
     light.local_matrix[5] = ${identityStore(5)};
     light.local_matrix[10] = ${identityStore(10)};
-    light.local_matrix[${translationIndex("x")}] = position.x;
-    light.local_matrix[${translationIndex("y")}] = position.y;
-    light.local_matrix[${translationIndex("z")}] = position.z;
     light.local_matrix[15] = ${identityStore(15)};
+    refresh_point_light_matrix(light);
     engine.lights.push_back(light);
     return LightHandle{
         static_cast<std::uint32_t>(engine.lights.size() - 1)};
 }
+
+${this.lightVectorSetters(modulePath, symbolName, "point", ["position"])}
 
 } // namespace bbl
 `,
@@ -458,13 +472,10 @@ ${this.lightVectorSetters(modulePath, symbolName, "directional", ["position"])}
         // Math.PI / 2 lights a quarter turn in total. The formula is
         // anchored structurally (a Math.cos over `angle * <factor>`) and
         // the half-angle factor flows into the emitted
-        // `std::cos(angle * ...)`, so a pin retune regenerates. The
-        // precision semantics stay the emission's own: float cos of an
-        // already-rounded float angle, where the pin takes a double cos
-        // into a float UBO store — the one-ULP boundary gap is the
-        // TODO.md entry "Carry a spot light's cone angle at the pin's
-        // precision", which owns the measurement plan before any
-        // semantic change here.
+        // `std::cos(angle * ...)`, so a pin retune regenerates. `angle` and
+        // the factor remain doubles through this expression, matching the
+        // JavaScript-number calculation before the pinned Float32Array store
+        // rounds the result once.
         const coneCosine = this.context.unwrapExpression(
             this.context.variableInitializer(
                 declaration,
@@ -546,7 +557,7 @@ LightHandle create_spot_light(
     Engine& engine,
     Vec3 position,
     Vec3 direction,
-    float angle,
+    double angle,
     float exponent,
     float intensity) {
     LightRecord light;
@@ -555,7 +566,8 @@ LightHandle create_spot_light(
     light.direction = direction;
     light.intensity = intensity;
     light.exponent = exponent;
-    light.cos_half_angle = std::cos(angle * ${this.context.floatLiteral(coneHalfFactor)});
+    light.cos_half_angle = static_cast<float>(
+        std::cos(angle * ${this.context.doubleLiteral(coneHalfFactor)}));
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();

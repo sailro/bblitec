@@ -38,7 +38,14 @@ export interface PinnedBinding {
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
      * `scalar` is an f64 local or parameter.
      */
-    type: "f32" | "u32" | "f32-view" | "u8-view" | "scalar" | "bool";
+    type:
+        | "f32"
+        | "u32"
+        | "f32-view"
+        | "u8-view"
+        | "scalar"
+        | "index"
+        | "bool";
     /**
      * A record the pin reads through an optional chain (`texture?.uScale`).
      *
@@ -85,6 +92,12 @@ export interface PinnedNumericScope {
      * nothing and a bare `return;` is emitted.
      */
     returnValue?: (expression: ts.Expression | undefined) => string;
+    /** This body uses `||` only to join boolean conditions. */
+    booleanOr?: boolean;
+    /** This body uses `&&` only to join boolean conditions. */
+    booleanAnd?: boolean;
+    /** Native option specialization may make a pinned fallback local dead. */
+    maybeUnusedConst?: boolean;
 }
 
 // The shared arithmetic set plus the comparisons these bodies guard with.
@@ -221,7 +234,7 @@ export class PinnedNumericLowerer {
             this.fail(declaration, "for initializer");
         }
         const name = declaration.name.text;
-        this.scope.bindings.set(name, { cpp: name, type: "scalar" });
+        this.scope.bindings.set(name, { cpp: name, type: "index" });
         return (
             `std::int64_t ${name} = ` +
             `static_cast<std::int64_t>(${this.expression(declaration.initializer)})`
@@ -309,7 +322,13 @@ export class PinnedNumericLowerer {
                 type: isBoolean ? "bool" : "scalar",
             });
             lines.push(
-                `${indent}${isConst ? "const " : ""}` +
+                `${indent}${
+                    isConst && this.scope.maybeUnusedConst
+                        ? "[[maybe_unused]] const "
+                        : isConst
+                          ? "const "
+                          : ""
+                }` +
                     `${isBoolean ? "bool" : "double"} ${name} = ${value};`,
             );
         }
@@ -414,6 +433,13 @@ export class PinnedNumericLowerer {
         value: ts.Expression,
     ): string {
         const text = this.expression(value);
+        const unwrapped = this.unwrap(target);
+        if (ts.isIdentifier(unwrapped)) {
+            const binding = this.scope.bindings.get(unwrapped.text);
+            if (binding?.type === "index") {
+                return `static_cast<std::int64_t>(${text})`;
+            }
+        }
         const element = this.elementType(target);
         if (element === "float") return `static_cast<float>(${text})`;
         if (element === "std::uint32_t") {
@@ -511,6 +537,8 @@ export class PinnedNumericLowerer {
             return `(${operator}${this.expression(node.operand)})`;
         }
         if (ts.isElementAccessExpression(node)) {
+            const exact = this.scope.bindings.get(node.getText(this.file));
+            if (exact) return exact.cpp;
             // Every read widens to the f64 a JS number is. The f32 ROUND-TRIP
             // that `sortSplatsBackToFront` depends on is enforced on the
             // store side, by `storedValue`/`elementType`.
@@ -668,6 +696,15 @@ export class PinnedNumericLowerer {
                 // default, so the right side IS the default -- read from the
                 // AST rather than restated beside the member.
                 const left = this.unwrap(node.left);
+                // Some pinned option records expose an optional tuple member
+                // (`opts.uvScale?.[0] ?? 1`). A caller that already resolved
+                // that option into its native record binds the complete
+                // optional-element expression here; naming that binding is
+                // the same specialization as taking the present arm.
+                const resolved = this.scope.bindings.get(
+                    left.getText(this.file),
+                );
+                if (resolved) return resolved.cpp;
                 if (!ts.isPropertyAccessExpression(left)) {
                     return this.fail(node, "'??' over a non-optional read");
                 }
@@ -687,6 +724,12 @@ export class PinnedNumericLowerer {
                     `${this.expression(node.right)})`
                 );
             case ts.SyntaxKind.BarBarToken:
+                if (this.scope.booleanOr) {
+                    return (
+                        `(${this.expression(node.left)} || ` +
+                        `${this.expression(node.right)})`
+                    );
+                }
                 // JS `a || b` evaluates to `a` when `a` is truthy and to `b`
                 // otherwise; C++ `a || b` evaluates to a bool. Emitting the
                 // C++ operator turned the pin's `Math.hypot(...) || 1` into
@@ -701,6 +744,12 @@ export class PinnedNumericLowerer {
                     `${this.expression(node.right)})`
                 );
             case ts.SyntaxKind.AmpersandAmpersandToken:
+                if (this.scope.booleanAnd) {
+                    return (
+                        `(${this.expression(node.left)} && ` +
+                        `${this.expression(node.right)})`
+                    );
+                }
                 // The same hazard in the other direction. No pinned body
                 // this translator serves uses it as a value yet, so it
                 // refuses rather than guessing which meaning is wanted.
@@ -726,6 +775,15 @@ export class PinnedNumericLowerer {
                     `static_cast<double>(static_cast<std::int32_t>(` +
                     `${this.expression(node.left)}) << ` +
                     `static_cast<std::int32_t>(${this.expression(node.right)}))`
+                );
+            case ts.SyntaxKind.PercentToken:
+                // JavaScript's `%` is floating-point remainder. The reached
+                // mesh builders use it with non-negative integral operands,
+                // but spelling fmod retains the JS-number contract instead
+                // of silently changing the operator to integer modulo.
+                return (
+                    `std::fmod(${this.expression(node.left)}, ` +
+                    `${this.expression(node.right)})`
                 );
             default:
                 return this.fail(node, "binary operator");

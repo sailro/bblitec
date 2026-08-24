@@ -205,6 +205,87 @@ test("scene-code occlusion strength controls the pin's ORM arm", async () => {
     assert.match(enabled[0]!.fragmentWgsl, /orm\.r/);
 });
 
+test("scene-code specular AA controls the pin's derivative roughness arm", async () => {
+    const material = {
+        materialsBefore: 0,
+        gltfAssetsBefore: 0,
+        hasBaseColorTexture: true,
+        hasOrmTexture: true,
+        metallicFactor: 1,
+        roughnessFactor: 1,
+        directIntensity: 1,
+        environmentIntensity: 1,
+        alpha: 1,
+        reflectance: 0.04,
+        doubleSided: false,
+        transmission: 0,
+        ior: 1.5,
+        thickness: 0,
+    };
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: false,
+        fog: false,
+    });
+    const disabled = await composeScenePbrVariants([material], arms);
+    const enabled = await composeScenePbrVariants(
+        [{ ...material, enableSpecularAA: true }],
+        arms,
+    );
+
+    assert.doesNotMatch(disabled[0]!.fragmentWgsl, /dpdx\(N\)/);
+    assert.match(enabled[0]!.fragmentWgsl, /dpdx\(N\)/);
+});
+
+test("Scene 26 composes the pin's subsurface thickness arm", async () => {
+    const arms = await pinnedSceneArms({
+        lightKinds: ["point"],
+        multiLight: false,
+        noLight: false,
+        toneMapping: [true],
+        environment: true,
+        fog: false,
+    });
+    const variants = await composeScenePbrVariants(
+        [{
+            materialsBefore: 0,
+            gltfAssetsBefore: 1,
+            hasBaseColorTexture: true,
+            hasOrmTexture: true,
+            metallicFactor: 1,
+            roughnessFactor: 1,
+            directIntensity: 1,
+            environmentIntensity: 1,
+            alpha: 1,
+            reflectance: 0.04,
+            doubleSided: false,
+            enableSpecularAA: true,
+            transmission: 0,
+            ior: 1.5,
+            thickness: 0,
+            subsurface: {
+                intensity: 1,
+                color: [1, 1, 1],
+                diffusionDistance: [1, 1, 1],
+                hasThicknessTexture: true,
+                minimumThickness: 0,
+                maximumThickness: 2.2,
+            },
+        }],
+        arms,
+    );
+
+    assert.ok(variants.some((variant) => variant.fragmentKey.includes("subsurface")));
+    for (const variant of variants) {
+        assert.match(variant.fragmentWgsl, /subsurfaceParams/);
+        assert.match(variant.fragmentWgsl, /thicknessTexture_/);
+        assert.match(variant.fragmentWgsl, /dpdx\(N\)/);
+    }
+});
+
 test("creation-only metallic F0 does not register the reflectance arm", async () => {
     const arms = await pinnedSceneArms({
         lightKinds: [],

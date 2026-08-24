@@ -674,6 +674,12 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 mesh.dimensions.z * 0.5f,
             };
         }
+        // A reached scene may replace either public Mesh bound after the
+        // factory/loader created it. Those values are object-local in the
+        // pin and therefore take the same world-transform path as the
+        // factory bounds they replace.
+        if (mesh.has_bounds_min_override) local_min = mesh.bounds_min_override;
+        if (mesh.has_bounds_max_override) local_max = mesh.bounds_max_override;
         const std::array<Vec3, 8> corners{
             Vec3{local_min.x, local_min.y, local_min.z},
             Vec3{local_max.x, local_min.y, local_min.z},

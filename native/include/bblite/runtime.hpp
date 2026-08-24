@@ -521,6 +521,7 @@ struct PbrMaterialOptions {
     float reflectance = 0.04f;
     bool unlit = false;
     bool double_sided = false;
+    bool specular_aa = false;
     bool skybox_mode = false;
     float transmission_factor = 0.0f;
     // Pinned default: gltf-ext-dielectric.ts treats ior 1.5 as neutral.
@@ -751,6 +752,13 @@ struct MeshRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
     Vec3 dimensions{1.0f, 1.0f, 1.0f};
+    // Scene-code boundMin/boundMax replace the corresponding object-local
+    // bound carried by the pinned Mesh. Keep each side optional because the
+    // public object permits either property to be assigned independently.
+    bool has_bounds_min_override = false;
+    bool has_bounds_max_override = false;
+    Vec3 bounds_min_override{};
+    Vec3 bounds_max_override{};
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     // A clone shares its source mesh's pinned shader composition. Generated
@@ -1272,6 +1280,12 @@ struct MaterialRecord {
     Color3 attenuation_color{1.0f, 1.0f, 1.0f};
     float attenuation_distance = 1.0f;
     float dispersion = 0.0f;
+    bool has_subsurface = false;
+    float subsurface_intensity = 1.0f;
+    Color3 subsurface_color{1.0f, 1.0f, 1.0f};
+    Color3 subsurface_diffusion_distance{1.0f, 1.0f, 1.0f};
+    float subsurface_minimum_thickness = 0.0f;
+    float subsurface_maximum_thickness = 1.0f;
     float clearcoat_intensity = 0.0f;
     float clearcoat_roughness = 0.0f;
     // Pinned default: the coat ior the clearcoat layer seeds.
@@ -1957,6 +1971,15 @@ void set_pbr_metallic_reflectance(
     Color3 color,
     FileTexture metallic_texture,
     FileTexture reflectance_texture);
+void set_pbr_subsurface(
+    Engine& engine,
+    MaterialHandle material,
+    float intensity,
+    Color3 color,
+    Color3 diffusion_distance,
+    float minimum_thickness,
+    float maximum_thickness,
+    FileTexture thickness_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 FileTexture load_file_texture(
     Engine& engine,
@@ -2013,7 +2036,7 @@ LightHandle create_spot_light(
     Engine& engine,
     Vec3 position,
     Vec3 direction,
-    float angle,
+    double angle,
     float exponent,
     float intensity = 1.0f);
 // A light's position and direction are ObservableVec3 upstream: writing one
@@ -2022,6 +2045,7 @@ LightHandle create_spot_light(
 // emitted beside its own kind's factory, so a scene reaching no light of a
 // kind links none of them. Only the vectors a reached scene writes are
 // lowered; the rest refuse at compile time (src/compiler/assignments.ts).
+void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_directional_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);

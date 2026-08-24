@@ -266,12 +266,12 @@ const lightLowerer = new LightLowerer(new LoweringContext());
 test("flows the pinned light matrices and spot cone into the factories", () => {
     const lowerer = lightLowerer;
     // The spot half-angle factor flows from the pinned _cosHalfAngle
-    // initializer (src/light/spot-light.ts); the precision semantics
-    // stay the emission's own (the TODO.md spot-cone ULP entry).
+    // initializer (src/light/spot-light.ts), and stays a double until the
+    // generated factory assigns the result to its float UBO field.
     const spot = lowerer.lowerSpotFactory();
     assert.match(
         spot.source,
-        /light\.cos_half_angle = std::cos\(angle \* 0\.5f\);/,
+        /double angle,[\s\S]*light\.cos_half_angle = static_cast<float>\(\s*std::cos\(angle \* 0\.5\)\);/,
     );
     // The point-light identity diagonal and translation column flow
     // from the pinned factory's own m[...] stores
@@ -287,8 +287,9 @@ test("flows the pinned light matrices and spot cone into the factories", () => {
     );
     assert.match(
         point.source,
-        /light\.local_matrix\[12\] = position\.x;/,
+        /light\.local_matrix\[12\] = light\.position\.x;/,
     );
+    assert.match(point.source, /refresh_point_light_matrix\(light\);/);
     assert.match(
         point.source,
         /light\.local_matrix\[15\] = 1\.0f;/,
@@ -352,7 +353,7 @@ test("every light vector setter rebuilds its own kind's local matrix", () => {
             assert.ok(!sources[kind].includes(`void set_${kind}_light_`));
         }
     }
-    assert.equal(emitted, 3);
+    assert.equal(emitted, 4);
 });
 
 test("generates scene fog storage for the pinned fog UBO field set", () => {
@@ -596,15 +597,16 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     assert.match(mesh.source, /mesh\.dimensions = Vec3\{width, height, depth\}/);
     assert.match(mesh.source, /geometry\.vertices\.insert/);
     assert.match(mesh.source, /vertex\.local_position = vertex\.position/);
-    assert.match(mesh.source, /const std::uint32_t subdivisions/);
+    assert.match(mesh.source, /const double subdivisions = options\.subdivisions/);
+    assert.match(mesh.source, /pinned_create_flat_ground_data/);
+    assert.match(mesh.source, /static_cast<std::uint32_t>\(bottomRight\)/);
+    // The translated pin builds the position from the unrounded normal, not
+    // from the float it just stored, so the product names the double local.
     assert.match(
         mesh.source,
-        /stored_u \* static_cast<double>\(options\.uv_scale\.x\)/,
+        /static_cast<float>\(\(rx \* nx\)\)/,
     );
-    assert.match(mesh.source, /bottom_right,\s*top_right,\s*top_left/s);
-    // The pin builds the position from the unrounded normal, not from
-    // the float it just stored, so the product names the double.
-    assert.match(mesh.source, /static_cast<float>\(radius\.x \* nx\)/);
+    assert.match(mesh.source, /pinned_create_torus_data/);
     assert.match(mesh.source, /options\.diameter_y/);
     assert.match(mesh.source, /mesh\.geometry =/);
     assert.match(mesh.source, /create_plane\(Engine& engine, PlaneOptions options\)/);
@@ -663,12 +665,26 @@ test("generates reached PBR material scalar fields", () => {
     assert.match(material.source, /material\.direct_intensity/);
     assert.match(material.source, /material\.environment_intensity/);
     assert.match(material.source, /material\.reflectance/);
+    assert.match(
+        material.source,
+        /material\.specular_aa = options\.specular_aa/,
+    );
     assert.match(material.source, /material\.has_ior = false/);
     assert.match(
         material.source,
         /material\.use_thickness_as_depth = options\.use_thickness_as_depth/,
     );
     assert.match(material.source, /material\.has_volume = options\.has_volume/);
+    assert.match(material.source, /void set_pbr_subsurface\(/);
+    assert.match(material.source, /record\.has_subsurface = true/);
+    assert.match(
+        material.source,
+        /record\.subsurface_diffusion_distance = diffusion_distance/,
+    );
+    assert.match(
+        material.source,
+        /record\.thickness_texture = std::move\(thickness_texture\.data\)/,
+    );
     assert.match(material.source, /options\.alpha < 1\.0f/);
 });
 
@@ -693,6 +709,7 @@ test("generates the public hemispheric light factory from upstream defaults", ()
     assert.match(point.source, /light\.kind = LightKind::point/);
     assert.match(point.source, /light\.position = position/);
     assert.match(point.source, /light\.range = std::numeric_limits<float>::max\(\)/);
+    assert.match(point.source, /void set_point_light_position\(/);
     assert.match(
         directional.source,
         /light\.kind = LightKind::directional/,
@@ -700,6 +717,20 @@ test("generates the public hemispheric light factory from upstream defaults", ()
     assert.match(
         directional.source,
         /local_matrix_from_direction/,
+    );
+});
+
+test("default camera framing consumes scene mesh bound overrides", () => {
+    const lowered = new CameraLowerer(
+        new LoweringContext(),
+    ).lowerDefaultFactory();
+    assert.match(
+        lowered.source,
+        /if \(mesh\.has_bounds_min_override\) local_min = mesh\.bounds_min_override;/,
+    );
+    assert.match(
+        lowered.source,
+        /if \(mesh\.has_bounds_max_override\) local_max = mesh\.bounds_max_override;/,
     );
 });
 

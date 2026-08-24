@@ -85,7 +85,15 @@ export function compileLightIntrinsic(
                 context.compileVec3(call.arguments[0]!);
             const direction =
                 context.compileVec3(call.arguments[1]!);
-            const angle = context.compileNumber(call.arguments[2]!);
+            // The pinned factory evaluates Math.cos(angle * 0.5) while angle
+            // is still a JavaScript number, then rounds once at its
+            // Float32Array UBO store. Preserve that double through the native
+            // factory boundary; rounding it here can move the hard cone test
+            // by one ULP.
+            const angle = context.compileNumber(
+                call.arguments[2]!,
+                "double",
+            );
             const exponent =
                 context.compileNumber(call.arguments[3]!);
             const intensity = call.arguments[4]
