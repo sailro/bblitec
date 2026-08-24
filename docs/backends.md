@@ -113,13 +113,10 @@ rounding; the transmission scenes keep a small Dawn edge (scene 33
 foreground 0.010 versus 0.007) from the scene-colour grab, where
 SDL_GPU copies the resolved opaque colour and the pin reads the
 multisampled attachment; and HillValley and the Standard geometry MRTs
-land closest on Dawn. The multisampled-line fix below closed most of
-what was left: fourteen published SDL_GPU cells moved toward the golden
-with it and none away, and scenes 8, 14, 28, 37, 120, 253 and 276 now
-measure identically on both backends — scene 120's splat cloud among
-them, from 0.024/0.071 to Dawn's own 0.001/0.003. Image processing is not
-part of that gap either — the vendored SDL patch lets SDL_GPU run the pinned
-per-sample pass.
+land closest on Dawn. Image processing is not part of that gap — the
+vendored SDL patch lets SDL_GPU run the pinned per-sample pass — and
+neither is line rasterization, which the overlay port's `MultisampleEnable`
+fix closed ([measured contracts](#measured-contracts)).
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
 after adaptive warmup (min(120, max(10, frames/10))), immediate present, same session

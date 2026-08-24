@@ -87,7 +87,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Runtime scene mutation](#runtime-scene-mutation) | Run | removal with plan rematching, material-family append, instance counts |
 | [Diagnostics and capture](#diagnostics-and-capture) | Run | screenshots, benchmarks, attribution buffers |
 
-Ten families have work on both sides of the line; the shader pipeline's
+Thirteen families have work on both sides of the line; the shader pipeline's
 second stage changes phase with the backend. Where the cut falls in each is
 [tabulated below](#where-the-boundary-falls-inside-a-family).
 
@@ -662,7 +662,7 @@ replacement.
 A node material is a graph, not a shader. `parseNodeMaterialFromSnippet`
 parses a Babylon NME document, walks it from its two output blocks through one
 emitter per block class, and wraps the two bodies into the module the browser
-compiles — a hundred and three emitters, which are the graph's semantics rather
+compiles — over a hundred emitters, which are the graph's semantics rather
 than a formula to restate.
 
 **Compile time: the whole compiler.** Generation runs that entry point against
@@ -1133,14 +1133,8 @@ The same split applies to the switches.
 `BBLITE_SDL_DIR`, `BBLITE_MINSIZE`, `VCPKG_TARGET_TRIPLET`, and the
 generated `BBLITE_IMAGE_CODECS`.
 
-**Run-time** (environment variables; see
-[development](development.md#runtime-switches)): `BBLITE_GPU_BACKEND`,
-`BBLITE_GPU_DEBUG`,
-`BBLITE_MSAA`, `BBLITE_BACKGROUND`, `BBLITE_GROUND`, `BBLITE_MAX_FRAMES`,
-`BBLITE_SCREENSHOT(_FRAME)`, `BBLITE_BENCHMARK_FRAMES`,
-`BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`,
-`BBLITE_DEFORMATION_DUMP`, `BBLITE_RENDER_CAPTURE`, and
-`BBLITE_BUILD_STAMP_OUT`.
+**Run-time**: the environment variables — `BBLITE_GPU_BACKEND` and the rest —
+are tabulated once in [development](development.md#runtime-switches).
 
 Requested environment grounds and DDS/HDR/solid-colour skyboxes render by
 default and are disabled independently with `BBLITE_GROUND=0` and

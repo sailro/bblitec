@@ -2,7 +2,8 @@
 
 Only unfinished work belongs here. What is done is in [status](docs/status.md),
 the docs, and Git history. Entries state what remains and the facts needed to
-act on it — not what was tried.
+act on it — not what was tried. Findings of the 2026-08-24 audit are tracked
+separately in [AUDIT](AUDIT.md) until fixed.
 
 ## Constraints
 
@@ -53,9 +54,9 @@ act on it — not what was tried.
 - [ ] Retire the hand-written C++ that encodes upstream semantics, leaf by
   leaf. Two shapes are legitimate — LOWER (walk the pinned AST) or EXECUTE
   (run the pin and bake); a re-typed formula agrees only until upstream
-  changes it. The templates in `src/lowering/templates/` are 5,319 lines,
-  of which `gltf-loader-cpp.ts` alone is 4,548, and `renderer-lowerer.ts`
-  is 4,516. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
+  changes it. The templates in `src/lowering/templates/` are ~5,400 lines,
+  of which `gltf-loader-cpp.ts` alone is ~4,600, and `renderer-lowerer.ts`
+  is ~4,600. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
   are the mechanisms to reuse. Each leaf is its own measurement: lower or
   execute it, then prove the generated tree moved only where intended.
 
@@ -160,7 +161,12 @@ act on it — not what was tried.
 
 - [ ] Add portable CMake presets.
 - [ ] Share one `VCPKG_INSTALLED_DIR` across build trees. Each build directory
-  carries its own ~49 MB copy of `vcpkg_installed`: 133 trees, 7.6 GB.
+  carries its own ~49 MB copy of `vcpkg_installed` (~140 trees, ~9 GB as of
+  2026-08-24). Exactly four manifest-feature combos exist across the corpus
+  (png; png+jpeg; png+webp; png+physics), so the stable shape is one shared
+  install dir per combo — a single shared dir would thrash, because vcpkg
+  reconciles the installed set to each configure's feature list. Fix the
+  configure-lock bypass ([AUDIT](AUDIT.md) BU-3) first.
 - [ ] Add `--explain-feature`. The inspection half shipped as `scene -- diff`'s
   pinned-block and shader-arm attribution plus the per-scene
   `feature-activation.json`.
@@ -168,7 +174,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-110 corpus scenes remain unregistered; measured scenes are in
+107 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -197,8 +203,7 @@ constructor expression 3, `createNavigationPluginAsync` 3.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
-unrelated to node materials. Node particles shipped ten of their eleven; only
-scene 300 remains, behind the drawn atlas its graph is handed.
+unrelated to node materials.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
   full and 0.28 foreground, identical on both backends. The composed fragment
@@ -241,7 +246,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (75 scenes):** 4, 16-18, 20, 22, 26, 38, 43,
+**Integrate first (74 scenes):** 4, 16-18, 20, 22, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.
@@ -250,8 +255,8 @@ and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
 user-input or external-service contract.
 
-**Defer (34 scenes):** 40-42, 44-49, 100-106, 153, 164, 170-175, 180, 181, 209,
-221, 222, 224, 225, 227, 228, 272.
+**Defer (33 scenes):** 41, 42, 44-49, 100-106, 153, 164, 170-175, 180, 181,
+209, 221, 222, 224, 225, 227, 228, 272.
 
 No audited scene requires audio, touch, gamepad, AR, or VR. Add any future scene
 that does to the deferred lane by default.
@@ -266,20 +271,8 @@ that does to the deferred lane by default.
   user function `requireGroup`. Iteration, `?? []`, `.find(pred)` with an arrow,
   and static glTF-root indexing now lower; this is the remaining shape where
   the collection itself travels beyond a compiler-owned call argument.
-- [x] Scene 12: support its reached `setPbrMetallicReflectance` options. Its
-  computed colour stays a native expression, both optional file maps bind
-  through linear texture views because the pinned fragment performs its own
-  RGB decode, and the alpha-only metallic-map fork composes per material.
-  Empty calls preserve the pin's process-global registration semantics,
-  including making an otherwise dormant creation-time `_metallicF0Factor`
-  visible.
 - [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
   `f0Factor` and `specularWeight` options still refuse explicitly.
-- [x] Scene 12: lower its imported hierarchy walk and root clones. The compiler
-  proves the exact recursive `TransformNode.children` leaf walk before mapping
-  it to the loader's flat mesh handles. Root clones retain geometry/material
-  features and the shared skinned animation pose, apply translation after
-  deformation, and add only their cloned entities to the scene.
 - [ ] Extend imported hierarchy/root clones beyond Scene 12's exact slice.
   The flattened visitor accepts only an effect-free recursive assignment of a
   scene-created PBR material; order-sensitive effects and other material
@@ -680,12 +673,10 @@ earlier compiler error.
   the pin's own `?captureFrame=120` and measured on both backends. What
   remains is one capability per scene, and none of it is shared plumbing
   any more.
-  - **What the lane no longer stops on.** The freeze every one of these
-    scenes pins its pose with is lowered: `stopEngine` is a flag the frame
-    conductor reads, `setTimeout(cb, 0)` is a one-shot deferred callback it
-    drains, and a nullable the source guarded with `!== null` reads as the
-    number the checker narrowed it to. Those three cleared the whole
-    seven-scene cluster at once.
+  - **What the lane no longer stops on.** The freeze (`stopEngine`, the
+    zero-delay `setTimeout`, a checker-narrowed nullable) is lowered
+    ([fidelity](docs/fidelity.md#physics-contract)); every remaining blocker
+    below is a per-scene API.
   - **First blockers, re-swept after that landed** -- each is now a scene
     API rather than capture plumbing: a non-glTF container's entities (41);
     an aggregate `radius`/`extents` (42, 45, and both want more besides --

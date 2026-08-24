@@ -45,7 +45,9 @@ what is decided at compile time and what lives at run time — and
 
 Requirements: Node.js 22+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
 PowerShell and DXC for shader compilation, and Chrome/Edge with WebGPU for
-shader and HDR asset compilation (see [development](docs/development.md)).
+browser references and executed asset compilation — the HDR GGX prefilter,
+Basis transcodes, drawn atlases, and node-particle bakes (see
+[development](docs/development.md)).
 
 **A built scene requires a GPU.** Both backends render through one, there is
 no software fallback, and a device that cannot be brought up is an error

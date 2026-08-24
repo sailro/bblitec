@@ -725,6 +725,7 @@ The full parity flag set (an unknown flag is an error naming this set):
 | `--gpu-debug` | the backend's validation layer plus SDL assertion defusal (see [debugging](debugging.md#runtime-switches-worth-knowing)) |
 | `--exe <path>` | measure a specific native executable instead of the scene's Release build; `BBLITE_NATIVE_EXE` is the environment form of the same override |
 | `--actual <png>` | compare an existing image instead of rendering one |
+| `--without ground\|background` | re-run the native side with one element suppressed against the unchanged golden — artifacts suffixed `-without-<element>`, no threshold gate |
 | `--no-fail` | report a threshold violation as a warning instead of a failing exit |
 
 Outputs land in the scene's parity directory `artifacts\parity\<scene>`:

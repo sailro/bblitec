@@ -62,9 +62,12 @@ answer:
   stale — recapture it with `parity <id> --recapture-reference` before
   debugging anything else.
 
-One more, off the parity path: `artifacts/shader-cache` keys on the WGSL
-and the DXC flags, not on `tools/compile-shaders.ps1`. After editing that
-script, delete the cache or every "reused N cached variants" is a lie.
+One more, off the parity path: `artifacts/shader-cache` keys on the DXC
+binaries, the profile and flags, and the *transformed HLSL* — so edits to
+`tools/compile-shaders.ps1`'s transformation passes are captured
+transitively through the HLSL bytes, and the Tint half re-runs on every
+invocation regardless. The one unkeyed surface is an inline change to the
+DXC invocation shape itself; delete the cache only after one of those.
 
 ### 2. Which side is it on?
 
@@ -349,9 +352,8 @@ does not compose with `all`.
 
 A blocker names a capability; it does not size one. The first error a
 scene reports is the first line of its chain, not its length — scenes
-4, 21, 23, 111, 140, 142, 226, 251 and 270 each hide shadows, node
-materials, anisotropy, splats or post-process tasks behind a one-line
-blocker.
+4, 111, 140, 226, 251 and 270 each hide a whole subsystem behind a
+one-line blocker.
 
 **Compile-probe first.** This works without a registry entry:
 
@@ -447,7 +449,7 @@ out the entire class of defect in one command.
 | `artifacts/capture/<id>/draws.json` | `capture` | the browser draw census, bundles included |
 | `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels; `diff`'s palette matching reads the rgba32float ones |
 | `artifacts/capture/<id>/seek-{minus1,plus1}/`, `seek-bracket.json` | `capture --seek-bracket` | the ±1-frame captures and the one-frame motion scale |
-| `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks (`diff` still reads a pre-rename `native-sdl_gpu.json` when only that exists) |
+| `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks |
 | `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
 | `artifacts/capture/<id>/diff-{gpu,dawn}.json` | `diff` | the paired report |
 | `artifacts/capture/<id>/probe-variants/{before,after}/native-dawn.*`, `probe-variants/probe-variants.json` | `probe-variants` | the two native renders around one neutralized shader term, and the before/after measurement |

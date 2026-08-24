@@ -245,9 +245,7 @@ from the unrounded normal rather than from the one it just stored.
 A float chain reads as harmless and is not: the sphere's normals move a few
 ulps, which a rougher material absorbs and a mirror-metal one does not.
 Scene 23 measured 0.004 with a 33-byte peak on the float chain and 0.002
-with every pixel inside one byte on the pin's. Across the corpus the
-correction is last-bit: every gate still passes, and the one published row
-it moves on both backends is scene 19's foreground, by a thousandth.
+with every pixel inside one byte on the pin's.
 
 The rule starts at the call site, not at the loop: `SphereOptions`,
 `GroundOptions` and `TorusOptions` carry their scalars as `double` and
@@ -264,10 +262,9 @@ so rounds to the same float either way.
 `src/loader-env/rgbd-decode.ts` decodes `.env` faces and the BRDF LUT into a
 `texture_storage_2d<rgba16float, write>`, so a half *is* the decode's result,
 not a packing step a caller may skip. `decode_rgbd` returns halves for that
-reason: the SDL_GPU BRDF-LUT path used to upload them as `RGBA32Float` while
-the cube and both Dawn paths packed to half, which is more precision than the
-pin has and a silent backend delta besides. Aligning it moved 19 SDL_GPU
-published rows by a thousandth, all inside their gates.
+reason, and both backends upload the same halves on every path — LUT and cube
+alike: a float32 upload would carry more precision than the pin has, and a
+silent backend delta besides.
 
 **A scene's reference pose can be a query string, and both sides read the
 same one.** A corpus scene that branches on `?seekTime=` reads
@@ -640,11 +637,7 @@ loader's own copy of it, and a contract assertion on the pinned expression
 fails generation if either arm moves. Scenes 62 and 81 gate it, and scenes
 160 and 162 gate its absence — both pass `mipMaps: false`, which is the arm
 that keeps anisotropy at one. Scene 21 reaches it too, through the
-`loadTexture2D` its `Promise.all` awaits, and is the one place where following
-the pin moved a published number the wrong way: its full MAD went from 0.32951
-to 0.32956, five parts in a hundred thousand of a residual that belongs to
-something else entirely. The two backends agree slightly better than they did,
-which is what a corrected CPU-side input looks like.
+`loadTexture2D` its `Promise.all` awaits.
 
 **A node graph's texture bindings are the pin's allocation, and the scene
 supplies the images by name.** `compileNodePipeline` draws each
@@ -726,20 +719,14 @@ composing a different program per flag set. Scenes 278 and 279 measure both
 at 0.000 on both backends.
 
 **A line-list on a multisampled target needs D3D12's multisampled line
-rule, and SDL_GPU did not ask for it.** Dawn sets
-`RasterizerState.MultisampleEnable` from the pipeline's sample count
-(`RenderPipelineD3D12.cpp`), which selects the quadrilateral rule that
-resolves line coverage against the target's samples; SDL's D3D12 backend
-hardcoded it to `FALSE` (`SDL_gpu_d3d12.c`), leaving lines on the aliased
-diamond-exit rule whatever the sample count, where its own Vulkan and Metal
-backends have no such switch. Measured before the fix: SDL_GPU at 4x was
-pixel-identical to SDL_GPU at one sample and to Dawn at one sample, and
-scene 278 measured 0.284 full MAD against a byte-exact Dawn. The vendored
-overlay port (`native/vcpkg-overlay-ports/sdl3`) now carries that one line
-beside libsdl-org/SDL#15838, and both backends measure 0.000. It affects
-line rasterization only — triangle coverage is per-sample on a multisampled
-target either way — which the corpus-wide neutrality run measures rather
-than assumes.
+rule.** SDL's D3D12 backend hardcodes
+`RasterizerState.MultisampleEnable = FALSE` (`SDL_gpu_d3d12.c`), leaving line
+lists on the aliased diamond-exit rule at any sample count, where Dawn sets
+the flag from the pipeline's sample count and SDL's own Vulkan and Metal
+backends have no such switch. The vendored overlay port
+(`native/vcpkg-overlay-ports/sdl3`) carries the one-line fix beside
+libsdl-org/SDL#15838; the isolating measurement and the triangle-edge A/B are
+in [backends](backends.md#measured-contracts).
 
 **A quantized glTF is dequantized by the pin's own hook, at generation.**
 `KHR_mesh_quantization` is implemented upstream as a single `preParse` that
@@ -896,7 +883,7 @@ composes two variants, one per material, like any other fork.
 
 **A node material is compiled by the pin, not re-emitted here.** A Babylon NME
 document is a graph, and `material/node/node-emitter.ts` turns it into WGSL
-through one emitter per block class — a hundred and three of them, which are
+through one emitter per block class — over a hundred of them, which are
 the graph's semantics rather than formulas to restate. So the pin's own
 `parseNodeMaterialFromSnippet` runs at generation against a recording device
 (`src/pinned-node-material.ts`): every device call on `compileNodePipeline`'s
@@ -1356,6 +1343,13 @@ the first the sphere never falls, without the second it rests 0.04 high.
 Bullet's default is the product of the pair, so both rules are applied on
 the contact manifold callback instead.
 
+Three more PAL-level equivalences are documented where they happen in
+`pal_physics_bullet.cpp`: the step is pinned to a single sub-step
+(`stepSimulation(seconds, 0, seconds)`, quoting the pin's own no-substepping
+comment), a kinematic `SetTargetQTransform` maps to `set_transform` (no
+corpus scene exercises an ACTION prestep yet), and a material whose static
+and dynamic friction differ refuses rather than averaging.
+
 ## Parity reports
 
 Reports name the backend they measured and include:
@@ -1540,8 +1534,8 @@ edge to integer target pixels and applies the same rectangle as a scissor.
 Fractional viewport bounds without that scissor introduce partial-sample
 coverage at tile boundaries, so native preserves the JavaScript
 double-precision viewport expressions and the pinned floor/scissor contract.
-The full-resolution attachment maxima remain `0.067` and `0.057`; use
-`npm run scene -- geometry scene145|scene146` to inspect them individually.
+Inspect the full-resolution attachments with
+`npm run scene -- geometry scene145|scene146`.
 
 ## Validation policy
 
