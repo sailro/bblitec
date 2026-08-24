@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { validateObjectProperties } from "../option-helpers.js";
+import {
+    staticNumberValue,
+    validateObjectProperties,
+} from "../option-helpers.js";
 import type { PropertyAnimationTargetKind } from "../property-animation.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -26,6 +29,13 @@ export interface AnimationIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    resolveStaticExpression(
+        expression: ts.Expression,
+    ): ts.Expression;
+    lookup(identifier: ts.Identifier): Value;
+    lookupOptional(
+        identifier: ts.Identifier,
+    ): Value | undefined;
     requireDefaultScene(node: ts.Node): Value;
     requireEngine(value: Value, node: ts.Node): string;
     fail(node: ts.Node, message: string): never;
@@ -302,6 +312,128 @@ export function compileAnimationIntrinsic(
                         group,
                         call.arguments[0]!,
                     )}, ${group.cpp}, ${weight})`,
+            };
+        }
+
+        case "setAnimationAdditive": {
+            // src/animation/weighted-gltf-mixer.ts: the group gains its
+            // additive reference (`group._additive = { referenceTime }`)
+            // and, when a manager already owns it, blending is enabled on
+            // that owner — both emitted at the call site. The options
+            // resolve at generation exactly where the pin resolves them:
+            // the mutual exclusion and the finite/non-negative reference
+            // refuse here as the pin throws, and the frame-to-time
+            // conversion stays in the generated body beside the pinned
+            // frame rate it divides by, the way `go_to_frame` already
+            // carries it.
+            context.expectArgumentCount(call, 1, 2);
+            const group =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                group,
+                "animation-group",
+                call.arguments[0]!,
+            );
+            requireGroupSource(
+                context,
+                group,
+                call.arguments[0]!,
+                "setAnimationAdditive",
+                "gltf",
+            );
+            context.reachFeature("animation:gltf-groups", call);
+            context.reachFeature(
+                "animation:gltf-additive",
+                call,
+            );
+            // The pin's setter reaches the mixer module and, through the
+            // owner, the manager machinery — reaching the intrinsic
+            // composes both, the way `enableAnimationBlending` does.
+            context.reachFeature(
+                "animation:gltf-blending",
+                call,
+            );
+            context.reachFeature(
+                "animation:managed-groups",
+                call,
+            );
+            const engine = context.requireEngine(
+                group,
+                call.arguments[0]!,
+            );
+            const optionsExpression = call.arguments[1];
+            if (!optionsExpression) {
+                // `(options?.referenceFrame ?? 0)`: no options means
+                // frame zero.
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::set_animation_additive_from_frame(` +
+                        `${engine}, ${group.cpp}, 0.0f)`,
+                };
+            }
+            const options = context.expectObjectLiteral(
+                optionsExpression,
+            );
+            validateObjectProperties(
+                context,
+                options,
+                ["referenceFrame", "referenceTime"],
+                "Additive animation options support referenceFrame and referenceTime.",
+            );
+            const frameExpression = context.objectProperty(
+                options,
+                "referenceFrame",
+            );
+            const timeExpression = context.objectProperty(
+                options,
+                "referenceTime",
+            );
+            if (frameExpression && timeExpression) {
+                context.fail(
+                    options,
+                    "Additive animation reference must use either referenceFrame or referenceTime, not both — the pinned setter throws on the pair.",
+                );
+            }
+            const selected =
+                timeExpression ?? frameExpression;
+            const reference = selected
+                ? staticNumberValue(context, selected)
+                : 0;
+            if (reference === undefined) {
+                context.fail(
+                    selected ?? options,
+                    "An additive animation reference resolves at generation: the pinned setter validates it before any frame runs.",
+                );
+            }
+            // The pinned guard is on the reference TIME; a frame divides
+            // by the positive pinned frame rate, so its sign and
+            // finiteness are the time's.
+            if (!Number.isFinite(reference) || reference < 0) {
+                context.fail(
+                    selected ?? options,
+                    `Additive animation reference time must be a finite non-negative number, got ${reference}.`,
+                );
+            }
+            if (timeExpression) {
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::set_animation_additive(` +
+                        `${engine}, ${group.cpp}, ` +
+                        `${context.compileNumber(timeExpression)})`,
+                };
+            }
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_animation_additive_from_frame(` +
+                    `${engine}, ${group.cpp}, ` +
+                    `${
+                        frameExpression
+                            ? context.compileNumber(frameExpression)
+                            : "0.0f"
+                    })`,
             };
         }
 

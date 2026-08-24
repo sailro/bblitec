@@ -2,8 +2,7 @@
 
 Only unfinished work belongs here. What is done is in [status](docs/status.md),
 the docs, and Git history. Entries state what remains and the facts needed to
-act on it — not what was tried. Findings of the 2026-08-24 audit are tracked
-separately in [AUDIT](AUDIT.md) until fixed.
+act on it — not what was tried.
 
 ## Constraints
 
@@ -180,7 +179,7 @@ separately in [AUDIT](AUDIT.md) until fixed.
 
 ## P1 — Full Babylon Lite corpus audit
 
-107 corpus scenes remain unregistered; measured scenes are in
+106 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -252,9 +251,9 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (74 scenes):** 4, 16-18, 20, 22, 38, 43,
+**Integrate first (73 scenes):** 4, 16-18, 20, 22, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
-140, 141, 144, 149, 156, 158, 165, 179, 200-207, 211, 214, 215, 217-219,
+140, 141, 144, 149, 156, 165, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
@@ -273,10 +272,6 @@ that does to the deferred lane by default.
   `let resolveFrozen!: () => void`; query-derived `Number.isFinite` conditions
   now fold to the native reference environment before the selected value arm
   lowers.
-- [ ] Scene 158: pass a loader-returned `animationGroups` collection to the
-  user function `requireGroup`. Iteration, `?? []`, `.find(pred)` with an arrow,
-  and static glTF-root indexing now lower; this is the remaining shape where
-  the collection itself travels beyond a compiler-owned call argument.
 - [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
   `f0Factor` and `specularWeight` options still refuse explicitly.
 - [ ] Extend imported hierarchy/root clones beyond Scene 12's exact slice.
@@ -305,10 +300,11 @@ that does to the deferred lane by default.
   or image skyboxes are rotation-invariant or unrelated; the remaining
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
-- [ ] Scenes 158, 171, 174, 175, 226, 251: lower `??` over an operand that is
-  not a static record property — 226 `container._gaussianSplats ?? []`, 158
-  and 251 `xbot.animationGroups ?? []`. Splats, animation groups and the
-  Recast lane sit behind them.
+- [ ] Scenes 171, 174, 175, 226, 251: lower `??` over an operand that is
+  not a static record property — 226 `container._gaussianSplats ?? []`; the
+  Recast lane's operands remain. An asset-derived `animationGroups ?? []`
+  now lowers through the handle-collection concept (scene 158), so 251's
+  first blocker has moved; re-probe it.
 - [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
   reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
   spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
@@ -503,17 +499,6 @@ that does to the deferred lane by default.
   `canvas.dataset.animationFrozen`, which is the shape this harness
   already injects — so the work is making the native side fold the same
   parameter to the measured pose rather than erasing the branch.
-- [ ] Scene 158: additive poses over the weighted skeleton mixer. Measured
-  chain, in order: a collection bound to a local (above), `requireGroup`
-  passing it to a user function that `.find`s and throws, `group.currentTime`
-  as an assignment, `setAnimationAdditive`, and the mixer's additive arm —
-  `accumulateAdditiveGroup` samples each channel at the clip time and at the
-  additive reference time, adds the weighted difference for translation and
-  scale, and for rotation multiplies `reference^-1 * sample` onto the base
-  before slerping by the weight. The seek needs one refinement with it: the
-  asset seeker moves every clip that is not stopped, and 158 pins its
-  additive pose with `pauseAnimation`, so a paused clip has to stay where the
-  scene put it.
 - [ ] Scene 165: a `createShaderMaterial` call with no `name`, then the
   viewProjection + world system-uniform pair, per-instance
   thin-instance colors (`setThinInstanceColors` plus the instance color vertex

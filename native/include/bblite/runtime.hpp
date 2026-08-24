@@ -1566,6 +1566,10 @@ struct AssetRecord {
     std::function<void(std::size_t)> apply_clip_pose;
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
+    // Marks one clip additive at its reference time (the pin's
+    // `group._additive = { referenceTime }`); filled by the generated
+    // loader only when the additive mixer is compiled in.
+    std::function<void(std::size_t, float)> set_clip_additive;
 };
 
 struct Engine {
@@ -2170,6 +2174,18 @@ void set_animation_loop(
     Engine& engine,
     AnimationGroupHandle group,
     bool loop);
+void set_animation_current_time(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float time);
+void set_animation_additive(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float reference_time);
+void set_animation_additive_from_frame(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float reference_frame);
 void attach_control(Engine& engine, CameraHandle camera);
 void attach_free_control(Engine& engine, CameraHandle camera);
 struct LoadSpriteAtlasOptions {

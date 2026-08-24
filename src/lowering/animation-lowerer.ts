@@ -17,7 +17,15 @@ export class AnimationLowerer {
      * the pin's frame-rate conversion and applies exactly the selected clip's
      * pose through the owning asset runtime.
      */
-    public lowerGroupOperations(): LoweredSource {
+    public lowerGroupOperations(
+        options: {
+            /** The scene reached `setAnimationAdditive`. */
+            additive?: boolean;
+            /** The scene writes `group.currentTime` directly. */
+            groupTime?: boolean;
+        } = {},
+    ): LoweredSource {
+        const { additive = false, groupTime = false } = options;
         const groupModule = "src/animation/animation-group.ts";
         const writers: Record<string, (value: string) => string> = {
             isPlaying: (value) =>
@@ -277,12 +285,36 @@ export class AnimationLowerer {
         asset.apply_clip_pose(record.clip);
     }
 }`;
+        // `group.currentTime` is a public mutable field upstream, so the
+        // direct write is the whole operation — the same writer route the
+        // operations above and `loopAnimation` take. Whoever drives the
+        // group applies the pose on its next tick, exactly as upstream.
+        const timeWriter =
+            `void set_animation_current_time(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float time) {
+    const AnimationGroupRecord& record =
+        group_record(engine, group);
+    AssetRecord& asset = group_asset(engine, record);
+    if (asset.set_clip_time) {
+        asset.set_clip_time(record.clip, time);
+    }
+}`;
         const operations = [
             operation("playAnimation", "play_animation"),
             operation("pauseAnimation", "pause_animation"),
             operation("stopAnimation", "stop_animation"),
             loopWriter,
             seekWriter,
+            ...(groupTime ? [timeWriter] : []),
+            ...(additive
+                ? [
+                      this.lowerSetAnimationAdditive(
+                          defaultFrameRate,
+                      ),
+                  ]
+                : []),
         ].join("\n\n");
         return {
             modulePath: groupModule,
@@ -294,7 +326,7 @@ export class AnimationLowerer {
                 "playAnimation,pauseAnimation,stopAnimation,goToFrame",
             )}
 #include <bblite/runtime.hpp>
-
+${additive ? "\n#include <cmath>" : ""}
 #include <stdexcept>
 
 namespace bbl {
@@ -325,6 +357,237 @@ ${operations}
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * `setAnimationAdditive` (src/animation/weighted-gltf-mixer.ts),
+     * lowered against its own body: the reference-time resolution, the
+     * finite/non-negative guard, the `group._additive` store, and the
+     * owner enable.
+     *
+     * The entry compiler resolves the OPTIONS at generation — the
+     * mutual exclusion and the sign/finiteness refuse there exactly
+     * where the pin throws — so what reaches this function is the
+     * reference already selected: a time, or a frame the emitted
+     * conversion divides by the pinned frame rate. That rate is anchored
+     * twice: the setter's own `|| 60` arm must state the same number as
+     * `DEFAULT_FRAME_RATE`, and the pinned glTF animation parse must
+     * still build clips without a `frameRate` of their own — which is
+     * what makes the group's rate the default for every glTF group, and
+     * the emitted divisor exact rather than assumed.
+     *
+     * The additive mark itself takes the same writer route as every
+     * other group field (`asset.set_clip_additive`), and the owner
+     * enable is `getAnimationGroupOwner` + `enableAnimationBlending` as
+     * the pin composes them: the manager `addAnimationGroups` attached,
+     * when there is one, gains the glTF mixer as its category handler.
+     */
+    private lowerSetAnimationAdditive(
+        defaultFrameRate: number,
+    ): string {
+        const mixerModule =
+            "src/animation/weighted-gltf-mixer.ts";
+        const { file, declaration: setAdditive } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "setAnimationAdditive",
+            );
+        // The pin refuses the option pair; the entry compiler refuses the
+        // same pair at generation, so the throw is asserted rather than
+        // emitted.
+        this.expectOneShape(
+            setAdditive,
+            "options?.referenceFrame !== undefined && options.referenceTime !== undefined",
+            "additive option exclusion",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                setAdditive,
+                "referenceTime",
+            ),
+            "options?.referenceTime ?? (options?.referenceFrame ?? 0) / (group.frameRate || 60)",
+            "Additive reference-time resolution",
+        );
+        this.expectOneShape(
+            setAdditive,
+            "!Number.isFinite(referenceTime) || referenceTime < 0",
+            "additive reference guard",
+        );
+        // The store the writer mirrors: `group._additive = { referenceTime }`.
+        const stores = this.context
+            .findNodes(
+                setAdditive,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    this.context
+                        .propertyPath(node.left)
+                        ?.join(".") === "group._additive",
+            );
+        if (stores.length !== 1) {
+            this.context.contractError(
+                setAdditive,
+                "Expected the additive store on the group.",
+            );
+        }
+        for (const owner of [
+            "getAnimationGroupOwner",
+            "enableAnimationBlending",
+        ]) {
+            if (!this.context.hasCall(setAdditive, owner)) {
+                this.context.contractError(
+                    setAdditive,
+                    `Expected setAnimationAdditive to reach ${owner}.`,
+                );
+            }
+        }
+        // The setter's own fallback rate, which must agree with the
+        // group factory's DEFAULT_FRAME_RATE for the emitted divisor to
+        // stand for both.
+        const divisions = this.context
+            .findNodes(
+                setAdditive,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.SlashToken &&
+                    ts.isBinaryExpression(
+                        this.context.unwrapExpression(
+                            node.right,
+                        ),
+                    ),
+            );
+        if (divisions.length !== 1) {
+            this.context.contractError(
+                setAdditive,
+                "Expected the additive frame-to-time conversion.",
+            );
+        }
+        const fallback = this.context.unwrapExpression(
+            divisions[0]!.right,
+        ) as ts.BinaryExpression;
+        const setterRate = this.context.numericValue(
+            fallback.right,
+            file,
+        );
+        if (setterRate !== defaultFrameRate) {
+            this.context.contractError(
+                fallback.right,
+                `setAnimationAdditive falls back to ${setterRate} fps where the group factory defaults to ${defaultFrameRate}; the emitted conversion cannot stand for both.`,
+            );
+        }
+        // A glTF clip carries no frameRate of its own, so the group's
+        // rate IS the default and the emitted divisor is exact.
+        const animationFile = this.context.sourceFile(
+            "src/loader-gltf/gltf-animation.ts",
+        );
+        const clipPushes = this.context.findNodes(
+            animationFile,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(
+                    node.expression,
+                ) &&
+                node.expression.name.text === "push" &&
+                ts.isIdentifier(
+                    node.expression.expression,
+                ) &&
+                node.expression.expression.text === "clips" &&
+                node.arguments.length === 1 &&
+                ts.isObjectLiteralExpression(
+                    this.context.unwrapExpression(
+                        node.arguments[0]!,
+                    ),
+                ),
+        );
+        if (clipPushes.length !== 1) {
+            this.context.contractError(
+                animationFile,
+                "Expected the one glTF clip construction.",
+            );
+        }
+        const clipLiteral = this.context.unwrapExpression(
+            clipPushes[0]!.arguments[0]!,
+        ) as ts.ObjectLiteralExpression;
+        const carriesFrameRate = clipLiteral.properties.some(
+            (property) =>
+                (ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(
+                        property,
+                    )) &&
+                this.context.propertyName(property.name) ===
+                    "frameRate",
+        );
+        if (carriesFrameRate) {
+            this.context.contractError(
+                clipLiteral,
+                "glTF clips now carry their own frameRate; the additive frame conversion must read it instead of the default.",
+            );
+        }
+        return (
+            `/**
+ * ${this.context.provenance(
+     mixerModule,
+     "setAnimationAdditive",
+ )}
+ */
+void set_animation_additive(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float reference_time) {
+    // The pinned guard; the entry compiler has already refused a
+    // non-static or negative reference, so this is the runtime mirror.
+    if (
+        !std::isfinite(reference_time) ||
+        reference_time < 0.0f) {
+        throw std::runtime_error(
+            "Additive animation reference time must be a finite "
+            "non-negative number.");
+    }
+    const AnimationGroupRecord& record =
+        group_record(engine, group);
+    AssetRecord& asset = group_asset(engine, record);
+    if (asset.set_clip_additive) {
+        asset.set_clip_additive(record.clip, reference_time);
+    }
+    // getAnimationGroupOwner + enableAnimationBlending: the manager
+    // addAnimationGroups attached, when there is one, gains the glTF
+    // mixer as its category handler. setAnimationTaskCategoryHandler
+    // keeps ONE handler per manager, so this replaces rather than
+    // composes.
+    for (
+        const PropertyAnimationManager& manager :
+        engine.animation_managers) {
+        if (!manager) continue;
+        bool owns = false;
+        for (
+            const AnimationGroupHandle attached :
+            manager->gltf_groups) {
+            if (attached.value == group.value) {
+                owns = true;
+                break;
+            }
+        }
+        if (!owns) continue;
+        manager->category_handler =
+            AnimationCategoryHandler::gltf_mixer;
+        break;
+    }
+}
+
+void set_animation_additive_from_frame(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float reference_frame) {
+    // (options?.referenceFrame ?? 0) / (group.frameRate || 60): a glTF
+    // clip carries no frame rate, so the divisor is the pinned default.
+    set_animation_additive(
+        engine,
+        group,
+        reference_frame / ${this.context.floatLiteral(defaultFrameRate)});
+}`
+        );
     }
 
     /**

@@ -186,6 +186,25 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "mixer as the manager's animation-group category handler)",
         consumers: CMAKE,
     },
+    "animation:gltf-additive": {
+        provenance:
+            "src/animation/weighted-gltf-mixer.ts " +
+            "(setAnimationAdditive marks a group additive with its " +
+            "reference time and enables blending on the owning manager; " +
+            "accumulateAdditiveGroup adds each channel's weighted " +
+            "difference from the reference-time sample, rotations as " +
+            "reference^-1 * sample onto the base before the weighted " +
+            "slerp)",
+        consumers: CMAKE,
+    },
+    "animation:gltf-group-time": {
+        provenance:
+            "src/animation/animation-group.ts (AnimationGroup." +
+            "currentTime is a public mutable field; the direct write " +
+            "takes the loader's set_clip_time writer route, and whoever " +
+            "drives the group applies the pose on its next tick)",
+        consumers: CMAKE,
+    },
     "core": {
         provenance:
             "src/engine/engine.ts + src/scene/scene-core.ts " +

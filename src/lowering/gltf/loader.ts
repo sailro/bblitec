@@ -37,6 +37,8 @@ import { lowerShPrescaleCpp } from "./sh-prescale.js";
 export interface GltfLoaderOptions {
     /** The scene reached `enableAnimationBlending` (the weighted mixer). */
     animationBlending?: boolean;
+    /** The scene reached `setAnimationAdditive` (the additive arm). */
+    animationAdditive?: boolean;
     /** The scene attaches this file's clips to its own manager. */
     managedGroups?: boolean;
     /** A composed skeleton variant carries the palette, lifting the
@@ -280,12 +282,23 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         expected: string,
         label: string,
     ): void {
+        this.expectShapeCount(declaration, expected, 1, label);
+    }
+
+    /** Exactly `count` expressions under `declaration` have this shape. */
+    private expectShapeCount(
+        declaration: ts.Node,
+        expected: string,
+        count: number,
+        label: string,
+    ): void {
         const matches = this.context
             .findNodes(
                 declaration,
                 (node): node is ts.Expression =>
                     ts.isBinaryExpression(node) ||
-                    ts.isPrefixUnaryExpression(node),
+                    ts.isPrefixUnaryExpression(node) ||
+                    ts.isCallExpression(node),
             )
             .filter((expression) =>
                 this.context.expressionMatchesShape(
@@ -293,12 +306,167 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     expected,
                 ),
             );
-        if (matches.length !== 1) {
+        if (matches.length !== count) {
             this.context.contractError(
                 declaration,
-                `Expected one ${label}.`,
+                `Expected ${count === 1 ? "one" : count} ${label}.`,
             );
         }
+    }
+
+    /**
+     * The additive arm of the same mixer, asserted against
+     * `accumulateAdditiveGroup` and its helpers: each channel sampled at
+     * the clip time AND at the additive reference time, weighted T/S
+     * difference accumulation on top of the base pose, and the rotation
+     * rule — reference⁻¹ × sample multiplied onto the base before the
+     * weighted slerp. The two gates the pin states around it — the
+     * qualifying skip's `(weight === 1 && !_additive)` half (asserted
+     * with the base mixer above) and the third-loop condition — decide
+     * when the arm runs at all.
+     */
+    private assertAdditiveMixer(): void {
+        const mixerModule =
+            "src/animation/weighted-gltf-mixer.ts";
+        const { declaration: update } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "updateWeightedGltfAnimations",
+            );
+        // The additive pass runs AFTER every base group accumulated, over
+        // exactly the groups this condition selects.
+        this.expectOneShape(
+            update,
+            "!group._stopped && group._additive && mixer && keys.has(mixer[GLTF_NODES])",
+            "additive accumulation condition",
+        );
+        // In the accumulation loop an additive group only advances its
+        // time and marks the target active; its channels contribute in
+        // the later pass.
+        const additiveAdvances = this.context
+            .findNodes(
+                update,
+                (node): node is ts.IfStatement =>
+                    ts.isIfStatement(node) &&
+                    this.context.expressionMatchesShape(
+                        node.expression,
+                        "group._additive",
+                    ),
+            );
+        if (
+            additiveAdvances.length !== 1 ||
+            !this.context.hasNode(
+                additiveAdvances[0]!,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text ===
+                        "advanceGroupTime",
+            )
+        ) {
+            this.context.contractError(
+                update,
+                "Expected the additive advance-only arm.",
+            );
+        }
+        const { declaration: accumulate } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "accumulateAdditiveGroup",
+            );
+        this.expectOneShape(
+            accumulate,
+            "!additive || weight === 0",
+            "additive zero-weight skip",
+        );
+        // Translation and scale add the weighted difference between the
+        // clip-time and reference-time samples onto whatever the base
+        // pass left — no zeroing and no weight accumulation.
+        this.expectOneShape(
+            accumulate,
+            "target.trs[base + T_OFF] = target.trs[base + T_OFF] + (scratch.sample[0] - scratch.reference[0]) * weight",
+            "additive translation difference",
+        );
+        this.expectOneShape(
+            accumulate,
+            "target.trs[base + S_OFF] = target.trs[base + S_OFF] + (scratch.sample[0] - scratch.reference[0]) * weight",
+            "additive scale difference",
+        );
+        // Each vector channel samples the reference pose beside the clip
+        // pose; rotation samples both as quaternions.
+        this.expectShapeCount(
+            accumulate,
+            "evaluateSampler(sampler, additive.referenceTime, 3, false, scratch.reference, 0)",
+            2,
+            "additive vector reference samples",
+        );
+        this.expectOneShape(
+            accumulate,
+            "evaluateSampler(sampler, additive.referenceTime, 4, true, scratch.reference, 0)",
+            "additive rotation reference sample",
+        );
+        this.expectOneShape(
+            accumulate,
+            "quatRefInverseTimesSample(scratch.delta, scratch.reference, scratch.sample)",
+            "additive rotation delta",
+        );
+        this.expectOneShape(
+            accumulate,
+            "applyAdditiveQuaternion(target.trs, base + R_OFF, scratch.delta, weight)",
+            "additive rotation application",
+        );
+        // reference⁻¹ × sample: the conjugated reference on the left of
+        // the Hamilton product, normalized before it blends.
+        const { declaration: refInverse } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "quatRefInverseTimesSample",
+            );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                refInverse,
+                "ax",
+            ),
+            "-ref[0]",
+            "Additive reference conjugation",
+        );
+        this.expectOneShape(
+            refInverse,
+            "out[0] = aw * bx + ax * bw + ay * bz - az * by",
+            "additive delta x row",
+        );
+        this.expectOneShape(
+            refInverse,
+            "out[3] = aw * bw - ax * bx - ay * by - az * bz",
+            "additive delta w row",
+        );
+        if (
+            !this.context.hasCall(
+                refInverse,
+                "normalizeQuaternionAt",
+            )
+        ) {
+            this.context.contractError(
+                refInverse,
+                "Expected the additive delta to normalize.",
+            );
+        }
+        // base × delta slerped onto the base by the weight — the whole
+        // call is the contract, product rows included.
+        const { declaration: applyAdditive } =
+            this.context.functionDeclaration(
+                mixerModule,
+                "applyAdditiveQuaternion",
+            );
+        this.expectOneShape(
+            applyAdditive,
+            "quatSlerpInto(base, offset, bx, by, bz, bw, " +
+                "bw * dx + bx * dw + by * dz - bz * dy, " +
+                "bw * dy - bx * dz + by * dw + bz * dx, " +
+                "bw * dz + bx * dy - by * dx + bz * dw, " +
+                "bw * dw - bx * dx - by * dy - bz * dz, weight)",
+            "additive base product slerp",
+        );
     }
 
     public lowerLoaderAdapter(
@@ -306,6 +474,9 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
     ): LoweredSource {
         if (options.animationBlending) {
             this.assertWeightedGltfMixer();
+        }
+        if (options.animationAdditive) {
+            this.assertAdditiveMixer();
         }
         const modulePath = "src/loader-gltf/load-gltf.ts";
         const symbolName = "loadGltf";

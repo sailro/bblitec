@@ -452,6 +452,31 @@ export interface CompiledNodeParticles
     steps: NodeParticleStep[];
 }
 
+/**
+ * One engine handle collection as a compile-time value: the loop target the
+ * inline shapes already resolve, plus — for an asset-derived collection —
+ * the materialized asset whose document names the members.
+ */
+export interface HandleCollectionInfo {
+    /** The property name as the source writes it (`animationGroups`). */
+    property: string;
+    /** The generated temporary's label, so emitted names stay stable. */
+    temporaryLabel: string;
+    /** The native vector expression the runtime loop iterates. */
+    containerCpp: string;
+    /** The element handle kind an iteration binds. */
+    elementKind: ValueKind;
+    /** The element's native type (`bbl::AnimationGroupHandle`). */
+    elementCppType: string;
+    engineCpp: string;
+    /**
+     * The materialized asset the collection came from. Present exactly for
+     * a loaded container's own collection; a scene-owned collection has no
+     * generation-known member list and keeps every operation runtime.
+     */
+    asset?: CompileAsset;
+}
+
 export interface CompileAsset {
     source: string;
     output: string;
@@ -679,6 +704,16 @@ export type ValueKind =
     | "tone-mapping"
     | "effect-wrapper"
     | "effect-renderer"
+    /**
+     * A collection of engine handles known at generation: the loader's own
+     * `animationGroups`, bound to a local or passed into a reached user
+     * function. The members come from the materialized asset, so `.find`
+     * over one resolves at generation; iteration stays the same native
+     * loop the inline property read already emits. Constructed only at
+     * binding points — the inline expression shapes keep their existing
+     * emission byte for byte.
+     */
+    | "handle-collection"
     | "sprite-custom-shader"
     | "billboard-custom-shader"
     | "billboard-system"
@@ -705,6 +740,9 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         kind === "tuple" ||
         kind === "record" ||
         kind === "morph-targets" ||
+        // A handle collection binds a name to the container the loader
+        // already owns; nothing native is declared for the binding itself.
+        kind === "handle-collection" ||
         // A custom-shader descriptor is compile-time data: the program it
         // names is composed at generation and the layer it is passed to
         // carries only that it has one.
@@ -802,9 +840,24 @@ export interface Value {
      * For a handle a search produced: the native boolean saying whether
      * the search matched. Upstream's `find` returns `undefined` when
      * nothing does, and a scene tests that before using the result, so
-     * the flag is what a truthiness test on this value reads.
+     * the flag is what a truthiness test on this value reads. A find the
+     * materialized asset resolved at generation carries the constant
+     * `"true"`, which is what folds the scene's own not-found guard away.
      */
     optionalFoundCpp?: string;
+    /**
+     * For a `handle-collection` value: where the collection lives and, when
+     * it is asset-derived, which materialized asset decides its members.
+     */
+    handleCollection?: HandleCollectionInfo;
+    /**
+     * A generation-time identity for a handle whose collection slot is
+     * known — `<asset source>#animationGroups[<index>]`. Two values carrying
+     * identities compare by them, which is what lets `group === sadPose`
+     * fold per unrolled iteration; a value without one compares its native
+     * `.value` at run time instead.
+     */
+    handleIdentity?: string;
     engineCpp?: string;
     geometryTask?: GeometryOutputTaskManifest;
     /**
@@ -940,6 +993,8 @@ export type Feature =
     | "animation:property-blending"
     | "animation:managed-groups"
     | "animation:gltf-blending"
+    | "animation:gltf-additive"
+    | "animation:gltf-group-time"
     | "background:ground"
     | "background:skybox"
     | "core"

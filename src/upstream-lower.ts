@@ -765,7 +765,14 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         if (features.includes("animation:gltf-groups")) {
             this.writeSource(
                 "upstream/src/animation_group.cpp",
-                new AnimationLowerer(context).lowerGroupOperations(),
+                new AnimationLowerer(context).lowerGroupOperations({
+                    additive: features.includes(
+                        "animation:gltf-additive",
+                    ),
+                    groupTime: features.includes(
+                        "animation:gltf-group-time",
+                    ),
+                }),
                 generated,
             );
         }
@@ -796,6 +803,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 gltf.lowerLoaderAdapter({
                     animationBlending: features.includes(
                         "animation:gltf-blending",
+                    ),
+                    animationAdditive: features.includes(
+                        "animation:gltf-additive",
                     ),
                     managedGroups: features.includes(
                         "animation:managed-groups",

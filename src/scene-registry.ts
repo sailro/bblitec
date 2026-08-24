@@ -818,6 +818,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene158",
+        name: "Scene 158 - Additive Pose Blending",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene158.ts",
+        title: "Babylon Lite Native - Additive Pose Blending",
+        parity: {
+            // The scene's own `?seekTime=` branch freezes it: both groups
+            // are written and paused, so the folded branch IS the pose on
+            // both sides and no time seek is registered.
+            referenceSearch: "?seekTime=1.25",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene155",
         name: "Scene 155 - Weighted Property Blending",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene155.ts",

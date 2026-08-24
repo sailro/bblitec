@@ -89,6 +89,44 @@ test("keeps the pin-import family in the shader composer", () => {
     }
 });
 
+test("keeps handle-collection semantics in one module", () => {
+    // The collection resolvers, the loop frame, the find, the pushes and
+    // the imported-mesh walk proof all live in handle-collections.ts —
+    // the concept a new collection shape extends instead of becoming
+    // another exact-shape sibling in expressions/statements/compiler.
+    const files = readdirSync("src", { recursive: true })
+        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
+        .filter((path) => path.endsWith(".ts"));
+    for (const marker of [
+        "readHandleCollection(",
+        "function emitHandleCollectionLoop",
+        "function isRecursiveImportedMeshWalk",
+        "nativeLocation(",
+    ]) {
+        const owners = files
+            .filter((path) => source(path).includes(marker))
+            .filter(
+                (path) =>
+                    path !== "src/compiler/properties.ts",
+            );
+        assert.deepEqual(
+            owners,
+            ["src/compiler/handle-collections.ts"],
+            `'${marker}' must live only in handle-collections.ts (and its table in properties.ts)`,
+        );
+    }
+    // The statement and expression layers reach the concept, not local
+    // re-derivations of it.
+    assert.match(
+        source("src/compiler/statements.ts"),
+        /from "\.\/handle-collections\.js"/,
+    );
+    assert.match(
+        source("src/compiler/expressions.ts"),
+        /handleCollections\.compileFind/,
+    );
+});
+
 test("routes extracted intrinsic families through the registry", () => {
     const registry = source(
         "src/compiler/intrinsics/registry.ts",
@@ -476,7 +514,6 @@ test("keeps the split lowerer families in their modules", () => {
     for (const seam of [
         /private assertRenderPlanPins\(/,
         /private assertPinnedTransparentSort\(\)/,
-        /private pinnedSampleCount\(\)/,
         /private loweredShaderVariants\(/,
         /private provedOpaqueOrderStamp\(\)/,
         /private renderPlanHeaderCpp\(/,
@@ -485,6 +522,12 @@ test("keeps the split lowerer families in their modules", () => {
     ]) {
         assert.match(renderer, seam);
     }
+    // The surface sample-count proof moved behind its own module in the
+    // wave-2 precision pass; the seam is the pinned-surface emitter now.
+    assert.match(
+        source("src/lowering/pinned-surface.ts"),
+        /function pinnedSampleCount\(/,
+    );
 });
 
 test("preserves multisampling across the transmission scene-color copy", () => {

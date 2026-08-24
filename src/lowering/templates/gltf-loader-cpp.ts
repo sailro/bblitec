@@ -234,6 +234,7 @@ export function gltfLoaderCpp(
 ): string {
     const {
         animationBlending = false,
+        animationAdditive = false,
         managedGroups = false,
         pinnedSkeletonPalette = false,
         nonTrianglePrimitives = false,
@@ -666,7 +667,14 @@ struct AnimationClip {
     bool stopped = true;
     // AnimationGroup.loopAnimation, which both advances read; the pinned
     // group default is true.
-    bool loop = true;
+    bool loop = true;${animationAdditive ? `
+    // group._additive (src/animation/weighted-gltf-mixer.ts): set by
+    // setAnimationAdditive through the writer below, read by the
+    // weighted pass — an additive clip contributes each channel's
+    // difference from its reference-time sample instead of joining the
+    // weighted base sums.
+    bool additive = false;
+    float additive_reference_time = 0.0f;` : ""}
 };
 
 struct AnimationRuntime {
@@ -4010,11 +4018,20 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
                 }
                 if (animation_runtime->clips[entry.clip].stopped) {
                     continue;
-                }
+                }${animationAdditive ? `
+                // A clip at full weight leaves the pose it would have
+                // written alone — unless it is additive, whose whole
+                // point is contributing beside the base
+                // (the pinned skip: weight === 1 && !_additive).
+                if (
+                    entry.weight != 1.0f ||
+                    animation_runtime->clips[entry.clip].additive) {
+                    qualifies = true;
+                }` : `
                 // A clip at full weight leaves the pose it would have
                 // written alone, so it does not make the mixer the
                 // handler for this tick.
-                if (entry.weight != 1.0f) qualifies = true;
+                if (entry.weight != 1.0f) qualifies = true;`}
             }
             if (!qualifies) return false;
             for (AnimatedNode& node : animation_runtime->nodes) {
@@ -4044,7 +4061,12 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
                     clip.time = std::min(
                         std::max(clip.time, 0.0f),
                         clip.duration);
-                }
+                }${animationAdditive ? `
+                // An additive group only advances its time here — the
+                // pin marks the target active and moves on; its channels
+                // contribute in the pass below, on top of whatever the
+                // base groups accumulated.
+                if (clip.additive) continue;` : ""}
                 const float weight = entry.weight;
                 if (weight == 0.0f) continue;
                 for (const RotationTrack& track :
@@ -4112,7 +4134,102 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
                     &AnimatedNode::scale,
                     &AnimatedNode::scale_weight);
             }
-            // A node the clips animate below full weight keeps the
+${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accumulateAdditiveGroup,
+            // run after every base group accumulated (the pin's own
+            // third pass): each additive clip's channels add the
+            // weighted difference between the clip-time sample and the
+            // reference-time sample, and for rotation multiply
+            // reference^-1 * sample onto the base before slerping toward
+            // it by the weight. Additive weights never join the
+            // rotation-weight sums, so the rest-remainder blend below
+            // sees only the base clips.
+            const auto quat_multiply =
+                [](const Vec4& a, const Vec4& b) -> Vec4 {
+                return Vec4{
+                    a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                    a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+                    a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+                    a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+                };
+            };
+            for (const BlendedClip& entry : blended) {
+                if (entry.clip >= animation_runtime->clips.size()) {
+                    continue;
+                }
+                AnimationClip& clip =
+                    animation_runtime->clips[entry.clip];
+                // The pinned pass condition: !_stopped && _additive.
+                if (clip.stopped || !clip.additive) continue;
+                const float weight = entry.weight;
+                if (weight == 0.0f) continue;
+                for (const RotationTrack& track :
+                     animation_runtime->rotation_tracks) {
+                    if (
+                        track.clip != entry.clip ||
+                        track.times.empty() ||
+                        track.node >=
+                            animation_runtime->nodes.size()) {
+                        continue;
+                    }
+                    const Vec4 sample =
+                        sample_rotation_track(track, clip.time);
+                    const Vec4 reference = sample_rotation_track(
+                        track,
+                        clip.additive_reference_time);
+                    // reference^-1 * sample, normalized: the delta this
+                    // clip contributes.
+                    const Vec4 delta = normalize_quaternion(
+                        quat_multiply(
+                            Vec4{
+                                -reference.x,
+                                -reference.y,
+                                -reference.z,
+                                reference.w,
+                            },
+                            sample));
+                    AnimatedNode& node =
+                        animation_runtime->nodes[track.node];
+                    node.rotation = interpolate_quaternion(
+                        node.rotation,
+                        quat_multiply(node.rotation, delta),
+                        weight);
+                }
+                const auto accumulate_additive_vec3 =
+                    [&](const std::vector<TranslationTrack>& tracks,
+                        Vec3 AnimatedNode::*value) {
+                    for (const TranslationTrack& track : tracks) {
+                        if (
+                            track.clip != entry.clip ||
+                            track.times.empty() ||
+                            track.node >=
+                                animation_runtime->nodes.size()) {
+                            continue;
+                        }
+                        const Vec3 sample =
+                            sample_vec3_track(track, clip.time);
+                        const Vec3 reference = sample_vec3_track(
+                            track,
+                            clip.additive_reference_time);
+                        AnimatedNode& node =
+                            animation_runtime->nodes[track.node];
+                        node.*value = Vec3{
+                            (node.*value).x +
+                                (sample.x - reference.x) * weight,
+                            (node.*value).y +
+                                (sample.y - reference.y) * weight,
+                            (node.*value).z +
+                                (sample.z - reference.z) * weight,
+                        };
+                    }
+                };
+                accumulate_additive_vec3(
+                    animation_runtime->translation_tracks,
+                    &AnimatedNode::translation);
+                accumulate_additive_vec3(
+                    animation_runtime->scale_tracks,
+                    &AnimatedNode::scale);
+            }
+` : ""}            // A node the clips animate below full weight keeps the
             // remainder of its rest rotation; at or above it, the
             // accumulated slerps are renormalized.
             for (AnimatedNode& node : animation_runtime->nodes) {
@@ -4464,7 +4581,16 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             // started holds at zero.
             animation_runtime->time = std::max(time, 0.0f);
             for (AnimationClip& clip : animation_runtime->clips) {
-                if (seek ? clip.stopped : !clip.playing) {
+                // A seek freezes what was animating. A stopped clip is
+                // outside it because the pin's own tick returns early
+                // for one — and a PAUSED clip already holds a pose the
+                // scene chose: upstream only moves a paused group's time
+                // through an explicit per-group write, never through a
+                // tick (advanceGroupTime advances only while playing),
+                // so the fanned-out seek must not move it either.
+                if (
+                    seek ? (clip.stopped || !clip.playing)
+                         : !clip.playing) {
                     continue;
                 }
                 clip.time = clip.duration <= 0.0f
@@ -4603,7 +4729,16 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             [animation_runtime](std::size_t clip, bool loop) {
             if (clip >= animation_runtime->clips.size()) return;
             animation_runtime->clips[clip].loop = loop;
-        };${animationBlending ? `
+        };${animationAdditive ? `
+        // group._additive = { referenceTime }: the additive mark takes
+        // the same writer route as every other group field.
+        asset.set_clip_additive =
+            [animation_runtime](std::size_t clip, float reference_time) {
+            if (clip >= animation_runtime->clips.size()) return;
+            animation_runtime->clips[clip].additive = true;
+            animation_runtime->clips[clip].additive_reference_time =
+                reference_time;
+        };` : ""}${animationBlending ? `
         asset.animation_blend = apply_blended_animation;` : ""}
     }
     if (asset.meshes.empty()) throw std::runtime_error("glTF contains no renderable meshes.");
