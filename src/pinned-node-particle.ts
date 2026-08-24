@@ -30,7 +30,10 @@
  * recorded per scene as the `executed-node-particle-simulation` adaptation:
  * the baked state depends on the Chrome that ran it.
  */
-import { createSuiteSceneServer } from "./capture-suite-reference.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserEntryUrl,
+} from "./capture-suite-reference.js";
 import {
     runPageGlobal,
     screenshotCaptureBrowserArgs,
@@ -318,7 +321,7 @@ export interface NodeParticleBake {
 }
 
 /** The pinned package path the served driver imports. */
-const pinnedPackage = "/node_modules/@babylonjs/lite/lib/index.js";
+const pinnedPackage = pinnedBrowserEntryUrl;
 
 function graphExpression(graph: NodeParticleGraphSource): string {
     if (graph.kind === "literal") {

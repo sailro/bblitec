@@ -297,8 +297,9 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
     // The pinned fork the anchors inside lowerRenderPlan pair with: a
     // failed pairing throws there, so this test both re-states the pin's
     // side and checks the emitted rules still carry the transcription.
-    const store = new UpstreamSourceStore();
-    const renderTask = store.getSource("src/frame-graph/render-task.ts");
+    const renderTask = sharedStore.getSource(
+        "src/frame-graph/render-task.ts",
+    );
     assert.ok(
         renderTask.includes("if (r.isTransparent || r._transmissive) {"),
     );
@@ -481,8 +482,7 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
 });
 
 test("anchors the light-slot packing to the pinned lights-ubo module", () => {
-    const store = new UpstreamSourceStore();
-    const lightsUbo = store.getSource("src/render/lights-ubo.ts");
+    const lightsUbo = sharedStore.getSource("src/render/lights-ubo.ts");
     // The pinned loops the PALs walk against the emitted
     // light_affects_mesh: both advance their slot cursor only for
     // _writeLightUbo lights, which keeps a mesh's packed indices aligned

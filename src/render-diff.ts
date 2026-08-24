@@ -98,6 +98,12 @@ export interface ShaderArmReport {
     matched: Array<{ browser: string[]; native: string[] }>;
     browserOnly: string[];
     nativeOnly: string[];
+    /** The browser-only modules that are PBR fragments — the
+     *  compose-class finding. Derived beside the near-miss preference
+     *  that already needs it; `buildRenderDiff` ranks its findings by it
+     *  and keeps it out of the serialized report. Optional so hand-built
+     *  report fixtures stay expressible. */
+    pbrOrphans?: string[];
     /** The closest one-sided pair by longest common line prefix, with
      *  the first divergent line — the line that names the arm. */
     nearMiss?: {
@@ -504,41 +510,33 @@ interface CapturedBuffer {
     mappedWrites?: Array<{ data?: string }>;
 }
 
+/** One buffers.json entry that passed admission, its last write decoded. */
+export interface AdmittedBuffer {
+    id: number | string;
+    size: number;
+    bytes: Buffer;
+}
+
 /**
- * Every uniform field the browser uploaded, decoded through the struct
- * declarations in the browser's own composed shaders.
- *
- * A buffer whose size matches several declared structs is decoded under
- * each of them; duplicate names collapse when their values agree, which
- * they do for the scene block every fragment redeclares.
+ * The capture's buffers.json, parsed once and reduced to the buffers
+ * whose values are worth reading — uniform blocks, plus storage buffers
+ * small enough to be state rather than geometry — each with its newest
+ * write decoded. Both projections below (the struct-decoded fields and
+ * the raw vec4 rows) read this one result, so they cannot disagree about
+ * which buffers even have bytes, and the multi-megabyte base64 payload
+ * is parsed and decoded once per diff instead of once per projection.
  */
-export function browserUniformFields(
-    captureDirectory: string,
-): UniformField[] {
+function admittedBuffers(captureDirectory: string): AdmittedBuffer[] {
     const buffersPath = captureBuffersPath(captureDirectory);
     if (!existsSync(buffersPath)) {
         throw new Error(
             `No browser capture at ${buffersPath}. Run 'scene -- capture <id>' first.`,
         );
     }
-    const structs: WgslStruct[] = [];
-    const shaderDirectory = captureShadersDirectory(captureDirectory);
-    if (existsSync(shaderDirectory)) {
-        for (const name of readdirSync(shaderDirectory)) {
-            if (!name.endsWith(".wgsl")) continue;
-            structs.push(
-                ...parseWgslStructs(
-                    readFileSync(join(shaderDirectory, name), "utf8"),
-                    name,
-                ),
-            );
-        }
-    }
     const buffers = JSON.parse(
         readFileSync(buffersPath, "utf8"),
     ) as CapturedBuffer[];
-    const fields: UniformField[] = [];
-    const seen = new Set<string>();
+    const admitted: AdmittedBuffer[] = [];
     for (const buffer of buffers) {
         const usage = buffer.usage ?? 0;
         const uniform = (usage & uniformUsage) !== 0;
@@ -548,17 +546,74 @@ export function browserUniformFields(
         if (!uniform && !storage) continue;
         const bytes = lastWriteBytes(buffer);
         if (!bytes) continue;
-        const size = buffer.size ?? bytes.length;
-        const matching = structs.filter((struct) => struct.size === size);
+        admitted.push({
+            id: buffer.id ?? "?",
+            size: buffer.size ?? bytes.length,
+            bytes,
+        });
+    }
+    return admitted;
+}
+
+/** A buffer's payload as bare `buffer#<id>[<lane>]` vec4 rows — upload
+ *  granularity, shared by the no-struct fallback and the row projection
+ *  so the two spell their names and lanes identically. */
+function bufferVec4Rows(buffer: AdmittedBuffer): UniformField[] {
+    const rows: UniformField[] = [];
+    for (
+        let offset = 0;
+        offset + 16 <= buffer.bytes.length;
+        offset += 16
+    ) {
+        rows.push({
+            name: `buffer#${buffer.id}[${offset / 4}]`,
+            values: [0, 1, 2, 3].map((lane) =>
+                buffer.bytes.readFloatLE(offset + lane * 4),
+            ),
+        });
+    }
+    return rows;
+}
+
+/** The capture's composed shader modules by file name — read once, and
+ *  served to the struct parse, the arm comparison and the sample-call
+ *  listing alike. */
+function readBrowserShaderTexts(
+    captureDirectory: string,
+): Map<string, string> {
+    const texts = new Map<string, string>();
+    const shaderDirectory = captureShadersDirectory(captureDirectory);
+    if (!existsSync(shaderDirectory)) return texts;
+    for (const name of readdirSync(shaderDirectory)) {
+        if (!name.endsWith(".wgsl")) continue;
+        texts.set(
+            name,
+            readFileSync(join(shaderDirectory, name), "utf8"),
+        );
+    }
+    return texts;
+}
+
+/**
+ * Every uniform field the browser uploaded, decoded through the struct
+ * declarations in the browser's own composed shaders.
+ *
+ * A buffer whose size matches several declared structs is decoded under
+ * each of them; duplicate names collapse when their values agree, which
+ * they do for the scene block every fragment redeclares.
+ */
+export function browserUniformFields(
+    buffers: readonly AdmittedBuffer[],
+    structs: readonly WgslStruct[],
+): UniformField[] {
+    const fields: UniformField[] = [];
+    const seen = new Set<string>();
+    for (const buffer of buffers) {
+        const matching = structs.filter(
+            (struct) => struct.size === buffer.size,
+        );
         if (matching.length === 0) {
-            for (let offset = 0; offset + 16 <= bytes.length; offset += 16) {
-                fields.push({
-                    name: `buffer#${buffer.id ?? "?"}[${offset / 4}]`,
-                    values: [0, 1, 2, 3].map((lane) =>
-                        bytes.readFloatLE(offset + lane * 4),
-                    ),
-                });
-            }
+            fields.push(...bufferVec4Rows(buffer));
             continue;
         }
         for (const struct of matching) {
@@ -571,12 +626,15 @@ export function browserUniformFields(
                 const values: number[] = [];
                 for (
                     let lane = 0;
-                    lane * 4 < width && offset + lane * 4 + 4 <= bytes.length;
+                    lane * 4 < width &&
+                    offset + lane * 4 + 4 <= buffer.bytes.length;
                     lane += 1
                 ) {
-                    values.push(bytes.readFloatLE(offset + lane * 4));
+                    values.push(
+                        buffer.bytes.readFloatLE(offset + lane * 4),
+                    );
                 }
-                const name = `buffer#${buffer.id ?? "?"} ${field.name}`;
+                const name = `buffer#${buffer.id} ${field.name}`;
                 const signature = `${name}|${values.join(",")}`;
                 if (seen.has(signature)) return;
                 seen.add(signature);
@@ -599,33 +657,9 @@ export function browserUniformFields(
  * native counterpart" would duplicate every decoded field.
  */
 export function browserBufferValueRows(
-    captureDirectory: string,
+    buffers: readonly AdmittedBuffer[],
 ): UniformField[] {
-    const buffersPath = captureBuffersPath(captureDirectory);
-    if (!existsSync(buffersPath)) return [];
-    const buffers = JSON.parse(
-        readFileSync(buffersPath, "utf8"),
-    ) as CapturedBuffer[];
-    const rows: UniformField[] = [];
-    for (const buffer of buffers) {
-        const usage = buffer.usage ?? 0;
-        const uniform = (usage & uniformUsage) !== 0;
-        const storage =
-            (usage & storageUsage) !== 0 &&
-            (buffer.size ?? 0) <= storageValueCap;
-        if (!uniform && !storage) continue;
-        const bytes = lastWriteBytes(buffer);
-        if (!bytes) continue;
-        for (let offset = 0; offset + 16 <= bytes.length; offset += 16) {
-            rows.push({
-                name: `buffer#${buffer.id ?? "?"}[${offset / 4}]`,
-                values: [0, 1, 2, 3].map((lane) =>
-                    bytes.readFloatLE(offset + lane * 4),
-                ),
-            });
-        }
-    }
-    return rows;
+    return buffers.flatMap((buffer) => bufferVec4Rows(buffer));
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1061,35 @@ export function normalizeShaderText(text: string): string {
         .replace(/\n+$/, "");
 }
 
+/**
+ * Where two texts stop agreeing: `scene -- compose`'s
+ * longest-common-prefix idiom, shared by the compose report and the
+ * shader-arm near miss so the two cannot count lines differently.
+ * `line` is the number of agreeing lines (0-based index of the first
+ * divergent one — the reports print `line + 1`), and each context is
+ * the two-line slice from that point.
+ */
+export function divergence(
+    mineText: string,
+    theirsText: string,
+): { line: number; mineContext: string[]; theirsContext: string[] } {
+    const mine = mineText.split("\n");
+    const theirs = theirsText.split("\n");
+    let line = 0;
+    while (
+        line < mine.length &&
+        line < theirs.length &&
+        mine[line] === theirs[line]
+    ) {
+        line += 1;
+    }
+    return {
+        line,
+        mineContext: mine.slice(line, line + 2),
+        theirsContext: theirs.slice(line, line + 2),
+    };
+}
+
 /** The compose report's own test for a PBR fragment: an entry point that
  *  shades a base F0. A captured module that passes it and matches no
  *  generated arm is the compose-class finding. */
@@ -1088,19 +1151,12 @@ export function shaderArmReport(
     for (const browserName of nearMissCandidates) {
         const mine = normalizeShaderText(
             browserModules.get(browserName) ?? "",
-        ).split("\n");
+        );
         for (const nativeName of nativeOnly) {
-            const theirs = normalizeShaderText(
-                nativeArms.get(nativeName) ?? "",
-            ).split("\n");
-            let line = 0;
-            while (
-                line < mine.length &&
-                line < theirs.length &&
-                mine[line] === theirs[line]
-            ) {
-                line += 1;
-            }
+            const { line, mineContext, theirsContext } = divergence(
+                mine,
+                normalizeShaderText(nativeArms.get(nativeName) ?? ""),
+            );
             // Strictly better only: a pair that shares no line at all is
             // not a near miss, it is two different shaders.
             if (line > agreed) {
@@ -1109,8 +1165,8 @@ export function shaderArmReport(
                     browser: browserName,
                     native: nativeName,
                     line: line + 1,
-                    browserLines: mine.slice(line, line + 2),
-                    nativeLines: theirs.slice(line, line + 2),
+                    browserLines: mineContext,
+                    nativeLines: theirsContext,
                 };
             }
         }
@@ -1119,6 +1175,7 @@ export function shaderArmReport(
         matched,
         browserOnly,
         nativeOnly,
+        pbrOrphans,
         ...(nearMiss ? { nearMiss } : {}),
     };
 }
@@ -1142,7 +1199,16 @@ export function buildRenderDiff(
     generatedDirectory: string,
 ): RenderDiffReport {
     const capture = readNativeCapture(nativeCapturePath);
-    const browser = browserUniformFields(captureDirectory);
+    // The browser capture is parsed once: the admitted buffers serve both
+    // value projections, and the shader texts serve the struct parse, the
+    // arm comparison and the sample-call listing.
+    const captureBuffers = admittedBuffers(captureDirectory);
+    const browserShaderTexts = readBrowserShaderTexts(captureDirectory);
+    const structs: WgslStruct[] = [];
+    for (const [name, text] of browserShaderTexts) {
+        structs.push(...parseWgslStructs(text, name));
+    }
+    const browser = browserUniformFields(captureBuffers, structs);
     // The struct authorities, in precedence order: the renderer plan's own
     // header, then the generated pinned-variant headers whose uniform
     // mirrors the capture's standard and PBR blocks are written through
@@ -1208,7 +1274,7 @@ export function buildRenderDiff(
     const candidateSignatures = new Set(
         browser.map((field) => `${field.name}|${field.values.join(",")}`),
     );
-    for (const row of browserBufferValueRows(captureDirectory)) {
+    for (const row of browserBufferValueRows(captureBuffers)) {
         const signature = `${row.name}|${row.values.join(",")}`;
         if (candidateSignatures.has(signature)) continue;
         candidateSignatures.add(signature);
@@ -1287,17 +1353,6 @@ export function buildRenderDiff(
         browserNonIndexed: browserShapes.nonIndexed,
     };
 
-    const shaderDirectory = captureShadersDirectory(captureDirectory);
-    const browserShaderTexts = new Map<string, string>();
-    if (existsSync(shaderDirectory)) {
-        for (const name of readdirSync(shaderDirectory)) {
-            if (!name.endsWith(".wgsl")) continue;
-            browserShaderTexts.set(
-                name,
-                readFileSync(join(shaderDirectory, name), "utf8"),
-            );
-        }
-    }
     const browserModules = [...browserShaderTexts.keys()];
     const nativeShaderDirectory = join(
         generatedDirectory,
@@ -1335,7 +1390,13 @@ export function buildRenderDiff(
             readFileSync(join(nativeShaderDirectory, name), "utf8"),
         );
     }
-    const arms = shaderArmReport(browserShaderTexts, nativeArmTexts);
+    // `pbrOrphans` rides beside the serialized arm sets, not inside them:
+    // the findings rank by it, while the written report keeps exactly the
+    // fields it has always had.
+    const { pbrOrphans = [], ...arms } = shaderArmReport(
+        browserShaderTexts,
+        nativeArmTexts,
+    );
 
     // The palette matching: absent (not empty) when the browser capture
     // predates tex-uploads.json, so the report can say "recapture" rather
@@ -1356,8 +1417,6 @@ export function buildRenderDiff(
     // A composed fragment we never emitted explains uniform differences
     // too — the two sides would not even share struct layouts — so it
     // outranks every value below it.
-    const pbrOrphans = arms.browserOnly.filter((name) =>
-        looksLikePbrFragment(browserShaderTexts.get(name) ?? ""));
     if (pbrOrphans.length > 0) {
         findings.push(
             `${pbrOrphans.length} captured PBR fragment(s) match no generated shader arm: ${pbrOrphans.join(", ")}` +

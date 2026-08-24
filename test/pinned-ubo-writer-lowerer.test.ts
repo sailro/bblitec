@@ -14,8 +14,13 @@ import {
     type UboFieldSlot,
 } from "../src/lowering/pinned-ubo-writer-lowerer.js";
 
+// One store for the whole file: the pinned sources are immutable and the
+// store is a read-through cache, so each test rebuilding one only re-read
+// and re-parsed the same package.
+const sharedStore = new UpstreamSourceStore();
+
 function context(): LoweringContext {
-    return new LoweringContext(new UpstreamSourceStore());
+    return new LoweringContext(sharedStore);
 }
 
 /** The clearcoat variant's fields, as the composer publishes them. */

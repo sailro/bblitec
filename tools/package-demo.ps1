@@ -147,7 +147,36 @@ foreach ($dll in $runtimeDlls) {
 }
 
 if ($sdlShared) {
-    $redistRoot = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC"
+    # The CRT redistributables ship from the installed Visual Studio,
+    # located the way src/scene-command.ts locates MSVC: vswhere names the
+    # install root, and the redist tree sits under it. The historical
+    # Community path stays as the documented fallback for a machine
+    # without vswhere.
+    $redistRoot = $null
+    $programFilesX86 = if (${env:ProgramFiles(x86)}) {
+        ${env:ProgramFiles(x86)}
+    } else {
+        "C:\Program Files (x86)"
+    }
+    $vswhere = Join-Path $programFilesX86 `
+        "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $vsRoot = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+        if ($LASTEXITCODE -eq 0 -and $vsRoot) {
+            $candidate = Join-Path ([string]$vsRoot).Trim() "VC\Redist\MSVC"
+            if (Test-Path $candidate) {
+                $redistRoot = $candidate
+            }
+        }
+    }
+    if (-not $redistRoot) {
+        $redistRoot = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC"
+    }
+    if (-not (Test-Path $redistRoot)) {
+        throw "MSVC redistributable root was not found: $redistRoot (vswhere absent or reported no VC tools)."
+    }
     $crtDirectory = Get-ChildItem $redistRoot -Directory |
         Sort-Object Name -Descending |
         ForEach-Object { Join-Path $_.FullName "x64\Microsoft.VC145.CRT" } |

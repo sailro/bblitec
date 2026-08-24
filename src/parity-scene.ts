@@ -36,9 +36,12 @@ import {
 /**
  * The generated manifest records the deterministic-seeded-random adaptation
  * whenever the compiled scene reached Math.random; the browser reference
- * must then install the pinned seeded generator before module load.
+ * must then install the pinned seeded generator before module load. Every
+ * browser capture of a compiled scene reads this — the parity reference,
+ * the instrumented capture and the geometry diagnostics — so a seeded
+ * scene renders the same particle set on all of them.
  */
-function usesSeededRandom(scene: SceneDefinition): boolean {
+export function usesSeededRandom(scene: SceneDefinition): boolean {
     const manifestPath = resolve(
         scene.output,
         "manifest.json",
@@ -284,6 +287,40 @@ export function captureMetaPath(captureDirectory: string): string {
     return join(captureDirectory, "capture-meta.json");
 }
 
+/**
+ * Writes a capture's seek-provenance sidecar, so a reuse path can tell
+ * whether the directory describes the pose it is about to be diffed at.
+ * `undefined` is recorded as `null` — captured with no seek. One writer
+ * for both capture halves, one reader in `scene -- diff`, so the JSON
+ * shape cannot drift between them.
+ */
+export function writeSeekMeta(
+    path: string,
+    seekSeconds: number | undefined,
+): void {
+    writeFileSync(
+        path,
+        `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
+    );
+}
+
+/**
+ * Reads a seek-provenance sidecar back. `null` = captured with no seek;
+ * `undefined` = no provenance (a pre-meta or unreadable capture), which
+ * reads as unknown and forces a recapture.
+ */
+export function readSeekMeta(path: string): number | null | undefined {
+    if (!existsSync(path)) return undefined;
+    try {
+        const meta = JSON.parse(readFileSync(path, "utf8")) as {
+            seekSeconds?: number | null;
+        };
+        return meta.seekSeconds ?? null;
+    } catch {
+        return undefined;
+    }
+}
+
 /** The browser capture's texture-upload record: raw texels for small
  *  uploads (bone palettes ride rgba32float rows), 4x4 samples for image
  *  copies. The writer is the instrumented capture's page script; the
@@ -398,6 +435,37 @@ export function applyGpuBackendEnvironment(backend: string): void {
         process.env.BBLITE_GPU_BACKEND = "dawn";
     } else {
         delete process.env.BBLITE_GPU_BACKEND;
+    }
+}
+
+/**
+ * Runs `body` with one environment variable set (or, for `undefined`,
+ * deleted — deleting matters as much as setting: an ambient value would
+ * otherwise survive into a run that chose otherwise), restoring the
+ * previous state however the body ends. The body is awaited before the
+ * restore, because restoring while spawned work is still running would
+ * change the variable under it. The one copy of the save/set/restore
+ * ceremony the scene tools kept re-spelling per variable.
+ */
+export async function withEnvironment<T>(
+    name: string,
+    value: string | undefined,
+    body: () => Promise<T>,
+): Promise<T> {
+    const previous = process.env[name];
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
+    }
+    try {
+        return await body();
+    } finally {
+        if (previous === undefined) {
+            delete process.env[name];
+        } else {
+            process.env[name] = previous;
+        }
     }
 }
 
@@ -1310,19 +1378,12 @@ export async function runSceneParityDifferential(
     // the other's.
     const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
-    const previousBackend = process.env.BBLITE_GPU_BACKEND;
-    try {
-        delete process.env.BBLITE_GPU_BACKEND;
-        await runSceneParity([sceneId]);
-        process.env.BBLITE_GPU_BACKEND = "dawn";
-        await runSceneParity([sceneId]);
-    } finally {
-        if (previousBackend === undefined) {
-            delete process.env.BBLITE_GPU_BACKEND;
-        } else {
-            process.env.BBLITE_GPU_BACKEND = previousBackend;
-        }
-    }
+    await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
+        runSceneParity([sceneId]),
+    );
+    await withEnvironment("BBLITE_GPU_BACKEND", "dawn", () =>
+        runSceneParity([sceneId]),
+    );
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): {
         full: { mad: number };

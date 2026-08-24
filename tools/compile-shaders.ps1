@@ -695,9 +695,6 @@ foreach ($shaderDirectory in $shaderDirectories) {
         $declared = $declaredModules[
             [System.IO.Path]::GetFileName($nativeWgsl)
         ]
-        # A hand-authored .hlsl with no native WGSL beside it is Babylon
-        # Lite's own text carried verbatim, so it keeps `main`; everything
-        # else was declared by generation.
         $entryPoint = if ($null -ne $declared) {
             [string]$declared.entryPoint
         } else {

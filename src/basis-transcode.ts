@@ -19,7 +19,10 @@
  * depend on the Chrome that compiled them — and it is recorded per scene as
  * the `executed-basis-transcode` adaptation.
  */
-import { createSuiteSceneServer } from "./capture-suite-reference.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserEntryUrl,
+} from "./capture-suite-reference.js";
 import type { KtxHeaderLayout } from "./lowering/compressed-texture-lowerer.js";
 import {
     pageBase64Script,
@@ -60,7 +63,7 @@ interface CapturedTranscode {
  * gives: a number per byte turns a megabyte into ten seconds of JSON.
  */
 function transcodeModule(url: string): string {
-    return `import { createEngine, loadBasisTexture2D } from "/node_modules/@babylonjs/lite/lib/index.js";
+    return `import { createEngine, loadBasisTexture2D } from ${JSON.stringify(pinnedBrowserEntryUrl)};
 
 ${pageBase64Script}
 window.__transcodeBasis = async () => {

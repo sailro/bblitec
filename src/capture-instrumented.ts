@@ -23,7 +23,10 @@ import {
     captureDrawsPath,
     captureMetaPath,
     captureShadersDirectory,
+    captureTextureUploadsPath,
     defaultCaptureDirectory,
+    usesSeededRandom,
+    writeSeekMeta,
 } from "./parity-scene.js";
 import { resolveScene } from "./scene-registry.js";
 
@@ -221,7 +224,14 @@ export async function runInstrumentedCapture(
     );
     const server = createSuiteSceneServer(
         moduleSource,
-        { sourcePath: scene.source },
+        {
+            sourcePath: scene.source,
+            // The same stub the parity reference installs: a scene whose
+            // manifest records `deterministic-seeded-random` must draw the
+            // pinned sequence here too, or the capture describes a
+            // different set of particles than the golden renders.
+            seededRandom: usesSeededRandom(scene),
+        },
     );
     await withBrowserPage(
         server,
@@ -276,7 +286,7 @@ export async function runInstrumentedCapture(
                 JSON.stringify(dump.buffers, null, 1),
             );
             writeFileSync(
-                join(outputDirectory, "tex-uploads.json"),
+                captureTextureUploadsPath(outputDirectory),
                 JSON.stringify(textureUploads, null, 1),
             );
             writeFileSync(
@@ -294,14 +304,10 @@ export async function runInstrumentedCapture(
                 join(outputDirectory, "buffers-summary.txt"),
                 summary,
             );
-            // The capture's provenance, so a reuse path can tell whether this
-            // directory describes the pose it is about to be diffed at. `null`
-            // means captured with no seek; a missing file is a pre-provenance
-            // capture and reads as unknown.
-            writeFileSync(
-                captureMetaPath(outputDirectory),
-                `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
-            );
+            // The capture's provenance, so a reuse path can tell whether
+            // this directory describes the pose it is about to be diffed
+            // at.
+            writeSeekMeta(captureMetaPath(outputDirectory), seekSeconds);
             console.log(`Instrumented capture written to ${outputDirectory}`);
             console.log(`Draw calls: ${JSON.stringify(draws)}`);
             console.log(summary);

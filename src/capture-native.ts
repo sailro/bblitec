@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import {
     backendFileToken,
@@ -10,6 +10,7 @@ import {
     spawnNativeMeasured,
     verifyBuildIdentity,
     verifyDeployedPayload,
+    writeSeekMeta,
 } from "./parity-scene.js";
 import { resolveScene } from "./scene-registry.js";
 
@@ -51,8 +52,7 @@ export function runNativeCapture(
         "capture",
     );
     // Filenames use the shared token ("gpu" for SDL_GPU), matching the
-    // parity artifacts; the pre-token `native-sdl_gpu.*` spelling is
-    // still read by `scene -- diff` for one transition.
+    // parity artifacts.
     const token = backendFileToken(backend);
     const outputDirectory = resolve(
         options.outputDirectory ?? defaultCaptureDirectory(scene.id),
@@ -111,9 +111,6 @@ export function runNativeCapture(
     }
     // Seek provenance for the reuse path; the build stamp is already inside
     // the capture itself, written by the native run.
-    writeFileSync(
-        paths.meta,
-        `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
-    );
+    writeSeekMeta(paths.meta, seekSeconds);
     return { capturePath, screenshotPath, backend };
 }

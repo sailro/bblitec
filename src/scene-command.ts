@@ -29,17 +29,19 @@ import {
     parseParityArguments,
     parseRgbTriple,
     parseStabilityArguments,
+    readSeekMeta,
     resolveBackend,
     runSceneParity,
     runSceneParityDifferential,
     runStabilityReport,
     seekBracketPlan,
+    withEnvironment,
     writeReport,
 } from "./parity-scene.js";
 import {
-    comparePayload,
     computeBuildStamp,
     deployedPayloads,
+    payloadOrphans,
 } from "./build-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 import { runInstrumentedCapture } from "./capture-instrumented.js";
@@ -120,6 +122,54 @@ function runAsync(
             );
         });
     });
+}
+
+/**
+ * The buffered-child-output stanza every concurrent spawn shares: the
+ * body runs children through one buffer, and the finally prints the
+ * block whole — label first — however the body ends, so interleaved
+ * children stay readable and a failure keeps its own diagnostics
+ * together. `buffer: false` inherits stdio instead (the single-child
+ * case); `settleMs` waits after the flush, success or not — the settle
+ * that has always followed a measured run on Windows.
+ */
+async function runBuffered(
+    options: {
+        buffer?: boolean;
+        label?: string;
+        settleMs?: number;
+    },
+    body: (
+        run: (
+            command: string,
+            arguments_: string[],
+            environment?: NodeJS.ProcessEnv,
+        ) => Promise<void>,
+    ) => Promise<void>,
+): Promise<void> {
+    const buffered = options.buffer ?? true;
+    const output: string[] = [];
+    try {
+        await body((command, arguments_, environment = process.env) =>
+            runAsync(
+                command,
+                arguments_,
+                environment,
+                buffered ? output : undefined,
+            ),
+        );
+    } finally {
+        if (output.length > 0) {
+            process.stdout.write(
+                `${options.label ?? ""}${output.join("")}`,
+            );
+        }
+        if (options.settleMs !== undefined) {
+            await new Promise((done) =>
+                setTimeout(done, options.settleMs),
+            );
+        }
+    }
 }
 
 function latestDirectory(root: string): string | undefined {
@@ -263,21 +313,10 @@ async function compile(idOrSource: string): Promise<void> {
         selected,
         inFlight,
         (scene) => scene.id,
-        async (scene) => {
-            const output: string[] = [];
-            try {
-                await runAsync(
-                    process.execPath,
-                    compilerArguments(scene),
-                    process.env,
-                    output,
-                );
-            } finally {
-                if (output.length > 0) {
-                    process.stdout.write(output.join(""));
-                }
-            }
-        },
+        (scene) =>
+            runBuffered({}, (run) =>
+                run(process.execPath, compilerArguments(scene)),
+            ),
     );
 }
 
@@ -337,40 +376,46 @@ async function parity(
                 `Measuring ${measured.length} scenes, ${inFlight} at a time.`,
             );
         }
+        // The children are scene-command.js processes themselves; the
+        // marker tells their holdDistLock that this parent already holds
+        // the dist lock, so the first finished child cannot unlink it
+        // from under the rest of the matrix run.
+        const childEnvironment: NodeJS.ProcessEnv = {
+            ...process.env,
+            BBLITE_DIST_LOCK_HELD: "1",
+        };
         await runConcurrently(
             measured,
             inFlight,
             (scene) => scene.id,
-            async (scene) => {
-                const output: string[] = [];
-                try {
-                    await runAsync(
-                        process.execPath,
-                        [
-                            resolve("dist/src/scene-command.js"),
-                            "parity",
-                            scene.id,
-                            ...(differential
-                                ? ["--differential"]
-                                : passthrough),
-                            ...(parsed.gpuDebug ? ["--gpu-debug"] : []),
-                        ],
-                        process.env,
-                        inFlight > 1 ? output : undefined,
-                    );
-                } finally {
-                    if (output.length > 0) {
-                        process.stdout.write(output.join(""));
-                    }
-                    // The settle that has always followed a measured run
-                    // on Windows; per worker now rather than per scene.
-                    if (process.platform === "win32") {
-                        await new Promise((done) =>
-                            setTimeout(done, 500),
-                        );
-                    }
-                }
-            },
+            (scene) =>
+                runBuffered(
+                    {
+                        buffer: inFlight > 1,
+                        // The settle that has always followed a measured
+                        // run on Windows; per worker rather than per
+                        // scene.
+                        ...(process.platform === "win32"
+                            ? { settleMs: 500 }
+                            : {}),
+                    },
+                    (run) =>
+                        run(
+                            process.execPath,
+                            [
+                                resolve("dist/src/scene-command.js"),
+                                "parity",
+                                scene.id,
+                                ...(differential
+                                    ? ["--differential"]
+                                    : passthrough),
+                                ...(parsed.gpuDebug
+                                    ? ["--gpu-debug"]
+                                    : []),
+                            ],
+                            childEnvironment,
+                        ),
+                ),
         );
         return;
     }
@@ -568,6 +613,7 @@ function cacheMatchesConfiguration(
     ) {
         return false;
     }
+    const passed = new Set<string>();
     for (const argument of configureArguments) {
         if (!argument.startsWith("-D")) {
             continue;
@@ -578,6 +624,7 @@ function cacheMatchesConfiguration(
         }
         const name = argument.slice(2, separator);
         const value = argument.slice(separator + 1);
+        passed.add(name);
         const cached = cache[name];
         if (cached === undefined) {
             return false;
@@ -587,6 +634,16 @@ function cacheMatchesConfiguration(
                 resolve(value).toLowerCase() &&
             cached !== value
         ) {
+            return false;
+        }
+    }
+    // The optional entries are compared in the unset direction too: a
+    // cache still carrying BBLITE_SDL_DIR from a previous configure while
+    // this invocation passes none would silently keep building against
+    // the previous SDL3, so the absence has to reconfigure as much as a
+    // changed value does.
+    for (const name of ["BBLITE_SDL_DIR"]) {
+        if (!passed.has(name) && cache[name]) {
             return false;
         }
     }
@@ -607,19 +664,7 @@ async function withColdBuild(
         await body();
         return;
     }
-    const previous = process.env.BBLITE_COLD_BUILD;
-    process.env.BBLITE_COLD_BUILD = "1";
-    try {
-        // Awaited, not just called: restoring the variable in `finally`
-        // while the builds were still running would unset it under them.
-        await body();
-    } finally {
-        if (previous === undefined) {
-            delete process.env.BBLITE_COLD_BUILD;
-        } else {
-            process.env.BBLITE_COLD_BUILD = previous;
-        }
-    }
+    await withEnvironment("BBLITE_COLD_BUILD", "1", body);
 }
 
 /**
@@ -688,17 +733,18 @@ function buildSetup(): SharedBuildSetup {
  * start over an asset it never asked for. Pruning here keeps the copy
  * incremental: only the orphans are removed.
  *
- * `comparePayload` decides what an orphan is, so the prune and the guard that
- * reports one cannot disagree about it.
+ * `payloadOrphans` shares its walk with `comparePayload`, so the prune and
+ * the guard that reports an orphan cannot disagree about what one is — and
+ * the prune skips the byte-compare of every expected file, which it never
+ * used.
  */
 function pruneDeployedOrphans(scene: (typeof scenes)[number]): void {
     for (const { source, deployed } of deployedPayloads(
         resolve(scene.buildDirectory),
         resolve(scene.output),
     )) {
-        for (const mismatch of comparePayload(source, deployed)) {
-            if (mismatch.reason !== "unexpected") continue;
-            rmSync(resolve(deployed, mismatch.path), { force: true });
+        for (const path of payloadOrphans(source, deployed)) {
+            rmSync(resolve(deployed, path), { force: true });
         }
     }
 }
@@ -754,48 +800,38 @@ async function runSceneBuild(
     // or generated directory has to reconfigure, or the build would
     // silently produce the previous configuration.
     const cmake = process.env.CMAKE_COMMAND ?? "cmake";
-    const output: string[] = [];
-    try {
-        if (
-            !cacheMatchesConfiguration(
-                scene.buildDirectory,
-                configureArguments,
-            )
-        ) {
-            await serializeConfigure(() =>
-                runAsync(
-                    cmake,
+    await runBuffered(
+        { buffer: captureOutput, label: `--- ${scene.id}\n` },
+        async (run) => {
+            if (
+                !cacheMatchesConfiguration(
+                    scene.buildDirectory,
                     configureArguments,
-                    environment,
-                    captureOutput ? output : undefined,
-                ),
+                )
+            ) {
+                await serializeConfigure(() =>
+                    run(cmake, configureArguments, environment),
+                );
+            }
+            pruneDeployedOrphans(scene);
+            await run(
+                cmake,
+                [
+                    "--build",
+                    scene.buildDirectory,
+                    "--config",
+                    "Release",
+                    "--parallel",
+                    // Without a count ninja takes the whole machine, which
+                    // is wrong once scenes run beside each other.
+                    ...(jobsPerScene === undefined
+                        ? []
+                        : [String(jobsPerScene)]),
+                ],
+                environment,
             );
-        }
-        pruneDeployedOrphans(scene);
-        await runAsync(
-            cmake,
-            [
-                "--build",
-                scene.buildDirectory,
-                "--config",
-                "Release",
-                "--parallel",
-                // Without a count ninja takes the whole machine, which is
-                // wrong once scenes run beside each other.
-                ...(jobsPerScene === undefined
-                    ? []
-                    : [String(jobsPerScene)]),
-            ],
-            environment,
-            captureOutput ? output : undefined,
-        );
-    } finally {
-        if (captureOutput && output.length > 0) {
-            process.stdout.write(
-                `--- ${scene.id}\n${output.join("")}`,
-            );
-        }
-    }
+        },
+    );
 }
 
 function compileShaders(sceneId?: string): void {
@@ -857,22 +893,9 @@ async function runRenderDiff(
     // stale-evidence class this command exists to prevent.
     const wantSeek =
         seek ?? scene.parity?.referenceTimeSeconds ?? null;
-    const recordedSeek = (metaPath: string): number | null | undefined => {
-        // `null` = captured with no seek; `undefined` = no provenance (a
-        // pre-meta capture), which reads as unknown and forces a recapture.
-        if (!existsSync(metaPath)) return undefined;
-        try {
-            const meta = JSON.parse(readFileSync(metaPath, "utf8")) as {
-                seekSeconds?: number | null;
-            };
-            return meta.seekSeconds ?? null;
-        } catch {
-            return undefined;
-        }
-    };
     const browserReason = !existsSync(captureBuffersPath(captureDirectory))
         ? "missing"
-        : recordedSeek(captureMetaPath(captureDirectory)) !==
+        : readSeekMeta(captureMetaPath(captureDirectory)) !==
                 wantSeek
             ? "was captured at a different seek (or carries no provenance)"
             : undefined;
@@ -887,19 +910,9 @@ async function runRenderDiff(
             outputDirectory: captureDirectory,
         });
     }
-    // The current filename token first; the pre-token `native-sdl_gpu.*`
-    // spelling is accepted for one transition so captures taken before
-    // the rename stay reusable. A recapture always writes the current
-    // spelling. Both spellings come from the one shared helper the
-    // native-capture writer uses, so reader and writer cannot drift.
-    const currentPaths = captureNativePaths(captureDirectory, token);
-    const legacyPaths = captureNativePaths(captureDirectory, backend);
-    const nativePaths =
-        !existsSync(currentPaths.capture) &&
-        legacyPaths.capture !== currentPaths.capture &&
-        existsSync(legacyPaths.capture)
-            ? legacyPaths
-            : currentPaths;
+    // One shared spelling with the native-capture writer, so reader and
+    // writer cannot drift.
+    const nativePaths = captureNativePaths(captureDirectory, token);
     let nativeCapturePath = nativePaths.capture;
     const nativeReason = ((): string | undefined => {
         if (!existsSync(nativeCapturePath)) return "missing";
@@ -919,7 +932,7 @@ async function runRenderDiff(
         } catch {
             return "is unreadable";
         }
-        if (recordedSeek(nativePaths.meta) !== wantSeek) {
+        if (readSeekMeta(nativePaths.meta) !== wantSeek) {
             return "was captured at a different seek (or carries no provenance)";
         }
         return undefined;
@@ -1227,7 +1240,6 @@ async function runProbeVariants(
     // Copy the deployed directory aside, neutralize in place, and restore
     // unconditionally — the manual recipe's exact shape.
     cpSync(deployedDirectory, backupDirectory, { recursive: true });
-    const previousOverride = process.env.BBLITE_GPU_SHADER_DIR;
     let after: NativeCaptureResult;
     try {
         writeFileSync(shaderPath, edited);
@@ -1236,18 +1248,17 @@ async function runProbeVariants(
         // shader dir routes the runtime to the same files while telling
         // that check this run's shader payload is chosen on purpose; the
         // executable's build-stamp identity check still runs.
-        process.env.BBLITE_GPU_SHADER_DIR = resolve(deployedDirectory);
-        after = runNativeCapture(idOrSource, {
-            backend: "dawn",
-            ...(seek !== undefined ? { seekSeconds: seek } : {}),
-            outputDirectory: join(probeDirectory, "after"),
-        });
+        after = await withEnvironment(
+            "BBLITE_GPU_SHADER_DIR",
+            resolve(deployedDirectory),
+            async () =>
+                runNativeCapture(idOrSource, {
+                    backend: "dawn",
+                    ...(seek !== undefined ? { seekSeconds: seek } : {}),
+                    outputDirectory: join(probeDirectory, "after"),
+                }),
+        );
     } finally {
-        if (previousOverride === undefined) {
-            delete process.env.BBLITE_GPU_SHADER_DIR;
-        } else {
-            process.env.BBLITE_GPU_SHADER_DIR = previousOverride;
-        }
         rmSync(deployedDirectory, { recursive: true, force: true });
         renameSync(backupDirectory, deployedDirectory);
         console.log(`Deployed shaders restored: ${deployedDirectory}`);
@@ -1582,7 +1593,20 @@ async function main(): Promise<void> {
         const module = parsed.values.get("--module");
         const decoded = decodeCapturedUniforms(directory, {
             ...(sizes !== undefined
-                ? { sizes: sizes.split(",").map((value) => Number(value)) }
+                ? {
+                      sizes: sizes.split(",").map((value) => {
+                          const numeric = Number(value);
+                          if (!Number.isFinite(numeric)) {
+                              // A NaN here used to filter every buffer
+                              // out silently — the tool answered "no
+                              // buffers" to a mistyped size.
+                              throw new Error(
+                                  `uniforms: --size must be comma-separated numbers (got '${value}').`,
+                              );
+                          }
+                          return numeric;
+                      }),
+                  }
                 : {}),
             ...(module !== undefined ? { module } : {}),
         });

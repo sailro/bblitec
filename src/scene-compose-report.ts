@@ -21,6 +21,7 @@ import {
     captureShadersDirectory,
     defaultCaptureDirectory,
 } from "./parity-scene.js";
+import { divergence } from "./render-diff.js";
 import {
     asObject,
     glbDocument,
@@ -173,18 +174,9 @@ async function reportScene(
             // Keep the candidate that agrees with some capture for longest, not
             // the first one composed: the reported divergence line is only a
             // finding if it belongs to the nearest variant.
-            const mine = variant.fragmentWgsl.split("\n");
             let reach = 0;
             for (const [, text] of captured) {
-                const theirs = text.split("\n");
-                let line = 0;
-                while (
-                    line < mine.length &&
-                    line < theirs.length &&
-                    mine[line] === theirs[line]
-                ) {
-                    line++;
-                }
+                const { line } = divergence(variant.fragmentWgsl, text);
                 if (line > reach) reach = line;
             }
             if (reach > closest) {
@@ -236,23 +228,17 @@ async function reportScene(
         // The closest capture by longest common prefix, and the line where it
         // stops agreeing. That line is the finding: it names the arm.
         let best = { lines: -1, file: "", mine: [""], theirs: [""] };
-        const mine = composed.split("\n");
         for (const [file, text] of captured) {
-            const theirs = text.split("\n");
-            let line = 0;
-            while (
-                line < mine.length &&
-                line < theirs.length &&
-                mine[line] === theirs[line]
-            ) {
-                line++;
-            }
+            const { line, mineContext, theirsContext } = divergence(
+                composed,
+                text,
+            );
             if (line > best.lines) {
                 best = {
                     lines: line,
                     file,
-                    mine: mine.slice(line, line + 2),
-                    theirs: theirs.slice(line, line + 2),
+                    mine: mineContext,
+                    theirs: theirsContext,
                 };
             }
         }

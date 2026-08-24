@@ -41,6 +41,16 @@ function mimeType(path: string): string {
 export type SuiteSourceTransform = (source: string) => string;
 
 /**
+ * The served URL of the pinned package's index module — what every page
+ * the suite server hosts imports the pin as. `pinnedPackageSpecifiers`
+ * rewrites bare package names to it, and the drivers that write their own
+ * page modules (basis transcode, node particles, the geometry impostor
+ * shim) import the same spelling rather than retyping it.
+ */
+export const pinnedBrowserEntryUrl =
+    "/node_modules/@babylonjs/lite/lib/index.js";
+
+/**
  * The scene source as the reference capture runs it: transpiled for the
  * browser, with the pinned package and asset URLs rewritten, and — for a
  * scene pinned to a pose — the seek the registry describes injected
@@ -128,7 +138,7 @@ export function pinnedPackageSpecifiers(source: string): string {
                     ? `"/node_modules/@babylonjs/lite/lib${
                           subpath.endsWith(".js") ? subpath : `${subpath}.js`
                       }"`
-                    : '"/node_modules/@babylonjs/lite/lib/index.js"',
+                    : `"${pinnedBrowserEntryUrl}"`,
         )
         .replaceAll(
             `"${physicsEngineModulePackage}"`,

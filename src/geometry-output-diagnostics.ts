@@ -6,6 +6,7 @@ import {
 import { resolve } from "node:path";
 import {
     captureSuiteReference,
+    pinnedBrowserEntryUrl,
     type SuiteSourceTransform,
 } from "./capture-suite-reference.js";
 import {
@@ -15,6 +16,7 @@ import {
     parityReportPath,
     resolveBackend,
     runNative,
+    usesSeededRandom,
     writeReport,
 } from "./parity-scene.js";
 import {
@@ -60,7 +62,7 @@ function geometryCopyTasks(generatedDirectory: string): string[] {
 }
 
 const impostorShimPath = "/__bbl-geometry-impostor-shim.js";
-const pinnedModulePath = "/node_modules/@babylonjs/lite/lib/index.js";
+const pinnedModulePath = pinnedBrowserEntryUrl;
 
 /**
  * Selects one impostor in the browser the way the native frame loop selects it
@@ -182,6 +184,11 @@ export async function runGeometryOutputDiagnostics(
                 virtualModules: {
                     [impostorShimPath]: impostorShimModule(task),
                 },
+                // The same stub the parity reference installs: a seeded
+                // scene must draw the pinned sequence in this capture too,
+                // or its impostor references describe different content
+                // than the golden's.
+                seededRandom: usesSeededRandom(scene),
                 ...(scene.parity?.referenceSearch !== undefined
                     ? { search: scene.parity.referenceSearch }
                     : {}),
