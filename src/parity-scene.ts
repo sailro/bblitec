@@ -833,6 +833,23 @@ export function defaultExecutable(buildDirectory: string): string {
 }
 
 /**
+ * The native executable a measured run spawns: an explicit `--exe` wins,
+ * the ambient `BBLITE_NATIVE_EXE` override is the fallback, then the
+ * scene's own Release build. One resolver, because `geometry` ignored
+ * both overrides for as long as each command spelled its own chain.
+ */
+export function resolveNativeExecutable(
+    explicit: string | undefined,
+    buildDirectory: string,
+): string {
+    return resolve(
+        explicit ??
+            process.env.BBLITE_NATIVE_EXE ??
+            defaultExecutable(buildDirectory),
+    );
+}
+
+/**
  * Refuse a measurement taken from a stale build.
  *
  * The executable reports the digest of the sources it was compiled from,
@@ -1143,10 +1160,9 @@ export async function runSceneParity(
     );
     if (!arguments_.actual) {
         runNative(
-            resolve(
-                arguments_.executable ??
-                    process.env.BBLITE_NATIVE_EXE ??
-                    defaultExecutable(scene.buildDirectory),
+            resolveNativeExecutable(
+                arguments_.executable,
+                scene.buildDirectory,
             ),
             actual,
             {
@@ -1675,9 +1691,9 @@ export function runStabilityReport(
     const modeSuffix =
         (stabilityArguments.singleSample ? "-single-sample" : "") +
         (!goldenComparable ? `-seek${seek}` : "");
-    const executable = resolve(
-        process.env.BBLITE_NATIVE_EXE ??
-            defaultExecutable(scene.buildDirectory),
+    const executable = resolveNativeExecutable(
+        undefined,
+        scene.buildDirectory,
     );
     const comparisons: StabilityRunComparison[] = [];
     const images: string[] = [];

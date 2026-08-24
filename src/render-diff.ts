@@ -168,6 +168,8 @@ export interface RenderDiffReport {
         divergent: number;
     };
     draws: DrawShapeReport;
+    /** Present when the capture composed any family beyond the mesh lists. */
+    families?: FamilyCensus;
     /** Native fields no browser upload carries, worst first. */
     divergent: FieldCorrespondence[];
     /** Browser fields no native block carries. */
@@ -255,6 +257,52 @@ export interface PinnedMeshBlock {
     bone1?: number[];
 }
 
+/**
+ * One 2D layer of a `spriteRenderers` entry: the six-index instanced quad
+ * its pass records and the sixteen-float layer block it pushes. Billboard
+ * systems do NOT appear here — they draw inside the scene's pass and ride
+ * the `draws` array like the splat cloud does.
+ */
+export interface NativeSpriteLayer {
+    layer?: number | null;
+    order?: number;
+    visible?: boolean;
+    count?: number;
+    indexCount?: number;
+    instanceCount?: number;
+    uniforms?: NativeUniformBlock[];
+}
+
+export interface NativeSpriteRenderer {
+    index?: number;
+    registered?: boolean;
+    layers?: NativeSpriteLayer[];
+}
+
+/** One `effects.wrappers` entry: the floats `setEffectUniforms` wrote and
+ *  the texture bindings by declared name. The three-vertex fullscreen draw
+ *  is non-indexed, so wrappers stay out of the indexed-shape census — the
+ *  browser's `draw(3,...)` records land in `browserNonIndexed` context. */
+export interface NativeEffectWrapper {
+    index?: number;
+    variant?: number;
+    name?: string;
+    uniformBytes?: number;
+    uniforms?: NativeUniformBlock[];
+    textures?: Array<{ name?: string; set?: boolean }>;
+}
+
+export interface NativeEffects {
+    wrappers?: NativeEffectWrapper[];
+    renderers?: Array<{ index?: number; effect?: number | null }>;
+    tasks?: Array<{
+        taskIndex?: number;
+        name?: string;
+        effect?: number | null;
+        target?: number | null;
+    }>;
+}
+
 export interface NativeCapture {
     backend: string;
     buildStamp: string;
@@ -264,8 +312,26 @@ export interface NativeCapture {
     meshes?: unknown[];
     materials?: unknown[];
     lights?: unknown[];
+    /** Absent when the scene compiles no sprite renderer. */
+    spriteRenderers?: NativeSpriteRenderer[];
+    /** Absent when the scene compiles no effect wrapper. */
+    effects?: NativeEffects;
     pinnedMaterialBlocks?: PinnedMaterialBlock[];
     pinnedMeshBlocks?: PinnedMeshBlock[];
+}
+
+/**
+ * Per-family census of what the native capture composed beyond the two
+ * mesh draw lists, so a report names the families in play — and so a
+ * family the capture used to omit is visibly present rather than silently
+ * counted into `nativeDraws`.
+ */
+export interface FamilyCensus {
+    billboardDraws: number;
+    splatDraws: number;
+    spriteLayers: number;
+    effectWrappers: number;
+    effectTasks: number;
 }
 
 export function readNativeCapture(path: string): NativeCapture {
@@ -1040,6 +1106,21 @@ function nativeDrawShapes(capture: NativeCapture): Set<string> {
             `${draw.indexCount ?? 0}x${Math.max(draw.instanceCount ?? 1, 1)}`,
         );
     }
+    // A 2D sprite layer records the same indexed instanced quad a
+    // billboard does (six indices, one instance per sprite), so a capture
+    // that reports layers contributes their shapes exactly as draws do.
+    // The pass's own gate is mirrored: an invisible or empty layer records
+    // no draw and must not claim a shape.
+    for (const renderer of capture.spriteRenderers ?? []) {
+        for (const layer of renderer.layers ?? []) {
+            const instances = layer.instanceCount ?? layer.count ?? 0;
+            if (layer.visible === false || instances === 0) continue;
+            shapes.add(`${layer.indexCount ?? 6}x${instances}`);
+        }
+    }
+    // Effect wrappers draw three non-indexed vertices; they never enter
+    // the indexed census on either side (the browser's `draw(3,...)`
+    // records are `browserNonIndexed` context).
     return shapes;
 }
 
@@ -1239,9 +1320,18 @@ export function buildRenderDiff(
         }
     }
 
+    // The sprite layers' and effect wrappers' blocks join the same pool as
+    // every draw's: their types have no generated struct declaration, so
+    // they decode as vec4 rows and pair by value like the splat block does.
+    const spriteLayers = (capture.spriteRenderers ?? []).flatMap(
+        (renderer) => renderer.layers ?? [],
+    );
+    const effectWrappers = capture.effects?.wrappers ?? [];
     const blocks: NativeUniformBlock[] = [
         ...(capture.draws ?? []).flatMap((draw) => draw.uniforms ?? []),
         ...(capture.backgroundUniforms ?? []),
+        ...spriteLayers.flatMap((layer) => layer.uniforms ?? []),
+        ...effectWrappers.flatMap((wrapper) => wrapper.uniforms ?? []),
     ];
     const native: UniformField[] = [];
     const seenField = new Set<string>();
@@ -1340,6 +1430,18 @@ export function buildRenderDiff(
 
     const browserShapes = browserDrawShapes(captureDirectory);
     const nativeShapes = nativeDrawShapes(capture);
+    const families: FamilyCensus = {
+        billboardDraws: (capture.draws ?? []).filter(
+            (draw) => draw.materialKind === "billboard",
+        ).length,
+        splatDraws: (capture.draws ?? []).filter(
+            (draw) => draw.materialKind === "splat",
+        ).length,
+        spriteLayers: spriteLayers.length,
+        effectWrappers: effectWrappers.length,
+        effectTasks: (capture.effects?.tasks ?? []).length,
+    };
+    const hasFamilies = Object.values(families).some((count) => count > 0);
     const draws: DrawShapeReport = {
         shared: [...nativeShapes].filter((shape) =>
             browserShapes.indexed.has(shape),
@@ -1494,6 +1596,7 @@ export function buildRenderDiff(
             ).length,
         },
         draws,
+        ...(hasFamilies ? { families } : {}),
         divergent,
         browserOnly,
         ...(pinnedBlockList.length > 0
@@ -1548,6 +1651,20 @@ export function formatRenderDiff(
             `${report.summary.nativeMeshes} meshes, ${report.summary.nativeMaterials} materials, ` +
             `${report.summary.nativeLights} lights`,
     );
+    if (report.families) {
+        const parts = (
+            [
+                [report.families.billboardDraws, "billboard draw(s)"],
+                [report.families.splatDraws, "splat draw(s)"],
+                [report.families.spriteLayers, "sprite layer(s)"],
+                [report.families.effectWrappers, "effect wrapper(s)"],
+                [report.families.effectTasks, "effect task(s)"],
+            ] as const
+        )
+            .filter(([count]) => count > 0)
+            .map(([count, label]) => `${count} ${label}`);
+        lines.push(`Composed beyond the mesh lists: ${parts.join(", ")}`);
+    }
     lines.push(
         `Uniform fields: ${report.summary.nativeFields} native against ${report.summary.browserFields} browser — ` +
             `${report.summary.exact} agree exactly, ${report.summary.vec3} agree on their first three lanes, ` +

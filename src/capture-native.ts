@@ -20,8 +20,9 @@ import { resolveScene } from "./scene-registry.js";
  * The browser half hooks WebGPU and records what Babylon Lite uploaded.
  * This half asks the native runtime for the same description of the same
  * frame: `BBLITE_RENDER_CAPTURE` makes it write every uniform block it
- * builds, the draw list in submission order, and the scene, camera,
- * light and material records those are built from
+ * builds, the draw list in submission order — meshes, splats, billboard
+ * systems, and the sprite/effect state the engine records — and the
+ * scene, camera, light and material records those are built from
  * (`native/src/pal_render_capture.hpp`).
  *
  * It runs under the same build-identity checks as a measured parity run,
@@ -104,9 +105,17 @@ export function runNativeCapture(
     );
     verifyBuildIdentity(executable, scene.output, stampPath);
     if (!existsSync(capturePath)) {
+        // The capture is written by the scene frame loop, which describes
+        // every renderable family a scene composes (meshes, splats,
+        // billboards, effect tasks). A sprite-only or effect-renderer-only
+        // scene renders through a standalone loop (pal_*_sprite.cpp /
+        // pal_*_effect.cpp) that writes no capture yet, so the run
+        // completing without one is that gap, not a broken build.
         throw new Error(
-            `The native run wrote no capture to ${capturePath}. A scene with no PBR render plan ` +
-                `(a sprite-only scene) has nothing to describe here.`,
+            `The native run wrote no capture to ${capturePath}. A scene with no scene renderer — ` +
+                `a sprite-only or effect-renderer-only scene — draws through a standalone frame ` +
+                `loop that does not write captures yet, so rung 3 has nothing to pair for it; ` +
+                `use the parity ladder's pixel rungs instead.`,
         );
     }
     // Seek provenance for the reuse path; the build stamp is already inside

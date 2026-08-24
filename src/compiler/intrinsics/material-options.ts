@@ -412,9 +412,13 @@ export function compilePbrMaterialOptions(
     let ior = pinnedDefaultFloatCpp("transmissionIndexOfRefraction");
     // NOT the pin's `?? 1`: with a refraction object and no thickness the
     // pinned writer reads `thick?.max ?? 1` while this record seeds 0 —
-    // the absent-subsurface ground state. Kept as-is (changing it would be
-    // a behaviour change for the measured wave); the `?? 1` arm the table
-    // anchors is the inner thickness branch below.
+    // the absent-subsurface ground state. UNREACHABLE today, measured
+    // 2026-08-24: a scene-code refraction shape refuses at generation
+    // ("no composed arm yet", the open transmission item in TODO), so the
+    // divergence cannot reach a composed variant. When that arm lands,
+    // resolve this seed against the pin's `?? 1` for the
+    // refraction-without-thickness shape before measuring. The `?? 1` arm
+    // the defaults table anchors is the inner thickness branch below.
     let thickness = "0.0f";
     let useThicknessAsDepth = "false";
     let hasVolume = "false";

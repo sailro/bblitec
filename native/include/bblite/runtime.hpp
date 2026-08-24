@@ -1031,7 +1031,7 @@ struct BillboardSystemRecord {
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
     // The mode-4 second pass's blend; see BillboardSystemOptions.
-    SpriteBlendDescriptor add_pass_blend{};
+    SpriteBlendDescriptor add_pass_blend;
     // billboard-custom-shader.ts: the same opt-in the 2D layer carries --
     // a system built with a descriptor draws the composed program and
     // binds the fx block beside its system block.
@@ -2203,19 +2203,20 @@ struct Sprite2DLayerOptions {
  * preserves the orientation already baked into the UVs.
  */
 /**
- * createFacingBillboardSystem's options, with the pin's own defaults.
- *
- * Scene code initializes this aggregate POSITIONALLY, so a new field
- * appends rather than inserting.
+ * createFacingBillboardSystem's options. Every generated construction is a
+ * full designated-initializer literal (the pin's defaults are emitted by
+ * generation and anchored against the pinned defaults table), so the
+ * members carry no initializers of their own — a partially-built options
+ * struct would be a generation bug, not a fallback.
  */
 struct BillboardSystemOptions {
-    double capacity = 16.0;
-    SpriteBlendDescriptor blend{};
-    float opacity = 1.0f;
-    bool visible = true;
-    float alpha_cutoff = 0.0f;
-    bool has_alpha_cutoff = false;
-    bool custom_shader = false;
+    double capacity;
+    SpriteBlendDescriptor blend;
+    float opacity;
+    bool visible;
+    float alpha_cutoff;
+    bool has_alpha_cutoff;
+    bool custom_shader;
     std::vector<PixelsTexture> custom_textures;
     // particle-billboard-renderable.ts: the mode-4 wrapper's SECOND pass.
     // The pin builds it as `{...system, blendMode: createParticleBlend(2),

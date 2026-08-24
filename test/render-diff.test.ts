@@ -977,6 +977,279 @@ test("extracts texture sample expressions without their trailing statement", () 
     );
 });
 
+test("billboard draws enter the census and their system block pairs by value", () => {
+    // The scene-54 class regression: the browser records the billboard's
+    // drawIndexed(6, N) and uploads its system block, and a native capture
+    // that omitted the family made both into false findings on a
+    // byte-exact scene. A capture that reports the draw — the shape, plus
+    // the same `build_billboard_system_ubo` floats — pairs both away.
+    const root = mkdtempSync(join(tmpdir(), "render-diff-billboard-"));
+    try {
+        const capture = join(root, "capture");
+        mkdirSync(capture, { recursive: true });
+        const systemUbo = [1, 1, 1, 0.5, 0, 0, 0, 0.25];
+        const bytes = Buffer.alloc(32);
+        systemUbo.forEach((value, index) =>
+            bytes.writeFloatLE(value, index * 4),
+        );
+        writeFileSync(
+            join(capture, "buffers.json"),
+            JSON.stringify([
+                {
+                    id: 3,
+                    size: 32,
+                    usage: 0x40,
+                    writes: [{ offset: 0, data: bytes.toString("base64") }],
+                },
+            ]),
+        );
+        writeFileSync(
+            join(capture, "draws.json"),
+            JSON.stringify({ "pass.drawIndexed(6,5,0,0)": 60 }),
+        );
+        const nativeCapture = join(capture, "native-gpu.json");
+        writeFileSync(
+            nativeCapture,
+            JSON.stringify({
+                backend: "sdl_gpu",
+                buildStamp: "t",
+                viewport: { width: 320, height: 180 },
+                draws: [
+                    {
+                        stage: "transparent",
+                        pipeline: "billboard",
+                        materialKind: "billboard",
+                        bucket: "alphaBlend",
+                        mesh: null,
+                        material: null,
+                        geometry: null,
+                        billboardSystem: 0,
+                        indexCount: 6,
+                        instanceCount: 5,
+                        uniforms: [
+                            {
+                                stage: "fragment",
+                                slot: 0,
+                                type: "BillboardSystemUniforms",
+                                floats: systemUbo,
+                            },
+                        ],
+                    },
+                ],
+                backgroundUniforms: [],
+            }),
+        );
+        const report = buildRenderDiff("54", capture, nativeCapture, root);
+        assert.deepEqual(report.draws.shared, ["6x5"]);
+        assert.deepEqual(report.draws.onlyInNative, []);
+        assert.deepEqual(report.draws.onlyInBrowser, []);
+        assert.ok(
+            !report.findings.some((finding) =>
+                finding.includes("Draw shapes differ"),
+            ),
+        );
+        // The system block decodes as vec4 rows (no generated struct
+        // declares it) and both rows sit in the browser's upload.
+        assert.deepEqual(report.divergent, []);
+        assert.deepEqual(report.families, {
+            billboardDraws: 1,
+            splatDraws: 0,
+            spriteLayers: 0,
+            effectWrappers: 0,
+            effectTasks: 0,
+        });
+        assert.match(
+            formatRenderDiff(report),
+            /Composed beyond the mesh lists: 1 billboard draw\(s\)/,
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("sprite layers and effect wrappers join the census, the pool and the family line", () => {
+    const root = mkdtempSync(join(tmpdir(), "render-diff-sprite-"));
+    try {
+        const capture = join(root, "capture");
+        mkdirSync(capture, { recursive: true });
+        // The sixteen-float layer block build_sprite_layer_ubo writes, and
+        // the effect wrapper's setEffectUniforms floats — both uploaded on
+        // the browser side.
+        const layerUbo = [
+            10, 20, 1.5, 0,
+            320, 180, 0.5, 0.5,
+            1, 1, 1, 0.75,
+            0, 0, 0, 0,
+        ];
+        const effectUniforms = [0.1, 0.2, 0.3, 0.4];
+        const layerBytes = Buffer.alloc(64);
+        layerUbo.forEach((value, index) =>
+            layerBytes.writeFloatLE(value, index * 4),
+        );
+        const effectBytes = Buffer.alloc(16);
+        effectUniforms.forEach((value, index) =>
+            effectBytes.writeFloatLE(value, index * 4),
+        );
+        writeFileSync(
+            join(capture, "buffers.json"),
+            JSON.stringify([
+                {
+                    id: 1,
+                    size: 64,
+                    usage: 0x40,
+                    writes: [
+                        { offset: 0, data: layerBytes.toString("base64") },
+                    ],
+                },
+                {
+                    id: 2,
+                    size: 16,
+                    usage: 0x40,
+                    writes: [
+                        { offset: 0, data: effectBytes.toString("base64") },
+                    ],
+                },
+            ]),
+        );
+        writeFileSync(
+            join(capture, "draws.json"),
+            JSON.stringify({
+                "pass.drawIndexed(6,3,0,0)": 10,
+                // The effect's fullscreen triangle: non-indexed, so it is
+                // census context on the browser side and contributes no
+                // native shape either.
+                "pass.draw(3,1,0)": 10,
+            }),
+        );
+        const nativeCapture = join(capture, "native-gpu.json");
+        writeFileSync(
+            nativeCapture,
+            JSON.stringify({
+                backend: "sdl_gpu",
+                buildStamp: "t",
+                viewport: { width: 320, height: 180 },
+                draws: [],
+                backgroundUniforms: [],
+                spriteRenderers: [
+                    {
+                        index: 0,
+                        registered: true,
+                        layers: [
+                            {
+                                layer: 0,
+                                order: 0,
+                                visible: true,
+                                count: 3,
+                                indexCount: 6,
+                                instanceCount: 3,
+                                uniforms: [
+                                    {
+                                        stage: "vertex",
+                                        slot: 0,
+                                        type: "SpriteLayerUniforms",
+                                        floats: layerUbo,
+                                    },
+                                ],
+                            },
+                            // The pass's gate, mirrored: an invisible
+                            // layer records no draw and claims no shape.
+                            {
+                                layer: 1,
+                                order: 1,
+                                visible: false,
+                                count: 9,
+                                indexCount: 6,
+                                instanceCount: 9,
+                                uniforms: [],
+                            },
+                        ],
+                    },
+                ],
+                effects: {
+                    wrappers: [
+                        {
+                            index: 0,
+                            variant: 0,
+                            name: "tint",
+                            uniformBytes: 16,
+                            uniforms: [
+                                {
+                                    stage: "fragment",
+                                    slot: 0,
+                                    type: "EffectUniforms",
+                                    floats: effectUniforms,
+                                },
+                            ],
+                            textures: [{ name: "tex0", set: true }],
+                        },
+                    ],
+                    renderers: [],
+                    tasks: [
+                        { taskIndex: 0, name: "fx", effect: 0, target: 1 },
+                    ],
+                },
+            }),
+        );
+        const report = buildRenderDiff("52", capture, nativeCapture, root);
+        assert.deepEqual(report.draws.shared, ["6x3"]);
+        assert.deepEqual(report.draws.onlyInNative, []);
+        assert.deepEqual(report.draws.onlyInBrowser, []);
+        assert.deepEqual(report.draws.browserNonIndexed, [
+            "pass.draw(3,1,0) x10",
+        ]);
+        // Every layer and wrapper row sits in the browser's uploads.
+        assert.deepEqual(report.divergent, []);
+        assert.deepEqual(report.families, {
+            billboardDraws: 0,
+            splatDraws: 0,
+            spriteLayers: 2,
+            effectWrappers: 1,
+            effectTasks: 1,
+        });
+        assert.ok(report.summary.exact >= 5);
+        assert.match(
+            formatRenderDiff(report),
+            /Composed beyond the mesh lists: 2 sprite layer\(s\), 1 effect wrapper\(s\), 1 effect task\(s\)/,
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("a capture without the family sections reports no family line", () => {
+    // Captures from scenes that compile none of the families — and captures
+    // predating the sections — must read exactly as before.
+    const report = buildRenderDiffFromMinimalCapture();
+    assert.equal(report.families, undefined);
+    assert.ok(
+        !formatRenderDiff(report).includes("Composed beyond the mesh lists"),
+    );
+});
+
+/** A minimal empty-scene pairing, shared by the absence test above. */
+function buildRenderDiffFromMinimalCapture(): RenderDiffReport {
+    const root = mkdtempSync(join(tmpdir(), "render-diff-minimal-"));
+    try {
+        const capture = join(root, "capture");
+        mkdirSync(capture, { recursive: true });
+        writeFileSync(join(capture, "buffers.json"), JSON.stringify([]));
+        const nativeCapture = join(capture, "native-gpu.json");
+        writeFileSync(
+            nativeCapture,
+            JSON.stringify({
+                backend: "sdl_gpu",
+                buildStamp: "t",
+                viewport: { width: 4, height: 4 },
+                draws: [],
+                backgroundUniforms: [],
+            }),
+        );
+        return buildRenderDiff("min", capture, nativeCapture, root);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+}
+
 test("refuses a missing native capture with the command that writes one", () => {
     assert.throws(
         () => buildRenderDiff("test", tmpdir(), join(tmpdir(), "absent.json"), tmpdir()),

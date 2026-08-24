@@ -1921,15 +1921,18 @@ async function main(): Promise<void> {
         const parsed = parseFlags(
             rest,
             {
-                value: ["--backend", "--seek"],
-                boolean: ["--recapture-reference"],
+                value: ["--backend", "--seek", "--exe"],
+                boolean: ["--recapture-reference", "--gpu-debug"],
             },
             "geometry",
         );
         const backend = parsed.values.get("--backend");
         const seek = flagNumber(parsed, "--seek", "geometry");
+        const executable = parsed.values.get("--exe");
         await runGeometryOutputDiagnostics(id, {
             recaptureReference: parsed.flags.has("--recapture-reference"),
+            gpuDebug: parsed.flags.has("--gpu-debug"),
+            ...(executable !== undefined ? { executable } : {}),
             ...(backend !== undefined ? { backend } : {}),
             ...(seek !== undefined ? { seekSeconds: seek } : {}),
         });

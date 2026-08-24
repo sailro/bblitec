@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+    ensurePinnedLoaderExecution,
     gltfImageResolver,
     pinnedMaterialInputFromGltf,
 } from "../src/pinned-material-input.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+
+// The executed loader is lazy in production (materialSubjects awaits it);
+// this file reads the synchronous API directly, so it awaits the same
+// gate up front.
+await ensurePinnedLoaderExecution();
 
 const environmentVariant = async (material: Record<string, unknown>) => {
     const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(

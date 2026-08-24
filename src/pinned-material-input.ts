@@ -20,11 +20,15 @@
  *
  * The pinned `applyMaterial` hooks are `async` (they await real texture
  * decodes) while this module's callers are synchronous, so the ext modules
- * are imported once at module load through `importPinnedModuleUnasynced`,
- * which erases the `async`/`await` keywords from the pin's own text — every
- * value they await here is produced synchronously by the stub — and the
- * module top-level awaits that one-time load. Callers see the same
- * synchronous API as before.
+ * are imported once through `importPinnedModuleUnasynced`, which erases the
+ * `async`/`await` keywords from the pin's own text — every value they await
+ * here is produced synchronously by the stub. That one-time load used to be
+ * a module top-level await, which made every `cli.js` import pay the ~15
+ * pinned imports whether or not the scene had a glTF material; it is now
+ * behind `ensurePinnedLoaderExecution()`, awaited by the one async choke
+ * point every production reader goes through (`materialSubjects` in
+ * `pinned-material-arms.ts`). Callers see the same synchronous API once the
+ * load has run; reading before it throws by name instead of misbehaving.
  *
  * What this module still carries by hand is plumbing, not formulas, each
  * piece cited at its definition: the loader's parsed-material field defaults
@@ -190,6 +194,7 @@ interface PinnedAnimatedTargetSets {
 export function gltfAnimatedExtensionTargets(
     document: JsonObject,
 ): ReadonlyMap<number, PinnedAnimatedExtensionTargets> {
+    const pin = executedPin();
     const animated = pin.animatedTargets(document);
     const families: ReadonlyArray<
         readonly [keyof PinnedAnimatedExtensionTargets, ReadonlySet<number>]
@@ -227,6 +232,7 @@ function seedAnimatedExtensions(
     material: JsonObject,
     animated: PinnedAnimatedExtensionTargets,
 ): void {
+    const pin = executedPin();
     const indices = (flagged?: boolean): ReadonlySet<number> =>
         flagged ? new Set([0]) : new Set();
     pin.seedExtMaterials(
@@ -428,9 +434,15 @@ const knownLayerProperties = new Set([
  * `Map.set` keyed by id — a re-registration keeps the first position — so
  * registering the composer's curated order here first makes every
  * registration the executed setters perform order-neutral. The scene hook
- * `setPbrTransmission` registers is a `Set` nothing in generation drains.
+ * `setPbrTransmission` registers is a `Set` nothing in generation drains,
+ * and the imports themselves touch no pinned registry (the loader ext
+ * modules and setters register only when *called*, which only happens
+ * inside `pinnedMaterialInputFromGltf` — after this load, by construction),
+ * so running this lazily cannot reorder anything a composition observes:
+ * scene 12's empty-setter registration stays a position no-op because the
+ * curated order always lands first, whichever path asks first.
  */
-const pin = await (async (): Promise<PinnedLoaderExecution> => {
+async function loadPinnedLoaderExecution(): Promise<PinnedLoaderExecution> {
     await registeredPbrExtensionIds();
     const uvTransform = await importPinnedModule<{
         default: {
@@ -545,7 +557,39 @@ const pin = await (async (): Promise<PinnedLoaderExecution> => {
             "seedExtMaterials"
         ] as PinnedLoaderExecution["seedExtMaterials"],
     };
-})();
+}
+
+let pinExecutionPromise: Promise<PinnedLoaderExecution> | undefined;
+let pinExecution: PinnedLoaderExecution | undefined;
+
+/**
+ * Runs the pinned loader execution once, memoized; every consumer awaits
+ * this before reading materials through the synchronous API below. The
+ * internal order is the eager module's own — the curated registration
+ * first, then the imports — so the only observable change is that a
+ * scene with no glTF/PBR material never runs the imports at all.
+ */
+export async function ensurePinnedLoaderExecution(): Promise<void> {
+    pinExecutionPromise ??= loadPinnedLoaderExecution();
+    pinExecution = await pinExecutionPromise;
+}
+
+/** Whether the loader execution has run — the lazy-import test's marker. */
+export function pinnedLoaderExecuted(): boolean {
+    return pinExecution !== undefined;
+}
+
+/** The executed pin, or a loud refusal naming the missing await. */
+function executedPin(): PinnedLoaderExecution {
+    if (pinExecution === undefined) {
+        throw new Error(
+            "pinned-material-input: the executed pinned loader has not " +
+                "run; await ensurePinnedLoaderExecution() before reading " +
+                "materials through this module.",
+        );
+    }
+    return pinExecution;
+}
 
 /**
  * The engine and mipmap generator only flow into the stubbed uploads —
@@ -579,7 +623,7 @@ function builtExtensionTexture(
 ): JsonObject | undefined {
     const info = asObject(slot);
     if (!info || imageOf(info["index"]) === undefined) return undefined;
-    const wrapped = pin.wrapTexture({}, info);
+    const wrapped = executedPin().wrapTexture({}, info);
     return {
         ...info,
         ...(wrapped["_hasTx"] === true ? { _hasTx: true as const } : {}),
@@ -656,7 +700,7 @@ function pinnedExtensionLayers(
     };
     const layers: JsonObject = {};
     let metallicReflectanceRegistered = false;
-    for (const extension of pin.materialExtensions) {
+    for (const extension of executedPin().materialExtensions) {
         const fragment = assertPinnedSync(
             extension.applyMaterial(mat, ctx),
             `${extension.id}.applyMaterial`,
@@ -698,6 +742,7 @@ export function pinnedMaterialInputFromGltf(
     material: JsonObject,
     scene: PinnedMaterialSceneContext = {},
 ): PinnedMaterialInput {
+    const pin = executedPin();
     const pbr = asObject(material["pbrMetallicRoughness"]) ?? {};
     const occlusion = asObject(material["occlusionTexture"]);
     const imageOf = scene.imageOf ?? ((): undefined => undefined);

@@ -718,21 +718,31 @@ export function compileSpriteIntrinsic(
             }
             return {
                 kind: "billboard-system",
+                // The record is spelled as a full C++20 designated
+                // initializer: each value pairs to its field by name (a
+                // renamed or reordered header field fails the build
+                // instead of silently shifting a positional list), and
+                // every member is stated so none rides a header default
+                // this call site never wrote. The unnamed options carry
+                // the pinned factory defaults; the second-pass blend is
+                // the node-particle enabler's arm and stays empty here.
                 cpp:
                     `bbl::create_billboard_system(${engineCpp}, ` +
                     `${atlas.cpp}, bbl::BillboardOrientation::` +
                     `${locked ? "axis_locked" : "facing"}, ${axisCpp}, ` +
                     `bbl::BillboardSystemOptions{` +
-                    `${numberOption(options, "capacity", "16.0f")}, ` +
-                    `${blendCpp}, ` +
-                    `${numberOption(options, "opacity", "1.0f")}, ` +
-                    `${property(options, "visible")?.cpp ?? "true"}, ` +
+                    `.capacity = ${numberOption(options, "capacity", "16.0f")}, ` +
+                    `.blend = ${blendCpp}, ` +
+                    `.opacity = ${numberOption(options, "opacity", "1.0f")}, ` +
+                    `.visible = ${property(options, "visible")?.cpp ?? "true"}, ` +
                     // resolveAlphaCutoff and the order default both follow
                     // the descriptor's own depth mode, so they are resolved
                     // beside it rather than from the name at this call site.
-                    `${numberOption(options, "alphaCutoff", "0.0f")}, ` +
-                    `${property(options, "alphaCutoff") ? "true" : "false"}, ` +
-                    `${custom.present}, ${custom.textures}})`,
+                    `.alpha_cutoff = ${numberOption(options, "alphaCutoff", "0.0f")}, ` +
+                    `.has_alpha_cutoff = ${property(options, "alphaCutoff") ? "true" : "false"}, ` +
+                    `.custom_shader = ${custom.present}, ` +
+                    `.custom_textures = ${custom.textures}, ` +
+                    `.add_pass_blend = bbl::SpriteBlendDescriptor{}})`,
                 engineCpp,
             };
         }

@@ -1309,12 +1309,10 @@ ${
     const BakedSystem& system = baked(set_index, system_index);
     const SpriteAtlasHandle atlas =
         particle_atlas(engine, set_index, system_index);
-    BillboardSystemOptions options;
-    options.capacity = system.capacity;
     // The plain builder maps three modes and degrades the rest to Add; the
     // enabler resolves all five exactly. Which one this system took is the
     // set's own answer, recorded at its build.
-    options.blend = ${
+    const SpriteBlendDescriptor blend = ${
         exact
             ? [
                   "system.exact_blend",
@@ -1322,18 +1320,38 @@ ${
                   "        : blend_for_mode(system.blend_mode)",
               ].join("\n")
             : "blend_for_mode(system.blend_mode)"
-    };${
+    };
+    // Every member named: the C++20 designators pair each value to its
+    // field by name (a renamed or reordered header field fails here),
+    // and the full spelling means no member rides a header default the
+    // generated code never stated. The values beyond the capacity and
+    // blend are the pinned factory defaults.
+    BillboardSystemOptions options{
+        .capacity = system.capacity,
+        .blend = blend,
+        .opacity = 1.0f,
+        .visible = true,
+        .alpha_cutoff = 0.0f,
+        .has_alpha_cutoff = false,
+        .custom_shader = false,
+        .custom_textures = {},${
         exact
             ? [
                   "",
-                  "    // The mode-4 wrapper's second pass, built where the",
-                  "    // pin builds it: createParticleBlend(2) over the same",
-                  "    // instances, with no custom shader.",
-                  "    if (options.blend.particle_passes == 2) {",
-                  "        options.add_pass_blend = create_particle_blend(2);",
-                  "    }",
+                  "        // The mode-4 wrapper's second pass, built where the",
+                  "        // pin builds it: createParticleBlend(2) over the same",
+                  "        // instances, with no custom shader. Read only when",
+                  "        // the blend carries two passes.",
+                  "        .add_pass_blend = blend.particle_passes == 2",
+                  "            ? create_particle_blend(2)",
+                  "            : SpriteBlendDescriptor{}};",
               ].join("\n")
-            : ""
+            : [
+                  "",
+                  "        // The three-arm mapping never builds a two-pass",
+                  "        // blend, so the second pass stays empty.",
+                  "        .add_pass_blend = SpriteBlendDescriptor{}};",
+              ].join("\n")
     }
     return create_billboard_system(
         engine,
