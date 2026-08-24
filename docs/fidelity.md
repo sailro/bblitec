@@ -704,7 +704,8 @@ the result to `createMeshFromData`, so the flatten is emitted as generated
 C++ with each rule it folds asserted against the declaration that states it:
 the segment index pair `(vertex - 1, vertex)` written only for
 `pointIndex > 0`, the `Math.max(0, line.length - 1) * 2` index count, the
-zero normal buffer, and the five validation throws. The material is the
+zero normal buffer (the shared mesh uploader requires one while the line
+shader binds no normal), and the five validation throws. The material is the
 program `line-material.ts` composes: its two stages are folded out of that
 module's own `vertexSource`/`fragmentSource` builders — the same evaluator
 the sprite composers go through — and its declarations and fixed-function
@@ -784,7 +785,8 @@ exactly as the `.env` container parser does. What cannot run at load is the
 `device.features` reports and tries them in order, and a native build has no
 network for a second candidate. Generation resolves it over the compiled
 backends' feature set — block compression, which is what a D3D12 adapter
-reports on both of them and in the browser reference — and the emitted format
+reports on both of them and in the browser reference
+(`texture-compression-bc`, and neither ASTC nor ETC2) — and the emitted format
 table carries the pin's block-compression rows alone, so a file outside them
 refuses at the pin's own `if (!format) throw` rather than at an upload that
 cannot name what it was handed. Both PALs then translate the pin's own WebGPU
@@ -1325,7 +1327,9 @@ browser harness screenshotting a canvas whose render loop has been
 cancelled. Seventeen of the corpus's twenty-one `setTimeout` call sites
 pass a delay of 0, which is the reached slice; the four real waits (scenes
 44, 48, 156 and 173) refuse rather than becoming "next frame", which would
-be a different scene.
+be a different scene. Babylon Native, which embeds a JavaScript engine and
+must serve any delay, needs a timer thread and a time-ordered queue for
+this; none of that applies where the frame conductor is the only thread.
 
 **Two ordering repairs belong to the PAL, not to the semantics.** The pin
 configures a body in Havok's order — create, motion type, add to world,

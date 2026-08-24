@@ -94,9 +94,9 @@ Four rules:
   something ours does not. Percentages of matching pixels are not that.
   Look for that line in an *arm* rather than in the arithmetic — upstream
   forks whole blocks on a boolean recording where an object came from
-  (`useF0Remap` from the glTF clearcoat loader, `hasAlbedoScaling` from
-  the sheen setter, `_cullMode` from a pipeline-descriptor default), and
-  an arm we never compose looks exactly like a small systematic bias.
+  (`useF0Remap` from the glTF clearcoat loader), and an arm we never
+  compose looks exactly like a small systematic bias; the rules opening
+  `docs/debugging.md` carry the other arms.
 - **Measure the PNG, do not eyeball it.** "The sprites are in the wrong
   place" is a guess; "exactly 7200 px at (640,180)-(719,269)" named the
   bug immediately.
@@ -183,15 +183,11 @@ complete source map is maintained in `docs/architecture.md`.
 - A build configures `BBLITE_BACKEND=BOTH` when the pinned Dawn library is
   installed and SDL_GPU otherwise; `BBLITE_GPU_BACKEND=dawn` selects Dawn at
   run time in a dual-backend build.
-- **Both backends, or the scene is not integrated.** A scene measured on one
-  backend has no independent check on it at all, and making the gap visible
-  (a flag, an unmeasured column, a TODO) documents an unfinished job rather
-  than making it acceptable.
+- **Both backends, or the scene is not integrated** — the elaboration lives
+  in `docs/debugging.md`'s "Before calling a scene done" checklist.
 - Run the scene in the demo window and move the camera before calling an
-  integration done. A gate renders the one pose its author chose; orbiting has
-  found defects a green matrix passed. When it finds something, turn it into a
-  measurement — copy the scene to `examples/`, move its camera there, and
-  `parity --recapture-reference` — rather than a screenshot.
+  integration done — orbiting has found defects a green matrix passed; the
+  orbit-then-measure recipe is in `docs/debugging.md`.
 - **bblitec requires a GPU.** There is no software renderer and no CPU
   fallback: a backend that cannot bring a device up throws, and the throw is
   the answer. Do not add a degraded path — nothing would measure it.

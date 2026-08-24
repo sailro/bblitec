@@ -43,7 +43,7 @@ what is decided at compile time and what lives at run time — and
 
 ## Quick start
 
-Requirements: Node.js 22+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
+Requirements: Node.js 22.12+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
 PowerShell and DXC for shader compilation, and Chrome/Edge with WebGPU for
 browser references and executed asset compilation — the HDR GGX prefilter,
 Basis transcodes, drawn atlases, and node-particle bakes (see

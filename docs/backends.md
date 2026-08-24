@@ -94,8 +94,7 @@ residual.
 
 The scene 1 attribution captures (draw-id buffer and triangle-cluster
 buffer) render on either backend under the same environment switch;
-the diagnostic filenames keep their fixed `-gpu` suffix and reflect
-whichever backend produced the run. Dawn draws them through the shared
+their filenames carry the backend token like every other artifact. Dawn draws them through the shared
 superset mesh bind-group layout with dedicated diagnostic pipelines
 and requests the primitive-index device feature for the cluster
 shader's `enable primitive_index`. Measured cross-backend agreement:
@@ -205,10 +204,9 @@ scene-less driver beside them and by the scene renderer's frame-graph effect
 task. The pipeline is built against the *output target's* format and sample
 count, which is what the pin's own `targetSignatureKey` cache is keyed by, so
 one wrapper drawn into two targets builds two passes. The two backends resolve
-its bind group differently for the standing reason: SDL_GPU reads the `.slots`
-sidecar, because a uniform block the caller's body never reads does not survive
-Tint and the compaction that follows is dense, while Dawn compiles the deployed
-WGSL and takes the descriptor's own binding numbers.
+its bind group differently for the standing reason: SDL_GPU binds by the
+`.slots` sidecar and Dawn by the descriptor's own binding numbers — the
+sidecar contract is [below](#dawn-backend-architecture-nativesrcpal_dawncpp).
 
 Deleting a backend stays a matter of dropping its files. `BBLITE_BACKEND`
 removes every translation unit belonging to the backend it turns off,

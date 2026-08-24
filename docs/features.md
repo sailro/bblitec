@@ -243,12 +243,10 @@ the split is the same one `.env` and `.hdr` already take.
   against the pin's own format table.
 - **Which container to fetch is decided at generation.** `loadKtxTexture2D`
   takes a base URL and a suffix list, keeps the suffixes whose compressed
-  format the *device* reports, and tries them in order — a run-time question a
-  native build cannot ask, because it has no network to fetch a second
-  candidate with. Generation answers it once with block compression, which
-  is what the validated platform reports, and that is the golden's answer
-  too: the browser reference runs D3D12, where a WebGPU adapter reports
-  `texture-compression-bc` and neither ASTC nor ETC2. A call listing no
+  format the *device* reports, and tries them in order — a run-time question
+  a native build cannot ask, so generation answers it once with block
+  compression, the format the validated platform and the browser reference
+  both report ([fidelity](fidelity.md#shader-contract)). A call listing no
   block-compression suffix refuses rather than packaging the pin's
   uncompressed fallback, which is a different texture; a device that cannot
   sample the packaged format refuses it by name at upload, on both backends.
@@ -261,12 +259,11 @@ the split is the same one `.env` and `.hdr` already take.
   Recorded per scene as `executed-basis-transcode`; the baked bytes depend on
   the Chrome that compiled them, exactly as the drawn atlas does.
 
-The texture object's own `invertY` travels with it either way, because it is
-not an upload flip: the pin applies it in the material's UV transform, which
-is what keeps a compressed texture correct where an in-place row swap is
-impossible. `loadKtxTexture2D` leaves it unset and `loadBasisTexture2D` sets
-it, so a Standard material sampling a Basis texture flips its UV block and one
-sampling a KTX texture does not.
+The texture object's own `invertY` travels with it either way — a UV-block
+flip rather than an upload flip, which is what keeps a compressed texture
+correct where an in-place row swap is impossible. `loadBasisTexture2D` sets
+it and `loadKtxTexture2D` does not ([fidelity](fidelity.md#shader-contract)
+carries the contract).
 
 ### Environment compilation
 
@@ -301,10 +298,11 @@ export is called in headless Chromium, and what it returned is baked. Two
 kinds reach this — a drawn sprite atlas, and a computed pixel buffer.
 
 **Why the atlas is compile time:** there is no file to download and no
-formula to port. It is built with canvas2D — rotated wedges, `arc`, `hsl` —
-so its pixels are a browser rasterizer's antialiasing rather than an
-expression. Recorded per scene as `drawn-sprite-atlas`. The frame grid is
-**not** baked with it — see
+formula to port — its canvas2D pixels are a browser rasterizer's
+antialiasing rather than an expression
+([fidelity](fidelity.md#shader-contract) carries the execution recipe).
+Recorded per scene as `drawn-sprite-atlas`. The frame grid is **not** baked
+with it — see
 [the boundary table](#where-the-boundary-falls-inside-a-family).
 
 **Why a pixel buffer is compile time**, a larger adaptation recorded
@@ -328,62 +326,42 @@ steps `animateParticleSystem` a couple of hundred times, and synchronizes the
 result into a camera-facing billboard system. What ships is that frozen
 state.
 
-**Why the simulation is compile time**, and it is the strongest case of the
-executed kind in this repository:
-
-- **The graph build is closures.** `npe-build.ts` walks the document and
-  dynamically imports one evaluator per block class, each installing getters
-  and update steps onto the system as JavaScript functions. There is no shape
-  to fold — the "shader" of a particle graph is a call tree assembled at load
-  — and this compiler lowers no closures.
-- **The value is fragile past any rounding argument.** The seed each scene
-  installs draws through `Math.sin`, which is not bit-portable between V8 and
-  a native maths library, and the graph consumes that sequence in an order
-  the block walk decides. A lowered simulation would diverge into a
-  *different set of particles* within a few hundred draws, not a slightly
-  different one.
-
-So generation runs the pin's own parser, builder and simulation in headless
-Chromium and bakes the particle buffer. Recorded per scene as
-`executed-node-particle-simulation`; the baked state depends on the Chrome
-that ran it, exactly as the drawn atlas and the pinned GGX prefilter do.
+**The simulation is executed, not lowered** — the strongest case of the
+executed kind in this repository: the graph build is JavaScript closures
+(one dynamically imported evaluator per block class), and the seed each
+scene installs draws through `Math.sin`, which is not bit-portable between
+V8 and a native maths library. So generation runs the pin's own parser,
+builder and simulation in headless Chromium and bakes the particle buffer.
+Recorded per scene as `executed-node-particle-simulation`; the baked state
+depends on the Chrome that ran it, exactly as the drawn atlas and the
+pinned GGX prefilter do. [Fidelity](fidelity.md#shader-contract) carries
+the full rationale and each downstream fold's contract.
 
 **What stays folded is everything downstream**, on both render targets.
-`createParticleBillboard` and `syncParticleBillboard` are lowered from their
-own pinned declarations — the
-grid atlas over the graph's texture, the blend its numeric mode selects, the
-five props the sync writes per particle — so the generated scene builds the
-billboard system the pin would have built and writes the sprites the pin
-would have written. From there it is an ordinary facing-billboard scene.
-
-The driver holds the scene state the pin reads while it builds. That is the
-graph, the emitter and the texture base URL — and the **camera**, because
-`UpdateFlowMapBlock` derives a view-projection during the build and a build
-with no camera leaves the flow update a silent no-op.
+`createParticleBillboard` and `syncParticleBillboard` are lowered from
+their own pinned declarations, so the generated scene builds the billboard
+system the pin would have built and writes the sprites the pin would have
+written; from there it is an ordinary facing-billboard scene. The driver
+holds the scene state the pin reads while it builds — the graph, the
+emitter, the texture base URL, and the **camera**, because
+`UpdateFlowMapBlock` derives a view-projection during the build.
 
 **Two render targets, and the exact blends on both.** A frozen set draws
 either as camera-facing billboards or through the pure-2D Sprite2D bridge,
-and each has a plain mapping and an exact one. The plain builders map three
-Babylon blend modes and degrade the rest; `enableNodeParticleBlendModes` (or
-the builder that applies it) resolves all five, which turns mode 3 into the
-pin's own private Multiply fragment and mode 4 into that pass followed by a
-stock Add pass over the same instances. The pure-2D bridge takes the same
-five through `registerNodeParticleSet2DWithBlendModes`, where mode 4 is two
-equal-order layers the renderer's stable sort keeps adjacent.
+and each has a plain mapping and an exact one: the plain builders map three
+Babylon blend modes and degrade the rest, while
+`enableNodeParticleBlendModes` and
+`registerNodeParticleSet2DWithBlendModes` resolve all five — mode 4 as two
+passes over one renderable on the billboard path, and as two equal-order
+layers the renderer's stable sort keeps adjacent on the pure-2D one.
 
-**A registered set is folded, and the fold is measured.**
-`registerNodeParticleSet` appends a callback that animates and
-re-synchronizes every frame, which one frozen state cannot answer in
-general. It can for a system the scene froze, and generation proves it
-rather than assuming it: the driver takes each registered system's state,
-steps it once more, and compares every column the sync reads. A registration
-whose system still moves, or whose `updateSpeed` is not zero, refuses.
-
-**A particle buffer is generation-time state.** The simulation runs at
-generation, so `buffer.alive` and every column exist only there: a scene that
-writes a column afterwards is editing the state the bake hands on, and one
-that checks the live count is asserting about it. Both move to the driver and
-emit nothing.
+**A registered set is folded, and the fold is measured**: the driver steps
+each registered system's state once more and compares every column the sync
+reads, refusing a registration whose system still moves or whose
+`updateSpeed` is not zero. **A particle buffer is generation-time state**: a
+scene that writes a column after the freeze, or checks the live count, is
+editing or asserting about the bake, so both move to the driver and emit
+nothing.
 
 What refuses at generation, by name: a snippet id (a network read at page
 load), a live set (one whose per-frame step moves particles), a system
@@ -506,10 +484,10 @@ compiled away:
   record, and texture-less PBR factors bake into 1x1 texels.
 - `KHR_materials_variants`: the loader reads each primitive's mappings and the
   document's variant order, and draws the material the scene's one static
-  `selectVariant` name resolves to. Only that name is compiled in; the pin's
-  run-time variant table is not carried, so a second differing selection, a
-  second selecting asset, a selection made from a frame callback,
-  `getVariantNames` and `resetVariant` all refuse at generation
+  `selectVariant` name resolves to. Only that name is compiled in, and every
+  shape the fold cannot represent — a second differing selection, a selection
+  on a second asset, one made from a frame callback, `getVariantNames`,
+  `resetVariant` — refuses at generation
   ([fidelity](fidelity.md#semantic-contract)).
 
 `loadSplat` loads a Gaussian-splat cloud, split across the two halves of the
@@ -549,15 +527,15 @@ builds at the call site is bound to a name first, because the pool keeps
 referencing it for the whole frame loop; one built inside a block refuses,
 since the binding would not outlive it.
 
-A **line system** is one of those meshes rather than a renderer of its own.
+A **line system** is one of those meshes rather than a renderer of its own:
 `createLineSystem` concatenates its polylines into a single indexed mesh —
-all points in line order, an index pair per segment, no index joining one
-line to the next, and one zero normal per vertex because the shared mesh
-uploader requires the buffer while the line shader binds no normal — and
-draws it with the `ShaderMaterial` `createLineMaterial` builds, whose
-`_topology` is `"line-list"`. Everything after that is the shader-material
-path: `updateLineSystem` rewrites positions and colours over an unchanged
-connectivity (a changed line or point count refuses, as upstream throws),
+an index pair per segment, nothing joining one line to the next — and draws
+it with the `ShaderMaterial` `createLineMaterial` builds, whose `_topology`
+is `"line-list"`; the flatten's asserted rules and the composed program are
+the pin's own ([fidelity](fidelity.md#shader-contract)). Everything after
+that is the shader-material path: `updateLineSystem` rewrites positions and
+colours over an unchanged connectivity (a changed line or point count
+refuses, as upstream throws),
 and `setThinInstanceColors` binds the per-instance RGBA stream a material
 created with `useThinInstanceColors` reads. The colour precedence is the
 pin's own: vertex colours, instance colours, their product, or the
@@ -596,10 +574,10 @@ material the call names, so a scene carrying several scene-code materials
 reaches each of them independently.
 
 A Standard material's `diffuseTexture` also takes a colour render target,
-which is how one pass displays another's output. The pin hands that
-attachment back carrying `invertY: true` and reads exactly that property to
-build the material's UV block, so the slot samples V-flipped — where a
-loaded image carries no such property and is flipped at upload instead.
+which is how one pass displays another's output: the pin hands that
+attachment back carrying `invertY: true`, so the slot samples V-flipped
+through the material's UV block — the flip contract, and why it lives there
+rather than at upload, is in [fidelity](fidelity.md#shader-contract).
 A `createTexture2DFromPixels` texture is the second source the slot takes:
 upstream has one `Texture2D` whatever built it, so the record copies the
 texels, the sampler and the texture-object properties across, and the
@@ -634,11 +612,10 @@ one declared as the pin declares it and re-homed into this backend's
 fragment texture group, bound per material by `setShaderTexture`. Which
 pairs the compiled stage keeps, and at which registers, is the caller's own
 WGSL to decide — a sampler read only inside a branch a define folds away is
-dropped and the registers behind it move up — so SDL_GPU binds by the
-`.slots` sidecar the compaction pass publishes, resolving each surviving
-register back to the slot the material stored, exactly as the composed
-material families do. Dawn compiles the deployed WGSL directly, where the
-declared order is the binding order. Its `defines` become the module-scope
+dropped — so SDL_GPU binds by the `.slots` sidecar and Dawn by the deployed
+WGSL's declared order
+([backends](backends.md#dawn-backend-architecture-nativesrcpal_dawncpp)
+owns the sidecar contract). Its `defines` become the module-scope
 WGSL `const` declarations the pin's own prelude writes — WGSL has no
 preprocessor, so a define is a constant the shader compiler folds a branch
 against, and the set is part of the program's identity rather than per-draw
@@ -668,20 +645,17 @@ than a formula to restate.
 **Compile time: the whole compiler.** Generation runs that entry point against
 a recording device, so what deploys is the module the pin built for this
 graph: its WGSL, the layout of the uniform block its named inputs produced,
-the vertex inputs it declares, and its cull state. The block's bytes are
-folded from the graph's own defaults, because a scene changing one would go
-through the `inputs` handles, which are not lowered.
+the vertex inputs it declares, and its cull state, with the block's bytes
+folded from the graph's own defaults.
 
-Two routes reach a graph, because the corpus writes them both ways. A module
-exporting the document as a literal is read as data — the fold, and the one to
-prefer, since a literal cannot drift. A module that *builds* its graph at load
-from id counters, spread-composed inputs and arrays it pushes into is code
-this compiler does not lower, so it is executed instead. That one runs under
-Node rather than in headless Chromium, which is the difference between this
-and the two executed asset kinds beside it: those produce *pixels*, so they
-run where the golden runs them and record an adaptation for it, while a graph
-is structure — an object of numbers, strings and arrays that no two ECMAScript
-engines can disagree about.
+Two routes reach a graph, because the corpus writes them both ways: a module
+exporting the document as a literal is read as data — the fold, and the one
+to prefer, since a literal cannot drift — while a module that *builds* its
+graph at load from id counters, spread-composed inputs and arrays it pushes
+into is code this compiler does not lower, so it is executed instead, under
+Node. The rationale — a graph is structure, not pixels, which is why it runs
+under Node rather than in headless Chromium — and the fold contracts are in
+[fidelity](fidelity.md#shader-contract).
 
 **Run time: the draw.** A node draw binds the pin's own group scheme — the
 per-pass scene block and lights in group 0, the graph's mesh block and uniform
@@ -703,14 +677,11 @@ the depth *convention* into its own output, and both backends render under
 the pin's ([fidelity](fidelity.md#shader-contract)).
 
 A graph may also sample textures. `TextureBlock` and `ImageSourceBlock` each
-declare a binding named after the block, and the pin's own pipeline builder
-allocates the group-1 texture/sampler pair for it out of the same running
-counter the node UBO and the environment take — so the pair belongs to the
-composition rather than to any ordering this port could choose. What the
-scene supplies is the image, under that binding's name
-(`parseNodeMaterialFromSnippet`'s `textures` record), and generation joins the
-two: a binding the record omits, or a name the graph declares no binding for,
-refuses at generation where upstream raises it at the first render.
+declare a binding named after the block, and the scene supplies the image
+under that name (`parseNodeMaterialFromSnippet`'s `textures` record);
+generation joins the two, refusing a binding the record omits or a name the
+graph declares no binding for. The pair's group-1 allocation belongs to the
+pin's own composition ([fidelity](fidelity.md#shader-contract)).
 
 What refuses at generation, naming the block that reached it: morph targets,
 shadows, clip planes and the mesh-attribute test. A graph fetched by snippet
@@ -812,12 +783,11 @@ feature through — and a layer or system without one draws the stock shader.
 The `fx` block a body may read (`fx.time`, and the `fx.params` vec4 the
 per-family setter writes) binds beside the family's own block, declared
 whether or not the body names it, as upstream declares it. What the body does
-NOT read still matters: a block nothing reads does not survive to the compiled
-shader, and SDL_GPU takes uniform buffers by dense slot. Which blocks a stage
-kept, and at which slots, is read from the sidecar the shader step writes
-beside that stage — the same one the pinned material variants bind through,
-written by both of its compaction passes. The compiled artifact answers it;
-nothing infers it from the WGSL. A scene whose every layer or
+NOT read still matters: a block nothing reads does not survive to the
+compiled shader, so which blocks a stage kept, and at which slots, is read
+from the `.slots` sidecar rather than inferred from the WGSL
+([backends](backends.md#dawn-backend-architecture-nativesrcpal_dawncpp)
+owns the contract). A scene whose every layer or
 system opts in never loads the stock program, so it is not composed either.
 
 A body may also sample textures the caller supplies. Each is named in the
@@ -867,45 +837,22 @@ and the world position a custom body may read, and the stock stage does not.
 ### Physics
 
 Rigid-body simulation, and the one family here whose numbers are not the
-pin's. It is worth reading the split before the feature list, because the
-split is the whole design.
-
-**The pin already drew the boundary.** `createHavokWorld(scene, hknp)` takes
-the solver as a *parameter* and every call the pinned physics layer makes on
-it is an `HP_*` entry point, so `src/physics/havok.ts` is not "the Havok
-integration" — it is Babylon's rigid-body semantics written against a fixed
-back-end surface. That splits exactly along this repository's ownership rule:
-
-- **Generated**, lowered from the pinned module: the world record and its
-  body list, the step gate (`_fixedDeltaMs > 0 ? _fixedDeltaMs : deltaMs`,
-  the non-finite rejection, and the `Math.min(stepMs, MAX_STEP_MS) / 1000`
-  tunnelling clamp), the four phases of a frame in order (pre-step node→body
-  sync, step, post-step body→node sync, after-step callbacks), the
-  aggregate's own ordering, and the shape parameters derived from the mesh's
-  bounds. Every constant is read from the pinned declaration rather than
-  restated, so a bump that moves one moves what is emitted.
-- **PAL**, `native/include/bblite/pal_physics.hpp` and one implementation
-  translation unit: the `HP_*` surface itself. That is a third-party library
-  behind a fixed entry-point list, which is the role SDL already plays.
-
-**The solver is Bullet, and that is the divergence.** The Havok WASM module
-is a proprietary binary this project cannot redistribute; Bullet is Zlib.
-Nothing generated names a solver, so a different implementation is a
-different translation unit — but two rigid-body solvers integrate different
-contact models, so a body's pose after N steps is a *different number*
-rather than a rounding of the same one. This is the only adaptation in the
-repository that is not bit-faithful by construction, it is recorded per
-scene as `substituted-physics-solver`, and it is why a physics scene cannot
-carry a pixel threshold against a Havok golden at a moving pose. What it can
-be measured by is a trajectory, plus a pixel comparison at rest, where the
-configuration is static and phase drops out — and there the two solvers
-agree to 16 pixels in 921,600 ([fidelity](fidelity.md#physics-contract)).
-
-`@babylonjs/havok` is a **browser-only devDependency**: the capture harness
-serves it to the reference page so a physics scene has a golden at all. It
-is never linked, never shipped, and reaches nothing in the native binary —
-`await HavokPhysics(...)` compiles to nothing, and the solver a build links
-is selected by the `physics:world` feature.
+pin's. The boundary is the pin's own: `createHavokWorld(scene, hknp)` takes
+the solver as a *parameter* and the pinned layer calls only `HP_*` entry
+points on it, so the rigid-body semantics are generated from the pinned
+module while the `HP_*` surface is one PAL translation unit
+(`native/include/bblite/pal_physics.hpp`). The solver behind that surface
+is Bullet rather than the proprietary Havok WASM module — `await
+HavokPhysics(...)` compiles to nothing, `@babylonjs/havok` stays a
+browser-only devDependency serving the reference page, and the solver a
+build links is selected by the `physics:world` feature. Two rigid-body
+solvers integrate different contact models, so this is the one adaptation
+that is not bit-faithful by construction — recorded per scene as
+`substituted-physics-solver`, measured by trajectory and by a pixel
+comparison at rest rather than by a threshold driven toward zero;
+[fidelity](fidelity.md#physics-contract) carries the why of the
+substitution, what stays lowered from the pinned declarations, and every
+measurement.
 
 The reached slice: `createHavokWorld` with an explicit or defaulted gravity,
 `createPhysicsAggregate` over the four primitive shapes
@@ -919,30 +866,15 @@ frame's. A body's integrated position and rotation are written onto the same
 `transform_version` the renderer re-reads.
 
 **A physics scene freezes itself, and that is what makes it measurable.**
-Every one in the corpus pins its measured pose the same way: it counts
-steps in `onPhysicsAfterStep`, and at the step its `?captureFrame=` query
-names it calls `stopEngine` from a zero-delay `setTimeout`. Both halves are
-reached rather than erased, because both have a native meaning:
-
-- **`stopEngine`** is a flag the frame conductor reads. The pin cancels its
-  animation frame and clears `_renderFn`, so nothing further submits; here
-  nothing further *advances* — the conductor stops running the scene's
-  callbacks and keeps presenting the frozen frame only while a capture is
-  still pending, which is how a screenshot lands on it exactly as the
-  browser harness takes one off the frozen canvas.
-- **`setTimeout(callback, 0)`** is a one-shot deferred callback the
-  conductor drains after the frame's own callbacks — the same boundary a
-  browser runs a zero-delay timeout at. Seventeen of the corpus's
-  twenty-one call sites pass a delay of exactly 0, which is the reached
-  slice; the four real waits (scenes 44, 48, 156 and 173) refuse rather
-  than being rounded to the next frame, which would be a different scene.
-  Babylon Native, which embeds a JavaScript engine and must serve any
-  delay, needs a timer thread and a time-ordered queue for this; none of
-  that applies where the frame conductor is the only thread.
-
-Without those two the scene runs free and the two sides are at different
-steps, which makes any pixel comparison meaningless. With them, both sides
-stop at the same physics step.
+Every one in the corpus counts steps in `onPhysicsAfterStep` and, at the
+step its `?captureFrame=` query names, calls `stopEngine` from a zero-delay
+`setTimeout` — both halves reached rather than erased: the flag the frame
+conductor reads, and the one-shot callback it drains after the frame's own
+callbacks. Without those two the scene runs free and the two sides are at
+different steps, which makes any pixel comparison meaningless; with them,
+both sides stop at the same physics step. The reached zero-delay slice, its
+census, and the real-delay scenes that refuse are in
+[fidelity](fidelity.md#physics-contract).
 
 Everything else in the pinned physics layer refuses at generation naming
 what it reached: mesh and convex-hull shapes (the pin's own mesh
@@ -998,24 +930,22 @@ formats, and refuses any extent a single fraction does not reproduce exactly.
 **Compile time: the stage.** The effect's factory runs under Node against a
 descriptor-only render target and the pin's own `getShaderModule` concatenates
 the module — so what deploys is the text the browser compiles, for the options
-this scene passed. That matters most for the blur, whose text is not fixed at
-all: its kernel decides how many taps the vertex stage carries, and each tap's
-offset and weight is a Gaussian evaluated in doubles and printed through the
-pin's own formatter. Both stages live in one module, so it deploys twice — once
+this scene passed. Both stages live in one module, so it deploys twice — once
 per entry point — and SDL_GPU re-addresses the pin's groups exactly as it does
 for a composed material variant. What identifies a module is that text and not
 the pass that reached it: a blur pair differing only in its `direction` uniform
-composes one module and deploys it once.
+composes one module and deploys it once. Why the factory is executed rather
+than folded — the blur's kernel-dependent taps, each a Gaussian printed
+through the pin's own formatter — is in [fidelity](fidelity.md#attribution).
 
 **Run time: the pass.** The parameters live on the task record and
 `updateUniforms` marks them for rewrite, which is the pin's own split between
-mutating a parameter and uploading the block. The uniform bytes are written by
+mutating a parameter and uploading the block; the uniform bytes are written by
 a generated writer lowered from each effect's own `writeUniforms`, so a pass
-whose values depend on the attachments — the blur's per-pixel delta, the
-chromatic aberration's screen size — reads them from the real targets. A
-normalized viewport becomes the pin's own pixel rectangle, which rounds its far
-edges *up* where a frame-graph copy task rounds them down, so the two do not
-share a resolver.
+whose values depend on the attachments reads them from the real targets. The
+two rules the pass takes from the pin — the output target's sample count, and
+the far-edges-up viewport rounding a copy task does not share — are in
+[fidelity](fidelity.md#attribution).
 
 ### Fullscreen effects
 
@@ -1029,14 +959,14 @@ scene needs no `SceneContext` at all.
 
 **Compile time: the module and the layout.** The pin builds one shader module
 as `vertexWGSL ?? DEFAULT_VERTEX_WGSL` concatenated with the caller's
-fragment, so generation lifts that constant out of the pinned module and
-performs the same concatenation. Both entry points live in the one module, so
-it deploys twice — once per stage — exactly as a post-process module does. The
-bind-group layout is the descriptor's `bindings` array rather than anything
-reflected out of the WGSL, which is why it travels to the generated table
-whole; a sampler's `textureBinding` is resolved to the texture binding it
-samples through at generation, so the runtime reads one number where the pin
-runs a lookup with a fallback.
+fragment, and generation performs the same concatenation; both entry points
+live in the one module, so it deploys twice — once per stage — exactly as a
+post-process module does. The bind-group layout is the descriptor's
+`bindings` array rather than anything reflected out of the WGSL, so it
+travels to the generated table whole, with a sampler's `textureBinding`
+fallback resolved once at generation. Everything else the pin decides about
+the pass is asserted at generation rather than restated;
+[fidelity](fidelity.md#shader-contract) carries the checked list.
 
 **Run time: the pass.** Two entry points draw the same pair of halves. An
 `EffectRenderer` is its own rendering context, so a scene registering one and
