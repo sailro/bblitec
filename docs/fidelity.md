@@ -1155,10 +1155,12 @@ matters because only one of them needs Havok.
 `BBLITE_PHYSICS_TRACE` writes the per-step pose, and three properties follow
 from mechanics rather than from any implementation:
 
-- **Free fall is exact.** Both solvers integrate semi-implicit Euler, so the
-  pose after `n` steps has a closed form: `y = y0 - g·dt²·n(n+1)/2`.
-  Measured on `examples/physics-drop.ts`, the native run matches it to
-  float32 precision (`1e-7` at magnitude 4) for every step before contact.
+- **Free fall is exact for the integrator this solver uses.** Bullet
+  integrates semi-implicit Euler, so the pose after `n` steps has a closed
+  form: `y = y0 - g·dt²·n(n+1)/2`. Measured on `examples/physics-drop.ts`,
+  the native run matches it to float32 precision (`1e-7` at magnitude 4) for
+  every step before contact. The pinned solver does *not* integrate that way,
+  which is the first of the two divergences measured below.
 - **A resting body settles at its geometric height.** A sphere of radius 1
   on a ground plane at `y = 0` rests at exactly `y = 1.0`. That is what the
   degenerate-box handling below is measured against.
@@ -1212,6 +1214,58 @@ byte-identical frame. So the substitution costs nothing at all where the two
 solvers are both converged, and everything it costs is in the transient —
 which is where a future measurement should look, and which needs the scene
 to freeze itself at a step count (see [TODO](../TODO.md)).
+
+**Which of the two divergences is a setting, and which is not.** The
+difference from the pinned solver was decomposed on scene 40 by rendering the
+native scene frozen at the same step as the reference and comparing the
+sphere's top scanline directly, so no screen-to-world fit sits inside the
+measurement. Both sides bounce at the same step -- native step 46, reference
+`?captureFrame=47` -- and that one-frame index shift is the two harnesses'
+own counters rather than the solvers'.
+
+*The fall is an integrator-order difference, and no setting reaches it.*
+Every `btContactSolverInfo` value the Bullet community names for contact
+agreement was swept against the per-step trace, which is exact and needs no
+reference at all:
+
+| Perturbation | Steps changed | Mean distance from the golden |
+| --- | --- | --- |
+| none, Bullet's own defaults | — | **5.0 px** |
+| `m_restitutionVelocityThreshold` `0.2` to `0` or `0.01` | 0 of 120 | 5.0 px |
+| `m_numIterations` `10` to `50` or `200` | 0 of 120 | 5.0 px |
+| `m_numIterations` `10` to `1` | 73 of 120 | 5.0 px, sub-pixel |
+| `m_linearSlop` `0.005` to `0` | 0 of 120 | 5.0 px |
+| `m_linearSlop` `0.005` to `0.05` | 73 of 120 | 12.2 px |
+| `m_erp` `0.2` to `0.8` | 0 of 120 | 5.0 px |
+| `m_erp2` to `0.8` | 73 of 120 | 6.7 px |
+| `m_splitImpulse` off | 72 of 120 | 35.4 px |
+
+Three are *inert* at their defaults here: the impact is far above the
+restitution threshold, a single contact point converges in well under ten
+iterations, and `m_erp` is unused while split impulse is on. Every
+perturbation that *is* live moves away from the golden. The shipped
+configuration is Bullet's own defaults because they measured closest, not
+because they were selected against the image.
+
+*What the fall difference actually is.* Semi-implicit Euler advances the
+position by the already-updated velocity, so it lags the exact solution for a
+constant acceleration by `½·a·dt²` every step. Adding exactly that term back
+-- as a probe, never as shipped code -- moves the fall and first impact from
+`+2, +3, +4` px to `-1, -1, 0` px, and reproduces the whole bounce profile
+within one pixel across five consecutive frames. So the pinned solver
+integrates constant acceleration to second order and Bullet does not, and
+Bullet exposes no flag for it: it is a property of the integrator rather than
+a setting.
+
+*It stays unadopted.* The same probe makes the phase after the bounce
+markedly worse -- `-6, -13, -21, -28, -32` px against the defaults'
+`-2, -6, -10, -11` -- because the rebound impulse is a contact-solver
+difference that a position correction perturbs rather than fixes. It buys the
+phase already matched to a few pixels and pays for it in the phase that is
+not, so the residual stays characterised rather than tuned. Neither the pin
+nor upstream's own `ammoJSPlugin` sets anything on its solver beyond gravity
+and per-body friction and restitution, so there is no upstream-blessed
+configuration to adopt either.
 
 **The degenerate ground box is a real seam.** `createGround` builds a mesh
 with a zero-thickness Y extent, and `createPhysicsAggregate(ground, BOX)`
