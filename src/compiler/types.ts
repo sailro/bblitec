@@ -247,6 +247,8 @@ export interface ScenePbrMaterialManifest {
     reflectance: number;
     /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
     occlusionStrength?: number;
+    /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
+    metallicF0Factor?: number;
     doubleSided: boolean;
     transmission: number;
     ior: number;

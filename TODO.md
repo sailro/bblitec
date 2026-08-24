@@ -306,11 +306,11 @@ that does to the deferred lane by default.
   user function `requireGroup`. Iteration, `?? []`, `.find(pred)` with an arrow,
   and static glTF-root indexing now lower; this is the remaining shape where
   the collection itself travels beyond a compiler-owned call argument.
-- [ ] Scene 12: support the scene-code `_metallicF0Factor` option to
-  `createPbrMaterial`. Its preceding `occlusionStrength` now reaches the
-  scene-material manifest and native record; the pinned material input and
-  native PBR record already carry the F0 field this scene writes next, before
-  its imported-root clone and recursive material walk.
+- [ ] Scene 12: support `setPbrMetallicReflectance`. Its preceding
+  `occlusionStrength` and internal `_metallicF0Factor` creation values now
+  reach the scene-material manifest and native record; the setter next stamps
+  the reflectance color and optional texture fields before the imported-root
+  clone and recursive material walk.
 - [ ] Scene 229: lower the reached spread element.
 - [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
   new in 1.21. One scene, self-contained, and the only glTF camera import in

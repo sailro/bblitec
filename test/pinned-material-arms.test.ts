@@ -203,3 +203,37 @@ test("scene-code occlusion strength controls the pin's ORM arm", async () => {
     assert.doesNotMatch(disabled[0]!.fragmentWgsl, /orm\.r/);
     assert.match(enabled[0]!.fragmentWgsl, /orm\.r/);
 });
+
+test("creation-only metallic F0 does not register the reflectance arm", async () => {
+    const arms = await pinnedSceneArms({
+        lightKinds: [],
+        multiLight: false,
+        noLight: true,
+        toneMapping: [false],
+        environment: false,
+        fog: false,
+    });
+    const variants = await composeScenePbrVariants(
+        [{
+            materialsBefore: 0,
+            gltfAssetsBefore: 0,
+            hasBaseColorTexture: true,
+            hasOrmTexture: true,
+            metallicFactor: 1,
+            roughnessFactor: 1,
+            directIntensity: 1,
+            environmentIntensity: 1,
+            alpha: 1,
+            reflectance: 0.04,
+            occlusionStrength: 0,
+            metallicF0Factor: 0.95,
+            doubleSided: false,
+            transmission: 0,
+            ior: 1.5,
+            thickness: 0,
+        }],
+        arms,
+    );
+
+    assert.doesNotMatch(variants[0]!.fragmentWgsl, /metallicF0Factor/);
+});

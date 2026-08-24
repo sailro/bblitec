@@ -57,13 +57,14 @@ export interface MaterialOptionContext
 /**
  * `createPbrMaterial`'s resolved options: the two texture values, the
  * sixteen native scalar/flag literals in constructor order, the resolved
- * scene-code occlusion strength, and the
+ * scene-code occlusion strength and internal metallic F0 factor, and the
  * appended `scenePbrMaterials` index that is this material's compile-time
  * identity.
  */
 export type CompiledPbrMaterialOptions = [
     Value,
     Value,
+    string,
     string,
     string,
     string,
@@ -123,11 +124,12 @@ export function compilePbrMaterialOptions(
             "alpha",
             "reflectance",
             "occlusionStrength",
+            "_metallicF0Factor",
             "doubleSided",
             "transmissive",
             "subsurface",
         ],
-        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, lighting intensities, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, the internal metallic F0 factor, lighting intensities, skybox mode, and transmission subsurface fields.",
     );
     const baseColorExpression = context.objectProperty(object, "baseColorTexture");
     const ormExpression = context.objectProperty(object, "ormTexture");
@@ -150,6 +152,10 @@ export function compilePbrMaterialOptions(
     const occlusionStrength = context.objectProperty(
         object,
         "occlusionStrength",
+    );
+    const metallicF0Factor = context.objectProperty(
+        object,
+        "_metallicF0Factor",
     );
     const doubleSided = context.objectProperty(object, "doubleSided");
     const transmissive = context.objectProperty(object, "transmissive");
@@ -243,6 +249,21 @@ export function compilePbrMaterialOptions(
     const occlusionStrengthCpp = occlusionStrength
         ? context.compileNumber(occlusionStrength)
         : "1.0f";
+    const staticMetallicF0Factor = metallicF0Factor
+        ? staticNumberValue(context, metallicF0Factor)
+        : 1;
+    if (
+        staticMetallicF0Factor === undefined ||
+        !Number.isFinite(staticMetallicF0Factor)
+    ) {
+        context.fail(
+            metallicF0Factor!,
+            "PBR _metallicF0Factor must be a finite static number: generation composes the reflectance-factor shader arm from it when the pinned extension is registered.",
+        );
+    }
+    const metallicF0FactorCpp = metallicF0Factor
+        ? context.compileNumber(metallicF0Factor)
+        : "1.0f";
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
         : "false";
@@ -267,6 +288,9 @@ export function compilePbrMaterialOptions(
         ...(staticOcclusionStrength === 1
             ? {}
             : { occlusionStrength: staticOcclusionStrength }),
+        ...(staticMetallicF0Factor === 1
+            ? {}
+            : { metallicF0Factor: staticMetallicF0Factor }),
         doubleSided: doubleSidedCpp === "true",
         transmission: Number.parseFloat(transmission),
         ior: Number.parseFloat(ior),
@@ -292,6 +316,7 @@ export function compilePbrMaterialOptions(
         attenuationColor,
         attenuationDistance,
         occlusionStrengthCpp,
+        metallicF0FactorCpp,
         sceneMaterialIndex,
     ];
 }

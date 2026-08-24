@@ -371,7 +371,12 @@ its resolved `occlusionStrength` is nonzero. `createPbrMaterial` is
 `(mat.occlusionStrength ?? 1) > 0` gate; generation carries the option into
 both that pinned feature input and the native material record, defaulting it to
 one only when absent. The glTF `_occlusionImage ? 1 : 0` rule belongs to the
-loader's own input builder and does not reach the scene-code path.
+loader's own input builder and does not reach the scene-code path. The pin's
+internal `_metallicF0Factor` creation property likewise stays distinct from
+the public base `reflectance`: a reached non-default is recorded and writes
+both native `metallic_f0_factor` and the writer's fallback `specular_weight`,
+but stays dormant in shader composition until the later
+`setPbrMetallicReflectance` call registers the reflectance extension.
 `KHR_materials_variants` is folded to the one selection a scene makes.
 `selectVariant` restores every original material and then applies the chosen
 variant's mapped entries, so with one static selection the end state is a

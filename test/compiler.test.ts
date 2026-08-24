@@ -1508,6 +1508,72 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
     }
 });
 
+test("preserves scene-code internal metallic F0 creation state", () => {
+    const compileMaterial = (
+        extraOption: string,
+        setup = "",
+    ) =>
+        compileSource(`
+            import {
+                createArcRotateCamera,
+                createEngine,
+                createPbrMaterial,
+                createSolidTexture2D,
+            } from "@babylonjs/lite";
+
+            async function main() {
+                const engine = await createEngine({});
+                ${setup}
+                createPbrMaterial({
+                    baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                    ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                    ${extraOption}
+                });
+            }
+        `);
+
+    const result = compileMaterial("_metallicF0Factor: 0.95,");
+    assert.equal(
+        result.manifest.scenePbrMaterials[0]?.metallicF0Factor,
+        0.95,
+    );
+    assert.match(
+        result.cpp,
+        /\.materials\[[^\]]+\.value\]\.metallic_f0_factor = 0\.95f;/,
+    );
+    assert.match(
+        result.cpp,
+        /\.materials\[[^\]]+\.value\]\.specular_weight = 0\.95f;/,
+    );
+
+    const defaultResult = compileMaterial("");
+    assert.equal(
+        defaultResult.manifest.scenePbrMaterials[0]?.metallicF0Factor,
+        undefined,
+    );
+    assert.doesNotMatch(
+        defaultResult.cpp,
+        /\.materials\[[^\]]+\.value\]\.(?:metallic_f0_factor|specular_weight) =/,
+    );
+
+    assert.throws(
+        () =>
+            compileMaterial(
+                "_metallicF0Factor: camera.alpha,",
+                "const camera = createArcRotateCamera(0, 1, 10, { x: 0, y: 0, z: 0 });",
+            ),
+        /_metallicF0Factor must be a finite static number/,
+    );
+    assert.throws(
+        () => compileMaterial("_metallicF0Factor: 1 / 0,"),
+        /_metallicF0Factor must be a finite static number/,
+    );
+    assert.throws(
+        () => compileMaterial("_specularWeight: 0.5,"),
+        /Reached PBR lowering supports/,
+    );
+});
+
 test("supports lexical block shadowing and if/else", () => {
     const result = compileSource(
         readFileSync(

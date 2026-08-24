@@ -217,6 +217,7 @@ export function compileMaterialIntrinsic(
                 attenuationColor,
                 attenuationDistance,
                 occlusionStrength,
+                metallicF0Factor,
                 scenePbrMaterialIndex,
             ] = context.compilePbrMaterialOptions(
                 call.arguments[0]!,
@@ -268,7 +269,8 @@ export function compileMaterialIntrinsic(
                 `${attenuationDistance}})`;
             if (
                 baseColor.textureFile ||
-                occlusionStrength !== "1.0f"
+                occlusionStrength !== "1.0f" ||
+                metallicF0Factor !== "1.0f"
             ) {
                 const temporary =
                     context.allocateTemporaryCppName(
@@ -285,6 +287,14 @@ export function compileMaterialIntrinsic(
                 if (occlusionStrength !== "1.0f") {
                     context.emit(
                         `${engine}.materials[${temporary}.value].occlusion_strength = ${occlusionStrength};`,
+                    );
+                }
+                if (metallicF0Factor !== "1.0f") {
+                    context.emit(
+                        `${engine}.materials[${temporary}.value].metallic_f0_factor = ${metallicF0Factor};`,
+                    );
+                    context.emit(
+                        `${engine}.materials[${temporary}.value].specular_weight = ${metallicF0Factor};`,
                     );
                 }
                 return {
