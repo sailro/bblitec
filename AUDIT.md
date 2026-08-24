@@ -119,6 +119,38 @@ backend** (splats, effects) it is not. The fix shape is always "emit it once".
   + not-set refusal is duplicated ~12 lines per backend
   (`pal_*_effect.hpp`). Fix: emit `preferred_sample_count()` for effect-only
   scenes from the same pinned read; share the texture lookup. Effort S.
+- [ ] **RD-4 — Scene-code material defaults are unanchored triplicates: the
+  UBO-writer lowerer discards every mapped `?? default`.**
+  `pinned-ubo-writer-lowerer.ts` lowers `x ?? d` to `x` alone for a
+  record-mapped property ("the record always carries a value"), throwing away
+  the pin's default expression it is holding — so the ~80 numeric defaults in
+  the pinned PBR writers (`?? 1` clearcoat intensity, the iridescence
+  1.0/1.3/100/400 quartet, sheen, subsurface, anisotropy…) are restated as
+  bare literals in `compiler/intrinsics/material-options.ts` with no pin
+  access, and a third time as `runtime.hpp` member initializers. A pin bump
+  that moves one default moves the browser reference and not the native
+  record — a silent parity split visible only when a corpus scene omits that
+  exact option. The repo already owns the right mechanism twice: the glTF
+  lane's `GltfLoweredDefault` and physics' `pinned_default_gravity()`. Fix:
+  evaluate the discarded default into a generated
+  `pinned_material_defaults` header and have the intrinsics emit the symbol
+  (matrix-validated), or minimally assert value-equality at the discard
+  against a table the intrinsics consume (guard-only). The billboard lane's
+  `DEFAULT_CAPACITY` shares the pattern one size down: value-checked on the
+  sprite-2D lane, shape-only on the billboard lane, restated in
+  `intrinsics/sprite.ts` and `runtime.hpp`. Effort M (guard S).
+- [ ] **RD-5 — `pinned_depth_clear` is hand-typed one line under its
+  pin-read twin.** `pinned-depth-state.ts` reads `REVERSE_DEPTH_COMPARE`
+  from the pin with an enumerator-refusal table, then types
+  `pinned_depth_clear = 0.0f` as a literal; the pin declares
+  `_depthClearValue` as readably as the compare. Read it the same way.
+  Byte-neutral, digest-provable. Effort S.
+- [ ] **RD-6 — A pre-audit compensating pair: `bump_scale` is inverted
+  twice.** The `.babylon` loader template stores `1/level`
+  (`templates/babylon-loader-cpp.ts`) and `pinned-standard-variants.ts`
+  inverts it back at composition; removing both is byte-identical. Sits
+  before this audit's baseline — the one live instance of the historical
+  cancelling-pair class. Effort S, digest-provable.
 - [ ] **FA-2 — The activation inventory lags the new families across its
   other three mechanisms.** Emit-option rows missing: `gpuInstanceColors`,
   `pinnedSkeletonPalette` (a real per-scene transport selection),
@@ -279,6 +311,18 @@ measured matrix; several also decide behavior under `BBLITE_MSAA=1`.
   `preferred_sample_count()` — Dawn re-types the 4 (ties into RD-3's
   emit-once fix); a probe-failing device silently renders 1-sample SDL
   against 4-sample Dawn. Effort S each.
+- [ ] **NA-22 — `runtime.hpp` restates pin defaults as dead member
+  initializers, and generated positional aggregate initializers are
+  order-guarded by comments alone.** Generation always fills every field of
+  the option structs (torus/ground/sphere dims, the iridescence trio,
+  `BillboardSystemOptions`) and no native caller uses the `= {}` defaults —
+  so the initializers are unguarded mirror copies waiting for a future
+  caller to trust them — while the aggregates' field pairing rests on a "new
+  field appends" comment in a `cxx_std_20` build where designated
+  initializers would make it compiler-checked. Fix: delete the pin-mirror
+  member inits (one live copy: the generated fill) and/or emit designated
+  initializers; RD-4's defaults header is the companion. Effort S–M
+  (designated-init switch is generated-text-only → matrix). 
 - [ ] **NA-21 — Low-priority constant divergences, recorded so they stop
   being re-found**: `create_texture_sampler` W-addressing (SDL repeat vs
   Dawn clamp default, behind a comment claiming exact mirroring) and LOD
@@ -291,6 +335,26 @@ measured matrix; several also decide behavior under `BBLITE_MSAA=1`.
 
 ## Tooling
 
+- [ ] **TL-14 — The SDL four-uniform-buffer cap is checked only for
+  filenames starting `variant-`.** `compile-shaders.ps1` gates the cbuffer
+  count + `gp` demotion on that prefix — beside its own comment celebrating
+  the death of per-family filename prefixes — so `node-N.*` and `effect-N.*`
+  stages are never counted against a failure the script's docstring calls
+  silent D3D12 command-buffer corruption; node graphs are the user-authored
+  family most likely to grow blocks, and `variant-std-*` fragments already
+  sit at exactly 4. Fix: run the already-computed count on every stage and
+  refuse >4; move demotion eligibility onto the composition/`SHADER_FAMILIES`
+  row where family facts live. Effort S.
+- [ ] **TL-15 — Late refusals lose the scene source location the manifest
+  already carries.** Refusals raised at composition/lowering time are bare
+  `Error`s (the CLI prints `error.message` only), while `featureSites`
+  (feature → "file:line") exists with a single consumer. Instances across
+  `upstream-lower.ts`, `compose-pipeline.ts`, the node-particle bake and the
+  post-process composite refusals; every new *intrinsic* refuses cleanly via
+  `context.fail`. Fix: thread `featureSites` into the composition layer and
+  prefix late refusals with the owning feature's first-reach site; the two
+  cross-family exclusivity refusals can move to the second-reaching
+  intrinsic, which holds a real node. Effort S–M.
 - [ ] **TL-4 — `compose` and `uniforms` read captures with none of the
   staleness discipline the writers earned, and `compose` writes no report.**
   `diff` refuses stale evidence (seek meta + build stamp); the two readers
