@@ -225,10 +225,16 @@ test("the multiply anchor accepts the pinned writer", () => {
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({});
-    // The multiply keeps the pinned accumulation shape; the projection
-    // writers' emitted rows are pinned by the upstream test that owns
-    // them ("translates the pinned perspective writer whole").
-    assert.match(plan.source, /static_cast<double>\(a\[row\]\) \* b0 \+/);
+    // The multiply is the pinned writer translated whole — the unrolled
+    // accumulation in the pin's own order, templated on the right
+    // operand's storage; the projection writers' emitted rows are pinned
+    // by the upstream test that owns them ("translates the pinned
+    // perspective writer whole").
+    assert.match(plan.source, /template <typename MatB>\nvoid mat4_multiply_into\(/);
+    assert.match(
+        plan.source,
+        /\(\(\(\(a0 \* b0\) \+ \(a4 \* b1\)\) \+ \(a8 \* b2\)\) \+ \(a12 \* b3\)\)/,
+    );
 });
 
 test("lifts the cubemap-skybox stages from the packaged pin", () => {

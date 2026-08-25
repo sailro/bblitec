@@ -541,15 +541,12 @@ export class RendererLowerer {
             options.shaderPrograms ?? [];
         const { shaderVariantTable, shaderVariantEntries } =
             this.loweredShaderVariants(reachedShaderPrograms);
-        // The camera matrix chain the source below emits is anchored
-        // against its pinned writers before anything is returned: the
-        // multiply accumulation order, and the view transpose (whose
-        // emission is derived from the pinned store map rather than
-        // asserted against it). The projection writers are translated
-        // whole from their own ASTs below, and the reverse-Z convention
-        // their depth rows carry is anchored beside its clear-value half
-        // in `pinned-depth-state.ts`.
-        this.assertPinnedMultiplyWriter();
+        // The camera matrix chain the source below emits comes from the
+        // pinned writers themselves: the multiply and both projection
+        // writers are translated whole from their own ASTs, and the view
+        // transpose's emission is derived from the pinned store map. The
+        // reverse-Z convention the projection rows carry is anchored
+        // beside its clear-value half in `pinned-depth-state.ts`.
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
         const opaqueOrderStamp =
@@ -569,7 +566,12 @@ export class RendererLowerer {
         }
         const instancingTrs = options.gpuInstancing
             ? this.pinnedTrsComposition()
-            : { quaternionProducts: "", basisLocals: "", basisStores: "" };
+            : {
+                  halfAngleLocals: "",
+                  quaternionProducts: "",
+                  basisLocals: "",
+                  basisStores: "",
+              };
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -643,6 +645,7 @@ export class RendererLowerer {
                 backgroundGeometry,
                 perspectiveWriter,
                 orthoWriter,
+                multiplyWriter: this.lowerMultiplyWriter(),
             }),
         };
     }
@@ -1282,6 +1285,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
             instancingTrs: {
+                halfAngleLocals: string;
                 quaternionProducts: string;
                 basisLocals: string;
                 basisStores: string;
@@ -1297,6 +1301,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             };
             perspectiveWriter: string;
             orthoWriter: string;
+            multiplyWriter: string;
         },
     ): string {
         const {
@@ -1309,6 +1314,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             backgroundGeometry,
             perspectiveWriter,
             orthoWriter,
+            multiplyWriter,
         } = inputs;
         return `// ${this.context.provenance(
                 renderTaskModule,
@@ -1363,26 +1369,15 @@ ${viewMatrixBody}\
 
 namespace {
 
-// src/math/mat4-multiply-into.ts mat4MultiplyInto: the pinned writer
-// accumulates each term in double from two float32 matrices and stores
-// once, where a float accumulator rounds after every product.
+${multiplyWriter}
+
+// The by-value shape every view-projection composition here uses: the
+// pinned writer over whole matrices at offset zero.
 std::array<float, 16> multiply_into(
     const std::array<float, 16>& a,
     const std::array<float, 16>& b) {
     std::array<float, 16> out{};
-    for (int column = 0; column < 4; ++column) {
-        const double b0 = static_cast<double>(b[column * 4]);
-        const double b1 = static_cast<double>(b[column * 4 + 1]);
-        const double b2 = static_cast<double>(b[column * 4 + 2]);
-        const double b3 = static_cast<double>(b[column * 4 + 3]);
-        for (int row = 0; row < 4; ++row) {
-            out[column * 4 + row] = static_cast<float>(
-                static_cast<double>(a[row]) * b0 +
-                static_cast<double>(a[4 + row]) * b1 +
-                static_cast<double>(a[8 + row]) * b2 +
-                static_cast<double>(a[12 + row]) * b3);
-        }
-    }
+    mat4_multiply_into(out, 0, a, 0, b, 0);
     return out;
 }
 
@@ -1841,18 +1836,7 @@ std::array<float, 16> build_instance_parent_world(
         mesh.rotation.x != 0.0f ||
         mesh.rotation.y != 0.0f ||
         mesh.rotation.z != 0.0f) {
-        const double half_x =
-            static_cast<double>(mesh.rotation.x) * 0.5;
-        const double half_y =
-            static_cast<double>(mesh.rotation.y) * 0.5;
-        const double half_z =
-            static_cast<double>(mesh.rotation.z) * 0.5;
-        const double cx = std::cos(half_x);
-        const double sx = std::sin(half_x);
-        const double cy = std::cos(half_y);
-        const double sy = std::sin(half_y);
-        const double cz = std::cos(half_z);
-        const double sz = std::sin(half_z);
+${instancingTrs.halfAngleLocals}\
 ${instancingTrs.quaternionProducts}\
     }
     const double scale_x = mesh.scaling.x;
@@ -1861,26 +1845,12 @@ ${instancingTrs.quaternionProducts}\
 ${instancingTrs.basisLocals}\
     std::array<double, 16> local{};
 ${instancingTrs.basisStores}\
+    // The pinned multiply, translated whole above: the parent is the f32
+    // matrix the loader recorded and the composed TRS stays f64, which is
+    // the pinned accumulation's own width for both.
     std::array<float, 16> result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            // Seed with the first product so signed zeros follow the
-            // pinned a0*b0 + a4*b1 + a8*b2 + a12*b3 evaluation exactly.
-            double sum =
-                static_cast<double>(
-                    mesh.instance_parent_matrix[row]) *
-                local[column * 4];
-            for (std::size_t term = 1; term < 4; ++term) {
-                sum +=
-                    static_cast<double>(
-                        mesh.instance_parent_matrix[
-                            term * 4 + row]) *
-                    local[column * 4 + term];
-            }
-            result[column * 4 + row] =
-                static_cast<float>(sum);
-        }
-    }
+    mat4_multiply_into(
+        result, 0, mesh.instance_parent_matrix, 0, local, 0);
     return result;
 }
 
@@ -3274,6 +3244,10 @@ ${lifted.fragmentBody}
         file: ts.SourceFile,
         expression: ts.Expression,
         rename: ReadonlyMap<string, string>,
+        calls: ReadonlyMap<
+            string,
+            (args: readonly string[]) => string
+        > = new Map(),
     ): string {
         const lowerer = new PinnedNumericLowerer(file, {
             bindings: new Map(
@@ -3284,9 +3258,68 @@ ${lifted.fragmentBody}
                     ],
                 ),
             ),
-            calls: new Map(),
+            calls,
         });
         return lowerer.expression(expression);
+    }
+
+    /**
+     * The pinned matrix multiply translated whole. Its `Mat4Storage`
+     * parameters accept F32- or F64-backed storage upstream; here every
+     * target and left operand is an f32 array while the right operand is
+     * f32 (view chain) or f64 (the composed instance TRS), and the body's
+     * reads widen to double identically for both — so the one axis that
+     * varies is the right operand's container, emitted as the template
+     * parameter. `lowerPinnedFunction` deliberately does not grow a
+     * template concept for this one signature.
+     */
+    private lowerMultiplyWriter(): string {
+        const module = "src/math/mat4-multiply-into.ts";
+        const symbol = "mat4MultiplyInto";
+        const { file, declaration } = this.context.functionDeclaration(
+            module,
+            symbol,
+        );
+        const expected: readonly (readonly [string, PinnedBinding])[] = [
+            ["dst", { cpp: "dst", type: "f32" }],
+            ["d", { cpp: "d", type: "index" }],
+            ["a", { cpp: "a", type: "f32" }],
+            ["i", { cpp: "i", type: "index" }],
+            ["b", { cpp: "b", type: "f32" }],
+            ["j", { cpp: "j", type: "index" }],
+        ];
+        if (
+            declaration.parameters.length !== expected.length ||
+            declaration.parameters.some(
+                (parameter, index) =>
+                    !ts.isIdentifier(parameter.name) ||
+                    parameter.name.text !== expected[index]![0],
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected pinned mat4MultiplyInto to take " +
+                    "(dst, d, a, i, b, j).",
+            );
+        }
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map(expected),
+            calls: new Map(),
+        });
+        const body = declaration.body!.statements
+            .flatMap((statement) => lowerer.statement(statement, "    "))
+            .join("\n");
+        return `// ${this.context.provenance(module, symbol)}
+template <typename MatB>
+void mat4_multiply_into(
+    std::array<float, 16>& dst,
+    std::int64_t d,
+    const std::array<float, 16>& a,
+    std::int64_t i,
+    const MatB& b,
+    std::int64_t j) {
+${body}
+}`;
     }
 
 
@@ -3490,54 +3523,6 @@ ${lifted.fragmentBody}
             body += line;
         }
         return body;
-    }
-
-    /**
-     * Per-term anchors for the pinned matrix multiply the emitted
-     * `multiply_into` loop and the instance-parent accumulation reproduce:
-     * row-stride-4 accumulators and the a0*b0 + a4*b1 + a8*b2 + a12*b3
-     * evaluation order, over exactly sixteen stores.
-     */
-    private assertPinnedMultiplyWriter(): void {
-        const { declaration } = this.context.functionDeclaration(
-            "src/math/mat4-multiply-into.ts",
-            "mat4MultiplyInto",
-        );
-        for (const [name, shape] of [
-            ["a0", "a[i]"],
-            ["a4", "a[i + 4]"],
-            ["a8", "a[i + 8]"],
-            ["a12", "a[i + 12]"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(declaration, name),
-                shape,
-                `Pinned matrix-multiply accumulator ${name}`,
-            );
-        }
-        const stores = this.context.pinnedElementStores(declaration, "dst");
-        if (stores.length !== 16) {
-            this.context.contractError(
-                declaration,
-                `Pinned matrix multiply gained or lost stores (${stores.length} of 16).`,
-            );
-        }
-        const first = stores[0]!;
-        if (
-            this.context.propertyPath(first.left.argumentExpression)?.join(
-                ".",
-            ) !== "d"
-        ) {
-            this.context.contractError(
-                first.left,
-                "Expected the pinned matrix multiply to store dst[d] first.",
-            );
-        }
-        this.context.assertExpressionShape(
-            first.right,
-            "a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3",
-            "Pinned matrix-multiply accumulation order",
-        );
     }
 
     /**
@@ -4361,6 +4346,7 @@ ${lifted.fragmentBody}
      * instance parent-world stays byte-for-byte the pin's composition.
      */
     private pinnedTrsComposition(): {
+        halfAngleLocals: string;
         quaternionProducts: string;
         basisLocals: string;
         basisStores: string;
@@ -4369,20 +4355,38 @@ ${lifted.fragmentBody}
             "src/math/quat-euler.ts",
             "eulerToQuat",
         );
-        for (const [name, shape] of [
-            ["cx", "Math.cos(rx * 0.5)"],
-            ["sx_", "Math.sin(rx * 0.5)"],
-            ["cy", "Math.cos(ry * 0.5)"],
-            ["sy_", "Math.sin(ry * 0.5)"],
-            ["cz", "Math.cos(rz * 0.5)"],
-            ["sz_", "Math.sin(rz * 0.5)"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(euler.declaration, name),
-                shape,
-                `Pinned Euler half-angle term ${name}`,
-            );
-        }
+        // The half-angle locals, emitted from the pinned initializers with
+        // the Euler parameters renamed to the record's rotation lanes —
+        // the emission that used to be asserted term by term and typed
+        // beside the assertion.
+        const rotationRename = new Map<string, string>([
+            ["rx", "static_cast<double>(mesh.rotation.x)"],
+            ["ry", "static_cast<double>(mesh.rotation.y)"],
+            ["rz", "static_cast<double>(mesh.rotation.z)"],
+        ]);
+        const halfAngleLocals = (
+            [
+                ["cx", "cx"],
+                ["sx_", "sx"],
+                ["cy", "cy"],
+                ["sy_", "sy"],
+                ["cz", "cz"],
+                ["sz_", "sz"],
+            ] as const
+        )
+            .map(
+                ([pinned, cpp]) =>
+                    `        const double ${cpp} = ${this.pinnedNumericExpression(
+                        euler.file,
+                        this.context.variableInitializer(
+                            euler.declaration,
+                            pinned,
+                        ),
+                        rotationRename,
+                        pinnedNumericMathCalls(),
+                    )};\n`,
+            )
+            .join("");
         const eulerReturn = this.context.findNodes(
             euler.declaration,
             (node): node is ts.ReturnStatement =>
@@ -4511,7 +4515,12 @@ ${lifted.fragmentBody}
                 storeRename,
             )};\n`;
         }
-        return { quaternionProducts, basisLocals, basisStores };
+        return {
+            halfAngleLocals,
+            quaternionProducts,
+            basisLocals,
+            basisStores,
+        };
     }
 
     /**
