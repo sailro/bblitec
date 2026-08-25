@@ -7,6 +7,8 @@
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/camera_controls.hpp>
 #include <bblite/upstream/camera_math.hpp>
+// The pin's own inverse image processing, for the linear-frame clear color.
+#include <bblite/upstream/pinned_inverse_image_processing.hpp>
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
 #include <bblite/upstream/frame_graph_geometry.hpp>
 #endif
@@ -2658,9 +2660,6 @@ void create_processed_color(
     state.processed_color_width = width;
     state.processed_color_height = height;
 }
-
-// inverse_image_processed_channel moved verbatim to
-// pal_gpu_shared.hpp so both backends share the linear clear color.
 
 void create_transmission_color(GpuState& state) {
     // The pin's refraction grab: the shared fixed-extent, shortened-chain
@@ -6741,23 +6740,29 @@ bool run_gpu_engine(Engine& engine) {
                     : capture_frame || transmission_enabled
                         ? state.color
                         : swapchain;
+            // The pin's inverse runs in f64 and WebGPU's clear value stays
+            // double; SDL_FColor is the one store that narrows, so the cast
+            // sits at the store exactly like the pin's own f32 boundaries.
             color_info.clear_color = transmission_enabled
                 ? SDL_FColor{
-                      inverse_image_processed_channel(
-                          scene.clear_color.r,
-                          scene.environment.exposure,
-                          scene.environment.contrast,
-                          scene.environment.tone_mapping_enabled),
-                      inverse_image_processed_channel(
-                          scene.clear_color.g,
-                          scene.environment.exposure,
-                          scene.environment.contrast,
-                          scene.environment.tone_mapping_enabled),
-                      inverse_image_processed_channel(
-                          scene.clear_color.b,
-                          scene.environment.exposure,
-                          scene.environment.contrast,
-                          scene.environment.tone_mapping_enabled),
+                      static_cast<float>(
+                          upstream::inverse_image_processed_channel(
+                              scene.clear_color.r,
+                              scene.environment.exposure,
+                              scene.environment.contrast,
+                              scene.environment.tone_mapping_enabled)),
+                      static_cast<float>(
+                          upstream::inverse_image_processed_channel(
+                              scene.clear_color.g,
+                              scene.environment.exposure,
+                              scene.environment.contrast,
+                              scene.environment.tone_mapping_enabled)),
+                      static_cast<float>(
+                          upstream::inverse_image_processed_channel(
+                              scene.clear_color.b,
+                              scene.environment.exposure,
+                              scene.environment.contrast,
+                              scene.environment.tone_mapping_enabled)),
                       scene.clear_color.a}
                 : SDL_FColor{
                       scene.clear_color.r,

@@ -16,7 +16,7 @@ import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
-import { pinnedToneMappingHeader } from "../src/lowering/pinned-tone-mapping.js";
+import { pinnedInverseImageProcessingHeader } from "../src/lowering/pinned-inverse-image-processing.js";
 import {
     readUpstreamPin,
     UpstreamSourceStore,
@@ -848,12 +848,26 @@ test("emits the pinned surface sample count for every scene shape", () => {
     assert.match(header, pinnedProvenance());
 });
 
-test("emits the pinned tone-mapping scale from the pin's own inverse", () => {
-    const header = pinnedToneMappingHeader(new LoweringContext());
+test("lowers the pinned inverse image processing whole", () => {
+    const header = pinnedInverseImageProcessingHeader(new LoweringContext());
+    // The whole chain, from the pinned declaration's own AST: the clamp
+    // helper, the contrast bisection loop, the `**` gamma as std::pow, the
+    // tone-mapping division by the pin's own literal, and the exposure
+    // conditional -- every intermediate at the f64 width the pin computes at.
+    assert.match(header, /inline double clamp01\(/);
     assert.match(
         header,
-        /inline constexpr float pinned_tone_mapping_scale = 1\.5905790328979492f;/,
+        /inline double inverse_image_processed_channel\(\n    double value,\n    double exposure,\n    double contrast,\n    bool tone_mapping\)/,
     );
+    assert.match(header, /double c = clamp01\(value\);/);
+    assert.match(header, /for \(std::int64_t i = /);
+    assert.match(header, /c = std::pow\(c, 2\.2\)/);
+    assert.match(header, /\/ 1\.5905790328979492\)/);
+    assert.match(
+        header,
+        /\(\(exposure > 0\.0\) \? \(c \/ exposure\) : c\)/,
+    );
+    assert.doesNotMatch(header, /float/);
     assert.match(header, pinnedProvenance());
 });
 

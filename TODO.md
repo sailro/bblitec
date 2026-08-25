@@ -58,12 +58,6 @@ act on it — not what was tried.
   is ~4,600. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
   are the mechanisms to reuse. Each leaf is its own measurement: lower or
   execute it, then prove the generated tree moved only where intended.
-- [ ] Lower the pinned `inverseImageProcessedChannel` whole: the pin carries
-  the full inverse — `src/frame-graph/transmission.ts`, contrast bisection
-  included — and the PAL's `inverse_image_processed_channel` is a float-width
-  transcription of it that today consumes only the lifted
-  `pinned_tone_mapping_scale`. Lowering the body needs a `**` arm in the
-  shared pinned-body translator.
 
 ## P1 — Assets and materials
 

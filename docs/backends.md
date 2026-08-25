@@ -288,10 +288,12 @@ The backend reuses every semantic layer the SDL_GPU backend uses:
 `upstream::build_render_plan`, `build_view_projection`,
 `build_pbr_uniforms`,
 `build_background_plan/uniforms`, `build_skybox_plan/uniforms`,
-`sort_transparent_draws`, and the shared vertex packing and decode
-helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
-`transformed_vertices`, `decode_rgbd`, `float_to_half`,
-`build_deformation_uniforms`, `inverse_image_processed_channel`).
+`sort_transparent_draws`, the generated
+`upstream::inverse_image_processed_channel` (the pin's own linear-frame
+clear-color inverse, translated whole from its declaration), and the
+shared vertex packing and decode helpers in
+`native/src/pal_gpu_shared.hpp` (`GpuVertex`, `transformed_vertices`,
+`decode_rgbd`, `float_to_half`, `build_deformation_uniforms`).
 Only the GPU API layer differs:
 
 - **Shaders**: the generated `*.native.wgsl` files are read from the
