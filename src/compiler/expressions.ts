@@ -168,10 +168,10 @@ export class ExpressionLowerer {
             this.context.fail(
                 unwrapped.operatorToken,
                 "'??' lowers over a static record property, an " +
-                    "asset-derived handle collection, or a data-model " +
-                    "value (an optional selects at run time; a " +
-                    "non-nullish left is the result). This operand is " +
-                    "none of those.",
+                    "asset-derived handle collection, a handle a " +
+                    "search produced, or a data-model value (an " +
+                    "optional selects at run time; a non-nullish left " +
+                    "is the result). This operand is none of those.",
             );
         }
         if (
@@ -265,6 +265,13 @@ export class ExpressionLowerer {
                 this.context.assetRootElementAccess(unwrapped);
             if (assetRoot) {
                 return assetRoot;
+            }
+            const collectionElement =
+                this.context.handleCollections.collectionElementAccess(
+                    unwrapped,
+                );
+            if (collectionElement) {
+                return collectionElement;
             }
             const owner = this.compileValue(
                 unwrapped.expression,

@@ -538,14 +538,19 @@ export function requirePropertyReads(
     }
 }
 
-/** `<base>.<key> ?? <default>` → the key and the default expression. */
+/**
+ * `<base>.<key> ?? <default>` → the key and the default expression. The
+ * operator defaults to `??`; a caller anchoring a pinned `||` default
+ * (the falsy-name fallbacks) passes `BarBarToken`.
+ */
 export function coalescedPropertyDefault(
     expression: ts.Expression,
+    operator: ts.SyntaxKind = ts.SyntaxKind.QuestionQuestionToken,
 ): { key: string; fallback: ts.Expression; read: ts.Expression } | undefined {
     const node = unwrapPin(expression);
     if (
         !ts.isBinaryExpression(node) ||
-        node.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+        node.operatorToken.kind !== operator
     ) {
         return undefined;
     }

@@ -486,6 +486,57 @@ export class HandleCollections {
     }
 
     /**
+     * `<collection>[<index>]` over an engine handle collection —
+     * `scene.meshes[0]` as a fallback after a missed find. Upstream
+     * indexing past the end yields `undefined`; the value carries that as
+     * its found flag (the same shape a loaded search returns), and the
+     * emitted read is guarded so the miss never touches the vector.
+     */
+    public collectionElementAccess(
+        expression: ts.ElementAccessExpression,
+    ): Value | undefined {
+        const target = this.iterationTarget(
+            expression.expression,
+        );
+        if (!target) {
+            return undefined;
+        }
+        const index = this.context.compileValue(
+            expression.argumentExpression,
+        );
+        if (index.kind !== "number") {
+            this.context.fail(
+                expression.argumentExpression,
+                `Indexing ${target.property} takes a number, received ${index.kind}.`,
+            );
+        }
+        const slot = this.context.allocateTemporaryCppName(
+            `${target.temporaryLabel}_index`,
+        );
+        const found = this.context.allocateTemporaryCppName(
+            `${target.temporaryLabel}_present`,
+        );
+        const element = this.context.allocateTemporaryCppName(
+            `${target.temporaryLabel}_at`,
+        );
+        this.context.emit(
+            `const std::size_t ${slot} = static_cast<std::size_t>(${index.cpp});`,
+        );
+        this.context.emit(
+            `const bool ${found} = ${slot} < ${target.containerCpp}.size();`,
+        );
+        this.context.emit(
+            `const ${target.elementCppType} ${element} = ${found} ? ${target.containerCpp}[${slot}] : ${target.elementCppType}{};`,
+        );
+        return {
+            kind: target.elementKind,
+            cpp: element,
+            engineCpp: target.engineCpp,
+            optionalFoundCpp: found,
+        };
+    }
+
+    /**
      * The flattened renderable descendants of an imported glTF root.
      * `StatementLowerer` admits this target only after proving the source is
      * the recursive TransformNode mesh-leaf visitor; arbitrary immediate

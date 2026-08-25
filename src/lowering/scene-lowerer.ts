@@ -90,6 +90,38 @@ export class SceneLowerer {
                 "Expected mesh clones to retain and share their GPU-backed resources.",
             );
         }
+        // The pinned clone naming: `mesh.name + "_clone"`. The suffix
+        // flows into the emitted record copy so a scene searching by name
+        // never matches a clone under the source's own name.
+        const cloneSuffixes = this.context
+            .findNodes(
+                cloneMeshNode,
+                (node): node is ts.BinaryExpression =>
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind ===
+                        ts.SyntaxKind.PlusToken &&
+                    this.context
+                        .propertyPath(node.left)
+                        ?.join(".") === "mesh.name" &&
+                    ts.isStringLiteral(
+                        this.context.unwrapExpression(node.right),
+                    ),
+            )
+            .map(
+                (concat) =>
+                    (
+                        this.context.unwrapExpression(
+                            concat.right,
+                        ) as ts.StringLiteral
+                    ).text,
+            );
+        if (cloneSuffixes.length !== 1) {
+            this.context.contractError(
+                cloneMeshNode,
+                "Expected one pinned clone-name suffix.",
+            );
+        }
+        const cloneSuffix = cloneSuffixes[0]!;
         for (const property of [
             "entities",
             "_gpu",
@@ -456,6 +488,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
             throw std::runtime_error("Invalid mesh handle in imported root.");
         }
         MeshRecord record = engine.meshes[source_mesh.value];
+        record.name += "${cloneSuffix}";
         record.feature_source_mesh =
             record.feature_source_mesh != invalid_handle
                 ? record.feature_source_mesh

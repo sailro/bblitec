@@ -9,6 +9,7 @@
 export function babylonLoaderCpp(
     provenance: string,
     cameraDerivation: string,
+    submeshNameSuffix: string,
     lightMeshLists = false,
     diffuseUv2 = false,
     bumpTexture = false,
@@ -628,6 +629,13 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                     material = found->second;
                 }
                 MeshRecord mesh;
+                // The pinned naming: md.name, suffixed only when the node
+                // splits into several submeshes (load-babylon.ts).
+                mesh.name = source.value("name", std::string{}) +
+                    (submeshes.size() > 1
+                         ? "${submeshNameSuffix}" +
+                               std::to_string(submesh.material_index)
+                         : std::string{});
                 mesh.primitive = PrimitiveKind::babylon;
                 // The pin's mesh.world keeps this node's TRS — its position
                 // attribute carries only localMatrix-applied vertices,

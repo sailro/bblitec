@@ -522,12 +522,16 @@ LineSystemData create_line_system_data(
 // Standard family, which no line mesh reaches, so it folds away here.
 MeshHandle create_line_system(
     Engine& engine,
+    const std::string& name,
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors,
     MaterialHandle material) {
     const LineSystemData data = create_line_system_data(lines, colors);
+    // The name is the compiled \`options.name ?? "lineSystem"\`, asserted
+    // in the whole createMeshFromData call shape above.
     const MeshHandle mesh = create_mesh_from_data(
         engine,
+        name,
         data.positions,
         data.normals,
         data.indices,

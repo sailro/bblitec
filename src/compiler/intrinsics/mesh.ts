@@ -85,12 +85,10 @@ export function compileMeshIntrinsic(
                 "engine",
                 call.arguments[0]!,
             );
-            // Mesh names have no native meaning yet (picking is not part
-            // of the supported subset); the name argument is validated as
-            // a static string and dropped.
-            context.compileStringLiteral(
-                call.arguments[1]!,
-            );
+            // The record carries the pinned Mesh name; scene code finds
+            // meshes by it.
+            const name = context.compileValue(call.arguments[1]!);
+            context.expectKind(name, "string", call.arguments[1]!);
             const positions =
                 context.compileTypedArrayArgument(
                     call.arguments[2]!,
@@ -136,6 +134,7 @@ export function compileMeshIntrinsic(
                 kind: "mesh",
                 cpp:
                     `bbl::create_mesh_from_data(${engine.cpp}, ` +
+                    `${name.cpp}, ` +
                     `${positions}, ${normals}, ${indices}, ` +
                     `${optional.join(", ")})`,
                 engineCpp:

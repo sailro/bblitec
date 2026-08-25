@@ -52,6 +52,69 @@ export class BabylonLowerer {
                 "Expected null-safe Babylon submesh handling.",
             );
         }
+        // The record naming the template emits:
+        // `md.name + (subMeshes.length > 1 ? \`_sub${sub.materialIndex}\` : "")`.
+        // The suffix flows; the split condition and the interpolated
+        // material index are asserted because the emitted C++ hardcodes
+        // both.
+        const nameAssignment = this.context
+            .findNodes(
+                declaration,
+                (node): node is ts.PropertyAssignment =>
+                    ts.isPropertyAssignment(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "name" &&
+                    ts.isBinaryExpression(node.initializer) &&
+                    node.initializer.operatorToken.kind ===
+                        ts.SyntaxKind.PlusToken &&
+                    this.context
+                        .propertyPath(node.initializer.left)
+                        ?.join(".") === "md.name",
+            )[0];
+        if (!nameAssignment) {
+            this.context.contractError(
+                declaration,
+                "Expected the pinned submesh naming off md.name.",
+            );
+        }
+        const suffixSelect = this.context.unwrapExpression(
+            (nameAssignment.initializer as ts.BinaryExpression).right,
+        );
+        if (!ts.isConditionalExpression(suffixSelect)) {
+            this.context.contractError(
+                nameAssignment,
+                "Expected the submesh suffix behind a split test.",
+            );
+        }
+        this.context.assertExpressionShape(
+            suffixSelect.condition,
+            "subMeshes.length > 1",
+            "Babylon submesh-split condition",
+        );
+        const suffixTemplate = this.context.unwrapExpression(
+            suffixSelect.whenTrue,
+        );
+        const suffixEmptyArm = this.context.unwrapExpression(
+            suffixSelect.whenFalse,
+        );
+        if (
+            !ts.isTemplateExpression(suffixTemplate) ||
+            suffixTemplate.templateSpans.length !== 1 ||
+            suffixTemplate.templateSpans[0]!.literal.text !== "" ||
+            this.context
+                .propertyPath(
+                    suffixTemplate.templateSpans[0]!.expression,
+                )
+                ?.join(".") !== "sub.materialIndex" ||
+            !ts.isStringLiteral(suffixEmptyArm) ||
+            suffixEmptyArm.text !== ""
+        ) {
+            this.context.contractError(
+                suffixSelect,
+                "Expected the suffix to interpolate exactly sub.materialIndex after a literal prefix.",
+            );
+        }
+        const submeshNameSuffix = suffixTemplate.head.text;
         const hasEntitySpread = (name: string): boolean =>
             this.context.hasNode(
                 declaration,
@@ -86,6 +149,7 @@ export class BabylonLowerer {
             source: babylonLoaderCpp(
                 this.context.provenance(modulePath, symbolName),
                 this.lowerCameraDerivation(),
+                submeshNameSuffix,
                 lightMeshLists,
                 diffuseUv2,
                 bumpTexture,
