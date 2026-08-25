@@ -1372,6 +1372,45 @@ export function emitPropertyAssignment(
         return;
     }
 
+    if (left.name.text === "currentTime") {
+        // AnimationGroup.currentTime is a public mutable field upstream
+        // (src/animation/animation-group.ts): the write is the whole
+        // operation, and whoever drives the group applies the pose on its
+        // next tick. A glTF group's time lives in its asset's runtime, so
+        // the write takes the same clip-writer route the group operations
+        // and `loopAnimation` above take.
+        const group = context.compileValue(left.expression);
+        context.expectKind(
+            group,
+            "animation-group",
+            left.expression,
+        );
+        requireGroupSource(
+            context,
+            group,
+            left,
+            "currentTime",
+            "gltf",
+        );
+        if (operator !== "=") {
+            context.fail(
+                left,
+                "currentTime takes a plain assignment.",
+            );
+        }
+        const value = context.compileValue(expression.right);
+        context.expectKind(value, "number", expression.right);
+        context.reachFeature("animation:gltf-groups", left);
+        context.reachFeature("animation:gltf-group-time", left);
+        context.emit(
+            `bbl::set_animation_current_time(${context.requireEngine(
+                group,
+                expression,
+            )}, ${group.cpp}, ${value.cpp});`,
+        );
+        return;
+    }
+
     if (
         ts.isPropertyAccessExpression(left.expression) &&
         ["position", "rotation", "scaling"].includes(

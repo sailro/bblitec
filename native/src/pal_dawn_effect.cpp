@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "pal_gpu_shared.hpp"
+#include "pal_render_capture.hpp"
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_EFFECT_RENDERER
 #include "pal_dawn_effect.hpp"
@@ -69,10 +70,20 @@ bool run_effect_dawn_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.width);
         const std::uint32_t height =
             static_cast<std::uint32_t>(engine.options.height);
+        // The extent is pinned to the engine options for the whole run
+        // (no per-frame resize on this driver), so a zero extent cannot
+        // be skipped like the SDL twin skips a minimized frame — refuse.
+        if (width == 0 || height == 0) {
+            dawn_error("effect surface has a zero extent.");
+        }
         // `createEffectRenderer` renders into an MSAA colour target and
         // resolves into the swapchain when the surface is multisampled, and
-        // straight into it when it is not. The pinned surface default is 4.
-        const std::uint32_t samples = frame_options.single_sample ? 1u : 4u;
+        // straight into it when it is not. The count is the generated read
+        // of the pin's own surface declaration (`msaaSamples === 1 ? 1 :
+        // 4`), not a re-typed 4.
+        const std::uint32_t samples = frame_options.single_sample
+            ? 1u
+            : upstream::preferred_sample_count();
         if (samples > 1) {
             WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
             descriptor.usage = WGPUTextureUsage_RenderAttachment;
@@ -173,6 +184,23 @@ bool run_effect_dawn_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
+            // The render capture describes CPU state alone — the same
+            // records the passes above read — written at the frame the
+            // screenshot gate names, exactly as the scene loop writes its
+            // own beside its screenshot.
+            if (
+                frame >= frame_options.screenshot_frame &&
+                !captures.render_capture_saved &&
+                !frame_options.render_capture_path.empty()) {
+                write_standalone_render_capture(
+                    frame_options.render_capture_path,
+                    "dawn",
+                    engine,
+                    static_cast<int>(width),
+                    static_cast<int>(height),
+                    frame);
+                captures.render_capture_saved = true;
+            }
             DawnSurfaceCapture capture{};
             if (capture_frame) {
                 capture = begin_dawn_surface_capture(

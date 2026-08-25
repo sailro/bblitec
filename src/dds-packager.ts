@@ -21,6 +21,7 @@
 
 import { preScalePolynomial } from "./hdr-packager.js";
 import { importPinnedModuleWithExports } from "./pinned-shader-composer.js";
+import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 
 const pinnedDdsLoader = await importPinnedModuleWithExports<{
     computeSH: (
@@ -127,6 +128,24 @@ export function computeDdsSphericalHarmonics(
  * round, so the mip chain is transposed here.
  */
 export function packageDdsEnvironment(bytes: Uint8Array): Uint8Array {
+    // The package is deterministic in (asset bytes, pin): the harmonic
+    // projection is the pin's own `computeSH` and the repack is fixed
+    // arithmetic. A repeat compile replays the package bytes rather
+    // than re-projecting and re-transposing the whole mip chain.
+    return cachedBakeSync(
+        {
+            kind: "dds-package",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: false,
+            parameters: {},
+            inputs: [bytes],
+        },
+        () => buildDdsPackage(bytes),
+    );
+}
+
+function buildDdsPackage(bytes: Uint8Array): Uint8Array {
     const cubemap = parseDdsCubemap(bytes);
     const sphericalHarmonics = computeDdsSphericalHarmonics(cubemap);
 

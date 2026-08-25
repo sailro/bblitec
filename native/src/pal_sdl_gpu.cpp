@@ -60,31 +60,21 @@ namespace bbl::pal {
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 namespace {
 
+// gpu_blend_factor / blend_state_from moved to pal_sdl_gpu_shared.hpp so
+// the family headers can translate the shared blend tuples too.
 
-SDL_GPUBlendFactor gpu_blend_factor(BlendFactor factor) {
-    switch (factor) {
-        case BlendFactor::one:
-            return SDL_GPU_BLENDFACTOR_ONE;
-        case BlendFactor::src_alpha:
-            return SDL_GPU_BLENDFACTOR_SRC_ALPHA;
-        case BlendFactor::one_minus_src_alpha:
-            return SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
-    }
-    return SDL_GPU_BLENDFACTOR_ONE;
+/** The shared cull enum in this API's; the pipeline-kind facts come from
+ *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+SDL_GPUCullMode gpu_cull_mode(upstream::RenderCullMode cull) {
+    return cull == upstream::RenderCullMode::none
+        ? SDL_GPU_CULLMODE_NONE
+        : SDL_GPU_CULLMODE_BACK;
 }
 
-// A shared blend tuple in this API's state; the operation is always add
-// (`transparent_blend` / `ground_blend`, pal_gpu_shared.hpp).
-SDL_GPUColorTargetBlendState blend_state_from(const BlendFactors& factors) {
-    SDL_GPUColorTargetBlendState blend{};
-    blend.enable_blend = true;
-    blend.color_blend_op = SDL_GPU_BLENDOP_ADD;
-    blend.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
-    blend.src_color_blendfactor = gpu_blend_factor(factors.src_color);
-    blend.dst_color_blendfactor = gpu_blend_factor(factors.dst_color);
-    blend.src_alpha_blendfactor = gpu_blend_factor(factors.src_alpha);
-    blend.dst_alpha_blendfactor = gpu_blend_factor(factors.dst_alpha);
-    return blend;
+SDL_GPUFrontFace gpu_front_face(bool clockwise) {
+    return clockwise
+        ? SDL_GPU_FRONTFACE_CLOCKWISE
+        : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
 }
 
 struct GpuMesh {
@@ -250,6 +240,73 @@ StandardRenderTextures material_render_textures(
             ? source_texture(material->emissive_render_texture)
             : nullptr,
     };
+}
+
+/**
+ * The grid and shader pipelines one secondary dispatch selects from. The
+ * main pass reads them off the state and a render task off its own
+ * parameters, so the sources travel as one bundle and the dispatch below
+ * exists once.
+ */
+struct SecondaryPipelines {
+    SDL_GPUGraphicsPipeline* grid_opaque = nullptr;
+    SDL_GPUGraphicsPipeline* grid_double_sided = nullptr;
+    SDL_GPUGraphicsPipeline* grid_transparent = nullptr;
+    SDL_GPUGraphicsPipeline* grid_transparent_double_sided = nullptr;
+    const std::vector<SDL_GPUGraphicsPipeline*>* shader = nullptr;
+    const std::vector<SDL_GPUGraphicsPipeline*>* shader_a2c = nullptr;
+};
+
+/**
+ * The pipeline a non-composed draw binds: the grid family by the shared
+ * kind decode, a shader material by its variant index. The composed
+ * families never reach here — the pinned dispatch above owns every PBR,
+ * Standard and node draw — so those families refuse by dispatch name.
+ * `dispatch` names the calling pass ("main dispatch" / "task dispatch").
+ */
+SDL_GPUGraphicsPipeline* secondary_pipeline_for(
+    const SecondaryPipelines& pipelines,
+    upstream::RenderPipelineKind kind,
+    std::uint32_t shader_variant,
+    const char* dispatch) {
+    const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    switch (traits.family) {
+        case upstream::RenderMaterialKind::pbr:
+            gpu_error(
+                (std::string(dispatch) +
+                 " reached a PBR pipeline kind; the pinned branch owns "
+                 "every PBR draw.")
+                    .c_str());
+        case upstream::RenderMaterialKind::standard:
+            gpu_error(
+                (std::string(dispatch) +
+                 " reached a Standard pipeline kind; the pinned branch "
+                 "owns every Standard draw.")
+                    .c_str());
+        case upstream::RenderMaterialKind::grid:
+            if (traits.transparent) {
+                return traits.cull == upstream::RenderCullMode::none
+                    ? pipelines.grid_transparent_double_sided
+                    : pipelines.grid_transparent;
+            }
+            return traits.cull == upstream::RenderCullMode::none
+                ? pipelines.grid_double_sided
+                : pipelines.grid_opaque;
+        case upstream::RenderMaterialKind::shader: {
+            const std::vector<SDL_GPUGraphicsPipeline*>* variants =
+                pipeline_kind_wants_a2c(kind)
+                    ? pipelines.shader_a2c
+                    : pipelines.shader;
+            return variants && shader_variant < variants->size()
+                ? (*variants)[shader_variant]
+                : nullptr;
+        }
+        case upstream::RenderMaterialKind::node:
+            // Node draws bind their own compiled graphs; a node kind here
+            // returns nothing and the caller refuses by name.
+            return nullptr;
+    }
+    return nullptr;
 }
 
 GpuMeshSlotMembers mesh_slot_members(
@@ -674,6 +731,7 @@ struct GpuState {
 SDL_GPUSampleCount task_sample_count(
     const GpuState& state,
     std::uint32_t requested);
+SDL_GPUTextureFormat texture_format(TextureFormatClass format);
 SDL_GPUTextureFormat geometry_texture_format(
     const GeometryTextureDescription& description);
 
@@ -880,23 +938,12 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         }
     }
 
-    // The kind carries the fixed-function state, the same way it does for the
-    // transcribed pipelines this backend builds from explicit fields. Reading it
-    // here rather than restating per-draw booleans is what keeps a mirrored
-    // node's clockwise winding from being lost.
-    using Kind = upstream::RenderPipelineKind;
-    const bool transparent =
-        kind == Kind::pbr_transparent_back ||
-        kind == Kind::pbr_transparent_none ||
-        kind == Kind::pbr_transparent_none_clockwise;
-    const bool double_sided =
-        kind == Kind::pbr_opaque_none ||
-        kind == Kind::pbr_opaque_none_clockwise ||
-        kind == Kind::pbr_transparent_none ||
-        kind == Kind::pbr_transparent_none_clockwise;
-    const bool clockwise =
-        kind == Kind::pbr_opaque_none_clockwise ||
-        kind == Kind::pbr_transparent_none_clockwise;
+    // The kind carries the fixed-function state, decoded once for both
+    // backends (`pipeline_kind_traits`). Reading it here rather than
+    // restating per-draw booleans is what keeps a mirrored node's
+    // clockwise winding from being lost.
+    const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    const bool transparent = traits.transparent;
     SDL_GPUColorTargetDescription color_target{};
     color_target.format = state.pinned_color_format;
     if (transparent) {
@@ -927,12 +974,9 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     };
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.rasterizer_state.cull_mode = double_sided
-        ? SDL_GPU_CULLMODE_NONE
-        : SDL_GPU_CULLMODE_BACK;
-    info.rasterizer_state.front_face = clockwise
-        ? SDL_GPU_FRONTFACE_CLOCKWISE
-        : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    info.rasterizer_state.cull_mode = gpu_cull_mode(traits.cull);
+    info.rasterizer_state.front_face =
+        gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
     info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
     info.depth_stencil_state.enable_depth_test = true;
@@ -947,37 +991,35 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     info.target_info.depth_stencil_format = state.depth_format;
     info.target_info.has_depth_stencil_target = true;
     // A geometry-output MRT variant draws into its task's own attachments:
-    // one target per attachment in the task's formats, plus the optional
-    // trailing colour output, at the task's sample count -- the same
-    // fixed-function state the transcribed geometry pipelines carried.
+    // one target per attachment in the shared class list, plus the
+    // optional trailing colour output, at the task's sample count -- the
+    // same fixed-function state the transcribed geometry pipelines
+    // carried. The list and its count assertion come from
+    // `geometry_target_classes`; only the API structs are built here.
     std::vector<SDL_GPUColorTargetDescription> geometry_targets;
     if (geometry_task) {
-        geometry_targets.reserve(
-            geometry_task->geometry.attachments.size() + 1u);
-        for (const GeometryTextureDescription& description :
-             geometry_task->geometry.attachments) {
+        const GeometryTargetClasses classes =
+            geometry_target_classes(*geometry_task);
+        require_geometry_target_count(
+            classes,
+            entry.color_target_count,
+            "pinned");
+        geometry_targets.reserve(classes.attachments.size() + 1u);
+        for (const TextureFormatClass format_class : classes.attachments) {
             SDL_GPUColorTargetDescription target{};
-            target.format = geometry_texture_format(description);
+            target.format = texture_format(format_class);
             if (transparent) {
                 target.blend_state = blend_state_from(transparent_blend);
             }
             geometry_targets.push_back(target);
         }
-        if (geometry_task->geometry.target.value != invalid_handle) {
+        if (classes.trailing_output) {
             SDL_GPUColorTargetDescription target{};
             target.format = state.pinned_color_format;
             if (transparent) {
                 target.blend_state = blend_state_from(transparent_blend);
             }
             geometry_targets.push_back(target);
-        }
-        if (geometry_targets.size() != entry.color_target_count) {
-            gpu_error(
-                ("pinned geometry variant writes " +
-                 std::to_string(entry.color_target_count) +
-                 " targets where its task carries " +
-                 std::to_string(geometry_targets.size()) + ".")
-                    .c_str());
         }
         info.target_info.color_target_descriptions =
             geometry_targets.data();
@@ -1094,8 +1136,11 @@ void draw_pinned_variant(
     SDL_GPURenderPass* pass,
     const Scene& scene,
     const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& matrix,
+    // The pass's scene and lights blocks, built once per pass by the
+    // caller (Dawn builds both per frame): their builders run camera and
+    // view math that must not repeat per draw.
+    const upstream::SceneUniforms& pinned_scene,
+    const std::vector<std::uint8_t>& pinned_lights,
     const upstream::RenderDrawCommand& draw,
     const GpuMesh& mesh,
     const MaterialRecord* material,
@@ -1122,10 +1167,6 @@ void draw_pinned_variant(
     }
     const upstream::PbrVariantEntry& variant_entry =
         upstream::pbr_variants[pinned_variant];
-    const upstream::SceneUniforms pinned_scene =
-        pinned_scene_block(scene, engine, camera, matrix);
-    const std::vector<std::uint8_t> pinned_lights =
-        pinned_lights_block(scene, engine);
     const MeshRecord& pinned_record =
         engine.meshes[item.mesh.value];
     // `pinned_draw_conventions` states the skinned and
@@ -1202,6 +1243,7 @@ void draw_pinned_variant(
         pass,
         pinned_fragment,
         true,
+        "pinned variant fragment",
         [&](const std::string& name) {
             const PinnedResource resource =
                 pinned_resource_for(state, mesh, name);
@@ -1243,6 +1285,7 @@ void draw_pinned_variant(
         pass,
         pinned_vertex,
         false,
+        "pinned variant vertex",
         [&](const std::string& name) {
             const PinnedResource resource =
                 pinned_resource_for(state, mesh, name);
@@ -1394,10 +1437,11 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     };
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    // The backFaceCulling the graph declared, through the same shared
+    // decode as the other families: the reached slice composes no blend,
+    // so the kind carries nothing else.
     info.rasterizer_state.cull_mode =
-        kind == upstream::RenderPipelineKind::node_opaque_none
-            ? SDL_GPU_CULLMODE_NONE
-            : SDL_GPU_CULLMODE_BACK;
+        gpu_cull_mode(pipeline_kind_traits(kind).cull);
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
@@ -1434,8 +1478,10 @@ void draw_node_variant(
     SDL_GPURenderPass* pass,
     const Scene& scene,
     const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& matrix,
+    // The pass's scene and lights blocks, built once per pass by the
+    // caller alongside the other composed families'.
+    const upstream::SceneUniforms& pinned_scene,
+    const std::vector<std::uint8_t>& pinned_lights,
     const upstream::RenderDrawCommand& draw,
     const GpuMesh& mesh,
     std::size_t variant,
@@ -1448,24 +1494,14 @@ void draw_node_variant(
     }
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
-    const upstream::SceneUniforms pinned_scene =
-        pinned_scene_block(scene, engine, camera, matrix);
     const upstream::NodeMeshUniforms node_mesh =
         node_mesh_block(scene, engine, draw.item.mesh.value);
-    // The pin's own lights array, at the group-0 slot every composed family
-    // shares. Filled on the first name that asks for it: the sidecar is what
-    // says whether this graph kept the block, and the walk and the block are
-    // pure cost for one that did not.
-    std::vector<std::uint8_t> pinned_lights;
     const auto resolve = [&](
                              const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
             return {&pinned_scene, sizeof(pinned_scene)};
         }
         if (block == "nmeLights") {
-            if (pinned_lights.empty()) {
-                pinned_lights = pinned_lights_block(scene, engine);
-            }
             return {pinned_lights.data(), pinned_lights.size()};
         }
         if (block == "meshU") return {&node_mesh, sizeof(node_mesh)};
@@ -1542,11 +1578,13 @@ void draw_node_variant(
         pass,
         state.node_vertex_slots[variant],
         false,
+        "node variant vertex",
         resolve_texture);
     bind_stage_textures(
         pass,
         state.node_fragment_slots[variant],
         true,
+        "node variant fragment",
         resolve_texture);
     const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
@@ -1701,13 +1739,10 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
                     .c_str());
         }
     }
-    using Kind = upstream::RenderPipelineKind;
-    const bool transparent =
-        kind == Kind::standard_transparent_back ||
-        kind == Kind::standard_transparent_none;
-    const bool double_sided =
-        kind == Kind::standard_opaque_none ||
-        kind == Kind::standard_transparent_none;
+    // The same shared decode the PBR sibling reads; standard kinds carry
+    // no clockwise arm, so only the blend and cull facts are consumed.
+    const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    const bool transparent = traits.transparent;
     SDL_GPUColorTargetDescription color_target{};
     color_target.format = state.pinned_color_format;
     if (transparent) {
@@ -1737,9 +1772,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     };
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    info.rasterizer_state.cull_mode = double_sided
-        ? SDL_GPU_CULLMODE_NONE
-        : SDL_GPU_CULLMODE_BACK;
+    info.rasterizer_state.cull_mode = gpu_cull_mode(traits.cull);
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
@@ -1754,35 +1787,32 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.target_info.depth_stencil_format = state.depth_format;
     info.target_info.has_depth_stencil_target = true;
     // A geometry-output MRT variant draws into its task's own
-    // attachments, exactly as the PBR sibling does.
+    // attachments, exactly as the PBR sibling does; the class list and
+    // its count assertion are the shared `geometry_target_classes`.
     std::vector<SDL_GPUColorTargetDescription> geometry_targets;
     if (geometry_task) {
-        geometry_targets.reserve(
-            geometry_task->geometry.attachments.size() + 1u);
-        for (const GeometryTextureDescription& description :
-             geometry_task->geometry.attachments) {
+        const GeometryTargetClasses classes =
+            geometry_target_classes(*geometry_task);
+        require_geometry_target_count(
+            classes,
+            entry.color_target_count,
+            "standard");
+        geometry_targets.reserve(classes.attachments.size() + 1u);
+        for (const TextureFormatClass format_class : classes.attachments) {
             SDL_GPUColorTargetDescription target{};
-            target.format = geometry_texture_format(description);
+            target.format = texture_format(format_class);
             if (transparent) {
                 target.blend_state = blend_state_from(transparent_blend);
             }
             geometry_targets.push_back(target);
         }
-        if (geometry_task->geometry.target.value != invalid_handle) {
+        if (classes.trailing_output) {
             SDL_GPUColorTargetDescription target{};
             target.format = state.pinned_color_format;
             if (transparent) {
                 target.blend_state = blend_state_from(transparent_blend);
             }
             geometry_targets.push_back(target);
-        }
-        if (geometry_targets.size() != entry.color_target_count) {
-            gpu_error(
-                ("standard geometry variant writes " +
-                 std::to_string(entry.color_target_count) +
-                 " targets where its task carries " +
-                 std::to_string(geometry_targets.size()) + ".")
-                    .c_str());
         }
         info.target_info.color_target_descriptions =
             geometry_targets.data();
@@ -1818,12 +1848,18 @@ void draw_standard_variant(
     SDL_GPURenderPass* pass,
     const Scene& scene,
     const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& matrix,
+    // The pass's scene and lights blocks, built once per pass by the
+    // caller (Dawn builds both per frame): their builders run camera and
+    // view math that must not repeat per draw.
+    const upstream::SceneUniforms& pinned_scene,
+    const std::vector<std::uint8_t>& pinned_lights,
     const upstream::RenderDrawCommand& draw,
     const GpuMesh& mesh,
     const MaterialRecord* material,
     std::size_t variant,
+    // The feature word the selector already derived for this draw
+    // (`standard_variant_key`), passed through rather than re-derived.
+    std::uint32_t features,
     SDL_GPUGraphicsPipeline*& bound_pipeline,
     const FrameTaskRecord* geometry_task = nullptr,
     const PinnedGeometryParams* geometry_params = nullptr,
@@ -1842,10 +1878,6 @@ void draw_standard_variant(
     }
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
-    const upstream::SceneUniforms pinned_scene =
-        pinned_scene_block(scene, engine, camera, matrix);
-    const std::vector<std::uint8_t> pinned_lights =
-        pinned_lights_block(scene, engine);
     const MeshRecord& record = engine.meshes[item.mesh.value];
     const upstream::MeshUniforms pinned_mesh =
         pinned_mesh_block(
@@ -1853,12 +1885,6 @@ void draw_standard_variant(
             engine,
             standard_draw_world(record, entry.uses_local_position),
             item.mesh.value);
-    std::uint32_t features = material
-        ? upstream::standard_material_features(*material)
-        : 0u;
-    if (material && material->no_color) {
-        features |= upstream::standard_no_color_output_flag;
-    }
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
     const upstream::StandardUvTransformUniforms uv_block =
@@ -1911,6 +1937,7 @@ void draw_standard_variant(
         pass,
         fragment_slots,
         true,
+        "standard variant fragment",
         [&](const std::string& name) {
             const PinnedResource resource = standard_resource_for(
                 state,
@@ -3776,6 +3803,14 @@ bool run_gpu_engine(Engine& engine) {
         const SDL_GPUTextureFormat swapchain_format =
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
         const bool transmission_enabled = scene.transmission_enabled;
+        // The frame-graph path takes the main pass's else arm, where the
+        // mid-pass scene-colour grab never runs — refuse, exactly as the
+        // Dawn backend does, rather than render transmission-less.
+        if (transmission_enabled && !scene.tasks.empty()) {
+            throw std::runtime_error(
+                "transmission combined with frame-graph tasks is not "
+                "implemented yet.");
+        }
         if (
             !frame_options.single_sample &&
             upstream::preferred_sample_count() >= 4 &&
@@ -4362,8 +4397,14 @@ bool run_gpu_engine(Engine& engine) {
                     gpu_error(
                         "SDL_CreateGPUGraphicsPipeline shader material");
                 }
+                // The one a2c rule (pal_gpu_shared.hpp): coverage needs
+                // samples to spread across, so a single-sample run draws
+                // the same un-cut pixels Dawn does instead of a2c's
+                // implicit 0.5 cutoff.
                 shader_pipeline_info.multisample_state
-                    .enable_alpha_to_coverage = true;
+                    .enable_alpha_to_coverage = alpha_to_coverage_enabled(
+                    true,
+                    gpu_sample_count_value(state.sample_count));
                 state.shader_a2c_pipelines[variant] =
                     SDL_CreateGPUGraphicsPipeline(
                         state.device,
@@ -4920,6 +4961,11 @@ bool run_gpu_engine(Engine& engine) {
 
         upstream::RenderPlan render_plan =
             upstream::build_render_plan(scene, engine);
+        // Every item's kind and variant against the generated tables
+        // before anything uploads — the same shared walk the Dawn
+        // backend runs, so a plan the build cannot draw fails here
+        // rather than at (or past) the draw.
+        validate_render_plan_items(render_plan);
         const auto upload_render_item =
             [&](const upstream::RenderItem& item) -> GpuMesh {
             const ModelGeometry& geometry = engine.geometries[item.geometry];
@@ -5370,19 +5416,11 @@ bool run_gpu_engine(Engine& engine) {
                 const std::uint32_t added_families =
                     scene.material_family_mask &
                     ~synced_material_family_mask;
-#if BBLITE_STANDARD_VARIANTS > 0
-                if (
-                    (added_families & material_family_standard) != 0 &&
-                    upstream::standard_variants.empty()) {
-                    throw std::runtime_error(
-                        "Post-registration Standard material family has no composed variants.");
-                }
-#else
-                if ((added_families & material_family_standard) != 0) {
-                    throw std::runtime_error(
-                        "Post-registration Standard material family in a build with no composed variants.");
-                }
-#endif
+                // The table half of the guard is shared with Dawn; the
+                // built-pipeline checks below are this backend's own
+                // residue — its modules are built eagerly at startup, so
+                // a family the initial plan never reached has none.
+                reject_uncomposed_family_growth(added_families);
                 if (
                     (added_families & material_family_shader) != 0 &&
                     state.shader_pipelines.empty()) {
@@ -5397,6 +5435,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
                 upstream::RenderPlan updated_plan =
                     upstream::build_render_plan(scene, engine);
+                validate_render_plan_items(updated_plan);
                 // Re-match the uploaded mesh entries to the updated
                 // plan: both plans walk the scene list in order, so a
                 // forward two-pointer pass keeps every surviving
@@ -5702,60 +5741,39 @@ bool run_gpu_engine(Engine& engine) {
                                           [[maybe_unused]] const PinnedGeometryParams* geometry_params,
                                           [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer) {
                     bool scene_matrix_bound = true;
+                    // One dispatch for both passes; only the sources
+                    // differ (`secondary_pipeline_for`).
+                    const SecondaryPipelines secondary{
+                        grid_opaque,
+                        grid_double_sided,
+                        grid_transparent,
+                        grid_transparent_double_sided,
+                        &shader_variant_pipelines,
+                        &shader_variant_a2c_pipelines,
+                    };
                     const auto pipeline_for =
                         [&](
                             upstream::RenderPipelineKind kind,
                             std::uint32_t shader_variant) {
-                        switch (kind) {
-                            // Unreachable: the pinned dispatch above owns
-                            // every PBR draw before this selector runs.
-                            case upstream::RenderPipelineKind::pbr_opaque_back:
-                            case upstream::RenderPipelineKind::pbr_opaque_none:
-                            case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
-                            case upstream::RenderPipelineKind::pbr_transparent_back:
-                            case upstream::RenderPipelineKind::pbr_transparent_none:
-                            case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
-                                gpu_error(
-                                    "task dispatch reached a PBR pipeline "
-                                    "kind; the pinned branch owns every PBR "
-                                    "draw.");
-                                return static_cast<
-                                    SDL_GPUGraphicsPipeline*>(nullptr);
-                            case upstream::RenderPipelineKind::standard_opaque_back:
-                            case upstream::RenderPipelineKind::standard_opaque_none:
-                            case upstream::RenderPipelineKind::standard_transparent_back:
-                            case upstream::RenderPipelineKind::standard_transparent_none:
-                                gpu_error(
-                                    "task dispatch reached a Standard "
-                                    "pipeline kind; the pinned branch owns "
-                                    "every Standard draw.");
-                                return static_cast<
-                                    SDL_GPUGraphicsPipeline*>(nullptr);
-                            case upstream::RenderPipelineKind::grid_opaque_back:
-                                return grid_opaque;
-                            case upstream::RenderPipelineKind::grid_opaque_none:
-                                return grid_double_sided;
-                            case upstream::RenderPipelineKind::grid_transparent_back:
-                                return grid_transparent;
-                            case upstream::RenderPipelineKind::grid_transparent_none:
-                                return grid_transparent_double_sided;
-                            case upstream::RenderPipelineKind::shader:
-                                return shader_variant <
-                                        shader_variant_pipelines.size()
-                                    ? shader_variant_pipelines[
-                                          shader_variant]
-                                    : nullptr;
-                            case upstream::RenderPipelineKind::shader_a2c:
-                                return shader_variant <
-                                        shader_variant_a2c_pipelines
-                                            .size()
-                                    ? shader_variant_a2c_pipelines[
-                                          shader_variant]
-                                    : nullptr;
-                        }
-                        return static_cast<
-                            SDL_GPUGraphicsPipeline*>(nullptr);
+                        return secondary_pipeline_for(
+                            secondary,
+                            kind,
+                            shader_variant,
+                            "task dispatch");
                     };
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+                    // The pass's scene and lights blocks, once per pass
+                    // rather than per draw: their builders run camera and
+                    // view math whose repetition was pure cost.
+                    const upstream::SceneUniforms pass_scene_block =
+                        pinned_scene_block(
+                            scene,
+                            engine,
+                            draw_camera,
+                            draw_matrix);
+                    const std::vector<std::uint8_t> pass_lights_block =
+                        pinned_lights_block(scene, engine);
+#endif
                     const auto draw_list =
                         [&](const upstream::RenderDrawList& list) {
                         SDL_GPUGraphicsPipeline* bound_pipeline =
@@ -5818,8 +5836,8 @@ bool run_gpu_engine(Engine& engine) {
                                     task_pass,
                                     scene,
                                     engine,
-                                    draw_camera,
-                                    draw_matrix,
+                                    pass_scene_block,
+                                    pass_lights_block,
                                     draw,
                                     mesh,
                                     material,
@@ -5838,6 +5856,7 @@ bool run_gpu_engine(Engine& engine) {
                             if (
                                 draw_item.material_kind ==
                                 upstream::RenderMaterialKind::standard) {
+                                StandardVariantKey standard_key;
                                 const std::size_t standard_variant =
                                     standard_variant_for_draw(
                                         scene,
@@ -5848,7 +5867,8 @@ bool run_gpu_engine(Engine& engine) {
                                                   geometry_task->geometry
                                                       .shader_index)
                                             : std::numeric_limits<
-                                                  std::size_t>::max());
+                                                  std::size_t>::max(),
+                                        &standard_key);
                                 if (
                                     standard_variant ==
                                     std::numeric_limits<
@@ -5873,12 +5893,13 @@ bool run_gpu_engine(Engine& engine) {
                                     task_pass,
                                     scene,
                                     engine,
-                                    draw_camera,
-                                    draw_matrix,
+                                    pass_scene_block,
+                                    pass_lights_block,
                                     draw,
                                     mesh,
                                     material,
                                     standard_variant,
+                                    standard_key.features,
                                     bound_pipeline,
                                     geometry_task,
                                     geometry_params,
@@ -6455,9 +6476,17 @@ bool run_gpu_engine(Engine& engine) {
                                           .render_targets[
                                               task.effect.target.value]
                                           .color_format,
+                                // Through the MSAA gate like every other
+                                // task pipeline, so a single-sample run
+                                // matches the 1-sample texture the gate
+                                // allocated (Dawn's site reads the same
+                                // gate).
                                 target_record.swapchain
                                     ? 1u
-                                    : target_record.samples);
+                                    : gpu_sample_count_value(
+                                          task_sample_count(
+                                              state,
+                                              target_record.samples)));
                         }
                         SDL_GPUColorTargetInfo effect_target{};
                         effect_target.texture =
@@ -6969,54 +6998,28 @@ bool run_gpu_engine(Engine& engine) {
                 [&](
                     upstream::RenderPipelineKind kind,
                     std::uint32_t shader_variant) {
-                switch (kind) {
-                    // The transcribed PBR pipelines are retired: every PBR
-                    // draw runs the pin's own composed stages, resolved
-                    // before this dispatch is consulted.
-                    case upstream::RenderPipelineKind::pbr_opaque_back:
-                    case upstream::RenderPipelineKind::pbr_opaque_none:
-                    case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
-                    case upstream::RenderPipelineKind::pbr_transparent_back:
-                    case upstream::RenderPipelineKind::pbr_transparent_none:
-                    case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
-                        gpu_error(
-                            "PBR draw reached the transcribed pipeline "
-                            "dispatch; the pinned path owns every PBR draw.");
-                        return static_cast<SDL_GPUGraphicsPipeline*>(nullptr);
-                    case upstream::RenderPipelineKind::standard_opaque_back:
-                    case upstream::RenderPipelineKind::standard_opaque_none:
-                    case upstream::RenderPipelineKind::standard_transparent_back:
-                    case upstream::RenderPipelineKind::standard_transparent_none:
-                        gpu_error(
-                            "main dispatch reached a Standard pipeline "
-                            "kind; the pinned branch owns every Standard "
-                            "draw.");
-                        return static_cast<
-                            SDL_GPUGraphicsPipeline*>(nullptr);
-                    case upstream::RenderPipelineKind::grid_opaque_back:
-                        return state.grid_pipeline;
-                    case upstream::RenderPipelineKind::grid_opaque_none:
-                        return state.grid_double_sided_pipeline;
-                    case upstream::RenderPipelineKind::grid_transparent_back:
-                        return state.grid_transparent_pipeline;
-                    case upstream::RenderPipelineKind::grid_transparent_none:
-                        return state
-                            .grid_transparent_double_sided_pipeline;
-                    case upstream::RenderPipelineKind::shader:
-                        return shader_variant <
-                                state.shader_pipelines.size()
-                            ? state.shader_pipelines[shader_variant]
-                            : nullptr;
-                    case upstream::RenderPipelineKind::shader_a2c:
-                        return shader_variant <
-                                state.shader_a2c_pipelines.size()
-                            ? state.shader_a2c_pipelines[
-                                  shader_variant]
-                            : nullptr;
-                }
-                return static_cast<
-                    SDL_GPUGraphicsPipeline*>(nullptr);
+                return secondary_pipeline_for(
+                    SecondaryPipelines{
+                        state.grid_pipeline,
+                        state.grid_double_sided_pipeline,
+                        state.grid_transparent_pipeline,
+                        state.grid_transparent_double_sided_pipeline,
+                        &state.shader_pipelines,
+                        &state.shader_a2c_pipelines,
+                    },
+                    kind,
+                    shader_variant,
+                    "main dispatch");
             };
+#if BBLITE_PINNED_MATERIALS
+            // The frame's scene and lights blocks, once per frame rather
+            // than per draw — the same hoist the Dawn backend's
+            // write_pinned_frame_blocks already makes.
+            const upstream::SceneUniforms pass_scene_block =
+                pinned_scene_block(scene, engine, camera, matrix);
+            const std::vector<std::uint8_t> pass_lights_block =
+                pinned_lights_block(scene, engine);
+#endif
             const auto draw_render_list =
                 [&](const upstream::RenderDrawList& list) {
                 SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
@@ -7124,8 +7127,8 @@ bool run_gpu_engine(Engine& engine) {
                             pass,
                             scene,
                             engine,
-                            camera,
-                            matrix,
+                            pass_scene_block,
+                            pass_lights_block,
                             draw,
                             mesh,
                             material,
@@ -7145,14 +7148,32 @@ bool run_gpu_engine(Engine& engine) {
 #if BBLITE_STANDARD_VARIANTS > 0
                     // Babylon Lite's own composed stages own every Standard
                     // draw too; a draw the gate refuses is an error naming
-                    // the mesh rather than a silent fallback. The main pass
-                    // carries no frame graph, so a depth-sampled emissive
-                    // render texture cannot appear here.
+                    // the mesh rather than a silent fallback.
                     if (
                         item.material_kind ==
                         upstream::RenderMaterialKind::standard) {
+                        // The main pass carries no frame graph, so a
+                        // render-target texture on a material has nothing
+                        // to resolve against — refused by name rather
+                        // than trusted to never happen.
+                        if (
+                            material &&
+                            (material->has_emissive_render_texture ||
+                             material->has_diffuse_render_texture)) {
+                            gpu_error(
+                                "a Standard material samples a "
+                                "render-target texture in the main pass, "
+                                "which carries no frame graph to resolve "
+                                "it.");
+                        }
+                        StandardVariantKey standard_key;
                         const std::size_t standard_variant =
-                            standard_variant_for_draw(scene, engine, draw);
+                            standard_variant_for_draw(
+                                scene,
+                                engine,
+                                draw,
+                                std::numeric_limits<std::size_t>::max(),
+                                &standard_key);
                         if (
                             standard_variant ==
                             std::numeric_limits<std::size_t>::max()) {
@@ -7171,12 +7192,13 @@ bool run_gpu_engine(Engine& engine) {
                             pass,
                             scene,
                             engine,
-                            camera,
-                            matrix,
+                            pass_scene_block,
+                            pass_lights_block,
                             draw,
                             mesh,
                             material,
                             standard_variant,
+                            standard_key.features,
                             bound_pipeline);
                         continue;
                     }
@@ -7203,8 +7225,8 @@ bool run_gpu_engine(Engine& engine) {
                             pass,
                             scene,
                             engine,
-                            camera,
-                            matrix,
+                            pass_scene_block,
+                            pass_lights_block,
                             draw,
                             mesh,
                             item.shader_variant,

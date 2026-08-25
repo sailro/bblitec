@@ -27,12 +27,45 @@
 // diff can never disagree with an upload about the block's bytes.
 #include "pal_gpu_shared.hpp"
 
-#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+// Two entry points serve two frame-loop families. `write_render_capture`
+// is called from the two scene frame loops (pal_sdl_gpu.cpp,
+// pal_dawn.cpp): it describes every renderable family a scene's own frame
+// composes — meshes, splats, billboards, effect tasks, and the
+// sprite/effect rendering contexts the engine records — and everything
+// mesh, camera or plan it reads is generated only for a scene that
+// registers one, so those writers ride the scene-renderer gates below.
+// `write_standalone_render_capture` is called from the standalone frame
+// loops (pal_*_sprite.cpp, pal_*_effect.cpp), which compile with no scene
+// renderer at all: it writes the same document shape carrying the engine
+// basics plus the sprite/effect sections, so the JSON machinery and those
+// two family sections sit outside the scene envelope, each on its own
+// family gate.
 
-#include <bblite/upstream/build_stamp.hpp>
+// The build stamp is read through `bblite_build_stamp()` (pal.hpp) rather
+// than the generated header: including the digest here would put it in
+// the including TUs' preprocessed text and force them to recompile per
+// scene.
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #if BBLITE_HAS_SPLATS
 #include <bblite/upstream/splat_sort.hpp>
+#endif
+#if BBLITE_HAS_BILLBOARDS
+// The system UBO builder, the instance layout and the pinned quad the
+// billboard lowerer generated out of the pinned pipeline module.
+#include <bblite/upstream/billboard_system.hpp>
+#endif
+#endif // BBLITE_HAS_PBR_RENDERER
+#if BBLITE_HAS_BILLBOARDS || \
+    (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+// The layer UBO builder, shared by the 2D layer and — for the fx block
+// sizes — the billboard family; generated whenever either is reached.
+#include <bblite/upstream/sprite_layer.hpp>
+#endif
+#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+// The variant table an effect wrapper draws through: stems, declared
+// bindings and the uniform block's size.
+#include <bblite/upstream/effect_variants.hpp>
 #endif
 
 #include <algorithm>
@@ -310,6 +343,58 @@ inline std::string payload_digest(const std::vector<std::uint8_t>& bytes) {
     return digest_text(fold_payload(bytes));
 }
 
+/**
+ * A uniform block as the GPU receives it: the generated struct's name
+ * plus its bytes read back as floats.
+ *
+ * Every one of these structs is an aggregate of `std::array<float, 4>`
+ * members with no padding, so the flat float view is byte-identical to
+ * the upload. The reader recovers the field names by parsing the same
+ * struct declaration out of the scene's generated `renderer_plan.hpp`,
+ * which is how a diff can say `emissive_factor` instead of `float 41`.
+ */
+template <typename Uniforms>
+inline void write_uniform_block(
+    JsonWriter& json,
+    const char* stage,
+    std::uint32_t slot,
+    const char* type_name,
+    const Uniforms& uniforms) {
+    static_assert(
+        sizeof(Uniforms) % sizeof(float) == 0,
+        "uniform blocks are float aggregates");
+    json.begin_object();
+    json.field("stage", stage);
+    json.field("slot", slot);
+    json.field("type", type_name);
+    json.field(
+        "floats",
+        reinterpret_cast<const float*>(&uniforms),
+        sizeof(Uniforms) / sizeof(float));
+    json.end_object();
+}
+
+inline void write_float_block(
+    JsonWriter& json,
+    const char* stage,
+    std::uint32_t slot,
+    const char* type_name,
+    const float* values,
+    std::size_t count) {
+    json.begin_object();
+    json.field("stage", stage);
+    json.field("slot", slot);
+    json.field("type", type_name);
+    json.field("floats", values, count);
+    json.end_object();
+}
+
+// The scene-frame writers: the plan's vocabulary and the scene-model
+// records the draw lists read from, compiled only where the scene loops
+// are (camera math and the render plan are generated only for a scene
+// that registers one).
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+
 inline const char* primitive_name(PrimitiveKind kind) {
     switch (kind) {
         case PrimitiveKind::babylon: return "babylon";
@@ -413,52 +498,6 @@ inline const char* address_name(TextureAddressMode mode) {
         case TextureAddressMode::mirror: return "mirror";
     }
     return "unknown";
-}
-
-/**
- * A uniform block as the GPU receives it: the generated struct's name
- * plus its bytes read back as floats.
- *
- * Every one of these structs is an aggregate of `std::array<float, 4>`
- * members with no padding, so the flat float view is byte-identical to
- * the upload. The reader recovers the field names by parsing the same
- * struct declaration out of the scene's generated `renderer_plan.hpp`,
- * which is how a diff can say `emissive_factor` instead of `float 41`.
- */
-template <typename Uniforms>
-inline void write_uniform_block(
-    JsonWriter& json,
-    const char* stage,
-    std::uint32_t slot,
-    const char* type_name,
-    const Uniforms& uniforms) {
-    static_assert(
-        sizeof(Uniforms) % sizeof(float) == 0,
-        "uniform blocks are float aggregates");
-    json.begin_object();
-    json.field("stage", stage);
-    json.field("slot", slot);
-    json.field("type", type_name);
-    json.field(
-        "floats",
-        reinterpret_cast<const float*>(&uniforms),
-        sizeof(Uniforms) / sizeof(float));
-    json.end_object();
-}
-
-inline void write_float_block(
-    JsonWriter& json,
-    const char* stage,
-    std::uint32_t slot,
-    const char* type_name,
-    const float* values,
-    std::size_t count) {
-    json.begin_object();
-    json.field("stage", stage);
-    json.field("slot", slot);
-    json.field("type", type_name);
-    json.field("floats", values, count);
-    json.end_object();
 }
 
 inline void write_texture_slot(
@@ -1045,13 +1084,446 @@ inline void write_splat_draw_list(
     }
 }
 #endif
+#endif // BBLITE_HAS_PBR_RENDERER (scene-frame writers)
+
+#if BBLITE_HAS_BILLBOARDS || \
+    (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER)
+// The sprite-family enums as names, and the two records both families
+// share — spelled once so the billboard and layer writers cannot label the
+// same descriptor differently.
+inline const char* sprite_blend_factor_name(SpriteBlendFactor factor) {
+    switch (factor) {
+        case SpriteBlendFactor::zero: return "zero";
+        case SpriteBlendFactor::one: return "one";
+        case SpriteBlendFactor::src_alpha: return "src_alpha";
+        case SpriteBlendFactor::one_minus_src_alpha:
+            return "one_minus_src_alpha";
+        case SpriteBlendFactor::dst: return "dst";
+        case SpriteBlendFactor::dst_alpha: return "dst_alpha";
+    }
+    return "unknown";
+}
+
+inline const char* billboard_depth_mode_name(BillboardDepthMode mode) {
+    return mode == BillboardDepthMode::cutout ? "cutout" : "transparent";
+}
+
+/** A pinned blend descriptor as the pure data it is (blend-as-data). */
+inline void write_sprite_blend(
+    JsonWriter& json,
+    const char* name,
+    const SpriteBlendDescriptor& blend) {
+    json.key(name);
+    json.begin_object();
+    json.field("enabled", blend.enabled);
+    json.field("depthMode", billboard_depth_mode_name(blend.depth_mode));
+    json.field("colorSrc", sprite_blend_factor_name(blend.color.src));
+    json.field("colorDst", sprite_blend_factor_name(blend.color.dst));
+    json.field("alphaSrc", sprite_blend_factor_name(blend.alpha.src));
+    json.field("alphaDst", sprite_blend_factor_name(blend.alpha.dst));
+    json.field("premultipliedOpacity", blend.premultiplied_opacity);
+    json.field("particlePasses", blend.particle_passes);
+    json.end_object();
+}
 
 /**
- * Write the whole frame.
+ * Which atlas a layer or system samples: identity by digest rather than
+ * payload, exactly as the material texture slots report theirs — the
+ * digest answers "same asset in the same slot?" without dumping pixels.
+ */
+inline void write_sprite_atlas_reference(
+    JsonWriter& json,
+    const Engine& engine,
+    SpriteAtlasHandle atlas) {
+    json.key("atlas");
+    json.begin_object();
+    if (atlas.value < engine.sprite_atlases.size()) {
+        const SpriteAtlasRecord& record = engine.sprite_atlases[atlas.value];
+        json.field("index", atlas.value);
+        json.field("width", record.width);
+        json.field("height", record.height);
+        json.field("frameCount", record.frames.size());
+        json.field("premultipliedAlpha", record.premultiplied_alpha);
+        json.field("mipMaps", record.mip_maps);
+        json.field("byteLength", record.rgba.size());
+        json.field("digest", payload_digest(record.rgba));
+    }
+    json.end_object();
+}
+#endif
+
+// Billboards draw only inside a scene's frame (there is no standalone
+// billboard loop), so their writer needs the scene envelope's camera math
+// and rides both gates.
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && \
+    BBLITE_HAS_BILLBOARDS
+/**
+ * The billboard renderables live beside the render plan rather than in
+ * either mesh draw list, exactly as the splat cloud does. Capture them at
+ * that same boundary, so a scene's billboard systems report the indexed
+ * instanced draw the frame records, the program stems the shared
+ * `billboard_draw_plan` selects for both backends, and the exact system
+ * block their passes push (`build_billboard_system_ubo`).
  *
- * Called from each backend at the frame the screenshot is taken, so the
- * capture describes the image that was measured rather than some other
- * frame of the same run.
+ * One entry per system whatever its `particle_passes`: the mode-4
+ * wrapper's second stock-Add draw repeats the same six-index,
+ * count-instance shape over the same instances and the same system block,
+ * so the pass count rides the entry rather than duplicating it.
+ *
+ * The custom-shader fx block is deliberately not dumped: its first lane
+ * is seconds since the system's first frame — backend frame-clock state,
+ * not a value derivable from (scene, engine, camera) — and a fabricated
+ * time would read as a divergence on a correct scene. The params half it
+ * carries is the `shaderParams` field beside the draw.
+ */
+inline void write_billboard_draw_list(
+    JsonWriter& json,
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera,
+    const std::array<float, 16>& view_projection) {
+    // The same view the frame builds once for the sort and the draw.
+    const std::array<float, 16> view = upstream::build_view_matrix(
+        upstream::camera_world_matrix(camera));
+    for (const BillboardSystemHandle handle : scene.billboard_systems) {
+        if (handle.value >= engine.billboard_systems.size()) continue;
+        const BillboardSystemRecord& system =
+            engine.billboard_systems[handle.value];
+        // The pass's own gate: an invisible or empty system records no
+        // draw, so it must not describe one here either.
+        if (!system.visible || system.count == 0) continue;
+        const BillboardDrawPlan plan = billboard_draw_plan(system);
+        const bool cutout =
+            system.depth_mode == BillboardDepthMode::cutout;
+        json.begin_object();
+        // The slot the depth mode gives it: cutout draws among the opaque
+        // meshes so everything after sees its depth; transparent closes
+        // the scene's pass, blending over every stage above.
+        json.field("stage", cutout ? "opaque" : "transparent");
+        json.field("pipeline", "billboard");
+        json.field("materialKind", "billboard");
+        json.field("bucket", cutout ? "opaque" : "alphaBlend");
+        json.handle("mesh", invalid_handle);
+        json.handle("material", invalid_handle);
+        json.handle("geometry", invalid_handle);
+        json.field("billboardSystem", handle.value);
+        json.field("vertexStem", plan.vertex_stem);
+        json.field("fragmentStem", plan.fragment_stem);
+        json.field(
+            "orientation", plan.axis_locked ? "axisLocked" : "facing");
+        json.field(
+            "depthMode", billboard_depth_mode_name(system.depth_mode));
+        json.field("depthWrites", plan.cutout_writes_depth);
+        // A transparent system stages its instances back to front for the
+        // view; a cutout one uploads in logical insertion order.
+        json.field("sorted", !cutout);
+        json.field("alphaToCoverage", system.alpha_to_coverage);
+        json.field("alphaCutoff", system.alpha_cutoff);
+        json.field("opacity", system.opacity);
+        json.field("axis", system.axis);
+        json.field("particlePasses", plan.particle_passes);
+        json.field("customShader", system.custom_shader);
+        json.field("customTextureCount", system.custom_textures.size());
+        json.field("shaderParams", system.shader_params);
+        write_sprite_blend(json, "blend", system.blend);
+        if (plan.particle_passes >= 2) {
+            write_sprite_blend(json, "addPassBlend", system.add_pass_blend);
+        }
+        write_sprite_atlas_reference(json, engine, system.atlas);
+        json.field(
+            "indexCount", upstream::billboard_index_data.size());
+        json.field("vertexCount", 4u);
+        json.field("instanceCount", system.count);
+        json.field("capacity", system.capacity);
+        json.field(
+            "instanceFloatsPerSprite", system.instance_floats_per_sprite);
+        json.key("uniforms");
+        json.begin_array();
+        {
+            // The reconstructed vertex stage's own block: view-projection
+            // then view, pushed as one block by both backends
+            // (`BillboardSceneUniforms`).
+            std::array<float, 32> scene_block{};
+            std::copy(
+                view_projection.begin(),
+                view_projection.end(),
+                scene_block.begin());
+            std::copy(view.begin(), view.end(), scene_block.begin() + 16);
+            write_float_block(
+                json,
+                "vertex",
+                0,
+                "BillboardSceneUniforms",
+                scene_block.data(),
+                scene_block.size());
+            // The per-system block, from the same builder both backends
+            // push — to the fragment stage always, and to the axis-locked
+            // vertex stage too, which reads its lock axis from it.
+            std::array<float, upstream::billboard_system_ubo_bytes / 4>
+                system_ubo{};
+            upstream::build_billboard_system_ubo(system, system_ubo);
+            write_float_block(
+                json,
+                "fragment",
+                0,
+                "BillboardSystemUniforms",
+                system_ubo.data(),
+                system_ubo.size());
+        }
+        json.end_array();
+        json.end_object();
+    }
+}
+#endif
+
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+/**
+ * The 2D sprite rendering contexts the engine records, layers in the
+ * draw order `sprite_layer_draw_order` decides for both backends, each
+ * with the exact sixteen-float layer block its pass pushes
+ * (`build_sprite_layer_ubo`) and the six-index, count-instance draw shape.
+ *
+ * Reachability note: the scene frame loops currently refuse a sprite
+ * renderer registered beside a scene (`reject_uncomposed_sprites`), so
+ * this section is empty in every capture a scene writes today. Its real
+ * callers are the sprite-only loops (`pal_*_sprite.cpp`), which write it
+ * through `write_standalone_render_capture` below; a future composition
+ * pairs against the same writer.
+ *
+ * The custom-shader fx block is skipped for the billboard writer's
+ * reason: its time lane is frame-clock state; the params ride the layer.
+ */
+inline void write_sprite_renderer_list(
+    JsonWriter& json,
+    const Engine& engine,
+    int width,
+    int height) {
+    for (std::size_t index = 0;
+         index < engine.sprite_renderers.size();
+         ++index) {
+        const SpriteRendererRecord& renderer =
+            engine.sprite_renderers[index];
+        bool registered = false;
+        for (const SpriteRendererHandle candidate :
+             engine.registered_sprite_renderers) {
+            if (candidate.value == static_cast<std::uint32_t>(index)) {
+                registered = true;
+                break;
+            }
+        }
+        json.begin_object();
+        json.field("index", index);
+        json.field("registered", registered);
+        json.field("clear", renderer.clear);
+        json.field("clearValue", renderer.clear_value);
+        json.key("layers");
+        json.begin_array();
+        for (const std::size_t slot :
+             sprite_layer_draw_order(engine, renderer)) {
+            const Sprite2DLayerHandle handle = renderer.layers[slot];
+            if (handle.value >= engine.sprite_layers.size()) continue;
+            const Sprite2DLayerRecord& layer =
+                engine.sprite_layers[handle.value];
+            json.begin_object();
+            json.field("layer", handle.value);
+            json.field("order", layer.order);
+            // The pass's own gate rides along as data: an invisible or
+            // empty layer records no draw.
+            json.field("visible", layer.visible);
+            json.field("opacity", layer.opacity);
+            json.field("count", layer.count);
+            json.field("capacity", layer.capacity);
+            json.field(
+                "instanceFloatsPerSprite",
+                layer.instance_floats_per_sprite);
+            json.field("uvScroll", layer.uv_scroll);
+            json.field("customShader", layer.custom_shader);
+            json.field(
+                "customTextureCount", layer.custom_textures.size());
+            json.field("shaderParams", layer.shader_params);
+            json.field("pivot", layer.pivot);
+            json.key("view");
+            json.begin_object();
+            json.field("positionPx", layer.view.position_px);
+            json.field("zoom", layer.view.zoom);
+            json.field("rotation", layer.view.rotation);
+            json.end_object();
+            write_sprite_blend(json, "blend", layer.blend);
+            write_sprite_atlas_reference(json, engine, layer.atlas);
+            json.field("indexCount", 6u);
+            json.field("vertexCount", 4u);
+            json.field("instanceCount", layer.count);
+            json.key("uniforms");
+            json.begin_array();
+            {
+                // Pushed to the vertex stage at slot zero and to the
+                // fragment slot its own compiled stage kept, by both
+                // backends; one block either way.
+                std::array<float, 16> ubo{};
+                upstream::build_sprite_layer_ubo(
+                    layer,
+                    static_cast<float>(width),
+                    static_cast<float>(height),
+                    ubo);
+                write_float_block(
+                    json,
+                    "vertex",
+                    0,
+                    "SpriteLayerUniforms",
+                    ubo.data(),
+                    ubo.size());
+            }
+            json.end_array();
+            json.end_object();
+        }
+        json.end_array();
+        json.end_object();
+    }
+}
+#endif
+
+#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+/**
+ * The fullscreen-effect state: every wrapper with the exact uniform floats
+ * `setEffectUniforms` wrote (already padded to the declared block size by
+ * the setter) and its texture bindings by declared name; the effect
+ * rendering contexts; and — where the frame graph reaches them — the
+ * effect render tasks with their targets. All of it is the same records
+ * `create_effect_pass` and `record_effect_pass` read, never the API.
+ *
+ * The tasks are the in-scene half (`effect:task`, drawn inside the
+ * scene's frame). An effect-renderer-only scene draws through
+ * `pal_*_effect.cpp`, which writes this same section through
+ * `write_standalone_render_capture` below.
+ */
+inline void write_effect_state(JsonWriter& json, const Engine& engine) {
+    json.begin_object();
+    json.key("wrappers");
+    json.begin_array();
+    for (std::size_t index = 0;
+         index < engine.effect_wrappers.size();
+         ++index) {
+        const EffectWrapperRecord& wrapper = engine.effect_wrappers[index];
+        if (wrapper.variant >= upstream::effect_variants.size()) continue;
+        const upstream::EffectVariantEntry& entry =
+            upstream::effect_variants.at(wrapper.variant);
+        // The declared uniform block's size, from the same variant table
+        // both passes size their push and their refusal with.
+        std::uint32_t uniform_bytes = 0;
+        for (std::size_t binding = 0;
+             binding < entry.binding_count;
+             ++binding) {
+            const upstream::EffectVariantBinding& row =
+                upstream::effect_variant_bindings.at(
+                    entry.first_binding + binding);
+            if (row.kind == upstream::EffectBindingKind::uniform) {
+                uniform_bytes = row.uniform_bytes;
+            }
+        }
+        json.begin_object();
+        json.field("index", index);
+        json.field("variant", wrapper.variant);
+        json.field("name", std::string(entry.name));
+        json.field("vertexStem", std::string(entry.vertex_stem));
+        json.field("fragmentStem", std::string(entry.fragment_stem));
+        json.field("uniformBytes", uniform_bytes);
+        json.key("textures");
+        json.begin_array();
+        for (const EffectTextureSlot& slot : wrapper.textures) {
+            json.begin_object();
+            json.field("name", slot.name);
+            json.field("set", slot.set);
+            json.field("color", slot.texture.color);
+            // The rounded byte IS the texture (`create_solid_texture`),
+            // so the texel is what a browser upload can be paired with.
+            json.key("texel");
+            json.begin_array();
+            for (const std::uint8_t channel : slot.texture.texel) {
+                json.value(static_cast<std::uint32_t>(channel));
+            }
+            json.end_array();
+            json.end_object();
+        }
+        json.end_array();
+        json.key("uniforms");
+        json.begin_array();
+        if (!wrapper.uniform_values.empty()) {
+            write_float_block(
+                json,
+                "fragment",
+                0,
+                "EffectUniforms",
+                wrapper.uniform_values.data(),
+                wrapper.uniform_values.size());
+        }
+        json.end_array();
+        json.end_object();
+    }
+    json.end_array();
+
+    // Registration order is draw order across rendering contexts, as it
+    // is for the sprite half.
+    json.key("renderers");
+    json.begin_array();
+    for (std::size_t index = 0;
+         index < engine.effect_renderers.size();
+         ++index) {
+        const EffectRendererRecord& renderer =
+            engine.effect_renderers[index];
+        bool registered = false;
+        for (const EffectRendererHandle candidate :
+             engine.registered_effect_renderers) {
+            if (candidate.value == static_cast<std::uint32_t>(index)) {
+                registered = true;
+                break;
+            }
+        }
+        json.begin_object();
+        json.field("index", index);
+        json.handle("effect", renderer.effect.value);
+        json.field("registered", registered);
+        json.field("clear", renderer.clear);
+        json.field("clearColor", renderer.clear_color);
+        json.end_object();
+    }
+    json.end_array();
+
+#if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
+    json.key("tasks");
+    json.begin_array();
+    for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
+        const FrameTaskRecord& task = engine.frame_tasks[index];
+        if (task.kind != FrameTaskKind::effect) continue;
+        json.begin_object();
+        json.field("taskIndex", index);
+        json.field("name", task.effect.name);
+        json.handle("effect", task.effect.effect.value);
+        json.handle("target", task.effect.target.value);
+        json.field("clear", task.effect.clear);
+        json.field("clearColor", task.effect.clear_color);
+        if (task.effect.target.value < engine.render_targets.size()) {
+            const RenderTargetRecord& target =
+                engine.render_targets[task.effect.target.value];
+            json.field("targetWidth", target.width);
+            json.field("targetHeight", target.height);
+            json.field("targetSamples", target.samples);
+            json.field("targetSwapchain", target.swapchain);
+        }
+        json.end_object();
+    }
+    json.end_array();
+#endif
+    json.end_object();
+}
+#endif
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/**
+ * Write the whole frame of a scene.
+ *
+ * Called from each backend's scene frame loop at the frame the screenshot
+ * is taken, so the capture describes the image that was measured rather
+ * than some other frame of the same run.
  */
 inline void write_render_capture(
     const std::string& path,
@@ -1072,7 +1544,7 @@ inline void write_render_capture(
     JsonWriter json(stream);
     json.begin_object();
     json.field("backend", backend);
-    json.field("buildStamp", BBLITE_BUILD_STAMP);
+    json.field("buildStamp", bblite_build_stamp());
     json.field("frame", static_cast<int>(frame));
     json.key("viewport");
     json.begin_object();
@@ -1094,6 +1566,15 @@ inline void write_render_capture(
     json.field("meshCount", scene.meshes.size());
     json.field("lightCount", scene.lights.size());
     json.field("taskCount", scene.tasks.size());
+#if BBLITE_HAS_BILLBOARDS
+    json.field("billboardSystemCount", scene.billboard_systems.size());
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+    json.field("spriteRendererCount", engine.sprite_renderers.size());
+#endif
+#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+    json.field("effectWrapperCount", engine.effect_wrappers.size());
+#endif
     json.end_object();
 
     json.key("camera");
@@ -1161,6 +1642,9 @@ inline void write_render_capture(
 #if BBLITE_HAS_SPLATS
     write_splat_draw_list(json, scene, engine, camera, width, height);
 #endif
+#if BBLITE_HAS_BILLBOARDS
+    write_billboard_draw_list(json, scene, engine, camera, view_projection);
+#endif
     json.end_array();
 
     json.key("backgroundUniforms");
@@ -1188,6 +1672,18 @@ inline void write_render_capture(
             json, "fragment", 0, "BackgroundUniforms", background);
     }
     json.end_array();
+
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+    json.key("spriteRenderers");
+    json.begin_array();
+    write_sprite_renderer_list(json, engine, width, height);
+    json.end_array();
+#endif
+
+#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+    json.key("effects");
+    write_effect_state(json, engine);
+#endif
 
 #if BBLITE_PBR_VARIANTS > 0
     // The material block our writers produce for every (material, variant) the
@@ -1293,7 +1789,85 @@ inline void write_render_capture(
     json.end_object();
     stream << '\n';
 }
+#endif // BBLITE_HAS_PBR_RENDERER (write_render_capture)
+
+// Compiled exactly where a standalone loop exists to call it — a build
+// with neither standalone renderer would hold an unreachable definition.
+#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
+    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER)
+/**
+ * Write the frame of a scene with no scene renderer.
+ *
+ * The standalone frame loops (`pal_*_sprite.cpp`, `pal_*_effect.cpp`)
+ * compile with no camera math and no render plan, so their document
+ * carries the engine basics the scene document does where they apply —
+ * backend, build stamp, frame, viewport, the family counts — plus the
+ * `spriteRenderers` and/or `effects` sections the build compiles. The
+ * mesh-family arrays are present and empty rather than absent, so the
+ * diff reader sees one document shape, not two.
+ *
+ * Called at the frame the screenshot gate names, exactly as the scene
+ * loops write theirs, so the capture describes the presented image.
+ */
+inline void write_standalone_render_capture(
+    const std::string& path,
+    const char* backend,
+    const Engine& engine,
+    int width,
+    int height,
+    long frame) {
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        throw std::runtime_error(
+            "Unable to write the render capture to '" + path + "'.");
+    }
+    JsonWriter json(stream);
+    json.begin_object();
+    json.field("backend", backend);
+    json.field("buildStamp", bblite_build_stamp());
+    json.field("frame", static_cast<int>(frame));
+    json.key("viewport");
+    json.begin_object();
+    json.field("width", width);
+    json.field("height", height);
+    json.end_object();
+
+    // The family counts the scene document's own `scene` section carries,
+    // read from the engine because a standalone frame has no Scene.
+    json.key("scene");
+    json.begin_object();
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+    json.field("spriteRendererCount", engine.sprite_renderers.size());
+#endif
+#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+    json.field("effectWrapperCount", engine.effect_wrappers.size());
+#endif
+    json.end_object();
+
+    // No render plan and no background pass exist on this loop; the draws
+    // this frame records are the family sections below.
+    json.key("draws");
+    json.begin_array();
+    json.end_array();
+    json.key("backgroundUniforms");
+    json.begin_array();
+    json.end_array();
+
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+    json.key("spriteRenderers");
+    json.begin_array();
+    write_sprite_renderer_list(json, engine, width, height);
+    json.end_array();
+#endif
+
+#if defined(BBLITE_HAS_EFFECT_WRAPPER) && BBLITE_HAS_EFFECT_WRAPPER
+    json.key("effects");
+    write_effect_state(json, engine);
+#endif
+
+    json.end_object();
+    stream << '\n';
+}
+#endif // standalone renderers
 
 } // namespace bbl::pal
-
-#endif // BBLITE_HAS_PBR_RENDERER

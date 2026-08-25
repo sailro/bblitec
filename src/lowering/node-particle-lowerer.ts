@@ -13,6 +13,7 @@
 // What the bake supplies is only the values: the particle columns, the
 // texture the graph loaded and the mode the system block set.
 import ts from "typescript";
+import { floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
     blendFactorySymbol,
@@ -23,6 +24,11 @@ import {
     gridSpriteAtlasFramesCpp,
     pushAtlasHandleCpp,
 } from "./pinned-grid-atlas.js";
+import {
+    pinnedDefaultFlag,
+    pinnedDefaultNumber,
+    pinnedDefaultVec2,
+} from "./pinned-material-defaults.js";
 import { pixelsTextureOptionsCpp } from "../pinned-address-modes.js";
 import type { NodeParticleSystemBake } from "../pinned-node-particle.js";
 import type {
@@ -439,9 +445,14 @@ export class NodeParticleLowerer {
                 );
             }
         }
+        // The default half of the shape comes from the table the intrinsic
+        // reads, so the resolved `autoStart` and the pin's own fallback are
+        // one value with one anchor.
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "autoStart"),
-            "options.autoStart ?? true",
+            `options.autoStart ?? ${
+                pinnedDefaultFlag("nodeParticleAutoStart")
+            }`,
             "registerNodeParticleSet autoStart",
         );
         // The registrar the pin picks per system: the enabler's, when one is
@@ -466,6 +477,27 @@ export class NodeParticleLowerer {
     }
 
     /**
+     * The pinned grid-atlas cell rule, stated once for the two factories
+     * that both declare it: a sprite sheet's positive cell size wins,
+     * otherwise the whole texture is one cell.
+     */
+    private assertAtlasCellRule(
+        atlasOptions: ts.ObjectLiteralExpression,
+        labelPrefix: string,
+    ): void {
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(atlasOptions, "cellWidthPx"),
+            "sheet && sheet.cellWidth > 0 ? sheet.cellWidth : texture.width",
+            `${labelPrefix} cell width`,
+        );
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(atlasOptions, "cellHeightPx"),
+            "sheet && sheet.cellHeight > 0 ? sheet.cellHeight : texture.height",
+            `${labelPrefix} cell height`,
+        );
+    }
+
+    /**
      * `createParticleSprite2DBridge`'s own rules: the atlas it grids, and
      * the layer it makes.
      *
@@ -480,6 +512,7 @@ export class NodeParticleLowerer {
             sprite2dModule,
             "createParticleSprite2DBridge",
         );
+        this.assertSprite2dDefaults(declaration);
         const call = (name: string): ts.CallExpression =>
             this.context.callExpression(declaration, name);
         const atlasOptions = call("createGridSpriteAtlas").arguments[1];
@@ -491,16 +524,7 @@ export class NodeParticleLowerer {
         }
         // The same cell rule the billboard bridge states, which is what lets
         // one baked cell size serve both.
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellWidthPx"),
-            "sheet && sheet.cellWidth > 0 ? sheet.cellWidth : texture.width",
-            "pure-2D bridge atlas cell width",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellHeightPx"),
-            "sheet && sheet.cellHeight > 0 ? sheet.cellHeight : texture.height",
-            "pure-2D bridge atlas cell height",
-        );
+        this.assertAtlasCellRule(atlasOptions, "pure-2D bridge atlas");
         const layerOptions = call("createSprite2DLayer").arguments[1];
         if (!layerOptions || !ts.isObjectLiteralExpression(layerOptions)) {
             this.context.contractError(
@@ -535,6 +559,78 @@ export class NodeParticleLowerer {
             this.context.numericValue(pivot.elements[0]!, file),
             this.context.numericValue(pivot.elements[1]!, file),
         ];
+    }
+
+    /**
+     * The pure-2D bridge's mapping defaults, asserted against the table
+     * the intrinsic resolves them from (`pinned-material-defaults.ts`).
+     *
+     * These `?? d` fallbacks never pass through a UBO writer's discard
+     * site, so the anchor lives here, beside the family's other pinned
+     * shapes: the default half of each expected shape is BUILT from the
+     * table entry, which makes the intrinsic's resolved value and the
+     * pin's own fallback one number with one guard.
+     */
+    private assertSprite2dDefaults(
+        declaration: ts.FunctionDeclaration,
+    ): void {
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "pixelsPerUnit"),
+            `options.pixelsPerUnit ?? ${
+                pinnedDefaultNumber("sprite2dPixelsPerUnit")
+            }`,
+            "pure-2D bridge pixelsPerUnit default",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "origin"),
+            `options.originPx ?? [${
+                pinnedDefaultVec2("sprite2dOriginPx").join(", ")
+            }]`,
+            "pure-2D bridge originPx default",
+        );
+        const returned = this.context
+            .findNodes(declaration.body!, ts.isReturnStatement)
+            .map((statement) => statement.expression)
+            .find(
+                (expression): expression is ts.ObjectLiteralExpression =>
+                    expression !== undefined &&
+                    ts.isObjectLiteralExpression(expression),
+            );
+        if (!returned) {
+            this.context.contractError(
+                declaration,
+                "createParticleSprite2DBridge no longer returns its " +
+                    "bridge record literal.",
+            );
+        }
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(returned, "invertY"),
+            `options.invertY ?? ${pinnedDefaultFlag("sprite2dInvertY")}`,
+            "pure-2D bridge invertY default",
+        );
+        const registrar = this.context.functionDeclaration(
+            sprite2dModule,
+            "registerNodeParticleSet2D",
+        ).declaration;
+        const autoStartShape = `options.autoStart ?? ${
+            pinnedDefaultFlag("sprite2dAutoStart")
+        }`;
+        if (
+            !this.context
+                .findNodes(registrar.body!, ts.isIfStatement)
+                .some((statement) =>
+                    this.context.expressionMatchesShape(
+                        statement.expression,
+                        autoStartShape,
+                    )
+                )
+        ) {
+            this.context.contractError(
+                registrar,
+                "registerNodeParticleSet2D no longer gates its start on " +
+                    `'${autoStartShape}'.`,
+            );
+        }
     }
 
     /**
@@ -676,22 +772,8 @@ export class NodeParticleLowerer {
             billboardModule,
             "createParticleBillboard",
         );
-        const call = (name: string): ts.CallExpression => {
-            const found = this.context
-                .findNodes(declaration.body!, ts.isCallExpression)
-                .find(
-                    (candidate) =>
-                        ts.isIdentifier(candidate.expression) &&
-                        candidate.expression.text === name,
-                );
-            if (!found) {
-                this.context.contractError(
-                    declaration,
-                    `createParticleBillboard no longer calls '${name}'.`,
-                );
-            }
-            return found;
-        };
+        const call = (name: string): ts.CallExpression =>
+            this.context.callExpression(declaration, name);
         const atlasOptions = call("createGridSpriteAtlas").arguments[1];
         if (!atlasOptions || !ts.isObjectLiteralExpression(atlasOptions)) {
             this.context.contractError(
@@ -699,16 +781,7 @@ export class NodeParticleLowerer {
                 "createParticleBillboard's atlas options changed.",
             );
         }
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellWidthPx"),
-            "sheet && sheet.cellWidth > 0 ? sheet.cellWidth : texture.width",
-            "particle atlas cell width",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(atlasOptions, "cellHeightPx"),
-            "sheet && sheet.cellHeight > 0 ? sheet.cellHeight : texture.height",
-            "particle atlas cell height",
-        );
+        this.assertAtlasCellRule(atlasOptions, "particle atlas");
         const systemOptions =
             call("createFacingBillboardSystem").arguments[1];
         if (!systemOptions || !ts.isObjectLiteralExpression(systemOptions)) {
@@ -810,6 +883,12 @@ export class NodeParticleLowerer {
         systems: readonly NodeParticleSystemEmit[],
         sprite2d: readonly NodeParticleSprite2DEmit[] = [],
         registrations: readonly NodeParticleRegistrationEmit[] = [],
+        /**
+         * A preformatted " (reached from <file:line>)" suffix naming the
+         * scene call site that pulled the particle family in, appended to
+         * the bake refusals; empty when the caller has no site to name.
+         */
+        refusalSite = "",
     ): LoweredSource {
         this.assertBillboardRules();
         this.assertSyncProps();
@@ -826,6 +905,7 @@ export class NodeParticleLowerer {
             this.assertBakeable(
                 entry,
                 isRegistered(entry) || hooked.has(nodeParticleKey(entry.bake)),
+                refusalSite,
             );
         }
         // The exact blend table is reached by either half: the billboard
@@ -1229,12 +1309,10 @@ ${
     const BakedSystem& system = baked(set_index, system_index);
     const SpriteAtlasHandle atlas =
         particle_atlas(engine, set_index, system_index);
-    BillboardSystemOptions options;
-    options.capacity = system.capacity;
     // The plain builder maps three modes and degrades the rest to Add; the
     // enabler resolves all five exactly. Which one this system took is the
     // set's own answer, recorded at its build.
-    options.blend = ${
+    const SpriteBlendDescriptor blend = ${
         exact
             ? [
                   "system.exact_blend",
@@ -1242,18 +1320,38 @@ ${
                   "        : blend_for_mode(system.blend_mode)",
               ].join("\n")
             : "blend_for_mode(system.blend_mode)"
-    };${
+    };
+    // Every member named: the C++20 designators pair each value to its
+    // field by name (a renamed or reordered header field fails here),
+    // and the full spelling means no member rides a header default the
+    // generated code never stated. The values beyond the capacity and
+    // blend are the pinned factory defaults.
+    BillboardSystemOptions options{
+        .capacity = system.capacity,
+        .blend = blend,
+        .opacity = 1.0f,
+        .visible = true,
+        .alpha_cutoff = 0.0f,
+        .has_alpha_cutoff = false,
+        .custom_shader = false,
+        .custom_textures = {},${
         exact
             ? [
                   "",
-                  "    // The mode-4 wrapper's second pass, built where the",
-                  "    // pin builds it: createParticleBlend(2) over the same",
-                  "    // instances, with no custom shader.",
-                  "    if (options.blend.particle_passes == 2) {",
-                  "        options.add_pass_blend = create_particle_blend(2);",
-                  "    }",
+                  "        // The mode-4 wrapper's second pass, built where the",
+                  "        // pin builds it: createParticleBlend(2) over the same",
+                  "        // instances, with no custom shader. Read only when",
+                  "        // the blend carries two passes.",
+                  "        .add_pass_blend = blend.particle_passes == 2",
+                  "            ? create_particle_blend(2)",
+                  "            : SpriteBlendDescriptor{}};",
               ].join("\n")
-            : ""
+            : [
+                  "",
+                  "        // The three-arm mapping never builds a two-pass",
+                  "        // blend, so the second pass stays empty.",
+                  "        .add_pass_blend = SpriteBlendDescriptor{}};",
+              ].join("\n")
     }
     return create_billboard_system(
         engine,
@@ -1332,7 +1430,7 @@ void register_node_particle_set_2d(
         if (bridge.has_opacity) options.opacity = bridge.opacity;
         if (bridge.has_visible) options.visible = bridge.visible;
         if (bridge.has_order) options.order = bridge.order;
-        options.pivot = Vec2{${floatLiteral(sprite2dPivot[0])}, ${floatLiteral(sprite2dPivot[1])}};
+        options.pivot = Vec2{${bakedFloatLiteral(sprite2dPivot[0])}, ${bakedFloatLiteral(sprite2dPivot[1])}};
         // Modes 3 and 4 draw the pin's own Multiply fragment on the primary
         // layer; mode 4's second layer keeps the stock one.
         options.custom_shader = options.blend_mode.particle_passes >= 1;
@@ -1367,6 +1465,7 @@ void register_node_particle_set_2d(
     private assertBakeable(
         entry: NodeParticleSystemEmit,
         perFrameStep: boolean,
+        refusalSite: string,
     ): void {
         // A registered system carries the pin's own per-frame callback,
         // which animates and re-synchronizes. Both are the identity only for
@@ -1379,27 +1478,27 @@ void register_node_particle_set_2d(
                     "A registered node-particle set animates its systems " +
                         "every frame; this one's updateSpeed is " +
                         `${entry.bake.updateSpeed}, so the frozen bake is ` +
-                        "not the image it renders.",
+                        `not the image it renders.${refusalSite}`,
                 );
             }
             if (!entry.bake.stepIsIdentity) {
                 throw new Error(
                     "A registration's per-frame step moved this system's " +
                         "particles at generation, so one frozen state " +
-                        "cannot answer for it.",
+                        `cannot answer for it.${refusalSite}`,
                 );
             }
         }
         if (!entry.bake.texture) {
             throw new Error(
                 "A node-particle system reached createParticleBillboard " +
-                    "without a texture; the pin throws there.",
+                    `without a texture; the pin throws there.${refusalSite}`,
             );
         }
         if (entry.bake.texture.invertY) {
             throw new Error(
                 "A node-particle texture block asked for a flipped upload; " +
-                    "the reached atlas path uploads unflipped.",
+                    `the reached atlas path uploads unflipped.${refusalSite}`,
             );
         }
     }
@@ -1427,10 +1526,20 @@ function pixelsTextureCpp(texture: PixelsTextureSource): string {
     );
 }
 
-/** Every baked float carries a decimal point: `1f` does not compile. */
-function floatLiteral(value: number): string {
-    if (!Number.isFinite(value)) return "0.0f";
-    return `${Number.isInteger(value) ? value.toFixed(1) : value}f`;
+/**
+ * A baked value as the shared C++ float literal, refusing a non-finite one
+ * by name: the node-particle bake is the only producer here, and a NaN or
+ * Infinity in its columns is a broken bake, not a value to silently emit
+ * as `0.0f`.
+ */
+function bakedFloatLiteral(value: number): string {
+    if (!Number.isFinite(value)) {
+        throw new Error(
+            `The node-particle bake produced a non-finite float ` +
+                `(${value}); the frozen particle table cannot carry it.`,
+        );
+    }
+    return floatLiteral(value);
 }
 
 /** One system's live particles, as the table the sync walks. */
@@ -1442,17 +1551,17 @@ function particleRowsCpp(
     const rows: string[] = [];
     for (let i = 0; i < bake.alive; i += 1) {
         rows.push(
-            `    {{${floatLiteral(bake.positions[i * 3]!)}, ` +
-                `${floatLiteral(bake.positions[i * 3 + 1]!)}, ` +
-                `${floatLiteral(bake.positions[i * 3 + 2]!)}}, ` +
-                `{${floatLiteral(bake.sizes[i * 2]!)}, ` +
-                `${floatLiteral(bake.sizes[i * 2 + 1]!)}}, ` +
-                `{${floatLiteral(bake.colors[i * 4]!)}, ` +
-                `${floatLiteral(bake.colors[i * 4 + 1]!)}, ` +
-                `${floatLiteral(bake.colors[i * 4 + 2]!)}, ` +
-                `${floatLiteral(bake.colors[i * 4 + 3]!)}}, ` +
-                `${floatLiteral(bake.rotations[i]!)}, ` +
-                `${floatLiteral(bake.frames ? bake.frames[i]! : 0)}},`,
+            `    {{${bakedFloatLiteral(bake.positions[i * 3]!)}, ` +
+                `${bakedFloatLiteral(bake.positions[i * 3 + 1]!)}, ` +
+                `${bakedFloatLiteral(bake.positions[i * 3 + 2]!)}}, ` +
+                `{${bakedFloatLiteral(bake.sizes[i * 2]!)}, ` +
+                `${bakedFloatLiteral(bake.sizes[i * 2 + 1]!)}}, ` +
+                `{${bakedFloatLiteral(bake.colors[i * 4]!)}, ` +
+                `${bakedFloatLiteral(bake.colors[i * 4 + 1]!)}, ` +
+                `${bakedFloatLiteral(bake.colors[i * 4 + 2]!)}, ` +
+                `${bakedFloatLiteral(bake.colors[i * 4 + 3]!)}}, ` +
+                `${bakedFloatLiteral(bake.rotations[i]!)}, ` +
+                `${bakedFloatLiteral(bake.frames ? bake.frames[i]! : 0)}},`,
         );
     }
     if (rows.length === 0) rows.push("    {}");
@@ -1469,7 +1578,7 @@ function sprite2dBridgeRowCpp(
     const optional = (value: number | boolean | undefined, fallback: string) =>
         value === undefined
             ? `${fallback}, false`
-            : `${typeof value === "boolean" ? value : floatLiteral(value)}, true`;
+            : `${typeof value === "boolean" ? value : bakedFloatLiteral(value)}, true`;
     return (
         `    {${request}, ${entry.set}, ${entry.system}, ${binding.exact}, ` +
         `${binding.pixelsPerUnit}, ${binding.originPx[0]}, ` +

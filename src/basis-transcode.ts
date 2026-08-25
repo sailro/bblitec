@@ -19,13 +19,17 @@
  * depend on the Chrome that compiled them — and it is recorded per scene as
  * the `executed-basis-transcode` adaptation.
  */
-import { createSuiteSceneServer } from "./capture-suite-reference.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserEntryUrl,
+} from "./capture-suite-reference.js";
 import type { KtxHeaderLayout } from "./lowering/compressed-texture-lowerer.js";
 import {
     pageBase64Script,
     runPageGlobal,
     webgpuComputeBrowserArgs,
 } from "./browser-harness.js";
+import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
 
 /** One transcoded level, as the pin's own `writeTexture` call carried it. */
 export interface TranscodedMipLevel {
@@ -60,7 +64,7 @@ interface CapturedTranscode {
  * gives: a number per byte turns a megabyte into ten seconds of JSON.
  */
 function transcodeModule(url: string): string {
-    return `import { createEngine, loadBasisTexture2D } from "/node_modules/@babylonjs/lite/lib/index.js";
+    return `import { createEngine, loadBasisTexture2D } from ${JSON.stringify(pinnedBrowserEntryUrl)};
 
 ${pageBase64Script}
 window.__transcodeBasis = async () => {
@@ -117,19 +121,40 @@ export async function transcodeBasisTexture(
     url: string,
     bytes: Uint8Array,
 ): Promise<TranscodedBasisTexture> {
-    // The pin fetches the file itself, so it is served back from the
-    // loopback origin: the bytes come from the same download cache every
-    // other asset uses, and the CDN is asked only for the transcoder.
-    const servedPath = "/basis-source.basis";
-    const server = createSuiteSceneServer(transcodeModule(servedPath), {
-        virtualAssets: { [servedPath]: bytes },
-    });
-    const captured = (await runPageGlobal(server, "__transcodeBasis", {
-        serverName: "basis transcode server",
-        browserRequirement:
-            "Transcoding a Basis Universal texture requires Chrome or Edge.",
-        browserArgs: webgpuComputeBrowserArgs,
-    })) as CapturedTranscode;
+    // Deterministic in (asset bytes, pin, browser) — the transcoder the
+    // pin injects and the format its priority list selects are the
+    // browser's — so a repeat compile replays the captured transcode
+    // from the bake cache instead of launching Chromium. The cached
+    // payload is exactly the JSON that crossed the page boundary.
+    const captured = await cachedJsonBake<CapturedTranscode>(
+        {
+            kind: "basis-transcode",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: {},
+            inputs: [bytes],
+        },
+        async () => {
+            // The pin fetches the file itself, so it is served back from
+            // the loopback origin: the bytes come from the same download
+            // cache every other asset uses, and the CDN is asked only
+            // for the transcoder.
+            const servedPath = "/basis-source.basis";
+            const server = createSuiteSceneServer(
+                transcodeModule(servedPath),
+                {
+                    virtualAssets: { [servedPath]: bytes },
+                },
+            );
+            return (await runPageGlobal(server, "__transcodeBasis", {
+                serverName: "basis transcode server",
+                browserRequirement:
+                    "Transcoding a Basis Universal texture requires Chrome or Edge.",
+                browserArgs: webgpuComputeBrowserArgs,
+            })) as CapturedTranscode;
+        },
+    );
     if (captured.mips.length === 0) {
         throw new Error(
             `Basis: the pinned loader uploaded no level for '${url}'.`,

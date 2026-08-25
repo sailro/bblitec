@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import {
     backendFileToken,
@@ -10,6 +10,7 @@ import {
     spawnNativeMeasured,
     verifyBuildIdentity,
     verifyDeployedPayload,
+    writeSeekMeta,
 } from "./parity-scene.js";
 import { resolveScene } from "./scene-registry.js";
 
@@ -19,8 +20,9 @@ import { resolveScene } from "./scene-registry.js";
  * The browser half hooks WebGPU and records what Babylon Lite uploaded.
  * This half asks the native runtime for the same description of the same
  * frame: `BBLITE_RENDER_CAPTURE` makes it write every uniform block it
- * builds, the draw list in submission order, and the scene, camera,
- * light and material records those are built from
+ * builds, the draw list in submission order — meshes, splats, billboard
+ * systems, and the sprite/effect state the engine records — and the
+ * scene, camera, light and material records those are built from
  * (`native/src/pal_render_capture.hpp`).
  *
  * It runs under the same build-identity checks as a measured parity run,
@@ -51,8 +53,7 @@ export function runNativeCapture(
         "capture",
     );
     // Filenames use the shared token ("gpu" for SDL_GPU), matching the
-    // parity artifacts; the pre-token `native-sdl_gpu.*` spelling is
-    // still read by `scene -- diff` for one transition.
+    // parity artifacts.
     const token = backendFileToken(backend);
     const outputDirectory = resolve(
         options.outputDirectory ?? defaultCaptureDirectory(scene.id),
@@ -104,16 +105,22 @@ export function runNativeCapture(
     );
     verifyBuildIdentity(executable, scene.output, stampPath);
     if (!existsSync(capturePath)) {
+        // Every frame loop writes a capture now: the scene loops describe
+        // the families a scene composes, and the standalone sprite/effect
+        // loops (pal_*_sprite.cpp / pal_*_effect.cpp) write theirs through
+        // write_standalone_render_capture. A run that completed without
+        // one is a real failure — a stale executable predating the
+        // standalone writers, or a run that ended before the capture
+        // frame — never an expected shape.
         throw new Error(
-            `The native run wrote no capture to ${capturePath}. A scene with no PBR render plan ` +
-                `(a sprite-only scene) has nothing to describe here.`,
+            `The native run wrote no capture to ${capturePath}. Every frame loop writes one ` +
+                `(scene, sprite-only and effect-renderer-only alike), so this run either ended ` +
+                `before the capture frame or ran an executable predating the standalone capture ` +
+                `writers. Rebuild with 'scene -- process ${scene.id}' and recapture.`,
         );
     }
     // Seek provenance for the reuse path; the build stamp is already inside
     // the capture itself, written by the native run.
-    writeFileSync(
-        paths.meta,
-        `${JSON.stringify({ seekSeconds: seekSeconds ?? null })}\n`,
-    );
+    writeSeekMeta(paths.meta, seekSeconds);
     return { capturePath, screenshotPath, backend };
 }

@@ -36,13 +36,10 @@ import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { resolveGeometryExtensions } from "./compressed-geometry.js";
 import { glbJsonText } from "./gltf-document.js";
-import { packageDdsEnvironment } from "./dds-packager.js";
-import { packageHdrEnvironment } from "./hdr-packager.js";
-import { packageSplat } from "./splat-packager.js";
-import {
-    transcodeBasisTexture,
-    writeKtx1,
-} from "./basis-transcode.js";
+// The dds/hdr/splat/basis packagers and the node-particle bake are imported
+// lazily at their per-kind branches: each top-level-awaits its pinned
+// modules (the HDR one transitively loads the browser harness), so a static
+// import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
 import { parseDataUrl } from "./data-url.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
@@ -77,7 +74,6 @@ import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { assetRecord } from "./compiler/assets.js";
-import { bakeNodeParticles } from "./pinned-node-particle.js";
 import type {
     NodeParticleRegistrationEmit,
     NodeParticleSprite2DEmit,
@@ -251,6 +247,7 @@ async function materializeAsset(
     }
 
     if (asset.kind === "splat") {
+        const { packageSplat } = await import("./splat-packager.js");
         writeFileSync(
             destination,
             packageSplat(await assetBytes(source, inputPath)).rows,
@@ -265,6 +262,9 @@ async function materializeAsset(
         // uploaded. The file itself rides the ordinary download cache and is
         // served back to the page from the loopback origin, so a recompile
         // asks the CDN for the transcoder alone.
+        const { transcodeBasisTexture, writeKtx1 } = await import(
+            "./basis-transcode.js"
+        );
         const lowerer = compressedTextureLowerer();
         const transcoded = await transcodeBasisTexture(
             source,
@@ -283,6 +283,7 @@ async function materializeAsset(
     }
 
     if (asset.kind === "dds-environment") {
+        const { packageDdsEnvironment } = await import("./dds-packager.js");
         writeFileSync(
             destination,
             packageDdsEnvironment(await assetBytes(source, inputPath)),
@@ -291,6 +292,7 @@ async function materializeAsset(
     }
 
     if (asset.kind === "hdr-environment") {
+        const { packageHdrEnvironment } = await import("./hdr-packager.js");
         writeFileSync(
             destination,
             await packageHdrEnvironment(
@@ -440,6 +442,7 @@ async function bakeNodeParticleSystems(
     sprite2d: NodeParticleSprite2DEmit[];
     registrations: NodeParticleRegistrationEmit[];
 }> {
+    const { bakeNodeParticles } = await import("./pinned-node-particle.js");
     const bake = await bakeNodeParticles(program);
     const systems = bake.systems.map((system) => {
         // A texture the scene assigned is already a generated asset -- the
@@ -826,6 +829,10 @@ async function main(): Promise<void> {
     }
     const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
+        // The compiler's first-reach record, threaded so late refusals in
+        // the composition/lowering layer can name the scene call site that
+        // pulled the owning feature in.
+        featureSites: result.manifest.featureSites,
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,

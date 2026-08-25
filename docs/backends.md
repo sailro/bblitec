@@ -94,8 +94,7 @@ residual.
 
 The scene 1 attribution captures (draw-id buffer and triangle-cluster
 buffer) render on either backend under the same environment switch;
-the diagnostic filenames keep their fixed `-gpu` suffix and reflect
-whichever backend produced the run. Dawn draws them through the shared
+their filenames carry the backend token like every other artifact. Dawn draws them through the shared
 superset mesh bind-group layout with dedicated diagnostic pipelines
 and requests the primitive-index device feature for the cluster
 shader's `enable primitive_index`. Measured cross-backend agreement:
@@ -113,13 +112,10 @@ rounding; the transmission scenes keep a small Dawn edge (scene 33
 foreground 0.010 versus 0.007) from the scene-colour grab, where
 SDL_GPU copies the resolved opaque colour and the pin reads the
 multisampled attachment; and HillValley and the Standard geometry MRTs
-land closest on Dawn. The multisampled-line fix below closed most of
-what was left: fourteen published SDL_GPU cells moved toward the golden
-with it and none away, and scenes 8, 14, 28, 37, 120, 253 and 276 now
-measure identically on both backends — scene 120's splat cloud among
-them, from 0.024/0.071 to Dawn's own 0.001/0.003. Image processing is not
-part of that gap either — the vendored SDL patch lets SDL_GPU run the pinned
-per-sample pass.
+land closest on Dawn. Image processing is not part of that gap — the
+vendored SDL patch lets SDL_GPU run the pinned per-sample pass — and
+neither is line rasterization, which the overlay port's `MultisampleEnable`
+fix closed ([measured contracts](#measured-contracts)).
 
 **Performance.** Scene 1 (BoomBox), Release, 1280x720, 2000 frames
 after adaptive warmup (min(120, max(10, frames/10))), immediate present, same session
@@ -208,10 +204,9 @@ scene-less driver beside them and by the scene renderer's frame-graph effect
 task. The pipeline is built against the *output target's* format and sample
 count, which is what the pin's own `targetSignatureKey` cache is keyed by, so
 one wrapper drawn into two targets builds two passes. The two backends resolve
-its bind group differently for the standing reason: SDL_GPU reads the `.slots`
-sidecar, because a uniform block the caller's body never reads does not survive
-Tint and the compaction that follows is dense, while Dawn compiles the deployed
-WGSL and takes the descriptor's own binding numbers.
+its bind group differently for the standing reason: SDL_GPU binds by the
+`.slots` sidecar and Dawn by the descriptor's own binding numbers — the
+sidecar contract is [below](#dawn-backend-architecture-nativesrcpal_dawncpp).
 
 Deleting a backend stays a matter of dropping its files. `BBLITE_BACKEND`
 removes every translation unit belonging to the backend it turns off,

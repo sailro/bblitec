@@ -11,35 +11,21 @@ import type {
     ValueKind,
 } from "./types.js";
 import { lightVectorSetter } from "./assignments.js";
-
-/** One engine handle collection an expression names. */
-export interface HandleCollectionTarget {
-    property: string;
-    temporaryLabel: string;
-    containerCpp: string;
-    elementKind: ValueKind;
-    elementCppType: string;
-    engineCpp: string;
-}
-
-/** What emitting a loop over one of those collections needs. */
-export interface HandleCollectionLoopContext {
-    allocateTemporaryCppName(label: string): string;
-    allocateBlockPrefix(): string;
-    emit(line: string): void;
-    increaseIndent(): void;
-    decreaseIndent(): void;
-    pushScope(cppPrefix: string): void;
-    popScope(): void;
-    bindLocalValue(
-        identifier: ts.Identifier,
-        value: Value,
-    ): void;
-}
+// The handle-collection concept owns the collection targets, the loop
+// frame, and the recursive imported-mesh walk proof; the emitters here are
+// the statement layer over the same resolutions.
+import {
+    emitHandleCollectionLoop,
+    isRecursiveImportedMeshWalk,
+    type HandleCollections,
+    type HandleCollectionTarget,
+} from "./handle-collections.js";
 
 export interface StatementLoweringContext {
     /** The scene node-particle program; a buffer guard lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
+    /** The handle-collection concept: every collection operation. */
+    readonly handleCollections: HandleCollections;
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
     /** Marks that a scene threw, so the generated main includes <stdexcept>. */
@@ -182,258 +168,7 @@ function bodyStatements(
         : [statement.statement];
 }
 
-/** Type-only wrappers do not change the object a hierarchy walk tests. */
-function unwrapWalkExpression(
-    expression: ts.Expression,
-): ts.Expression {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isNonNullExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
-}
 
-function logicalAndOperands(
-    expression: ts.Expression,
-): ts.Expression[] {
-    const current = unwrapWalkExpression(expression);
-    if (
-        ts.isBinaryExpression(current) &&
-        current.operatorToken.kind ===
-            ts.SyntaxKind.AmpersandAmpersandToken
-    ) {
-        return [
-            ...logicalAndOperands(current.left),
-            ...logicalAndOperands(current.right),
-        ];
-    }
-    return [current];
-}
-
-function isPropertyPresenceProbe(
-    expression: ts.Expression,
-    binding: ts.Identifier,
-    property: string,
-): boolean {
-    const current = unwrapWalkExpression(expression);
-    const right = ts.isBinaryExpression(current)
-        ? unwrapWalkExpression(current.right)
-        : undefined;
-    return (
-        ts.isBinaryExpression(current) &&
-        current.operatorToken.kind === ts.SyntaxKind.InKeyword &&
-        ts.isStringLiteral(current.left) &&
-        current.left.text === property &&
-        !!right &&
-        ts.isIdentifier(right) &&
-        right.text === binding.text
-    );
-}
-
-function singleExpressionStatement(
-    statement: ts.Statement,
-): ts.Expression | undefined {
-    const statements = ts.isBlock(statement)
-        ? statement.statements
-        : [statement];
-    return statements.length === 1 &&
-        ts.isExpressionStatement(statements[0]!)
-        ? statements[0]!.expression
-        : undefined;
-}
-
-/**
- * Proves the exact Scene 12 hierarchy visitor that flattening preserves:
- * the function contains only this loop, the transform arm only recurses into
- * that function with the material parameter unchanged, and the mesh arm only
- * assigns that material. The assignment is order-independent, so the native
- * loader's flat mesh order need not claim to be the hierarchy's DFS order.
- */
-function isRecursiveImportedMeshWalk(
-    statement: ts.ForOfStatement,
-    binding: ts.Identifier,
-): ts.BinaryExpression | undefined {
-    const statements = bodyStatements(statement);
-    if (
-        statements.length !== 1 ||
-        !ts.isIfStatement(statements[0]!) ||
-        !statements[0]!.elseStatement
-    ) {
-        return undefined;
-    }
-    const branch = statements[0]!;
-    const operands = logicalAndOperands(branch.expression);
-    if (operands.length !== 3) {
-        return undefined;
-    }
-    let children = false;
-    let rotationQuaternion = false;
-    let gpuNegated = false;
-    for (const operand of operands) {
-        if (isPropertyPresenceProbe(operand, binding, "children")) {
-            children = true;
-            continue;
-        }
-        if (
-            isPropertyPresenceProbe(
-                operand,
-                binding,
-                "rotationQuaternion",
-            )
-        ) {
-            rotationQuaternion = true;
-            continue;
-        }
-        const current = unwrapWalkExpression(operand);
-        if (
-            ts.isPrefixUnaryExpression(current) &&
-            current.operator === ts.SyntaxKind.ExclamationToken &&
-            isPropertyPresenceProbe(
-                current.operand,
-                binding,
-                "_gpu",
-            )
-        ) {
-            gpuNegated = true;
-            continue;
-        }
-        return undefined;
-    }
-    if (!children || !rotationQuaternion || !gpuNegated) {
-        return undefined;
-    }
-
-    let owner: ts.Node | undefined = statement.parent;
-    while (owner && !ts.isFunctionLike(owner)) {
-        owner = owner.parent;
-    }
-    if (
-        !owner ||
-        !ts.isFunctionDeclaration(owner) ||
-        !owner.name ||
-        !owner.body ||
-        owner.body.statements.length !== 1 ||
-        owner.body.statements[0] !== statement ||
-        owner.parameters.length !== 2 ||
-        owner.parameters.some(
-            (parameter) => !ts.isIdentifier(parameter.name),
-        )
-    ) {
-        return undefined;
-    }
-    const nodeParameter = owner.parameters[0]!.name as ts.Identifier;
-    const materialParameter = owner.parameters[1]!.name as ts.Identifier;
-    if (
-        [binding, nodeParameter, materialParameter].some(
-            (identifier) => identifier.text === owner.name!.text,
-        )
-    ) {
-        return undefined;
-    }
-    const walked = unwrapWalkExpression(statement.expression);
-    if (
-        !ts.isPropertyAccessExpression(walked) ||
-        walked.name.text !== "children" ||
-        !ts.isIdentifier(unwrapWalkExpression(walked.expression)) ||
-        (unwrapWalkExpression(walked.expression) as ts.Identifier).text !==
-            nodeParameter.text
-    ) {
-        return undefined;
-    }
-    const recursive = singleExpressionStatement(
-        branch.thenStatement,
-    );
-    if (
-        !recursive ||
-        !ts.isCallExpression(recursive) ||
-        !ts.isIdentifier(recursive.expression) ||
-        recursive.expression.text !== owner.name.text ||
-        recursive.arguments.length !== owner.parameters.length
-    ) {
-        return undefined;
-    }
-    const first = unwrapWalkExpression(recursive.arguments[0]!);
-    if (!ts.isIdentifier(first) || first.text !== binding.text) {
-        return undefined;
-    }
-    const recursiveMaterial = unwrapWalkExpression(
-        recursive.arguments[1]!,
-    );
-    if (
-        !ts.isIdentifier(recursiveMaterial) ||
-        recursiveMaterial.text !== materialParameter.text
-    ) {
-        return undefined;
-    }
-    const leaf = singleExpressionStatement(branch.elseStatement!);
-    const assignment = leaf && unwrapWalkExpression(leaf);
-    if (
-        !assignment ||
-        !ts.isBinaryExpression(assignment) ||
-        assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken
-    ) {
-        return undefined;
-    }
-    const target = unwrapWalkExpression(assignment.left);
-    const targetOwner = ts.isPropertyAccessExpression(target)
-        ? unwrapWalkExpression(target.expression)
-        : undefined;
-    const material = unwrapWalkExpression(assignment.right);
-    if (
-        !ts.isPropertyAccessExpression(target) ||
-        target.name.text !== "material" ||
-        !targetOwner ||
-        !ts.isIdentifier(targetOwner) ||
-        targetOwner.text !== binding.text ||
-        !ts.isIdentifier(material) ||
-        material.text !== materialParameter.text
-    ) {
-        return undefined;
-    }
-    return assignment;
-}
-
-/**
- * The emitted range-for over an engine handle collection: the loop, its
- * scope, and the binding the body reads. Both the `for...of` lowering and
- * the `.find` search emit exactly this frame, so it is written once —
- * only the body differs.
- */
-export function emitHandleCollectionLoop<
-    Context extends HandleCollectionLoopContext,
->(
-    context: Context,
-    target: HandleCollectionTarget,
-    binding: ts.Identifier,
-    emitBody: (context: Context) => void,
-): void {
-    const item = context.allocateTemporaryCppName(
-        target.temporaryLabel,
-    );
-    context.emit(
-        `for (const ${target.elementCppType} ${item} : ${target.containerCpp}) {`,
-    );
-    context.increaseIndent();
-    context.pushScope(context.allocateBlockPrefix());
-    try {
-        context.bindLocalValue(binding, {
-            kind: target.elementKind,
-            cpp: item,
-            engineCpp: target.engineCpp,
-        });
-        emitBody(context);
-    } finally {
-        context.popScope();
-        context.decreaseIndent();
-    }
-    context.emit("}");
-}
 
 export class StatementLowerer {
     public emit(
@@ -1237,6 +972,15 @@ export class StatementLowerer {
         ) {
             return;
         }
+        if (
+            this.emitTupleForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
         const staticLiteral =
             ts.isIdentifier(declaration.name) &&
             !this.bindsEnclosingLoop(statement.statement)
@@ -1406,6 +1150,59 @@ export class StatementLowerer {
             }
         } finally {
             context.popScope();
+        }
+        return true;
+    }
+
+    /**
+     * Iterates an identifier bound to a compile-time tuple — a local like
+     * `const activeGroups = [idle, sadPose]`. The elements are the values
+     * the declaration already compiled, so the body unrolls once per
+     * element with the binding standing for that value, exactly as the
+     * inline static-array-literal unroll below does for its expressions.
+     */
+    private emitTupleForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        if (!ts.isIdentifier(declaration.name)) {
+            return false;
+        }
+        const elements =
+            context.handleCollections.tupleElements(
+                statement.expression,
+            );
+        if (!elements) {
+            return false;
+        }
+        if (this.bindsEnclosingLoop(statement.statement)) {
+            context.fail(
+                statement,
+                "break/continue in for...of requires a runtime data container.",
+            );
+        }
+        for (const element of elements) {
+            context.emit("{");
+            context.increaseIndent();
+            context.pushScope(
+                context.allocateBlockPrefix(),
+            );
+            try {
+                context.bindLocalValue(
+                    declaration.name,
+                    element,
+                );
+                for (const nested of bodyStatements(
+                    statement,
+                )) {
+                    this.emit(context, nested);
+                }
+            } finally {
+                context.popScope();
+                context.decreaseIndent();
+            }
+            context.emit("}");
         }
         return true;
     }

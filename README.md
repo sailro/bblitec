@@ -15,14 +15,14 @@ Unsupported syntax and APIs fail at compile time with source locations.
 | :-: | :-: | :-: | :-: |
 | [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene11-banner.png" alt="Scene 11" width="170">](docs/status.md#curated-parity-scenes) |
 
-*A few of the 134 curated parity scenes, compiled to native C++ and rendered
+*A few of the 135 curated parity scenes, compiled to native C++ and rendered
 on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points
 
 - Pinned upstream: `@babylonjs/lite@1.23.0`,
   commit `19c7c7e4b20b3a133b5025c0b22e40db2f57a408`.
-- 134 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
+- 135 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
 - External glTF/GLB support.
 - Support for Typescript structs, nullable objects, dynamic arrays,
   enums, switch/break/continue, destructuring, spread, runtime Math.
@@ -43,9 +43,11 @@ what is decided at compile time and what lives at run time — and
 
 ## Quick start
 
-Requirements: Node.js 22+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
+Requirements: Node.js 22.12+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
 PowerShell and DXC for shader compilation, and Chrome/Edge with WebGPU for
-shader and HDR asset compilation (see [development](docs/development.md)).
+browser references and executed asset compilation — the HDR GGX prefilter,
+Basis transcodes, drawn atlases, and node-particle bakes (see
+[development](docs/development.md)).
 
 **A built scene requires a GPU.** Both backends render through one, there is
 no software fallback, and a device that cannot be brought up is an error

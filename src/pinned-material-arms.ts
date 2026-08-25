@@ -27,6 +27,7 @@ import {
     type JsonObject,
 } from "./gltf-document.js";
 import {
+    ensurePinnedLoaderExecution,
     gltfAnimatedExtensionTargets,
     gltfAnimatedMaterialPointers,
     gltfImageResolver,
@@ -255,6 +256,11 @@ export async function materialSubjects(
     document: JsonObject,
     scene: { linearImageProcessing?: boolean } = {},
 ): Promise<readonly MaterialSubject[]> {
+    // The executed pinned loader behind every reader below, run on first
+    // need: this is the one async choke point through which production
+    // reaches `pinnedMaterialInputFromGltf`/`gltfAnimatedExtensionTargets`,
+    // so a scene with no glTF material never pays the ~15 pinned imports.
+    await ensurePinnedLoaderExecution();
     const view = document as GltfDocument;
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);

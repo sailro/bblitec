@@ -8,6 +8,7 @@ import {
     mkdtempSync,
     readFileSync,
     rmSync,
+    writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import {
@@ -4953,6 +4954,283 @@ test("refuses the line shapes outside the reached slice", () => {
         );`),
             ),
         /one color per point/,
+    );
+});
+
+/**
+ * A minimal GLB whose JSON chunk declares named animations — what the
+ * handle-collection concept's static `.find` reads. No BIN chunk: the
+ * members come from the document alone.
+ */
+function animationGltfFixture(names: readonly string[]): Buffer {
+    const document = {
+        asset: { version: "2.0" },
+        animations: names.map((name) => ({
+            name,
+            channels: [],
+            samplers: [],
+        })),
+    };
+    let json = Buffer.from(JSON.stringify(document), "utf8");
+    if (json.length % 4 !== 0) {
+        json = Buffer.concat([
+            json,
+            Buffer.alloc(4 - (json.length % 4), 0x20),
+        ]);
+    }
+    const header = Buffer.alloc(20);
+    header.writeUInt32LE(0x46546c67, 0);
+    header.writeUInt32LE(2, 4);
+    header.writeUInt32LE(20 + json.length, 8);
+    header.writeUInt32LE(json.length, 12);
+    header.writeUInt32LE(0x4e4f534a, 16);
+    return Buffer.concat([header, json]);
+}
+
+/** Compiles a scene beside a written animation fixture. */
+function compileWithAnimationFixture(
+    source: string,
+    names: readonly string[],
+    options: { search?: string } = {},
+): ReturnType<typeof compileSource> {
+    const directory = mkdtempSync(
+        join(tmpdir(), "bblitec-groups-"),
+    );
+    try {
+        writeFileSync(
+            join(directory, "model.glb"),
+            animationGltfFixture(names),
+        );
+        return compileSource(source, {
+            fileName: join(directory, "scene.ts"),
+            ...(options.search !== undefined
+                ? { search: options.search }
+                : {}),
+        });
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+}
+
+const HANDLE_COLLECTION_SCENE = (body: string): string => `
+    import {
+        addAnimationGroups,
+        createAnimationManager,
+        createEngine,
+        enableAnimationBlending,
+        loadGltf,
+        pauseAnimation,
+        playAnimation,
+        setAnimationAdditive,
+        setAnimationWeight,
+        stopAnimation,
+    } from "@babylonjs/lite";
+    import type { AnimationGroup } from "@babylonjs/lite";
+
+    function requireGroup(
+        groups: readonly AnimationGroup[],
+        name: string,
+    ): AnimationGroup {
+        const group = groups.find(
+            (candidate) => candidate.name === name,
+        );
+        if (!group) {
+            throw new Error(
+                \`fixture group "\${name}" was not found\`,
+            );
+        }
+        return group;
+    }
+
+    async function main() {
+        const engine = await createEngine({});
+        const container = await loadGltf(engine, "model.glb");
+        const manager = createAnimationManager({ engine });
+        const groups = container.animationGroups ?? [];
+${body}
+    }
+`;
+
+test("binds a loader group collection, resolves finds statically, and erases the proven-dead throw", () => {
+    const result = compileWithAnimationFixture(
+        HANDLE_COLLECTION_SCENE(`
+        for (const group of groups) {
+            stopAnimation(group);
+            setAnimationWeight(group, 0);
+        }
+        const idle = requireGroup(groups, "idle");
+        const sadPose = requireGroup(groups, "sad_pose");
+        const active = [idle, sadPose];
+        addAnimationGroups(manager, active);
+        playAnimation(idle);
+        playAnimation(sadPose);
+        setAnimationAdditive(sadPose, { referenceFrame: 0 });
+        setAnimationWeight(sadPose, 1);
+        for (const group of active) {
+            group.currentTime = group === sadPose ? 0.25 : 1.5;
+            pauseAnimation(group);
+        }
+        enableAnimationBlending(manager);
+        `),
+        ["idle", "agree", "sad_pose"],
+    );
+
+    // The bound collection iterates as the same native loop the inline
+    // property read emits.
+    assert.match(
+        result.cpp,
+        /for \(const bbl::AnimationGroupHandle [^ ]+ : v_engine\.assets\[v_container\.value\]\.animation_groups\)/,
+    );
+    // The finds resolved against the materialized document: idle is
+    // animation 0, sad_pose animation 2 — no search loop, no found flag.
+    assert.match(result.cpp, /\.animation_groups\[0\]/);
+    assert.match(result.cpp, /\.animation_groups\[2\]/);
+    assert.doesNotMatch(result.cpp, /_match/);
+    assert.doesNotMatch(result.cpp, /_found/);
+    // The scene's own not-found guard read a constant truth, so its
+    // throw arm erased.
+    assert.doesNotMatch(result.cpp, /was not found/);
+    // The tuple local reaches addAnimationGroups as the selected pair.
+    assert.match(
+        result.cpp,
+        /bbl::add_animation_groups\([^;]*std::vector<bbl::AnimationGroupHandle>\{v_idle, v_sadPose\}\)/,
+    );
+    // setAnimationAdditive: frame zero through the pinned conversion.
+    assert.match(
+        result.cpp,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
+    );
+    // The handle ternary folded per unrolled element: the additive pose
+    // keeps its own time, the other group takes the seek value.
+    assert.match(
+        result.cpp,
+        /bbl::set_animation_current_time\(v_engine, [^,]+, 0\.25f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_animation_current_time\(v_engine, [^,]+, 1\.5f\)/,
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "animation:gltf-additive",
+        ),
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "animation:gltf-group-time",
+        ),
+    );
+});
+
+test("a find the materialized asset cannot serve fails generation with the scene's own message", () => {
+    assert.throws(
+        () =>
+            compileWithAnimationFixture(
+                HANDLE_COLLECTION_SCENE(`
+        const missing = requireGroup(groups, "missing");
+        playAnimation(missing);
+                `),
+                ["idle", "agree", "sad_pose"],
+            ),
+        /fixture group "missing" was not found[\s\S]*'idle', 'agree', 'sad_pose'/,
+    );
+});
+
+test("an inline collection find keeps the loaded search loop and the runtime guard", () => {
+    // The pre-concept shape (scene 157): the collection never travels, so
+    // the search stays a real loop and the scene's guard reads its found
+    // flag — byte-shape pinned so the concept's static path cannot leak
+    // into it.
+    const result = compileWithAnimationFixture(
+        `
+        import {
+            createEngine,
+            loadGltf,
+            playAnimation,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const container = await loadGltf(engine, "model.glb");
+            const walk = container.animationGroups?.find(
+                (group) => group.name === "walk",
+            );
+            if (!walk) {
+                throw new Error("walk was not found");
+            }
+            playAnimation(walk);
+        }
+        `,
+        ["walk", "run"],
+    );
+    assert.match(result.cpp, /_match/);
+    assert.match(result.cpp, /_found/);
+    assert.match(
+        result.cpp,
+        /throw std::runtime_error\("walk was not found"\);/,
+    );
+    assert.doesNotMatch(result.cpp, /\.animation_groups\[0\]/);
+});
+
+test("handle identity compares at run time when a side has no generation-known slot", () => {
+    const result = compileWithAnimationFixture(
+        HANDLE_COLLECTION_SCENE(`
+        const idle = requireGroup(groups, "idle");
+        for (const group of groups) {
+            group.currentTime = group === idle ? 0.25 : 1.5;
+        }
+        `),
+        ["idle", "agree"],
+    );
+    assert.match(
+        result.cpp,
+        /\.value == v_idle\.value\) \? 0\.25f : 1\.5f\)/,
+    );
+});
+
+test("setAnimationAdditive resolves its options at generation exactly where the pin throws", () => {
+    // The mutual exclusion.
+    assert.throws(
+        () =>
+            compileWithAnimationFixture(
+                HANDLE_COLLECTION_SCENE(`
+        const idle = requireGroup(groups, "idle");
+        setAnimationAdditive(idle, { referenceFrame: 0, referenceTime: 1 });
+                `),
+                ["idle"],
+            ),
+        /not both/,
+    );
+    // The finite/non-negative reference guard.
+    assert.throws(
+        () =>
+            compileWithAnimationFixture(
+                HANDLE_COLLECTION_SCENE(`
+        const idle = requireGroup(groups, "idle");
+        setAnimationAdditive(idle, { referenceFrame: -1 });
+                `),
+                ["idle"],
+            ),
+        /finite non-negative/,
+    );
+    // The referenceTime arm passes the value through untouched, and no
+    // options means frame zero.
+    const result = compileWithAnimationFixture(
+        HANDLE_COLLECTION_SCENE(`
+        const idle = requireGroup(groups, "idle");
+        const other = requireGroup(groups, "agree");
+        setAnimationAdditive(idle, { referenceTime: 0.5 });
+        setAnimationAdditive(other);
+        `),
+        ["idle", "agree"],
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_animation_additive\(v_engine, [^,]+, 0\.5f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_animation_additive_from_frame\(v_engine, [^,]+, 0\.0f\)/,
     );
 });
 

@@ -226,6 +226,20 @@ export function comparePayload(
             mismatches.push({ path, reason: "changed" });
         }
     }
+    for (const path of orphansAgainst(expected, deployedDirectory)) {
+        mismatches.push({ path, reason: "unexpected" });
+    }
+    return mismatches;
+}
+
+/** The names-only walk behind the `unexpected` entries, shared by
+ *  `comparePayload` and `payloadOrphans` so the guard and the prune
+ *  cannot disagree about what an orphan is. */
+function orphansAgainst(
+    expected: ReadonlySet<string>,
+    deployedDirectory: string,
+): string[] {
+    const orphans: string[] = [];
     for (const path of walkFiles(deployedDirectory)) {
         // The build's own marker files (CMake stamps the shader snapshot
         // with `.snapshot-stamp`) are not payload.
@@ -233,13 +247,30 @@ export function comparePayload(
             continue;
         }
         if (!expected.has(path)) {
-            mismatches.push({
-                path,
-                reason: "unexpected",
-            });
+            orphans.push(path);
         }
     }
-    return mismatches;
+    return orphans;
+}
+
+/**
+ * Deployed files the generated tree no longer has — `comparePayload`'s
+ * `unexpected` entries, computed without byte-comparing every expected
+ * file first. The pre-build prune reads only these, so hashing the whole
+ * matching payload to find them was pure cost; the measured-run guard
+ * keeps the full byte-compare through `comparePayload`.
+ */
+export function payloadOrphans(
+    sourceDirectory: string,
+    deployedDirectory: string,
+): string[] {
+    if (!existsSync(sourceDirectory)) {
+        return [];
+    }
+    return orphansAgainst(
+        new Set(walkFiles(sourceDirectory)),
+        deployedDirectory,
+    );
 }
 
 /** The CMake cache entries that shape what a build directory produces. */

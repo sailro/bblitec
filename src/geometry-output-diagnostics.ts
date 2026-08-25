@@ -6,16 +6,21 @@ import {
 import { resolve } from "node:path";
 import {
     captureSuiteReference,
+    pinnedBrowserEntryUrl,
     type SuiteSourceTransform,
 } from "./capture-suite-reference.js";
 import {
     applyGpuBackendEnvironment,
     backendFileToken,
-    defaultExecutable,
+    enableGpuDebug,
     parityReportPath,
+    readSeekMeta,
     resolveBackend,
+    resolveNativeExecutable,
     runNative,
+    usesSeededRandom,
     writeReport,
+    writeSeekMeta,
 } from "./parity-scene.js";
 import {
     compareImages,
@@ -60,7 +65,7 @@ function geometryCopyTasks(generatedDirectory: string): string[] {
 }
 
 const impostorShimPath = "/__bbl-geometry-impostor-shim.js";
-const pinnedModulePath = "/node_modules/@babylonjs/lite/lib/index.js";
+const pinnedModulePath = pinnedBrowserEntryUrl;
 
 /**
  * Selects one impostor in the browser the way the native frame loop selects it
@@ -115,13 +120,64 @@ function taskSlug(task: string): string {
     return task.slice(task.indexOf("-impostor-") + "-impostor-".length);
 }
 
+/**
+ * The four files one impostor task leaves in the scene's geometry
+ * directory, spelled once for the writer and the staleness reader. The
+ * browser reference carries no native backend and stays `-lite`; its
+ * seek-provenance sidecar sits beside it the way `capture --native`'s
+ * does (`captureNativePaths`), and the native/diff pair carry the shared
+ * backend filename token.
+ */
+export function geometryTaskPaths(
+    outputDirectory: string,
+    slug: string,
+    token: string,
+): { reference: string; referenceMeta: string; actual: string; diff: string } {
+    return {
+        reference: resolve(outputDirectory, `${slug}-lite.png`),
+        referenceMeta: resolve(outputDirectory, `${slug}-lite.meta.json`),
+        actual: resolve(outputDirectory, `${slug}-native-${token}.png`),
+        diff: resolve(outputDirectory, `${slug}-diff-${token}.png`),
+    };
+}
+
+/**
+ * Why a cached impostor reference is NOT reusable at `wantSeek`, or
+ * `undefined` when it is — the same rule `scene -- diff` applies to the
+ * native capture before trusting it: reuse on bare existence compared an
+ * animated scene's settled browser pose against whatever pose the file
+ * happened to hold. `null` means "no seek"; a missing sidecar reads as
+ * unknown and forces a recapture.
+ */
+export function geometryReferenceStaleness(
+    referencePath: string,
+    metaPath: string,
+    wantSeek: number | null,
+): string | undefined {
+    if (!existsSync(referencePath)) return "missing";
+    if (readSeekMeta(metaPath) !== wantSeek) {
+        return "was captured at a different seek (or carries no provenance)";
+    }
+    return undefined;
+}
+
 export interface GeometryDiagnosticsOptions {
     recaptureReference?: boolean;
     /** `sdl_gpu` (default; `gpu` accepted) or `dawn`; the ambient
      *  `BBLITE_GPU_BACKEND` variable is the fallback. */
     backend?: string;
-    /** Override the pose for both sides; requires `recaptureReference`. */
+    /**
+     * Override the pose for both sides; the default is the registry's
+     * `referenceTimeSeconds`. A cached reference at another pose is
+     * recaptured rather than compared (the rule `diff` applies).
+     */
     seekSeconds?: number;
+    /** The backend's validation layer plus the SDL assertion defusal,
+     *  exactly as the sibling commands' `--gpu-debug`. */
+    gpuDebug?: boolean;
+    /** `--exe` override; `BBLITE_NATIVE_EXE` is the environment
+     *  fallback, then the scene's own Release build. */
+    executable?: string;
 }
 
 export async function runGeometryOutputDiagnostics(
@@ -129,26 +185,32 @@ export async function runGeometryOutputDiagnostics(
     options: GeometryDiagnosticsOptions = {},
 ): Promise<void> {
     const recaptureReference = options.recaptureReference ?? false;
+    if (options.gpuDebug) enableGpuDebug();
     const backend = resolveBackend(options.backend, "geometry");
     applyGpuBackendEnvironment(backend);
     // Backend-produced files carry the shared filename token
     // (`-gpu`/`-dawn`) so the two backends' attachments sit side by side;
     // the browser reference has no native backend and stays `-lite`.
     const token = backendFileToken(backend);
-    const seek = options.seekSeconds;
-    if (seek !== undefined && !recaptureReference) {
-        throw new Error(
-            "geometry: --seek compares a seeked native frame against references captured at another pose, which measures nothing. " +
-                "Add --recapture-reference to recapture the references at this seek.",
-        );
-    }
     const scene = resolveScene(idOrSource);
+    const config = scene.parity;
+    // The measured pose, exactly as parity resolves it: the explicit
+    // `--seek` wins, else the registry's pinned pose, else no seek. The
+    // browser capture takes the seconds; the native side reads the same
+    // number through `BBLITE_ANIMATION_SEEK_SECONDS` — the registry's
+    // `nativeEnvironment` already carries the derived copy, and an
+    // explicit seek overrides it after the spread as parity does.
+    const seek = options.seekSeconds ?? config?.referenceTimeSeconds;
     const tasks = geometryCopyTasks(resolve(scene.output));
     if (tasks.length === 0) {
         throw new Error(
             `Scene '${scene.id}' has no geometry-output copy tasks.`,
         );
     }
+    const executable = resolveNativeExecutable(
+        options.executable,
+        scene.buildDirectory,
+    );
     const outputDirectory = resolve(
         "artifacts",
         "parity",
@@ -159,42 +221,58 @@ export async function runGeometryOutputDiagnostics(
     const results: GeometryDiagnosticResult[] = [];
     for (const task of tasks) {
         const slug = taskSlug(task);
-        const reference = resolve(
+        const { reference, referenceMeta, actual, diff } = geometryTaskPaths(
             outputDirectory,
-            `${slug}-lite.png`,
+            slug,
+            token,
         );
-        const actual = resolve(
-            outputDirectory,
-            `${slug}-native-${token}.png`,
-        );
-        const diff = resolve(
-            outputDirectory,
-            `${slug}-diff-${token}.png`,
-        );
+        // The same staleness discipline diff applies: a cached reference
+        // is only evidence at the pose it was captured at, so a stale or
+        // provenance-less one is recaptured rather than compared.
+        const staleness = recaptureReference
+            ? undefined
+            : geometryReferenceStaleness(
+                  reference,
+                  referenceMeta,
+                  seek ?? null,
+              );
+        if (staleness !== undefined && staleness !== "missing") {
+            console.log(
+                `Geometry reference ${slug} ${staleness}; recapturing.`,
+            );
+        }
+        const capture = recaptureReference || staleness !== undefined;
         await captureSuiteReference(
             scene.source,
             reference,
-            recaptureReference,
+            capture,
             impostorShimTransform(),
             seek,
-            undefined,
+            config?.referenceAnimationGroups,
             {
                 virtualModules: {
                     [impostorShimPath]: impostorShimModule(task),
                 },
-                ...(scene.parity?.referenceSearch !== undefined
-                    ? { search: scene.parity.referenceSearch }
+                // The same stub the parity reference installs: a seeded
+                // scene must draw the pinned sequence in this capture too,
+                // or its impostor references describe different content
+                // than the golden's.
+                seededRandom: usesSeededRandom(scene),
+                ...(config?.referenceSearch !== undefined
+                    ? { search: config.referenceSearch }
                     : {}),
             },
         );
+        if (capture) writeSeekMeta(referenceMeta, seek);
         runNative(
-            defaultExecutable(scene.buildDirectory),
+            executable,
             actual,
             {
-                BBLITE_COPY_TASK: task,
+                ...config?.nativeEnvironment,
                 ...(seek !== undefined
                     ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seek) }
                     : {}),
+                BBLITE_COPY_TASK: task,
             },
             undefined,
             undefined,

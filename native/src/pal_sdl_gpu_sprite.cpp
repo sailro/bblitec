@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pal_gpu_shared.hpp"
+#include "pal_render_capture.hpp"
 
 #if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
@@ -131,6 +132,23 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
+            // The render capture describes CPU state alone — the same
+            // records the uploads above read — written at the frame the
+            // screenshot gate names, exactly as the scene loop writes its
+            // own beside its screenshot.
+            if (
+                frame >= frame_options.screenshot_frame &&
+                !captures.render_capture_saved &&
+                !frame_options.render_capture_path.empty()) {
+                write_standalone_render_capture(
+                    frame_options.render_capture_path,
+                    "sdl_gpu",
+                    engine,
+                    static_cast<int>(width),
+                    static_cast<int>(height),
+                    frame);
+                captures.render_capture_saved = true;
+            }
 
             // Rendered offscreen and blitted, because a swapchain texture
             // cannot be read back for the capture.

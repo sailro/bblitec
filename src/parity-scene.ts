@@ -36,9 +36,12 @@ import {
 /**
  * The generated manifest records the deterministic-seeded-random adaptation
  * whenever the compiled scene reached Math.random; the browser reference
- * must then install the pinned seeded generator before module load.
+ * must then install the pinned seeded generator before module load. Every
+ * browser capture of a compiled scene reads this — the parity reference,
+ * the instrumented capture and the geometry diagnostics — so a seeded
+ * scene renders the same particle set on all of them.
  */
-function usesSeededRandom(scene: SceneDefinition): boolean {
+export function usesSeededRandom(scene: SceneDefinition): boolean {
     const manifestPath = resolve(
         scene.output,
         "manifest.json",
@@ -284,6 +287,81 @@ export function captureMetaPath(captureDirectory: string): string {
     return join(captureDirectory, "capture-meta.json");
 }
 
+/**
+ * The browser capture's provenance sidecar, beyond the seek: which scene
+ * module was served (`suiteBrowserModuleDigest`), whether the hooked
+ * render stayed byte-identical to the committed golden, and whether a
+ * draw filter perturbed the capture. The instrumented capture writes it;
+ * the reuse paths (`diff`, `compose`, `uniforms`) read it and refuse
+ * evidence that no longer describes the current scene.
+ */
+export interface CaptureMeta {
+    /** `null` = captured with no seek. */
+    seekSeconds: number | null;
+    /** sha256 of the served browser module; absent on pre-digest
+     *  captures, which reads as unknown and forces a recapture. */
+    moduleSha256?: string;
+    /** The byte-identity verdict against the committed golden.
+     *  `"not-checked"` = no golden on disk, or a filtered capture. */
+    goldenIdentity?: "identical" | "differs" | "not-checked";
+    /** The `--skip-draw` filter the capture ran under, when any: a
+     *  filtered capture is an experiment, not reusable evidence. */
+    drawFilter?: number;
+}
+
+/**
+ * Writes a capture's provenance sidecar, so a reuse path can tell
+ * whether the directory describes the pose — and, for the browser half,
+ * the scene module — it is about to be read as evidence. `undefined`
+ * seek is recorded as `null` — captured with no seek. One writer for
+ * both capture halves (the native half records the seek alone), one
+ * reader family below, so the JSON shape cannot drift between them.
+ */
+export function writeSeekMeta(
+    path: string,
+    seekSeconds: number | undefined,
+    extras?: Omit<CaptureMeta, "seekSeconds">,
+): void {
+    writeFileSync(
+        path,
+        `${JSON.stringify({
+            seekSeconds: seekSeconds ?? null,
+            ...extras,
+        })}\n`,
+    );
+}
+
+/**
+ * Reads the full provenance sidecar back. `undefined` = no sidecar or an
+ * unreadable one, which reads as unknown and forces a recapture.
+ */
+export function readCaptureMeta(path: string): CaptureMeta | undefined {
+    if (!existsSync(path)) return undefined;
+    try {
+        const meta = JSON.parse(readFileSync(path, "utf8")) as CaptureMeta;
+        return { ...meta, seekSeconds: meta.seekSeconds ?? null };
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Reads a seek-provenance sidecar back. `null` = captured with no seek;
+ * `undefined` = no provenance (a pre-meta or unreadable capture), which
+ * reads as unknown and forces a recapture.
+ */
+export function readSeekMeta(path: string): number | null | undefined {
+    if (!existsSync(path)) return undefined;
+    try {
+        const meta = JSON.parse(readFileSync(path, "utf8")) as {
+            seekSeconds?: number | null;
+        };
+        return meta.seekSeconds ?? null;
+    } catch {
+        return undefined;
+    }
+}
+
 /** The browser capture's texture-upload record: raw texels for small
  *  uploads (bone palettes ride rgba32float rows), 4x4 samples for image
  *  copies. The writer is the instrumented capture's page script; the
@@ -398,6 +476,37 @@ export function applyGpuBackendEnvironment(backend: string): void {
         process.env.BBLITE_GPU_BACKEND = "dawn";
     } else {
         delete process.env.BBLITE_GPU_BACKEND;
+    }
+}
+
+/**
+ * Runs `body` with one environment variable set (or, for `undefined`,
+ * deleted — deleting matters as much as setting: an ambient value would
+ * otherwise survive into a run that chose otherwise), restoring the
+ * previous state however the body ends. The body is awaited before the
+ * restore, because restoring while spawned work is still running would
+ * change the variable under it. The one copy of the save/set/restore
+ * ceremony the scene tools kept re-spelling per variable.
+ */
+export async function withEnvironment<T>(
+    name: string,
+    value: string | undefined,
+    body: () => Promise<T>,
+): Promise<T> {
+    const previous = process.env[name];
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
+    }
+    try {
+        return await body();
+    } finally {
+        if (previous === undefined) {
+            delete process.env[name];
+        } else {
+            process.env[name] = previous;
+        }
     }
 }
 
@@ -724,6 +833,23 @@ export function defaultExecutable(buildDirectory: string): string {
 }
 
 /**
+ * The native executable a measured run spawns: an explicit `--exe` wins,
+ * the ambient `BBLITE_NATIVE_EXE` override is the fallback, then the
+ * scene's own Release build. One resolver, because `geometry` ignored
+ * both overrides for as long as each command spelled its own chain.
+ */
+export function resolveNativeExecutable(
+    explicit: string | undefined,
+    buildDirectory: string,
+): string {
+    return resolve(
+        explicit ??
+            process.env.BBLITE_NATIVE_EXE ??
+            defaultExecutable(buildDirectory),
+    );
+}
+
+/**
  * Refuse a measurement taken from a stale build.
  *
  * The executable reports the digest of the sources it was compiled from,
@@ -993,21 +1119,24 @@ export async function runSceneParity(
         implementation: backend === "dawn" ? "Dawn" : "SDL_GPU",
         driverSelection: process.env.SDL_GPU_DRIVER ?? "auto",
     };
-    // A suppression run skips the attribution buffers: their filenames
-    // carry no suffix, so writing them would overwrite the standard run's,
-    // and with the draw set changed the ids would not line up anyway.
+    // A suppression run skips the attribution buffers: with the draw set
+    // changed the ids would not line up with the specialization anyway.
+    // The buffers carry the backend token like every other artifact —
+    // they are documented byte-identical across backends, but a filename
+    // must not claim a provenance the run did not have.
+    const token = backendFileToken(backend);
     const idBufferPath = !without && config.attribution?.drawIds
-        ? resolve(outputDirectory, "draw-ids-gpu.png")
+        ? resolve(outputDirectory, `draw-ids-${token}.png`)
         : undefined;
     const idVisualizationPath = idBufferPath
-        ? resolve(outputDirectory, "draw-ids-visual-gpu.png")
+        ? resolve(outputDirectory, `draw-ids-visual-${token}.png`)
         : undefined;
     const clusterBufferPath =
         !without && config.attribution?.triangleClusters
-        ? resolve(outputDirectory, "triangle-clusters-gpu.png")
+        ? resolve(outputDirectory, `triangle-clusters-${token}.png`)
         : undefined;
     const clusterVisualizationPath = clusterBufferPath
-        ? resolve(outputDirectory, "triangle-clusters-visual-gpu.png")
+        ? resolve(outputDirectory, `triangle-clusters-visual-${token}.png`)
         : undefined;
 
     validateReferenceCapture(
@@ -1031,10 +1160,9 @@ export async function runSceneParity(
     );
     if (!arguments_.actual) {
         runNative(
-            resolve(
-                arguments_.executable ??
-                    process.env.BBLITE_NATIVE_EXE ??
-                    defaultExecutable(scene.buildDirectory),
+            resolveNativeExecutable(
+                arguments_.executable,
+                scene.buildDirectory,
             ),
             actual,
             {
@@ -1310,19 +1438,12 @@ export async function runSceneParityDifferential(
     // the other's.
     const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
-    const previousBackend = process.env.BBLITE_GPU_BACKEND;
-    try {
-        delete process.env.BBLITE_GPU_BACKEND;
-        await runSceneParity([sceneId]);
-        process.env.BBLITE_GPU_BACKEND = "dawn";
-        await runSceneParity([sceneId]);
-    } finally {
-        if (previousBackend === undefined) {
-            delete process.env.BBLITE_GPU_BACKEND;
-        } else {
-            process.env.BBLITE_GPU_BACKEND = previousBackend;
-        }
-    }
+    await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
+        runSceneParity([sceneId]),
+    );
+    await withEnvironment("BBLITE_GPU_BACKEND", "dawn", () =>
+        runSceneParity([sceneId]),
+    );
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): {
         full: { mad: number };
@@ -1388,6 +1509,11 @@ export interface StabilityArguments {
     singleSample: boolean;
     gpuDebug: boolean;
     backend?: string;
+    /** Render every run at this pose instead of the registry's. At a
+     *  pose other than the registry's the golden columns are suppressed:
+     *  the golden holds the registry pose, so a cross-pose comparison
+     *  measures nothing (the same refusal `parity --seek` makes). */
+    seekSeconds?: number;
 }
 
 export function parseStabilityArguments(
@@ -1396,11 +1522,12 @@ export function parseStabilityArguments(
     const parsed = parseFlags(
         rest,
         {
-            value: ["--runs", "--backend"],
+            value: ["--runs", "--backend", "--seek"],
             boolean: ["--single-sample", "--gpu-debug"],
         },
         "stability",
     );
+    const seekSeconds = flagNumber(parsed, "--seek", "stability");
     const runsValue = parsed.values.get("--runs");
     let runs = 5;
     if (runsValue !== undefined) {
@@ -1421,6 +1548,7 @@ export function parseStabilityArguments(
         singleSample: parsed.flags.has("--single-sample"),
         gpuDebug: parsed.flags.has("--gpu-debug"),
         ...(backend !== undefined ? { backend } : {}),
+        ...(seekSeconds !== undefined ? { seekSeconds } : {}),
     };
 }
 
@@ -1429,7 +1557,9 @@ export interface StabilityRunComparison {
     run: number;
     /** Absent for run 1. */
     vsFirst?: { mad: number; maxDiff: number };
-    vsGolden: { mad: number; maxDiff: number };
+    /** Absent at a seeked (non-registry) pose, where the golden is not
+     *  comparable. */
+    vsGolden?: { mad: number; maxDiff: number };
 }
 
 /**
@@ -1446,22 +1576,31 @@ export function formatStabilityReport(
     backend: string,
     singleSample: boolean,
     runs: readonly StabilityRunComparison[],
+    seekedPoseSeconds?: number,
 ): string {
     const lines: string[] = [];
     lines.push(
         `Stability: ${sceneName} (${backend}, ` +
-            `${singleSample ? "single-sampled" : "multisampled"}), ` +
-            `${runs.length} runs`,
+            `${singleSample ? "single-sampled" : "multisampled"}` +
+            (seekedPoseSeconds !== undefined
+                ? `, seeked to ${seekedPoseSeconds}s`
+                : "") +
+            `), ${runs.length} runs`,
     );
     for (const entry of runs) {
-        const golden =
-            `vs golden MAD=${entry.vsGolden.mad.toFixed(3)} ` +
-            `max=${entry.vsGolden.maxDiff}`;
+        const golden = entry.vsGolden
+            ? `vs golden MAD=${entry.vsGolden.mad.toFixed(3)} ` +
+              `max=${entry.vsGolden.maxDiff}`
+            : "";
         lines.push(
             entry.vsFirst === undefined
-                ? `  run ${entry.run}: ${golden}  (baseline for the run-to-run column)`
+                ? `  run ${entry.run}: ${golden}${
+                      golden ? "  " : ""
+                  }(baseline for the run-to-run column)`
                 : `  run ${entry.run}: vs run 1 MAD=${entry.vsFirst.mad.toFixed(3)} ` +
-                      `max=${entry.vsFirst.maxDiff}  |  ${golden}`,
+                      `max=${entry.vsFirst.maxDiff}${
+                          golden ? `  |  ${golden}` : ""
+                      }`,
         );
     }
     const wobbling = runs.filter(
@@ -1484,7 +1623,13 @@ export function formatStabilityReport(
         );
     }
     const first = runs[0];
-    if (first !== undefined) {
+    if (seekedPoseSeconds !== undefined) {
+        lines.push(
+            `Seeked pose (${seekedPoseSeconds}s): golden columns suppressed — ` +
+                "the golden holds the registry pose, so a cross-pose comparison " +
+                "measures nothing. Only the run-to-run columns answer here.",
+        );
+    } else if (first?.vsGolden !== undefined) {
         if (singleSample) {
             lines.push(
                 "Golden column is context only under --single-sample: the goldens are multisampled, " +
@@ -1522,7 +1667,14 @@ export function runStabilityReport(
     const backend = resolveBackend(stabilityArguments.backend, "stability");
     applyGpuBackendEnvironment(backend);
     const reference = resolve(config.reference.path);
-    if (!existsSync(reference)) {
+    // `--seek` at the registry pose is the standard measurement with the
+    // pose written explicitly; any other pose suppresses the golden
+    // columns — the golden holds the registry pose, so a cross-pose
+    // comparison measures nothing (parity refuses the same pair).
+    const seek = stabilityArguments.seekSeconds;
+    const goldenComparable =
+        seek === undefined || seek === config.referenceTimeSeconds;
+    if (goldenComparable && !existsSync(reference)) {
         throw new Error(
             `Stability compares every run against the golden, and ${reference} does not exist. ` +
                 "Capture it first ('scene -- parity <id> --recapture-reference' for an intentional update).",
@@ -1533,13 +1685,15 @@ export function runStabilityReport(
     mkdirSync(stabilityDirectory, { recursive: true });
     const token = backendFileToken(backend);
     // Single-sample runs are a different measurement (BBLITE_MSAA=1), so
-    // they keep their own filenames beside the multisampled ones.
-    const modeSuffix = stabilityArguments.singleSample
-        ? "-single-sample"
-        : "";
-    const executable = resolve(
-        process.env.BBLITE_NATIVE_EXE ??
-            defaultExecutable(scene.buildDirectory),
+    // they keep their own filenames beside the multisampled ones; a
+    // seeked pose likewise, so an experiment cannot overwrite the
+    // registry-pose evidence.
+    const modeSuffix =
+        (stabilityArguments.singleSample ? "-single-sample" : "") +
+        (!goldenComparable ? `-seek${seek}` : "");
+    const executable = resolveNativeExecutable(
+        undefined,
+        scene.buildDirectory,
     );
     const comparisons: StabilityRunComparison[] = [];
     const images: string[] = [];
@@ -1563,6 +1717,11 @@ export function runStabilityReport(
             image,
             {
                 ...config.nativeEnvironment,
+                // The explicit pose wins over the registry-derived one,
+                // through the same variable the native clock reads.
+                ...(seek !== undefined
+                    ? { BBLITE_ANIMATION_SEEK_SECONDS: String(seek) }
+                    : {}),
                 ...(stabilityArguments.singleSample
                     ? { BBLITE_MSAA: "1" }
                     : {}),
@@ -1577,7 +1736,9 @@ export function runStabilityReport(
             ...(run > 1
                 ? { vsFirst: summarize(compareImages(image, images[0]!)) }
                 : {}),
-            vsGolden: summarize(compareImages(image, reference)),
+            ...(goldenComparable
+                ? { vsGolden: summarize(compareImages(image, reference)) }
+                : {}),
         });
     }
     const reportPath = resolve(
@@ -1595,8 +1756,12 @@ export function runStabilityReport(
             scene: scene.name,
             runs: stabilityArguments.runs,
             singleSample: stabilityArguments.singleSample,
+            ...(seek !== undefined ? { seekSeconds: seek } : {}),
             comparisons,
-            files: { reference, runs: images },
+            files: {
+                ...(goldenComparable ? { reference } : {}),
+                runs: images,
+            },
         },
     );
     console.log(
@@ -1605,6 +1770,7 @@ export function runStabilityReport(
             backend,
             stabilityArguments.singleSample,
             comparisons,
+            goldenComparable ? undefined : seek,
         ),
     );
     console.log(`Report: ${reportPath}`);

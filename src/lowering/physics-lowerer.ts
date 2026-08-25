@@ -261,25 +261,20 @@ ${body}
     }
 
     /**
-     * Asserts the step gate is still the shape this port emits: reject a
-     * non-finite or non-positive step, then clamp through `Math.min`
-     * against `MAX_STEP_MS` and divide by 1000 into seconds. The emitted
-     * C++ mirrors it; this is what fails generation if the pin's gate
-     * moves rather than letting a silently different step ship.
-     */
-    /**
      * The pinned declarations this port RESTATES, and what must still be
      * true of each.
      *
      * A restated body is safe only while the thing it restates has not
      * moved, so every rule the emitted template folds is listed against the
-     * declaration that states it. Two shapes cover all of them: fragments a
-     * body must contain, and CALLS it must make in order. The second reads
-     * the declaration own call nodes rather than its text, because a
-     * substring scan is satisfied by a comment naming the function, and an
-     * ordering a comment can reorder is not a contract.
+     * declaration that states it. Two shapes cover all of them: expressions
+     * a body must state, and CALLS it must make in order. Both read the
+     * declaration's own nodes rather than its text, because a substring
+     * scan is satisfied by a comment naming the rule, and an ordering a
+     * comment can reorder is not a contract. Each expression is matched
+     * structurally (`expressionMatchesShape`), so formatting, parentheses
+     * and `as` casts do not pin bytes that carry no meaning.
      */
-    private static readonly textContracts: ReadonlyArray<
+    private static readonly shapeContracts: ReadonlyArray<
         readonly [string, readonly string[]]
     > = [
         [
@@ -290,8 +285,13 @@ ${body}
                 "!Number.isFinite(stepMs) || stepMs <= 0",
                 "Math.min(stepMs, MAX_STEP_MS) / 1000",
                 // Which bodies each phase touches; the template restates
-                // all three predicates.
+                // all three predicates, and the whole pre-step gate --
+                // DISABLED skips, and only an ANIMATED (kinematic) or
+                // explicitly pre-stepped body syncs.
                 "b._prestepType !== PhysicsPrestepType.DISABLED",
+                "b._prestepType !== PhysicsPrestepType.DISABLED && " +
+                    "(b.motionType === (PhysicsMotionType.ANIMATED as number) " +
+                    "|| b._preStep)",
                 "b._prestepType === PhysicsPrestepType.ACTION",
                 "b.motionType === (PhysicsMotionType.DYNAMIC as number)",
             ],
@@ -338,10 +338,12 @@ ${body}
         [
             // `setPhysicsBodyMass` keeps the shape-derived tensor and
             // overrides only the mass scalar. The generated code performs
-            // that branch, so the branch has to still be the pin one.
+            // that branch, so the branch has to still be the pin one --
+            // asserted whole, isotropic fallback arm included.
             "setPhysicsBodyMass",
             [
-                "body._shape ? buildMassProperties(world, body)",
+                "body._shape ? buildMassProperties(world, body) : " +
+                    "[[0, 0, 0], mass, [mass, mass, mass], [0, 0, 0, 1]]",
                 "massProps[1] = mass",
             ],
         ],
@@ -390,24 +392,28 @@ ${body}
 
     /** Every rule the emitted template folds, checked where it is stated. */
     private assertPinnedContracts(): void {
-        for (const [symbolName, fragments] of PhysicsLowerer
-            .textContracts) {
+        for (const [symbolName, shapes] of PhysicsLowerer
+            .shapeContracts) {
             const declaration = this.pinnedDeclaration(symbolName);
-            const text = declaration.getText(
-                this.context.sourceFile(havokModule),
-            );
-            for (const fragment of fragments) {
-                if (text.includes(fragment)) continue;
+            for (const shape of shapes) {
+                const stated = this.context.findNodes(
+                    declaration,
+                    (node): node is ts.Expression =>
+                        ts.isExpression(node) &&
+                        this.context.expressionMatchesShape(node, shape),
+                );
+                if (stated.length > 0) continue;
                 this.context.contractError(
                     declaration,
-                    "Expected " + symbolName + " to carry '" +
-                        fragment + "'. The generated physics " +
+                    "Expected " + symbolName + " to state '" +
+                        shape + "'. The generated physics " +
                         "translation unit restates this rule, so a " +
                         "pinned change to it fails generation rather " +
                         "than shipping a different simulation.",
                 );
             }
         }
+        this.assertStepWorldInventory();
         for (const [symbolName, callees] of PhysicsLowerer
             .orderContracts) {
             const declaration = this.pinnedDeclaration(symbolName);
@@ -433,6 +439,58 @@ ${body}
                 }
                 cursor = at;
             }
+        }
+    }
+
+    /**
+     * `_stepWorld`'s own statement inventory, kind by kind and in order.
+     *
+     * The emitted `step_world` restates the whole body, so the shape and
+     * order contracts above are complete only while the body has exactly
+     * these statements: an arm upstream ADDS is invisible to every
+     * per-expression check, and this is what makes it refuse generation
+     * naming the count instead of shipping a frame with a missing phase.
+     */
+    private assertStepWorldInventory(): void {
+        const declaration = this.pinnedDeclaration("_stepWorld");
+        const statements = declaration.body!.statements;
+        const expected: ReadonlyArray<
+            readonly [string, (statement: ts.Statement) => boolean]
+        > = [
+            // const { _hknp, _hkWorld, _bodies } = world;
+            ["variable statement", ts.isVariableStatement],
+            // const stepMs = <fixed-or-live gate>;
+            ["variable statement", ts.isVariableStatement],
+            // the non-finite / non-positive rejection
+            ["if statement", ts.isIfStatement],
+            // const dt = <MAX_STEP_MS clamp>;
+            ["variable statement", ts.isVariableStatement],
+            // the floating-origin arm (nothing reached sets `_fo`)
+            ["if statement", ts.isIfStatement],
+            // the pre-step sync loop
+            ["for statement", ts.isForStatement],
+            // hknp.HP_World_Step(hkWorld, dt);
+            ["expression statement", ts.isExpressionStatement],
+            // the post-step sync loop
+            ["for statement", ts.isForStatement],
+            // the after-step hooks
+            ["if statement", ts.isIfStatement],
+        ];
+        const matches =
+            statements.length === expected.length &&
+            expected.every(([, predicate], index) =>
+                predicate(statements[index]!),
+            );
+        if (!matches) {
+            this.context.contractError(
+                declaration,
+                `_stepWorld carries ${statements.length} top-level ` +
+                    `statement(s); the emitted step_world restates a body ` +
+                    `of exactly ${expected.length} (${expected
+                        .map(([kind]) => kind)
+                        .join(", ")}), so an added or reordered arm must ` +
+                    "be read and re-emitted, not silently dropped.",
+            );
         }
     }
 

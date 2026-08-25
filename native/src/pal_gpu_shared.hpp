@@ -8,6 +8,11 @@
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+// Always-emitted pinned reads every scene shape carries: the surface sample
+// count and the tone-mapping scale (the effect drivers compile with no
+// renderer_plan.hpp, so these cannot ride that header).
+#include <bblite/upstream/pinned_surface.hpp>
+#include <bblite/upstream/pinned_tone_mapping.hpp>
 // The generated material texture-slot table both render backends execute:
 // which record field fills each slot, its sRGB rule, its fallback texel and
 // the pinned binding names it serves. Emitted for every scene beside the
@@ -1559,9 +1564,13 @@ inline std::size_t standard_variant_for_draw(
     const Scene& scene,
     const Engine& engine,
     const upstream::RenderDrawCommand& draw,
-    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max(),
+    // Filled with the derived key when the caller passes one, so the draw
+    // can consume `key.features` instead of re-deriving it.
+    StandardVariantKey* key_out = nullptr) {
     (void)scene;
     const StandardVariantKey key = standard_variant_key(engine, draw);
+    if (key_out) *key_out = key;
     if (!key.resolved) {
         return std::numeric_limits<std::size_t>::max();
     }
@@ -1716,9 +1725,12 @@ inline float inverse_image_processed_channel(
     }
     color = std::pow(color, 2.2f);
     if (tone_mapping) {
+        // The pin has no inverse to lower; only the forward curve's scale
+        // exists, and it travels as the generated
+        // `pinned_tone_mapping_scale` rather than being re-typed here.
         color =
             -std::log2(std::max(1.0f - color, 0.000001f)) /
-            1.59057903289794921875f;
+            upstream::pinned_tone_mapping_scale;
     }
     return exposure > 0.0f ? color / exposure : color;
 }
@@ -2116,6 +2128,154 @@ inline std::vector<std::size_t> sprite_layer_draw_order(
 }
 
 /**
+ * The program selection and pass rules for one billboard system, decided
+ * once for both backends. The stems name the composed modules the shader
+ * step deployed; the flags carry the pinned pairings — depth writes iff
+ * cutout, the axis-locked vertex stage reading the system block for its
+ * lock axis, and the mode-4 wrapper's second stock-Add pass. Backends
+ * keep pipeline and bind mechanics only.
+ */
+struct BillboardDrawPlan {
+    const char* vertex_stem;
+    const char* fragment_stem;
+    bool axis_locked;
+    /** The pinned depth table pairs `transparent` with writes off, which
+     *  is what makes the sorted draw order the composite, and `cutout`
+     *  with writes on, which lets the GPU resolve overlap instead. */
+    bool cutout_writes_depth;
+    /** The axis-locked basis reads the system block in the vertex stage. */
+    bool vertex_reads_system_block;
+    std::uint32_t particle_passes;
+};
+
+inline BillboardDrawPlan billboard_draw_plan(
+    const BillboardSystemRecord& system) {
+    const bool axis_locked =
+        system.orientation == BillboardOrientation::axis_locked;
+    // The particle family's Multiply program is a module of the pin's own,
+    // outside both sprite composers: it declares no fx block, and its
+    // vertex stage travels with its fragment because the pin writes them
+    // together.
+    const bool particle_multiply = system.blend.particle_passes >= 1;
+    // That pairing is exactly why it is exclusive: the program carries the
+    // FACING basis and the pin's own body, so an axis-locked or custom
+    // system reaching it would silently draw neither. The registrar
+    // upstream only ever builds facing particle systems with no custom
+    // shader, so this says so rather than picking a program that would be
+    // wrong.
+    if (particle_multiply && (axis_locked || system.custom_shader)) {
+        throw std::runtime_error(
+            "A node-particle Multiply blend draws the pin's own facing "
+            "program; it has no axis-locked or custom-shader arm.");
+    }
+    const bool cutout =
+        system.depth_mode == BillboardDepthMode::cutout;
+    BillboardDrawPlan plan{};
+    // Unlike the 2D layer, a custom billboard program brings its own
+    // vertex stage: the pin's composer exposes the view distance and the
+    // world position to a custom body, which the stock stage does not
+    // write.
+    plan.vertex_stem = particle_multiply
+        ? "billboard_particle_multiply.vert"
+        : system.custom_shader ? "billboard_custom.vert"
+        : axis_locked          ? "billboard_axis_locked.vert"
+                               : "billboard.vert";
+    // The cutout arm discards below the cutoff; with alpha-to-coverage
+    // the pin drops the discard and lets sample coverage carry the edge,
+    // so that permutation shares the transparent stage.
+    plan.fragment_stem = particle_multiply
+        ? "billboard_particle_multiply.frag"
+        : system.custom_shader ? "billboard_custom.frag"
+        : cutout && !system.alpha_to_coverage ? "billboard_cutout.frag"
+                                              : "billboard.frag";
+    plan.axis_locked = axis_locked;
+    plan.cutout_writes_depth = cutout;
+    plan.vertex_reads_system_block = axis_locked;
+    plan.particle_passes = system.blend.particle_passes;
+    return plan;
+}
+
+/**
+ * What a billboard pass last uploaded, so an unchanged frame re-uploads
+ * nothing. The sorted order depends on the view alone, and the lowered
+ * permutation only ever APPENDS instances — so the count is the instance
+ * version, the way the sprite twin's `uploaded_version` is its layer's.
+ * A setter that one day mutates an instance in place needs a real record
+ * version; today none exists.
+ */
+struct BillboardUploadStamp {
+    std::array<float, 16> view{};
+    std::uint32_t count = 0;
+    bool uploaded = false;
+};
+
+/**
+ * Whether the sorted instance buffer must be rebuilt and re-uploaded this
+ * frame — the one gating rule, stated once for both backends. Only the
+ * sort+upload is gated; the small per-frame UBO rebuilds beside it are
+ * not. A cutout system is not sorted (it writes depth, so the GPU
+ * resolves overlap and the pin uploads in logical insertion order), so
+ * its buffer never depends on the view and uploads once per count.
+ */
+inline bool billboard_needs_upload(
+    const BillboardSystemRecord& system,
+    const BillboardUploadStamp& stamp,
+    const std::array<float, 16>& view) {
+    if (system.count == 0) return false;
+    if (!stamp.uploaded || stamp.count != system.count) return true;
+    const bool cutout =
+        system.depth_mode == BillboardDepthMode::cutout;
+    return !(cutout || stamp.view == view);
+}
+
+inline void stamp_billboard_upload(
+    BillboardUploadStamp& stamp,
+    const BillboardSystemRecord& system,
+    const std::array<float, 16>& view) {
+    stamp.view = view;
+    stamp.count = system.count;
+    stamp.uploaded = true;
+}
+
+/**
+ * The texture `setEffectTexture` stored for one declared binding name.
+ *
+ * The walk and the refusal are the pin's own `findTextureSlot` contract:
+ * a binding the compiled fragment kept must have been set before the
+ * first render, and a name the wrapper never stored fails by name rather
+ * than binding a neighbour. Both backends resolve through this.
+ */
+inline const SolidTexture& effect_texture_for_binding(
+    const EffectWrapperRecord& wrapper,
+    std::string_view name) {
+    for (const EffectTextureSlot& candidate : wrapper.textures) {
+        if (candidate.name != name) continue;
+        if (!candidate.set) break;
+        return candidate.texture;
+    }
+    throw std::runtime_error(
+        "Effect texture binding '" + std::string(name) +
+        "' was not set before the first render.");
+}
+
+/**
+ * The uniform floats a scene set must fill the block the descriptor
+ * declared exactly: a short write leaves a stale or zero tail behind the
+ * declared size, silently and differently per backend.
+ */
+inline void require_effect_uniform_size(
+    const EffectWrapperRecord& wrapper,
+    std::uint32_t uniform_bytes) {
+    const std::size_t bytes =
+        wrapper.uniform_values.size() * sizeof(float);
+    if (bytes == uniform_bytes) return;
+    throw std::runtime_error(
+        "Effect uniforms carry " + std::to_string(bytes) +
+        " bytes where the declared block takes " +
+        std::to_string(uniform_bytes) + ".");
+}
+
+/**
  * The delta a scene's before-render callbacks advance by.
  *
  * A scene that sets `fixedDeltaMs` pins it, which is how the measured
@@ -2395,6 +2555,207 @@ inline constexpr BlendFactors ground_blend{
     BlendFactor::one,
     BlendFactor::one_minus_src_alpha,
 };
+
+/**
+ * The one alpha-to-coverage rule: coverage needs samples to spread
+ * across, and WebGPU rejects a 1-sample a2c pipeline outright where
+ * D3D12 quantizes coverage to a ~0.5 cutoff instead. Every pipeline in
+ * either backend that wants a2c enables it through this, so a
+ * single-sample run draws the same pixels on both.
+ */
+inline bool alpha_to_coverage_enabled(
+    bool wants_a2c,
+    std::uint32_t samples) {
+    return wants_a2c && samples > 1;
+}
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/**
+ * The fixed-function facts one `RenderPipelineKind` carries, decoded once
+ * for both backends: the material family, whether the draw blends, the
+ * cull mode and the front face. The plan's own enums carry the answers,
+ * so a backend keeps only its API-enum translation — the same split the
+ * depth compare already uses. A new enumerator must be given an arm here
+ * rather than inheriting one.
+ */
+struct RenderPipelineKindTraits {
+    upstream::RenderMaterialKind family;
+    bool transparent;
+    upstream::RenderCullMode cull;
+    bool clockwise_front_face;
+};
+
+/** Whether the kind asks for alpha-to-coverage (the `shader_a2c` arm). */
+inline bool pipeline_kind_wants_a2c(upstream::RenderPipelineKind kind) {
+    return kind == upstream::RenderPipelineKind::shader_a2c;
+}
+
+inline RenderPipelineKindTraits pipeline_kind_traits(
+    upstream::RenderPipelineKind kind) {
+    using Kind = upstream::RenderPipelineKind;
+    using Family = upstream::RenderMaterialKind;
+    using Cull = upstream::RenderCullMode;
+    switch (kind) {
+        case Kind::pbr_opaque_back:
+            return {Family::pbr, false, Cull::back, false};
+        case Kind::pbr_opaque_none:
+            return {Family::pbr, false, Cull::none, false};
+        case Kind::pbr_opaque_none_clockwise:
+            return {Family::pbr, false, Cull::none, true};
+        case Kind::pbr_transparent_back:
+            return {Family::pbr, true, Cull::back, false};
+        case Kind::pbr_transparent_none:
+            return {Family::pbr, true, Cull::none, false};
+        case Kind::pbr_transparent_none_clockwise:
+            return {Family::pbr, true, Cull::none, true};
+        case Kind::standard_opaque_back:
+            return {Family::standard, false, Cull::back, false};
+        case Kind::standard_opaque_none:
+            return {Family::standard, false, Cull::none, false};
+        case Kind::standard_transparent_back:
+            return {Family::standard, true, Cull::back, false};
+        case Kind::standard_transparent_none:
+            return {Family::standard, true, Cull::none, false};
+        case Kind::grid_opaque_back:
+            return {Family::grid, false, Cull::back, false};
+        case Kind::grid_opaque_none:
+            return {Family::grid, false, Cull::none, false};
+        case Kind::grid_transparent_back:
+            return {Family::grid, true, Cull::back, false};
+        case Kind::grid_transparent_none:
+            return {Family::grid, true, Cull::none, false};
+        // A shader kind's concrete fixed-function state comes from the
+        // emitted variant table (cull, blend, depth write, topology); the
+        // kind itself carries only the family and the a2c request.
+        case Kind::shader:
+        case Kind::shader_a2c:
+            return {Family::shader, false, Cull::back, false};
+        case Kind::node_opaque_back:
+            return {Family::node, false, Cull::back, false};
+        case Kind::node_opaque_none:
+            return {Family::node, false, Cull::none, false};
+    }
+    throw std::runtime_error(
+        "render pipeline kind " +
+        std::to_string(static_cast<int>(kind)) +
+        " is not implemented yet.");
+}
+
+/**
+ * Every plan item's kind and variant, checked against the generated
+ * tables before anything is uploaded or drawn from it. Both backends run
+ * this at every plan (re)build, so a plan the build cannot draw fails at
+ * rebuild time on both rather than at (or past) one backend's draw.
+ */
+inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
+    for (const upstream::RenderItem& item : plan.items) {
+        if (item.material_kind == upstream::RenderMaterialKind::shader) {
+            if (item.shader_variant >= upstream::shader_variant_count()) {
+                throw std::runtime_error(
+                    "this shader material variant is not implemented "
+                    "yet.");
+            }
+        } else if (
+            item.material_kind == upstream::RenderMaterialKind::node) {
+#if BBLITE_NODE_VARIANTS > 0
+            if (item.shader_variant >= upstream::node_variants.size()) {
+                throw std::runtime_error(
+                    "this node material graph was not composed.");
+            }
+#else
+            throw std::runtime_error(
+                "a node material in a build with no composed graphs.");
+#endif
+        } else if (
+            item.material_kind !=
+                upstream::RenderMaterialKind::standard &&
+            item.material_kind != upstream::RenderMaterialKind::pbr &&
+            item.material_kind != upstream::RenderMaterialKind::grid) {
+            throw std::runtime_error(
+                "only Standard, PBR, Grid, node and shader-variant "
+                "materials are implemented yet.");
+        }
+    }
+}
+
+/**
+ * A material family appearing after registration must have composed
+ * artifacts to draw with: generation composes variants from the whole
+ * scene, so a family the tables never saw is a compiler contract broken,
+ * not a scene mistake. This is the table half of the guard, shared by
+ * both backends; a backend whose modules are built eagerly at startup
+ * (SDL_GPU) keeps its own built-pipeline residue beside it.
+ */
+inline void reject_uncomposed_family_growth(std::uint32_t added_families) {
+#if BBLITE_STANDARD_VARIANTS > 0
+    if (
+        (added_families & material_family_standard) != 0 &&
+        upstream::standard_variants.empty()) {
+        throw std::runtime_error(
+            "Post-registration Standard material family has no composed "
+            "variants.");
+    }
+#else
+    if ((added_families & material_family_standard) != 0) {
+        throw std::runtime_error(
+            "Post-registration Standard material family in a build with "
+            "no composed variants.");
+    }
+#endif
+    if (
+        (added_families & material_family_shader) != 0 &&
+        upstream::shader_variant_count() == 0) {
+        throw std::runtime_error(
+            "Post-registration shader material family has no composed "
+            "variants.");
+    }
+}
+#endif
+
+/**
+ * The format classes of a geometry-output task's colour targets, in the
+ * task's own attachment order, plus whether a trailing target in the
+ * frame's colour format follows. Both backends assemble their MRT
+ * pipeline targets from this one list; only the API structs stay per
+ * backend.
+ */
+struct GeometryTargetClasses {
+    std::vector<TextureFormatClass> attachments;
+    bool trailing_output = false;
+};
+
+inline GeometryTargetClasses geometry_target_classes(
+    const FrameTaskRecord& task) {
+    GeometryTargetClasses classes;
+    classes.attachments.reserve(task.geometry.attachments.size());
+    for (
+        const GeometryTextureDescription& description :
+        task.geometry.attachments) {
+        classes.attachments.push_back(geometry_format_class(description));
+    }
+    classes.trailing_output =
+        task.geometry.target.value != invalid_handle;
+    return classes;
+}
+
+/**
+ * The count assertion beside the list: a variant composed for N targets
+ * over a task carrying M is the same generation bug on either backend,
+ * so the refusal is stated once. `family` names the variant family the
+ * caller resolves ("pinned" or "standard").
+ */
+inline void require_geometry_target_count(
+    const GeometryTargetClasses& classes,
+    std::size_t entry_color_target_count,
+    const char* family) {
+    const std::size_t total = classes.attachments.size() +
+        (classes.trailing_output ? 1u : 0u);
+    if (total == entry_color_target_count) return;
+    throw std::runtime_error(
+        std::string(family) + " geometry variant writes " +
+        std::to_string(entry_color_target_count) +
+        " targets where its task carries " + std::to_string(total) + ".");
+}
 
 /**
  * The skybox stage in sub-draw order: load-env.ts pushes the solid cube

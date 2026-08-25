@@ -732,10 +732,11 @@ test("the native-support block flows from the pin's own declarations", async () 
         ),
     );
     assert.ok(!block.includes("LIGHTMAP"));
-    // The record-gap closures: the bump inverse, the alpha lane, and the
-    // pin-default fields left untouched.
+    // The record-gap closures: the alpha lane and the pin-default fields
+    // left untouched. bump_level is one-to-one — the record stores the
+    // authored level and the pinned writer derives 1 / level itself.
     assert.ok(
-        block.includes("props.bump_level = material.bump_scale != 0.0f"),
+        block.includes("props.bump_level = material.bump_scale;"),
     );
     assert.ok(
         block.includes("props.alpha = material.base_color_factor.a;"),

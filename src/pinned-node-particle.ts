@@ -30,11 +30,19 @@
  * recorded per scene as the `executed-node-particle-simulation` adaptation:
  * the baked state depends on the Chrome that ran it.
  */
-import { createSuiteSceneServer } from "./capture-suite-reference.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserEntryUrl,
+} from "./capture-suite-reference.js";
 import {
     runPageGlobal,
     screenshotCaptureBrowserArgs,
 } from "./browser-harness.js";
+import {
+    cachedJsonBake,
+    moduleClosureBytes,
+    moduleIdentity,
+} from "./bake-cache.js";
 
 /** The graph a `parseNodeParticleSource` call reached. */
 export type NodeParticleGraphSource =
@@ -318,7 +326,7 @@ export interface NodeParticleBake {
 }
 
 /** The pinned package path the served driver imports. */
-const pinnedPackage = "/node_modules/@babylonjs/lite/lib/index.js";
+const pinnedPackage = pinnedBrowserEntryUrl;
 
 function graphExpression(graph: NodeParticleGraphSource): string {
     if (graph.kind === "literal") {
@@ -736,18 +744,52 @@ function assertBake(value: unknown): NodeParticleBake {
 /**
  * Run one reached node-particle set through the pin in headless Chromium and
  * return the frozen state it produced.
+ *
+ * The simulation is deterministic in its declared inputs — the driver
+ * text (which carries every graph literal, step and seeded-random
+ * arrow), the scene-adjacent modules the driver imports (graph
+ * factories and pixel-buffer factories, with their sibling imports),
+ * the pin, and the Chrome that runs it — so a repeat compile replays
+ * the frozen state from the bake cache. The cached payload is exactly
+ * the JSON that crossed the page boundary, and a request whose module
+ * closure cannot be resolved is baked uncached rather than guessed at.
  */
 export async function bakeNodeParticles(
     request: NodeParticleBakeRequest,
 ): Promise<NodeParticleBake> {
-    const server = createSuiteSceneServer(driverModule(request));
-    const result = await runPageGlobal(server, "__bakeNodeParticles", {
-        serverName: "node-particle bake server",
-        browserRequirement:
-            "Baking a node-particle simulation requires Chrome or Edge.",
-        browserArgs: screenshotCaptureBrowserArgs,
-        viewport: { width: 1280, height: 720 },
-        pageErrorPrefix: "Node particle",
-    });
-    return assertBake(result);
+    const driver = driverModule(request);
+    const bake = async (): Promise<NodeParticleBake> => {
+        const server = createSuiteSceneServer(driver);
+        const result = await runPageGlobal(server, "__bakeNodeParticles", {
+            serverName: "node-particle bake server",
+            browserRequirement:
+                "Baking a node-particle simulation requires Chrome or Edge.",
+            browserArgs: screenshotCaptureBrowserArgs,
+            viewport: { width: 1280, height: 720 },
+            pageErrorPrefix: "Node particle",
+        });
+        return assertBake(result);
+    };
+    const modules = new Set<string>();
+    for (const set of request.sets) {
+        if (set.graph.kind === "module") modules.add(set.graph.module);
+    }
+    for (const texture of request.textures ?? []) {
+        modules.add(pixelsModule(texture.source).module);
+    }
+    const closure = moduleClosureBytes([...modules]);
+    if (closure === undefined) return bake();
+    return assertBake(
+        await cachedJsonBake<NodeParticleBake>(
+            {
+                kind: "node-particle",
+                version: "1",
+                module: moduleIdentity(import.meta.url),
+                browser: true,
+                parameters: {},
+                inputs: [Buffer.from(driver, "utf8"), ...closure],
+            },
+            bake,
+        ),
+    );
 }

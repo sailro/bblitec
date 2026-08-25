@@ -183,20 +183,39 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({ gpuInstancing: true });
-    // eulerToQuat's four products, printed from the pinned tuple.
-    assert.match(plan.source, /qx = sx \* cy \* cz \+ cx \* sy \* sz;/);
-    assert.match(plan.source, /qy = cx \* sy \* cz - sx \* cy \* sz;/);
-    assert.match(plan.source, /qz = cx \* cy \* sz \+ sx \* sy \* cz;/);
-    assert.match(plan.source, /qw = cx \* cy \* cz - sx \* sy \* sz;/);
-    // mat4ComposeInto's quaternion basis, printed from the pinned stores.
-    assert.match(plan.source, /const double xx = qx \* qx;/);
-    assert.match(plan.source, /const double wz = qw \* qz;/);
+    // eulerToQuat's four products, printed from the pinned tuple through
+    // the shared translator (double operands, explicit parenthesization).
     assert.match(
         plan.source,
-        /local\[0\] = \(1\.0 - 2\.0 \* \(yy \+ zz\)\) \* scale_x;/,
+        /qx = \(\(\(sx \* cy\) \* cz\) \+ \(\(cx \* sy\) \* sz\)\);/,
     );
-    assert.match(plan.source, /local\[6\] = 2\.0 \* \(yz \+ wx\) \* scale_y;/);
-    assert.match(plan.source, /local\[9\] = 2\.0 \* \(yz - wx\) \* scale_z;/);
+    assert.match(
+        plan.source,
+        /qy = \(\(\(cx \* sy\) \* cz\) - \(\(sx \* cy\) \* sz\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /qz = \(\(\(cx \* cy\) \* sz\) \+ \(\(sx \* sy\) \* cz\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /qw = \(\(\(cx \* cy\) \* cz\) - \(\(sx \* sy\) \* sz\)\);/,
+    );
+    // mat4ComposeInto's quaternion basis, printed from the pinned stores.
+    assert.match(plan.source, /const double xx = \(qx \* qx\);/);
+    assert.match(plan.source, /const double wz = \(qw \* qz\);/);
+    assert.match(
+        plan.source,
+        /local\[0\] = \(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\);/,
+    );
+    assert.match(
+        plan.source,
+        /local\[6\] = \(\(2\.0 \* \(yz \+ wx\)\) \* scale_y\);/,
+    );
+    assert.match(
+        plan.source,
+        /local\[9\] = \(\(2\.0 \* \(yz - wx\)\) \* scale_z\);/,
+    );
     assert.match(plan.source, /local\[12\] = mesh\.position\.x;/);
     assert.match(plan.source, /local\[15\] = 1\.0;/);
 });
@@ -297,8 +316,9 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
     // The pinned fork the anchors inside lowerRenderPlan pair with: a
     // failed pairing throws there, so this test both re-states the pin's
     // side and checks the emitted rules still carry the transcription.
-    const store = new UpstreamSourceStore();
-    const renderTask = store.getSource("src/frame-graph/render-task.ts");
+    const renderTask = sharedStore.getSource(
+        "src/frame-graph/render-task.ts",
+    );
     assert.ok(
         renderTask.includes("if (r.isTransparent || r._transmissive) {"),
     );
@@ -481,8 +501,7 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
 });
 
 test("anchors the light-slot packing to the pinned lights-ubo module", () => {
-    const store = new UpstreamSourceStore();
-    const lightsUbo = store.getSource("src/render/lights-ubo.ts");
+    const lightsUbo = sharedStore.getSource("src/render/lights-ubo.ts");
     // The pinned loops the PALs walk against the emitted
     // light_affects_mesh: both advance their slot cursor only for
     // _writeLightUbo lights, which keeps a mesh's packed indices aligned

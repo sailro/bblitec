@@ -1841,9 +1841,6 @@ inline bool standard_uv_inverted(
 }
 
 // MaterialRecord -> StandardMaterialProps, the record gaps closed:
-//  - bump_level: the record stores the pinned fragment's 1/level
-//    (babylon-loader-cpp.ts), and writeStdMaterialData divides by the
-//    authored level itself, so the fill inverts the record back.
 //  - alpha: rides base_color_factor.a (the compiled setter and the loader
 //    both write it there).
 //  - reflection_coord_mode: the record mirrors the pin's own loader write
@@ -1862,9 +1859,7 @@ inline StandardMaterialProps standard_material_props(
     props.specular_power = material.specular_power;
     props.emissive_color = material.emissive_factor;
     props.ambient_color = material.ambient_color;
-    props.bump_level = material.bump_scale != 0.0f
-        ? 1.0f / material.bump_scale
-        : 0.0f;
+    props.bump_level = material.bump_scale;
     props.ambient_tex_level = material.ambient_level;
     props.opacity_level = material.opacity_level;
     props.alpha_cutoff = material.alpha_cutoff;

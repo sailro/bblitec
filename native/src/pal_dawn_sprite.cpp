@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pal_gpu_shared.hpp"
+#include "pal_render_capture.hpp"
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_SPRITE_RENDERER
 #include "pal_dawn_sprite.hpp"
@@ -83,6 +84,12 @@ bool run_sprite_dawn_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.width);
         const std::uint32_t height =
             static_cast<std::uint32_t>(engine.options.height);
+        // The extent is pinned to the engine options for the whole run
+        // (no per-frame resize on this driver), so a zero extent cannot
+        // be skipped like the SDL twin skips a minimized frame — refuse.
+        if (width == 0 || height == 0) {
+            dawn_error("sprite surface has a zero extent.");
+        }
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
         const long warmup = frame_options.benchmark_warmup();
@@ -150,6 +157,23 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
+            // The render capture describes CPU state alone — the same
+            // records the uploads above read — written at the frame the
+            // screenshot gate names, exactly as the scene loop writes its
+            // own beside its screenshot.
+            if (
+                frame >= frame_options.screenshot_frame &&
+                !captures.render_capture_saved &&
+                !frame_options.render_capture_path.empty()) {
+                write_standalone_render_capture(
+                    frame_options.render_capture_path,
+                    "dawn",
+                    engine,
+                    static_cast<int>(width),
+                    static_cast<int>(height),
+                    frame);
+                captures.render_capture_saved = true;
+            }
             DawnSurfaceCapture capture{};
             if (capture_frame) {
                 capture = begin_dawn_surface_capture(

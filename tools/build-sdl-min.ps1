@@ -63,6 +63,45 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
     }
 }
 
+# The project patches the vcpkg overlay port applies
+# (native/vcpkg-overlay-ports/sdl3/portfile.cmake). Stock release-3.4.14
+# does not carry them, and a minimal build without them would diverge
+# from the vcpkg-installed SDL3 the parity numbers were measured against
+# (the multisample-read view and the D3D12 MultisampleEnable line rule).
+# The overlay's third patch, fix-freebsd.patch, only rewires the FreeBSD
+# pkgconfig install path — vcpkg packaging infrastructure with no effect
+# on this Windows build — so it is deliberately not applied here.
+# Idempotent: a patch that already sits in the working tree (a re-run on
+# a warm workspace) reverse-applies cleanly and is skipped; anything
+# else fails loudly rather than building unpatched sources.
+$patchNames = @(
+    "sdl-multisample-read.patch",
+    "d3d12-multisample-lines.patch"
+)
+foreach ($patchName in $patchNames) {
+    $patch = Join-Path $root "native\vcpkg-overlay-ports\sdl3\$patchName"
+    if (-not (Test-Path $patch)) {
+        throw "SDL patch not found: $patch"
+    }
+    git -C $source apply --check $patch 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        git -C $source apply $patch
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to apply SDL patch $patchName."
+        }
+        Write-Output "Applied SDL patch $patchName."
+    } else {
+        git -C $source apply --check --reverse $patch 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                "SDL patch $patchName neither applies to $source nor is " +
+                "already applied. Delete the workspace and rerun."
+            )
+        }
+        Write-Output "SDL patch $patchName is already applied."
+    }
+}
+
 & $CMake -S $source -B $build `
     -DCMAKE_BUILD_TYPE=MinSizeRel `
     "-DCMAKE_INSTALL_PREFIX=$output" `
@@ -110,7 +149,8 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     repository = $repository
     tag = $tag
     version = $sdlVersion
-    variant = "static, MinSizeRel, static CRT, video+events+render+gpu only"
+    patches = $patchNames
+    variant = "static, MinSizeRel, static CRT, video+events+gpu only"
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

@@ -19,9 +19,10 @@ import {
 import { LoweredSource, LoweringContext } from "./context.js";
 import { blendSide, nativeBlendFactor } from "./pinned-blend-table.js";
 import {
-    PINNED_ARITHMETIC_OPERATORS,
-    pinnedMathCall,
-} from "./pinned-operators.js";
+    PinnedNumericLowerer,
+    type PinnedBinding,
+} from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const TASK_MODULE = "src/frame-graph/post-process-task.ts";
 
@@ -41,6 +42,12 @@ export class PostProcessLowerer {
         private readonly context: LoweringContext,
         private readonly tasks: readonly PostProcessTaskManifest[],
         private readonly composites: readonly ComposedComposite[] = [],
+        /**
+         * A preformatted " (reached from <file:line>)" suffix naming the
+         * scene call site that pulled the post-process family in, appended
+         * to the composite refusals; empty when the caller has no site.
+         */
+        private readonly refusalSite: string = "",
     ) {
         this.passes = postProcessPassOrder(tasks, composites);
     }
@@ -713,7 +720,11 @@ ${this.compositeFactories()}
             if (target.format) {
                 lines.push(
                     `    ${intermediate(slot)}_options.format = ` +
-                        `${nativeTextureFormat(target.format, target.label)};`,
+                        `${nativeTextureFormat(
+                            target.format,
+                            target.label,
+                            this.refusalSite,
+                        )};`,
                     `    ${intermediate(slot)}_options.has_format = true;`,
                 );
             }
@@ -744,7 +755,8 @@ ${this.compositeFactories()}
             if (texture.option === "targetTexture") {
                 if (!asTarget) {
                     throw new Error(
-                        "A composite pass reads the task's own output target.",
+                        "A composite pass reads the task's own output " +
+                            `target.${this.refusalSite}`,
                     );
                 }
                 return "inputs.target";
@@ -752,6 +764,7 @@ ${this.compositeFactories()}
             const slot = compositeExtraIndex(
                 composite,
                 texture.option,
+                this.refusalSite,
             );
             return `inputs.extra_textures[${slot}]`;
         };
@@ -761,13 +774,14 @@ ${this.compositeFactories()}
                 .join(", ");
             return (
                 `        PostProcessPassOptions{\n` +
-                `            ${passName(pass.name)},\n` +
+                `            ${passName(pass.name, this.refusalSite)},\n` +
                 `            ${firstShaderIndex + slot}u,\n` +
                 `            ${reference(pass.source, false)},\n` +
                 `            ${reference(pass.target, true)},\n` +
                 `            PostProcessSampling::${nativeSampling(
                     pass.sampling,
                     pass.name,
+                    this.refusalSite,
                 )},\n` +
                 `            ${pass.alphaMode}u,\n` +
                 `            ${pass.viewport ? "true" : "false"},\n` +
@@ -839,12 +853,15 @@ ${this.uniformWriterBody(effect)}
     }
 
     /**
-     * The effect's `writeUniforms`, statement by statement.
+     * The effect's `writeUniforms`, statement by statement through the
+     * shared `PinnedNumericLowerer`.
      *
      * The pin writes into a `Float32Array`, so every expression evaluates in
-     * double and rounds once at the store — the same rule the camera and
-     * matrix ports follow. A runtime slot is refreshed first, which is what
-     * the chromatic factory's `record` override does before the write.
+     * double and rounds once at the store — the translator's own rule. A
+     * runtime slot is refreshed first, which is what the chromatic factory's
+     * `record` override does before the write. What used to be this file's
+     * private walker survives as the binding table below: the effect-path
+     * resolver, spelled as the names a pinned body may read.
      */
     private uniformWriterBody(effect: PostProcessEffect): string {
         const lines: string[] = [];
@@ -864,188 +881,87 @@ ${this.uniformWriterBody(effect)}
                 });`,
             );
         }
-        const { declaration } = this.context.propertyFunction(
+        const { file, declaration } = this.context.propertyFunction(
             effect.module,
             effect.intrinsic,
             "writeUniforms",
         );
-        const scope = new Map<string, string>();
+        // The effect's own state, spelled onto the records the emitted
+        // writer reads: `params.<path>` by descriptor slot (first slot wins,
+        // the way the descriptor's own lookup did), the camera planes where
+        // the effect binds a camera, and the pass's two attachment extents.
+        // A read outside this table fails generation, as it did before.
+        const bindings = new Map<string, PinnedBinding>([
+            ["data", { cpp: "data", type: "f32" }],
+            [
+                "task.outputTexture._width",
+                {
+                    cpp: "static_cast<double>(output_width)",
+                    type: "scalar",
+                },
+            ],
+            [
+                "task.outputTexture._height",
+                {
+                    cpp: "static_cast<double>(output_height)",
+                    type: "scalar",
+                },
+            ],
+            [
+                "config.sourceTexture._width",
+                {
+                    cpp: "static_cast<double>(source_width)",
+                    type: "scalar",
+                },
+            ],
+            [
+                "config.sourceTexture._height",
+                {
+                    cpp: "static_cast<double>(source_height)",
+                    type: "scalar",
+                },
+            ],
+        ]);
+        for (const [slot, parameter] of effect.params.entries()) {
+            const key = `params.${parameter.path}`;
+            if (!bindings.has(key)) {
+                bindings.set(key, {
+                    cpp: `task.params[${slot}]`,
+                    type: "scalar",
+                });
+            }
+        }
+        if (effect.usesCamera) {
+            bindings.set("camera.nearPlane", {
+                cpp: "engine.cameras[task.camera.value].near_plane",
+                type: "scalar",
+            });
+            bindings.set("camera.farPlane", {
+                cpp: "engine.cameras[task.camera.value].far_plane",
+                type: "scalar",
+            });
+        }
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: pinnedNumericMathCalls(),
+        });
         for (const statement of declaration.body.statements) {
-            if (ts.isVariableStatement(statement)) {
-                for (const binding of statement.declarationList
-                    .declarations) {
-                    if (
-                        !ts.isIdentifier(binding.name) ||
-                        !binding.initializer
-                    ) {
-                        this.context.contractError(
-                            binding,
-                            "Expected a named binding in writeUniforms.",
-                        );
-                    }
-                    const name = binding.name.text;
-                    lines.push(
-                        `            const double ${name} = ${this.expression(
-                            binding.initializer,
-                            effect,
-                            scope,
-                        )};`,
-                    );
-                    scope.set(name, name);
-                }
-                continue;
-            }
-            if (
-                !ts.isExpressionStatement(statement) ||
-                !ts.isBinaryExpression(statement.expression) ||
-                statement.expression.operatorToken.kind !==
-                    ts.SyntaxKind.EqualsToken ||
-                !ts.isElementAccessExpression(statement.expression.left) ||
-                !ts.isIdentifier(statement.expression.left.expression) ||
-                statement.expression.left.expression.text !== "data" ||
-                !ts.isNumericLiteral(
-                    statement.expression.left.argumentExpression,
-                )
-            ) {
-                this.context.contractError(
-                    statement,
-                    "Expected writeUniforms to bind a local or store into data[i].",
-                );
-            }
-            const index = Number(
-                statement.expression.left.argumentExpression.text,
-            );
-            lines.push(
-                `            data[${index}] = static_cast<float>(${this.expression(
-                    statement.expression.right,
-                    effect,
-                    scope,
-                )});`,
-            );
+            lines.push(...lowerer.statement(statement, "            "));
         }
         return lines.join("\n");
-    }
-
-    /** The bounded expression set a pinned uniform writer uses. */
-    private expression(
-        expression: ts.Expression,
-        effect: PostProcessEffect,
-        scope: ReadonlyMap<string, string>,
-    ): string {
-        const node = this.context.unwrapExpression(expression);
-        if (ts.isNumericLiteral(node)) {
-            return this.context.doubleLiteral(Number(node.text));
-        }
-        if (ts.isIdentifier(node)) {
-            const local = scope.get(node.text);
-            if (local) {
-                return local;
-            }
-            return this.context.contractError(
-                node,
-                `writeUniforms reads an unbound name '${node.text}'.`,
-            );
-        }
-        if (ts.isBinaryExpression(node)) {
-            const operator = PINNED_ARITHMETIC_OPERATORS.get(
-                node.operatorToken.kind,
-            );
-            if (operator) {
-                return `(${this.expression(
-                    node.left,
-                    effect,
-                    scope,
-                )} ${operator} ${this.expression(
-                    node.right,
-                    effect,
-                    scope,
-                )})`;
-            }
-            if (
-                node.operatorToken.kind === ts.SyntaxKind.BarBarToken
-            ) {
-                // JavaScript's numeric `||`: an extent of zero falls through
-                // to the source's, which is what an unsized target reads.
-                return `bbl::js::or_number(${this.expression(
-                    node.left,
-                    effect,
-                    scope,
-                )}, ${this.expression(node.right, effect, scope)})`;
-            }
-            return this.context.contractError(
-                node,
-                "writeUniforms uses an operator this port does not lower.",
-            );
-        }
-        const math = pinnedMathCall(node);
-        if (math) {
-            return `${math.native}(${math.call.arguments
-                .map((argument) =>
-                    this.expression(argument, effect, scope),
-                )
-                .join(", ")})`;
-        }
-        const path = this.context.propertyPath(node);
-        if (path) {
-            const native = this.pathExpression(path, effect);
-            if (native) {
-                return native;
-            }
-        }
-        return this.context.contractError(
-            node,
-            `writeUniforms reads '${node.getText(
-                node.getSourceFile(),
-            )}', which this port does not carry.`,
-        );
-    }
-
-    /** What a pinned read of the effect's own state names natively. */
-    private pathExpression(
-        path: readonly string[],
-        effect: PostProcessEffect,
-    ): string | undefined {
-        const joined = path.join(".");
-        if (path[0] === "params") {
-            const slot = effect.params.findIndex(
-                (candidate) => candidate.path === path.slice(1).join("."),
-            );
-            return slot < 0
-                ? undefined
-                : `task.params[${slot}]`;
-        }
-        if (path[0] === "camera" && effect.usesCamera) {
-            if (path[1] === "nearPlane" || path[1] === "farPlane") {
-                const field =
-                    path[1] === "nearPlane" ? "near_plane" : "far_plane";
-                return `engine.cameras[task.camera.value].${field}`;
-            }
-            return undefined;
-        }
-        // The pass's own attachments: `task.outputTexture` is where it draws
-        // and `config.sourceTexture` is what it samples.
-        if (joined === "task.outputTexture._width") {
-            return "static_cast<double>(output_width)";
-        }
-        if (joined === "task.outputTexture._height") {
-            return "static_cast<double>(output_height)";
-        }
-        if (joined === "config.sourceTexture._width") {
-            return "static_cast<double>(source_width)";
-        }
-        if (joined === "config.sourceTexture._height") {
-            return "static_cast<double>(source_height)";
-        }
-        return undefined;
     }
 }
 
 /** The sampler a pass asked for, refusing a mode this port does not carry. */
-function nativeSampling(mode: string, name: string): string {
+function nativeSampling(
+    mode: string,
+    name: string,
+    refusalSite = "",
+): string {
     if (mode !== "nearest" && mode !== "linear") {
         throw new Error(
             `A composite's pass '${name}' samples in '${mode}', which is ` +
-                "neither of the two modes the pass carries.",
+                `neither of the two modes the pass carries.${refusalSite}`,
         );
     }
     return mode;
@@ -1056,11 +972,11 @@ function nativeSampling(mode: string, name: string): string {
  * suffix. The composite's name is the scene's, known only at run time, so the
  * suffix is what generation carries.
  */
-function passName(name: string): string {
+function passName(name: string, refusalSite = ""): string {
     if (!name.startsWith(COMPOSITION_NAME)) {
         throw new Error(
             `A composite named a pass '${name}', which does not derive from ` +
-                "the name it was given.",
+                `the name it was given.${refusalSite}`,
         );
     }
     return `inputs.name + ${stringLiteral(
@@ -1081,13 +997,14 @@ function intermediate(index: number): string {
 function compositeExtraIndex(
     composite: ComposedComposite,
     option: string,
+    refusalSite = "",
 ): number {
     const descriptor = postProcessComposite(composite.intrinsic);
     const slot = descriptor?.extraTextures.indexOf(option) ?? -1;
     if (slot < 0) {
         throw new Error(
             `${composite.intrinsic} builds a pass reading '${option}', ` +
-                "which its descriptor does not name as a texture.",
+                `which its descriptor does not name as a texture.${refusalSite}`,
         );
     }
     return slot;
@@ -1102,7 +1019,11 @@ function compositeExtraIndex(
  * a swapchain-shaped format arriving here would mean the composite named one,
  * which it does not, and is refused with everything else unlisted.
  */
-function nativeTextureFormat(format: string, label: string): string {
+function nativeTextureFormat(
+    format: string,
+    label: string,
+    refusalSite = "",
+): string {
     const native: Readonly<Record<string, string>> = {
         r16float: "TextureFormatClass::r16_float",
         r32float: "TextureFormatClass::r32_float",
@@ -1113,7 +1034,7 @@ function nativeTextureFormat(format: string, label: string): string {
     if (!name) {
         throw new Error(
             `A composite sizes '${label}' in '${format}', which this port's ` +
-                "two backends do not both express.",
+                `two backends do not both express.${refusalSite}`,
         );
     }
     return name;

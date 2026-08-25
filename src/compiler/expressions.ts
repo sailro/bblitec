@@ -25,10 +25,10 @@ import type {
     Value,
     ValueKind,
 } from "./types.js";
-import {
-    emitHandleCollectionLoop,
-    type HandleCollectionTarget,
-} from "./statements.js";
+import type {
+    HandleCollections,
+    HandleCollectionTarget,
+} from "./handle-collections.js";
 import type {
     UserFunctionContext,
     UserFunctionLowerer,
@@ -110,6 +110,8 @@ export interface ExpressionContext
     evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined;
+    /** The handle-collection concept: every collection operation. */
+    readonly handleCollections: HandleCollections;
     handleCollectionIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
@@ -136,6 +138,16 @@ export class ExpressionLowerer {
             unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.QuestionQuestionToken
         ) {
+            // An engine handle collection first: the materialized asset
+            // decides `container.animationGroups ?? []`, generalizing the
+            // static-record rule below to asset-derived collections.
+            const collection =
+                this.context.handleCollections.resolveNullishCollection(
+                    unwrapped,
+                );
+            if (collection) {
+                return collection;
+            }
             return this.compileValue(
                 this.context.evaluator.resolveNullish(unwrapped),
             );
@@ -695,168 +707,6 @@ export class ExpressionLowerer {
         return conditional;
     }
 
-    /**
-     * `scene.lights.push(light)`, which is what `addToScene` does with one.
-     *
-     * The pin's own `addToScene` branches on the entity: a light takes
-     * `ctx.lights.push(entity)` and then recurses into `entity.children`,
-     * which a scene-code light has none of. So the two spellings are the same
-     * call here, and a scene that writes the collection directly reaches the
-     * lowering the intrinsic already has rather than a second one.
-     */
-    private compileSceneLightPush(
-        call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
-    ): Value | undefined {
-        if (
-            callee.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "lights"
-        ) {
-            return undefined;
-        }
-        const scene = this.context.compileValue(
-            callee.expression.expression,
-        );
-        if (scene.kind !== "scene") return undefined;
-        this.context.expectArgumentCount(call, 1, 1);
-        const light = this.context.compileValue(call.arguments[0]!);
-        this.context.expectKind(light, "light", call.arguments[0]!);
-        this.context.expectSameEngine(scene, light, call);
-        return {
-            kind: "void",
-            cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,
-        };
-    }
-
-    /**
-     * `set.systems.push(other)`: one built set's systems composed into
-     * another's, so a single registration renders both.
-     *
-     * `NodeParticleSet.systems` is a mutable array behind a readonly
-     * property upstream, and the corpus uses exactly that to render a
-     * Multiply system beside a MultiplyAdd one. It records a step rather
-     * than emitting: the bake replays the push and reports which systems
-     * the registration then walked, because the set's own count is the
-     * graph's answer.
-     */
-    private compileParticleSystemsPush(
-        call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
-    ): Value | undefined {
-        if (
-            callee.name.text !== "push" ||
-            !ts.isPropertyAccessExpression(callee.expression) ||
-            callee.expression.name.text !== "systems"
-        ) {
-            return undefined;
-        }
-        const set = this.context.compileValue(
-            callee.expression.expression,
-        );
-        if (set.kind !== "node-particle-set") return undefined;
-        this.context.expectArgumentCount(call, 1, 1);
-        const system = this.context.compileValue(call.arguments[0]!);
-        this.context.expectKind(
-            system,
-            "node-particle-system",
-            call.arguments[0]!,
-        );
-        if (
-            set.nodeParticleSetIndex === undefined ||
-            system.nodeParticleSetIndex === undefined ||
-            system.nodeParticleSystemIndex === undefined
-        ) {
-            this.context.fail(
-                call,
-                "A pushed particle system comes from a built set.",
-            );
-        }
-        this.context.reachedNodeParticles.steps.push({
-            op: "push-system",
-            set: set.nodeParticleSetIndex,
-            fromSet: system.nodeParticleSetIndex,
-            fromSystem: system.nodeParticleSystemIndex,
-        });
-        return { kind: "void", cpp: "" };
-    }
-
-    /**
-     * `<collection>.find(<arrow>)` over a collection of engine handles.
-     *
-     * The collection is loaded, so the search is a real loop over it: the
-     * predicate is the caller's own expression with the element bound,
-     * and the result is the handle plus whether one matched — which is
-     * what a scene tests before using it, and what upstream's `undefined`
-     * return means.
-     */
-    private compileHandleCollectionFind(
-        call: ts.CallExpression,
-        callee: ts.PropertyAccessExpression,
-    ): Value | undefined {
-        if (callee.name.text !== "find") {
-            return undefined;
-        }
-        const target =
-            this.context.handleCollectionIterationTarget(
-                callee.expression,
-            );
-        if (!target) {
-            return undefined;
-        }
-        this.context.expectArgumentCount(call, 1, 1);
-        const predicate = this.context.unwrap(
-            call.arguments[0]!,
-        );
-        if (
-            !ts.isArrowFunction(predicate) ||
-            predicate.parameters.length !== 1 ||
-            !ts.isIdentifier(predicate.parameters[0]!.name) ||
-            ts.isBlock(predicate.body)
-        ) {
-            this.context.fail(
-                call.arguments[0] ?? call,
-                "find takes an arrow whose one parameter is the element and whose body is the test.",
-            );
-        }
-        const result = this.context.allocateTemporaryCppName(
-            `${target.temporaryLabel}_match`,
-        );
-        const found = this.context.allocateTemporaryCppName(
-            `${target.temporaryLabel}_found`,
-        );
-        this.context.emit(
-            `${target.elementCppType} ${result}{};`,
-        );
-        this.context.emit(`bool ${found} = false;`);
-        emitHandleCollectionLoop(
-            this.context,
-            target,
-            predicate.parameters[0]!.name as ts.Identifier,
-            (context) => {
-                const item = context.lookup(
-                    predicate.parameters[0]!.name as ts.Identifier,
-                ).cpp;
-                const test = context.compileCondition(
-                    predicate.body as ts.Expression,
-                );
-                context.emit(`if (${test}) {`);
-                context.increaseIndent();
-                context.emit(`${result} = ${item};`);
-                context.emit(`${found} = true;`);
-                context.emit("break;");
-                context.decreaseIndent();
-                context.emit("}");
-            },
-        );
-        return {
-            kind: target.elementKind,
-            cpp: result,
-            engineCpp: target.engineCpp,
-            optionalFoundCpp: found,
-        };
-    }
-
     private compileCall(call: ts.CallExpression): Value {
         const promise = compileImmediatePromise(
             this.context,
@@ -875,10 +725,14 @@ export class ExpressionLowerer {
         }
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
-            const pushed = this.compileParticleSystemsPush(
-                call,
-                callee,
-            );
+            // The handle-collection concept owns the collection calls; the
+            // three dispatch positions stay exactly where the arms sat so
+            // the resolution order a call site observes is unchanged.
+            const pushed =
+                this.context.handleCollections.compileParticleSystemsPush(
+                    call,
+                    callee,
+                );
             if (pushed) return pushed;
             const math =
                 this.context.dataLowerer.compileMathCall(call);
@@ -892,17 +746,19 @@ export class ExpressionLowerer {
             if (method) {
                 return method;
             }
-            const lightPush = this.compileSceneLightPush(
-                call,
-                callee,
-            );
+            const lightPush =
+                this.context.handleCollections.compileSceneLightPush(
+                    call,
+                    callee,
+                );
             if (lightPush) {
                 return lightPush;
             }
-            const found = this.compileHandleCollectionFind(
-                call,
-                callee,
-            );
+            const found =
+                this.context.handleCollections.compileFind(
+                    call,
+                    callee,
+                );
             if (found) {
                 return found;
             }

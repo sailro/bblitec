@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node.js 22+
+- Node.js 22.12+
 - CMake 3.24+
 - Ninja
 - a C++20 compiler
@@ -40,6 +40,8 @@ npm run scene -- diff scene1
 npm run scene -- compose scene1
 npm run scene -- measure artifacts\parity\scene1\native-gpu.png
 npm run scene -- stability scene9 --backend dawn
+npm run scene -- diagnose scene33
+npm run scene -- clean --orphans
 npm run scene -- validate scene1
 npm run scene -- neutrality artifacts/parity-baseline
 npm run scene -- neutrality-generated artifacts/generated-baseline.txt --write
@@ -67,6 +69,15 @@ at ±1 frame and prints the one-frame motion scale a residual should be
 judged against. `stability` renders the native side N times and prints
 every run against the first *and* against the golden — both always,
 because run-to-run agreement alone hides a stable-but-wrong image.
+`stability` also takes `--seek <t>`: at a non-registry pose the golden
+columns are suppressed (two poses measure nothing) and artifacts gain a
+`-seek<t>` suffix so experiments never clobber registry-pose evidence.
+`diagnose` walks the diagnosis ladder for one scene — parity
+`--differential`, then `diff`, then `compose` over one shared capture —
+and prints each rung's verdict in order (`--backend`, `--seek` and
+`--gpu-debug` pass through).
+`clean --orphans` deletes build trees and `generated/` entries no registry
+scene owns; `--all` additionally removes owned build trees.
 `validate` chains compile, shaders, build, parity and the status check
 with one summary line per stage, preserving every artifact on failure.
 See [debugging](debugging.md) for the ladder they sit in.
@@ -80,7 +91,12 @@ HDR scene compilation launches headless Chromium to run the pinned
 1024-sample GGX compute shader, a node-particle scene launches it to run
 the pin's own simulation to the frame the scene freezes, and a scene loading
 a `.basis` texture launches it to run the pinned loader's own transcode. Set
-`CHROME_PATH` when Chrome/Edge is not in a standard location.
+`CHROME_PATH` when Chrome/Edge is not in a standard location. Those executed
+bakes replay from a content-addressed cache under `artifacts\bake-cache`
+(keyed on the pin, the input bytes, the parameters, the packager module and
+the browser build), so a warm recompile launches no Chromium and produces
+byte-identical output; the directory is disposable, and `BBLITE_BAKE_CACHE=0`
+disables the replay.
 
 Aggregate registered-scene workflows are registry-driven through
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
@@ -109,19 +125,11 @@ scene is considered for integration, before implementing native fixes:
 5. Carry useful evidence into the scene dashboard note, focused tests, or
    `TODO.md` before setting a curated threshold.
 6. Run the scene in the demo window and move the camera before calling the
-   integration done. A gate renders the one pose its author chose, so a
-   defect that is off-screen or edge-on there passes a green matrix — a
-   skybox the camera's far plane clips, or one that breaks into a hard-edged
-   quad outside the cube, are both invisible from a fixed pose. This is a
-   manual step: a second capture per scene would double the matrix to cover
-   something only a few scenes reach. When it finds something, turn it into a
-   measurement rather than a screenshot: copy the scene into `examples\`, move
-   its camera there, and `parity --recapture-reference` so both sides are
-   compared at that pose. Then bisect with the runtime switches before
-   trusting the description the defect came with — `BBLITE_GROUND=0` and
-   `BBLITE_BACKGROUND=0` each remove one background element, and the one whose
-   removal makes the measurement *worse* is not the cause
-   ([debugging](debugging.md#before-calling-a-scene-done)).
+   integration done — a manual step, since a second capture per scene would
+   double the matrix to cover something only a few scenes reach.
+   [Debugging](debugging.md#before-calling-a-scene-done) carries the
+   orbit-then-measure recipe and the suppression bisection to run before
+   trusting the description a defect came with.
 
 Do not wait for a high MAD investigation to perform this review. Upstream
 history inspection avoids repeating Babylon Lite's own parity debugging and
@@ -156,9 +164,10 @@ where Dawn is structurally closer to the golden carry their own
 bytes per channel.
 
 Animated scenes pin a frame rather than a wall-clock moment.
-`referenceTimeSeconds` makes the browser harness seek and pause, and
-`nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS` pairs the native run to the
-same time. A golden is only valid for the registry parameters it was captured
+`referenceTimeSeconds` makes the browser harness seek and pause, and the
+registry derives `nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS` from it so
+the pose is spelled once — an entry that still writes the variable explicitly
+must agree numerically or registry load refuses. A golden is only valid for the registry parameters it was captured
 under: a reference captured without them carries no seek, so the scene
 free-ran, and diffing a seeked native run against it produces a large and
 meaningless result. When native and `scene -- capture <id> --seek <t>` agree
@@ -412,8 +421,10 @@ Generation:
 Generation must finish before shader compilation and native build. Do not run
 those phases concurrently.
 
-Every `npm run scene -- ...` invocation first re-runs a clean `npm run build`,
-so editing TypeScript while one is running risks a mixed `dist`. For a chain of
+Every `npm run scene -- ...` invocation first runs `npm run build`, which
+skips the clean and `tsc` when `dist/.build-stamp` still matches the sources
+(any doubt rebuilds; `npm run clean:dist` forces cold) — so editing TypeScript
+while one is running still risks a mixed `dist`. For a chain of
 several operations, build once and call `node dist/src/scene-command.js <op>
 <scene>` directly, which leaves `dist` frozen while sources change. That
 freezes generation entirely: its only inputs are the compiled `dist` and the
@@ -510,11 +521,18 @@ Native outputs are self-contained by default: CMake places `assets` and
 executable. `BBLITE_ASSET_DIR` and `BBLITE_GPU_SHADER_DIR` remain explicit
 overrides for diagnostics and unusual layouts.
 
-Shader compilation uses `artifacts\shader-cache`, keyed by source, profile,
-DXC executable/codegen DLLs, and the exact invocation flags. DXIL and SPIR-V
-are validated and atomically published, so interrupted or malformed entries
-are rebuilt instead of reused. Identical variants are reused across scenes;
-the cache is disposable.
+Shader compilation uses `artifacts\shader-cache` for both halves of the
+offline path: the DXC half is keyed by source, profile, DXC
+executable/codegen DLLs and the exact invocation flags, and the Tint half
+(`tint-*` entries holding HLSL/MSL/reflection/`.slots`) by the Tint
+executable, the source WGSL, the entry point and the script itself — so a
+warm corpus pass reports `0 transpiled, N replayed`. DXIL and SPIR-V are
+validated and atomically published, so interrupted or malformed entries are
+rebuilt instead of reused. Identical variants are reused across scenes; the
+cache is disposable. The step also enforces SDL_GPU's four-uniform-buffer
+stage cap on every compiled stage, refusing by block name (release SDL
+corrupts the D3D12 command buffer past it), with the `gp` demotion keyed on
+the block's own declaration rather than a filename.
 
 Build the pinned Tint CLI with:
 
@@ -603,9 +621,12 @@ byte-identical differential reports, so raising it on a known machine is safe.
 ## Minimal-size builds
 
 The minimal release shape statically links everything into one
-executable per backend. Measured on Scene 1: 2.2 MB SDL_GPU and
-7.7 MB Dawn, versus 5.9 MB across 17 files and 37.8 MB across 21
-files for the dynamic packages, at identical parity.
+executable per backend. Measured on Scene 1: 2.3 MB SDL_GPU (with the
+two vendored SDL patches compiled in) and 7.7 MB Dawn, versus 5.9 MB
+across 17 files and 37.8 MB across 21 files for the dynamic packages,
+at identical parity — the minimal Scene 1 executable measures the same
+0.001/0.007 as the dynamic build. A physics scene folds Bullet into the
+same shape: Scene 40 measures 2.5 MB.
 
 Build the trimmed dependencies once:
 
@@ -725,6 +746,7 @@ The full parity flag set (an unknown flag is an error naming this set):
 | `--gpu-debug` | the backend's validation layer plus SDL assertion defusal (see [debugging](debugging.md#runtime-switches-worth-knowing)) |
 | `--exe <path>` | measure a specific native executable instead of the scene's Release build; `BBLITE_NATIVE_EXE` is the environment form of the same override |
 | `--actual <png>` | compare an existing image instead of rendering one |
+| `--without ground\|background` | re-run the native side with one element suppressed against the unchanged golden — artifacts suffixed `-without-<element>`, no threshold gate |
 | `--no-fail` | report a threshold violation as a warning instead of a failing exit |
 
 Outputs land in the scene's parity directory `artifacts\parity\<scene>`:
@@ -735,8 +757,9 @@ draw/cluster buffers. Committed goldens live under `reference\<scene>`.
 
 Both GPU backends serve the attribution captures. `BBLITE_GPU_BACKEND=dawn`
 before any of the scene 1 commands renders the draw-id and triangle-cluster
-buffers through Dawn instead of SDL_GPU; the `-gpu` filenames
-always reflect whichever backend produced the run. The two backends produce
+buffers through Dawn instead of SDL_GPU, and the filenames carry the backend
+token like every other artifact (`draw-ids-<token>.png`,
+`triangle-clusters-<token>.png`). The two backends produce
 byte-identical id/cluster buffers, so either side can attribute a diff.
 
 Render both GPU backends and diff them against each other and the
@@ -750,7 +773,8 @@ Each backend still runs through its standard gates (scenes where Dawn
 is structurally closer to the golden carry tighter `dawnThresholds`
 in the registry), and `report-differential.json` adds the direct
 SDL_GPU-versus-Dawn comparison — backend agreement to one LSB puts a
-divergence on the CPU side, disagreement puts it on the GPU side.
+divergence on the CPU side, disagreement on the GPU side
+([backends](backends.md)).
 `--differential` also composes with `parity all`. It runs each backend in its
 own process, because the backend selection is process-global, and those
 processes receive only the differential flag — combining it with anything
@@ -950,26 +974,27 @@ npm run scenes:parity
 npm run scene -- neutrality artifacts/parity-baseline
 ```
 
-`neutrality` prints every cell that moved and exits non-zero if any did.
+`neutrality` prints every cell that moved and exits non-zero if any did. It
+compares `report-differential.json` only — a single-backend sweep produces
+nothing it can compare.
 `status:verify` performs the published half of the same comparison.
 
 It already knows the movements that are not findings: scenes 9, 37 and 120 do
 not render bit-identically from one run to the next, so those cells move for
 any change and for no change alike. They are reported as expected wobble and
-excluded from the exit status; every other moved cell is real. The mover is
-multisampling rather than a backend — at one sample every one of the three
-is byte-identical across runs — so the whitelist is per scene AND per
-backend: scene 9 wobbles on Dawn alone and is measured bit-stable on SDL_GPU,
-while scenes 37 and 120 wobble on both. A cross-backend cell moves when either
-side does, so one wobbling backend excuses it; each scene's own
+excluded from the exit status; every other moved cell is real. The whitelist
+is per scene AND per backend — scene 9's wobble is Dawn-only, scenes 37 and
+120 wobble on both — because the mover is multisampling
+([debugging](debugging.md#2-which-side-is-it-on) carries the measured
+mechanism and the magnitudes). A cross-backend cell moves when either side
+does, so one wobbling backend excuses it; each scene's own
 `goldenVersusSdlGpu` cells stay compared regardless.
 
 Nothing else is on that list, and the entry fee is a measurement rather than a
 surprising neutrality run: `scene -- stability <id> --backend <b>` has to show
 the re-runs differing and `--single-sample` has to show them stop. A whitelist
 entry excuses those cells permanently, so it hides any regression smaller than
-the wobble — scene 120's spans 0.002 against a 0.004 Dawn foreground on
-Dawn, and measures 0.000250 peak on SDL_GPU against scene 37's 0.000059.
+the wobble.
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat

@@ -147,17 +147,15 @@ export class SpriteLowerer {
             uvScrollModule,
             "ensureWide",
         );
-        const write = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isPropertyAccessExpression(node.left) &&
-                    node.left.name.text === "_uvScrollAttr",
-            )
-            .map((node) => node as ts.BinaryExpression)[0];
+        const write = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                node.left.name.text === "_uvScrollAttr",
+        )[0];
         if (!write) {
             this.context.contractError(
                 declaration,
@@ -323,7 +321,7 @@ export class SpriteLowerer {
      * rather than trusted: a moved slot has to fail generation.
      */
     private assertInstanceSlots(): void {
-        const { declaration } = this.functionOf(
+        const { declaration } = this.context.functionDeclaration(
             layerModule,
             "writeInstance",
         );
@@ -338,18 +336,16 @@ export class SpriteLowerer {
             [7, "vMax"],
             [8, "rotation"],
         ];
-        const writes = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(node.left) &&
-                    ts.isIdentifier(node.left.expression) &&
-                    node.left.expression.text === "data",
-            )
-            .map((node) => node as ts.BinaryExpression);
+        const writes = this.context.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                ts.isIdentifier(node.left.expression) &&
+                node.left.expression.text === "data",
+        );
         for (const [slot, source] of expected) {
             const write = writes.find(
                 (node) =>
@@ -405,7 +401,7 @@ export class SpriteLowerer {
 
     /** `base` is `slotIndex * layer._instanceFloatsPerSprite`. */
     private assertInstanceBase(): void {
-        const { declaration } = this.functionOf(
+        const { declaration } = this.context.functionDeclaration(
             layerModule,
             "writeInstance",
         );
@@ -429,7 +425,7 @@ export class SpriteLowerer {
 
     /** `createGridSpriteAtlas` derives columns, rows, and each frame's UVs. */
     private assertGridAtlas(): void {
-        const { declaration } = this.functionOf(
+        const { declaration } = this.context.functionDeclaration(
             atlasModule,
             "createGridSpriteAtlas",
         );
@@ -504,7 +500,7 @@ export class SpriteLowerer {
 
     /** `resolveSpriteFrame` is a bounds check and nothing else. */
     private assertFrameResolution(): void {
-        const { declaration } = this.functionOf(
+        const { declaration } = this.context.functionDeclaration(
             atlasModule,
             "resolveSpriteFrame",
         );
@@ -539,7 +535,7 @@ export class SpriteLowerer {
 
     /** `loadSpriteAtlas` requires `gridSize` and fixes the texture options. */
     private assertAtlasLoader(): void {
-        const { declaration, file } = this.functionOf(
+        const { declaration, file } = this.context.functionDeclaration(
             atlasModule,
             "loadSpriteAtlas",
         );
@@ -587,16 +583,6 @@ export class SpriteLowerer {
         }
     }
 
-    /** `spriteBlendAlpha` and the shared straight-alpha blend state. */
-    /**
-     * `writeSpriteFxUbo` fills eight floats in a fixed order, and
-     * `SPRITE_FX_UBO_BYTES` is what the block is bound as.
-     *
-     * The module is shared between the two families, so the check and the
-     * function it guards are stated once here and the billboard system
-     * reads them out of the same header, the way it already does for
-     * `resolveSpriteFrame`.
-     */
     /**
      * The slot expressions a pinned writer fills, checked against the pin.
      *
@@ -640,8 +626,17 @@ export class SpriteLowerer {
         }
     }
 
+    /**
+     * `writeSpriteFxUbo` fills eight floats in a fixed order, and
+     * `SPRITE_FX_UBO_BYTES` is what the block is bound as.
+     *
+     * The module is shared between the two families, so the check and the
+     * function it guards are stated once here and the billboard system
+     * reads them out of the same header, the way it already does for
+     * `resolveSpriteFrame`.
+     */
     private assertFxUbo(): number {
-        const { declaration, file } = this.functionOf(
+        const { declaration, file } = this.context.functionDeclaration(
             customShaderCoreModule,
             "writeSpriteFxUbo",
         );
@@ -679,7 +674,7 @@ export class SpriteLowerer {
 
     /** `buildSpriteLayerUbo` fills sixteen floats in a fixed order. */
     private assertLayerUbo(): void {
-        const { declaration, file } = this.functionOf(
+        const { declaration, file } = this.context.functionDeclaration(
             pipelineModule,
             "buildSpriteLayerUbo",
         );
@@ -750,7 +745,7 @@ export class SpriteLowerer {
             "new U16([0, 1, 2, 0, 2, 3])",
             "shared sprite index buffer",
         );
-        const { declaration } = this.functionOf(
+        const { declaration } = this.context.functionDeclaration(
             rendererModule,
             "spriteRendererRecord",
         );
@@ -880,19 +875,6 @@ export class SpriteLowerer {
     // -----------------------------------------------------------------
     // Emission
     // -----------------------------------------------------------------
-
-    private functionOf(
-        modulePath: string,
-        symbolName: string,
-    ): {
-        file: ts.SourceFile;
-        declaration: ts.FunctionDeclaration;
-    } {
-        return this.context.functionDeclaration(
-            modulePath,
-            symbolName,
-        );
-    }
 
     private elementIndexText(
         target: ts.Expression,

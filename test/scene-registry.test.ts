@@ -34,7 +34,7 @@ test("states the curated scene count the registry actually holds", () => {
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes.map(({ id }) => id),
-        ["primitives", "scene1", "scene3", "scene6", "scene14", "scene24", "scene28", "scene29", "scene31", "scene33", "scene35", "scene216", "scene150", "scene178", "scene210", "scene212", "scene243", "scene246", "scene247", "scene252", "scene254", "scene255", "scene258", "scene259", "scene265", "scene2", "scene7", "scene8", "scene5", "scene10", "scene12", "scene13", "scene32", "scene159", "scene160", "scene161", "scene162", "scene163", "audit-shader-frame-graph", "regression-runtime-sweep", "regression-instanced-ground", "regression-morph-ground", "regression-light-setters", "regression-compiler-state", "scene168", "scene176", "scene213", "scene151", "scene154", "scene152", "scene157", "scene155", "scene240", "regression-track-clamp", "scene110", "scene120", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene267", "scene268", "scene30", "scene256", "scene260", "scene34", "scene9", "scene242", "scene23", "scene40", "scene273", "scene274", "scene244", "scene37", "scene253", "scene39", "scene21", "scene19", "scene15", "scene50", "scene56", "scene57", "scene92", "scene93", "scene94", "scene95", "scene96", "scene97", "scene54", "scene55", "scene98", "scene177", "regression-animation-groups", "scene26", "scene27", "scene142", "scene143", "scene147", "scene11", "scene148", "scene60", "scene61", "scene77", "scene78", "scene79", "scene80", "scene82", "scene85", "scene88", "scene89", "scene63", "scene67", "scene68", "scene69", "scene70", "scene71", "scene84", "scene62", "scene81", "scene87", "scene74", "scene75", "scene76", "scene262", "scene263", "scene264", "scene276", "scene277", "scene280", "scene281", "scene283", "scene284", "scene278", "scene279", "scene301", "scene282", "scene220", "scene25", "scene36"]
+        ["primitives", "scene1", "scene3", "scene6", "scene14", "scene24", "scene28", "scene29", "scene31", "scene33", "scene35", "scene216", "scene150", "scene178", "scene210", "scene212", "scene243", "scene246", "scene247", "scene252", "scene254", "scene255", "scene258", "scene259", "scene265", "scene2", "scene7", "scene8", "scene5", "scene10", "scene12", "scene13", "scene32", "scene159", "scene160", "scene161", "scene162", "scene163", "audit-shader-frame-graph", "regression-runtime-sweep", "regression-instanced-ground", "regression-morph-ground", "regression-light-setters", "regression-compiler-state", "scene168", "scene176", "scene213", "scene151", "scene154", "scene152", "scene157", "scene158", "scene155", "scene240", "regression-track-clamp", "scene110", "scene120", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene267", "scene268", "scene30", "scene256", "scene260", "scene34", "scene9", "scene242", "scene23", "scene40", "scene273", "scene274", "scene244", "scene37", "scene253", "scene39", "scene21", "scene19", "scene15", "scene50", "scene56", "scene57", "scene92", "scene93", "scene94", "scene95", "scene96", "scene97", "scene54", "scene55", "scene98", "scene177", "regression-animation-groups", "scene26", "scene27", "scene142", "scene143", "scene147", "scene11", "scene148", "scene60", "scene61", "scene77", "scene78", "scene79", "scene80", "scene82", "scene85", "scene88", "scene89", "scene63", "scene67", "scene68", "scene69", "scene70", "scene71", "scene84", "scene62", "scene81", "scene87", "scene74", "scene75", "scene76", "scene262", "scene263", "scene264", "scene276", "scene277", "scene280", "scene281", "scene283", "scene284", "scene278", "scene279", "scene301", "scene282", "scene220", "scene25", "scene36"]
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is
@@ -94,6 +94,43 @@ test("registers unique generated scene targets", () => {
     assert.equal(getScene("scene273").parity?.maxFullMad, 0.001);
     assert.equal(getScene("scene1").parity?.reference.kind, "source");
     assert.throws(() => getScene("missing"), /Unknown scene/);
+});
+
+test("spells the measured pose once: the native seek derives from referenceTimeSeconds", () => {
+    // 23 entries used to hand-pair referenceTimeSeconds with
+    // nativeEnvironment.BBLITE_ANIMATION_SEEK_SECONDS; drift would have
+    // split rung 1 (the env var, read by the parity run) from rung 3
+    // (referenceTimeSeconds, read by capture --native and diff)
+    // silently. The registry now derives the env var, and this asserts
+    // the pairing holds for every entry in both directions.
+    let derived = 0;
+    for (const scene of scenes) {
+        const pose = scene.parity?.referenceTimeSeconds;
+        const seek =
+            scene.parity?.nativeEnvironment
+                ?.BBLITE_ANIMATION_SEEK_SECONDS;
+        if (pose === undefined) {
+            assert.equal(
+                seek,
+                undefined,
+                `${scene.id} carries a native seek with no referenceTimeSeconds.`,
+            );
+            continue;
+        }
+        assert.ok(
+            seek !== undefined,
+            `${scene.id} pins referenceTimeSeconds=${pose} but derives no native seek.`,
+        );
+        assert.equal(
+            Number(seek),
+            pose,
+            `${scene.id}: BBLITE_ANIMATION_SEEK_SECONDS='${seek}' disagrees with referenceTimeSeconds=${pose}.`,
+        );
+        derived += 1;
+    }
+    // The derivation is live, not vacuous: the registry holds animated
+    // scenes.
+    assert.ok(derived >= 20, `only ${derived} scenes derive a seek.`);
 });
 
 test("derives defaults for an unregistered scene source", () => {

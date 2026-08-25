@@ -70,7 +70,6 @@ import {
     compileTorusOptions,
     type MeshOptionContext,
 } from "./compiler/intrinsics/mesh-options.js";
-import { requireGroupSource } from "./compiler/intrinsics/animation.js";
 import {
     compileRegisteredConstant,
     compileRegisteredIntrinsic,
@@ -123,8 +122,6 @@ import {
     createCompilerProgram,
 } from "./compiler/program.js";
 import {
-    nativeLocation,
-    readHandleCollection,
     readProperty,
     type PropertyContext,
 } from "./compiler/properties.js";
@@ -141,6 +138,10 @@ import {
     type StatementLoweringContext,
     StatementLowerer,
 } from "./compiler/statements.js";
+import {
+    HandleCollections,
+    type HandleCollectionTarget,
+} from "./compiler/handle-collections.js";
 import {
     type UserFunctionContext,
     UserFunctionLowerer,
@@ -193,106 +194,14 @@ import {
 } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
-
-const featureSources: Record<Feature, string[]> = {
-    "animation:gltf-groups": [],
-    "animation:property": [],
-    "animation:property-blending": [],
-    "animation:managed-groups": [],
-    "animation:gltf-blending": [],
-    "core": ["src/pal.cpp"],
-    "backend:sdl": ["src/pal_sdl.cpp"],
-    "camera:arc-rotate": [],
-    "camera:default": [],
-    "camera:free": [],
-    "camera:orthographic": [],
-    "environment:ibl": [],
-    "environment:env": [],
-    "environment:hdr": [],
-    "environment:dds": [],
-    "background:ground": [],
-    "background:skybox": [],
-    "background:image-skybox": [],
-    "background:solid-skybox": [],
-    "light:hemispheric": [],
-    "light:directional": [],
-    "light:point": [],
-    "light:spot": [],
-    "loader:babylon": [],
-    "loader:gltf": [],
-    "loader:gltf-variants": [],
-    "loader:splat": [],
-    "material:pbr": [],
-    "material:clearcoat": [],
-    "material:sheen": [],
-    "material:sheen-albedo-scaling": [],
-    "material:clearcoat-f0-remap": [],
-    "material:iridescence": [],
-    "material:anisotropy": [],
-    "material:metallic-reflectance": [],
-    "material:tracking": [],
-    "material:emissive": [],
-    "material:no-color-view": [],
-    "material:grid": [],
-    "material:node": [],
-    "material:shader": [],
-    "material:standard": [],
-    "material:standard-diffuse-render-texture": [],
-    "material:standard-diffuse-pixels-texture": [],
-    "material:standard-diffuse-file-texture": [],
-    "material:standard-uv-transform": [],
-    "material:standard-emissive-render-texture": [],
-    "material:standard-emissive-file-texture": [],
-    "material:standard-vertex-colors": [],
-    "mesh:box": [],
-    "mesh:from-data": [],
-    "mesh:ground": [],
-    "mesh:lines": [],
-    "mesh:morph-targets": [],
-    "mesh:plane": [],
-    "mesh:sphere": [],
-    "mesh:thin-instances": [],
-    "mesh:thin-instance-colors": [],
-    "mesh:thin-instances-dynamic": [],
-    "mesh:torus": [],
-    "scene:remove": [],
-    "sprite:2d": [],
-    "sprite:uv-scroll": [],
-    "sprite:custom-shader": [],
-    "texture:file": [],
-    "texture:compressed": [],
-    "texture:pixels": [],
-    "sprite:billboard": [],
-    // A frozen node-particle system draws through the billboard family; the
-    // simulation itself is baked at generation, so nothing of the pin's own
-    // particle runtime compiles.
-    "particle:node": [],
-    // The rigid-body solver. `havok.ts` itself is Babylon behaviour and is
-    // generated like every other pinned module; what this translation unit
-    // carries is the `HP_*` surface the pin calls on the `hknp` module it
-    // is handed -- a third-party library behind a fixed entry-point list,
-    // which is the same role SDL plays and so the same boundary.
-    "physics:world": ["src/pal_physics_bullet.cpp"],
-    "physics:aggregate": [],
-    "sprite:billboard-axis-locked": [],
-    "sprite:billboard-cutout": [],
-    "sprite:billboard-custom-shader": [],
-    "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
-    // The scene-less fullscreen-effect path: an EffectRenderer is its own
-    // rendering context on the engine, exactly as a SpriteRenderer is, so a
-    // scene registering one and no SceneContext compiles no scene renderer
-    // and draws from this translation unit instead.
-    "renderer:effect": ["src/pal_sdl_gpu_effect.cpp"],
-    "effect:wrapper": [],
-    "effect:task": [],
-    "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
-    "renderer:transmission": [],
-    "renderer:fog": [],
-    "renderer:geometry-output": [],
-    "renderer:post-process": [],
-};
-
-const featureOrder = Object.keys(featureSources) as Feature[];
+import {
+    featureOrder,
+    featureSources,
+    renderFeaturesCmake,
+    renderMainCpp,
+} from "./compiler/output-projection.js";
+export { renderFeaturesCmake };
+import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
 
 export class CompileError extends Error {
     public readonly fileName: string;
@@ -306,37 +215,6 @@ export class CompileError extends Error {
         this.line = line;
         this.column = column;
     }
-}
-
-/**
- * The features.cmake render, a pure function of the three lists so a caller
- * that augments the manifest's features after compilation (the CLI joins the
- * assets' own KHR_lights_punctual kinds there) re-renders the same authority
- * instead of patching the string.
- */
-export function renderFeaturesCmake(
-    features: readonly Feature[],
-    runtimeSources: readonly string[],
-    generatedSources: readonly string[],
-): string {
-    const sourceLines = runtimeSources.map((source) => `    "\${BBLITE_NATIVE_ROOT}/${source}"`).join("\n");
-    const generatedSourceLines = generatedSources
-        .map((source) => `    "\${BBLITE_GENERATED_DIR}/${source}"`)
-        .join("\n");
-    const featureLines = features.map((feature) => `    "${feature}"`).join("\n");
-    return `# Generated by bblitec. Included by native/CMakeLists.txt.
-set(BBLITE_RUNTIME_FEATURES
-${featureLines}
-)
-
-set(BBLITE_RUNTIME_SOURCES
-${sourceLines}
-)
-
-set(BBLITE_GENERATED_SOURCES
-${generatedSourceLines}
-)
-`;
 }
 
 export function compileSource(source: string, options: CompileOptions = {}): CompileResult {
@@ -380,6 +258,9 @@ class Compiler
         UserFunctionContext {
     public readonly symbols: CompilerSymbols;
     public readonly evaluator: StaticEvaluator;
+    /** The handle-collection concept: every collection operation. */
+    public readonly handleCollections: HandleCollections =
+        new HandleCollections(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
     public readonly dataTypes: DataTypeRegistry;
@@ -449,13 +330,12 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] =
         [];
-    public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
+    private readonly sceneMaterials = new SceneMaterialRecorder();
     private readonly sceneMeshes: SceneMeshManifest[] = [];
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
         [];
     private reachedPlainSpriteLayer = false;
     private reachedPlainBillboardSystem = false;
-    private sceneMaterialCount = 0;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
     private indentLevel = 2;
@@ -589,7 +469,7 @@ class Compiler
                 postProcessComposites: this.postProcessComposites,
                 adaptations: compileAdaptations(this, features),
                 scenePbrMaterials: this.scenePbrMaterials,
-                sceneMaterialCount: this.sceneMaterialCount,
+                sceneMaterialCount: this.sceneMaterials.count,
                 sceneMeshes: this.sceneMeshes,
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
                 effects: this.reachedEffects_,
@@ -1690,6 +1570,17 @@ class Compiler
             return `!(${operand})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            // Engine-handle identity first: `group === sadPose` is
+            // upstream object identity, which native handles carry as
+            // their creation-ordered `.value`. The probe only looks
+            // bindings up, so a miss falls through without emitting.
+            const handles =
+                this.handleCollections.compileHandleEquality(
+                    unwrapped,
+                );
+            if (handles) {
+                return handles;
+            }
             const typed =
                 this.dataLowerer.equalityComparison(
                     unwrapped,
@@ -2361,22 +2252,6 @@ class Compiler
      * declarations whose name appears nowhere else, so a local that IS read
      * keeps the warning that would catch a lowering bug.
      */
-    private markUnreferencedNumericLocals(): void {
-        const declaration = /^(\s*)(double )([A-Za-z_][A-Za-z0-9_]*) = /;
-        const counts = new Map<string, number>();
-        for (const line of this.body) {
-            for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
-                counts.set(name, (counts.get(name) ?? 0) + 1);
-            }
-        }
-        for (const [index, line] of this.body.entries()) {
-            const match = declaration.exec(line);
-            if (!match || counts.get(match[3]!) !== 1) continue;
-            this.body[index] =
-                `${match[1]}[[maybe_unused]] ${line.trimStart()}`;
-        }
-    }
-
     /** How many lines the body stream holds, for a caller that may undo. */
     public emittedLineCount(): number {
         return this.body.length;
@@ -2522,296 +2397,52 @@ class Compiler
      * static-literal paths.
      */
     /**
-     * A collection expression past the two shapes that leave it
-     * unchanged: `container.animationGroups ?? []` and `?.`.
-     *
-     * `AssetContainer.animationGroups` is optional upstream, so a scene
-     * reading it writes one of those; both resolve to the container's own
-     * collection, and an absent one is the empty vector the loader
-     * already leaves behind — the same zero iterations `?? []` produces.
-     */
-    private unwrapCollectionExpression(
-        expression: ts.Expression,
-    ): ts.Expression {
-        const unwrapped = this.unwrap(expression);
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind ===
-                ts.SyntaxKind.QuestionQuestionToken &&
-            ts.isArrayLiteralExpression(unwrapped.right) &&
-            unwrapped.right.elements.length === 0
-        ) {
-            return this.unwrapCollectionExpression(
-                unwrapped.left,
-            );
-        }
-        return unwrapped;
-    }
-
-    /**
-     * The glTF animation groups a call names: a container's own
-     * collection, or a static array of groups the scene selected.
+     * The glTF animation groups a call names — the handle-collection
+     * concept's list resolution, delegated so intrinsic contexts keep
+     * their method.
      */
     public compileAnimationGroupList(
         expression: ts.Expression,
     ): { cpp: string; engineCpp: string } {
-        const collection =
-            this.handleCollectionIterationTarget(expression);
-        if (collection) {
-            if (collection.elementKind !== "animation-group") {
-                this.fail(
-                    expression,
-                    `Expected animation groups, received ${collection.property}.`,
-                );
-            }
-            return {
-                cpp: collection.containerCpp,
-                engineCpp: collection.engineCpp,
-            };
-        }
-        const literal = this.probeStaticArrayLiteral(
-            this.unwrapCollectionExpression(expression),
+        return this.handleCollections.compileAnimationGroupList(
+            expression,
         );
-        if (!literal) {
-            this.fail(
-                expression,
-                "Expected a container's animationGroups or a static array of groups.",
-            );
-        }
-        const groups = literal.elements.map((element) => {
-            const value = this.compileValue(element);
-            this.expectKind(
-                value,
-                "animation-group",
-                element,
-            );
-            requireGroupSource(
-                this,
-                value,
-                element,
-                "addAnimationGroups",
-                "gltf",
-            );
-            return value;
-        });
-        const engineCpp = groups[0]
-            ? this.requireEngine(groups[0], expression)
-            : this.fail(
-                  expression,
-                  "addAnimationGroups requires at least one group.",
-              );
-        return {
-            cpp:
-                `std::vector<bbl::AnimationGroupHandle>{` +
-                `${groups.map((group) => group.cpp).join(", ")}}`,
-            engineCpp,
-        };
     }
 
-    /**
-     * `<container>.entities`, when the container is a glTF asset.
-     *
-     * The iteration folds to one body emission over the container itself.
-     * That is not a claim about how many entities there are — `load-gltf`
-     * seeds `[root]` and every loader feature appends its own, so a file
-     * with punctual lights carries several — but about what the body can
-     * do with one: an entity value is accepted by `addToScene` alone, and
-     * adding each entity of a container adds exactly the meshes and lights
-     * the loader created for it, which is what the emitted call does in
-     * one step. A body reaching an entity any other way fails on the
-     * value's kind.
-     *
-     * A `.babylon` container refuses: nothing reached iterates one, and
-     * its entity list carries lights beside the roots, so the fold would
-     * need its own proof.
-     */
+    /** `<container>.entities` — the concept's entity-walk fold. */
     public assetEntitiesIterationTarget(
         expression: ts.Expression,
     ): Value | undefined {
-        const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            unwrapped.name.text !== "entities"
-        ) {
-            return undefined;
-        }
-        const owner = this.compileValue(unwrapped.expression);
-        if (owner.kind !== "asset") {
-            return undefined;
-        }
-        if (owner.asset?.kind !== "gltf") {
-            this.fail(
-                unwrapped,
-                "Iterating entities is lowered for a glTF container, whose entities are one root node; another container's roots are not.",
-            );
-        }
-        return {
-            ...owner,
-            kind: "asset-entity",
-            engineCpp: this.requireEngine(owner, unwrapped),
-        };
+        return this.handleCollections.assetEntitiesIterationTarget(
+            expression,
+        );
     }
 
-    /**
-     * `<gltf container>.entities[0]`, the synthetic root transform the pin
-     * creates before any loader feature appends further entities.
-     *
-     * Native loading resolves the root hierarchy into the asset's mesh
-     * records rather than allocating a transform-node handle for that
-     * synthetic wrapper. The value therefore stays an opaque asset-root
-     * identity: later operations must prove how they act on the whole
-     * imported hierarchy instead of mistaking the asset handle for a mesh.
-     */
+    /** `<gltf container>.entities[0]` — the concept's root indexing. */
     public assetRootElementAccess(
         expression: ts.ElementAccessExpression,
     ): Value | undefined {
-        const collection = this.unwrap(expression.expression);
-        if (
-            !ts.isPropertyAccessExpression(collection) ||
-            collection.name.text !== "entities"
-        ) {
-            return undefined;
-        }
-        const owner = this.compileValue(collection.expression);
-        if (owner.kind !== "asset") {
-            return undefined;
-        }
-        if (owner.asset?.kind !== "gltf") {
-            this.fail(
-                collection,
-                "Indexing entities is lowered for a glTF container, whose first entity is its synthetic root transform; another container's roots are not.",
-            );
-        }
-        const index = this.compileValue(
-            expression.argumentExpression,
+        return this.handleCollections.assetRootElementAccess(
+            expression,
         );
-        if (
-            index.kind !== "number" ||
-            index.staticNumber !== 0
-        ) {
-            this.fail(
-                expression.argumentExpression,
-                "A glTF container's entities are indexed only at static index 0, which is its synthetic root transform.",
-            );
-        }
-        return {
-            ...owner,
-            kind: "asset-root",
-            engineCpp: this.requireEngine(owner, collection),
-        };
     }
 
-    /**
-     * The flattened renderable descendants of an imported glTF root.
-     * `StatementLowerer` admits this target only after proving the source is
-     * the recursive TransformNode mesh-leaf visitor; arbitrary immediate
-     * child iteration is deliberately not exposed as this collection.
-     */
+    /** An imported root's flattened descendants — the concept's walk target. */
     public assetRootChildrenIterationTarget(
         expression: ts.Expression,
-    ):
-        | {
-              property: string;
-              temporaryLabel: string;
-              containerCpp: string;
-              elementKind: ValueKind;
-              elementCppType: string;
-              engineCpp: string;
-          }
-        | undefined {
-        const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            unwrapped.name.text !== "children"
-        ) {
-            return undefined;
-        }
-        const owner = this.compileValue(unwrapped.expression);
-        if (owner.kind !== "asset-root") {
-            return undefined;
-        }
-        const engineCpp = this.requireEngine(owner, unwrapped);
-        return {
-            property: "children",
-            temporaryLabel: "asset_descendant_mesh",
-            containerCpp:
-                `${engineCpp}.assets[${owner.cpp}.value].meshes`,
-            elementKind: "mesh",
-            elementCppType: "bbl::MeshHandle",
-            engineCpp,
-        };
+    ): HandleCollectionTarget | undefined {
+        return this.handleCollections.assetRootChildrenIterationTarget(
+            expression,
+        );
     }
 
+    /** The loop target a collection expression or binding names. */
     public handleCollectionIterationTarget(
         expression: ts.Expression,
-    ):
-        | {
-              property: string;
-              temporaryLabel: string;
-              containerCpp: string;
-              elementKind: ValueKind;
-              elementCppType: string;
-              engineCpp: string;
-          }
-        | undefined {
-        const unwrapped =
-            this.unwrapCollectionExpression(expression);
-        if (!ts.isPropertyAccessExpression(unwrapped)) {
-            return undefined;
-        }
-        const owner = this.compileValue(unwrapped.expression);
-        const collection = readHandleCollection(
-            owner,
-            unwrapped.name.text,
+    ): HandleCollectionTarget | undefined {
+        return this.handleCollections.iterationTarget(
+            expression,
         );
-        if (!collection) {
-            return undefined;
-        }
-        // The declared type carries the element model: the property's own
-        // number-index type is what an iteration yields, and the pinned
-        // handle registry turns that type into the kind it binds as and the
-        // C++ type the range-for declares. Neither is restated in the table.
-        // A container's own collections are optional upstream
-        // (`animationGroups?: AnimationGroup[]`), and a scene reads one
-        // through `?? []` or `?.`; the element model is the same either
-        // way, so the nullable half is dropped before the index lookup.
-        const elementType = this.checker.getIndexTypeOfType(
-            this.checker.getNonNullableType(
-                this.checker.getTypeAtLocation(unwrapped),
-            ),
-            ts.IndexKind.Number,
-        );
-        if (!elementType) {
-            this.fail(
-                unwrapped,
-                `'${unwrapped.name.text}' is not an indexable collection.`,
-            );
-        }
-        const element = this.dataTypes.fromTsType(
-            elementType,
-            unwrapped,
-        );
-        if (element?.kind !== "handle") {
-            this.fail(
-                unwrapped,
-                `Iterating '${unwrapped.name.text}' yields ` +
-                    `${element?.kind ?? "an unmapped type"}, which carries ` +
-                    "no engine handle to bind.",
-            );
-        }
-        const engineCpp = this.requireEngine(owner, unwrapped);
-        return {
-            property: collection.property,
-            temporaryLabel: collection.temporaryLabel,
-            containerCpp: nativeLocation(
-                collection,
-                owner.cpp,
-                engineCpp,
-            ),
-            elementKind: element.handle,
-            elementCppType: this.dataTypes.cppType(element),
-            engineCpp,
-        };
     }
 
     public bindDataIterationVariable(
@@ -3573,163 +3204,97 @@ class Compiler
     }
 
     /**
-     * Stamps setter options on the scene-code material the call names, the
-     * way the pin's `setPbrSheen`/`setPbrClearCoat` stamp the props object
-     * onto the material object they are handed. `index` is that object
-     * identity at compile time and rides the value the setter was passed,
-     * so a material of another family — which owns no manifest entry to
-     * stamp — is a named failure rather than a guess.
+     * The scene-material manifest recorders live in
+     * `compiler/scene-materials.ts`; the context surface the material
+     * intrinsics stamp through delegates to one recorder instance, so
+     * its callers keep one context object.
      */
-    private sceneMaterialForSetter(
-        setter: string,
-        index: number | undefined,
-    ): ScenePbrMaterialManifest {
-        const material =
-            index === undefined
-                ? undefined
-                : this.scenePbrMaterials[index];
-        if (!material) {
-            throw new Error(
-                `${setter} names no scene-code PBR material; only a value ` +
-                    "createPbrMaterial produced, or a mesh one was assigned " +
-                    "to, resolves which record to stamp.",
-            );
-        }
-        return material;
+    public get scenePbrMaterials(): ScenePbrMaterialManifest[] {
+        return this.sceneMaterials.scenePbrMaterials;
     }
 
-    /**
-     * Records a no-color view of the scene material the call names: the
-     * pin's view is the same material record rendered with
-     * `PBR2_NO_COLOR_OUTPUT`, so the derived entry copies its source and
-     * appends in creation order. Returns the new entry's index, which is
-     * the view's own compile-time identity.
-     */
     public recordScenePbrNoColorView(
         sourceIndex: number | undefined,
     ): number {
-        const source = this.sceneMaterialForSetter(
-            "createPbrNoColorMaterialView",
+        return this.sceneMaterials.recordScenePbrNoColorView(
             sourceIndex,
         );
-        this.scenePbrMaterials.push({
-            ...source,
-            materialsBefore: this.recordSceneMaterialSlot(),
-            noColorView: true,
-        });
-        return this.scenePbrMaterials.length - 1;
     }
 
-    /**
-     * Counts one scene-code material creation of any family. Every creator
-     * bumps this: material handles are creation-ordered across families, so
-     * a standard material shifts the next PBR handle.
-     */
     public recordSceneMaterialSlot(): number {
-        return this.sceneMaterialCount++;
+        return this.sceneMaterials.recordSceneMaterialSlot();
     }
 
     public recordScenePbrUnlit(index: number | undefined): void {
-        this.sceneMaterialForSetter("setPbrUnlit", index).unlit = true;
+        this.sceneMaterials.recordScenePbrUnlit(index);
     }
 
     public recordScenePbrSkybox(index: number | undefined): void {
-        this.sceneMaterialForSetter("setPbrSkybox", index).skyboxMode = true;
+        this.sceneMaterials.recordScenePbrSkybox(index);
     }
 
     public recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter("setPbrSheen", index).sheen = sheen;
+        this.sceneMaterials.recordScenePbrSheen(sheen, index);
     }
 
     public recordScenePbrClearCoat(
         clearCoat: ScenePbrClearCoatManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrClearCoat",
+        this.sceneMaterials.recordScenePbrClearCoat(
+            clearCoat,
             index,
-        ).clearCoat = clearCoat;
+        );
     }
 
     public recordScenePbrEmissive(
         color: readonly number[],
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrEmissive",
-            index,
-        ).emissiveColor = color;
+        this.sceneMaterials.recordScenePbrEmissive(color, index);
     }
 
     public recordScenePbrIridescence(
         iridescence: ScenePbrIridescenceManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrIridescence",
+        this.sceneMaterials.recordScenePbrIridescence(
+            iridescence,
             index,
-        ).iridescence = iridescence;
+        );
     }
 
     public recordScenePbrSubsurface(
         subsurface: ScenePbrSubsurfaceManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrSubsurface",
+        this.sceneMaterials.recordScenePbrSubsurface(
+            subsurface,
             index,
-        ).subsurface = subsurface;
+        );
     }
 
     public recordScenePbrAnisotropy(
         anisotropy: ScenePbrAnisotropyManifest,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
-            "setPbrAnisotropy",
+        this.sceneMaterials.recordScenePbrAnisotropy(
+            anisotropy,
             index,
-        ).anisotropy = anisotropy;
+        );
     }
 
     public recordScenePbrMetallicReflectance(
         reflectance: ScenePbrMetallicReflectanceManifest,
         index: number | undefined,
     ): void {
-        const material = this.sceneMaterialForSetter(
-            "setPbrMetallicReflectance",
+        this.sceneMaterials.recordScenePbrMetallicReflectance(
+            reflectance,
             index,
         );
-        const previous = material.metallicReflectance;
-        material.metallicReflectance = {
-            hasColor: previous?.hasColor === true || reflectance.hasColor,
-            hasMetallicTexture:
-                previous?.hasMetallicTexture === true ||
-                reflectance.hasMetallicTexture,
-            hasReflectanceTexture:
-                previous?.hasReflectanceTexture === true ||
-                reflectance.hasReflectanceTexture,
-            ...(reflectance.hasColor
-                ? (reflectance.color
-                    ? { color: reflectance.color }
-                    : {})
-                : previous?.color
-                    ? { color: previous.color }
-                    : {}),
-            ...(reflectance.useOnlyMetallicFromTexture !== undefined
-                ? {
-                    useOnlyMetallicFromTexture:
-                        reflectance.useOnlyMetallicFromTexture,
-                }
-                : previous?.useOnlyMetallicFromTexture !== undefined
-                    ? {
-                        useOnlyMetallicFromTexture:
-                            previous.useOnlyMetallicFromTexture,
-                    }
-                    : {}),
-        };
     }
 
     /** One layer or system built without a custom shader, so with the stock program. */
@@ -3940,87 +3505,21 @@ class Compiler
     }
 
     private renderCpp(features: Feature[]): string {
-        // Scene code names a blend descriptor and a layer at the call
-        // site, so the factories the sprite lowerer emits have to be visible
-        // to main.cpp.
-        const spriteInclude = features.includes("sprite:2d")
-            ? "#include <bblite/upstream/sprite_layer.hpp>\n"
-            : "";
-        const billboardInclude = features.includes(
-            "sprite:billboard",
-        )
-            ? "#include <bblite/upstream/billboard_system.hpp>\n"
-            : "";
-        // The frozen node-particle bridge: main.cpp calls the two folded
-        // pinned functions by name.
-        const nodeParticleInclude = features.includes("particle:node")
-            ? "#include <bblite/upstream/node_particles.hpp>\n"
-            : "";
-        // The rigid-body family: main.cpp calls the generated world and
-        // aggregate factories by name.
-        const physicsInclude = features.includes("physics:world")
-            ? "#include <bblite/upstream/physics.hpp>\n"
-            : "";
-        const cameraMathInclude =
-            features.some((feature) =>
-                feature.startsWith("camera:"),
-            )
-                ? "#include <bblite/upstream/camera_math.hpp>\n"
-                : "";
-        const jsDataInclude = this.jsDataReached
-            ? "#include <bblite/js_data.hpp>\n"
-            : "";
-        // A composite's factory is generated, so the scene calls it by a name
-        // only its own generated header declares.
-        const postProcessInclude =
-            this.postProcessComposites.length > 0
-                ? "#include <bblite/upstream/frame_graph_post_process.hpp>\n"
-                : "";
-        const preambleSections: string[] = [];
-        const dataPreamble =
-            this.dataTypes.renderPreamble();
-        if (dataPreamble.length > 0) {
-            preambleSections.push(dataPreamble);
-        }
-        if (this.nativeFunctionPrototypes.length > 0) {
-            preambleSections.push(
-                [
-                    "namespace bblscene {",
-                    "",
-                    ...this.nativeFunctionPrototypes,
-                    "",
-                    ...this.nativeFunctionDefinitions,
-                    "}  // namespace bblscene",
-                ].join("\n"),
-            );
-        }
-        // The body is finished, so a local nothing referenced is now
-        // decidable — mark those, and only those.
-        this.markUnreferencedNumericLocals();
-        const preamble =
-            preambleSections.length > 0
-                ? `\n${preambleSections.join("\n\n")}\n`
-                : "";
-        const seedRandom = this.jsRandomReached
-            ? "        bbl::js::seed_random(1u);\n"
-            : "";
-        return `// Generated by bblitec. Do not edit.
-#include <bblite/runtime.hpp>
-${jsDataInclude}${cameraMathInclude}${spriteInclude}${billboardInclude}${nodeParticleInclude}${physicsInclude}${postProcessInclude}
-#include <cmath>
-#include <exception>
-#include <iostream>${this.throwReached ? "\n#include <stdexcept>" : ""}
-${preamble}
-int main() {
-    try {
-${seedRandom}${this.body.join("\n")}
-        return 0;
-    } catch (const std::exception& error) {
-        std::cerr << "Babylon Lite native error: " << error.what() << '\\n';
-        return 1;
-    }
-}
-`;
+        return renderMainCpp({
+            features,
+            jsDataReached: this.jsDataReached,
+            jsRandomReached: this.jsRandomReached,
+            throwReached: this.throwReached,
+            postProcessCompositeCount:
+                this.postProcessComposites.length,
+            renderDataPreamble: () =>
+                this.dataTypes.renderPreamble(),
+            nativeFunctionPrototypes:
+                this.nativeFunctionPrototypes,
+            nativeFunctionDefinitions:
+                this.nativeFunctionDefinitions,
+            body: this.body,
+        });
     }
 
     private renderCmake(features: Feature[], runtimeSources: string[], generatedSources: string[]): string {

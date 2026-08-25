@@ -46,6 +46,14 @@ import type {
     NodeParticleBuilder,
     NodeParticleGraphSource,
 } from "../../pinned-node-particle.js";
+// The pin's own bridge defaults, read from the one table
+// `node-particle-lowerer.ts` asserts against the pinned declarations —
+// so the values resolved here cannot drift from the pin unseen.
+import {
+    pinnedDefaultFlag,
+    pinnedDefaultNumber,
+    pinnedDefaultVec2,
+} from "../../lowering/pinned-material-defaults.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface ParticleIntrinsicContext
@@ -223,10 +231,10 @@ function sprite2dOptions(
     order?: number;
 } {
     const resolved = {
-        autoStart: true,
-        pixelsPerUnit: 1,
-        originPx: [0, 0] as readonly [number, number],
-        invertY: true,
+        autoStart: pinnedDefaultFlag("sprite2dAutoStart"),
+        pixelsPerUnit: pinnedDefaultNumber("sprite2dPixelsPerUnit"),
+        originPx: pinnedDefaultVec2("sprite2dOriginPx"),
+        invertY: pinnedDefaultFlag("sprite2dInvertY"),
     };
     if (!expression) return resolved;
     const options = context.expectObjectLiteral(expression);
@@ -626,7 +634,7 @@ export function compileParticleIntrinsic(
                 "node-particle-set",
                 call.arguments[1]!,
             );
-            let autoStart = true;
+            let autoStart = pinnedDefaultFlag("nodeParticleAutoStart");
             const optionsArgument = call.arguments[2];
             if (optionsArgument) {
                 const options =

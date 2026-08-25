@@ -28,6 +28,29 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
+// The pin's own `?? d` fallbacks, stated once: the UBO-writer lowerer
+// asserts each discarded pinned default against this table, and the
+// defaults below read the same entries, so the record seed IS the number
+// the assert pins.
+import {
+    pinnedDefaultColor3,
+    pinnedDefaultColor3Cpp,
+    pinnedDefaultFloatCpp,
+    pinnedDefaultNumber,
+    pinnedDefaultVec2,
+    pinnedDefaultVec2Cpp,
+    type PinnedMaterialDefaultName,
+} from "../../lowering/pinned-material-defaults.js";
+
+/** One pinned scalar default, in the two forms a setter resolves. */
+function pinnedScalarDefault(
+    name: PinnedMaterialDefaultName,
+): { cpp: string; value: number } {
+    return {
+        cpp: pinnedDefaultFloatCpp(name),
+        value: pinnedDefaultNumber(name),
+    };
+}
 
 export interface MaterialOptionContext
     extends ObjectValidationContext, PositiveIntegerContext {
@@ -229,13 +252,13 @@ export function compileSubsurfaceOptions(
     const intensity = requiredStaticFiniteNumber(
         context,
         context.objectProperty(translucency, "intensity"),
-        1,
+        pinnedDefaultNumber("subsurfaceIntensity"),
         "Translucency intensity",
     );
     const colorExpression = context.objectProperty(translucency, "color");
     const color = colorExpression
         ? staticColor3Value(context, colorExpression)
-        : ([1, 1, 1] as const);
+        : pinnedDefaultColor3("subsurfaceColor");
     if (!color || color.some((channel) => !Number.isFinite(channel))) {
         context.fail(
             colorExpression!,
@@ -248,7 +271,7 @@ export function compileSubsurfaceOptions(
     );
     const diffusionDistance = diffusionExpression
         ? staticColor3Value(context, diffusionExpression)
-        : ([1, 1, 1] as const);
+        : pinnedDefaultColor3("subsurfaceDiffusionDistance");
     if (
         !diffusionDistance ||
         diffusionDistance.some((channel) => !Number.isFinite(channel))
@@ -261,8 +284,8 @@ export function compileSubsurfaceOptions(
 
     const thicknessExpression = context.objectProperty(object, "thickness");
     let thicknessTexture: Value | undefined;
-    let minimum = { cpp: "0.0f", value: 0 };
-    let maximum = { cpp: "1.0f", value: 1 };
+    let minimum = pinnedScalarDefault("subsurfaceMinimumThickness");
+    let maximum = pinnedScalarDefault("subsurfaceMaximumThickness");
     if (thicknessExpression) {
         const thickness = context.expectObjectLiteral(thicknessExpression);
         validateObjectProperties(
@@ -293,13 +316,13 @@ export function compileSubsurfaceOptions(
         minimum = requiredStaticFiniteNumber(
             context,
             context.objectProperty(thickness, "min"),
-            0,
+            pinnedDefaultNumber("subsurfaceMinimumThickness"),
             "Minimum thickness",
         );
         maximum = requiredStaticFiniteNumber(
             context,
             context.objectProperty(thickness, "max"),
-            1,
+            pinnedDefaultNumber("subsurfaceMaximumThickness"),
             "Maximum thickness",
         );
     }
@@ -308,10 +331,10 @@ export function compileSubsurfaceOptions(
         intensity: intensity.cpp,
         color: colorExpression
             ? context.compileColor3(colorExpression)
-            : "bbl::Color3{1.0f, 1.0f, 1.0f}",
+            : pinnedDefaultColor3Cpp("subsurfaceColor"),
         diffusionDistance: diffusionExpression
             ? context.compileColor3(diffusionExpression)
-            : "bbl::Color3{1.0f, 1.0f, 1.0f}",
+            : pinnedDefaultColor3Cpp("subsurfaceDiffusionDistance"),
         ...(thicknessTexture ? { thicknessTexture } : {}),
         minimumThickness: minimum.cpp,
         maximumThickness: maximum.cpp,
@@ -385,13 +408,22 @@ export function compilePbrMaterialOptions(
     const doubleSided = context.objectProperty(object, "doubleSided");
     const transmissive = context.objectProperty(object, "transmissive");
     const subsurfaceExpression = context.objectProperty(object, "subsurface");
-    let transmission = "0.0f";
-    let ior = "1.5f";
+    let transmission = pinnedDefaultFloatCpp("transmissionIntensity");
+    let ior = pinnedDefaultFloatCpp("transmissionIndexOfRefraction");
+    // NOT the pin's `?? 1`: with a refraction object and no thickness the
+    // pinned writer reads `thick?.max ?? 1` while this record seeds 0 —
+    // the absent-subsurface ground state. UNREACHABLE today, measured
+    // 2026-08-24: a scene-code refraction shape refuses at generation
+    // ("no composed arm yet", the open transmission item in TODO), so the
+    // divergence cannot reach a composed variant. When that arm lands,
+    // resolve this seed against the pin's `?? 1` for the
+    // refraction-without-thickness shape before measuring. The `?? 1` arm
+    // the defaults table anchors is the inner thickness branch below.
     let thickness = "0.0f";
     let useThicknessAsDepth = "false";
     let hasVolume = "false";
-    let attenuationColor = "bbl::Color3{1.0f, 1.0f, 1.0f}";
-    let attenuationDistance = "1.0f";
+    let attenuationColor = pinnedDefaultColor3Cpp("attenuationColor");
+    let attenuationDistance = pinnedDefaultFloatCpp("attenuationDistance");
     if (subsurfaceExpression) {
         const subsurface = context.expectObjectLiteral(subsurfaceExpression);
         const refractionExpression = context.objectProperty(
@@ -413,10 +445,10 @@ export function compilePbrMaterialOptions(
                 ? context.compileNumber(intensity)
                 : transmissive
                     ? "1.0f"
-                    : "0.0f";
+                    : pinnedDefaultFloatCpp("transmissionIntensity");
             ior = indexOfRefraction
                 ? context.compileNumber(indexOfRefraction)
-                : "1.5f";
+                : pinnedDefaultFloatCpp("transmissionIndexOfRefraction");
             useThicknessAsDepth = thicknessAsDepth
                 ? context.compileBoolean(thicknessAsDepth)
                 : "false";
@@ -429,7 +461,9 @@ export function compilePbrMaterialOptions(
             const thicknessObject =
                 context.expectObjectLiteral(thicknessExpression);
             const maximum = context.objectProperty(thicknessObject, "max");
-            thickness = maximum ? context.compileNumber(maximum) : "1.0f";
+            thickness = maximum
+                ? context.compileNumber(maximum)
+                : pinnedDefaultFloatCpp("transmissionThicknessMax");
         }
         const tintExpression = context.objectProperty(subsurface, "tint");
         if (tintExpression) {
@@ -447,21 +481,25 @@ export function compilePbrMaterialOptions(
     }
     const metallicCpp = metallic
         ? context.compileNumber(metallic)
-        : "1.0f";
+        : pinnedDefaultFloatCpp("pbrMetallicFactor");
     const roughnessCpp = roughness
         ? context.compileNumber(roughness)
-        : "1.0f";
-    const directCpp = direct ? context.compileNumber(direct) : "1.0f";
+        : pinnedDefaultFloatCpp("pbrRoughnessFactor");
+    const directCpp = direct
+        ? context.compileNumber(direct)
+        : pinnedDefaultFloatCpp("pbrDirectIntensity");
     const environmentCpp = environment
         ? context.compileNumber(environment)
-        : "1.0f";
-    const alphaCpp = alpha ? context.compileNumber(alpha) : "1.0f";
+        : pinnedDefaultFloatCpp("pbrEnvironmentIntensity");
+    const alphaCpp = alpha
+        ? context.compileNumber(alpha)
+        : pinnedDefaultFloatCpp("pbrAlpha");
     const reflectanceCpp = reflectance
         ? context.compileNumber(reflectance)
-        : "0.04f";
+        : pinnedDefaultFloatCpp("pbrReflectance");
     const staticOcclusionStrength = occlusionStrength
         ? staticNumberValue(context, occlusionStrength)
-        : 1;
+        : pinnedDefaultNumber("occlusionStrength");
     if (
         staticOcclusionStrength === undefined ||
         !Number.isFinite(staticOcclusionStrength)
@@ -473,10 +511,10 @@ export function compilePbrMaterialOptions(
     }
     const occlusionStrengthCpp = occlusionStrength
         ? context.compileNumber(occlusionStrength)
-        : "1.0f";
+        : pinnedDefaultFloatCpp("occlusionStrength");
     const staticMetallicF0Factor = metallicF0Factor
         ? staticNumberValue(context, metallicF0Factor)
-        : 1;
+        : pinnedDefaultNumber("metallicF0Factor");
     if (
         staticMetallicF0Factor === undefined ||
         !Number.isFinite(staticMetallicF0Factor)
@@ -488,7 +526,7 @@ export function compilePbrMaterialOptions(
     }
     const metallicF0FactorCpp = metallicF0Factor
         ? context.compileNumber(metallicF0Factor)
-        : "1.0f";
+        : pinnedDefaultFloatCpp("metallicF0Factor");
     const doubleSidedCpp = doubleSided
         ? context.compileBoolean(doubleSided)
         : "false";
@@ -517,10 +555,10 @@ export function compilePbrMaterialOptions(
         environmentIntensity: Number.parseFloat(environmentCpp),
         alpha: Number.parseFloat(alphaCpp),
         reflectance: Number.parseFloat(reflectanceCpp),
-        ...(staticOcclusionStrength === 1
+        ...(staticOcclusionStrength === pinnedDefaultNumber("occlusionStrength")
             ? {}
             : { occlusionStrength: staticOcclusionStrength }),
-        ...(staticMetallicF0Factor === 1
+        ...(staticMetallicF0Factor === pinnedDefaultNumber("metallicF0Factor")
             ? {}
             : { metallicF0Factor: staticMetallicF0Factor }),
         ...(staticEnableSpecularAA ? { enableSpecularAA: true } : {}),
@@ -802,23 +840,27 @@ export function compileClearCoatOptions(
     const enabled = isEnabled ? context.compileBoolean(isEnabled) : "false";
     const staticIntensity = intensity
         ? staticNumberValue(context, intensity)
-        : 1;
+        : pinnedDefaultNumber("clearcoatIntensity");
     const staticRoughness = roughness
         ? staticNumberValue(context, roughness)
-        : 0;
+        : pinnedDefaultNumber("clearcoatRoughness");
     const staticIndexOfRefraction = indexOfRefraction
         ? staticNumberValue(context, indexOfRefraction)
-        : 1.5;
+        : pinnedDefaultNumber("clearcoatIndexOfRefraction");
     return {
         enabled,
-        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
-        roughness: roughness ? context.compileNumber(roughness) : "0.0f",
+        intensity: intensity
+            ? context.compileNumber(intensity)
+            : pinnedDefaultFloatCpp("clearcoatIntensity"),
+        roughness: roughness
+            ? context.compileNumber(roughness)
+            : pinnedDefaultFloatCpp("clearcoatRoughness"),
         indexOfRefraction: indexOfRefraction
             ? context.compileNumber(indexOfRefraction)
-            : "1.5f",
+            : pinnedDefaultFloatCpp("clearcoatIndexOfRefraction"),
         bumpTextureScale: bumpTextureScale
             ? context.compileNumber(bumpTextureScale)
-            : "1.0f",
+            : pinnedDefaultFloatCpp("clearcoatBumpTextureScale"),
         manifest: {
             isEnabled: enabled === "true",
             ...(staticIntensity !== undefined
@@ -878,28 +920,30 @@ export function compileIridescenceOptions(
     const enabled = isEnabled ? context.compileBoolean(isEnabled) : "false";
     const staticIntensity = intensity
         ? staticNumberValue(context, intensity)
-        : 1;
+        : pinnedDefaultNumber("iridescenceIntensity");
     const staticIndexOfRefraction = indexOfRefraction
         ? staticNumberValue(context, indexOfRefraction)
-        : 1.3;
+        : pinnedDefaultNumber("iridescenceIndexOfRefraction");
     const staticMinimumThickness = minimumThickness
         ? staticNumberValue(context, minimumThickness)
-        : 100;
+        : pinnedDefaultNumber("iridescenceMinimumThickness");
     const staticMaximumThickness = maximumThickness
         ? staticNumberValue(context, maximumThickness)
-        : 400;
+        : pinnedDefaultNumber("iridescenceMaximumThickness");
     return {
         enabled,
-        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
+        intensity: intensity
+            ? context.compileNumber(intensity)
+            : pinnedDefaultFloatCpp("iridescenceIntensity"),
         indexOfRefraction: indexOfRefraction
             ? context.compileNumber(indexOfRefraction)
-            : "1.3f",
+            : pinnedDefaultFloatCpp("iridescenceIndexOfRefraction"),
         minimumThickness: minimumThickness
             ? context.compileNumber(minimumThickness)
-            : "100.0f",
+            : pinnedDefaultFloatCpp("iridescenceMinimumThickness"),
         maximumThickness: maximumThickness
             ? context.compileNumber(maximumThickness)
-            : "400.0f",
+            : pinnedDefaultFloatCpp("iridescenceMaximumThickness"),
         manifest: {
             isEnabled: enabled === "true",
             ...(staticIntensity !== undefined
@@ -951,16 +995,18 @@ export function compileAnisotropyOptions(
                 direction,
                 "An anisotropy direction must be a static [x, y].",
             )
-        : ([1, 0] as const);
+        : pinnedDefaultVec2("anisotropyDirection");
     const staticIntensity = intensity
         ? staticNumberValue(context, intensity)
-        : 1;
+        : pinnedDefaultNumber("anisotropyIntensity");
     return {
         enabled,
-        intensity: intensity ? context.compileNumber(intensity) : "1.0f",
+        intensity: intensity
+            ? context.compileNumber(intensity)
+            : pinnedDefaultFloatCpp("anisotropyIntensity"),
         direction: direction
             ? context.compileVec2(direction)
-            : "bbl::Vec2{1.0f, 0.0f}",
+            : pinnedDefaultVec2Cpp("anisotropyDirection"),
         manifest: {
             isEnabled: enabled === "true",
             // Omitted where the scene computes the value: the composition
@@ -1025,26 +1071,26 @@ export function compileSheenOptions(
         : "false";
     const staticColor = color
         ? staticColor3Value(context, color)
-        : ([1, 1, 1] as const);
+        : pinnedDefaultColor3("sheenColor");
     const staticRoughness = roughness
         ? staticNumberValue(context, roughness)
-        : 0;
+        : pinnedDefaultNumber("sheenRoughness");
     const staticIntensity = intensity
         ? staticNumberValue(context, intensity)
-        : 1;
+        : pinnedDefaultNumber("sheenIntensity");
     const texture = context.objectProperty(object, "texture");
     const albedoScalingEnabled = albedoScalingValue === "true";
     return {
         enabled,
         color: color
             ? context.compileColor3(color)
-            : "bbl::Color3{1.0f, 1.0f, 1.0f}",
+            : pinnedDefaultColor3Cpp("sheenColor"),
         roughness: roughness
             ? context.compileNumber(roughness)
-            : "0.0f",
+            : pinnedDefaultFloatCpp("sheenRoughness"),
         intensity: intensity
             ? context.compileNumber(intensity)
-            : "1.0f",
+            : pinnedDefaultFloatCpp("sheenIntensity"),
         texture,
         albedoScaling: albedoScalingEnabled,
         manifest: {

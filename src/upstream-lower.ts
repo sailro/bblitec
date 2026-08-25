@@ -13,6 +13,8 @@ import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
+import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
+import { pinnedToneMappingHeader } from "./lowering/pinned-tone-mapping.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
@@ -217,6 +219,14 @@ import type {
 export interface UpstreamEmitOptions {
     idDiagnostics: boolean;
     /**
+     * feature -> "file:line" of the first scene-source call site that
+     * reached it, from the manifest's `featureSites` record. Threaded here
+     * so the generation-time refusals below can name the scene call site
+     * that pulled the owning feature in; optional, and refusal text is
+     * unchanged when a caller does not pass it.
+     */
+    featureSites?: Readonly<Record<string, string>>;
+    /**
      * The largest per-asset `KHR_lights_punctual` light-node count. The pin
      * grows `MAX_LIGHTS` past its constant at run time (`setMaxLights` in
      * `gltf-feature-lights-punctual.ts`); this port freezes the constant and
@@ -405,6 +415,22 @@ const SHADER_FAMILIES = {
 
 type ShaderFamily = keyof typeof SHADER_FAMILIES;
 
+/**
+ * The " (reached from <file:line>)" suffix a late refusal appends, naming
+ * the scene call site that first reached the feature owning the refused
+ * mechanism. The compiler records only first-reach sites, so this is the
+ * closest scene-source anchor a composition/lowering-time error can carry;
+ * empty when no site was recorded (a caller without the record, an
+ * asset-joined feature), which keeps the message exactly as it was.
+ */
+export function refusalReachedFrom(
+    featureSites: Readonly<Record<string, string>> | undefined,
+    feature: string,
+): string {
+    const site = featureSites?.[feature];
+    return site === undefined ? "" : ` (reached from ${site})`;
+}
+
 /** The two optional metallic-reflectance pairs are independent slots. */
 export function metallicReflectanceCapabilityDefines(
     pbrBindingNames: ReadonlySet<string>,
@@ -543,6 +569,22 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_depth_state.hpp",
             pinnedDepthStateHeader(new LoweringContext(this.store)),
+        );
+        // The pinned default sample count, the same way: the one inline
+        // definition of `preferred_sample_count()`, for every scene shape —
+        // the render plan's TU no longer defines it, and an effect-only
+        // scene compiles no render plan at all.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_surface.hpp",
+            pinnedSurfaceHeader(new LoweringContext(this.store)),
+        );
+        // The pin's exponential tone-mapping constant, read from its own
+        // inverse and cross-checked against the forward curve, so the PAL's
+        // clear-color inverse names a generated symbol instead of a typed
+        // literal.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_tone_mapping.hpp",
+            pinnedToneMappingHeader(new LoweringContext(this.store)),
         );
         // The texture-slot table both render backends execute. Emitted for
         // every scene beside the capability defines above (the base slots
@@ -723,7 +765,14 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         if (features.includes("animation:gltf-groups")) {
             this.writeSource(
                 "upstream/src/animation_group.cpp",
-                new AnimationLowerer(context).lowerGroupOperations(),
+                new AnimationLowerer(context).lowerGroupOperations({
+                    additive: features.includes(
+                        "animation:gltf-additive",
+                    ),
+                    groupTime: features.includes(
+                        "animation:gltf-group-time",
+                    ),
+                }),
                 generated,
             );
         }
@@ -754,6 +803,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 gltf.lowerLoaderAdapter({
                     animationBlending: features.includes(
                         "animation:gltf-blending",
+                    ),
+                    animationAdditive: features.includes(
+                        "animation:gltf-additive",
                     ),
                     managedGroups: features.includes(
                         "animation:managed-groups",
@@ -934,7 +986,11 @@ ${wgsl}`,
                     "A scene-code Sprite2D custom shader and an exact " +
                         "node-particle Multiply bridge both compose the " +
                         "one custom sprite program; this port carries a " +
-                        "single program per family.",
+                        "single program per family." +
+                        refusalReachedFrom(
+                            options.featureSites,
+                            "sprite:custom-shader",
+                        ),
                 );
             }
             const custom = particlePrograms.sprite2dMultiply
@@ -1045,6 +1101,10 @@ ${wgsl}`,
                     nodeParticles,
                     options.nodeParticleSprite2d ?? [],
                     options.nodeParticleRegistrations ?? [],
+                    refusalReachedFrom(
+                        options.featureSites,
+                        "particle:node",
+                    ),
                 ),
                 generated,
                 "upstream/include/bblite/upstream/node_particles.hpp",
@@ -1378,6 +1438,10 @@ ${wgsl}`,
                     context,
                     options.postProcessTasks,
                     options.postProcessComposites,
+                    refusalReachedFrom(
+                        options.featureSites,
+                        "renderer:post-process",
+                    ),
                 ).lowerTaskRecords(),
                 generated,
                 "upstream/include/bblite/upstream/frame_graph_post_process.hpp",
@@ -1583,7 +1647,12 @@ ${composed.wgsl}`,
                         `${maxLights} and this port freezes it where the pin ` +
                         `grows the lights buffer (setMaxLights). Lights past ` +
                         `the constant would not shade; integrate the grown ` +
-                        `constant or reduce the asset's light nodes.`,
+                        `constant or reduce the asset's light nodes.` +
+                        // The loadAsset call that brought the asset in.
+                        refusalReachedFrom(
+                            options.featureSites,
+                            "loader:gltf",
+                        ),
                 );
             }
         }
@@ -1654,7 +1723,12 @@ ${composed.wgsl}`,
                     "A composed Standard velocity variant extends " +
                         "MeshUniforms past the PBR header's mirror; " +
                         "hoisting the widest struct for a scene that also " +
-                        "emits pbr_variants.hpp is not wired yet.",
+                        "emits pbr_variants.hpp is not wired yet." +
+                        // The velocity arm rides a geometry-output task.
+                        refusalReachedFrom(
+                            options.featureSites,
+                            "renderer:geometry-output",
+                        ),
                 );
             }
             const sharedMirrors = (options.pinnedVariants ?? []).length > 0

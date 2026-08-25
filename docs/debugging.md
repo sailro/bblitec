@@ -32,6 +32,9 @@ Three rules make the rest of this page work:
 
 Work down it. Each rung answers a question that makes the rungs below it
 meaningful, and stopping early is how a wrong branch gets taken.
+`scene -- diagnose <id>` walks rungs 2, 3 and 7 in that order over one
+shared capture and prints each rung's verdict — the ladder as one command;
+the individual rungs remain the tools for going deeper.
 
 | # | Question | Command |
 | --- | --- | --- |
@@ -62,9 +65,12 @@ answer:
   stale — recapture it with `parity <id> --recapture-reference` before
   debugging anything else.
 
-One more, off the parity path: `artifacts/shader-cache` keys on the WGSL
-and the DXC flags, not on `tools/compile-shaders.ps1`. After editing that
-script, delete the cache or every "reused N cached variants" is a lie.
+One more, off the parity path: `artifacts/shader-cache` keys on the DXC
+binaries, the profile and flags, and the *transformed HLSL* — so edits to
+`tools/compile-shaders.ps1`'s transformation passes are captured
+transitively through the HLSL bytes, and the Tint half re-runs on every
+invocation regardless. The one unkeyed surface is an inline change to the
+DXC invocation shape itself; delete the cache only after one of those.
 
 ### 2. Which side is it on?
 
@@ -72,10 +78,10 @@ script, delete the cache or every "reused N cached variants" is a lie.
 npm run scene -- parity scene33 --differential
 ```
 
-SDL_GPU and Dawn are two independent compiler and API stacks. Agreement
-to one LSB puts the cause on the CPU side — this port's values, plan and
-loader. Disagreement puts it on the GPU side — a pipeline state, a shader
-translation, a format. One command separates the two.
+SDL_GPU and Dawn are two independent compiler and API stacks: agreement
+to one LSB puts the cause on the CPU side, disagreement on the GPU side
+([backends](backends.md) carries the rationale). One command separates
+the two.
 
 Scenes 9, 37 and 120 are not bit-stable from run to run, so a moved cell for
 those three means nothing on its own — `scene -- neutrality` knows that and
@@ -97,7 +103,9 @@ npm run scene -- stability scene9 --backend dawn --single-sample
 npm run scene -- stability scene120 --backend sdl_gpu
 ```
 
-It renders the native side N times (default 5, `--runs N`) and prints every
+It renders the native side N times (default 5, `--runs N`; `--seek <t>` at a
+non-registry pose suppresses the golden columns and suffixes the artifacts
+`-seek<t>`) and prints every
 run against run 1 *and* against the golden — both columns always, because
 comparing runs only against each other hides a stable-but-wrong image, and the
 report says so out loud when the runs agree while all differing from the
@@ -217,11 +225,11 @@ Get-Content generated/scene93/upstream/shaders/sprite_custom.frag.slots
 ```
 
 Each line is a register and the block that kept it (`b0 fx`, `t0 atlasTex`).
-That file, not the WGSL, is what SDL_GPU binds against, and the two disagree
-by design: a stage may declare a block it never reads, Tint drops it, and the
-compaction that follows is dense — so a dropped block takes its slot and
-everything behind it moves up one. Counting declarations in the `.native.wgsl`
-gives the wrong answer.
+That file, not the WGSL, is what SDL_GPU binds against — a declared-but-unread
+block does not survive Tint and the compaction that follows is dense
+([backends](backends.md#dawn-backend-architecture-nativesrcpal_dawncpp)
+owns the contract) — so counting declarations in the `.native.wgsl` gives
+the wrong answer.
 
 ### 5. Which draw, which pixels
 
@@ -349,9 +357,8 @@ does not compose with `all`.
 
 A blocker names a capability; it does not size one. The first error a
 scene reports is the first line of its chain, not its length — scenes
-4, 21, 23, 111, 140, 142, 226, 251 and 270 each hide shadows, node
-materials, anisotropy, splats or post-process tasks behind a one-line
-blocker.
+4, 111, 140, 226, 251 and 270 each hide a whole subsystem behind a
+one-line blocker.
 
 **Compile-probe first.** This works without a registry entry:
 
@@ -379,7 +386,8 @@ before choosing a shape.
 
 - **Both backends, or it is not integrated.** A scene measured on one
   backend has no independent check on it at all. Making the gap visible
-  does not make it acceptable.
+  (a flag, an unmeasured column, a TODO) documents an unfinished job
+  rather than making it acceptable.
 - **Compose its materials.** If the scene loads a glTF, `scene -- compose
   <id>` should report every material matching. A green parity gate does not
   prove the derivation: a fragment missing an arm entirely still renders,
@@ -419,9 +427,9 @@ the wrong one wastes the run:
 | `capture` | The browser's ground truth: composed WGSL, texture uploads, per-draw isolation with `--skip-draw`. `diff` consumes a subset of it and reports differences; the capture itself is what you read when `diff` says a value has no counterpart. |
 | `uniforms` | One browser buffer in full, decoded under **every** candidate layout of its size, ambiguity included. `diff` picks a correspondence; `uniforms` refuses to and shows you all of them. |
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
-| `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. Takes `--backend` and `--seek` (the latter with `--recapture-reference`) under the same rules as `parity`. |
+| `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. Takes `--backend`, `--seek`, `--gpu-debug` and `--exe` under the same rules as `diff`: the pose defaults to the registry's, and a cached reference at another pose (or without provenance) is recaptured rather than compared. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh, in full. `diff`'s texture-palette section verdicts the first two matrices per mesh against the browser's uploads; this dump is what to read when that verdict says divergent. |
-| `stability` | **Whether a number is reproducible at all.** Every other tool measures one run; only repeated runs separate a residual from the scenes 9/37 run-to-run wobble class — and its golden column prints beside the run-to-run one because a stable-but-wrong image passes the latter. |
+| `stability` | **Whether a number is reproducible at all.** Every other tool measures one run; only repeated runs separate a residual from the scenes 9/37/120 run-to-run wobble class — and its golden column prints beside the run-to-run one because a stable-but-wrong image passes the latter. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |
 
 The shape to expect: `parity` says something is wrong, `--differential`
@@ -447,8 +455,9 @@ out the entire class of defect in one command.
 | `artifacts/capture/<id>/draws.json` | `capture` | the browser draw census, bundles included |
 | `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels; `diff`'s palette matching reads the rgba32float ones |
 | `artifacts/capture/<id>/seek-{minus1,plus1}/`, `seek-bracket.json` | `capture --seek-bracket` | the ±1-frame captures and the one-frame motion scale |
-| `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks (`diff` still reads a pre-rename `native-sdl_gpu.json` when only that exists) |
-| `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek each capture was taken at, read by `diff`'s reuse check |
+| `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks |
+| `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek, the served browser-module digest and the golden byte-identity verdict — `diff`, `compose` and `uniforms` refuse or recapture on a mismatch |
+| `artifacts/capture/<id>/compose-report.json` | `compose` (single scene) | the per-material compose verdicts with provenance |
 | `artifacts/capture/<id>/diff-{gpu,dawn}.json` | `diff` | the paired report |
 | `artifacts/capture/<id>/probe-variants/{before,after}/native-dawn.*`, `probe-variants/probe-variants.json` | `probe-variants` | the two native renders around one neutralized shader term, and the before/after measurement |
 | `artifacts/parity/<id>/report-<token>-without-{ground,background}.json`, `native-...png` | `parity --without` | the suppression run, suffixed so the standard run's artifacts stay |
@@ -500,12 +509,11 @@ well, which makes the assertion print and the run continue.
 
 **`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
 backend against *itself* at one sample separates multisampling from
-everything else — it is what places the scenes 9/37/120 run-to-run wobble
-in the multisampled path, since every one of the three is bit-identical
-across runs at one sample on the backend that moves at 4x, which excludes the
-scene, the assets and the shading math. Compare backend-to-backend or run-to-run
-when you do this — the goldens are multisampled, so every scene looks worse
-against them at one sample and that number means nothing.
+everything else — it is what placed the scenes 9/37/120 run-to-run wobble in
+the multisampled path ([which side is it on?](#2-which-side-is-it-on)
+carries the measurement). Compare backend-to-backend or run-to-run when you
+do this — the goldens are multisampled, so every scene looks worse against
+them at one sample and that number means nothing.
 
 Comparing native bone palettes against the browser's requires the mirror
 similarity map — negate column-major indexes 1, 2, 3, 4, 8 and 12 — which

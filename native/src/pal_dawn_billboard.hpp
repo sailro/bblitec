@@ -24,6 +24,9 @@
 #include <stdexcept>
 #include <vector>
 
+// billboard_draw_plan / billboard_needs_upload: the program ladder and
+// the upload gate, decided once for both backends.
+#include "pal_gpu_shared.hpp"
 #include "pal_dawn_shared.hpp"
 // dawn_sprite_blend_factor: one translation of the pinned blend enum,
 // shared with the 2D layer's pass.
@@ -73,6 +76,10 @@ struct DawnBillboardPass {
     BillboardSystemHandle system{};
     // The reordered upload, kept across frames.
     std::vector<float> sorted;
+    // What the buffer holds — the view it was sorted for and the count it
+    // carried — so `billboard_needs_upload` can gate the re-upload and a
+    // post-frame append invalidates it (pal_gpu_shared.hpp).
+    BillboardUploadStamp upload_stamp;
 };
 
 /** The vertex block the reconstructed billboard stage declares. */
@@ -133,43 +140,13 @@ inline DawnBillboardPass create_dawn_billboard_pass(
             static_cast<std::size_t>(descriptor.size));
     }
 
-    const bool axis_locked =
-        system.orientation == BillboardOrientation::axis_locked;
-    // Unlike the 2D layer, a custom billboard program brings its own vertex
-    // stage: the pin's composer exposes the view distance and the world
-    // position to a custom body, which the stock stage does not write.
-    // The particle family's Multiply program is a module of the pin's own,
-    // outside both sprite composers: it declares no fx block, and its vertex
-    // stage travels with its fragment because the pin writes them together.
-    const bool particle_multiply = system.blend.particle_passes >= 1;
-    // That pairing is exactly why it is exclusive: the program carries the
-    // FACING basis and the pin's own body, so an axis-locked or custom
-    // system reaching it would silently draw neither. The registrar upstream
-    // only ever builds facing particle systems with no custom shader, so
-    // this says so rather than picking a program that would be wrong.
-    if (particle_multiply && (axis_locked || system.custom_shader)) {
-        throw std::runtime_error(
-            "A node-particle Multiply blend draws the pin's own facing "
-            "program; it has no axis-locked or custom-shader arm.");
-    }
-    pass.vertex_module = load_wgsl_module(
-        device,
-        particle_multiply    ? "billboard_particle_multiply.vert"
-        : system.custom_shader ? "billboard_custom.vert"
-        : axis_locked        ? "billboard_axis_locked.vert"
-                             : "billboard.vert");
-    // The cutout arm discards below the cutoff; with alpha-to-coverage the
-    // pin drops the discard and lets sample coverage carry the edge, so that
-    // permutation shares the transparent stage.
-    const bool cutout =
-        system.depth_mode == BillboardDepthMode::cutout;
-    pass.fragment_module = load_wgsl_module(
-        device,
-        particle_multiply    ? "billboard_particle_multiply.frag"
-        : system.custom_shader ? "billboard_custom.frag"
-        : cutout && !system.alpha_to_coverage
-            ? "billboard_cutout.frag"
-            : "billboard.frag");
+    // The program ladder and the pass rules, decided once for both
+    // backends (`billboard_draw_plan`, pal_gpu_shared.hpp); this side
+    // keeps only its API mechanics.
+    const BillboardDrawPlan plan = billboard_draw_plan(system);
+    const bool axis_locked = plan.vertex_reads_system_block;
+    pass.vertex_module = load_wgsl_module(device, plan.vertex_stem);
+    pass.fragment_module = load_wgsl_module(device, plan.fragment_stem);
 
     // Group 0 is unused by the specialized WGSL (the scene block is
     // re-homed into the vertex group) and is declared empty so the layout's
@@ -292,14 +269,12 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     fragment_state.targetCount = 1;
     fragment_state.targets = &color_target;
 
-    // The pinned depth table pairs `transparent` with writes off, which is
-    // what makes the sorted draw order the composite, and `cutout` with
-    // writes on, which is what lets the GPU resolve overlap instead.
+    // The depth pairing comes with the plan: writes iff cutout.
     WGPUDepthStencilState depth_state = WGPU_DEPTH_STENCIL_STATE_INIT;
     depth_state.format = depth_format;
     depth_state.depthCompare =
         dawn_depth_compare(upstream::pinned_depth_compare);
-    depth_state.depthWriteEnabled = cutout
+    depth_state.depthWriteEnabled = plan.cutout_writes_depth
         ? WGPUOptionalBool_True
         : WGPUOptionalBool_False;
 
@@ -325,8 +300,12 @@ inline DawnBillboardPass create_dawn_billboard_pass(
     descriptor.depthStencil = &depth_state;
     descriptor.multisample.count = sample_count;
     descriptor.multisample.mask = 0xFFFFFFFFu;
+    // The one a2c rule (pal_gpu_shared.hpp): at one sample WebGPU rejects
+    // an a2c pipeline outright.
     descriptor.multisample.alphaToCoverageEnabled =
-        system.alpha_to_coverage;
+        alpha_to_coverage_enabled(
+            system.alpha_to_coverage,
+            sample_count);
     descriptor.fragment = &fragment_state;
     pass.pipeline = wgpuDeviceCreateRenderPipeline(device, &descriptor);
     if (!pass.pipeline) {
@@ -334,7 +313,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
         dawn_error("wgpuDeviceCreateRenderPipeline billboard");
     }
 
-    if (system.blend.particle_passes == 2) {
+    if (plan.particle_passes == 2) {
         // The mode-4 second pass: the STOCK program, the Add blend the
         // generated builder resolved, and the same layout -- the pin builds
         // it as a copy of the system with its custom shader cleared.
@@ -483,8 +462,9 @@ inline DawnBillboardPass create_dawn_billboard_pass(
  * Sorts the instances back to front in view space and uploads them, with the
  * uniforms the frame's camera settles.
  *
- * With depth writes off the draw ORDER is the composite, so this runs every
- * frame rather than only when the system changes.
+ * The UBO writes are small and run every frame; the sort+upload is gated
+ * by the shared `billboard_needs_upload` rule, exactly as the SDL twin
+ * gates it.
  */
 inline void upload_dawn_billboard_pass(
     WGPUQueue queue,
@@ -530,7 +510,10 @@ inline void upload_dawn_billboard_pass(
             fx.size() * sizeof(float));
     }
 
-    if (system.count == 0) {
+    // One gating rule for both backends (`billboard_needs_upload`): an
+    // unchanged view over an unchanged count re-sorts and re-uploads
+    // nothing.
+    if (!billboard_needs_upload(system, pass.upload_stamp, view)) {
         return;
     }
     upstream::billboard_upload_instances(system, view, pass.sorted);
@@ -540,6 +523,7 @@ inline void upload_dawn_billboard_pass(
         0,
         pass.sorted.data(),
         pass.sorted.size() * sizeof(float));
+    stamp_billboard_upload(pass.upload_stamp, system, view);
 }
 
 /** Records the draw into an encoder the scene renderer already opened. */

@@ -15,6 +15,8 @@ import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
+import { pinnedToneMappingHeader } from "../src/lowering/pinned-tone-mapping.js";
 import {
     readUpstreamPin,
     UpstreamSourceStore,
@@ -823,8 +825,36 @@ test("lowers the reachable upstream light matrix implementation", () => {
     const lowered = new LightLowerer(new LoweringContext()).lowerMatrix();
     assert.equal(lowered.modulePath, "src/light/light-matrix.ts");
     assert.match(lowered.source, /std::sqrt/);
-    assert.match(lowered.source, /m\[15\] = 1\.0f/);
+    // The pinned body computes in JavaScript numbers: double locals, the
+    // NaN-aware value-selecting `||`, and a single rounding cast at each
+    // Float32Array store.
+    assert.match(lowered.source, /const double flen = bbl::js::or_number\(/);
+    assert.match(lowered.source, /const double dx = static_cast<double>\(dx_f32\)/);
+    assert.match(
+        lowered.source,
+        /out\[static_cast<std::size_t>\(15\.0\)\] = static_cast<float>\(1\.0\)/,
+    );
+    assert.doesNotMatch(lowered.source, /nonzero_or/);
+    assert.doesNotMatch(lowered.source, /const float/);
     assert.match(lowered.source, pinnedProvenance());
+});
+
+test("emits the pinned surface sample count for every scene shape", () => {
+    const header = pinnedSurfaceHeader(new LoweringContext());
+    assert.match(
+        header,
+        /inline std::uint32_t preferred_sample_count\(\) \{\s*return 4u;/,
+    );
+    assert.match(header, pinnedProvenance());
+});
+
+test("emits the pinned tone-mapping scale from the pin's own inverse", () => {
+    const header = pinnedToneMappingHeader(new LoweringContext());
+    assert.match(
+        header,
+        /inline constexpr float pinned_tone_mapping_scale = 1\.5905790328979492f;/,
+    );
+    assert.match(header, pinnedProvenance());
 });
 
 test("generates the render plan from upstream frame-graph binding semantics", () => {
@@ -944,7 +974,9 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         /: environment\.skybox_position;/,
     );
     assert.match(lowered.source, /build_skybox_view_projection/);
-    assert.match(lowered.source, /preferred_sample_count\(\).*return 4u/s);
+    // preferred_sample_count moved to the always-emitted pinned_surface.hpp
+    // so effect-only scenes carry it too; the plan defines it nowhere.
+    assert.doesNotMatch(lowered.source, /preferred_sample_count/);
     assert.match(lowered.header, /struct PbrUniforms/);
     assert.match(lowered.source, /mesh\.geometry >= engine\.geometries\.size\(\)/);
     assert.match(lowered.source, pinnedProvenance());
@@ -1019,10 +1051,17 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
     );
     // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle
     // products, and the mat4MultiplyInto column loop all transcribe into
-    // the emitted helper; the record's own transform never reaches it
-    // for non-thin-instanced meshes.
-    assert.match(plan.source, /\(1\.0 - 2\.0 \* \(yy \+ zz\)\) \* scale_x/);
-    assert.match(plan.source, /qx = sx \* cy \* cz \+ cx \* sy \* sz;/);
+    // the emitted helper (through the shared PinnedNumericLowerer, whose
+    // parenthesization is explicit); the record's own transform never
+    // reaches it for non-thin-instanced meshes.
+    assert.match(
+        plan.source,
+        /\(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\)/,
+    );
+    assert.match(
+        plan.source,
+        /qx = \(\(\(sx \* cy\) \* cz\) \+ \(\(cx \* sy\) \* sz\)\);/,
+    );
     assert.match(
         plan.source,
         /if \(!mesh\.thin_instanced\) \{\s*\r?\n\s*return mesh\.instance_parent_matrix;/,

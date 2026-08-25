@@ -23,6 +23,20 @@ export const PINNED_ARITHMETIC_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
     ]);
 
 /**
+ * The assignment forms a pinned body states: `=` plus the compound
+ * operators, each meaning in C++ exactly what it means in TypeScript over
+ * the scalars these lowerers emit.
+ */
+export const PINNED_ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> =
+    new Map<ts.SyntaxKind, string>([
+        [ts.SyntaxKind.EqualsToken, "="],
+        [ts.SyntaxKind.PlusEqualsToken, "+="],
+        [ts.SyntaxKind.MinusEqualsToken, "-="],
+        [ts.SyntaxKind.AsteriskEqualsToken, "*="],
+        [ts.SyntaxKind.SlashEqualsToken, "/="],
+    ]);
+
+/**
  * The arithmetic set plus the comparisons and boolean joins a writer guards
  * with. `==` covers both `==` and `===`: every operand a pinned writer
  * compares has already lowered to a native scalar, so the two are one operator
@@ -50,6 +64,7 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     max: "std::max",
     min: "std::min",
     cos: "std::cos",
+    acos: "std::acos",
     sin: "std::sin",
     sqrt: "std::sqrt",
     abs: "std::abs",
@@ -57,6 +72,32 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     ceil: "std::ceil",
     floor: "std::floor",
 };
+
+/**
+ * `PINNED_MATH_FUNCTIONS` as the spelling map `PinnedNumericLowerer` takes:
+ * `Math.x` to its `<cmath>` call over doubles. `std::max`/`std::min` pin the
+ * template argument, or a mixed-width call is ambiguous. Callers that need a
+ * member with different semantics (`Math.round`, `Math.hypot`) layer it on
+ * top of this map and say why.
+ */
+export function pinnedNumericMathCalls(): Map<
+    string,
+    (args: readonly string[]) => string
+> {
+    return new Map(
+        Object.entries(PINNED_MATH_FUNCTIONS).map(
+            ([name, spelling]): [
+                string,
+                (args: readonly string[]) => string,
+            ] => [
+                `Math.${name}`,
+                name === "max" || name === "min"
+                    ? (args) => `${spelling}<double>(${args.join(", ")})`
+                    : (args) => `${spelling}(${args.join(", ")})`,
+            ],
+        ),
+    );
+}
 
 /**
  * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the

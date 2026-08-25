@@ -186,6 +186,25 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "mixer as the manager's animation-group category handler)",
         consumers: CMAKE,
     },
+    "animation:gltf-additive": {
+        provenance:
+            "src/animation/weighted-gltf-mixer.ts " +
+            "(setAnimationAdditive marks a group additive with its " +
+            "reference time and enables blending on the owning manager; " +
+            "accumulateAdditiveGroup adds each channel's weighted " +
+            "difference from the reference-time sample, rotations as " +
+            "reference^-1 * sample onto the base before the weighted " +
+            "slerp)",
+        consumers: CMAKE,
+    },
+    "animation:gltf-group-time": {
+        provenance:
+            "src/animation/animation-group.ts (AnimationGroup." +
+            "currentTime is a public mutable field; the direct write " +
+            "takes the loader's set_clip_time writer route, and whoever " +
+            "drives the group applies the pose on its next tick)",
+        consumers: CMAKE,
+    },
     "core": {
         provenance:
             "src/engine/engine.ts + src/scene/scene-core.ts " +
@@ -272,7 +291,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/light/point-light.ts; asset-joined via " +
             "KHR_lights_punctual " +
-            "(src/loader-gltf/gltf-feature-lights-punctual.ts)",
+            "(src/loader-gltf/gltf-feature-lights-punctual.ts) or a " +
+            ".babylon document's point lights " +
+            "(src/loader-babylon/load-babylon.ts)",
         consumers: ["features.cmake", "variant table"],
     },
     "light:spot": {
@@ -675,8 +696,16 @@ function runtimeFeatureRows(
             : joinedBy !== undefined
                 ? name === "environment:ibl"
                     ? `asset-joined: ${joinedBy} carries EXT_lights_image_based`
-                    : `asset-joined: ${joinedBy} carries KHR_lights_punctual ` +
-                      `kind "${name.slice("light:".length)}"`
+                    // The CLI performs the light join from two loaders and
+                    // records the asset output either way; a `.babylon`
+                    // document's own lights are load-babylon.ts's, not a
+                    // glTF extension's.
+                    : joinedBy.endsWith(".babylon")
+                        ? `asset-joined: ${joinedBy} carries a .babylon ` +
+                          `${name.slice("light:".length)} light ` +
+                          "(src/loader-babylon/load-babylon.ts)"
+                        : `asset-joined: ${joinedBy} carries KHR_lights_punctual ` +
+                          `kind "${name.slice("light:".length)}"`
                 : site !== undefined
                     ? `scene source: reached at ${site}`
                     : "scene source: reached by the compiled scene TypeScript";
@@ -710,6 +739,8 @@ function capabilityRows(
     const { specialization: spec, emit, features } = inputs;
     const has = (feature: Feature): boolean => features.includes(feature);
     const variantCount = (emit.pinnedVariants ?? []).length;
+    const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
+    const nodeVariantCount = (emit.nodeVariants ?? []).length;
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
     const standardReflection = (emit.pinnedStandardVariants ?? [])
@@ -827,6 +858,24 @@ function capabilityRows(
             "src/loader-gltf/gltf-feature-registry.ts: " +
                 "EXT_mesh_gpu_instancing -> gltf-feature-gpu-instancing.js; " +
                 "scene half src/mesh/thin-instance.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_GPU_INSTANCE_COLORS",
+            "capability",
+            emit.gpuInstanceColors,
+            [
+                [
+                    has("mesh:thin-instance-colors"),
+                    "scene source reached mesh:thin-instance-colors " +
+                        "(a per-instance RGBA stream widens the instance " +
+                        "vertex layout)",
+                ],
+            ],
+            "no thin-instance colour stream",
+            "src/mesh/thin-instance.ts setThinInstanceColors: the pin " +
+                "appends its own per-instance colour lane to the instance " +
+                "layout when a material reads it",
             ["render_capabilities.hpp"],
         ),
         checkedRow(
@@ -1077,6 +1126,80 @@ function capabilityRows(
                 "per-scene fragment",
             ["render_capabilities.hpp", "variant table"],
         ),
+        row(
+            "BBLITE_STANDARD_VARIANTS",
+            "capability",
+            standardVariantCount > 0,
+            standardVariantCount > 0
+                ? `${standardVariantCount} Standard variant(s) composed ` +
+                    "by the pin over the scene's .babylon and scene-code " +
+                    "Standard materials"
+                : "no Standard materials compose variants",
+            "the pin's own composed Standard stages " +
+                "(src/material/standard/standard-template.ts and its " +
+                "fragments), emitted as standard_variants.hpp beside the " +
+                "composed stages",
+            ["render_capabilities.hpp", "variant table"],
+        ),
+        row(
+            "BBLITE_NODE_VARIANTS",
+            "capability",
+            nodeVariantCount > 0,
+            nodeVariantCount > 0
+                ? `${nodeVariantCount} node graph(s) compiled by the ` +
+                    "pin's own node-material emitter for this scene"
+                : "no node materials compile graphs",
+            "the pin's own node-material emitter " +
+                "(src/material/node/node-material.ts " +
+                "parseNodeMaterialFromSnippet), one module per graph, " +
+                "emitted as node_variants.hpp beside the two stages each " +
+                "deploys",
+            ["render_capabilities.hpp", "variant table"],
+        ),
+        // The two derived defines. `render_capabilities.hpp` states each as
+        // a preprocessor expression over the three counts above; the rows
+        // derive the same disjunctions from the same emit options, so the
+        // inventory names which family switched the shared machinery on.
+        row(
+            "BBLITE_PINNED_MATERIALS",
+            "capability",
+            variantCount > 0 ||
+                standardVariantCount > 0 ||
+                nodeVariantCount > 0,
+            variantCount > 0 ||
+                standardVariantCount > 0 ||
+                nodeVariantCount > 0
+                ? "derived: a composed family " +
+                    `(${[
+                        ...(variantCount > 0 ? ["PBR"] : []),
+                        ...(standardVariantCount > 0 ? ["Standard"] : []),
+                        ...(nodeVariantCount > 0 ? ["node"] : []),
+                    ].join(", ")}) draws through the pin's own group scheme`
+                : "no composed family reaches the pinned group scheme",
+            "native-architecture: the derived define " +
+                "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 " +
+                "|| BBLITE_NODE_VARIANTS > 0` gates the shared per-pass " +
+                "scene/lights frame state the three composed families bind",
+            ["render_capabilities.hpp"],
+        ),
+        row(
+            "BBLITE_PINNED_MATERIAL_VARIANTS",
+            "capability",
+            variantCount > 0 || standardVariantCount > 0,
+            variantCount > 0 || standardVariantCount > 0
+                ? "derived: a material family " +
+                    `(${[
+                        ...(variantCount > 0 ? ["PBR"] : []),
+                        ...(standardVariantCount > 0 ? ["Standard"] : []),
+                    ].join(", ")}) reaches the thin-instance arm and the ` +
+                    "geometry contract"
+                : "no material family composes variants",
+            "native-architecture: the derived define " +
+                "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0` " +
+                "gates the two material families' thin-instance arm and " +
+                "geometry contract, which a node graph does not reach",
+            ["render_capabilities.hpp"],
+        ),
     ];
 }
 
@@ -1127,7 +1250,10 @@ function codecRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
 function emitOptionRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
-    const { emit } = inputs;
+    const { emit, features } = inputs;
+    const customShaderFamilies = emit.spriteCustomShaders
+        .map((shader) => shader.family)
+        .join(", ");
     return [
         row(
             "animatedWorldBounds",
@@ -1318,6 +1444,107 @@ function emitOptionRows(
                 "composed shaders",
             ["renderer plan"],
         ),
+        checkedRow(
+            "gpuInstanceColors",
+            "emit-option",
+            emit.gpuInstanceColors,
+            [
+                [
+                    features.includes("mesh:thin-instance-colors"),
+                    "scene source reached mesh:thin-instance-colors, so " +
+                        "the instance vertex layout widens by the pin's " +
+                        "colour lane",
+                ],
+            ],
+            "no thin-instance colour stream",
+            "src/mesh/thin-instance.ts setThinInstanceColors: the pin " +
+                "appends its own per-instance colour lane to the instance " +
+                "layout when a material reads it",
+            ["render_capabilities.hpp"],
+        ),
+        row(
+            "pinnedSkeletonPalette",
+            "emit-option",
+            emit.pinnedSkeletonPalette ?? false,
+            (emit.pinnedSkeletonPalette ?? false)
+                ? "the composed variants carry the pin's own skeleton " +
+                    "mesh bit, so the bone palette rides its per-bone " +
+                    "texture (which caps no joint count)"
+                : "no composed variant carries the skeleton bit; a " +
+                    "skinned asset would take the transcribed 64-matrix " +
+                    "uniform palette",
+            "src/loader-gltf/gltf-feature-skeleton.ts: the pin uploads " +
+                "its bone palette as a per-bone texture; which transport " +
+                "a scene takes is decided by whether its composed " +
+                "variants carry the pinned skeleton mesh bit " +
+                "(pinnedFeaturesCarrySkeleton over the renderable " +
+                "mesh-feature table, cli.ts)",
+            ["loader flag"],
+        ),
+        row(
+            "spriteCustomShaders",
+            "emit-option",
+            emit.spriteCustomShaders.length > 0,
+            emit.spriteCustomShaders.length > 0
+                ? `${emit.spriteCustomShaders.length} scene-code custom ` +
+                    "fragment(s) composed into the pin's own builder(s): " +
+                    customShaderFamilies
+                : "no scene-code sprite-family custom shaders",
+            "src/sprite/sprite-custom-shader.ts makeCustomSpriteWgsl + " +
+                "src/sprite/billboard-custom-shader.ts " +
+                "makeCustomBillboardWgsl: the pin composes one custom " +
+                "module per family from the same prologue with the " +
+                "caller's fragment spliced in",
+            ["deployed shaders"],
+        ),
+        row(
+            "effects",
+            "emit-option",
+            emit.effects.length > 0,
+            emit.effects.length > 0
+                ? `${emit.effects.length} createEffectWrapper ` +
+                    "descriptor(s), each composed as the pin's own " +
+                    "fullscreen vertex stage plus the caller's fragment " +
+                    "and deployed under both entry points"
+                : "no effect wrappers",
+            "src/effect/effect-renderer.ts createEffectWrapper " +
+                "(DEFAULT_VERTEX_WGSL plus the caller's fragment); the " +
+                "emitted effect_variants.hpp carries each descriptor's " +
+                "uniform layout",
+            ["deployed shaders"],
+        ),
+        row(
+            "plainSpriteLayer",
+            "emit-option",
+            emit.plainSpriteLayer,
+            emit.plainSpriteLayer
+                ? "a scene-code layer draws the stock sprite program"
+                : "every scene-code layer opts into a custom shader, so " +
+                    "the stock fragment deploys only if a node-particle " +
+                    "bridge needs it (the bridges answer for their own " +
+                    "layers from the pin's pass table)",
+            "src/sprite/sprite-pipeline.ts makeSpriteWgsl: the stock " +
+                "fragment deploys only where a plain layer draws with it; " +
+                "upstream-lower.ts ORs this option with the " +
+                "node-particle-derived plain half",
+            ["deployed shaders"],
+        ),
+        row(
+            "plainBillboardSystem",
+            "emit-option",
+            emit.plainBillboardSystem,
+            emit.plainBillboardSystem
+                ? "a scene-code system draws the stock billboard program"
+                : "every scene-code system opts into a custom shader, so " +
+                    "the stock pair deploys only if a node-particle " +
+                    "system needs it (mode 4's second pass draws the " +
+                    "stock program over the same instances)",
+            "src/sprite/billboard-pipeline.ts makeBillboardWgsl: the " +
+                "stock pair deploys only where a plain system draws with " +
+                "it; upstream-lower.ts ORs this option with the " +
+                "node-particle-derived plain half",
+            ["deployed shaders"],
+        ),
     ];
 }
 
@@ -1326,9 +1553,17 @@ function compositionRows(
 ): FeatureActivationRow[] {
     const { composition, emit, specialization: spec, features } = inputs;
     const variantCount = (emit.pinnedVariants ?? []).length;
+    const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
+    const nodeVariantCount = (emit.nodeVariants ?? []).length;
     const taskCount = emit.geometryOutputTasks.length;
     const passCount = emit.postProcessTasks.length;
     const kinds = composition.lightKinds;
+    // The two sprite-family halves compose independently; the row names
+    // whichever this scene reached.
+    const spriteFamilies = [
+        ...(features.includes("renderer:sprite") ? ["2D sprite"] : []),
+        ...(features.includes("sprite:billboard") ? ["billboard"] : []),
+    ];
     return [
         row(
             "scene-arms:light-modes",
@@ -1417,6 +1652,99 @@ function compositionRows(
                 "each effect module's own _shader record",
             ["deployed shaders"],
         ),
+        row(
+            "standard-variants:stages",
+            "composition",
+            standardVariantCount > 0,
+            standardVariantCount > 0
+                ? `${standardVariantCount} Standard variant(s) composed ` +
+                    "by the pin over the scene's .babylon and scene-code " +
+                    "Standard materials, deployed under the variant-std- " +
+                    "stems beside standard_variants.hpp"
+                : "no Standard materials compose variants",
+            "src/material/standard/standard-template.ts and its " +
+                "fragments, composed per (material, mesh bits, scene arm) " +
+                "by the pin's own Standard composer",
+            ["variant table", "deployed shaders"],
+        ),
+        row(
+            "node-variants:stages",
+            "composition",
+            nodeVariantCount > 0,
+            nodeVariantCount > 0
+                ? `${nodeVariantCount} node graph(s) compiled by the ` +
+                    "pin's own node-material emitter, one module per " +
+                    "graph deployed under both entry points beside " +
+                    "node_variants.hpp"
+                : "no node materials compile graphs",
+            "src/material/node/node-material.ts " +
+                "parseNodeMaterialFromSnippet + the pin's own " +
+                "node-material emitter; each module keeps the pin's own " +
+                "group scheme under the node- stems",
+            ["variant table", "deployed shaders"],
+        ),
+        row(
+            "splat:stages",
+            "composition",
+            features.includes("loader:splat"),
+            features.includes("loader:splat")
+                ? "the pin's own Gaussian-splat module, split at its two " +
+                    "entry points (splat.vert/splat.frag)"
+                : "no splat assets",
+            "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts " +
+                "WGSL: the pin ships the module text itself; nothing " +
+                "composes",
+            ["deployed shaders"],
+        ),
+        row(
+            "shader-material:programs",
+            "composition",
+            emit.shaderPrograms.length > 0,
+            emit.shaderPrograms.length > 0
+                ? `${emit.shaderPrograms.length} shader-material ` +
+                    `program(s) composed into deployed stages: ${
+                        emit.shaderPrograms
+                            .map((program) => program.name)
+                            .join(", ")
+                    }`
+                : "no shader materials (the line family, a mesh plus a " +
+                    "ShaderMaterial, rides this list too)",
+            "src/material/shader/shader-material.ts: each program's WGSL " +
+                "composes through the scene-local variant table, and the " +
+                "line system's own stages travel as one of these programs",
+            ["deployed shaders"],
+        ),
+        row(
+            "sprite-billboard:stages",
+            "composition",
+            spriteFamilies.length > 0,
+            spriteFamilies.length > 0
+                ? "the pinned sprite-family builders' text reconstructed " +
+                    `for the reached permutations (${
+                        spriteFamilies.join(", ")
+                    })`
+                : "no sprite or billboard renderer",
+            "src/sprite/sprite-pipeline.ts makeSpriteWgsl + " +
+                "src/sprite/billboard-pipeline.ts makeBillboardWgsl: the " +
+                "pin's own builders, reconstructed per reached " +
+                "permutation (stock, custom, uv-scroll, cutout, " +
+                "axis-locked, particle Multiply)",
+            ["deployed shaders"],
+        ),
+        row(
+            "effect-wrapper:stages",
+            "composition",
+            emit.effects.length > 0,
+            emit.effects.length > 0
+                ? `${emit.effects.length} composed effect module(s): the ` +
+                    "pin's fullscreen vertex stage concatenated with each " +
+                    "caller's fragment, one module per descriptor"
+                : "no effect wrappers compose stages",
+            "src/effect/effect-renderer.ts createEffectWrapper: " +
+                "DEFAULT_VERTEX_WGSL plus the caller's fragment, in one " +
+                "module carrying both entry points",
+            ["deployed shaders"],
+        ),
     ];
 }
 
@@ -1462,7 +1790,7 @@ function interleaveRow(
 function refusalRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
-    const { specialization: spec, emit, gltfAssetNames } = inputs;
+    const { specialization: spec, emit, features, gltfAssetNames } = inputs;
     const checkedAssets =
         gltfAssetNames.length > 0
             ? `checked ${gltfAssetNames.length} glTF asset(s) ` +
@@ -1601,6 +1929,76 @@ function refusalRows(
                         "generation instead of mis-keying the table",
                 ),
             ]),
+        row(
+            "refusal:physics-shapes",
+            "generation-refusal",
+            false,
+            features.includes("physics:aggregate")
+                ? "checked: every reached physics aggregate names one of " +
+                    "the primitive shapes " +
+                    "createPrimitivePhysicsShapeHandle builds"
+                : "no physics aggregates to check",
+            "src/physics/havok.ts createPrimitivePhysicsShapeHandle: the " +
+                "reached slice is the four mesh-free primitives; " +
+                "CONVEX_HULL, MESH, CONTAINER and HEIGHTFIELD refuse at " +
+                "the intrinsic (src/compiler/intrinsics/physics.ts) rather " +
+                "than at the pin's own throw inside createPhysicsAggregate",
+            gate,
+        ),
+        row(
+            "refusal:ktx-format",
+            "generation-refusal",
+            false,
+            features.includes("texture:compressed")
+                ? "checked: every loadKtxTexture2D call lists a " +
+                    "block-compression suffix, so generation packages the " +
+                    "candidate the validated D3D12 adapter would pick"
+                : "no compressed-texture loads to check",
+            "src/texture/compressed-formats.ts: the pin keeps every " +
+                "suffix whose device feature the adapter reports and falls " +
+                "back to the base image; generation makes the same choice " +
+                "once over texture-compression-bc " +
+                "(src/compiler/compressed-texture.ts), and a call listing " +
+                "no block-compression suffix refuses rather than packaging " +
+                "the pin's fallback image — a different texture the golden " +
+                "does not render",
+            gate,
+        ),
+        row(
+            "refusal:splat-format",
+            "generation-refusal",
+            false,
+            features.includes("loader:splat")
+                ? "checked: every splat asset parsed as plain PLY or the " +
+                    ".splat row layout"
+                : "no splat assets to check",
+            "src/loader-splat/splat-data.ts: a compressed or " +
+                "spherical-harmonic PLY needs the pin's second parser and " +
+                "its own SH pipeline, and a .sog/.spz needs a ZIP/gzip " +
+                "decoder before either; the packager refuses both rather " +
+                "than emitting a row buffer the renderer would draw wrong " +
+                "(src/splat-packager.ts)",
+            gate,
+        ),
+        row(
+            "refusal:node-particle-live-set",
+            "generation-refusal",
+            false,
+            (emit.nodeParticles ?? []).length > 0
+                ? `checked ${(emit.nodeParticles ?? []).length} frozen ` +
+                    "node-particle system(s): every registered one holds " +
+                    "updateSpeed 0 with a further step measured as the " +
+                    "identity, and every one carries an unflipped texture"
+                : "no frozen node-particle systems to check",
+            "src/particle/particle-scene.ts registerNodeParticleSet " +
+                "installs the pin's per-frame animate+sync callback, which " +
+                "one frozen state answers only when a further step is the " +
+                "identity; a live set (updateSpeed != 0 or a step that " +
+                "moves particles), a texture-less system, or a " +
+                "flipped-upload texture block refuses at generation " +
+                "(src/lowering/node-particle-lowerer.ts assertBakeable)",
+            gate,
+        ),
         row(
             "refusal:eight-influence-skinning",
             "generation-refusal",

@@ -12,7 +12,10 @@ import {
     variantMaterialIndex,
     type JsonRecord,
 } from "./gltf-document.js";
-import { UpstreamSourceStore } from "./upstream-source.js";
+import {
+    sharedUpstreamStore,
+    UpstreamSourceStore,
+} from "./upstream-source.js";
 
 interface GltfSpecialization {
     asset: string;
@@ -323,13 +326,7 @@ function refuseUnsupportedGltf(
  */
 function extensionModuleMap(store: UpstreamSourceStore): Map<string, string> {
     const path = "src/loader-gltf/gltf-feature-registry.ts";
-    const source = store.getSource(path);
-    const file = ts.createSourceFile(
-        path,
-        source,
-        ts.ScriptTarget.ES2022,
-        true,
-    );
+    const file = store.getSourceFile(path);
     const constants = new Map<string, string>();
     const rows: Array<[ts.Expression, ts.Expression]> = [];
     const visit = (node: ts.Node): void => {
@@ -424,7 +421,10 @@ export function specializeGltf(
     assetName: string,
     /** The variant a scene's `selectVariant` chose on this asset, by name. */
     selectedVariantName?: string,
-    store = new UpstreamSourceStore(),
+    // The process-shared store: the pin cannot change within a run, and a
+    // fresh store per asset re-reads every source map. A caller that wants
+    // an isolated store (a test pointing at another tree) still passes one.
+    store = sharedUpstreamStore(),
 ): GltfSpecialization {
     const document = parseGlbJson(path);
     const selectedVariant = selectedVariantIndex(

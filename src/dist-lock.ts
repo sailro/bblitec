@@ -36,6 +36,12 @@ function release(): void {
  * Ctrl-C would block every later build until someone read this file.
  */
 export function holdDistLock(command: string): void {
+    // A scene-command child spawned by another scene-command (the
+    // `parity all` fan-out) runs under its parent's lock: taking it here
+    // would overwrite the parent's record, and this process's exit would
+    // then unlink the lock from under the rest of the matrix run. The
+    // parent sets the marker in every child's environment.
+    if (process.env.BBLITE_DIST_LOCK_HELD === "1") return;
     if (held) return;
     try {
         mkdirSync(dirname(lockPath), { recursive: true });

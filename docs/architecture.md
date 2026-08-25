@@ -70,7 +70,7 @@ Primary source ownership:
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
 | `src/compiler/types.ts` | compiler public result types and internal typed values/features |
 | `src/upstream-source.ts` | pinned source-map reconstruction |
-| `src/upstream-graph.ts` | conservative reachable-module analysis |
+| `src/upstream-graph.ts` | conservative reachable-module analysis — test-only until scene 144's bloom observation seam consumes it |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
 | `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, lifts named declarations out of a composition verbatim, and imports a pinned module with chosen imports observed |
 | `src/lowering/pinned-shader-defines.ts` | the `defines` half of the pin's own ShaderMaterial prelude: the `const` line `buildShaderPrelude` writes per entry, evaluated rather than restated |
@@ -317,9 +317,8 @@ Each scene records:
   by the pass: two passes whose composed text is identical -- a blur pair
   differing only in its `direction` uniform -- share one
 - `upstream/shaders/*.slots`: per stage, the register each block kept after
-  compaction, by its own name. Written for every compiled stage, and the
-  only authority on SDL_GPU slot order -- a block a stage declares but never
-  reads does not survive, and the compaction is dense
+  compaction — the only authority on SDL_GPU slot order
+  ([backends](backends.md#dawn-backend-architecture-nativesrcpal_dawncpp))
 - `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
 - `upstream/shaders/shader-compiler.json`: selected offline compiler backend
 - `upstream/shaders/composition.json`: reached WGSL modules and content hashes
