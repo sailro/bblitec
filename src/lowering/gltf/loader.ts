@@ -52,6 +52,10 @@ export interface GltfLoaderOptions {
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;
     nonTrianglePrimitives?: boolean;
+    /** The scene assigns an AnimationGroupMask to one of this file's groups. */
+    animationMask?: boolean;
+    /** The scene writes an AnimationGroup's speedRatio. */
+    animationSpeedRatio?: boolean;
     nodeVisibility?: boolean;
     animationPointer?: boolean;
     animatedWorldBounds?: boolean;

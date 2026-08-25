@@ -245,7 +245,7 @@ const extensionWriters: ReadonlyArray<{
             ormTexture: "material.orm_transform",
             emissiveTexture: "material.emissive_transform",
             specGlossTexture: "bblIdentityTransform",
-            occlusionTexture: "bblIdentityTransform",
+            occlusionTexture: "material.occlusion_transform",
         },
         nestedWriters: {
             writeOne: uvTransformSources({
@@ -253,12 +253,16 @@ const extensionWriters: ReadonlyArray<{
                 normal: "material.normal_transform",
                 orm: "material.orm_transform",
                 emissive: "material.emissive_transform",
-                // Occlusion rides the ORM texture, so it carries that
-                // texture's transform: the browser's block for Scene 29 has
-                // `occlUVm` equal to `ormUVm` at 30 / -30 where the identity
-                // stood here (`scene -- uniforms scene29 --size 256` against
-                // the native capture's `pinnedMaterialBlocks`).
-                occl: "material.orm_transform",
+                // Occlusion's own carrier, which is what the pin passes:
+                // `writeOne(..., "occl", m.occlusionTexture)` reads the
+                // texture `buildDefaultPbrTexturesExt` wrapped from the
+                // occlusion textureInfo, not the ORM one. The two agree
+                // wherever a material gives both slots the same transform --
+                // Scene 29's asset carries 30 / -30 on every texture, which
+                // is what `scene -- uniforms scene29 --size 256` shows in
+                // `occlUVm` -- and part where the occlusion slot declares
+                // its own, which is the orm-unpack split's whole point.
+                occl: "material.occlusion_transform",
                 // Specular-glossiness has no transform in the loader; the pin
                 // reads `tex?.uScale ?? 1` for an absent texture, which is the
                 // identity a default-constructed TextureTransform gives.

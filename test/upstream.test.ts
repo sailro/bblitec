@@ -154,7 +154,7 @@ test("generates the pinned glTF animation-group seek", () => {
     );
     assert.match(
         lowered.source,
-        /asset\.apply_clip_pose\(record\.clip\)/,
+        /asset\.apply_clip_pose\(record\.clip, with_engine\)/,
     );
 });
 
@@ -389,7 +389,7 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /read_component/);
     assert.match(
         adapter.source,
-        /if \(selected\.stopped\) return;\s*apply_animation_state\(clip\);/,
+        /if \(selected\.stopped && !with_engine\) return;\s*apply_animation_state\(clip, with_engine\);/,
     );
     assert.match(
         adapter.source,
@@ -397,7 +397,7 @@ test("generates GLB framing validation from upstream constants", () => {
     );
     assert.match(
         adapter.source,
-        /Sparse glTF accessors are not supported/,
+        /glTF accessor is sparse/,
     );
     assert.match(
         adapter.source,

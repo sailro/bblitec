@@ -1,9 +1,11 @@
 import ts from "typescript";
 import {
+    pinnedEnumMemberName,
     staticNumberValue,
     validateObjectProperties,
 } from "../option-helpers.js";
 import type { PropertyAnimationTargetKind } from "../property-animation.js";
+import type { CompilerSymbols } from "../symbols.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
@@ -54,6 +56,38 @@ export interface AnimationIntrinsicContext
     compileAnimationGroupList(
         expression: ts.Expression,
     ): { cpp: string; engineCpp: string };
+    /**
+     * The resolved import symbols, so a pinned enum member is told apart
+     * from a local of the same name by what it resolves to.
+     */
+    readonly symbols: CompilerSymbols;
+}
+
+/**
+ * Which arm of the pin's `AnimationGroupMaskMode` an argument names.
+ *
+ * The enum's two members are the whole of the mode, and
+ * `animationGroupMaskRetainsTarget` reads it as one comparison against
+ * `Include` -- so what travels from here is that boolean, and the
+ * generated predicate is lowered from the pin's own expression.
+ */
+function maskModeInclude(
+    context: AnimationIntrinsicContext,
+    expression: ts.Expression,
+): boolean {
+    const member = pinnedEnumMemberName(
+        context,
+        context.resolveStaticExpression(expression),
+        "AnimationGroupMaskMode",
+    );
+    if (member !== "Include" && member !== "Exclude") {
+        context.fail(
+            expression,
+            `AnimationGroupMaskMode.${member} is not a pinned mask mode; ` +
+                "the pin declares Include and Exclude alone.",
+        );
+    }
+    return member === "Include";
 }
 
 /** The pinned group operations and the native functions lowered from them. */
@@ -491,6 +525,49 @@ export function compileAnimationIntrinsic(
             };
         }
 
+        case "createAnimationGroupMask": {
+            // src/animation/animation-group-mask.ts: the factory copies the
+            // names and defaults the mode to Include. Both arguments are
+            // constants in every shape this port can compile -- a module
+            // array of string literals and one of the pin's two enum members
+            // -- so the mask resolves here and the assignment to
+            // `group.mask` is what reaches the runtime. A mask built from
+            // computed names would need the pin's own lazy resolver, which
+            // re-reads `names` whenever its array reference or length moves.
+            context.expectArgumentCount(call, 1, 2);
+            const namesExpression = context.resolveStaticExpression(
+                call.arguments[0]!,
+            );
+            if (!ts.isArrayLiteralExpression(namesExpression)) {
+                context.fail(
+                    call.arguments[0]!,
+                    "createAnimationGroupMask takes a static array of " +
+                        "target names.",
+                );
+            }
+            const names = namesExpression.elements.map((element) => {
+                const resolved = context.resolveStaticExpression(element);
+                if (!ts.isStringLiteralLike(resolved)) {
+                    context.fail(
+                        element,
+                        "An animation group mask lists static target names.",
+                    );
+                }
+                return resolved.text;
+            });
+            const modeExpression = call.arguments[1];
+            return {
+                kind: "animation-group-mask",
+                cpp: "",
+                animationGroupMask: {
+                    names,
+                    include:
+                        modeExpression === undefined ||
+                        maskModeInclude(context, modeExpression),
+                },
+            };
+        }
+
         case "startAnimationManager": {
             context.expectArgumentCount(call, 1, 1);
             const manager =
@@ -544,7 +621,13 @@ export function compileAnimationIntrinsic(
         }
 
         case "goToFrame": {
-            context.expectArgumentCount(call, 2, 2);
+            // The pin's third argument is the EngineContext, and its only
+            // effect is the guard `engine || !group._stopped ||
+            // !group._gltfMixer`: with one, a stopped glTF group is still
+            // posed. It is not a value the native call needs -- the engine
+            // is already how a group is reached -- so what travels is that
+            // the caller passed it.
+            context.expectArgumentCount(call, 2, 3);
             const group =
                 context.compileValue(call.arguments[0]!);
             context.expectKind(
@@ -555,6 +638,14 @@ export function compileAnimationIntrinsic(
             const frame = context.compileNumber(
                 call.arguments[1]!,
             );
+            const engineArgument = call.arguments[2];
+            if (engineArgument !== undefined) {
+                context.expectKind(
+                    context.compileValue(engineArgument),
+                    "engine",
+                    engineArgument,
+                );
+            }
             if (group.animationGroupSource !== "property") {
                 context.reachFeature(
                     "animation:gltf-groups",
@@ -565,8 +656,16 @@ export function compileAnimationIntrinsic(
                     cpp:
                         `bbl::go_to_frame(` +
                         `${context.requireEngine(group, call)}, ` +
-                        `${group.cpp}, ${frame})`,
+                        `${group.cpp}, ${frame}, ` +
+                        `${engineArgument !== undefined ? "true" : "false"})`,
                 };
+            }
+            if (engineArgument !== undefined) {
+                context.fail(
+                    engineArgument,
+                    "goToFrame on a property-animation group takes no " +
+                        "engine argument.",
+                );
             }
             return {
                 kind: "void",

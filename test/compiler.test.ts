@@ -3069,7 +3069,7 @@ test("lowers Scene 12's imported recursive mesh walk and animated root clones", 
     );
     assert.match(
         result.cpp,
-        /bbl::go_to_frame\([^;]+30\.0f\)/,
+        /bbl::go_to_frame\([^;]+30\.0f, false\)/,
     );
 
     assert.throws(

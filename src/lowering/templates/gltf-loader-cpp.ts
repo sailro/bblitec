@@ -259,6 +259,8 @@ export function gltfLoaderCpp(
         managedGroups = false,
         pinnedSkeletonPalette = false,
         nonTrianglePrimitives = false,
+        animationMask = false,
+        animationSpeedRatio = false,
         nodeVisibility = false,
         animationPointer = false,
         animatedWorldBounds = false,
@@ -384,10 +386,19 @@ struct AccessorInfo {
 
 using Matrix = std::array<float, 16>;
 
+// The pin's own sampler interpolation (src/animation/types.ts:
+// INTERP_LINEAR, INTERP_STEP, INTERP_CUBICSPLINE), which is what
+// evaluateSampler branches on.
+enum class TrackInterpolation : std::uint8_t {
+    linear,
+    step,
+    cubic,
+};
+
 struct RotationTrack {
     std::size_t clip = 0;
     std::size_t node = 0;
-    bool cubic = false;
+    TrackInterpolation interpolation = TrackInterpolation::linear;
     std::vector<float> times;
     std::vector<Vec4> values;
     std::vector<Vec4> in_tangents;
@@ -397,7 +408,7 @@ struct RotationTrack {
 struct TranslationTrack {
     std::size_t clip = 0;
     std::size_t node = 0;
-    bool cubic = false;
+    TrackInterpolation interpolation = TrackInterpolation::linear;
     std::vector<float> times;
     std::vector<Vec3> values;
     std::vector<Vec3> in_tangents;
@@ -407,6 +418,7 @@ struct TranslationTrack {
 struct WeightTrack {
     std::size_t clip = 0;
     std::size_t node = 0;
+    TrackInterpolation interpolation = TrackInterpolation::linear;
     std::size_t target_count = 0;
     std::vector<float> times;
     std::vector<float> values;
@@ -662,7 +674,7 @@ struct AnimatedNode {
     Matrix world{};
     bool computed = false;
     bool computing = false;
-    std::vector<float> weights;${animationBlending ? `
+    std::vector<float> weights;${animationBlending || animationMask ? `
     // The mixer accumulates into the TRS above, so the rest pose it
     // resets to each tick is kept beside it — and the partial-weight
     // rotation slerp blends against that rest rotation, which is what
@@ -699,7 +711,26 @@ struct AnimationClip {
     bool stopped = true;
     // AnimationGroup.loopAnimation, which both advances read; the pinned
     // group default is true.
-    bool loop = true;${animationAdditive ? `
+    bool loop = true;
+${animationSpeedRatio ? `
+    // AnimationGroup.speedRatio, at the pinned group default. The manager
+    // advance scales its own delta by it; the scene's master-clock fan-out
+    // scales the elapsed span since the ratio was written, which is the
+    // same accumulation for a ratio that does not move.
+    float speed_ratio = 1.0f;
+    // Where the scene's master clock was when the ratio last changed, and
+    // the clip time it stood at -- so a write moves the future and never
+    // the past, exactly as the pin's own time += dt * speedRatio does.
+    float speed_origin = 0.0f;
+    float speed_base = 0.0f;` : ""}${animationMask ? `
+    // The pin's resolveAnimationMask output: one skip flag per node, and
+    // whether a mask is attached at all. A masked node's channels are
+    // skipped, so it keeps the rest-pose TRS the tick reset it to.
+    std::vector<std::uint8_t> masked_nodes;
+    // The same set as an index list, because the pose pass restores only
+    // the masked nodes and would otherwise rescan every node each frame.
+    std::vector<std::uint32_t> masked_node_indices;
+    bool mask_active = false;` : ""}${animationAdditive ? `
     // group._additive (src/animation/weighted-gltf-mixer.ts): set by
     // setAnimationAdditive through the writer below, read by the
     // weighted pass — an additive clip contributes each channel's
@@ -711,7 +742,10 @@ struct AnimationClip {
 
 struct AnimationRuntime {
     float time = 0.0f;
-    bool paused = false;
+    bool paused = false;${animationMask ? `
+    // The glTF node names, in document order -- what an AnimationGroupMask
+    // matches its target names against (parseAnimationData's nodeNames).
+    std::vector<std::string> node_names;` : ""}
     std::vector<AnimationClip> clips;
     std::vector<RotationTrack> rotation_tracks;
     std::vector<TranslationTrack> translation_tracks;
@@ -878,17 +912,44 @@ double track_amount_at(
         : 0.0;
 }
 
+// evaluateSampler's STEP branch: the later key once the time reaches its
+// own, the earlier one inside the span. track_key_at returns the first key at
+// or after the time (clamped, never zero), so its own pair is exactly the two
+// the pin's (t >= t1 ? idx + 1 : idx) chooses between.
+${animationMask ? `// animationGroupMaskRetainsTarget, resolved per node at the write and
+// read here per channel: a masked node keeps the rest-pose TRS the tick
+// reset it to, which is what upstream's own \`continue\` leaves behind.
+bool clip_masks_node(
+    const AnimationClip& clip,
+    std::size_t node) {
+    return clip.mask_active &&
+        node < clip.masked_nodes.size() &&
+        clip.masked_nodes[node] != 0;
+}
+
+` : ""}std::size_t track_step_key_at(
+    const std::vector<float>& times,
+    std::size_t left,
+    std::size_t right,
+    float time) {
+    return times[right] <= time ? right : left;
+}
+
 Vec4 sample_rotation_track(
     const RotationTrack& track,
     float time) {
     const std::size_t right = track_key_at(track.times, time);
     const std::size_t left = right > 0 ? right - 1 : 0;
+    if (track.interpolation == TrackInterpolation::step) {
+        return track.values[
+            track_step_key_at(track.times, left, right, time)];
+    }
     const double span =
         static_cast<double>(track.times[right]) -
         track.times[left];
     const double amount =
         track_amount_at(track.times, left, right, time);
-    return track.cubic
+    return track.interpolation == TrackInterpolation::cubic
         ? cubic_quaternion(
               track.values[left],
               track.out_tangents[left],
@@ -907,6 +968,10 @@ Vec3 sample_vec3_track(
     float time) {
     const std::size_t right = track_key_at(track.times, time);
     const std::size_t left = right > 0 ? right - 1 : 0;
+    if (track.interpolation == TrackInterpolation::step) {
+        return track.values[
+            track_step_key_at(track.times, left, right, time)];
+    }
     const double span =
         static_cast<double>(track.times[right]) -
         track.times[left];
@@ -914,7 +979,7 @@ Vec3 sample_vec3_track(
         track_amount_at(track.times, left, right, time);
     const Vec3 left_value = track.values[left];
     const Vec3 right_value = track.values[right];
-    return track.cubic
+    return track.interpolation == TrackInterpolation::cubic
         ? cubic_vec3(
               left_value,
               track.out_tangents[left],
@@ -1440,15 +1505,32 @@ MaterialHandle load_material(
     material.occlusion_strength =
         occlusion_texture_info ? 1.0f : 0.0f;
     if (occlusion_texture_info) {
-        // Babylon Lite's buildDefaultPbrTexturesExt: an occlusion
-        // texture on TEXCOORD_1 without a metallic-roughness image
-        // keeps the factor-driven ORM slot and binds the occlusion
-        // image through the dedicated uv2 pair; on TEXCOORD_0 the
-        // occlusion image itself becomes the ORM texture while
-        // assemblePbrPropsExt drops the glTF metallic and roughness
-        // factors (the engine defaults of 1.0 apply). Distinct
-        // metallic-roughness and occlusion images composite upstream
-        // and stay unreached natively.
+        // Babylon Lite's buildDefaultPbrTexturesExt, arm for arm.
+        //
+        // Which texture the ORM slot samples, and whether occlusion gets a
+        // carrier of its own, are two separate questions there, and the pin
+        // answers each from the images the material actually resolved:
+        //
+        //  - occlusion on a non-zero texCoord with NO metallic-roughness
+        //    image is occlusionOnUv2: the ORM slot stays the factor texel
+        //    baked above and the occlusion image binds through the dedicated
+        //    pair the composed variant declares for uv2 mask bit 32.
+        //  - occlusion with no metallic-roughness image on TEXCOORD_0 becomes
+        //    the ORM texture itself, at the OCCLUSION slot's own transform
+        //    (ormTi = raw.occlusionTexture), and assemblePbrPropsExt then
+        //    passes no metallic or roughness factor at all, so the engine
+        //    defaults of 1.0 apply.
+        //  - occlusion beside a metallic-roughness image that shares its
+        //    image keeps the ORM slot on the metallic-roughness textureInfo
+        //    and gives occlusion a second wrapper over the same image
+        //    whenever the two can be sampled apart: on TEXCOORD_1 through the
+        //    uv2 pair, or -- occlusionNeedsSplit -- through a distinct
+        //    texture object or its own KHR_texture_transform, which is the
+        //    orm-unpack split the fragment reads as a second ormTexture
+        //    sample at occlUV.
+        //
+        // Distinct occlusion and metallic-roughness IMAGES composite on a
+        // canvas upstream (gltf-ext-orm.ts) and stay unreached natively.
         const ts::JsonValue* metallic_roughness_info = nullptr;
         if (const ts::JsonValue* pbr_value =
                 optional(material_json, "pbrMetallicRoughness")) {
@@ -1456,25 +1538,65 @@ MaterialHandle load_material(
                 pbr_value->as_object(),
                 "metallicRoughnessTexture");
         }
+        const auto texture_index_of =
+            [&](const ts::JsonValue* info) -> std::size_t {
+                return unsigned_value(
+                    required(info->as_object(), "index"));
+            };
         const auto texture_image =
             [&](const ts::JsonValue* info) -> std::size_t {
-                const std::size_t texture_index = unsigned_value(
-                    required(info->as_object(), "index"));
                 return texture_image_index(
-                    textures.at(texture_index).as_object());
+                    textures.at(texture_index_of(info)).as_object());
             };
         const std::size_t occlusion_uv = unsigned_or(
             occlusion_texture_info->as_object(),
             "${materialDefaults.occlusionTexCoord.key}",
             ${materialDefaults.occlusionTexCoord.literal});
-        if (occlusion_uv == 1) {
-            if (metallic_roughness_info) {
-                throw std::runtime_error(
-                    "Reached glTF occlusion texture on TEXCOORD_1 "
-                    "alongside a metallic-roughness texture is not "
-                    "lowered.");
-            }
-            material.occlusion_texture = texture_data(
+        if (occlusion_uv > 1) {
+            // wrapTexCoord stamps _texCoord only for 1, so upstream samples
+            // TEXCOORD_0 here while assemblePbrPropsExt still records the
+            // texCoord and leaves the uv2 mask bit clear -- a shape whose
+            // occlusion reaches neither the dedicated pair nor the split. No
+            // corpus asset authors it, so it is refused rather than mirrored.
+            throw std::runtime_error(
+                "Reached glTF occlusion texture uses an unsupported "
+                "texture-coordinate set.");
+        }
+        const bool occlusion_on_uv2 =
+            occlusion_uv != 0 && !metallic_roughness_info;
+        // occlusionNeedsSplit: a distinct texture object, or occlusion
+        // carrying a KHR_texture_transform an animation pointer can drive
+        // apart from the metallic-roughness one.
+        const bool occlusion_needs_split =
+            metallic_roughness_info != nullptr &&
+            (texture_index_of(occlusion_texture_info) !=
+                 texture_index_of(metallic_roughness_info) ||
+             texture_transform_value(occlusion_texture_info) != nullptr);
+        if (
+            metallic_roughness_info &&
+            texture_image(metallic_roughness_info) !=
+                texture_image(occlusion_texture_info)) {
+            throw std::runtime_error(
+                "Reached glTF material uses distinct occlusion "
+                "and metallic-roughness images.");
+        }
+        if (
+            occlusion_uv == 1 &&
+            metallic_roughness_info &&
+            !occlusion_needs_split) {
+            // assemblePbrPropsExt sets uv2 mask bit 32 from the texCoord
+            // while buildDefaultPbrTexturesExt builds the carrier only for
+            // occlusionNeedsSplit, so the composed fragment declares the
+            // dedicated occlusion pair with no texture behind it. The
+            // browser fails validation and draws nothing; refusing here is
+            // the same verdict, named.
+            throw std::runtime_error(
+                "Reached glTF occlusion texture on TEXCOORD_1 names the "
+                "same texture object as the metallic-roughness slot, "
+                "which composes an occlusion binding with no texture.");
+        }
+        if (!metallic_roughness_info && !occlusion_on_uv2) {
+            material.metallic_roughness_texture = texture_data(
                 buffer,
                 container,
                 views,
@@ -1482,10 +1604,22 @@ MaterialHandle load_material(
                 textures,
                 samplers,
                 occlusion_texture_info);
-            material.occlusion_texture_uv2 = true;
-        } else if (occlusion_uv == 0) {
-            if (!metallic_roughness_info) {
-                material.metallic_roughness_texture = texture_data(
+            apply_texture_transform(
+                material.orm_transform,
+                occlusion_texture_info);
+            material.metallic_factor = 1.0f;
+            material.roughness_factor = 1.0f;
+        } else if (occlusion_on_uv2 || occlusion_needs_split) {
+            // The carrier's own transform, always -- both arms sample at a UV
+            // the occlusion slot owns. Its BYTES are only wanted by the uv2
+            // arm: the split one re-samples ormTexture at occlUV, over the
+            // image the ORM slot already uploaded, so packaging a second copy
+            // of those bytes into the record would bind nothing.
+            apply_texture_transform(
+                material.occlusion_transform,
+                occlusion_texture_info);
+            if (occlusion_uv == 1) {
+                material.occlusion_texture = texture_data(
                     buffer,
                     container,
                     views,
@@ -1493,20 +1627,9 @@ MaterialHandle load_material(
                     textures,
                     samplers,
                     occlusion_texture_info);
-                material.metallic_factor = 1.0f;
-                material.roughness_factor = 1.0f;
-            } else if (
-                texture_image(metallic_roughness_info) !=
-                texture_image(occlusion_texture_info)) {
-                throw std::runtime_error(
-                    "Reached glTF material uses distinct occlusion "
-                    "and metallic-roughness images.");
             }
-        } else {
-            throw std::runtime_error(
-                "Reached glTF occlusion texture uses an unsupported "
-                "texture-coordinate set.");
         }
+        material.occlusion_texture_uv2 = occlusion_uv == 1;
     }
     if (const ts::JsonValue* extensions_value = optional(material_json, "extensions")) {
         const JsonObject& extensions = extensions_value->as_object();
@@ -2000,9 +2123,15 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     accessors.reserve(accessor_json.size());
     for (const ts::JsonValue& value : accessor_json) {
         const JsonObject& object = value.as_object();
+        // Packaging resolves every sparse accessor through the pin's own
+        // preParse hook, so a packaged document carries none. This is the
+        // BBLITE_ASSET_DIR defense: an unpackaged asset would otherwise read
+        // its unpatched base values here, exactly as the pinned
+        // resolveAccessor would without the hook.
         if (optional(object, "sparse")) {
             throw std::runtime_error(
-                "Sparse glTF accessors are not supported.");
+                "glTF accessor is sparse; this asset was not packaged by "
+                "bblitec, which resolves sparse accessors at generation.");
         }
         const std::size_t buffer_view =
             unsigned_value(required(object, "bufferView"));
@@ -2256,9 +2385,12 @@ ${animationPointer ? `    animation_runtime->light_nodes =
                             *optional(node, "mesh")))
                         .as_object(),
                     "weights"));
-        }${animationBlending ? `
+        }${animationBlending || animationMask ? `
         // The node's authored TRS is the rest pose the weighted mixer
-        // resets to each tick, before any clip accumulates into it.
+        // resets to each tick before any clip accumulates into it, and the
+        // pose a masked node holds: the pin's controller resets every node
+        // to it before walking a clip's channels, so skipping a masked
+        // channel leaves exactly this.
         animated_node.rest_translation = animated_node.translation;
         animated_node.rest_rotation = animated_node.rotation;
         animated_node.rest_scale = animated_node.scale;` : ""}
@@ -2328,15 +2460,30 @@ ${nonTrianglePrimitives
             // gltf-feature-primitive.ts turns it into a GPUPrimitiveState.
             // A triangle strip is the one non-default mode that describes
             // the same triangles a triangle list can, so it is expanded
-            // below; point, line, and line-strip topologies rasterize
-            // differently and stay unsupported.
+            // below into the list every rasterizer expands it into; points,
+            // lines and line strips reach the pipeline as themselves.
+            //
+            // LINE_LOOP (2) and TRIANGLE_FAN (6) are the two modes WebGPU has
+            // no topology for. Upstream leaves them as a triangle list --
+            // matching BJS, which cannot render them -- which draws a
+            // different shape rather than the authored one, so they refuse
+            // here instead of being mirrored.
             const std::size_t primitive_mode =
                 unsigned_or(primitive, "mode", 4);
-            if (primitive_mode != 4 && primitive_mode != 5) {
-                throw std::runtime_error(
-                    "Only triangle-list and triangle-strip glTF primitives "
-                    "are supported (mode " +
-                    std::to_string(primitive_mode) + ").");
+            MeshTopology primitive_topology = MeshTopology::triangles;
+            switch (primitive_mode) {
+                case 0: primitive_topology = MeshTopology::points; break;
+                case 1: primitive_topology = MeshTopology::lines; break;
+                case 3: primitive_topology = MeshTopology::line_strip; break;
+                // TRIANGLES draws itself; TRIANGLE_STRIP expands below into
+                // the triangle list it describes.
+                case 4:
+                case 5: break;
+                default:
+                    throw std::runtime_error(
+                        "glTF primitive mode " +
+                        std::to_string(primitive_mode) +
+                        " has no WebGPU topology and is not supported.");
             }`
             : `            if (unsigned_or(primitive, "mode", 4) != 4) {
                 throw std::runtime_error("Only triangle-list glTF primitives are supported.");
@@ -2501,7 +2648,10 @@ ${nonTrianglePrimitives
                     }
                 }
             }
-            ModelGeometry geometry;
+            ModelGeometry geometry;${nonTrianglePrimitives
+            ? `
+            geometry.topology = primitive_topology;`
+            : ""}
             geometry.vertices.resize(positions.count);
             geometry.bounds_min = Vec3{
                 std::numeric_limits<float>::max(),
@@ -2770,8 +2920,16 @@ ${lowered.vertexColor}
                 geometry.indices = std::move(expanded);
             }`
             : ""}
-            if (geometry.indices.size() % 3 != 0) {
+            if (
+                geometry.topology == MeshTopology::triangles &&
+                geometry.indices.size() % 3 != 0) {
                 throw std::runtime_error("Triangle-list glTF indices must be divisible by three.");
+            }
+            if (
+                geometry.topology == MeshTopology::lines &&
+                geometry.indices.size() % 2 != 0) {
+                throw std::runtime_error(
+                    "Line-list glTF indices must be divisible by two.");
             }
             for (const std::uint32_t index : geometry.indices) {
                 if (index >= geometry.vertices.size()) {
@@ -2779,7 +2937,25 @@ ${lowered.vertexColor}
                         "glTF primitive index exceeds its vertex count.");
                 }
             }
+            // The winding swap and the flat-normal fold below are both
+            // triangle facts: a mirrored transform reverses a face's winding,
+            // and a face normal is a property of a triangle. A point or a
+            // line has neither, and the pin's own flat-normal expression --
+            // normalize(cross(dpdx(worldPos), dpdy(worldPos))) -- needs a
+            // fragment quad with area to differentiate over, which a
+            // one-pixel line and a point do not give it. So a non-triangle
+            // primitive with no NORMAL is refused rather than shaded from a
+            // derivative both backends would evaluate at zero.
             if (
+                geometry.topology != MeshTopology::triangles &&
+                !normals) {
+                throw std::runtime_error(
+                    "A glTF point or line primitive with no NORMAL "
+                    "accessor reaches the pinned flat-normal path, whose "
+                    "screen-space derivative has no area to read.");
+            }
+            if (
+                geometry.topology == MeshTopology::triangles &&
                 determinant < 0.0f &&
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
@@ -3648,10 +3824,19 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     string_or(sampler, "interpolation", "LINEAR");
                 if (
                     interpolation != "LINEAR" &&
+                    interpolation != "STEP" &&
                     interpolation != "CUBICSPLINE") {
                     throw std::runtime_error(
-                        "Reached glTF animation lowering supports LINEAR and CUBICSPLINE interpolation.");
+                        "Reached glTF animation lowering supports LINEAR, STEP and CUBICSPLINE interpolation.");
                 }
+                // INTERP_MAP in gltf-animation.ts, which reads an unknown
+                // name as LINEAR -- unreachable past the gate above.
+                const TrackInterpolation track_interpolation =
+                    interpolation == "STEP"
+                        ? TrackInterpolation::step
+                        : interpolation == "CUBICSPLINE"
+                            ? TrackInterpolation::cubic
+                            : TrackInterpolation::linear;
                 const AccessorInfo& input =
                     accessors.at(unsigned_value(required(sampler, "input")));
                 const AccessorInfo& output =
@@ -3676,7 +3861,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 }
                 if (path_name == "rotation") {
                     const bool cubic =
-                        interpolation == "CUBICSPLINE";
+                        track_interpolation == TrackInterpolation::cubic;
                     if (
                         output.type != "VEC4" ||
                         output.count !=
@@ -3686,7 +3871,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     }
                     RotationTrack track;
                     track.node = target_node;
-                    track.cubic = cubic;
+                    track.interpolation = track_interpolation;
                     for (std::size_t index = 0; index < input.count; ++index) {
                         track.times.push_back(
                             read_component(
@@ -3724,7 +3909,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     path_name == "translation" ||
                     path_name == "scale") {
                     const bool cubic =
-                        interpolation == "CUBICSPLINE";
+                        track_interpolation == TrackInterpolation::cubic;
                     if (
                         output.type != "VEC3" ||
                         output.count !=
@@ -3734,7 +3919,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     }
                     TranslationTrack track;
                     track.node = target_node;
-                    track.cubic = cubic;
+                    track.interpolation = track_interpolation;
                     for (std::size_t index = 0; index < input.count; ++index) {
                         track.times.push_back(
                             read_component(buffer, container, views, input, index, 0));
@@ -3769,9 +3954,11 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                             .push_back(std::move(track));
                     }
                 } else {
-                    if (interpolation != "LINEAR") {
+                    if (
+                        track_interpolation ==
+                            TrackInterpolation::cubic) {
                         throw std::runtime_error(
-                            "glTF weights animation currently requires LINEAR interpolation.");
+                            "glTF weights animation currently requires LINEAR or STEP interpolation.");
                     }
                     if (
                         output.type != "SCALAR" ||
@@ -3782,6 +3969,7 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     }
                     WeightTrack track;
                     track.node = target_node;
+                    track.interpolation = track_interpolation;
                     track.target_count =
                         output.count / input.count;
                     for (std::size_t index = 0; index < input.count; ++index) {
@@ -3811,7 +3999,15 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                 }
             }
         }
-        // The pose half of a tick: node worlds, skin palettes, morph
+${animationMask ? `        // parseAnimationData's own nodeNames, in document order: what an
+        // AnimationGroupMask matches against. A node with no name matches
+        // the empty string, which is what the pin's resolver reads too.
+        animation_runtime->node_names.reserve(node_json.size());
+        for (const ts::JsonValue& node_value : node_json) {
+            animation_runtime->node_names.push_back(
+                string_or(node_value.as_object(), "name", ""));
+        }
+` : ""}        // The pose half of a tick: node worlds, skin palettes, morph
         // weights and the CPU deformation fallbacks, from whatever the
         // node TRS currently holds. Split out because the weighted mixer
         // (src/animation/weighted-gltf-mixer.ts) accumulates a blended
@@ -4120,6 +4316,8 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
                             animation_runtime->nodes.size()) {
                         continue;
                     }
+${animationMask ? `
+                    if (clip_masks_node(clip, track.node)) continue;` : ""}
                     const Vec4 sample =
                         sample_rotation_track(track, clip.time);
                     AnimatedNode& node =
@@ -4152,6 +4350,8 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
                                 animation_runtime->nodes.size()) {
                             continue;
                         }
+${animationMask ? `
+                        if (clip_masks_node(clip, track.node)) continue;` : ""}
                         const Vec3 sample =
                             sample_vec3_track(track, clip.time);
                         AnimatedNode& node =
@@ -4294,9 +4494,39 @@ ${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accum
         // given: the pointer tracks, the transform channels, the morph
         // weights, and the pose pass. Split out so a manager can advance
         // only the clips it owns and then run the same evaluation.
+        // only_clip selects which clip's channels run; force_stopped is
+        // goToFrame's engine argument, which ticks a stopped group's
+        // controller where an ordinary pass skips it.
         const auto apply_animation_state =
             [animation_runtime, &engine, apply_animation_pose](
-                std::size_t only_clip) {${animationPointer ? `
+                std::size_t only_clip,
+                bool force_stopped) {${animationMask ? `
+            // The pin's controller resets every node to its rest TRS before
+            // walking the clip's channels, so a masked channel leaves the
+            // rest pose behind. Only the masked nodes need it here: every
+            // other animated node is overwritten by its own track.
+            for (
+                std::size_t index = 0;
+                index < animation_runtime->clips.size();
+                ++index) {
+                const AnimationClip& masked_clip =
+                    animation_runtime->clips[index];
+                if (!masked_clip.mask_active) continue;
+                if (
+                    only_clip != invalid_handle &&
+                    index != only_clip) continue;
+                if (masked_clip.stopped && !force_stopped) continue;
+                for (
+                    const std::uint32_t node :
+                    masked_clip.masked_node_indices) {
+                    if (node >= animation_runtime->nodes.size()) continue;
+                    AnimatedNode& target =
+                        animation_runtime->nodes[node];
+                    target.translation = target.rest_translation;
+                    target.rotation = target.rest_rotation;
+                    target.scale = target.rest_scale;
+                }
+            }` : ""}${animationPointer ? `
             for (const VisibilityTrack& track :
                  animation_runtime->visibility_tracks) {
                 if (
@@ -4304,19 +4534,19 @@ ${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accum
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (track.times.empty()) continue;
                 // STEP holds each output until the next keyframe, so the
                 // key in effect is the last one at or before the current
-                // time and the first key holds before that.
-                std::size_t key = 0;
-                while (
-                    key + 1 < track.times.size() &&
-                    track.times[key + 1] <=
-                        clip.time) {
-                    ++key;
-                }
-                const bool visible = track.values[key];
+                // time and the first key holds before that -- the same
+                // selection every STEP sampler makes.
+                const std::size_t right =
+                    track_key_at(track.times, clip.time);
+                const bool visible = track.values[track_step_key_at(
+                    track.times,
+                    right > 0 ? right - 1 : 0,
+                    right,
+                    clip.time)];
                 for (const std::size_t node : track.subtree) {
                     if (
                         node >=
@@ -4339,7 +4569,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (
                     track.times.empty() ||
                     track.material >= engine.materials.size()) {
@@ -4459,7 +4689,7 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (
                     track.times.empty() ||
                     track.light.value >= engine.lights.size()) {
@@ -4522,13 +4752,14 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >=
                         animation_runtime->node_meshes.size()) {
                     continue;
-                }
+                }${animationMask ? `
+                if (clip_masks_node(clip, track.node)) continue;` : ""}
                 animation_runtime->nodes[track.node].rotation =
                     sample_rotation_track(track, clip.time);
             }
@@ -4539,13 +4770,14 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >=
                         animation_runtime->nodes.size()) {
                     continue;
-                }
+                }${animationMask ? `
+                if (clip_masks_node(clip, track.node)) continue;` : ""}
                 animation_runtime->nodes[track.node].translation =
                     sample_vec3_track(track, clip.time);
             }
@@ -4556,13 +4788,14 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >=
                         animation_runtime->nodes.size()) {
                     continue;
-                }
+                }${animationMask ? `
+                if (clip_masks_node(clip, track.node)) continue;` : ""}
                 animation_runtime->nodes[track.node].scale =
                     sample_vec3_track(track, clip.time);
             }
@@ -4581,16 +4814,24 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                     track.clip != only_clip) continue;
                 const AnimationClip& clip =
                     animation_runtime->clips[track.clip];
-                if (clip.stopped) continue;
+                if (clip.stopped && !force_stopped) continue;
                 if (
                     track.times.empty() ||
                     track.node >= animation_runtime->nodes.size()) {
                     continue;
-                }
-                const std::size_t right =
+                }${animationMask ? `
+                if (clip_masks_node(clip, track.node)) continue;` : ""}
+                std::size_t right =
                     track_key_at(track.times, clip.time);
-                const std::size_t left =
+                std::size_t left =
                     right > 0 ? right - 1 : 0;
+                if (track.interpolation == TrackInterpolation::step) {
+                    // One key held: collapsing the pair onto it leaves
+                    // track_amount_at's zero-span arm to return 0, so the
+                    // blend below reads that key alone.
+                    left = right = track_step_key_at(
+                        track.times, left, right, clip.time);
+                }
                 const double amount = track_amount_at(
                     track.times,
                     left,
@@ -4635,7 +4876,32 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                          : !clip.playing) {
                     continue;
                 }
+${animationSpeedRatio ? `                // The pin advances time += dt * speedRatio from wherever
+                // the ratio was last written, so the derived time is the
+                // base plus the scaled span since that write.
+                //
+                // A SEEK is the exception, and deliberately: the browser
+                // capture harness pins a pose by writing the group's own
+                // currentTime and pausing it, which no ratio scales. The
+                // native seek mirrors that harness, so it takes the clock
+                // as the clip time and leaves the ratio to the tick.
+                const float raw = seek
+                    ? animation_runtime->time
+                    : clip.speed_base +
+                          (animation_runtime->time - clip.speed_origin) *
+                              clip.speed_ratio;
+                const float wrapped = clip.duration <= 0.0f
+                    ? 0.0f
+                    : std::fmod(raw, clip.duration);
                 clip.time = clip.duration <= 0.0f
+                    ? 0.0f
+                    : clip.loop
+                      ? (wrapped < 0.0f
+                             ? wrapped + clip.duration
+                             : wrapped)
+                      : std::min(
+                            std::max(raw, 0.0f),
+                            clip.duration);` : `                clip.time = clip.duration <= 0.0f
                     ? 0.0f
                     : clip.loop
                       ? std::fmod(
@@ -4643,12 +4909,12 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                             clip.duration)
                       : std::min(
                             animation_runtime->time,
-                            clip.duration);
+                            clip.duration);`}
                 if (seek) {
                     clip.playing = false;
                 }
             }
-            apply_animation_state(invalid_handle);
+            apply_animation_state(invalid_handle, false);
         };
         apply_animation_time(0.0f, false);
         // cloneTransformNode gives every mesh wrapper its own transform and
@@ -4719,13 +4985,17 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
             animation_runtime->clips[clip].time = std::max(time, 0.0f);
         };
         asset.apply_clip_pose =
-            [animation_runtime, apply_animation_state](std::size_t clip) {
+            [animation_runtime, apply_animation_state](
+                std::size_t clip,
+                bool with_engine) {
             if (clip >= animation_runtime->clips.size()) return;
             AnimationClip& selected = animation_runtime->clips[clip];
-            // This is the pin's two-argument goToFrame slice: a stopped glTF
-            // group has no engine argument, so its controller is not ticked.
-            if (selected.stopped) return;
-            apply_animation_state(clip);
+            // goToFrame's own guard: engine || !group._stopped ||
+            // !group._gltfMixer. A glTF group always carries the mixer, so
+            // what is left is the engine argument and the stopped flag --
+            // a stopped group posed only when the caller passed an engine.
+            if (selected.stopped && !with_engine) return;
+            apply_animation_state(clip, with_engine);
         };
         asset.animation_seek =
             [animation_runtime, apply_animation_time](float time) {
@@ -4755,7 +5025,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
                 AnimationClip& clip =
                     animation_runtime->clips[entry.clip];
                 if (clip.stopped || !clip.playing) continue;
-                clip.time += delta_ms * 0.001f;
+                clip.time += delta_ms * 0.001f${animationSpeedRatio ? ` * clip.speed_ratio` : ""};
                 if (clip.duration <= 0.0f) {
                     clip.time = 0.0f;
                 } else if (clip.loop) {
@@ -4765,13 +5035,53 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
                     clip.time = std::min(clip.time, clip.duration);
                 }
             }
-            apply_animation_state(invalid_handle);
+            apply_animation_state(invalid_handle, false);
         };
 ` : ""}        asset.set_clip_loop =
             [animation_runtime](std::size_t clip, bool loop) {
             if (clip >= animation_runtime->clips.size()) return;
             animation_runtime->clips[clip].loop = loop;
-        };${animationAdditive ? `
+        };${animationSpeedRatio ? `
+        asset.set_clip_speed_ratio =
+            [animation_runtime](std::size_t clip, float speed_ratio) {
+            if (clip >= animation_runtime->clips.size()) return;
+            AnimationClip& selected = animation_runtime->clips[clip];
+            // Re-anchor: the pin accumulates time += dt * speedRatio, so a
+            // write moves the future alone. Holding the clip time and the
+            // master clock at the write is what makes the derived time
+            // below agree with that accumulation.
+            selected.speed_base = selected.time;
+            selected.speed_origin = animation_runtime->time;
+            selected.speed_ratio = speed_ratio;
+        };` : ""}${animationMask ? `
+        asset.set_clip_mask =
+            [animation_runtime](
+                std::size_t clip,
+                const std::vector<std::string>& names,
+                bool include) {
+            if (clip >= animation_runtime->clips.size()) return;
+            AnimationClip& selected = animation_runtime->clips[clip];
+            const std::size_t node_count =
+                animation_runtime->node_names.size();
+            selected.masked_nodes.assign(node_count, 0);
+            selected.masked_node_indices.clear();
+            for (std::size_t node = 0; node < node_count; ++node) {
+                const bool listed =
+                    std::find(
+                        names.begin(),
+                        names.end(),
+                        animation_runtime->node_names[node]) !=
+                    names.end();
+                // animationGroupMaskRetainsTarget: retained when listing
+                // and including agree. The skip flag is its complement,
+                // which is what resolveAnimationMask writes.
+                if (listed == include) continue;
+                selected.masked_nodes[node] = 1;
+                selected.masked_node_indices.push_back(
+                    static_cast<std::uint32_t>(node));
+            }
+            selected.mask_active = true;
+        };` : ""}${animationAdditive ? `
         // group._additive = { referenceTime }: the additive mark takes
         // the same writer route as every other group field.
         asset.set_clip_additive =

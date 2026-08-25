@@ -777,6 +777,12 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     groupTime: features.includes(
                         "animation:gltf-group-time",
                     ),
+                    groupSpeed: features.includes(
+                        "animation:gltf-group-speed",
+                    ),
+                    groupMask: features.includes(
+                        "animation:gltf-group-mask",
+                    ),
                 }),
                 generated,
             );
@@ -819,6 +825,12 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         options.pinnedSkeletonPalette ?? false,
                     nonTrianglePrimitives:
                         options.nonTrianglePrimitives,
+                    animationMask: features.includes(
+                        "animation:gltf-group-mask",
+                    ),
+                    animationSpeedRatio: features.includes(
+                        "animation:gltf-group-speed",
+                    ),
                     nodeVisibility: options.nodeVisibility,
                     animationPointer: options.animationPointer,
                     animatedWorldBounds:

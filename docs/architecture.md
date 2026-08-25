@@ -233,9 +233,16 @@ The current generated slice includes:
 
 - engine, scene, camera, light, mesh, and material APIs
 - external glTF packaging and typed GLB loading, including vertex colors
+  and per-slot texture-coordinate selection
+- glTF sparse accessors, materialized at packaging by the pin's own
+  `preParse` hook so every accessor the generated loader reads is an
+  ordinary bufferView
+- glTF point, line and line-strip primitives, at the fixed-function state
+  the pin's own `buildPrimitiveState` gives each topology
 - property-animation managers, clips, groups, LINEAR/STEP scalar/vector
   tracks, quaternion slerp, ranges, looping, and deterministic seeking
-- glTF LINEAR/CUBICSPLINE transform animation, recursive skeleton hierarchies,
+- glTF animation-group masks, speed ratios, and `goToFrame`'s engine argument
+- glTF LINEAR/STEP/CUBICSPLINE transform animation, recursive skeleton hierarchies,
   inverse bind matrices, and animated position/normal/tangent morph targets
 - direct single-target morph attachment for generated meshes through the same
   tree-shaken deformation vertex layout

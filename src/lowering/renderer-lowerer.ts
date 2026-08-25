@@ -946,6 +946,16 @@ enum class RenderPipelineKind {
     pbr_transparent_back,
     pbr_transparent_none,
     pbr_transparent_none_clockwise,
+    // The pin's own primitive state for a non-triangle mode: cull none for
+    // every one of them (points and lines have no faces to cull), and the
+    // winding a triangle kind carries is meaningless here, so the blend
+    // state is the only other axis.
+    pbr_opaque_points,
+    pbr_opaque_lines,
+    pbr_opaque_line_strip,
+    pbr_transparent_points,
+    pbr_transparent_lines,
+    pbr_transparent_line_strip,
     standard_opaque_back,
     standard_opaque_none,
     standard_transparent_back,
@@ -974,6 +984,11 @@ struct RenderItem {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     RenderBucket bucket = RenderBucket::opaque;
     RenderCullMode cull_mode = RenderCullMode::back;
+    // The geometry's own primitive mode, carried per draw because that is
+    // where the pin carries it: gltf-feature-primitive.ts stamps a
+    // GPUPrimitiveState on the mesh and the PBR pipeline path spreads it
+    // over its triangle-list default.
+    MeshTopology topology = MeshTopology::triangles;
     std::uint32_t shader_variant = 0;
     bool clockwise_front_face = false;
     bool alpha_to_coverage = false;
@@ -1421,6 +1436,27 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
         item.cull_mode == RenderCullMode::none;
     switch (item.material_kind) {
         case RenderMaterialKind::pbr:
+            // buildPrimitiveState resolves the whole fixed-function
+            // state from the topology index alone, so for a non-triangle
+            // primitive neither the material's cull mode nor a mirrored
+            // node's winding reaches the pipeline: points and lines have no
+            // faces for either to act on.
+            switch (item.topology) {
+                case MeshTopology::points:
+                    return transparent
+                        ? RenderPipelineKind::pbr_transparent_points
+                        : RenderPipelineKind::pbr_opaque_points;
+                case MeshTopology::lines:
+                    return transparent
+                        ? RenderPipelineKind::pbr_transparent_lines
+                        : RenderPipelineKind::pbr_opaque_lines;
+                case MeshTopology::line_strip:
+                    return transparent
+                        ? RenderPipelineKind::pbr_transparent_line_strip
+                        : RenderPipelineKind::pbr_opaque_line_strip;
+                case MeshTopology::triangles:
+                    break;
+            }
             if (transparent) {
                 if (!double_sided) {
                     return RenderPipelineKind::pbr_transparent_back;
@@ -1717,6 +1753,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         item.geometry = mesh.geometry;
         item.clockwise_front_face =
             mesh.clockwise_front_face;
+        item.topology = engine.geometries[mesh.geometry].topology;
         item.order = static_cast<std::uint32_t>(result.items.size());
         result.items.push_back(
             bind_render_item(item, engine, mesh.material));
@@ -3677,6 +3714,31 @@ ${lifted.fragmentBody}
                 "src/loader-gltf/gltf-feature-primitive.ts",
                 'prim.frontFace = "cw";',
                 "clockwise front face",
+            ],
+            // The topology half of the same feature. `buildPrimitiveState`
+            // is the one place upstream states what a non-triangle primitive
+            // draws as, and this port restates that table in four: the
+            // loader's mode gate, the pipeline-kind switch, and each
+            // backend's enum translation. These three markers are what makes
+            // an upstream change refuse generation rather than leave the four
+            // silently disagreeing.
+            [
+                "src/loader-gltf/gltf-feature-primitive.ts",
+                "const topo = mode === 0 ? 1 : (mode as number) & 1 ? " +
+                    "((mode as number) + 3) >> 1 : undefined;",
+                "glTF primitive mode to topology index",
+            ],
+            [
+                "src/material/pbr/pbr-primitive-topology.ts",
+                'topology: topo === 1 ? "point-list" : topo === 2 ? ' +
+                    '"line-list" : topo === 3 ? "line-strip" : ' +
+                    '"triangle-strip",',
+                "topology index to WebGPU topology",
+            ],
+            [
+                "src/material/pbr/pbr-primitive-topology.ts",
+                'prim.stripIndexFormat = indexU32 ? "uint32" : "uint16";',
+                "strip index format",
             ],
         ] as const) {
             if (

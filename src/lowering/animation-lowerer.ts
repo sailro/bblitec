@@ -23,9 +23,18 @@ export class AnimationLowerer {
             additive?: boolean;
             /** The scene writes `group.currentTime` directly. */
             groupTime?: boolean;
+            /** The scene writes `group.speedRatio` directly. */
+            groupSpeed?: boolean;
+            /** The scene assigns `group.mask`. */
+            groupMask?: boolean;
         } = {},
     ): LoweredSource {
-        const { additive = false, groupTime = false } = options;
+        const {
+            additive = false,
+            groupTime = false,
+            groupSpeed = false,
+            groupMask = false,
+        } = options;
         const groupModule = "src/animation/animation-group.ts";
         const writers: Record<string, (value: string) => string> = {
             isPlaying: (value) =>
@@ -174,6 +183,7 @@ export class AnimationLowerer {
         for (const [name, expected] of [
             ["loopAnimation", "true"],
             ["weight", "1.0"],
+            ["speedRatio", "1.0"],
         ] as const) {
             const actual = groupDefault(name);
             if (actual !== expected) {
@@ -269,7 +279,8 @@ export class AnimationLowerer {
             `void go_to_frame(
     Engine& engine,
     AnimationGroupHandle group,
-    float frame) {
+    float frame,
+    bool with_engine) {
     const AnimationGroupRecord& record =
         group_record(engine, group);
     AssetRecord& asset = group_asset(engine, record);
@@ -282,7 +293,7 @@ export class AnimationLowerer {
         asset.set_clip_playing(record.clip, false);
     }
     if (asset.apply_clip_pose) {
-        asset.apply_clip_pose(record.clip);
+        asset.apply_clip_pose(record.clip, with_engine);
     }
 }`;
         // `group.currentTime` is a public mutable field upstream, so the
@@ -301,6 +312,56 @@ export class AnimationLowerer {
         asset.set_clip_time(record.clip, time);
     }
 }`;
+        // `syncControllerFromGroup` is the whole of what a speed ratio
+        // does upstream: it pushes the group's field onto the controller,
+        // whose tick advances `time += (deltaMs / 1000) * speedRatio`. The
+        // generated clip advance scales its own delta by the stored ratio,
+        // so what has to hold is that the pin still routes the field that
+        // way -- asserted, because there is no arithmetic here to lower.
+        if (groupSpeed) {
+            const { declaration: sync } =
+                this.context.functionDeclaration(
+                    groupModule,
+                    "syncControllerFromGroup",
+                );
+            const speedAssignments = this.context
+                .findNodes(
+                    sync,
+                    (node): node is ts.BinaryExpression =>
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken,
+                )
+                .filter(
+                    (expression) =>
+                        this.context
+                            .propertyPath(expression.left)
+                            ?.join(".") === "ctrl.speedRatio",
+                );
+            if (speedAssignments.length !== 1) {
+                this.context.contractError(
+                    sync,
+                    "Expected one controller speed-ratio sync.",
+                );
+            }
+            this.context.assertExpressionShape(
+                speedAssignments[0]!.right,
+                "group.speedRatio",
+                "glTF group speed ratio",
+            );
+        }
+        const speedWriter =
+            `void set_animation_speed_ratio(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float speed_ratio) {
+    const AnimationGroupRecord& record =
+        group_record(engine, group);
+    AssetRecord& asset = group_asset(engine, record);
+    if (asset.set_clip_speed_ratio) {
+        asset.set_clip_speed_ratio(record.clip, speed_ratio);
+    }
+}`;
         const operations = [
             operation("playAnimation", "play_animation"),
             operation("pauseAnimation", "pause_animation"),
@@ -308,6 +369,8 @@ export class AnimationLowerer {
             loopWriter,
             seekWriter,
             ...(groupTime ? [timeWriter] : []),
+            ...(groupSpeed ? [speedWriter] : []),
+            ...(groupMask ? [this.lowerSetAnimationMask()] : []),
             ...(additive
                 ? [
                       this.lowerSetAnimationAdditive(
@@ -588,6 +651,93 @@ void set_animation_additive_from_frame(
         reference_frame / ${this.context.floatLiteral(defaultFrameRate)});
 }`
         );
+    }
+
+    /**
+     * `group.mask = createAnimationGroupMask(names, mode)`: the names the
+     * factory copied, resolved against the asset's own node names.
+     *
+     * The membership rule is the pin's own
+     * `animationGroupMaskRetainsTarget` -- a listed name is retained in
+     * Include mode and dropped in Exclude mode, and a disabled mask retains
+     * everything -- asserted here rather than restated loosely, because it is
+     * the one place the two modes are told apart. What the runtime stores is
+     * the pin's own `resolveAnimationMask` output: a skip flag per node, so
+     * the controller's per-channel test is one lookup. `disabled` is folded
+     * to its factory default of false, which no reached scene writes -- so the
+     * disabled arm is asserted to return exactly that default's answer.
+     */
+    private lowerSetAnimationMask(): string {
+        const maskModule = "src/animation/animation-group-mask.ts";
+        const { file, declaration: retains } =
+            this.context.functionDeclaration(
+                maskModule,
+                "animationGroupMaskRetainsTarget",
+            );
+        const returns = this.context.findNodes(
+            retains,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node),
+        );
+        if (returns.length !== 2 || !returns[1]?.expression) {
+            this.context.contractError(
+                retains,
+                "Expected the disabled guard and the membership return.",
+            );
+        }
+        // A disabled mask retains every name, which is what makes folding
+        // `disabled` to false safe: the folded-away arm is a no-op.
+        if (
+            returns[0]?.expression?.kind !== ts.SyntaxKind.TrueKeyword
+        ) {
+            this.context.contractError(
+                returns[0] ?? retains,
+                "Expected a disabled mask to retain every target.",
+            );
+        }
+        this.context.assertExpressionShape(
+            returns[1]!.expression!,
+            "(mask.names.indexOf(name) !== -1) === " +
+                "(mask.mode === AnimationGroupMaskMode.Include)",
+            "animation group mask membership",
+        );
+        // The enum's two members, from its own declaration: Include is what
+        // the membership test compares against, and a third member would
+        // make the boolean this port carries insufficient.
+        const modes = this.context.findNodes(
+            file,
+            (node): node is ts.EnumDeclaration =>
+                ts.isEnumDeclaration(node) &&
+                node.name.text === "AnimationGroupMaskMode",
+        )[0];
+        const members = modes
+            ? modes.members.map((member) =>
+                  this.context.propertyName(member.name),
+              )
+            : [];
+        if (
+            members.length !== 2 ||
+            members[0] !== "Include" ||
+            members[1] !== "Exclude"
+        ) {
+            this.context.contractError(
+                modes ?? retains,
+                "Expected AnimationGroupMaskMode to declare Include and " +
+                    "Exclude alone.",
+            );
+        }
+        return `void set_animation_mask(
+    Engine& engine,
+    AnimationGroupHandle group,
+    const std::vector<std::string>& names,
+    bool include) {
+    const AnimationGroupRecord& record =
+        group_record(engine, group);
+    AssetRecord& asset = group_asset(engine, record);
+    if (asset.set_clip_mask) {
+        asset.set_clip_mask(record.clip, names, include);
+    }
+}`;
     }
 
     /**

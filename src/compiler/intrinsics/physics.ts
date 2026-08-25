@@ -17,6 +17,7 @@
 import ts from "typescript";
 import type { CompilerSymbols } from "../symbols.js";
 import {
+    pinnedEnumMemberName,
     validateObjectProperties,
     type ObjectValidationContext,
 } from "../option-helpers.js";
@@ -168,18 +169,11 @@ function expectShapeType(
     context: PhysicsIntrinsicContext,
     expression: ts.Expression,
 ): string {
-    if (
-        !ts.isPropertyAccessExpression(expression) ||
-        !ts.isIdentifier(expression.expression) ||
-        context.symbols.importedName(expression.expression) !==
-            "PhysicsShapeType"
-    ) {
-        context.fail(
-            expression,
-            "A physics shape type must be a `PhysicsShapeType` member.",
-        );
-    }
-    const member = expression.name.text;
+    const member = pinnedEnumMemberName(
+        context,
+        expression,
+        "PhysicsShapeType",
+    );
     if (
         !(PRIMITIVE_SHAPE_TYPES as readonly string[]).includes(member)
     ) {

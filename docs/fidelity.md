@@ -46,8 +46,9 @@ New high-risk adaptations require an explicit record and a focused test.
 
 The recorded set is semantic *divergences* only. Compile-time folds that are
 bit-identical by construction — the DDS harmonics projected by the pin's own
-`computeSH`, Draco and meshopt decoded by the pin's own decoder builds — are
-deliberately not recorded per scene, because the browser and the native
+`computeSH`, Draco and meshopt decoded by the pin's own decoder builds, the
+quantized and sparse accessors rewritten by the pin's own `preParse` hooks —
+are deliberately not recorded per scene, because the browser and the native
 build read the same bytes. Two freezes sit at the boundary and are stated
 here instead of per scene: the composed variant set is closed at generation
 (upstream can rebuild a material's shader at run time; a run-time material
@@ -361,18 +362,53 @@ vertex uniforms at register space 1 and fragment uniforms at space 3
 where the pin binds at WebGPU groups 0 and 1. The native mesh block is
 the pin's 96-byte layout field for field, which is why a render capture
 pairs against the browser's own upload. Scenes 7 and 146 reach it.
-glTF occlusion follows Babylon's `buildDefaultPbrTexturesExt` contract: an
+**Every texture slot samples the UV set its own `textureInfo` names.**
+`assemblePbrPropsExt` folds the six of them into one `_uv2Mask` — base
+colour 1, ORM 2, normal 4, emissive 8, spec-gloss 16, occlusion 32 — and
+`createPbrTemplateExt` decodes that mask into the fragment's own
+`input.uv`/`input.uv2` reads, gated on the mesh actually carrying
+TEXCOORD_1. Generation executes both, so the selection is the pin's rather
+than a re-derived one, and it is composed into the stage rather than uploaded:
+the loader carries no texCoord at all for the five slots a UV set alone
+resolves. `KHR_texture_transform.texCoord` overrides the slot's own, which is
+the extension's own rule and one the executed `wrapTexture` applies. A
+`texCoord` of 2 or more needs nothing: `wrapTexCoord` stamps only 1, so the
+executed mask leaves that slot's bit clear and both sides sample UV0.
+
+glTF occlusion is the slot that cannot be resolved by a UV set alone, and it
+follows Babylon's `buildDefaultPbrTexturesExt` contract arm for arm. An
 `occlusionTexture` on TEXCOORD_1 without a metallic-roughness image keeps the
 factor-driven ORM slot and binds the occlusion image through a dedicated
 texture pair sampled at uv2 (the pinned `occlusionOverride` replaces the ORM
-red channel; the native loader reads TEXCOORD_1 for this), while a TEXCOORD_0
-occlusion image without a metallic-roughness image becomes the ORM texture
-itself with the glTF metallic and roughness factors reverting to the engine
-defaults of 1.0, exactly as `assemblePbrPropsExt` passes them only alongside a
-metallic-roughness image. Distinct occlusion and metallic-roughness images
-(upstream's canvas composite) and occlusion on TEXCOORD_1 alongside a
-metallic-roughness texture stay unreached and fail explicitly. Scene 243
-gates the uv2 pair through MorphStressTest's baked-AO platform.
+red channel). A TEXCOORD_0 occlusion image without a metallic-roughness image
+becomes the ORM texture itself, at the *occlusion* slot's own transform, with
+the glTF metallic and roughness factors reverting to the engine defaults of
+1.0 — exactly as `assemblePbrPropsExt` passes them only alongside a
+metallic-roughness image. Beside a metallic-roughness texture that shares its
+image, occlusion gets a second carrier whenever the two can be sampled apart:
+on TEXCOORD_1 through the uv2 pair, or — `occlusionNeedsSplit`, a distinct
+texture object or a `KHR_texture_transform` of its own — through the
+orm-unpack split, which samples `ormTexture` a second time at `occlUV` so an
+animated occlusion transform stays independent of the metallic-roughness one.
+The record therefore carries `occlusion_transform` apart from
+`orm_transform`; the two agree wherever a material gives both slots the same
+transform, which is every corpus material that reaches them.
+
+Two shapes stay refused, each because upstream renders them no better. Distinct
+occlusion and metallic-roughness *images* composite on a canvas upstream
+(`gltf-ext-orm.ts`). And occlusion on TEXCOORD_1 naming the **same texture
+object** as the metallic-roughness slot sets uv2 mask bit 32 from the texCoord
+while building no carrier for it, so the composed fragment declares an
+occlusion binding with no texture behind it — a WebGPU validation failure whose
+golden is a black canvas, measured on a fixture before the refusal was written.
+Occlusion is also the one slot where a `texCoord` of 2 or more is refused
+rather than mirrored: `assemblePbrPropsExt` records the value while
+`wrapTexCoord` leaves the mask bit clear, so upstream's occlusion reaches
+neither the dedicated pair nor the split and shades from a factor texel. No
+corpus asset authors one.
+
+Scene 243 gates the uv2 pair through MorphStressTest's baked-AO platform, scene
+29 the orm-unpack split, and the glTF UV-sets gate all seven arms at once.
 A scene-code material has no separate occlusion image and samples `orm.r` when
 its resolved `occlusionStrength` is nonzero. `createPbrMaterial` is
 `{...props}`, and `_computePbrMaterialFeatures` owns the
@@ -566,7 +602,48 @@ intentionally uses the unrotated reflection vector.
 
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
-reached. Morph position/normal deltas are applied before recursive skinning;
+reached, and STEP on every channel the loader carries. STEP has no arithmetic
+to lower — it selects one stored key and copies it — so what is pinned is the
+key it selects: `evaluateSampler` takes the later key once the time reaches
+its own (`t >= t1 ? idx + 1 : idx`) and the earlier one inside the span, and
+generation asserts that selection against the pin's own branch rather than
+restating it. `track_key_at` already returns exactly those two keys, so the
+generated `sample_step_*` arm is a choice between its own pair.
+
+**A group's `speedRatio` scales the future, not the past.** Upstream
+accumulates `time += (deltaMs / 1000) * speedRatio`, so a write moves what
+follows it and leaves the pose already reached alone. The scene's master-clock
+fan-out derives a clip time rather than accumulating one, so the writer
+re-anchors: it records the clip time and the master clock at the write, and the
+derived time is that base plus the scaled span since. At the default ratio of
+one, with no write, this is the elapsed clock it always was — byte-identical
+for every scene that never sets a ratio. A **seek** is the deliberate
+exception: the browser capture harness pins a pose by writing the group's own
+`currentTime` and pausing it, which no ratio scales, so the native seek takes
+the clock as the clip time and leaves the ratio to the tick. That also means no
+seek-pinned gate can observe a ratio — every pinning mechanism upstream
+exposes writes the clip time directly — so what the glTF STEP gate measures
+about it is that carrying one does not disturb the pose the harness pinned.
+
+**An `AnimationGroupMask` resolves at the write, where the pin resolves it
+lazily.** `animationGroupMaskRetainsTarget` retains a name when listing it and
+including agree, and `resolveAnimationMask` turns that into a skip flag per
+node; the generated writer runs the same rule over the asset's own node names
+and stores the same flags. A masked channel is skipped, and the node keeps the
+rest TRS the pin's controller resets to before walking a clip — which the
+generated pose pass restores for the masked nodes alone, since every other
+animated node is overwritten by its own track. The names and the mode are
+folded because they are constants in every reachable shape; the pin's own
+re-resolution exists to notice a `names` array that moves, which a compiled
+scene cannot do. `group.mask` is refused for anything but a
+`createAnimationGroupMask` value, and a mode other than the enum's two members
+fails by name. Scene 251 gates it over Xbot's walk.
+
+`goToFrame`'s third argument is the pin's `engine`, and its only effect is
+the guard `engine || !group._stopped || !group._gltfMixer`: a glTF group
+always carries the mixer, so what is left is that a stopped group is posed when
+the caller passed an engine and skipped when it did not. The native call takes
+that as a boolean rather than the engine itself, which it already has. Morph position/normal deltas are applied before recursive skinning;
 generated joint palettes and morph weights drive the deformation stage.
 Every morphed mesh uses Babylon's pinned uncapped storage-buffer path
 (`morph-fragment-core.ts`) — the pin's one morph mechanism, compiled in for
@@ -1533,13 +1610,41 @@ clients need not handle primitive restart, which makes the run contiguous.
 The expansion belongs to the loader rather than the pipeline because a face
 normal needs each triangle to own its vertices, and Scene 260 — a strip with
 no `NORMAL` — needs both. Dawn, which compiles and rasterizes through the
-browser's own stack, renders it byte-identical to the golden. Point, line and
-line-strip modes describe primitives no triangle list can express and fail at
-load by mode number. All of it is gated on the `nonTrianglePrimitives`
+browser's own stack, renders it byte-identical to the golden.
+
+Points (mode 0), lines (mode 1) and line strips (mode 3) describe primitives no
+triangle list can express, so they reach the pipeline as themselves. The
+fixed-function state is `buildPrimitiveState`'s own: the topology, `cullMode:
+"none"` for every one of them — points and lines have no faces to cull — and
+WebGPU's `stripIndexFormat` beside a line strip, which the loader's uint32
+index buffer settles. Each is one `RenderPipelineKind` per blend state rather
+than one per cull and winding combination, because neither of those reaches a
+primitive without faces. Three triangle-list rules are skipped with them: the
+divisible-by-three index count (a line list is divisible by two and a point
+list by nothing), the mirrored-transform winding swap, and the flat-normal
+deindex. That last one is a refusal rather than a skip — the pin's own
+flat-normal expression is
+`normalize(cross(dpdx(worldPos), dpdy(worldPos)))`, which needs a fragment
+quad with area to differentiate over, and a one-pixel line gives it none — so a
+non-triangle primitive with no `NORMAL` accessor fails at load. LINE_LOOP (2)
+and TRIANGLE_FAN (6) are the two modes WebGPU has no topology for at all;
+upstream leaves them as a triangle list, matching a legacy engine that cannot
+render them either, which draws a different shape rather than the authored one,
+so they are refused rather than mirrored.
+
+Only the pinned colour pipeline carries a topology: the depth-only pipelines a
+transmission grab pre-passes through, and the geometry-output tasks, are built
+at a triangle list for every draw they take. A scene reaching both a
+point-or-line primitive and one of those passes therefore refuses at
+generation, rather than silently pre-passing a line as a triangle.
+
+All of it is gated on the `nonTrianglePrimitives`
 specialization flag, which is the predicate behind Babylon Lite's own
 dynamically imported `gltf-feature-primitive.js`: a scene whose assets are all
 triangle lists emits a loader that carries no topology handling at all, which
-is where upstream keeps it too.
+is where upstream keeps it too. The glTF topology gate measures all three
+modes beside the triangle list they draw next to, each carrying vertex
+colours.
 Standard bump maps compose the pin's own `normal-map-fragment`
 (`HAS_BUMP_TEXTURE`), whose `WGSL_PERTURB_NORMAL` helper builds the cotangent
 frame from screen-space derivatives, so a mesh needs no tangent attribute,

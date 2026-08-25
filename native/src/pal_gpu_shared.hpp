@@ -2537,6 +2537,11 @@ struct RenderPipelineKindTraits {
     bool transparent;
     upstream::RenderCullMode cull;
     bool clockwise_front_face;
+    // The primitive the pipeline is built at. Only the glTF PBR kinds carry
+    // anything but triangles, and each of those already fixes its cull mode
+    // to none, exactly as `buildPrimitiveState` does -- so every other arm
+    // takes this default rather than restating it.
+    MeshTopology topology = MeshTopology::triangles;
 };
 
 /** Whether the kind asks for alpha-to-coverage (the `shader_a2c` arm). */
@@ -2549,6 +2554,7 @@ inline RenderPipelineKindTraits pipeline_kind_traits(
     using Kind = upstream::RenderPipelineKind;
     using Family = upstream::RenderMaterialKind;
     using Cull = upstream::RenderCullMode;
+    using Topology = MeshTopology;
     switch (kind) {
         case Kind::pbr_opaque_back:
             return {Family::pbr, false, Cull::back, false};
@@ -2562,6 +2568,22 @@ inline RenderPipelineKindTraits pipeline_kind_traits(
             return {Family::pbr, true, Cull::none, false};
         case Kind::pbr_transparent_none_clockwise:
             return {Family::pbr, true, Cull::none, true};
+        // Points and lines cull nothing and have no winding, so each is one
+        // arm per blend state.
+        case Kind::pbr_opaque_points:
+            return {Family::pbr, false, Cull::none, false, Topology::points};
+        case Kind::pbr_opaque_lines:
+            return {Family::pbr, false, Cull::none, false, Topology::lines};
+        case Kind::pbr_opaque_line_strip:
+            return {
+                Family::pbr, false, Cull::none, false, Topology::line_strip};
+        case Kind::pbr_transparent_points:
+            return {Family::pbr, true, Cull::none, false, Topology::points};
+        case Kind::pbr_transparent_lines:
+            return {Family::pbr, true, Cull::none, false, Topology::lines};
+        case Kind::pbr_transparent_line_strip:
+            return {
+                Family::pbr, true, Cull::none, false, Topology::line_strip};
         case Kind::standard_opaque_back:
             return {Family::standard, false, Cull::back, false};
         case Kind::standard_opaque_none:

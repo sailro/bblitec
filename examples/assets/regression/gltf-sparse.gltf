@@ -1,0 +1,175 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "bblitec tools/fixtures/build-gltf-sparse.mjs"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "SparseQuad"
+    }
+  ],
+  "meshes": [
+    {
+      "name": "SparseQuad",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "COLOR_0": 2
+          },
+          "indices": 3,
+          "material": 0
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "SparseVertexColor",
+      "doubleSided": true,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.6
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "name": "positionSparse",
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -0.8,
+        -0.8,
+        0
+      ],
+      "max": [
+        0.8,
+        0.8,
+        0
+      ],
+      "sparse": {
+        "count": 4,
+        "indices": {
+          "bufferView": 1,
+          "componentType": 5121
+        },
+        "values": {
+          "bufferView": 2
+        }
+      }
+    },
+    {
+      "name": "normal",
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "name": "colorSparseNoBase",
+      "componentType": 5121,
+      "normalized": true,
+      "count": 4,
+      "type": "VEC4",
+      "sparse": {
+        "count": 4,
+        "indices": {
+          "bufferView": 4,
+          "componentType": 5123
+        },
+        "values": {
+          "bufferView": 5
+        }
+      }
+    },
+    {
+      "name": "indexSparse",
+      "bufferView": 6,
+      "componentType": 5123,
+      "count": 6,
+      "type": "SCALAR",
+      "sparse": {
+        "count": 6,
+        "indices": {
+          "bufferView": 7,
+          "componentType": 5125
+        },
+        "values": {
+          "bufferView": 8
+        }
+      }
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 48,
+      "byteLength": 4
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 52,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 100,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 148,
+      "byteLength": 8
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 156,
+      "byteLength": 16
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 172,
+      "byteLength": 12
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 184,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 208,
+      "byteLength": 12
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAECA83MTL/NzEy/AAAAAM3MTD/NzEy/AAAAAM3MTD/NzEw/AAAAAM3MTL/NzEw/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAQACAAMA3Cgo/yjIPP8yWub/5sgo/wAAAAAAAAAAAAAAAAAAAAABAAAAAgAAAAMAAAAEAAAABQAAAAAAAQACAAAAAgADAA==",
+      "byteLength": 220
+    }
+  ]
+}

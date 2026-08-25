@@ -16,6 +16,8 @@ export const featureSources: Record<Feature, string[]> = {
     "animation:gltf-blending": [],
     "animation:gltf-additive": [],
     "animation:gltf-group-time": [],
+    "animation:gltf-group-speed": [],
+    "animation:gltf-group-mask": [],
     "core": ["src/pal.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp"],
     "camera:arc-rotate": [],
