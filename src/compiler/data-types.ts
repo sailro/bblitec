@@ -14,17 +14,19 @@ type Fail = (node: ts.Node, message: string) => never;
  * id, so the value-copy model needs no special case for them, and each pinned
  * type that names one maps here rather than at every use site.
  */
-export type HandleKind = "mesh" | "animation-group";
+export type HandleKind = "mesh" | "animation-group" | "camera";
 
 const handleCppTypes: Record<HandleKind, string> = {
     "mesh": "bbl::MeshHandle",
     "animation-group": "bbl::AnimationGroupHandle",
+    "camera": "bbl::CameraHandle",
 };
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
     Mesh: "mesh",
     AnimationGroup: "animation-group",
+    Camera: "camera",
 };
 
 export type DataType =

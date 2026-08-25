@@ -135,6 +135,13 @@ const handleCollections: readonly HandleCollectionRead[] = [
         record: ["assets", "animation_groups"],
         temporaryLabel: "asset_animation_group",
     },
+    {
+        // `AssetContainer.cameras` — see AssetRecord::cameras.
+        owner: "asset",
+        property: "cameras",
+        record: ["assets", "cameras"],
+        temporaryLabel: "asset_camera",
+    },
 ];
 
 /** The rule in a table claiming this (owner kind, property) pair. */
@@ -301,6 +308,18 @@ const propertyRules: readonly PropertyRule[] = [
         value: "data",
         dataType: { kind: "string" },
         record: ["animation_groups", "name"],
+    },
+    {
+        // The `_camera` loader feature names each imported camera
+        // `def.name ?? camera<index>`; a scene-created camera carries the
+        // record default, the empty string, which no equality against a
+        // scene's literal matches — the pin's undefined compares the same
+        // way. This read is what the `.find` search loop tests.
+        owner: "camera",
+        property: "name",
+        value: "data",
+        dataType: { kind: "string" },
+        record: ["cameras", "name"],
     },
     {
         owner: "scene",

@@ -216,11 +216,10 @@ remains, and its blocker is an asset mechanism rather than a render one.
 
 ### The eight scenes 1.23.0 added
 
-Six of the eight shipped. Two remain.
+Seven of the eight shipped. One remains.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
-| 250 | `enableGltfCameras` | glTF camera import, new in 1.21 |
 | 300 | an `OffscreenCanvas` construction in `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
 
 **No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
@@ -241,10 +240,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (73 scenes):** 4, 16-18, 20, 22, 38, 43,
+**Integrate first (72 scenes):** 4, 16-18, 20, 22, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 165, 179, 200-207, 211, 214, 215, 217-219,
-223, 226, 229, 231, 241, 250, 251, 261, 269-271, 275, 300.
+223, 226, 229, 231, 241, 251, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,

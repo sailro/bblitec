@@ -868,6 +868,32 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene250",
+        name: "Scene 250 - VirtualCity Cameras",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene250.ts",
+        title: "Babylon Lite Native - VirtualCity Cameras",
+        parity: {
+            // The scene seeks itself: at its tenth frame it reads
+            // `?seekTime=5` — the pin's own parity query — multiplies by
+            // 60, and goToFrame-freezes every group on both sides. The
+            // native run needs to reach that frame, so the capture is
+            // taken at frame 10.
+            referenceSearch: "?seekTime=5",
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "10",
+            },
+            // Measured 0.004 / 0.003 (SDL_GPU / Dawn), 99% exact and every
+            // region pixel within one count on both backends — the
+            // texture-interpolation floor of a fully textured cityscape.
+            // Dawn's full-image max is 1; SDL_GPU's masked border carries
+            // a few antialiased sky-dome edge pixels up to 22.
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.005,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-track-clamp",
         name: "Regression - glTF Track Clamp",
         source: "examples/regression-track-clamp.ts",

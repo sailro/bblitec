@@ -1,8 +1,74 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
 
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext) {}
+
+    /**
+     * The parented-world composition `camera_world_matrix` mirrors when a
+     * record carries a parent: the pinned `getWorldMatrix`
+     * (src/scene/world-matrix-state.ts) multiplies the parent's world by
+     * the local through `mat4MultiplyInto(out, 0, parent, 0, local, 0)`.
+     * The operand order is the whole contract — swapping it composes the
+     * camera on the wrong side of its fixup node — so this reads the
+     * pin's one multiply call and requires the parent world third and the
+     * local matrix fifth.
+     */
+    private assertParentWorldComposition(): void {
+        const module = "src/scene/world-matrix-state.ts";
+        const file = this.context.sourceFile(module);
+        const multiplies = this.context
+            .findNodes(
+                file,
+                (node): node is ts.CallExpression =>
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "mat4MultiplyInto",
+            );
+        if (multiplies.length !== 1) {
+            this.context.contractError(
+                multiplies[1] ?? file,
+                "Expected one world composition multiply in world-matrix-state.",
+            );
+        }
+        const call = multiplies[0]!;
+        const operand = (index: number): ts.Expression =>
+            this.context.unwrapExpression(call.arguments[index]!);
+        const parentOperand = operand(2);
+        const localOperand = operand(4);
+        if (
+            call.arguments.length !== 6 ||
+            !ts.isIdentifier(parentOperand) ||
+            !ts.isIdentifier(localOperand)
+        ) {
+            this.context.contractError(
+                call,
+                "Expected the pinned world composition to multiply two named matrices at offset zero.",
+            );
+        }
+        if (
+            !this.context.expressionMatchesShape(
+                this.context.variableInitializer(
+                    file,
+                    parentOperand.text,
+                ),
+                "_parent.worldMatrix",
+            ) ||
+            !this.context.expressionMatchesShape(
+                this.context.variableInitializer(
+                    file,
+                    localOperand.text,
+                ),
+                "getLocalMatrix()",
+            )
+        ) {
+            this.context.contractError(
+                call,
+                "Expected the pinned world composition to take the parent world on the left and the local matrix on the right.",
+            );
+        }
+    }
 
     /**
      * The camera-to-world writer both factories reach, and the two
@@ -79,7 +145,7 @@ export class CameraLowerer {
         };
     }
 
-    public lowerArcRotateFactory(): LoweredSource {
+    public lowerArcRotateFactory(gltfCameras = false): LoweredSource {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
@@ -118,6 +184,31 @@ export class CameraLowerer {
             this.context.doubleLiteral(
                 this.context.numericValue(this.context.propertyInitializer(camera, name), file),
             );
+        if (gltfCameras) {
+            this.assertParentWorldComposition();
+        }
+        const parentArm = gltfCameras
+            ? `
+namespace {
+
+${lowerMat4MultiplyWriterCpp(this.context)}
+
+} // namespace
+
+// src/scene/world-matrix-state.ts getWorldMatrix: with a parent the world
+// is mat4MultiplyInto(out, 0, parent.worldMatrix, 0, local, 0) — parent
+// on the left, the camera's own look-at local on the right. The record's
+// parent_world is the imported camera's fixup-node world, written by the
+// glTF loader.
+std::array<float, 16> camera_parented_world(
+    const CameraRecord& camera,
+    const std::array<float, 16>& local) {
+    std::array<float, 16> world{};
+    mat4_multiply_into(world, 0, camera.parent_world, 0, local, 0);
+    return world;
+}
+`
+            : "";
         return {
             modulePath,
             symbolName,
@@ -156,14 +247,14 @@ Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
     };
 }
 
-// ${this.context.provenance(lookAtModule, lookAtSymbol)}
+${parentArm}// ${this.context.provenance(lookAtModule, lookAtSymbol)}
 // The camera-to-world matrix both factories write through
 // \`createWorldMatrixState\`; with no parent the world matrix *is* this
 // local one (\`src/scene/world-matrix-state.ts\` getWorldMatrix), and the
 // storage is the \`allocateMat4()\` Float32Array. So every term is
 // computed in double and stored once as float, and \`getViewMatrix\`
 // downstream reads these rounded values exactly as the pin does.
-std::array<float, 16> camera_world_matrix(const CameraRecord& camera) {
+std::array<float, 16> ${gltfCameras ? "camera_local_matrix" : "camera_world_matrix"}(const CameraRecord& camera) {
     const Vec3d eye = arc_rotate_eye_position(camera);
     std::array<float, 16> out{};
     out[3] = 0.0f;
@@ -217,7 +308,14 @@ std::array<float, 16> camera_world_matrix(const CameraRecord& camera) {
     out[10] = static_cast<float>(zz);
     return out;
 }
-
+${gltfCameras ? `
+std::array<float, 16> camera_world_matrix(const CameraRecord& camera) {
+    const std::array<float, 16> local = camera_local_matrix(camera);
+    return camera.has_parent_world
+        ? camera_parented_world(camera, local)
+        : local;
+}
+` : ""}
 } // namespace bbl::upstream
 
 namespace bbl {

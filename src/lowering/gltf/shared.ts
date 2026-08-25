@@ -508,6 +508,36 @@ export function declarationOf(
     )[0];
 }
 
+/**
+ * Refuses unless `root` still reads every named property (as a property
+ * access, a string literal, or a bare identifier — the spellings a JSON
+ * walk uses). The anchor that keeps a lowered walk honest about the keys
+ * it mirrors.
+ */
+export function requirePropertyReads(
+    symbol: string,
+    root: ts.Node,
+    names: readonly string[],
+): void {
+    for (const name of names) {
+        const carried = collectNodes(
+            root,
+            (node): node is ts.Node =>
+                ((ts.isPropertyAccessExpression(node) ||
+                    ts.isPropertyAccessChain(node)) &&
+                    node.name.text === name) ||
+                (ts.isStringLiteral(node) && node.text === name) ||
+                (ts.isIdentifier(node) && node.text === name),
+        ).length > 0;
+        if (!carried) {
+            refuseModule(
+                symbol,
+                `no longer reads the '${name}' property`,
+            );
+        }
+    }
+}
+
 /** `<base>.<key> ?? <default>` → the key and the default expression. */
 export function coalescedPropertyDefault(
     expression: ts.Expression,

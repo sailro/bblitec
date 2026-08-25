@@ -24,6 +24,7 @@ import {
     lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
+import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerPunctualLightsCpp } from "./punctual-lights.js";
 import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
@@ -53,6 +54,8 @@ export interface GltfLoaderOptions {
     materialSpecular?: boolean;
     /** The `KHR_materials_variants` name a scene selected, or "". */
     selectedMaterialVariant?: string;
+    /** The scene reached `enableGltfCameras` (the `_camera` feature). */
+    gltfCameras?: boolean;
 }
 
 export class GltfLowerer {
@@ -699,6 +702,17 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
             this.context.sourceFile("src/light/spot-light.ts"),
             parserFile,
         );
+        const gltfCameras = options.gltfCameras
+            ? lowerGltfCamerasCpp(
+                  this.context.sourceFile(
+                      "src/loader-gltf/gltf-feature-camera.ts",
+                  ),
+                  this.context.sourceFile(
+                      "src/loader-gltf/load-gltf.ts",
+                  ),
+                  parserFile,
+              )
+            : { parentWriter: "", loading: "", poseRefresh: "" };
         return {
             modulePath,
             symbolName,
@@ -725,6 +739,9 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     iblPolynomial,
                     iblEnvironmentScalars,
                     punctualLightLoading,
+                    gltfCameraParentWriter: gltfCameras.parentWriter,
+                    gltfCameraLoading: gltfCameras.loading,
+                    gltfCameraPoseRefresh: gltfCameras.poseRefresh,
                 },
                 options,
             ),

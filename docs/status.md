@@ -140,6 +140,7 @@ threshold on it can be driven to zero
 | 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="160"> | 0.001 / 0.009 | 0.001 / 0.009 | `EXT_mesh_gpu_instancing` T/R/S, one native instanced draw |
 | 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | external glTF and sampler modes |
 | 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | vertex-color alpha and mask cutoff |
+| 250 | <img src="images/scenes/scene250.png" alt="Scene 250 rendering" width="160"> | 0.004 / 0.004 | 0.003 / 0.003 | VirtualCity through an imported glTF camera: the `_camera` feature's parented FreeCamera on an animated vehicle node, found by name, frozen at `?seekTime=5` |
 | 252 | <img src="images/scenes/scene252.png" alt="Scene 252 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | direct single-target morph deformation on a generated Standard sphere |
 | 253 | <img src="images/scenes/scene253.png" alt="Scene 253 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | `KHR_animation_pointer` across node transforms, punctual lights and material extensions, spot lights, 69 channels |
 | 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | signed animation sampler accessors, quaternion slerp |

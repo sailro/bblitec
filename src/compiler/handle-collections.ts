@@ -810,6 +810,14 @@ export class HandleCollections {
         target: HandleCollectionTarget,
         predicate: ts.ArrowFunction,
     ): Value | undefined {
+        // The members this resolution reads are the materialized
+        // document's animations, so only the animationGroups collection
+        // resolves here; any other collection (a container's cameras)
+        // keeps the loaded search, whose member names the generated
+        // loader itself wrote.
+        if (target.property !== "animationGroups") {
+            return undefined;
+        }
         const body = this.context.unwrap(
             predicate.body as ts.Expression,
         );
