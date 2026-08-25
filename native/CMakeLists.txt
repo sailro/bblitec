@@ -88,6 +88,19 @@ set(
     "Installed pinned Dawn library root"
 )
 
+# Installed LabSound root (tools/build-labsound.ps1). LabSound is not in
+# the vcpkg registry, so it is built once from a pinned commit into
+# artifacts/tools the way Dawn and Tint are. Unlike Dawn it is consumed
+# by path rather than through find_package: LabSound's install(EXPORT)
+# names every backend target, including the two this build deliberately
+# does not compile, so its package config cannot resolve.
+set(
+    BBLITE_LABSOUND_DIR
+    "${BBLITE_NATIVE_ROOT}/../artifacts/tools/labsound"
+    CACHE PATH
+    "Installed pinned LabSound root"
+)
+
 # Optional subsystem-trimmed static SDL3 (tools/build-sdl-min.ps1).
 # Empty selects the toolchain-provided SDL3 (vcpkg).
 set(
@@ -518,6 +531,38 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
             RecastNavigation::DetourTileCache
             RecastNavigation::DebugUtils
     )
+endif()
+
+# The Web Audio engine is reached only through `bblite/pal_audio.hpp`,
+# whose implementation is one translation unit the feature list selects
+# (`featureSources`). Nothing generated names LabSound. SDL3 is already
+# linked as the platform layer and carries the audio device
+# (`pal_audio_sdl_device.hpp`), so no second platform dependency appears.
+if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib")
+        message(
+            FATAL_ERROR
+            "This scene reaches audio:engine but no LabSound install was "
+            "found at ${BBLITE_LABSOUND_DIR}. Build it once with "
+            "tools/build-labsound.ps1, or point BBLITE_LABSOUND_DIR at an "
+            "existing install."
+        )
+    endif()
+    # SYSTEM: LabSound's headers are not warning-clean under /W4, and
+    # this project's own sources must stay so.
+    target_include_directories(
+        bblite_native
+        SYSTEM PRIVATE "${BBLITE_LABSOUND_DIR}/include"
+    )
+    target_link_libraries(
+        bblite_native
+        PRIVATE
+            "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
+            "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
+    )
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=0)
 endif()
 
 if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)

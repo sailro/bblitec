@@ -548,6 +548,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "library links)",
         consumers: CMAKE,
     },
+    "audio:engine": {
+        provenance:
+            "src/audio/audio-engine.ts createAudioEngineAsync + bus.ts " +
+            "createMainOut/createMainBus (the Web Audio API the pinned " +
+            "module reaches is the back end this port supplies from the " +
+            "PAL, over LabSound with an SDL3 device)",
+        consumers: CMAKE,
+    },
     "physics:world": {
         provenance:
             "src/physics/havok.ts createHavokWorld + _stepWorld " +

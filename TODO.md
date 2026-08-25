@@ -261,7 +261,9 @@ user-input or external-service contract.
 209, 221, 222, 224, 225, 227, 228, 272.
 
 No audited scene requires audio, touch, gamepad, AR, or VR. Add any future scene
-that does to the deferred lane by default.
+that does to the deferred lane by default. Audio's own reach is upstream's
+demos rather than its scenes, which is why the Web Audio entry sits in P2
+below rather than blocking a scene here.
 
 ### Integration-first compiler contract gaps
 
@@ -761,7 +763,89 @@ CLI exposes no combined-sampler emission.
 ## P2 — Platform and performance
 
 - [ ] Add touch, gamepad, and fuller keyboard mapping.
-- [ ] Inventory and lower static audio playback behind an SDL audio PAL.
+- [ ] Finish the Web Audio slice. A working prototype is on this branch:
+  `bblite/pal_audio.hpp` over LabSound with an SDL3 `lab::AudioDevice`
+  (`native/src/pal_audio_sdl_device.hpp`), an `audio:engine` runtime feature
+  selecting one translation unit, and `examples/audio-probe.ts` compiling to a
+  scene that opens a device and plays a scheduled triad. The contracts are in
+  [fidelity](docs/fidelity.md#audio-contract); the adaptation is recorded as
+  `substituted-audio-engine`. **The corpus reaches none of it**: no `sceneNNN`
+  scene uses audio at all. The reach, swept over the whole pinned tree for all
+  38 exported audio symbols, is nine files: upstream's seven *game* demos
+  (tetris, quake, doom, minecraft, platformer, racer, sandblox), which use the
+  engine for lifecycle only; `lab/lite/src/demos/audio-demo.ts`, the module's
+  own Tier-4 showcase, which is the one place `createSoundAsync`/`playSound`,
+  the microphone, the visualizer and the unmute UI are reached at all; and
+  `packages/babylon-lite-compat/src/audio/`, a Babylon.js-classic-shaped
+  wrapper in a separate package no corpus scene imports (out of scope here,
+  recorded so the next sweep does not rediscover it).
+  - **The seam is the pin's own, and it is the Web Audio API rather than
+    Babylon's sound API.** Every *game* demo uses the Lite engine for
+    lifecycle only -- `createAudioEngineAsync`, `engine.audioContext`,
+    `createSoundSourceAsync`, `unlockAudioEngineAsync` -- then builds its own
+    raw graph on the context. Only the module's own showcase reaches the sound
+    family, which is what makes refusing it the right call rather than a gap. The whole raw surface those eight files reach is
+    small: `createGain` (25), `createBufferSource` (12), `createBuffer` (7),
+    `createBiquadFilter` (7), `createOscillator` (6), `createStereoPanner` (1),
+    `decodeAudioData` (2), and three `AudioParam` schedulers
+    (`setValueAtTime` 22, `exponentialRampToValueAtTime` 20,
+    `linearRampToValueAtTime` 4).
+  - **What is measured**: `BBLITE_AUDIO_CAPTURE` renders the scene's graph
+    offline at the end of `run_engine` and writes 32-bit float WAV from the
+    same bus the reported peak/RMS is measured on. `examples/audio-probe.ts`
+    gives 48000 frames at 48 kHz, peak 0.032524, RMS 0.004254, byte-identical
+    across runs, per-100 ms RMS rising monotonically as its own
+    `exponentialRampToValueAtTime` says. The pinned engine accepts an
+    `OfflineAudioContext` for the same reason, so the browser half of a PCM
+    comparison exists -- **that comparison is the gate this slice still
+    lacks**, and it is the next thing worth building. Upstream has already
+    built the picture-shaped version of it and this port should reuse the
+    shape rather than invent one: `docs/lite/architecture/41-audio-engine.md`
+    Tier 3 rasterizes the offline PCM to a deterministic waveform PNG and
+    diffs it against a committed golden
+    (`tests/lite/audio/visual/waveform-golden.test.ts`, a pngjs rasterizer,
+    thick band, position-tolerant within 2 px, goldens under
+    `reference/lite/audio/<case>.png`). That drops onto this repository's
+    existing PNG/MAD harness directly.
+  - **The next capability is the buffer family.** `createBuffer`,
+    `getChannelData`, a source's `buffer` and `loop` all refuse by name, and
+    the PAL declares none of them, because the blocker is one thing: the
+    plain-data model has no borrowed float span, so a scene cannot write
+    samples into PAL-owned memory. Every demo that plays a recorded sound
+    needs it. `decodeAudioData` needs a second thing besides -- an audio
+    asset materialized at generation, the way textures are.
+  - **`setMasterVolume` and `getMasterVolume` refuse**, and closing that means
+    lowering `audio-param.ts`'s ramp component: the exp/log curve tables, the
+    `MinRampDuration` gate, and `setValueCurveAtTime` reaching the PAL as a
+    span. The PAL entry point is deliberately absent until then rather than
+    declared and unused.
+  - **Everything else refuses by name**: the whole StaticSound/StreamingSound
+    family, buses, spatial, stereo, the analyzer, the microphone, the unmute
+    UI, the visualizer and the media-stream tap on the Babylon side; the
+    analyser/panner/delay/convolver/compressor/wave-shaper factories and
+    `setTargetAtTime` on the Web Audio side.
+  - **The two blockers that keep the demos out of reach**, both language rather
+    than audio: `sound.ts` in every demo dispatches effects through a
+    string-literal `switch` (still unlowered, P1 above) and creates its engine
+    inside `void (async () => { try { ... } catch { ... } })()`, which needs
+    both escaping closures and `catch`. Sizing an audio demo means sizing those
+    first.
+  - **Still open, smaller**: LabSound logs at TRACE to stdout with no hook to
+    route it; `libnyquist` is fetched by LabSound's own CMake at `GIT_TAG
+    master`, so `tools/build-labsound.ps1` pins the commit itself and passes it
+    back through `LIBNYQUIST_SOURCE_DIR`; and LabSound is consumed by path
+    rather than through `find_package`, because its `install(EXPORT)` names
+    every backend target including the two this build does not compile.
+  - **Neutrality, measured**: with the change applied, `compile all` moves
+    exactly 438 generated files -- `build-inputs.json`, `build_stamp.hpp` and
+    `feature-activation.json`, one of each per registered scene, and nothing
+    else. The first two are the tracked-native-source digest, which any new PAL
+    translation unit moves by construction; the third gains the `audio:engine`
+    row every scene's inventory lists whether or not it reaches it. No
+    generated C++, shader, manifest or fidelity record moved. The stamp moving
+    does mean every scene's binary needs rebuilding before its parity number is
+    trustworthy again, so `npm run scenes:parity` is owed before this pushes.
+
 - [ ] Separate CPU submission, GPU execution, decode, and startup timing.
 - [ ] Track executable, shader, and asset sizes consistently.
 - [ ] Deduplicate resources and batch uploads before investigating meshlets,

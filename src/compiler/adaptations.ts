@@ -295,6 +295,48 @@ export function compileAdaptations(
         });
     }
 
+    if (features.includes("audio:engine")) {
+        adaptations.push({
+            id: "substituted-audio-engine",
+            category: "platform",
+            sourceSemantics:
+                "`createAudioEngineAsync` builds a Web Audio graph in the " +
+                "browser: `new AudioContext()`, `GainNode`, `AudioParam` " +
+                "and their siblings, implemented by whatever engine the " +
+                "page runs on -- Blink's for the reference captures.",
+            nativeSemantics:
+                "The pinned engine's own output graph is folded from " +
+                "`bus.ts`'s declarations (and `src/lowering/" +
+                "audio-lowerer.ts` refuses generation if any of them " +
+                "moves), but the Web Audio API under it is LabSound's, " +
+                "reached through `bblite/pal_audio.hpp` over an SDL3 " +
+                "device. LabSound is a fork of WebKit's own WebAudio " +
+                "implementation with the copyleft code removed, so the " +
+                "node graph, the parameter timeline and the panner math " +
+                "are the same algorithms rather than a second design -- " +
+                "the relationship navigation has with recastnavigation " +
+                "rather than the one physics has with Bullet. It is " +
+                "still a different codebase from the one that produced " +
+                "the reference, and it has diverged from WebKit for a " +
+                "decade, so agreement is expected rather than " +
+                "guaranteed by construction. Two places are known to " +
+                "need translation and are translated in the PAL: a " +
+                "`StereoPannerNode`'s `pan` is declared with default 0.5 " +
+                "over 0..1 where Web Audio specifies 0.0 over -1..1, and " +
+                "the graph's sample rate and channel count are the " +
+                "device's rather than a scene's.",
+            risk: "high",
+            validation: [
+                "an offline capture of the same scene is byte-identical " +
+                    "across runs (`BBLITE_AUDIO_CAPTURE`), which is what " +
+                    "makes a PCM comparison against the browser's own " +
+                    "`OfflineAudioContext` render a measurement",
+                "no corpus scene reaches audio, so nothing published is " +
+                    "gated on it yet",
+            ],
+        });
+    }
+
     if (features.includes("backend:sdl")) {
         adaptations.push({
             id: "sdl-platform-boundary",

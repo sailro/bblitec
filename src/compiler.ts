@@ -663,6 +663,19 @@ class Compiler
         }
 
         const value = this.compileValue(declaration.initializer);
+        if (value.impure) {
+            // A `const` bound to a clock is a snapshot of it, so later
+            // uses must read the native local rather than fold back to
+            // the initializer and call the clock again. Same removal a
+            // `let` declaration takes above, for the same reason: the
+            // initializer stops being the value.
+            const symbol = this.symbols.valueSymbol(
+                declaration.name as ts.Identifier,
+            );
+            if (symbol) {
+                this.staticConstants.delete(symbol);
+            }
+        }
         if (value.kind === "node-particle-2d-binding") {
             // Nothing native to bind: the registrar already ran, and the
             // binding exists so instrumentation can report it.

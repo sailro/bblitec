@@ -70,6 +70,24 @@ interface PropertyRead {
      */
     carriesNodeParticleSet?: true;
     /**
+     * A second, constant argument to `helper`. The Web Audio parameter
+     * reads are `audio_node_param(owner, AudioParamName::Gain)` -- the
+     * same "a native function that takes the owner expression" shape the
+     * other helpers take, plus the enumerator that says which parameter.
+     */
+    helperArgument?: string;
+    /**
+     * Carries the owner's audio context onto the value read. Web Audio
+     * forbids connecting nodes across contexts and every factory is a
+     * method on one, so the context travels with everything a context
+     * produced.
+     */
+    carriesAudioContext?: true;
+    /**
+     * This read is a clock rather than a constant: see `Value.impure`.
+     */
+    impure?: true;
+    /**
      * The plain-data type this read produces, when it produces data rather
      * than a handle or a scalar the compiler models itself. Set it and the
      * value arrives as `kind: "data"`, which is what the comparison, sink
@@ -145,6 +163,32 @@ const handleCollections: readonly HandleCollectionRead[] = [
 ];
 
 /** The rule in a table claiming this (owner kind, property) pair. */
+/**
+ * `node.<name>` for every automatable parameter the PAL serves. A node
+ * and a source both carry them, so each name yields two rows -- the
+ * enumerator is spelled once.
+ */
+const AUDIO_PARAM_NAMES: readonly (readonly [
+    property: string,
+    enumerator: string,
+])[] = [
+    ["gain", "Gain"],
+    ["frequency", "Frequency"],
+    ["detune", "Detune"],
+    ["Q", "Q"],
+    ["pan", "Pan"],
+];
+
+const AUDIO_PARAM_RULES: readonly PropertyRule[] =
+    AUDIO_PARAM_NAMES.map(([property, enumerator]) => ({
+        owner: "audio-node" as const,
+        property,
+        value: "audio-param" as const,
+        helper: "bbl::pal::audio_node_param",
+        helperArgument: `bbl::pal::AudioParamName::${enumerator}`,
+        carriesAudioContext: true as const,
+    }));
+
 function ruleFor<Rule extends { owner: ValueKind; property: string }>(
     table: readonly Rule[],
     owner: Value,
@@ -189,6 +233,76 @@ export function readHandleCollection(
 }
 
 const propertyRules: readonly PropertyRule[] = [
+    // --- Web Audio ------------------------------------------------------
+    // The seam the pinned `src/audio/*.ts` reaches is the browser's API,
+    // so these read like any other handle's properties: a helper that
+    // takes the owner, or the same handle retagged.
+    {
+        // The engine handle IS the context handle: the pin's
+        // `audioContext` getter returns the context it was built over,
+        // and every node the scene makes belongs to it.
+        owner: "audio-engine",
+        property: "audioContext",
+        value: "audio-context",
+        retag: true,
+        carriesAudioContext: true,
+    },
+    {
+        owner: "audio-engine",
+        property: "currentTime",
+        value: "number",
+        helper: "bbl::pal::audio_current_time",
+        // The audio clock advances on the audio thread; two reads are two
+        // instants. A scene binding it to a `const` means one.
+        impure: true,
+    },
+    {
+        owner: "audio-engine",
+        property: "state",
+        unsupported:
+            "AudioEngine.state is a string this runtime does not carry; the reached slice unlocks unconditionally.",
+    },
+    {
+        owner: "audio-engine",
+        property: "onStateChanged",
+        unsupported:
+            "AudioEngine.onStateChanged is an observer, and escaping callbacks are not lowered.",
+    },
+    {
+        owner: "audio-engine",
+        property: "onUserGesture",
+        unsupported:
+            "AudioEngine.onUserGesture is an observer, and escaping callbacks are not lowered.",
+    },
+    {
+        owner: "audio-context",
+        property: "currentTime",
+        value: "number",
+        helper: "bbl::pal::audio_current_time",
+        // The audio clock advances on the audio thread; two reads are two
+        // instants. A scene binding it to a `const` means one.
+        impure: true,
+    },
+    {
+        owner: "audio-context",
+        property: "sampleRate",
+        value: "number",
+        helper: "bbl::pal::audio_sample_rate",
+    },
+    {
+        owner: "audio-context",
+        property: "destination",
+        value: "audio-node",
+        helper: "bbl::pal::audio_destination",
+        carriesAudioContext: true,
+    },
+    ...AUDIO_PARAM_RULES,
+    {
+        owner: "audio-param",
+        property: "value",
+        value: "number",
+        helper: "bbl::pal::audio_param_value",
+    },
     {
         // The lab demos reach the raw GPUDevice to writeBuffer
         // thin-instance pools each frame; the compiled surface has a
@@ -454,6 +568,13 @@ export function readProperty(
         owner.nodeParticleSetIndex !== undefined
             ? { nodeParticleSetIndex: owner.nodeParticleSetIndex }
             : {}),
+        ...(rule.carriesAudioContext
+            ? {
+                  audioContextCpp:
+                      owner.audioContextCpp ?? owner.cpp,
+              }
+            : {}),
+        ...(rule.impure ? { impure: true as const } : {}),
         ...(rule.carriesRenderTextureAspect
             ? {
                   ...(owner.isDepthTexture
@@ -480,7 +601,11 @@ export function readProperty(
         );
     }
     if (rule.helper) {
-        return read(`${rule.helper}(${owner.cpp})`);
+        return read(
+            rule.helperArgument
+                ? `${rule.helper}(${owner.cpp}, ${rule.helperArgument})`
+                : `${rule.helper}(${owner.cpp})`,
+        );
     }
     if (rule.barrier) {
         return read("");

@@ -1350,6 +1350,82 @@ comment), a kinematic `SetTargetQTransform` maps to `set_transform` (no
 corpus scene exercises an ACTION prestep yet), and a material whose static
 and dynamic friction differ refuses rather than averaging.
 
+## Audio contract
+
+**The seam is the pin's own, and it is the Web Audio API.**
+`packages/babylon-lite/src/audio/` is a behavioural port of Babylon.js
+AudioV2 whose entire platform reach is `AudioContext`, `GainNode`,
+`PannerNode`, `StereoPannerNode`, `AnalyserNode`,
+`AudioBufferSourceNode` and `AudioParam`, plus the `document`/`navigator`
+hooks in the modules this port refuses. Where `createHavokWorld(scene,
+hknp)` takes its solver as a parameter, audio takes the *browser* — so
+`native/include/bblite/pal_audio.hpp` mirrors Web Audio, and buses, the
+sound sub-graph, ramp shapes and the sound state machine stay Babylon
+behaviour.
+
+**No corpus scene reaches it.** The reach is upstream's seven *game*
+demos — tetris, quake, doom, minecraft, platformer, racer, sandblox —
+which use the Lite engine for lifecycle only (`createAudioEngineAsync`,
+`engine.audioContext`, `createSoundSourceAsync`,
+`unlockAudioEngineAsync`) and then build their own raw Web Audio graph on
+the context they are handed. The eighth consumer is `audio-demo.ts`, the
+audio module's own Tier-4 showcase, and it is the one place
+`createSoundAsync`/`playSound`, the microphone, the visualizer and the
+unmute UI are reached at all; upstream marks it manual and
+non-deterministic, never a gate. Nothing published is gated on audio, and
+the slice is a prototype: [TODO](../TODO.md) carries what remains.
+
+**The engine's output graph is folded, and the fold is gated.**
+`createAudioEngineAsync` builds `mainBus -> mainOut -> ctx.destination`
+— three statements — so the shape is the contract and
+`src/compiler/intrinsics/audio.ts` emits it at the reaching call site.
+`src/lowering/audio-lowerer.ts` is the other half of that bargain: it
+emits nothing and asserts every statement against the pinned declaration
+that states it, including the one the fold omits
+(`setMainOutVolume(engine._mainOut, engine._volume)`, inert only because
+`_volume` defaults to `options.volume ?? 1`, which is therefore what gets
+checked). A moved contract fails generation naming the declaration.
+
+**`setMasterVolume` refuses, because the pin has no un-ramped form.**
+`setMainOutVolume` goes through `setRampTarget`, whose shape defaults to
+`"linear"` and whose duration defaults to the engine's `_rampDuration`
+(0.01 s) — above `MinRampDuration`, so even a call passing no options
+schedules `cancelScheduledValues(0)` and a two-point
+`setValueCurveAtTime`. An instantaneous write would be a substituted
+behaviour wearing a subset's clothes, so the call refuses until
+`audio-param.ts`'s curve component is lowered.
+
+**The engine under the seam is LabSound, and that is the one thing here
+a measurement cannot close by construction.** LabSound is a fork of
+WebKit's own WebAudio implementation with the copyleft code removed, so
+the node graph, the parameter timeline and the panner math are the same
+algorithms rather than a second design — the relationship navigation has
+with recastnavigation rather than the one physics has with Bullet. It is
+still a different codebase from the one that produced the references,
+and it has diverged for a decade, so agreement is expected rather than
+guaranteed. Recorded per scene as `substituted-audio-engine`. Two
+divergences are known and translated in the PAL: a `StereoPannerNode`'s
+`pan` is declared with default 0.5 over 0..1 where Web Audio specifies
+0.0 over -1..1 (only the descriptor differs — the DSP clamps to [-1, 1]
+and `setValue` does not enforce a range — so an unset panner would sit
+right of centre), and a context's rate and channel count are the
+device's, because `new AudioContext()` takes neither.
+
+**Audio produces no pixels, so it is measured as PCM.**
+`BBLITE_AUDIO_CAPTURE=<path.wav>` makes every context the scene creates
+render offline: the same graph, no device, no thread, and the clock
+advances only inside the render, which happens at the end of
+`pal::run_engine` — the one place a run ends, the same seam
+`CaptureGate` takes a screenshot at. The WAV and the reported
+frames/peak/RMS come from one captured bus, so they are the same bytes
+by construction. `examples/audio-probe.ts` measures 48000 frames at
+48 kHz, peak 0.032524, RMS 0.004254, byte-identical across runs, with
+the per-100 ms RMS rising monotonically as its own
+`exponentialRampToValueAtTime` says. The pinned engine accepts an
+`OfflineAudioContext` through `createAudioEngineAsync({ audioContext })`
+for exactly this reason, so the browser half of a PCM comparison already
+exists; that comparison is the gate this slice still lacks.
+
 ## Parity reports
 
 Reports name the backend they measured and include:

@@ -57,11 +57,16 @@ import {
     compileNavigationIntrinsic,
     type NavigationIntrinsicContext,
 } from "./navigation.js";
+import {
+    compileAudioIntrinsic,
+    type AudioIntrinsicContext,
+} from "./audio.js";
 import type { Value } from "../types.js";
 
 export interface IntrinsicContext
     extends AnimationIntrinsicContext,
         AssetIntrinsicContext,
+        AudioIntrinsicContext,
         CameraIntrinsicContext,
         EngineIntrinsicContext,
         LightIntrinsicContext,
@@ -96,6 +101,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileParticleIntrinsic,
     compilePhysicsIntrinsic,
     compileNavigationIntrinsic,
+    compileAudioIntrinsic,
 ];
 
 /**

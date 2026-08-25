@@ -85,6 +85,9 @@ Primary source ownership:
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/lowering/physics-lowerer.ts` | the rigid-body family: `havok.ts`'s own step gate, its four frame phases in order, the aggregate's ordering and the bounding-box shape sizing, each emitted from the declaration that states it -- the solver behind the `HP_*` surface is the PAL's, which is the seam the pin itself draws by taking `hknp` as a parameter |
 | `src/compiler/intrinsics/physics.ts` | which physics calls a scene reached, and the erased solver module its `await HavokPhysics(...)` produced |
+| `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted rather than restated |
+| `src/compiler/intrinsics/audio.ts` | the Babylon half of the audio surface: the engine lifecycle a scene reaches, and every sound/bus/spatial entry point that refuses by name |
+| `src/compiler/audio-surface.ts` | the browser half: the Web Audio method calls and property writes a scene makes on the context the engine hands back (its reads live in the property-rule table) |
 | `src/lowering/line-lowerer.ts` | the line family: the polyline flatten emitted as C++ from its own pinned declaration, and the `ShaderMaterial` `createLineMaterial` composes -- its two stages folded out of that module's own text builders |
 | `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
 | `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation's seed: recorded for the executed bake, refused where lowered code would also answer it |
@@ -115,6 +118,9 @@ Primary source ownership:
 | `native/include/bblite/pal_physics.hpp` | the rigid-body solver contract: the `HP_*` surface the pinned physics layer calls on the module it is handed |
 | `native/src/pal_physics_bullet.cpp` | that surface over Bullet, plus the two ordering repairs Bullet needs and Havok does not ([fidelity](fidelity.md#physics-contract)) |
 | `native/include/bblite/pal_navigation.hpp` | the navigation contract: the Recast/Detour surface the pinned wrapper calls on the module it loads |
+| `native/include/bblite/pal_audio.hpp` | the Web Audio contract: the browser surface the pinned audio module calls, which is the seam the pin itself draws |
+| `native/src/pal_audio_labsound.cpp` | that surface over LabSound, a fork of WebKit's own WebAudio ([fidelity](fidelity.md#audio-contract)) |
+| `native/src/pal_audio_sdl_device.hpp` | SDL3 behind LabSound's `lab::AudioDevice`, so the platform stream stays SDL like every other service here |
 | `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's own pinned recastnavigation commit, replaying `generateSoloNavMesh` and the Detour query verbatim |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |

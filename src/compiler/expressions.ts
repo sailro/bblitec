@@ -10,6 +10,8 @@
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
+
+import { compileAudioMethodCall } from "./audio-surface.js";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { NativeFunctionLowerer } from "./native-functions.js";
@@ -810,6 +812,18 @@ export class ExpressionLowerer {
                 );
             if (method) {
                 return method;
+            }
+            // The Web Audio surface: `ctx.createGain()`,
+            // `node.connect(...)`, `param.setValueAtTime(...)`. Babylon
+            // Lite is function-shaped and the browser API is not, so the
+            // audio family is the one place a handle carries methods.
+            const audio = compileAudioMethodCall(
+                this.context,
+                call,
+                callee,
+            );
+            if (audio) {
+                return audio;
             }
             const lightPush =
                 this.context.handleCollections.compileSceneLightPush(

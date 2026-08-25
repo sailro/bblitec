@@ -1139,8 +1139,12 @@ build error with a source location, not a silently different image.
   parameters pass by native reference; `new Array` elements zero-initialize;
   and `Math.random` is the pinned seeded sequence — each recorded in
   `fidelity.json`
-- no audio or networking. Physics is reached, behind a substituted solver
-  ([below](#physics))
+- no networking. Physics is reached, behind a substituted solver
+  ([below](#physics)), and a Web Audio prototype is reached behind a
+  substituted engine ([fidelity](fidelity.md#audio-contract)) — the
+  reached slice is the Lite engine's lifecycle plus a caller-built node
+  graph, and the sound, bus, spatial, streaming and analyzer families all
+  refuse by name
 - property animation covers LINEAR/STEP scalar and vector tracks, quaternion
   slerp, group ranges/looping/speed, and deterministic seeking for the reached
   mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths

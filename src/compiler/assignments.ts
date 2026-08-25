@@ -672,6 +672,12 @@ export function emitPropertyAssignment(
         );
         return;
     }
+    // `param.value = x`, `osc.type = "square"`. The audio handles are the
+    // one family whose writes go through the PAL rather than onto an
+    // engine record.
+    if (emitAudioPropertyAssignment(context, expression, left)) {
+        return;
+    }
     if (
         emitFrameGraphTransmission(
             context,
@@ -1592,6 +1598,8 @@ function requireSimpleAssignment(
     }
 }
 import ts from "typescript";
+
+import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGroupSource } from "./intrinsics/animation.js";
 import { emitParticleBufferWrite } from "./particle-buffer.js";

@@ -2,6 +2,7 @@
 // the engine entry point that dispatches to a GPU backend.
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_audio.hpp>
 #include <bblite/pal_gpu.hpp>
 #if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
 #include <bblite/pal_image.hpp>
@@ -104,6 +105,12 @@ bool run_dawn(Engine& engine, RendererKind kind) {
 
 void pal::run_engine(Engine& engine) {
     const RendererKind kind = renderer_kind(engine);
+    // A requested audio capture renders when the run ends, however it
+    // ends -- the same seam CaptureGate takes a screenshot at. A build
+    // that compiled no audio calls the header's inline stub.
+    struct AudioCaptureOnExit {
+        ~AudioCaptureOnExit() { pal::audio_render_pending_captures(); }
+    } audio_capture_on_exit;
     // bblitec requires a GPU. A backend that reaches its device and fails
     // throws, and the throw propagates: there is no software path to
     // degrade into, so a failure is the answer rather than a condition to
