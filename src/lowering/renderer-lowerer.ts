@@ -552,6 +552,7 @@ export class RendererLowerer {
         // beside its clear-value half in `pinned-depth-state.ts`.
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
+        this.assertPinnedAffectsMesh();
         const opaqueOrderStamp =
             this.provedOpaqueOrderStamp();
         // Emitted from the compiler's own table so the generated enum's
@@ -3262,6 +3263,67 @@ ${lifted.fragmentBody}
             calls,
         });
         return lowerer.expression(expression);
+    }
+
+    /**
+     * The pinned per-mesh light predicate, anchored arm by arm. The
+     * emitted `light_affects_mesh` is a representation translation — the
+     * pin keys Sets of string mesh ids where the records key index
+     * vectors — so it cannot be lowered by the numeric translator, and
+     * each arm's fold is justified against the shape asserted here: a
+     * native mesh index is always a present id, so the pin's `!!meshId`
+     * conjunct folds to true and its `!meshId` disjunct folds to false,
+     * leaving exactly the two membership tests the emission carries, in
+     * the pinned precedence (included wins when it is non-empty).
+     */
+    private assertPinnedAffectsMesh(): void {
+        const { declaration } = this.context.functionDeclaration(
+            "src/render/lights-ubo.ts",
+            "affectsMesh",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "included"),
+            "light.includedOnlyMeshIds",
+            "Pinned affectsMesh included source",
+        );
+        const gate = this.context.findNodes(
+            declaration,
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
+        );
+        if (gate.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Pinned affectsMesh no longer forks once on the " +
+                    "included list.",
+            );
+        }
+        this.context.assertExpressionShape(
+            gate[0]!.expression,
+            "included?.size",
+            "Pinned affectsMesh included gate",
+        );
+        const returns = this.context.findNodes(
+            declaration,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node) && node.expression !== undefined,
+        );
+        if (returns.length !== 2) {
+            this.context.contractError(
+                declaration,
+                "Pinned affectsMesh no longer returns the two " +
+                    "membership arms.",
+            );
+        }
+        this.context.assertExpressionShape(
+            returns[0]!.expression!,
+            "!!meshId && included.has(meshId)",
+            "Pinned affectsMesh included arm",
+        );
+        this.context.assertExpressionShape(
+            returns[1]!.expression!,
+            "!meshId || !light.excludedMeshIds?.has(meshId)",
+            "Pinned affectsMesh excluded arm",
+        );
     }
 
     /** A literal element read `base[<n>]`, or a contract error. */
