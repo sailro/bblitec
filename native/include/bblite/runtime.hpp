@@ -753,14 +753,6 @@ struct MeshRecord {
      * scene assigned. Scene code finds meshes by it.
      */
     std::string name;
-    /**
-     * A scene-authored geometry (createMeshFromData and the builders
-     * that finish through it): its pinned worldMatrix is the mesh's own
-     * TRS with no RH→LH mirror, unlike a glTF-loaded mesh whose pinned
-     * world carries the loader's root conversion. The draw arm picks
-     * identity over the mirror for these.
-     */
-    bool scene_authored = false;
     PrimitiveKind primitive = PrimitiveKind::box;
     Vec3 position{};
     Vec3 rotation{};
