@@ -42,7 +42,7 @@
   },
   "devDependencies": {
     "@babylonjs/havok": "^1.3.14",
-    "@babylonjs/lite": "1.23.0",
+    "@babylonjs/lite": "^1.24.0",
     "@types/node": "^22.15.0",
     "@types/pngjs": "^6.0.5",
     "playwright-core": "^1.62.1",
