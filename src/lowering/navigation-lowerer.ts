@@ -14,11 +14,11 @@
  *
  * - `_mergeMeshes`: each mesh's CPU positions through its worldMatrix,
  *   merged with a running vertex base, and index winding reversed
- *   (i, i+2, i+1). The native geometry already carries the node world
- *   baked into its vertices WITHOUT the RH→LH mirror, and the pin's
- *   worldMatrix is the mirror times that node world — a sign flip is
- *   exact in float, so the emitted merge negates the baked X instead of
- *   re-multiplying, asserted against the pin's own multiply rows.
+ *   (i, i+2, i+1). The native loader bakes the pin's own mirrored
+ *   world into its vertices (measured: the baked stream equals the
+ *   pin's merged stream on the nav asset), so the emitted merge passes
+ *   the baked positions through, asserted against the pin's own
+ *   multiply rows.
  * - `_createNavMeshFromMerged`'s dispatch: the tile-cache and tiled
  *   arms refuse by name (their record plumbing does not exist yet); the
  *   solo arm hands the merged geometry and the present-key config to
@@ -97,7 +97,6 @@ export class NavigationLowerer {
     public lowerNavigation(): LoweredSource {
         const modulePath = "src/navigation/navigation.ts";
         const symbolName = "createNavMesh";
-        const file = this.context.sourceFile(modulePath);
 
         // The PAL bakes `recastConfigDefaults`; this is the drift gate.
         // A bumped @recast-navigation that moves a default fails
@@ -139,9 +138,9 @@ export class NavigationLowerer {
 
         // _mergeMeshes: the world multiply rows and the winding reversal
         // the emitted merge folds. The pin's worldMatrix is applied as
-        // three dot-product rows; the emitted negate-X stands on those
-        // rows being exactly the matrix product the native bake already
-        // performed (mirror excluded), so the rows are the anchor.
+        // three dot-product rows; the emitted pass-through stands on
+        // those rows being exactly the mirrored product the native bake
+        // already performed, so the rows are the anchor.
         const { declaration: merge } =
             this.context.functionDeclaration(modulePath, "_mergeMeshes");
         for (const [lane, row] of [
@@ -149,43 +148,28 @@ export class NavigationLowerer {
             ["y", "x * wm[1] + y * wm[5] + z * wm[9] + wm[13]"],
             ["z", "x * wm[2] + y * wm[6] + z * wm[10] + wm[14]"],
         ] as const) {
-            const carried = this.context
-                .findNodes(
-                    merge,
-                    (node): node is ts.Expression =>
-                        this.context.expressionMatchesShape(
-                            node as ts.Expression,
-                            row,
-                        ),
-                ).length;
-            if (carried !== 1) {
-                this.context.contractError(
-                    merge,
-                    `Expected the merge to apply the world matrix ${lane} row once.`,
-                );
-            }
+            this.context.expectShapeCount(
+                merge,
+                row,
+                `the merge world-matrix ${lane} row`,
+            );
         }
-        // The reversed triple: indices (i, i+2, i+1) plus the vertex base.
-        for (const shape of [
-            "meshIdx[i]! + vertBase",
-            "meshIdx[i + 2]! + vertBase",
-            "meshIdx[i + 1]! + vertBase",
-        ]) {
-            const carried = this.context
-                .findNodes(
-                    merge,
-                    (node): node is ts.Expression =>
-                        this.context.expressionMatchesShape(
-                            node as ts.Expression,
-                            shape.replace(/!/g, ""),
-                        ),
-                ).length;
-            if (carried < 1) {
-                this.context.contractError(
-                    merge,
-                    "Expected the merge to reverse index winding over a running vertex base.",
-                );
-            }
+        // The reversed triple: indices (i, i+2, i+1) plus the vertex
+        // base. The lead shape counts twice because the pin's
+        // `doNotReverseIndices` arm is a straight per-index copy of the
+        // same expression; the intrinsic refuses that option, which is
+        // what makes the reversed triple the arm this emission mirrors.
+        for (const [shape, count] of [
+            ["meshIdx[i] + vertBase", 2],
+            ["meshIdx[i + 2] + vertBase", 1],
+            ["meshIdx[i + 1] + vertBase", 1],
+        ] as const) {
+            this.context.expectShapeCount(
+                merge,
+                shape,
+                "the merge winding arms over a running vertex base",
+                count,
+            );
         }
         this.context.assertExpressionShape(
             this.context.variableInitializer(merge, "vertBase"),
@@ -304,7 +288,6 @@ export class NavigationLowerer {
             );
         }
 
-        void file;
         return {
             modulePath,
             symbolName,
@@ -349,11 +332,11 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
 
 // _mergeMeshes, folded onto the native bake: the pin applies each
 // mesh's worldMatrix (the RH→LH mirror times the node world) to raw
-// CPU positions; the native geometry carries the node world baked into
-// its vertices without the mirror, so the pin's stream is the baked
-// position with X negated — a sign flip, exact in float. Winding is
-// reversed (i, i+2, i+1) over a running vertex base exactly as the pin
-// writes it.
+// CPU positions, and the native loader bakes that same mirrored world
+// into its vertices — measured on nav_test.glb: every baked position
+// equals the pin's stream value — so the merge passes them through
+// untouched. Winding is reversed (i, i+2, i+1) over a running vertex
+// base exactly as the pin writes it.
 void create_nav_mesh(
     Engine& engine,
     bbl::pal::NavigationHandle plugin,
@@ -366,8 +349,8 @@ void create_nav_mesh(
             throw std::runtime_error("Invalid mesh handle for navmesh");
         }
         const MeshRecord& mesh = engine.meshes[handle.value];
-        // The negate-X fold stands on the vertices carrying the node
-        // world baked without the mirror — true for glTF-imported
+        // The pass-through stands on the vertices carrying the pin's
+        // own mirrored world already baked — true for glTF-imported
         // meshes at rest. A factory mesh's world lives in its TRS
         // record instead, which this merge does not compose yet.
         if (
@@ -380,14 +363,14 @@ void create_nav_mesh(
             mesh.scaling.z != 1.0f) {
             throw std::runtime_error(
                 "createNavMesh is lowered for glTF-imported meshes at "
-                "their loaded transform; mesh \"" + mesh.name +
-                "\" carries scene-code TRS the merge does not compose "
+                "their loaded transform; mesh '" + mesh.name +
+                "' carries scene-code TRS the merge does not compose "
                 "yet.");
         }
         if (mesh.geometry >= engine.geometries.size()) {
             throw std::runtime_error(
-                "Mesh \\"" + mesh.name +
-                "\\" missing CPU geometry for navmesh");
+                "Mesh '" + mesh.name +
+                "' missing CPU geometry for navmesh");
         }
         const ModelGeometry& geometry =
             engine.geometries[mesh.geometry];
@@ -395,7 +378,7 @@ void create_nav_mesh(
             merged.positions.size() +
             geometry.vertices.size() * 3);
         for (const ModelVertex& vertex : geometry.vertices) {
-            merged.positions.push_back(-vertex.position.x);
+            merged.positions.push_back(vertex.position.x);
             merged.positions.push_back(vertex.position.y);
             merged.positions.push_back(vertex.position.z);
         }

@@ -1006,11 +1006,12 @@ export class DataLowerer {
             // compiling it speculatively would emit an inlined body twice
             // when the fold misses. A canvas size reaches the same evaluator
             // through `staticCanvasSize`, so it folds here too.
-            const folded = staticNumberValue(
+            const argument = staticNumberValue(
                 this.context,
                 call.arguments[0]!,
             );
-            if (folded !== undefined) {
+            if (argument !== undefined) {
+                const folded = foldableMathUnary[method]!(argument);
                 return {
                     kind: "number",
                     cpp: doubleLiteral(folded),

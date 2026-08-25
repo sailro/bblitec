@@ -1443,6 +1443,27 @@ struct MaterialRecord {
     float reflection_coord_mode = 1.0f;
 };
 
+// The pin reads `mat.alpha < 1` live when it builds renderables, and the
+// PBR transmission extension forces blending regardless of alpha, so the
+// mode is a derivation of the two factors it is stored beside. One home
+// for that rule: the factor-driven families (Standard, PBR) derive here at
+// creation and at every alpha write; a shader, node, or grid material owns
+// its mode through its variant flag or opacity control instead, and an
+// alpha write leaves it with its factory. A glTF-authored mask mode is
+// alpha-testing, not factor-driven, and likewise stays.
+inline void derive_material_alpha_mode(MaterialRecord& material) {
+    if (material.shader_material || material.node_material ||
+        material.grid_material ||
+        material.alpha_mode == MaterialAlphaMode::mask) {
+        return;
+    }
+    material.alpha_mode =
+        material.base_color_factor.a < 1.0f ||
+                material.transmission_factor > 0.0f
+            ? MaterialAlphaMode::blend
+            : MaterialAlphaMode::opaque;
+}
+
 struct LightRecord {
     LightKind kind = LightKind::directional;
     Vec3 position{};
@@ -1839,6 +1860,11 @@ void set_morph_target_weights(
     MeshHandle mesh,
     const std::vector<float>& weights);
 MeshHandle create_torus(Engine& engine, TorusOptions options);
+MeshHandle create_tube(
+    Engine& engine,
+    const std::vector<Vec3d>& path_points,
+    double radius,
+    double tessellation_option);
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,

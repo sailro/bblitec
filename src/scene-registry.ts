@@ -894,6 +894,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene175",
+        name: "Scene 175 - Navigation Raycast",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene175.ts",
+        title: "Babylon Lite Native - Navigation Raycast",
+        parity: {
+            // Measured 0.006 / 0.023 on both backends, every region
+            // pixel within one count: the navmesh build runs the same
+            // pinned recastnavigation commit on both sides, so the
+            // debug overlay triangulates identically and the residual
+            // is the blended overlay's rounding floor.
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-track-clamp",
         name: "Regression - glTF Track Clamp",
         source: "examples/regression-track-clamp.ts",

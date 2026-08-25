@@ -1,9 +1,14 @@
 import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import {
+    validateObjectProperties,
+    type ObjectValidationContext,
+} from "../option-helpers.js";
 
 export interface MeshIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext,
+        ObjectValidationContext {
     compileBoxOptions(
         expression: ts.Expression,
     ): [string, string, string];
@@ -26,6 +31,15 @@ export interface MeshIntrinsicContext
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    vec3FromRecord(
+        value: Value,
+        node: ts.Node,
+        precision?: "float" | "double",
+    ): string;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -46,7 +60,31 @@ export interface MeshIntrinsicContext
     isEntryBodyScope(): boolean;
     requireEngine(value: Value, node: ts.Node): string;
     unwrap(expression: ts.Expression): ts.Expression;
+    resolveStaticExpression(
+        expression: ts.Expression,
+    ): ts.Expression;
+    readonly handleCollections: {
+        tupleElements(
+            expression: ts.Expression,
+        ): readonly Value[] | undefined;
+    };
     fail(node: ts.Node, message: string): never;
+}
+
+/** A Vec3d expression from a tuple element: a record's x/y/z lanes at
+ *  JS-double width, through the evaluator's one record-to-vector home. */
+function vec3RecordCpp(
+    context: MeshIntrinsicContext,
+    element: Value,
+    node: ts.Node,
+): string {
+    if (element.kind !== "record") {
+        context.fail(
+            node,
+            `Tube path elements must be Vec3 records, received ${element.kind}.`,
+        );
+    }
+    return context.vec3FromRecord(element, node, "double");
 }
 
 export function compileMeshIntrinsic(
@@ -577,6 +615,81 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::set_morph_target_weights(${engine.cpp}, ` +
                     `${mesh}, ${weights})`,
+            };
+        }
+
+        case "createTube": {
+            // The reached subset: an explicit path, radius and
+            // tessellation. The pinned cap/arc/radiusFunction arms are
+            // outside it (the lowering pins the defaults that keep them
+            // unreachable), and the radius/tessellation defaults stay
+            // unduplicated by requiring the scene to name both.
+            context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 2, 2);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            const options = context.expectObjectLiteral(
+                call.arguments[1]!,
+            );
+            validateObjectProperties(
+                context,
+                options,
+                ["path", "radius", "tessellation"],
+                "Reached tubes name their path, radius and tessellation; cap, arc and radiusFunction are not lowered.",
+            );
+            const pathExpression = context.objectProperty(
+                options,
+                "path",
+            );
+            const radius = context.objectProperty(options, "radius");
+            const tessellation = context.objectProperty(
+                options,
+                "tessellation",
+            );
+            if (!pathExpression || !radius || !tessellation) {
+                context.fail(
+                    call.arguments[1]!,
+                    "Reached tubes name their path, radius and tessellation explicitly.",
+                );
+            }
+            // The path arrives inline or bound to a local — a
+            // compile-time tuple of Vec3 records whose lanes may be
+            // runtime reads (a raycast hit point).
+            const boundElements =
+                context.handleCollections.tupleElements(pathExpression);
+            const points = boundElements
+                ? boundElements.map((element) =>
+                      vec3RecordCpp(context, element, pathExpression),
+                  )
+                : context
+                      .expectStaticArrayLiteral(
+                          context.resolveStaticExpression(
+                              pathExpression,
+                          ),
+                      )
+                      .elements.map((element) =>
+                          context.compileVec3(element, "double"),
+                      );
+            context.reachFeature("mesh:tube", call);
+            context.reachFeature("mesh:from-data", call);
+            return {
+                kind: "mesh",
+                cpp:
+                    `bbl::create_tube(${engine.cpp}, ` +
+                    `std::vector<bbl::Vec3d>{${points.join(", ")}}, ` +
+                    `${context.compileNumber(radius, "double")}, ` +
+                    `${context.compileNumber(tessellation, "double")})`,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
             };
         }
 

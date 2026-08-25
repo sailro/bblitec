@@ -13,6 +13,7 @@ import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
+import { TubeLowerer } from "./lowering/factory/tube.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
@@ -1635,6 +1636,13 @@ ${composed.wgsl}`,
                 new PhysicsLowerer(context).lowerPhysics(),
                 generated,
                 "upstream/include/bblite/upstream/physics.hpp",
+            );
+        }
+        if (features.includes("mesh:tube")) {
+            this.writeSource(
+                "upstream/src/mesh_tube.cpp",
+                new TubeLowerer(context).lowerTube(),
+                generated,
             );
         }
         if (features.includes("navigation:recast")) {

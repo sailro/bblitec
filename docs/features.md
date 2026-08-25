@@ -529,7 +529,7 @@ rather than in a worker, which is the state `mesh.firstSortReady` waits for
 
 ### Geometry and meshes
 
-Box, sphere, subdivided ground, plane, and torus primitives;
+Box, sphere, subdivided ground, plane, torus, and tube primitives;
 `createMeshFromData` typed-array meshes; indexed glTF/GLB and `.babylon`
 geometry; glTF triangle-list and triangle-strip primitive modes; generated and
 flat normals; negative transforms; and fixed-capacity thin-instance pools —
@@ -538,6 +538,16 @@ aliased, so flush and count updates re-read it per frame. An array the caller
 builds at the call site is bound to a name first, because the pool keeps
 referencing it for the whole frame loop; one built inside a block refuses,
 since the binding would not outlive it.
+
+`createTube` is lowered from its pinned chain — the circle swept along
+`computePath3D`'s Frenet frames by Rodrigues rotation, triangulated by the
+ribbon builder with computed normals — every formula shape-asserted against
+the pinned AST and finished through `create_mesh_from_data`, so the only
+float rounding is the pin's own typed-array store. The reached slice is a
+multi-point path with explicit `radius` and `tessellation`; `cap`, `arc`,
+`radiusFunction`, an instance to update, and a single-point path refuse by
+name, and the pinned defaults that make the dropped arms unreachable (cap
+`NONE`, arc `1`) are anchored rather than assumed.
 
 A **line system** is one of those meshes rather than a renderer of its own:
 `createLineSystem` concatenates its polylines into a single indexed mesh —
@@ -893,6 +903,32 @@ what it reached: mesh and convex-hull shapes (the pin's own mesh
 accumulator), containers, heightfields, constraints, queries, triggers,
 collision events, the character controller, the debug viewer, floating
 origin, and every body control past creation.
+
+### Navigation
+
+Runtime Recast/Detour navigation behind the same boundary shape physics
+draws — `createNavigationPluginAsync` hands the pin a module and the pinned
+wrapper calls a fixed entry-point surface on it, held in one PAL
+translation unit (`native/include/bblite/pal_navigation.hpp`) — but where
+physics substitutes the solver, navigation links the very recastnavigation
+commit the wrapper's own WASM builds (a vcpkg overlay port), with
+`/fp:strict` and a libm-shaped `cosf` patch pinning the arithmetic, so the
+numbers stay the pin's: measured equal on the current corpus. The wrapper's
+`recastConfigDefaults` are baked into the PAL verbatim and drift-gated at
+generation against the installed `@recast-navigation/core`, so a bumped
+package that moves a default names the constant to move.
+
+The reached slice: a solo navmesh built from glTF-imported meshes at their
+loaded transform — the merge passes the loader-baked vertices through
+untouched (they already carry the pin's mirrored world, measured equal on
+the corpus, and a scene-code TRS refuses at runtime naming the mesh) with
+the pin's reversed winding over a running vertex base; the numeric config
+subset of `createNavMesh`; `createDebugNavMeshGeometry`'s detached
+triangles with the pin's reversed storage winding; and `raycast`, which
+finds the nearest poly in the wrapper's ±1 half-extents, reports a hit
+exactly when `0 < t < 1`, and lerps the hit point in JS-double width.
+Tiled meshes, tile cache and obstacles, off-mesh connections, crowds, and
+the query family past `raycast` refuse at generation by name.
 
 ### Frame graph
 
