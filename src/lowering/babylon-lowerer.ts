@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { lowerObjectComponents } from "./pinned-function-lowerer.js";
 import {
     type PinnedBinding,
     PinnedNumericLowerer,
@@ -151,23 +152,19 @@ export class BabylonLowerer {
                     "and a target.",
             );
         }
-        const vector = (argument: ts.Expression): string[] => {
-            const literal = this.context.unwrapExpression(argument);
-            if (!ts.isObjectLiteralExpression(literal)) {
-                this.context.contractError(
-                    argument,
-                    "Expected a pinned camera vector literal.",
-                );
-            }
-            return (["x", "y", "z"] as const).map((axis) =>
-                lowerer.expression(
-                    this.context.propertyInitializer(literal, axis),
-                ),
-            );
-        };
-        const position = vector(factory.arguments[0]!);
-        const target = vector(factory.arguments[1]!);
-        return `// ${this.context.provenance(module, symbol)}
+        const position = lowerObjectComponents(
+            this.context,
+            lowerer,
+            factory.arguments[0]!,
+            ["x", "y", "z"],
+        );
+        const target = lowerObjectComponents(
+            this.context,
+            lowerer,
+            factory.arguments[1]!,
+            ["x", "y", "z"],
+        );
+        return `        // ${this.context.provenance(module, symbol)}
         const double p0 = double_at(*selected, "position", 0, 0.0);
         const double p1 = double_at(*selected, "position", 1, 0.0);
         const double p2 = double_at(*selected, "position", 2, 0.0);

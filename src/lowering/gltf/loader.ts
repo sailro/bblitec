@@ -679,11 +679,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const composeFile = this.context.sourceFile(
             "src/math/mat4-compose-into.ts",
         );
-        const matrixMultiply = lowerMatrixMultiplyCpp(
-            this.context.sourceFile(
-                "src/math/mat4-multiply-into.ts",
-            ),
-        );
+        const matrixMultiply = lowerMatrixMultiplyCpp(this.context);
         const matrixLocal = lowerLocalMatrixCpp(
             parserFile,
             composeFile,

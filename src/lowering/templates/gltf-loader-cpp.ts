@@ -1,4 +1,8 @@
 import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
+// Imported from the module rather than the barrel: the barrel reaches this
+// template through gltf/loader.ts, so a value import of the barrel here
+// would be a runtime cycle.
+import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -1070,24 +1074,7 @@ TextureData image_data(
     return result;
 }
 
-float color_channel(
-    const Color3& color,
-    int channel) {
-    return channel == 0
-        ? color.r
-        : channel == 1
-            ? color.g
-            : color.b;
-}
-
-void set_color_channel(
-    Color3& color,
-    int channel,
-    float value) {
-    if (channel == 0) color.r = value;
-    else if (channel == 1) color.g = value;
-    else color.b = value;
-}
+${COLOR_CHANNEL_HELPERS_CPP}
 
 ${lowered.shPrescale}
 

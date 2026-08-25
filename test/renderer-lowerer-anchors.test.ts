@@ -220,8 +220,9 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     assert.match(plan.source, /local\[15\] = 1\.0;/);
 });
 
-test("the multiply anchor accepts the pinned writer", () => {
-    // Both anchors run inside lowerRenderPlan, so pinned drift throws here.
+test("translates the pinned multiply writer whole", () => {
+    // Pinned drift now flows into different emitted bytes rather than
+    // throwing at a per-term anchor, so the regexes below pin the emission.
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({});

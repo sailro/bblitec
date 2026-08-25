@@ -54,6 +54,100 @@ const parameterKinds: Readonly<
     },
 };
 
+/**
+ * The named components of a pinned vector object literal, each lowered
+ * through the caller's translator, in the caller's field order. A field the
+ * pin stops writing fails by name instead of leaving a default-constructed
+ * member behind. (The splat lowerer keeps its own stricter walk, which also
+ * refuses fields outside the order.)
+ */
+export function lowerObjectComponents(
+    context: LoweringContext,
+    lowerer: PinnedNumericLowerer,
+    argument: ts.Expression,
+    names: readonly string[],
+): string[] {
+    const literal = context.unwrapExpression(argument);
+    if (!ts.isObjectLiteralExpression(literal)) {
+        context.contractError(
+            argument,
+            "Expected a pinned vector object literal.",
+        );
+    }
+    return names.map((name) =>
+        lowerer.expression(context.propertyInitializer(literal, name)),
+    );
+}
+
+/**
+ * The pinned matrix multiply translated whole, shared by the render plan
+ * and the glTF loader so one pinned declaration has one translation. Its
+ * `Mat4Storage` parameters accept F32- or F64-backed storage upstream;
+ * every consumer's target and left operand is an f32 array while the right
+ * operand is f32 (the view chain, the loader's node matrices) or f64 (the
+ * composed instance TRS), and the body's reads widen to double identically
+ * for both — so the one axis that varies is the right operand's container,
+ * emitted as the template parameter. `lowerPinnedFunction` deliberately
+ * does not grow a template concept for this one signature; the parameter
+ * contract below carries the same name-and-annotation strength.
+ */
+export function lowerMat4MultiplyWriterCpp(context: LoweringContext): string {
+    const module = "src/math/mat4-multiply-into.ts";
+    const symbol = "mat4MultiplyInto";
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        symbol,
+    );
+    const expected: readonly (readonly [string, string, PinnedBinding])[] = [
+        ["dst", "Mat4Storage", { cpp: "dst", type: "f32" }],
+        ["d", "number", { cpp: "d", type: "index" }],
+        ["a", "Mat4Storage", { cpp: "a", type: "f32" }],
+        ["i", "number", { cpp: "i", type: "index" }],
+        ["b", "Mat4Storage", { cpp: "b", type: "f32" }],
+        ["j", "number", { cpp: "j", type: "index" }],
+    ];
+    if (declaration.parameters.length !== expected.length) {
+        context.contractError(
+            declaration,
+            "Expected pinned mat4MultiplyInto to take (dst, d, a, i, b, j).",
+        );
+    }
+    declaration.parameters.forEach((parameter, index) => {
+        const [pinned, annotation] = expected[index]!;
+        if (
+            !ts.isIdentifier(parameter.name) ||
+            parameter.name.text !== pinned ||
+            parameter.type?.getText(file) !== annotation
+        ) {
+            context.contractError(
+                parameter,
+                `Expected pinned ${symbol} parameter ${index} to be ` +
+                    `'${pinned}: ${annotation}'.`,
+            );
+        }
+    });
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map(
+            expected.map(([pinned, , binding]) => [pinned, binding]),
+        ),
+        calls: new Map(),
+    });
+    const body = declaration.body!.statements
+        .flatMap((statement) => lowerer.statement(statement, "    "))
+        .join("\n");
+    return `// ${context.provenance(module, symbol)}
+template <typename MatB>
+void mat4_multiply_into(
+    std::array<float, 16>& dst,
+    std::int64_t d,
+    const std::array<float, 16>& a,
+    std::int64_t i,
+    const MatB& b,
+    std::int64_t j) {
+${body}
+}`;
+}
+
 /** A pinned function of scalars (and at most a Mat4Storage target), as C++. */
 export function lowerPinnedFunction(
     context: LoweringContext,

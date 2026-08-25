@@ -1,6 +1,9 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { lowerShPrescaleCpp } from "./gltf/sh-prescale.js";
+import {
+    COLOR_CHANNEL_HELPERS_CPP,
+    lowerShPrescaleCpp,
+} from "./gltf-lowerer.js";
 
 interface EnvironmentConstants {
     magic: number[];
@@ -244,24 +247,7 @@ Color3 parse_color(std::string_view text, std::string_view key, std::size_t star
     return result;
 }
 
-float color_channel(
-    const Color3& color,
-    int channel) {
-    return channel == 0
-        ? color.r
-        : channel == 1
-            ? color.g
-            : color.b;
-}
-
-void set_color_channel(
-    Color3& color,
-    int channel,
-    float value) {
-    if (channel == 0) color.r = value;
-    else if (channel == 1) color.g = value;
-    else color.b = value;
-}
+${COLOR_CHANNEL_HELPERS_CPP}
 
 ${prescale}
 
@@ -1392,7 +1378,6 @@ void load_hdr_environment(
             imageType: imageType.right.text,
         };
     }
-
 
     private assignmentExpression(
         declaration: ts.FunctionDeclaration,

@@ -1,9 +1,10 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
+import type { LoweringContext } from "../context.js";
+import { lowerMat4MultiplyWriterCpp } from "../pinned-function-lowerer.js";
 import { renderCppExpression } from "./animation-interpolation.js";
 import {
     CppExpressionScope,
-    additiveTerms,
     coalescedPropertyDefault,
     collectNodes,
     identifierParameters,
@@ -106,182 +107,23 @@ function offsetElementIndex(
 }
 
 /**
- * `mat4MultiplyInto` → `multiply_matrix`.
- *
- * The pin is fully unrolled: sixteen `dst[d + n] = a? * b? + …` stores
- * over four reloaded right-hand column windows. The walk resolves every
- * term back to its flat `a`/`b` element and requires exactly the
- * canonical column-major product — `a[row + 4k] * b[4·column + k]` with
- * k ascending in a left-associated plus chain — so a transposed or
- * re-associated pin refuses. The emission is the loop the loader has
- * always carried: the loop is presentation only, because `0.0 + x` is
- * exact and the running double sum adds the pin's exact products in the
- * pin's order before the one rounding at the float store.
+ * `mat4MultiplyInto` → the whole-translated templated writer plus the
+ * by-value `multiply_matrix` wrapper the loader has always called. One
+ * translation now serves the render plan and this loader from one
+ * emission, so an upstream edit to the multiply changes both TUs together
+ * instead of one refusing at a canonical-form walk while the other adopts
+ * the new order silently; the walk this replaces existed only to prove the
+ * loop presentation equal to the pin, and translating the pin whole makes
+ * that argument unnecessary.
  */
-export function lowerMatrixMultiplyCpp(file: ts.SourceFile): string {
-    const symbol = "mat4MultiplyInto";
-    const declaration = topLevelFunction(file, symbol);
-    const parameters = identifierParameters(symbol, file, declaration);
-    if (parameters.length !== 6) {
-        refuseNode(
-            symbol,
-            file,
-            declaration,
-            "no longer takes (dst, d, a, i, b, j)",
-        );
-    }
-    const dstName = parameters[0]!;
-    const dstOffset = parameters[1]!;
-    const leftName = parameters[2]!;
-    const leftOffset = parameters[3]!;
-    const rightName = parameters[4]!;
-    const rightOffset = parameters[5]!;
-    const leftFlat = new Map<string, number>();
-    const rightFlat = new Map<string, number>();
-    let next = 0;
-    for (const statement of declaration.body.statements) {
-        if (ts.isVariableStatement(statement)) {
-            for (const binding of
-                statement.declarationList.declarations) {
-                if (
-                    !ts.isIdentifier(binding.name) ||
-                    !binding.initializer
-                ) {
-                    refuseNode(
-                        symbol,
-                        file,
-                        statement,
-                        "binds a local this lowering cannot carry",
-                    );
-                }
-                const leftIndex = offsetElementIndex(
-                    binding.initializer,
-                    leftName,
-                    leftOffset,
-                );
-                const rightIndex = offsetElementIndex(
-                    binding.initializer,
-                    rightName,
-                    rightOffset,
-                );
-                if (leftIndex !== undefined) {
-                    leftFlat.set(binding.name.text, leftIndex);
-                } else if (rightIndex !== undefined) {
-                    rightFlat.set(binding.name.text, rightIndex);
-                } else {
-                    refuseNode(
-                        symbol,
-                        file,
-                        binding,
-                        "no longer binds a matrix element read",
-                    );
-                }
-            }
-            continue;
-        }
-        const assignment = ts.isExpressionStatement(statement) &&
-                ts.isBinaryExpression(statement.expression) &&
-                statement.expression.operatorToken.kind ===
-                    ts.SyntaxKind.EqualsToken
-            ? statement.expression
-            : undefined;
-        if (!assignment) {
-            refuseNode(
-                symbol,
-                file,
-                statement,
-                "carries a statement this lowering cannot carry",
-            );
-        }
-        const target = unwrapPin(assignment.left);
-        if (
-            ts.isIdentifier(target) &&
-            rightFlat.has(target.text)
-        ) {
-            const reloaded = offsetElementIndex(
-                assignment.right,
-                rightName,
-                rightOffset,
-            );
-            if (reloaded === undefined) {
-                refuseNode(
-                    symbol,
-                    file,
-                    assignment,
-                    "no longer reloads the right-hand column window",
-                );
-            }
-            rightFlat.set(target.text, reloaded);
-            continue;
-        }
-        const component = offsetElementIndex(
-            assignment.left,
-            dstName,
-            dstOffset,
-        );
-        if (component === undefined || component !== next) {
-            refuseNode(
-                symbol,
-                file,
-                assignment,
-                `no longer stores component ${next} in order`,
-            );
-        }
-        const terms = additiveTerms(assignment.right);
-        const row = component % 4;
-        const column = (component - row) / 4;
-        if (terms.length !== 4) {
-            refuseNode(
-                symbol,
-                file,
-                assignment,
-                `no longer sums four products for component ${component}`,
-            );
-        }
-        terms.forEach((term, k) => {
-            const product = unwrapPin(term);
-            const canonical = ts.isBinaryExpression(product) &&
-                product.operatorToken.kind ===
-                    ts.SyntaxKind.AsteriskToken &&
-                leftFlat.get(identifierText(product.left) ?? "") ===
-                    row + 4 * k &&
-                rightFlat.get(identifierText(product.right) ?? "") ===
-                    column * 4 + k;
-            if (!canonical) {
-                refuseNode(
-                    symbol,
-                    file,
-                    term,
-                    "no longer forms the canonical column-major product " +
-                        `for component ${component}`,
-                );
-            }
-        });
-        next += 1;
-    }
-    if (next !== 16) {
-        refuseModule(symbol, "no longer stores all sixteen components");
-    }
-    return [
-        "Matrix multiply_matrix(const Matrix& left, const Matrix& right) {",
-        "    // Pinned matrix multiplication runs in JavaScript double",
-        "    // precision over float32 entries and rounds once per component",
-        "    // at the Float32Array store; mirror that exactly.",
-        "    Matrix result{};",
-        "    for (int column = 0; column < 4; ++column) {",
-        "        for (int row = 0; row < 4; ++row) {",
-        "            double sum = 0.0;",
-        "            for (int index = 0; index < 4; ++index) {",
-        "                sum +=",
-        "                    static_cast<double>(left[index * 4 + row]) *",
-        "                    static_cast<double>(right[column * 4 + index]);",
-        "            }",
-        "            result[column * 4 + row] = static_cast<float>(sum);",
-        "        }",
-        "    }",
-        "    return result;",
-        "}",
-    ].join("\n");
+export function lowerMatrixMultiplyCpp(context: LoweringContext): string {
+    return `${lowerMat4MultiplyWriterCpp(context)}
+
+Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
+    Matrix result{};
+    mat4_multiply_into(result, 0, left, 0, right, 0);
+    return result;
+}`;
 }
 
 /** The pinned `mat4ComposeInto` body, walked once for both emitters. */

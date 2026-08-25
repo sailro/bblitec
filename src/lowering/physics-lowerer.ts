@@ -39,6 +39,7 @@
  */
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
+import { lowerObjectComponents } from "./pinned-function-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -225,19 +226,12 @@ export class PhysicsLowerer {
                 );
             }
             if (!returnsVector) return lowerer.expression(expression);
-            if (!ts.isObjectLiteralExpression(expression)) {
-                return this.context.contractError(
-                    expression,
-                    `Expected ${symbolName} to return { x, y, z }.`,
-                );
-            }
-            return `Vec3d{${["x", "y", "z"]
-                .map((axis) =>
-                    lowerer.expression(
-                        this.context.propertyInitializer(expression, axis),
-                    ),
-                )
-                .join(", ")}}`;
+            return `Vec3d{${lowerObjectComponents(
+                this.context,
+                lowerer,
+                expression,
+                ["x", "y", "z"],
+            ).join(", ")}}`;
         };
         lowerer = new PinnedNumericLowerer(file, {
             bindings,

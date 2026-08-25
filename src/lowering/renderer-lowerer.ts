@@ -58,7 +58,10 @@ import {
     splitWgslStatements,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import {
+    lowerMat4MultiplyWriterCpp,
+    lowerPinnedFunction,
+} from "./pinned-function-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
@@ -645,7 +648,7 @@ export class RendererLowerer {
                 backgroundGeometry,
                 perspectiveWriter,
                 orthoWriter,
-                multiplyWriter: this.lowerMultiplyWriter(),
+                multiplyWriter: lowerMat4MultiplyWriterCpp(this.context),
             }),
         };
     }
@@ -667,15 +670,13 @@ export class RendererLowerer {
             );
         }
         if (options.gpuInstancing) {
-            // The instance parent-world helper transcribes these pinned
-            // modules; assert they still carry the composed symbols.
+            // The instance parent-world helper is translated from these
+            // pinned modules; assert they still carry the composed symbols.
+            // (mat4MultiplyInto needs no entry: the multiply writer
+            // resolves its declaration on every plan.)
             this.context.functionDeclaration(
                 "src/math/mat4-compose-into.ts",
                 "mat4ComposeInto",
-            );
-            this.context.functionDeclaration(
-                "src/math/mat4-multiply-into.ts",
-                "mat4MultiplyInto",
             );
             this.context.functionDeclaration(
                 "src/math/quat-euler.ts",
@@ -3263,66 +3264,6 @@ ${lifted.fragmentBody}
         return lowerer.expression(expression);
     }
 
-    /**
-     * The pinned matrix multiply translated whole. Its `Mat4Storage`
-     * parameters accept F32- or F64-backed storage upstream; here every
-     * target and left operand is an f32 array while the right operand is
-     * f32 (view chain) or f64 (the composed instance TRS), and the body's
-     * reads widen to double identically for both — so the one axis that
-     * varies is the right operand's container, emitted as the template
-     * parameter. `lowerPinnedFunction` deliberately does not grow a
-     * template concept for this one signature.
-     */
-    private lowerMultiplyWriter(): string {
-        const module = "src/math/mat4-multiply-into.ts";
-        const symbol = "mat4MultiplyInto";
-        const { file, declaration } = this.context.functionDeclaration(
-            module,
-            symbol,
-        );
-        const expected: readonly (readonly [string, PinnedBinding])[] = [
-            ["dst", { cpp: "dst", type: "f32" }],
-            ["d", { cpp: "d", type: "index" }],
-            ["a", { cpp: "a", type: "f32" }],
-            ["i", { cpp: "i", type: "index" }],
-            ["b", { cpp: "b", type: "f32" }],
-            ["j", { cpp: "j", type: "index" }],
-        ];
-        if (
-            declaration.parameters.length !== expected.length ||
-            declaration.parameters.some(
-                (parameter, index) =>
-                    !ts.isIdentifier(parameter.name) ||
-                    parameter.name.text !== expected[index]![0],
-            )
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected pinned mat4MultiplyInto to take " +
-                    "(dst, d, a, i, b, j).",
-            );
-        }
-        const lowerer = new PinnedNumericLowerer(file, {
-            bindings: new Map(expected),
-            calls: new Map(),
-        });
-        const body = declaration.body!.statements
-            .flatMap((statement) => lowerer.statement(statement, "    "))
-            .join("\n");
-        return `// ${this.context.provenance(module, symbol)}
-template <typename MatB>
-void mat4_multiply_into(
-    std::array<float, 16>& dst,
-    std::int64_t d,
-    const std::array<float, 16>& a,
-    std::int64_t i,
-    const MatB& b,
-    std::int64_t j) {
-${body}
-}`;
-    }
-
-
     /** A literal element read `base[<n>]`, or a contract error. */
     private pinnedElementIndex(
         expression: ts.Expression,
@@ -4356,24 +4297,24 @@ ${body}
             "eulerToQuat",
         );
         // The half-angle locals, emitted from the pinned initializers with
-        // the Euler parameters renamed to the record's rotation lanes —
-        // the emission that used to be asserted term by term and typed
-        // beside the assertion.
+        // the Euler parameters renamed to the record's rotation lanes. One
+        // pair table serves this emission and the quaternion products'
+        // rename below.
         const rotationRename = new Map<string, string>([
             ["rx", "static_cast<double>(mesh.rotation.x)"],
             ["ry", "static_cast<double>(mesh.rotation.y)"],
             ["rz", "static_cast<double>(mesh.rotation.z)"],
         ]);
-        const halfAngleLocals = (
-            [
-                ["cx", "cx"],
-                ["sx_", "sx"],
-                ["cy", "cy"],
-                ["sy_", "sy"],
-                ["cz", "cz"],
-                ["sz_", "sz"],
-            ] as const
-        )
+        const eulerLocalNames: readonly (readonly [string, string])[] = [
+            ["cx", "cx"],
+            ["sx_", "sx"],
+            ["cy", "cy"],
+            ["sy_", "sy"],
+            ["cz", "cz"],
+            ["sz_", "sz"],
+        ];
+        const mathCalls = pinnedNumericMathCalls();
+        const halfAngleLocals = eulerLocalNames
             .map(
                 ([pinned, cpp]) =>
                     `        const double ${cpp} = ${this.pinnedNumericExpression(
@@ -4383,7 +4324,7 @@ ${body}
                             pinned,
                         ),
                         rotationRename,
-                        pinnedNumericMathCalls(),
+                        mathCalls,
                     )};\n`,
             )
             .join("");
@@ -4405,14 +4346,7 @@ ${body}
                 "Expected the pinned Euler quaternion tuple.",
             );
         }
-        const eulerRename = new Map<string, string>([
-            ["sx_", "sx"],
-            ["sy_", "sy"],
-            ["sz_", "sz"],
-            ["cx", "cx"],
-            ["cy", "cy"],
-            ["cz", "cz"],
-        ]);
+        const eulerRename = new Map<string, string>(eulerLocalNames);
         const quaternionSlots = ["qx", "qy", "qz", "qw"];
         const quaternionProducts = tuple.elements
             .map(

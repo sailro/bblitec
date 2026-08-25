@@ -1119,11 +1119,11 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
         plan.header,
         /build_instance_parent_world\(\s*const MeshRecord& mesh\)/,
     );
-    // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle
-    // products, and the mat4MultiplyInto column loop all transcribe into
-    // the emitted helper (through the shared PinnedNumericLowerer, whose
+    // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle terms
+    // and products, and the whole-translated mat4_multiply_into all flow
+    // from the pinned ASTs (through the shared PinnedNumericLowerer, whose
     // parenthesization is explicit); the record's own transform never
-    // reaches it for non-thin-instanced meshes.
+    // reaches the helper for non-thin-instanced meshes.
     assert.match(
         plan.source,
         /\(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\)/,

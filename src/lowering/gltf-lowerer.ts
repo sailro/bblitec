@@ -36,7 +36,10 @@ export {
     lowerAccessorNormalizationCpp,
     lowerVertexColorCpp,
 } from "./gltf/accessor-normalization.js";
-export { lowerShPrescaleCpp } from "./gltf/sh-prescale.js";
+export {
+    COLOR_CHANNEL_HELPERS_CPP,
+    lowerShPrescaleCpp,
+} from "./gltf/sh-prescale.js";
 export {
     lowerImageProcessingDefaultsCpp,
 } from "./gltf/image-processing-defaults.js";

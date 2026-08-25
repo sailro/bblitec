@@ -935,9 +935,15 @@ export class DataLowerer {
                 );
             }
             const [left, right] = numbers();
+            // `pow` is a shared member, spelled through the pinned table;
+            // `atan2` is compiler-only (no pinned body reaches it) and
+            // follows the same std:: rule here.
+            const spelling = method === "pow"
+                ? pinnedMathSpelling(method)
+                : `std::${method}`;
             return {
                 kind: "number",
-                cpp: `std::${method}(${left}, ${right})`,
+                cpp: `${spelling}(${left}, ${right})`,
                 dataType: { kind: "number" },
             };
         }
@@ -964,6 +970,10 @@ export class DataLowerer {
                     `Math.${method} expects at least two arguments.`,
                 );
             }
+            // Deliberately not the pinned table's `<double>`-pinned 2-arg
+            // spelling: JS max/min are n-ary, so the compiler folds them
+            // as a chain, and every operand it compiles is already a
+            // double, which makes the bare std:: call unambiguous.
             const parts = numbers();
             let cpp = parts[0]!;
             for (const part of parts.slice(1)) {
