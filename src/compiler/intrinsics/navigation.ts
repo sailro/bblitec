@@ -13,6 +13,7 @@ import {
     validateObjectProperties,
     type ObjectValidationContext,
 } from "../option-helpers.js";
+import { PINNED_AGENT_PARAM_DEFAULTS } from "../../lowering/navigation-lowerer.js";
 
 export interface NavigationIntrinsicContext
     extends IntrinsicCallContext,
@@ -225,31 +226,212 @@ export function compileNavigationIntrinsic(
                         dataType: { kind: "boolean" },
                     },
                     hitPoint: {
-                        kind: "record",
-                        cpp: "",
+                        ...vec3LanesOf(`${temporary}.hit_point`),
                         optionalFoundCpp: `${temporary}.hit`,
-                        recordProperties: {
-                            x: {
-                                kind: "number",
-                                cpp: `${temporary}.hit_point.x`,
-                            },
-                            y: {
-                                kind: "number",
-                                cpp: `${temporary}.hit_point.y`,
-                            },
-                            z: {
-                                kind: "number",
-                                cpp: `${temporary}.hit_point.z`,
-                            },
-                        },
                     },
                 },
             };
         }
 
+        case "getClosestPoint": {
+            context.expectArgumentCount(call, 2, 2);
+            const plugin = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                plugin,
+                "navigation",
+                call.arguments[0]!,
+            );
+            const position = context.compileVec3(
+                call.arguments[1]!,
+                "double",
+            );
+            return navVec3Record(
+                context,
+                "nav_closest",
+                `bbl::upstream::nav_closest_point(${plugin.cpp}, ${position})`,
+            );
+        }
+
+        case "createNavCrowd": {
+            context.expectArgumentCount(call, 3, 3);
+            const plugin = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                plugin,
+                "navigation",
+                call.arguments[0]!,
+            );
+            const maxAgents = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const maxAgentRadius = context.compileNumber(
+                call.arguments[2]!,
+                "double",
+            );
+            const crowd = context.allocateTemporaryCppName("nav_crowd");
+            context.emit(
+                `const bbl::pal::NavCrowdHandle ${crowd} = ` +
+                    `bbl::upstream::create_nav_crowd(${plugin.cpp}, ` +
+                    `${maxAgents}, ${maxAgentRadius});`,
+            );
+            return { kind: "navigation-crowd", cpp: crowd };
+        }
+
+        case "addAgent": {
+            context.expectArgumentCount(call, 3, 3);
+            const crowd = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                crowd,
+                "navigation-crowd",
+                call.arguments[0]!,
+            );
+            const position = context.compileVec3(
+                call.arguments[1]!,
+                "double",
+            );
+            const options = context.expectObjectLiteral(
+                call.arguments[2]!,
+            );
+            validateObjectProperties(
+                context,
+                options,
+                AGENT_PARAM_NAMES,
+                "Reached crowd agents name the pinned dtCrowdAgentParams fields.",
+            );
+            // `reachRadius` is the one `AgentParameters` field the pinned
+            // `addAgent` never forwards, so upstream drops it silently.
+            // Refusing by name says so rather than compiling a scene
+            // whose author expects it to reach the agent.
+            if (context.objectProperty(options, "reachRadius")) {
+                context.fail(
+                    call.arguments[2]!,
+                    "addAgent's reachRadius is declared but never " +
+                        "forwarded to the crowd by the pinned module.",
+                );
+            }
+            const parameters =
+                context.allocateTemporaryCppName("agent_params");
+            context.emit(
+                `bbl::pal::NavAgentParams ${parameters}{};`,
+            );
+            for (const [name, field] of AGENT_FLOAT_PARAMS) {
+                const value = context.objectProperty(options, name);
+                if (!value) {
+                    context.fail(
+                        call.arguments[2]!,
+                        `addAgent requires '${name}'; the pinned ` +
+                            "parameters carry no default for it.",
+                    );
+                }
+                context.emit(
+                    `${parameters}.${field} = static_cast<float>(` +
+                        `${context.compileNumber(value, "double")});`,
+                );
+            }
+            // The pin's own `?? N` defaults, resolved here so the
+            // wrapper's spread never decides them. The numbers come from
+            // the table the lowerer gates against the pinned expression,
+            // so neither side can move alone.
+            for (const [
+                name,
+                field,
+                fallback,
+            ] of PINNED_AGENT_PARAM_DEFAULTS) {
+                const value = context.objectProperty(options, name);
+                const resolved = value
+                    ? context.compileNumber(value, "double")
+                    : String(fallback);
+                context.emit(
+                    `${parameters}.${field} = ` +
+                        `static_cast<unsigned char>(${resolved});`,
+                );
+            }
+            return {
+                kind: "number",
+                cpp:
+                    `bbl::upstream::add_agent(${crowd.cpp}, ` +
+                    `${position}, ${parameters})`,
+            };
+        }
+
+        case "getAgentPosition": {
+            context.expectArgumentCount(call, 2, 2);
+            const crowd = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                crowd,
+                "navigation-crowd",
+                call.arguments[0]!,
+            );
+            const index = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            return navVec3Record(
+                context,
+                "agent_pos",
+                `bbl::upstream::get_agent_position(${crowd.cpp}, ${index})`,
+            );
+        }
+
         default:
             return undefined;
     }
+}
+
+/**
+ * The `AgentParameters` fields the pinned `addAgent` forwards and the
+ * caller must supply. The three it defaults with `?? N` live in
+ * `PINNED_AGENT_PARAM_DEFAULTS`, beside the assertion that gates them
+ * against the pin; `reachRadius` is declared upstream and forwarded
+ * nowhere, so it is refused at the call site instead.
+ */
+const AGENT_FLOAT_PARAMS: readonly (readonly [string, string])[] = [
+    ["radius", "radius"],
+    ["height", "height"],
+    ["maxAcceleration", "max_acceleration"],
+    ["maxSpeed", "max_speed"],
+    ["collisionQueryRange", "collision_query_range"],
+    ["pathOptimizationRange", "path_optimization_range"],
+    ["separationWeight", "separation_weight"],
+];
+
+const AGENT_PARAM_NAMES = [
+    ...AGENT_FLOAT_PARAMS.map(([name]) => name),
+    ...PINNED_AGENT_PARAM_DEFAULTS.map(([name]) => name),
+    "reachRadius",
+];
+
+/**
+ * The three lanes of a native vector, as a record the scene reads at run
+ * time. Every navigation query answers in one, whether the vector is the
+ * whole result or a member of it.
+ */
+function vec3LanesOf(base: string): Value {
+    return {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+            x: { kind: "number", cpp: `${base}.x` },
+            y: { kind: "number", cpp: `${base}.y` },
+            z: { kind: "number", cpp: `${base}.z` },
+        },
+    };
+}
+
+/**
+ * A query whose whole result is that vector: the call is emitted into a
+ * temporary first, so a scene reading two lanes calls the PAL once.
+ */
+function navVec3Record(
+    context: NavigationIntrinsicContext,
+    label: string,
+    expression: string,
+): Value {
+    const temporary = context.allocateTemporaryCppName(label);
+    context.emit(
+        `const bbl::Vec3d ${temporary} = ${expression};`,
+    );
+    return vec3LanesOf(temporary);
 }
 
 function validateNavMeshParams(

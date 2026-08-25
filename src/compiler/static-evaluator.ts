@@ -83,15 +83,21 @@ export class StaticEvaluator {
         const unwrapped = this.unwrap(
             this.resolveStaticExpression(expression),
         );
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const value = this.resolveProperty(unwrapped);
-            if (value?.kind === "record") {
-                return this.vec3FromRecord(
-                    value,
-                    unwrapped,
-                    precision,
-                );
-            }
+        // A record reaching a vector sink resolves the same three ways a
+        // tuple does, so it takes the same dispatch: a navmesh query's
+        // snapped point is handed to the next query by its local, and
+        // `raycast`'s hit point is reached through `result.hitPoint`. A
+        // non-record result leaves the literal branches below to run,
+        // which is what keeps the domain error the message a scene
+        // passing something else deserves.
+        const resolved =
+            ts.isIdentifier(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped) ||
+            ts.isPropertyAccessExpression(unwrapped)
+                ? this.resolveValue(unwrapped)
+                : undefined;
+        if (resolved?.kind === "record") {
+            return this.vec3FromRecord(resolved, unwrapped, precision);
         }
         const tuple = this.tupleElements(unwrapped, 3);
         if (tuple) {

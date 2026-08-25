@@ -175,7 +175,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-106 corpus scenes remain unregistered; measured scenes are in
+103 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -248,16 +248,19 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (72 scenes):** 4, 16-18, 20, 22, 38, 43,
+**Integrate first (76 scenes):** 4, 16-18, 20, 22, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
-140, 141, 144, 149, 156, 165, 179, 200-207, 211, 214, 215, 217-219,
+140, 141, 144, 149, 156, 165, 171-174, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 251, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
-user-input or external-service contract.
+user-input or external-service contract. The navigation scenes moved here
+when the toolset did: 175 and 170 are integrated, and what 171-174 still
+want is compiler contracts and the wrapper's tile-cache arm, not a new
+platform boundary.
 
-**Defer (32 scenes):** 41, 42, 44-49, 100-106, 153, 164, 170-174, 180, 181,
+**Defer (27 scenes):** 41, 42, 44-49, 100-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
 
 No audited scene requires audio, touch, gamepad, AR, or VR. Add any future scene
@@ -707,13 +710,38 @@ earlier compiler error.
     every body control past creation (impulse, velocity, motion-type
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
-- [ ] Scenes 170-174: extend the navigation slice past what scene 175
-  measures. The subsystem shipped with 175 — the `navigation:recast` PAL
-  over the wrapper's own pinned recastnavigation commit, the solo-navmesh
-  build, debug geometry, and `raycast` ([features](docs/features.md)) — so
-  what remains is each scene's own surface, refused by name today: crowds
-  and agents, `computePath`, `getClosestPointToMesh`, off-mesh connections,
-  tiled meshes and the tile cache with obstacles.
+- [ ] Scenes 171-174: extend the navigation slice past what scenes 170 and
+  175 measure. The subsystem is the `navigation:recast` PAL over the
+  wrapper's own pinned recastnavigation commit, and it now carries the
+  solo-navmesh build over both mesh kinds, debug geometry, `raycast`,
+  `getClosestPoint` and a Detour crowd whose agents a scene places and
+  reads ([features](docs/features.md)). What remains is each scene's own
+  surface, each refused by name today, and the chains below are measured
+  by stripped probe at this pin rather than read off the first blocker.
+  - **171 and 174 share one chain**, and none of it is navigation: after
+    `computePath`, both want a path the scene *transforms* — `.length` on
+    a runtime array, `pathPoints.map((p) => ({ ... }))`, and
+    `createTube` over the mapped result. The native `create_tube` already
+    takes a `std::vector<Vec3d>`, so the tube's own half is a call-site
+    arm; the language half is an intrinsic returning a data-model
+    container of structs (the pin's own `Vec3[]`) plus `Array.map` with
+    an inlined arrow. 174 then adds `offMeshConnections` to the build.
+    Both scenes freeze their agent with `?freeze=1`, the pin's own parity
+    query, so `agentGoto`, `updateNavCrowd` and `getAgentPosition` sit in
+    a branch the fold never compiles.
+  - **172 and 173 need the tile cache**: `maxObstacles > 0` selects the
+    wrapper's `generateTileCache` build, `addBoxObstacle` /
+    `addCylinderObstacle` / `removeObstacle` / `updateNavMeshObstacles`,
+    and — before any of that — the obstacle wireframes both scenes draw,
+    which want by-reference data arguments and static tuple indexing.
+    173 additionally toggles an obstacle a second after ready, which its
+    own `?freeze=1` branch never schedules.
+  - Unreached by any corpus scene and unlowered: `agentGoto`,
+    `updateNavCrowd`, `getAgentVelocity`, `findClosestPointWithin`,
+    `findRandomPoint`, `findRandomPointAroundCircle`,
+    `setNavigationRandomSeed`, `navRayBlocked`, `disposeNavigationPlugin`,
+    and `addAgent`'s `reachRadius` (which the pinned module declares and
+    forwards nowhere).
 - [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
   through `CanvasRenderingContext2D`, not Babylon Lite rendering. First blocker:
   animation manager options past `engine`.

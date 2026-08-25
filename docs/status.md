@@ -124,6 +124,7 @@ threshold on it can be driven to zero
 | 162 | <img src="images/scenes/scene162.png" alt="Scene 162 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | shader-material `defines` as the pin's own prelude consts |
 | 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | custom shader blend, alpha test, discard |
 | 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | double-sided winding through a clockwise front-face pipeline |
+| 170 | <img src="images/scenes/scene170.png" alt="Scene 170 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a Detour crowd over a navmesh built from scene primitives: the merge composes each caster's own world matrix, and the agent draws where `addAgent` snapped it |
 | 175 | <img src="images/scenes/scene175.png" alt="Scene 175 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | Recast navigation raycast: the navmesh built natively by the pinned recastnavigation commit, its debug overlay, and a tube tracing the Detour hit |
 | 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | linear transmission, alpha state, IOR, volume, scene-color copy |
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | scene-code `setPbrIridescence` over an `.env` environment, two scene materials under independent setters |

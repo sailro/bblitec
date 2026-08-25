@@ -2852,6 +2852,13 @@ ${lowered.vertexColor}
                 }
             }
             geometry.has_tangents = tangents != nullptr;
+            // The same fork the position store above took: a static
+            // primitive carries its mirrored node world, an animated or
+            // instanced one carries the mirror alone and receives the
+            // node matrix per draw.
+            geometry.vertex_space = animated || instanced
+                ? VertexSpace::mirrored_local
+                : VertexSpace::world;
             if (animated) {
                 geometry.bind_vertices = geometry.vertices;
             }

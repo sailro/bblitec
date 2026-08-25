@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
+import {
+    pinnedTrsComposition,
+    type PinnedTrsComposition,
+} from "./pinned-trs.js";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
     CompiledShaderProgram,
@@ -62,10 +66,6 @@ import {
     lowerMat4MultiplyWriterCpp,
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
-import {
-    PinnedNumericLowerer,
-    type PinnedBinding,
-} from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /**
@@ -568,14 +568,11 @@ export class RendererLowerer {
             // contract, asserted here so a pin retune fails generation.
             assertPinnedFogInfosOrder();
         }
-        const instancingTrs = options.gpuInstancing
-            ? this.pinnedTrsComposition()
-            : {
-                  halfAngleLocals: "",
-                  quaternionProducts: "",
-                  basisLocals: "",
-                  basisStores: "",
-              };
+        // A scene reaching no thin instances composes no parent world, so
+        // the body is never interpolated and the derivation is skipped.
+        const instancingTrs: PinnedTrsComposition = options.gpuInstancing
+            ? pinnedTrsComposition(this.context)
+            : { composeLocalBody: "" };
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -1286,12 +1283,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp: string;
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
-            instancingTrs: {
-                halfAngleLocals: string;
-                quaternionProducts: string;
-                basisLocals: string;
-                basisStores: string;
-            };
+            instancingTrs: PinnedTrsComposition;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1825,28 +1817,7 @@ std::array<float, 16> build_instance_parent_world(
     if (!mesh.thin_instanced) {
         return mesh.instance_parent_matrix;
     }
-    double qx = 0.0;
-    double qy = 0.0;
-    double qz = 0.0;
-    double qw = 1.0;
-    if (mesh.has_rotation_quaternion) {
-        qx = mesh.rotation_quaternion.x;
-        qy = mesh.rotation_quaternion.y;
-        qz = mesh.rotation_quaternion.z;
-        qw = mesh.rotation_quaternion.w;
-    } else if (
-        mesh.rotation.x != 0.0f ||
-        mesh.rotation.y != 0.0f ||
-        mesh.rotation.z != 0.0f) {
-${instancingTrs.halfAngleLocals}\
-${instancingTrs.quaternionProducts}\
-    }
-    const double scale_x = mesh.scaling.x;
-    const double scale_y = mesh.scaling.y;
-    const double scale_z = mesh.scaling.z;
-${instancingTrs.basisLocals}\
-    std::array<double, 16> local{};
-${instancingTrs.basisStores}\
+${instancingTrs.composeLocalBody}\
     // The pinned multiply, translated whole above: the parent is the f32
     // matrix the loader recorded and the composed TRS stays f64, which is
     // the pinned accumulation's own width for both.
@@ -3235,37 +3206,6 @@ ${lifted.fragmentBody}
     }
 
     /**
-     * Prints one pinned arithmetic expression as C++, renaming identifiers
-     * through a required map. This is how the TRS and Euler emissions below
-     * pair term for term with the pinned writers: the C++ text flows from
-     * the pinned AST through the shared `PinnedNumericLowerer` — double
-     * operands, explicit parenthesization — and an identifier or operator
-     * the map does not know fails generation instead of drifting.
-     */
-    private pinnedNumericExpression(
-        file: ts.SourceFile,
-        expression: ts.Expression,
-        rename: ReadonlyMap<string, string>,
-        calls: ReadonlyMap<
-            string,
-            (args: readonly string[]) => string
-        > = new Map(),
-    ): string {
-        const lowerer = new PinnedNumericLowerer(file, {
-            bindings: new Map(
-                [...rename].map(
-                    ([name, cpp]): [string, PinnedBinding] => [
-                        name,
-                        { cpp, type: "scalar" },
-                    ],
-                ),
-            ),
-            calls,
-        });
-        return lowerer.expression(expression);
-    }
-
-    /**
      * The pinned per-mesh light predicate, anchored arm by arm. The
      * emitted `light_affects_mesh` is a representation translation — the
      * pin keys Sets of string mesh ids where the records key index
@@ -3346,30 +3286,6 @@ ${lifted.fragmentBody}
         );
     }
 
-
-    /** The `<base>` or `<base> + <n>` offset of a pinned indexed store. */
-    private pinnedStoreOffset(
-        argument: ts.Expression,
-        base: string,
-    ): number {
-        const unwrapped = this.context.unwrapExpression(argument);
-        if (ts.isIdentifier(unwrapped) && unwrapped.text === base) {
-            return 0;
-        }
-        if (
-            ts.isBinaryExpression(unwrapped) &&
-            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            ts.isIdentifier(unwrapped.left) &&
-            unwrapped.left.text === base &&
-            ts.isNumericLiteral(unwrapped.right)
-        ) {
-            return Number(unwrapped.right.text);
-        }
-        return this.context.contractError(
-            argument,
-            `Expected a '${base}'-relative store offset.`,
-        );
-    }
 
     /**
      * The view-transpose body, derived from the pinned getViewMatrix store
@@ -4339,183 +4255,6 @@ ${lifted.fragmentBody}
             skyboxVertexRows: skyboxVertexRows.join("\n"),
             skyboxCornerRows: skyboxCornerRows.join("\n"),
             skyboxIndexRows: skyboxIndexRows.join("\n"),
-        };
-    }
-
-    /**
-     * The thin-instance TRS emissions, derived from their pinned writers:
-     * eulerToQuat's four products and mat4ComposeInto's quaternion basis
-     * flow from the pinned ASTs into the emitted C++ term for term, so the
-     * instance parent-world stays byte-for-byte the pin's composition.
-     */
-    private pinnedTrsComposition(): {
-        halfAngleLocals: string;
-        quaternionProducts: string;
-        basisLocals: string;
-        basisStores: string;
-    } {
-        const euler = this.context.functionDeclaration(
-            "src/math/quat-euler.ts",
-            "eulerToQuat",
-        );
-        // The half-angle locals, emitted from the pinned initializers with
-        // the Euler parameters renamed to the record's rotation lanes. One
-        // pair table serves this emission and the quaternion products'
-        // rename below.
-        const rotationRename = new Map<string, string>([
-            ["rx", "static_cast<double>(mesh.rotation.x)"],
-            ["ry", "static_cast<double>(mesh.rotation.y)"],
-            ["rz", "static_cast<double>(mesh.rotation.z)"],
-        ]);
-        const eulerLocalNames: readonly (readonly [string, string])[] = [
-            ["cx", "cx"],
-            ["sx_", "sx"],
-            ["cy", "cy"],
-            ["sy_", "sy"],
-            ["cz", "cz"],
-            ["sz_", "sz"],
-        ];
-        const mathCalls = pinnedNumericMathCalls();
-        const halfAngleLocals = eulerLocalNames
-            .map(
-                ([pinned, cpp]) =>
-                    `        const double ${cpp} = ${this.pinnedNumericExpression(
-                        euler.file,
-                        this.context.variableInitializer(
-                            euler.declaration,
-                            pinned,
-                        ),
-                        rotationRename,
-                        mathCalls,
-                    )};\n`,
-            )
-            .join("");
-        const eulerReturn = this.context.findNodes(
-            euler.declaration,
-            (node): node is ts.ReturnStatement =>
-                ts.isReturnStatement(node),
-        )[0];
-        const tuple = eulerReturn?.expression
-            ? this.context.unwrapExpression(eulerReturn.expression)
-            : undefined;
-        if (
-            !tuple ||
-            !ts.isArrayLiteralExpression(tuple) ||
-            tuple.elements.length !== 4
-        ) {
-            this.context.contractError(
-                eulerReturn ?? euler.declaration,
-                "Expected the pinned Euler quaternion tuple.",
-            );
-        }
-        const eulerRename = new Map<string, string>(eulerLocalNames);
-        const quaternionSlots = ["qx", "qy", "qz", "qw"];
-        const quaternionProducts = tuple.elements
-            .map(
-                (component, index) =>
-                    `        ${quaternionSlots[index]} = ${this.pinnedNumericExpression(
-                        euler.file,
-                        component,
-                        eulerRename,
-                    )};\n`,
-            )
-            .join("");
-
-        const compose = this.context.functionDeclaration(
-            "src/math/mat4-compose-into.ts",
-            "mat4ComposeInto",
-        );
-        const productNames = [
-            "xx",
-            "yy",
-            "zz",
-            "xy",
-            "xz",
-            "yz",
-            "wx",
-            "wy",
-            "wz",
-        ];
-        const quaternionRename = new Map<string, string>([
-            ["qx", "qx"],
-            ["qy", "qy"],
-            ["qz", "qz"],
-            ["qw", "qw"],
-        ]);
-        const basisLocals = productNames
-            .map(
-                (name) =>
-                    `    const double ${name} = ${this.pinnedNumericExpression(
-                        compose.file,
-                        this.context.variableInitializer(
-                            compose.declaration,
-                            name,
-                        ),
-                        quaternionRename,
-                    )};\n`,
-            )
-            .join("");
-        const storeRename = new Map<string, string>([
-            ...productNames.map(
-                (name) => [name, name] as [string, string],
-            ),
-            ["sx", "scale_x"],
-            ["sy", "scale_y"],
-            ["sz", "scale_z"],
-        ]);
-        const translationStores = new Map<string, string>([
-            ["tx", "mesh.position.x"],
-            ["ty", "mesh.position.y"],
-            ["tz", "mesh.position.z"],
-        ]);
-        const stores = this.context.pinnedElementStores(
-            compose.declaration,
-            "dst",
-        );
-        if (stores.length !== 16) {
-            this.context.contractError(
-                compose.declaration,
-                `Pinned mat4ComposeInto gained or lost stores (${stores.length} of 16); the instance emission no longer covers it.`,
-            );
-        }
-        let basisStores = "";
-        for (const store of stores) {
-            const offset = this.pinnedStoreOffset(
-                store.left.argumentExpression,
-                "off",
-            );
-            const rhs = this.context.unwrapExpression(store.right);
-            if (ts.isNumericLiteral(rhs)) {
-                const value = Number(rhs.text);
-                if (value === 0) {
-                    // The zero cells stay the zero-initialized locals.
-                    continue;
-                }
-                basisStores += `    local[${offset}] = ${this.context.doubleLiteral(value)};\n`;
-                continue;
-            }
-            if (ts.isIdentifier(rhs)) {
-                const translation = translationStores.get(rhs.text);
-                if (translation === undefined) {
-                    this.context.contractError(
-                        rhs,
-                        `Pinned mat4ComposeInto stores '${rhs.text}', which the instance emission does not map.`,
-                    );
-                }
-                basisStores += `    local[${offset}] = ${translation};\n`;
-                continue;
-            }
-            basisStores += `    local[${offset}] = ${this.pinnedNumericExpression(
-                compose.file,
-                rhs,
-                storeRename,
-            )};\n`;
-        }
-        return {
-            halfAngleLocals,
-            quaternionProducts,
-            basisLocals,
-            basisStores,
         };
     }
 
