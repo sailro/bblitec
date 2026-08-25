@@ -53,6 +53,10 @@ import {
     compileSpriteIntrinsic,
     type SpriteIntrinsicContext,
 } from "./sprite.js";
+import {
+    compileNavigationIntrinsic,
+    type NavigationIntrinsicContext,
+} from "./navigation.js";
 import type { Value } from "../types.js";
 
 export interface IntrinsicContext
@@ -64,6 +68,7 @@ export interface IntrinsicContext
         LineIntrinsicContext,
         MaterialIntrinsicContext,
         MeshIntrinsicContext,
+        NavigationIntrinsicContext,
         ParticleIntrinsicContext,
         PhysicsIntrinsicContext,
         SceneIntrinsicContext,
@@ -90,6 +95,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileEffectIntrinsic,
     compileParticleIntrinsic,
     compilePhysicsIntrinsic,
+    compileNavigationIntrinsic,
 ];
 
 /**

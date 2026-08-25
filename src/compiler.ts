@@ -822,6 +822,8 @@ class Compiler
             annotated.kind === "boolean" ||
             annotated.kind === "span" ||
             annotated.kind === "table" ||
+            (annotated.kind === "optional" &&
+                annotated.inner.kind === "handle") ||
             (annotated.kind === "tuple" &&
                 !ts.isArrayLiteralExpression(
                     initializerLiteral,
@@ -830,7 +832,10 @@ class Compiler
             // Readonly views keep the legacy static-tuple declaration
             // semantics; only owning composites (and mutable tuple
             // locals initialized from array literals) take the data
-            // path.
+            // path. An optional HANDLE local (`Mesh | undefined` from a
+            // search) keeps the value path too: a handle a search
+            // produced carries its found flag, which is this port's
+            // representation of that optionality.
             return false;
         }
         this.reachJsData();
@@ -1656,6 +1661,24 @@ class Compiler
             ts.isIdentifier(unwrapped)
         ) {
             return this.compileBoolean(unwrapped);
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            // A record member in condition position: a boolean member is
+            // its own truth (`result.hit`), and a member that carries a
+            // found flag — a search result's maybe-absent record
+            // (`result.hitPoint`) — is truthy exactly when the search
+            // said so.
+            const value = this.compileValue(unwrapped);
+            if (
+                value.kind === "boolean" ||
+                (value.kind === "data" &&
+                    value.dataType?.kind === "boolean")
+            ) {
+                return value.cpp;
+            }
+            if (value.optionalFoundCpp !== undefined) {
+                return value.optionalFoundCpp;
+            }
         }
         this.fail(unwrapped, "Expected a reached callback condition.");
     }

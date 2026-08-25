@@ -17,7 +17,9 @@
 #include <DetourNavMeshQuery.h>
 #include <Recast.h>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -478,12 +480,7 @@ NavRaycastHit navigation_raycast(
     if (!(t > 0.0f && t < 1.0f)) {
         return NavRaycastHit{};
     }
-    return NavRaycastHit{
-        true,
-        start_x + (end_x - start_x) * t,
-        start_y + (end_y - start_y) * t,
-        start_z + (end_z - start_z) * t,
-    };
+    return NavRaycastHit{true, t};
 }
 
 } // namespace bbl::pal

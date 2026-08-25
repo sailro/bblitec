@@ -691,6 +691,7 @@ export type ValueKind =
     // nothing. A body and a shape have no compile-time value because
     // `createPhysicsBody` and `createPhysicsShape` both refuse.
     | "physics-engine-module"
+    | "navigation"
     | "physics-world"
     | "physics-aggregate"
     | "render-target"

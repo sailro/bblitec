@@ -71,11 +71,15 @@ struct NavDebugGeometry {
     std::vector<std::uint32_t> indices;
 };
 
+/**
+ * `raycast`'s raw outcome: whether the pinned hit window `0 < t < 1`
+ * held, and the parameter itself. The hit point is the caller's — the
+ * pinned wrapper lerps it in JavaScript doubles, so the generated
+ * layer above this seam owns that arithmetic.
+ */
 struct NavRaycastHit {
     bool hit = false;
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
+    float t = 0.0f;
 };
 
 /** `createNavigationPluginAsync`: a fresh plugin slot. */

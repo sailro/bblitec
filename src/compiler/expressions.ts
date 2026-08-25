@@ -706,6 +706,42 @@ export class ExpressionLowerer {
         whenFalse: Value,
         node: ts.Node,
     ): Value {
+        // Two records select member by member, the way two tuples select
+        // element by element: a record is a compile-time property map
+        // with no native expression of its own. The shared property
+        // names are the condition for that to be the same thing.
+        if (
+            whenTrue.kind === "record" &&
+            whenFalse.kind === "record"
+        ) {
+            const trueProperties = whenTrue.recordProperties ?? {};
+            const falseProperties = whenFalse.recordProperties ?? {};
+            const names = Object.keys(trueProperties);
+            const falseNames = new Set(Object.keys(falseProperties));
+            if (
+                names.length !== falseNames.size ||
+                names.some((name) => !falseNames.has(name))
+            ) {
+                this.context.fail(
+                    node,
+                    "Conditional record branches must carry the same properties.",
+                );
+            }
+            const selected: Record<string, Value> = {};
+            for (const name of names) {
+                selected[name] = this.selectValue(
+                    condition,
+                    trueProperties[name]!,
+                    falseProperties[name]!,
+                    node,
+                );
+            }
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: selected,
+            };
+        }
         if (
             whenTrue.kind !== whenFalse.kind ||
             whenTrue.cpp.length === 0 ||
