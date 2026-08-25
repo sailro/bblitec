@@ -53,11 +53,19 @@ act on it — not what was tried.
 - [ ] Retire the hand-written C++ that encodes upstream semantics, leaf by
   leaf. Two shapes are legitimate — LOWER (walk the pinned AST) or EXECUTE
   (run the pin and bake); a re-typed formula agrees only until upstream
-  changes it. The templates in `src/lowering/templates/` are ~5,400 lines,
-  of which `gltf-loader-cpp.ts` alone is ~4,600, and `renderer-lowerer.ts`
-  is ~4,600. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
-  are the mechanisms to reuse. Each leaf is its own measurement: lower or
-  execute it, then prove the generated tree moved only where intended.
+  changes it. The templates in `src/lowering/templates/` are ~5,500 lines,
+  of which `gltf-loader-cpp.ts` alone is ~4,750, and `renderer-lowerer.ts`
+  is ~4,600 — but much of what remains in all three is loader/plan
+  plumbing and record-model translation (pinned string-id Sets against
+  native index vectors, the anchored draw-list stamps), not formulas: the
+  formula leaves retired so far are the inverse image processing, the
+  perspective/orthographic/multiply matrix writers, the Euler half-angle
+  terms, the shared SH prescale, and the `.babylon` camera derivation.
+  `pinned-function-lowerer.ts` (whole functions of scalars and one mat4),
+  `pinned-numeric-lowerer.ts` (bodies), `pinned-ubo-writer-lowerer.ts` and
+  `pinned-shader-composer.ts` are the mechanisms to reuse. Each leaf is
+  its own measurement: lower or execute it, then prove the generated tree
+  moved only where intended.
 
 ## P1 — Assets and materials
 
