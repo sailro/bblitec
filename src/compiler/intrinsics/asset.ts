@@ -204,6 +204,22 @@ export function compileAssetIntrinsic(
             return { kind: "void", cpp: "" };
         }
 
+        case "enableGltfCameras": {
+            // src/loader-gltf/gltf-feature-camera.ts enableGltfCameras:
+            // registers the `_camera` feature for subsequent loadGltf
+            // calls, gated per asset by `!!json.cameras?.length`. The
+            // generated loader carries the lowered applyAsset walk for
+            // every glTF load, which is the pin's behaviour for a scene
+            // that enables cameras before loading — the corpus shape.
+            // The call itself creates nothing, so it emits no statement.
+            // Each imported camera is the pin's own parented FreeCamera,
+            // so the free-camera record family is part of this feature.
+            context.expectArgumentCount(call, 0, 0);
+            context.reachFeature("loader:gltf-cameras", call);
+            context.reachFeature("camera:free", call);
+            return { kind: "void", cpp: "" };
+        }
+
         case "loadBabylon": {
             context.expectArgumentCount(call, 2, 3);
             const engine =

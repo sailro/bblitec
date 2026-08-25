@@ -638,7 +638,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             const cameraLowerer = new CameraLowerer(context);
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
-                cameraLowerer.lowerArcRotateFactory(),
+                cameraLowerer.lowerArcRotateFactory(
+                    features.includes("loader:gltf-cameras"),
+                ),
                 generated,
                 "upstream/include/bblite/upstream/camera_math.hpp",
             );
@@ -824,6 +826,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     materialSpecular: options.materialSpecular,
                     selectedMaterialVariant:
                         options.selectedMaterialVariant,
+                    gltfCameras: features.includes(
+                        "loader:gltf-cameras",
+                    ),
                 }),
                 generated,
             );

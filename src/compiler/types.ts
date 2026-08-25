@@ -1014,6 +1014,7 @@ export type Feature =
     | "loader:babylon"
     | "loader:gltf"
     | "loader:gltf-variants"
+    | "loader:gltf-cameras"
     | "loader:splat"
     | "material:pbr"
     | "material:clearcoat"

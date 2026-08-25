@@ -1503,6 +1503,21 @@ struct CameraRecord {
     // the render target's aspect ratio.
     bool orthographic = false;
     double ortho_half_height = 1.0;
+    /**
+     * The `_camera` glTF loader feature's naming: `def.name ?? camera<idx>`
+     * on an imported camera, the record default (empty) on a scene-created
+     * one — matching the pin, whose scene cameras leave `name` unset.
+     */
+    std::string name;
+    /**
+     * An imported glTF camera is the pin's FreeCamera parented under its
+     * `<name>_fixup` transform: `getWorldMatrix` composes
+     * `parent_world × local` through the pinned multiply, so the record
+     * carries the fixup node's composed world. The loader writes it — once
+     * for a baked (unreachable) node, per pose for a live one.
+     */
+    bool has_parent_world = false;
+    std::array<float, 16> parent_world{};
 };
 
 struct Scene;
@@ -1522,6 +1537,11 @@ struct AnimationGroupRecord {
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
+    /**
+     * The cameras the `_camera` loader feature instantiated, one per
+     * referencing glTF node in node order — `AssetContainer.cameras`.
+     */
+    std::vector<CameraHandle> cameras;
     // The synthetic root's own position for a hierarchy clone. The cloned
     // mesh records carry it as `outer_position`; this value preserves
     // absolute assignment and clone-of-clone semantics.

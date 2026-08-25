@@ -136,6 +136,17 @@ export interface GltfLoaderLoweredSegments {
      * `RH_TO_LH_ROOT`.
      */
     punctualLightLoading: string;
+    /**
+     * The glTF `camera` node property (`_camera` feature), lowered from
+     * `src/loader-gltf/gltf-feature-camera.ts#applyAsset`: the fold that
+     * writes an imported camera's fixup-node world, the load-time walk
+     * that builds one parented FreeCamera per referencing node, and the
+     * per-pose refresh that keeps a live node's camera following it.
+     * Empty strings when the scene never reached `enableGltfCameras`.
+     */
+    gltfCameraParentWriter: string;
+    gltfCameraLoading: string;
+    gltfCameraPoseRefresh: string;
 }
 
 /** One lowered glTF extension default: the JSON key and the C++ literal. */
@@ -249,6 +260,7 @@ export function gltfLoaderCpp(
         assetTransmission = false,
         materialSpecular = false,
         selectedMaterialVariant = "",
+        gltfCameras = false,
     } = options;
     // The scene selected a variant, so the loader resolves each mapped
     // primitive's material. `JSON.stringify` is the C++ string literal: the
@@ -392,7 +404,17 @@ struct WeightTrack {
     std::size_t target_count = 0;
     std::vector<float> times;
     std::vector<float> values;
-};${animationPointer ? `
+};${gltfCameras ? `
+
+// An imported glTF camera on a reachable node: the pinned feature parents
+// its fixup TransformNode to that node, so the camera's parent world
+// follows the animated pose. The lanes are the fixup diagonal, resolved
+// once at load from the node's rest scale.
+struct AnimatedCameraBinding {
+    CameraHandle camera{};
+    std::size_t node = 0;
+    std::array<float, 4> fixup_lanes{1.0f, 1.0f, 1.0f, 1.0f};
+};` : ""}${animationPointer ? `
 
 struct VisibilityTrack {
     std::size_t clip = 0;
@@ -692,7 +714,8 @@ struct AnimationRuntime {
     std::vector<VisibilityTrack> visibility_tracks;
     std::vector<LightTrack> light_tracks;
     std::vector<AnimatedLightBinding> light_nodes;` : ""}${animationPointerMaterials ? `
-    std::vector<MaterialTrack> material_tracks;` : ""}
+    std::vector<MaterialTrack> material_tracks;` : ""}${gltfCameras ? `
+    std::vector<AnimatedCameraBinding> camera_nodes;` : ""}
     std::vector<std::vector<std::uint32_t>> node_meshes;
     std::vector<AnimatedNode> nodes;
     std::vector<SkinRuntime> skins;
@@ -918,7 +941,9 @@ Matrix identity_matrix() {
     return result;
 }
 
-${lowered.matrixMultiply}
+${lowered.matrixMultiply}${gltfCameras ? `
+
+${lowered.gltfCameraParentWriter}` : ""}
 
 ${lowered.matrixLocal}
 
@@ -2107,6 +2132,7 @@ ${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual
     // which is the index a light pointer names.
     std::vector<LightHandle> punctual_lights;
     std::vector<AnimatedLightBinding> light_node_bindings;
+` : ""}${gltfCameras ? `    std::vector<AnimatedCameraBinding> camera_node_bindings;
 ` : ""}    if (const ts::JsonValue* extensions_value =
             optional(document, "extensions")) {
         const JsonObject& extensions =
@@ -2166,10 +2192,13 @@ ${lowered.punctualLightLoading}
             }
         }
     }
-    const auto animation_runtime =
+${gltfCameras ? `${lowered.gltfCameraLoading}
+` : ""}    const auto animation_runtime =
         std::make_shared<AnimationRuntime>();
 ${animationPointer ? `    animation_runtime->light_nodes =
         std::move(light_node_bindings);
+` : ""}${gltfCameras ? `    animation_runtime->camera_nodes =
+        std::move(camera_node_bindings);
 ` : ""}    animation_runtime->node_meshes.resize(node_json.size());
     animation_runtime->nodes.resize(node_json.size());
     for (std::size_t index = 0; index < node_json.size(); ++index) {
@@ -3820,7 +3849,8 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                     -light_world[9],
                     -light_world[10],
                 });
-            }` : ""}
+            }` : ""}${gltfCameras ? `
+${lowered.gltfCameraPoseRefresh}` : ""}
             for (const AnimatedMeshBinding& binding :
                  animation_runtime->meshes) {
                 ModelGeometry& geometry =

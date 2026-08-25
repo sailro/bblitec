@@ -319,6 +319,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-gltf/gltf-feature-variants.ts",
         consumers: ["features.cmake", "variant table", "loader flag"],
     },
+    "loader:gltf-cameras": {
+        provenance:
+            "src/loader-gltf/gltf-feature-camera.ts#enableGltfCameras + " +
+            "src/loader-gltf/gltf-feature-camera.ts#applyAsset",
+        consumers: ["features.cmake", "loader flag"],
+    },
     "loader:splat": {
         provenance:
             "src/loader-splat/load-splat.ts#loadSplat + " +
