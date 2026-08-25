@@ -570,6 +570,7 @@ combination):
 | `BBLITE_BACKEND` | `SDL_GPU` | compiled GPU backend set: `SDL_GPU`, `DAWN`, or `BOTH`; `scene -- build` defaults to `BOTH` once the Dawn library is installed and honors the `BBLITE_BACKEND` environment variable |
 | `BBLITE_DAWN_DIR` | `artifacts/tools/dawn` | installed Dawn package root; point at `artifacts/tools/dawn-min` for the minimal static FXC-only library |
 | `BBLITE_SDL_DIR` | empty | subsystem-trimmed static SDL3 root (`tools/build-sdl-min.ps1`); empty selects the toolchain (vcpkg) SDL3 |
+| `BBLITE_LABSOUND_DIR` | `artifacts/tools/labsound` | installed pinned LabSound root (`tools/build-labsound.ps1`); required only by a scene reaching `audio:engine` |
 | `BBLITE_MINSIZE` | `OFF` | whole-program optimization and dead-stripping (`/GL /Gw`, `/LTCG /OPT:REF /OPT:ICF`) plus a `/MAP` linker map for `tools/map-size-report.mjs` |
 | `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
 | `CMAKE_MSVC_RUNTIME_LIBRARY` | toolchain | pass `MultiThreaded$<$<CONFIG:Debug>:Debug>` with the static triplet; vcpkg does not flip the project's own CRT |
@@ -638,7 +639,10 @@ pwsh -File tools\build-dawn-min.ps1
 `build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
 video, events, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
 sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer — nothing
-links the software renderer, since bblitec requires a GPU).
+links the software renderer, since bblitec requires a GPU). **A scene
+reaching `audio:engine` is refused at configure against this install**,
+because `SDL_AUDIO=OFF` leaves no device to open; a minimal build with
+audio needs that option flipped in an install root of its own.
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with
@@ -691,6 +695,8 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
 | `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
 | `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
+| `BBLITE_AUDIO_CAPTURE=<path.wav>` | render the scene's audio graph offline instead of opening a device, and write it as 32-bit float WAV when the run ends, with a frames/peak/RMS line on stderr. Audio produces no pixels, so this is what a comparison reads; two runs of one scene produce byte-identical PCM |
+| `BBLITE_AUDIO_CAPTURE_SECONDS=<t>` | how long to render for `BBLITE_AUDIO_CAPTURE` (default 1.0) |
 | `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
 Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and

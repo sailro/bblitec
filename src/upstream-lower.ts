@@ -12,6 +12,7 @@ import { FactoryLowerer } from "./lowering/factory-lowerer.js";
 import { CompressedTextureLowerer } from "./lowering/compressed-texture-lowerer.js";
 import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
+import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
@@ -1644,6 +1645,14 @@ ${composed.wgsl}`,
                 new TubeLowerer(context).lowerTube(),
                 generated,
             );
+        }
+        // The audio engine's output graph is FOLDED at the reaching call
+        // site rather than emitted here, because the shape is three
+        // statements long. This is the other half of that: it emits
+        // nothing and refuses generation the moment one of those
+        // statements moves.
+        if (features.includes("audio:engine")) {
+            new AudioLowerer(context).assertEngineGraphContract();
         }
         if (features.includes("navigation:recast")) {
             this.writeSource(

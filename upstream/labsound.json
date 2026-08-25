@@ -1,0 +1,13 @@
+{
+  "$comment": "The Web Audio engine behind bblite/pal_audio.hpp. LabSound is a fork of WebKit's own WebAudio implementation with the LGPL/GPL code removed, so a native audio result is expected to track the browser reference the way navigation does with recastnavigation rather than the way physics does with Bullet. It is not in the vcpkg registry, so it is built from this commit by tools/build-labsound.ps1 into artifacts/tools/labsound -- the same shape the pinned Tint and Dawn builds take. libnyquist is LabSound's own file-decode dependency (its core references the encoder header); the audio device is SDL3 through native/src/pal_audio_sdl_device.hpp, not LabSound's bundled miniaudio or RtAudio backend.",
+  "repository": "https://github.com/LabSound/LabSound.git",
+  "commit": "b5de2522b64a382f9e4e14520ecd395d068d1cda",
+  "license": "BSD-2-Clause AND BSD-3-Clause",
+  "dependencies": {
+    "libnyquist": {
+      "repository": "https://github.com/LabSound/libnyquist.git",
+      "commit": "e687b0ed3e68e2cfd82fb9d4caa652dbdce2b762",
+      "$comment": "Fetched by LabSound's own cmake/libnyquist.cmake at GIT_TAG master; this commit is what the pinned build resolved to and must be passed back with -DLIBNYQUIST_SOURCE_DIR to stay reproducible."
+    }
+  }
+}

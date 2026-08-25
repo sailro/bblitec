@@ -696,6 +696,16 @@ export type ValueKind =
     // The navigation plugin: the Detour surface behind the PAL, held the
     // way `physics-world` holds the solver.
     | "navigation"
+    // The Web Audio family. The seam is the pin's own: `src/audio/*.ts`
+    // reaches the browser through `AudioContext`/`GainNode`/`AudioParam`
+    // and nothing else, so those are the handles -- the same shape
+    // `physics-world` holds the solver behind. `audio-engine` is the Lite
+    // engine record; `audio-context` is the `BaseAudioContext` it hands
+    // back, which every reached demo builds its own graph on.
+    | "audio-engine"
+    | "audio-context"
+    | "audio-node"
+    | "audio-param"
     | "render-target"
     | "render-target-texture"
     | "render-texture"
@@ -799,6 +809,32 @@ export interface Value {
      * the assignment stored.
      */
     scenePbrMaterialIndex?: number;
+    /**
+     * Set on a read whose value can differ between two evaluations of the
+     * same expression -- a clock, not a constant.
+     *
+     * `collectStaticConstants` registers every `const` initializer so a
+     * later use folds back to it, which is right for a literal and wrong
+     * for `ctx.currentTime`: `const now = ctx.currentTime` followed by two
+     * uses would call the clock twice and schedule against two different
+     * instants, where the source asked for one. A declaration bound to an
+     * impure value therefore stops being a static constant and its uses
+     * read the native local.
+     */
+    impure?: true;
+    /**
+     * `mainBus._in` under an audio engine -- the gain a sound source
+     * connects into. It rides the engine value because the pin reaches it
+     * through the engine object rather than by name.
+     */
+    audioMainBusCpp?: string;
+    /**
+     * The context a node or parameter belongs to. Web Audio forbids
+     * connecting across contexts and every factory is a method on one, so
+     * the context travels with everything it made; `carriesAudioContext`
+     * in the property table is what moves it across a read.
+     */
+    audioContextCpp?: string;
     /**
      * The materialized asset an `asset` value was loaded from.
      * `selectVariant` needs it the way the pin's own setter reaches
@@ -1049,6 +1085,7 @@ export type Feature =
     | "mesh:tube"
     | "particle:node"
     | "navigation:recast"
+    | "audio:engine"
     | "physics:world"
     | "physics:aggregate"
     | "scene:remove"

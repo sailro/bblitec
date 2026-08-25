@@ -45,6 +45,24 @@ if(
     list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
 endif()
 
+# The trimmed SDL3 (tools/build-sdl-min.ps1) is built -DSDL_AUDIO=OFF,
+# because nothing needed the subsystem until the Web Audio slice existed.
+# A scene reaching audio against it would open no device and throw at the
+# first frame -- a late and uninformative way to learn that a build
+# option said no. Refused here, before project(), so it is the first
+# thing a bad pair reports.
+if(BBLITE_SDL_DIR AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
+    message(
+        FATAL_ERROR
+        "This scene reaches audio:engine, but BBLITE_SDL_DIR selects the "
+        "subsystem-trimmed SDL3, which tools/build-sdl-min.ps1 builds with "
+        "SDL_AUDIO=OFF -- there is no audio device to open. Either leave "
+        "BBLITE_SDL_DIR empty to use the toolchain SDL3, or rebuild the "
+        "trimmed SDL with SDL_AUDIO=ON into an install root of its own and "
+        "point BBLITE_SDL_DIR at that."
+    )
+endif()
+
 project(babylon_lite_native LANGUAGES CXX)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
@@ -88,6 +106,19 @@ set(
     "Installed pinned Dawn library root"
 )
 
+# Installed LabSound root (tools/build-labsound.ps1). LabSound is not in
+# the vcpkg registry, so it is built once from a pinned commit into
+# artifacts/tools the way Dawn and Tint are. Unlike Dawn it is consumed
+# by path rather than through find_package: LabSound's install(EXPORT)
+# names every backend target, including the two this build deliberately
+# does not compile, so its package config cannot resolve.
+set(
+    BBLITE_LABSOUND_DIR
+    "${BBLITE_NATIVE_ROOT}/../artifacts/tools/labsound"
+    CACHE PATH
+    "Installed pinned LabSound root"
+)
+
 # Optional subsystem-trimmed static SDL3 (tools/build-sdl-min.ps1).
 # Empty selects the toolchain-provided SDL3 (vcpkg).
 set(
@@ -96,6 +127,7 @@ set(
     CACHE PATH
     "Installed trimmed SDL3 root (empty = toolchain SDL3)"
 )
+
 
 set_property(
     CACHE BBLITE_BACKEND
@@ -518,6 +550,38 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
             RecastNavigation::DetourTileCache
             RecastNavigation::DebugUtils
     )
+endif()
+
+# The Web Audio engine is reached only through `bblite/pal_audio.hpp`,
+# whose implementation is one translation unit the feature list selects
+# (`featureSources`). Nothing generated names LabSound. SDL3 is already
+# linked as the platform layer and carries the audio device
+# (`pal_audio_sdl_device.hpp`), so no second platform dependency appears.
+if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib")
+        message(
+            FATAL_ERROR
+            "This scene reaches audio:engine but no LabSound install was "
+            "found at ${BBLITE_LABSOUND_DIR}. Build it once with "
+            "tools/build-labsound.ps1, or point BBLITE_LABSOUND_DIR at an "
+            "existing install."
+        )
+    endif()
+    # SYSTEM: LabSound's headers are not warning-clean under /W4, and
+    # this project's own sources must stay so.
+    target_include_directories(
+        bblite_native
+        SYSTEM PRIVATE "${BBLITE_LABSOUND_DIR}/include"
+    )
+    target_link_libraries(
+        bblite_native
+        PRIVATE
+            "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
+            "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
+    )
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=0)
 endif()
 
 if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)
