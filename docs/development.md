@@ -639,7 +639,10 @@ pwsh -File tools\build-dawn-min.ps1
 `build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
 video, events, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
 sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer — nothing
-links the software renderer, since bblitec requires a GPU).
+links the software renderer, since bblitec requires a GPU). **A scene
+reaching `audio:engine` is refused at configure against this install**,
+because `SDL_AUDIO=OFF` leaves no device to open; a minimal build with
+audio needs that option flipped in an install root of its own.
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with

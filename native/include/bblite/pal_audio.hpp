@@ -220,13 +220,10 @@ void audio_param_cancel_scheduled_values(AudioParamHandle param, double time);
  *
  * Called once from `pal::run_engine`, which is the one place a run ends
  * -- the same seam `CaptureGate` takes a screenshot at, rather than an
- * `atexit` hook running after teardown has begun. A build that compiled
- * no audio has nothing to render, which is what the stub says.
+ * `atexit` hook running after teardown has begun. A build that reached
+ * no audio does not include this header at all, so there is no stub to
+ * declare: the caller is compiled out with it.
  */
-#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
 void audio_render_pending_captures();
-#else
-inline void audio_render_pending_captures() {}
-#endif
 
 } // namespace bbl::pal

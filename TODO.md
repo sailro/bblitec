@@ -830,6 +830,15 @@ CLI exposes no combined-sampler emission.
     inside `void (async () => { try { ... } catch { ... } })()`, which needs
     both escaping closures and `catch`. Sizing an audio demo means sizing those
     first.
+  - **A minimal-size build cannot carry audio yet.**
+    `tools/build-sdl-min.ps1` builds SDL3 with `SDL_AUDIO=OFF`, so an
+    `audio:engine` scene against `BBLITE_SDL_DIR` has no device to open; the
+    pair is refused at configure naming both ways out. Closing it means a
+    second trimmed-SDL install root with `SDL_AUDIO=ON`, and measuring what
+    the subsystem plus LabSound cost against the 2.3 MB SDL_GPU baseline --
+    LabSound's core is ~1 MB of static archive before dead-stripping, and it
+    drags libnyquist in for one encoder call, so `MINSIZE` may want the
+    WAV writer to stop being LabSound's.
   - **Still open, smaller**: LabSound logs at TRACE to stdout with no hook to
     route it; `libnyquist` is fetched by LabSound's own CMake at `GIT_TAG
     master`, so `tools/build-labsound.ps1` pins the commit itself and passes it

@@ -45,6 +45,24 @@ if(
     list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
 endif()
 
+# The trimmed SDL3 (tools/build-sdl-min.ps1) is built -DSDL_AUDIO=OFF,
+# because nothing needed the subsystem until the Web Audio slice existed.
+# A scene reaching audio against it would open no device and throw at the
+# first frame -- a late and uninformative way to learn that a build
+# option said no. Refused here, before project(), so it is the first
+# thing a bad pair reports.
+if(BBLITE_SDL_DIR AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
+    message(
+        FATAL_ERROR
+        "This scene reaches audio:engine, but BBLITE_SDL_DIR selects the "
+        "subsystem-trimmed SDL3, which tools/build-sdl-min.ps1 builds with "
+        "SDL_AUDIO=OFF -- there is no audio device to open. Either leave "
+        "BBLITE_SDL_DIR empty to use the toolchain SDL3, or rebuild the "
+        "trimmed SDL with SDL_AUDIO=ON into an install root of its own and "
+        "point BBLITE_SDL_DIR at that."
+    )
+endif()
+
 project(babylon_lite_native LANGUAGES CXX)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
@@ -109,6 +127,7 @@ set(
     CACHE PATH
     "Installed trimmed SDL3 root (empty = toolchain SDL3)"
 )
+
 
 set_property(
     CACHE BBLITE_BACKEND

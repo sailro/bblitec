@@ -112,6 +112,11 @@ foreach ($patchName in $patchNames) {
     -DSDL_STATIC=ON `
     -DSDL_TEST_LIBRARY=OFF `
     -DSDL_EXAMPLES=OFF `
+    # Off because nothing needed it until the Web Audio slice existed. A
+    # scene reaching `audio:engine` against this install is refused at
+    # configure by native/CMakeLists.txt rather than failing to open a
+    # device at run time; a minimal build WITH audio needs this ON in an
+    # install root of its own.
     -DSDL_AUDIO=OFF `
     -DSDL_JOYSTICK=OFF `
     -DSDL_HAPTIC=OFF `
