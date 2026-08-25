@@ -295,10 +295,4 @@ function validateNavMeshParams(
             );
         }
     }
-    const keep = context.objectProperty(options, "keepIntermediates");
-    if (keep) {
-        // Accepted and discarded: it only gates freeing Recast
-        // intermediates, which nothing reached reads.
-        void keep;
-    }
 }

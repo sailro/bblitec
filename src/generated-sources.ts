@@ -228,6 +228,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["physics:world"],
     },
     {
+        source: "upstream/src/mesh_tube.cpp",
+        features: ["mesh:tube"],
+    },
+    {
         source: "upstream/src/navigation.cpp",
         features: ["navigation:recast"],
     },

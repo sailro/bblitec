@@ -1,0 +1,26 @@
+diff --git a/Recast/Source/Recast.cpp b/Recast/Source/Recast.cpp
+index d75a9f5..2abe732 100644
+--- a/Recast/Source/Recast.cpp
++++ b/Recast/Source/Recast.cpp
+@@ -341,7 +341,10 @@ void rcMarkWalkableTriangles(rcContext* context, const float walkableSlopeAngle,
+ 	rcIgnoreUnused(context);
+ 	rcIgnoreUnused(numVerts);
+ 
+-	const float walkableThr = cosf(walkableSlopeAngle / 180.0f * RC_PI);
++	// The wasm reference computes cosf through double precision
++	// (musl); spelling that out keeps the walkable threshold identical
++	// across the two builds of these sources.
++	const float walkableThr = (float)cos((double)(walkableSlopeAngle / 180.0f * RC_PI));
+ 
+ 	float norm[3];
+ 
+@@ -366,7 +369,8 @@ void rcClearUnwalkableTriangles(rcContext* context, const float walkableSlopeAng
+ 	rcIgnoreUnused(numVerts);
+ 
+ 	// The minimum Y value for a face normal of a triangle with a walkable slope.
+-	const float walkableLimitY = cosf(walkableSlopeAngle / 180.0f * RC_PI);
++	// See rcMarkWalkableTriangles: match the wasm reference's libm.
++	const float walkableLimitY = (float)cos((double)(walkableSlopeAngle / 180.0f * RC_PI));
+ 
+ 	float faceNormal[3];
+ 	for (int i = 0; i < numTris; ++i)

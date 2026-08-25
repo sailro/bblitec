@@ -688,7 +688,13 @@ test("generates reached PBR material scalar fields", () => {
         material.source,
         /record\.thickness_texture = std::move\(thickness_texture\.data\)/,
     );
-    assert.match(material.source, /options\.alpha < 1\.0f/);
+    // The alpha-mode rule lives in one native helper shared with the
+    // write-site re-derivation, so the factory calls it rather than
+    // restating the predicate.
+    assert.match(
+        material.source,
+        /derive_material_alpha_mode\(material\);/,
+    );
 });
 
 test("generates no-color material views from pinned view flags", () => {

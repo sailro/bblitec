@@ -1287,6 +1287,20 @@ export function emitPropertyAssignment(
                 `${record}.${recordField.field} ` +
                     `${recordField.simpleOnly ? "=" : operator} ${stored};`,
             );
+            if (
+                recordField.kind === "material" &&
+                recordField.property === "alpha"
+            ) {
+                // The pin reads `mat.alpha < 1` live when it builds
+                // renderables, so a post-creation write moves the
+                // material between the opaque and blended families.
+                // One shared home for the rule (the factory calls the
+                // same helper), so the transmission arm and the family
+                // gates cannot drift from the creation-time derivation.
+                context.emit(
+                    `bbl::derive_material_alpha_mode(${record});`,
+                );
+            }
             return;
         }
 

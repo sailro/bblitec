@@ -2036,6 +2036,7 @@ MeshHandle create_mesh_from_data(
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.name = name;
+    mesh.scene_authored = true;
     mesh.primitive = PrimitiveKind::gltf;
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);

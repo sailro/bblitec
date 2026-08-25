@@ -691,9 +691,11 @@ export type ValueKind =
     // nothing. A body and a shape have no compile-time value because
     // `createPhysicsBody` and `createPhysicsShape` both refuse.
     | "physics-engine-module"
-    | "navigation"
     | "physics-world"
     | "physics-aggregate"
+    // The navigation plugin: the Detour surface behind the PAL, held the
+    // way `physics-world` holds the solver.
+    | "navigation"
     | "render-target"
     | "render-target-texture"
     | "render-texture"
@@ -1044,6 +1046,7 @@ export type Feature =
     | "mesh:thin-instance-colors"
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
+    | "mesh:tube"
     | "particle:node"
     | "navigation:recast"
     | "physics:world"

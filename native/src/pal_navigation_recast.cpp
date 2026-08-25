@@ -84,8 +84,8 @@ void navigation_create_solo_nav_mesh(
     const float* vertices = geometry.positions.data();
     const int vertex_count =
         static_cast<int>(geometry.positions.size() / 3);
-    const int index_count = static_cast<int>(geometry.indices.size());
-    const int triangle_count = index_count / 3;
+    const int triangle_count =
+        static_cast<int>(geometry.indices.size()) / 3;
     std::vector<int> triangles(geometry.indices.begin(),
                                geometry.indices.end());
 
@@ -109,72 +109,43 @@ void navigation_create_solo_nav_mesh(
     // copy. The wrapper stores JS numbers into rcConfig's int fields,
     // where emscripten truncates — the double-to-int casts here are
     // that same truncation.
-    ResolvedBuildConfig resolved;
-    if (params.cs) resolved.cs = static_cast<float>(*params.cs);
-    if (params.ch) resolved.ch = static_cast<float>(*params.ch);
-    if (params.walkable_slope_angle) {
-        resolved.walkable_slope_angle =
-            static_cast<float>(*params.walkable_slope_angle);
-    }
-    if (params.walkable_height) {
-        resolved.walkable_height =
-            static_cast<int>(*params.walkable_height);
-    }
-    if (params.walkable_climb) {
-        resolved.walkable_climb =
-            static_cast<int>(*params.walkable_climb);
-    }
-    if (params.walkable_radius) {
-        resolved.walkable_radius =
-            static_cast<int>(*params.walkable_radius);
-    } else {
-        // The wrapper's default walkableRadius is 0.5, truncated to 0
-        // by rcConfig's int field.
-        resolved.walkable_radius = 0;
-    }
-    if (params.max_edge_len) {
-        resolved.max_edge_len = static_cast<int>(*params.max_edge_len);
-    }
-    if (params.max_simplification_error) {
-        resolved.max_simplification_error =
-            static_cast<float>(*params.max_simplification_error);
-    }
-    if (params.min_region_area) {
-        resolved.min_region_area =
-            static_cast<int>(*params.min_region_area);
-    }
-    if (params.merge_region_area) {
-        resolved.merge_region_area =
-            static_cast<int>(*params.merge_region_area);
-    }
-    if (params.max_verts_per_poly) {
-        resolved.max_verts_per_poly =
-            static_cast<int>(*params.max_verts_per_poly);
-    }
-    if (params.detail_sample_dist) {
-        resolved.detail_sample_dist =
-            static_cast<float>(*params.detail_sample_dist);
-    }
-    if (params.detail_sample_max_error) {
-        resolved.detail_sample_max_error =
-            static_cast<float>(*params.detail_sample_max_error);
-    }
-
+    const ResolvedBuildConfig defaults;
+    const auto pick_float = [](const std::optional<double>& given,
+                               float fallback) -> float {
+        return given ? static_cast<float>(*given) : fallback;
+    };
+    const auto pick_int = [](const std::optional<double>& given,
+                             int fallback) -> int {
+        return given ? static_cast<int>(*given) : fallback;
+    };
     rcConfig config;
     std::memset(&config, 0, sizeof(config));
-    config.cs = resolved.cs;
-    config.ch = resolved.ch;
-    config.walkableSlopeAngle = resolved.walkable_slope_angle;
-    config.walkableHeight = resolved.walkable_height;
-    config.walkableClimb = resolved.walkable_climb;
-    config.walkableRadius = resolved.walkable_radius;
-    config.maxEdgeLen = resolved.max_edge_len;
-    config.maxSimplificationError = resolved.max_simplification_error;
-    config.minRegionArea = resolved.min_region_area;
-    config.mergeRegionArea = resolved.merge_region_area;
-    config.maxVertsPerPoly = resolved.max_verts_per_poly;
-    config.detailSampleDist = resolved.detail_sample_dist;
-    config.detailSampleMaxError = resolved.detail_sample_max_error;
+    config.cs = pick_float(params.cs, defaults.cs);
+    config.ch = pick_float(params.ch, defaults.ch);
+    config.walkableSlopeAngle = pick_float(
+        params.walkable_slope_angle, defaults.walkable_slope_angle);
+    config.walkableHeight =
+        pick_int(params.walkable_height, defaults.walkable_height);
+    config.walkableClimb =
+        pick_int(params.walkable_climb, defaults.walkable_climb);
+    config.walkableRadius =
+        pick_int(params.walkable_radius, defaults.walkable_radius);
+    config.maxEdgeLen =
+        pick_int(params.max_edge_len, defaults.max_edge_len);
+    config.maxSimplificationError = pick_float(
+        params.max_simplification_error,
+        defaults.max_simplification_error);
+    config.minRegionArea =
+        pick_int(params.min_region_area, defaults.min_region_area);
+    config.mergeRegionArea =
+        pick_int(params.merge_region_area, defaults.merge_region_area);
+    config.maxVertsPerPoly =
+        pick_int(params.max_verts_per_poly, defaults.max_verts_per_poly);
+    config.detailSampleDist = pick_float(
+        params.detail_sample_dist, defaults.detail_sample_dist);
+    config.detailSampleMaxError = pick_float(
+        params.detail_sample_max_error,
+        defaults.detail_sample_max_error);
     config.borderSize = 0;
     config.tileSize = 0;
 
@@ -353,8 +324,7 @@ NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
     std::uint32_t triangle_vertex = 0;
     for (int tile_index = 0; tile_index < mesh.getMaxTiles();
          ++tile_index) {
-        const dtMeshTile* tile =
-            const_cast<const dtNavMesh&>(mesh).getTile(tile_index);
+        const dtMeshTile* tile = mesh.getTile(tile_index);
         if (!tile || !tile->header) continue;
         for (int poly_index = 0; poly_index < tile->header->polyCount;
              ++poly_index) {
@@ -470,10 +440,10 @@ NavRaycastHit navigation_raycast(
         return NavRaycastHit{};
     }
 
+    // Zeroed wholesale: a null path buffer with maxPath 0 asks Detour
+    // for the t and normal only, the way the wrapper's raycast does.
     dtRaycastHit ray_hit;
     std::memset(&ray_hit, 0, sizeof(ray_hit));
-    ray_hit.path = nullptr;
-    ray_hit.maxPath = 0;
     state.query->raycast(nearest_ref, start, end, &state.filter, 0,
                          &ray_hit, 0);
     const float t = ray_hit.t;

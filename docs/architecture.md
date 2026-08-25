@@ -114,6 +114,8 @@ Primary source ownership:
 | `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
 | `native/include/bblite/pal_physics.hpp` | the rigid-body solver contract: the `HP_*` surface the pinned physics layer calls on the module it is handed |
 | `native/src/pal_physics_bullet.cpp` | that surface over Bullet, plus the two ordering repairs Bullet needs and Havok does not ([fidelity](fidelity.md#physics-contract)) |
+| `native/include/bblite/pal_navigation.hpp` | the navigation contract: the Recast/Detour surface the pinned wrapper calls on the module it loads |
+| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's own pinned recastnavigation commit, replaying `generateSoloNavMesh` and the Detour query verbatim |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |

@@ -1516,6 +1516,18 @@ class Compiler
         );
     }
 
+    public vec3FromRecord(
+        value: Value,
+        node: ts.Node,
+        precision: "float" | "double" = "float",
+    ): string {
+        return this.evaluator.vec3FromRecord(
+            value,
+            node,
+            precision,
+        );
+    }
+
     public compileVec2(expression: ts.Expression): string {
         return this.evaluator.compileVec2(expression);
     }
