@@ -83,6 +83,41 @@ export function parsePublishedRows(
     return rows;
 }
 
+/**
+ * The curated table reads in scene order, and a row inserted in the wrong
+ * place is the mistake this catches. It is invisible in review — 137 rows
+ * of identical shape, and the diff of an integration shows only the row
+ * being added — but the number is how a reader finds a scene, so a stray
+ * one costs every later lookup. The project-owned gates below the curated
+ * table carry names rather than numbers and keep their own order.
+ */
+export function outOfOrderRows(
+    rows: readonly PublishedRow[],
+    statusPath = "docs/status.md",
+): string[] {
+    const problems: string[] = [];
+    const numbered = rows.flatMap((row) => {
+        const id = /^scene([0-9]+)$/.exec(row.sceneId)?.[1];
+        return id === undefined
+            ? []
+            : [{ row, id: Number(id) }];
+    });
+    for (let index = 1; index < numbered.length; index++) {
+        const previous = numbered[index - 1]!;
+        const current = numbered[index]!;
+        if (current.id === previous.id) {
+            problems.push(
+                `${statusPath}:${current.row.line} scene ${current.id} is published twice.`,
+            );
+        } else if (current.id < previous.id) {
+            problems.push(
+                `${statusPath}:${current.row.line} scene ${current.id} is published after scene ${previous.id}; the curated table reads in scene order.`,
+            );
+        }
+    }
+    return problems;
+}
+
 function measured(
     sceneId: string,
 ): { values: number[]; source: string } | undefined {
@@ -169,6 +204,7 @@ export function verifyStatus(statusPath = "docs/status.md"): string[] {
         );
         return problems;
     }
+    problems.push(...outOfOrderRows(rows, statusPath));
     const columns = [
         "SDL_GPU full",
         "SDL_GPU foreground",

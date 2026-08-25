@@ -252,6 +252,18 @@ npm run status:verify
 `scenes:process` *is* compile, shaders and build — naming the steps separately
 runs generation twice.
 
+**Read the verdict from the command, not from a pipeline.** Every stage above
+exits non-zero on failure and names what failed (`N of M failed:` with the
+scene list, or `Parity regression: ...`), but a shell pipeline reports its
+*last* command's status — so `npm run scenes:parity | tail -40` exits 0 while
+a scene sits over its gate, and the failure line can scroll past in a long
+log. Do not filter a validation run through `tail`, `grep` or `head` unless
+the shell has `set -o pipefail`; keep the full log and check the exit code.
+When a run is filtered anyway, confirm the result positively instead: every
+`artifacts/parity/*/report-*.json` carries its own `thresholds`, so comparing
+each report's `full.mad`/`region.mad` against them proves the matrix green
+without trusting a scrolled line.
+
 For a change confined to TypeScript the cheap proof is stronger than the
 matrix: compile every scene and digest `generated/`. Byte-identical output plus
 an untouched `native/` tree means the build stamps match, which means the

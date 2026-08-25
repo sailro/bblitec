@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+    outOfOrderRows,
     parsePublishedRows,
     severityColor,
 } from "../src/verify-status.js";
@@ -37,6 +39,56 @@ test("reads each published row through its preview image id", () => {
         "#1a7f37",
     ]);
     assert.equal(rows[0]?.line, 3);
+});
+
+const orderedRow = (id: number): string =>
+    `| ${id} | <img src="images/scenes/scene${id}.png" alt="Scene ${id} rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | coverage |`;
+
+test("names a row published out of scene order", () => {
+    const problems = outOfOrderRows(
+        parsePublishedRows(
+            [orderedRow(10), orderedRow(98), orderedRow(11)].join("\n"),
+        ),
+    );
+    assert.equal(problems.length, 1);
+    assert.match(problems[0]!, /:3 scene 11 is published after scene 98/);
+});
+
+test("names a scene published twice", () => {
+    const problems = outOfOrderRows(
+        parsePublishedRows([orderedRow(10), orderedRow(10)].join("\n")),
+    );
+    assert.deepEqual(problems, [
+        "docs/status.md:2 scene 10 is published twice.",
+    ]);
+});
+
+test("leaves the named project-owned gates in their own order", () => {
+    const gate = (name: string): string =>
+        `| ${name} | <img src="images/scenes/regression-${name}.png" alt="${name}" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | gate |`;
+    assert.deepEqual(
+        outOfOrderRows(
+            parsePublishedRows(
+                [
+                    orderedRow(301),
+                    gate("runtime-sweep"),
+                    gate("instanced-ground"),
+                ].join("\n"),
+            ),
+        ),
+        [],
+    );
+});
+
+test("the published table is in scene order", () => {
+    // The gate itself: a row hand-inserted in the wrong place fails here
+    // rather than surviving into the published table.
+    assert.deepEqual(
+        outOfOrderRows(
+            parsePublishedRows(readFileSync("docs/status.md", "utf8")),
+        ),
+        [],
+    );
 });
 
 test("bands the severity colour the way the table documents it", () => {
