@@ -26,6 +26,7 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import {
     type PinnedBinding,
     PinnedNumericLowerer,
@@ -254,10 +255,7 @@ export function lowerStandardUvTransformWriter(
     }
     const lowerer = new PinnedNumericLowerer(file, {
         bindings,
-        calls: new Map([
-            ["Math.cos", (args: readonly string[]) => `std::cos(${args[0]})`],
-            ["Math.sin", (args: readonly string[]) => `std::sin(${args[0]})`],
-        ]),
+        calls: pinnedNumericMathCalls(),
     });
     const channelBody = channelWriter.body.statements
         .flatMap((statement) => lowerer.statement(statement, "    "))
