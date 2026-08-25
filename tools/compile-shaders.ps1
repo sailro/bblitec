@@ -916,17 +916,21 @@ foreach ($shaderDirectory in $shaderDirectories) {
         Copy-Item $cachedSpirv "$outputBase.spv" -Force
         $compiled += 1
     }
+    # [ordered]: a plain hashtable serializes its keys in bucket order,
+    # which varies between processes, so the record's bytes differed from
+    # run to run with identical content — defeating both the generated-tree
+    # digest and the Move-IfDifferent guard below.
     $compilerRecord = if ($directoryNativeWgsl.Count -gt 0) {
         $pin = Get-Content (Join-Path $root "upstream\tint.json") -Raw |
             ConvertFrom-Json
-        @{
+        [ordered]@{
             backend = "tint-wgsl"
             tintCommit = $pin.commit
             tintSha256 = (Get-FileHash $Tint -Algorithm SHA256).Hash
             dxilCompilerSha256 = (Get-FileHash $Dxc -Algorithm SHA256).Hash
         }
     } else {
-        @{
+        [ordered]@{
             backend = "dxc-hlsl"
             dxilCompilerSha256 = (Get-FileHash $Dxc -Algorithm SHA256).Hash
         }
