@@ -14,9 +14,11 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 Both native GPU backends are measured against the same goldens; the
 Dawn backend renders through the browser reference's own compiler and
 rasterization stack (see [backends](backends.md)). Each backend column is full-image / foreground MAD. Severity:
-$\color{#1a7f37}{\textsf{green below 0.500}}$,
-$\color{#9a6700}{\textsf{yellow from 0.500 to below 1.000}}$, and
-$\color{#cf222e}{\textsf{red above 1.000}}$.
+green below 0.500, yellow from 0.500 to below 1.000, and red above
+1.000. (The legend is plain text on purpose: GitHub stops rendering
+math expressions after roughly 287 per page, and the table's cells
+spend two each — the legend must not spend the three that push the
+last row over.)
 
 A scene that does not reach zero carries a recorded adaptation: every
 generated scene writes a `fidelity.json` giving the source and native
