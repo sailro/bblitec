@@ -10,7 +10,7 @@
  *
  * That is the same contract `pinned-blend-table.ts` holds for the pin's blend
  * factors, and it is what the projection half of this convention already gets
- * from `assertPinnedPerspectiveWriter`.
+ * from `assertReverseZProjectionRows`.
  */
 import ts from "typescript";
 import { floatLiteral } from "../cpp-literals.js";
@@ -135,8 +135,9 @@ namespace bbl::upstream {
  * the reached slice's convention rather than the library's only one.
  *
  * The matching projection is \`mat4PerspectiveLHToRef\`, which maps near to 1
- * and far to 0; \`build_projection\` in the render plan writes those rows and
- * \`assertPinnedPerspectiveWriter\` anchors them term by term.
+ * and far to 0; the render plan's \`mat4_perspective_lh_to_ref\` is that
+ * writer translated whole, and \`assertReverseZProjectionRows\` anchors the
+ * two depth rows this convention's consumers assume.
  */
 inline constexpr DepthCompare pinned_depth_compare =
     DepthCompare::${nativeDepthCompare(compare)};

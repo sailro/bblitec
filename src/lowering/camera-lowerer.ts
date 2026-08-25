@@ -316,12 +316,12 @@ CameraHandle create_arc_rotate_camera(
         // from the one stored extent, and near/far are the camera's own
         // scalars, already on the record — so `ortho_half_height` is the
         // only new state the native camera needs. They also guard the
-        // C++ transcription of the same derivation in the renderer's
-        // orthographic branch (renderer-lowerer.ts, the
+        // renderer's orthographic branch (renderer-lowerer.ts, the
         // `if (camera.orthographic)` arm of build_view_projection),
         // which re-derives left/right/bottom/top from
-        // `ortho_half_height * aspect`; the mat4 writer's terms are
-        // asserted beside that arm, the plane derivation only here.
+        // `ortho_half_height * aspect` and hands them to the pinned
+        // mat4 writer translated whole from its own AST; the plane
+        // derivation is asserted only here.
         this.context.assertExpressionShape(
             this.context.variableInitializer(
                 writer,

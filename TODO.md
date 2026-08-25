@@ -165,7 +165,14 @@ act on it — not what was tried.
   (png; png+jpeg; png+webp; png+physics), so the stable shape is one shared
   install dir per combo — a single shared dir would thrash, because vcpkg
   reconciles the installed set to each configure's feature list. Fix the
-  configure-lock bypass ([AUDIT](AUDIT.md) BU-3) first.
+  configure-lock bypass first: `serializeConfigure` wraps only the explicit
+  `cmake -S` call, and when `CMakeLists.txt` or a scene's `features.cmake`
+  is newer than the cache, `cmake --build` re-runs CMake itself inside the
+  parallel build stage — so a change flipping a vcpkg manifest feature
+  across many scenes triggers concurrent manifest installs sharing one
+  download/binary cache, the documented unreliable condition. Treat that
+  staleness as a cache mismatch and run the configure explicitly under the
+  lock before building.
 - [ ] Add `--explain-feature`. The inspection half shipped as `scene -- diff`'s
   pinned-block and shader-arm attribution plus the per-scene
   `feature-activation.json`.

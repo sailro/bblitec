@@ -334,6 +334,7 @@ const fogWgslModule = "src/shader/wgsl-fog.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
 const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
+const perspectiveMatrixModule = "src/math/mat4-perspective-lh-to-ref.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -539,11 +540,12 @@ export class RendererLowerer {
         const { shaderVariantTable, shaderVariantEntries } =
             this.loweredShaderVariants(reachedShaderPrograms);
         // The camera matrix chain the source below emits is anchored
-        // per-term against its pinned writers before anything is returned:
-        // the perspective stores, the multiply accumulation order, and the
+        // against its pinned writers before anything is returned: the
+        // reverse-Z projection rows (the writer itself is translated from
+        // its own AST below), the multiply accumulation order, and the
         // view transpose (whose emission is derived from the pinned store
         // map rather than asserted against it).
-        this.assertPinnedPerspectiveWriter();
+        this.assertReverseZProjectionRows();
         this.assertPinnedMultiplyWriter();
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
@@ -565,6 +567,38 @@ export class RendererLowerer {
         const instancingTrs = options.gpuInstancing
             ? this.pinnedTrsComposition()
             : { quaternionProducts: "", basisLocals: "", basisStores: "" };
+        // The projection writers, translated whole from their pinned
+        // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
+        // because Windows headers define the bare names away.
+        const perspectiveWriter = this.lowerPinnedMatrixWriter(
+            perspectiveMatrixModule,
+            "mat4PerspectiveLHToRef",
+            "mat4_perspective_lh_to_ref",
+            new Map([
+                ["fov", "fov"],
+                ["aspect", "aspect"],
+                ["near", "near_plane"],
+                ["far", "far_plane"],
+            ]),
+            new Map([
+                ["Math.tan", (args) => `std::tan(${args[0]})`],
+            ]),
+        );
+        const orthoWriter = options.orthographicCamera
+            ? this.lowerPinnedMatrixWriter(
+                  orthoMatrixModule,
+                  "mat4OrthoOffCenterLHToRef",
+                  "mat4_ortho_off_center_lh_to_ref",
+                  new Map([
+                      ["left", "left"],
+                      ["right", "right"],
+                      ["bottom", "bottom"],
+                      ["top", "top"],
+                      ["near", "near_plane"],
+                      ["far", "far_plane"],
+                  ]),
+              )
+            : "";
         // Under multi-light the pinned lights block owns every light past
         // the primary slot, so the legacy capture block keeps its second
         // analytic slot empty there exactly as the retired uploader did.
@@ -595,6 +629,8 @@ export class RendererLowerer {
                 instancingTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
+                perspectiveWriter,
+                orthoWriter,
             }),
         };
     }
@@ -644,28 +680,6 @@ export class RendererLowerer {
             throw new Error(
                 "Orthographic cameras are lowered for the scene projection only; environment skyboxes and grounds still build a perspective view-projection.",
             );
-        }
-        if (options.orthographicCamera) {
-            // The reverse-Z off-center writer the projection branch
-            // transcribes term by term.
-            const orthoSource = this.context.store.getSource(
-                orthoMatrixModule,
-            );
-            for (const marker of [
-                "out[0] = 2 / (right - left);",
-                "out[5] = 2 / (top - bottom);",
-                "out[10] = -1 / range;",
-                "out[12] = (left + right) / (left - right);",
-                "out[13] = (top + bottom) / (bottom - top);",
-                "out[14] = far / range;",
-                "out[15] = 1;",
-            ]) {
-                if (!orthoSource.includes(marker)) {
-                    throw new Error(
-                        `Pinned Babylon Lite orthographic projection changed: ${marker}`,
-                    );
-                }
-            }
         }
     }
 
@@ -1270,6 +1284,8 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 skyboxCornerRows: string;
                 skyboxIndexRows: string;
             };
+            perspectiveWriter: string;
+            orthoWriter: string;
         },
     ): string {
         const {
@@ -1280,6 +1296,8 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             instancingTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
+            perspectiveWriter,
+            orthoWriter,
         } = inputs;
         return `// ${this.context.provenance(
                 renderTaskModule,
@@ -1708,24 +1726,28 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
     return result;
 }
 
-// src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in the
-// same double-then-store-once shape as the rest of the chain. The pin maps
-// near -> 1 and far -> 0 and compares greater-equal
+// The pinned perspective writer, translated whole below. It maps
+// near -> 1 and far -> 0 and the engine compares greater-equal
 // (src/engine/render-target.ts REVERSE_DEPTH_COMPARE), which is the one
 // convention every pinned family renders under, so it is the one this
 // renderer writes -- for the scene's own view and for the skybox's alike.
+${perspectiveWriter}
+${orthoWriter ? `
+${orthoWriter}
+` : ""}\
+
 std::array<float, 16> build_projection(
     const CameraRecord& camera,
     double aspect) {
-    const double focal = 1.0 / std::tan(camera.fov * 0.5);
-    const double range = camera.far_plane - camera.near_plane;
+    // The pinned writer stores only the five perspective lanes and relies
+    // on an already-zero target, which the fresh array provides.
     std::array<float, 16> projection{};
-    projection[0] = static_cast<float>(focal / aspect);
-    projection[5] = static_cast<float>(focal);
-    projection[10] = static_cast<float>(-camera.near_plane / range);
-    projection[11] = 1.0f;
-    projection[14] = static_cast<float>(
-        (camera.far_plane * camera.near_plane) / range);
+    mat4_perspective_lh_to_ref(
+        projection,
+        camera.fov,
+        aspect,
+        camera.near_plane,
+        camera.far_plane);
     return projection;
 }
 
@@ -1737,35 +1759,24 @@ std::array<float, 16> build_view_projection(
 
 ${options.orthographicCamera
     ? `    if (camera.orthographic) {
-        // src/camera/orthographic.ts writeOrthoProjection derives every
-        // plane from the half-extent, then writes
-        // src/math/mat4-ortho-lh-to-ref.ts mat4OrthoOffCenterLHToRef.
-        // The pinned writer runs in JavaScript doubles into a
-        // Float32Array cache, so the terms are computed in double here
-        // and stored as float.
+        // src/camera/orthographic.ts writeOrthoProjection: every plane
+        // derives from the half-extent (the derivation and all seven
+        // call arguments are shape-asserted where the single-extent
+        // record is emitted), and the writer itself is the pinned
+        // mat4OrthoOffCenterLHToRef translated whole above.
         const double half_height =
             static_cast<double>(camera.ortho_half_height);
         const double half_width =
             half_height * static_cast<double>(aspect);
-        const double left = -half_width;
-        const double right = half_width;
-        const double bottom = -half_height;
-        const double top = half_height;
-        const double near_plane =
-            static_cast<double>(camera.near_plane);
-        const double far_plane =
-            static_cast<double>(camera.far_plane);
-        const double range = far_plane - near_plane;
         std::array<float, 16> projection{};
-        projection[0] = static_cast<float>(2.0 / (right - left));
-        projection[5] = static_cast<float>(2.0 / (top - bottom));
-        projection[10] = static_cast<float>(-1.0 / range);
-        projection[12] =
-            static_cast<float>((left + right) / (left - right));
-        projection[13] =
-            static_cast<float>((top + bottom) / (bottom - top));
-        projection[14] = static_cast<float>(far_plane / range);
-        projection[15] = 1.0f;
+        mat4_ortho_off_center_lh_to_ref(
+            projection,
+            -half_width,
+            half_width,
+            -half_height,
+            half_height,
+            camera.near_plane,
+            camera.far_plane);
         return multiply_into(projection, view);
     }
 `
@@ -3267,6 +3278,80 @@ ${lifted.fragmentBody}
         return lowerer.expression(expression);
     }
 
+    /**
+     * One pinned matrix writer translated whole: a `Mat4Storage` target
+     * followed by JavaScript-number scalars. The target binds as an f32
+     * buffer, so every store rounds where the pin's `Float32Array` store
+     * does and every local keeps the f64 width a JavaScript number is —
+     * the same two rules the shared translator already enforces. The
+     * scalar map is exhaustive both ways, so a pinned parameter this
+     * emission does not spell, or a spelling the pin no longer takes,
+     * fails generation instead of binding positionally.
+     */
+    private lowerPinnedMatrixWriter(
+        modulePath: string,
+        symbolName: string,
+        cppName: string,
+        scalars: ReadonlyMap<string, string>,
+        calls: ReadonlyMap<
+            string,
+            (args: readonly string[]) => string
+        > = new Map(),
+    ): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            modulePath,
+            symbolName,
+        );
+        if (declaration.parameters.length !== scalars.size + 1) {
+            this.context.contractError(
+                declaration,
+                `Expected pinned ${symbolName} to take a target and ` +
+                    `${scalars.size} scalar(s).`,
+            );
+        }
+        const bindings = new Map<string, PinnedBinding>();
+        const signature: string[] = ["std::array<float, 16>& out"];
+        declaration.parameters.forEach((parameter, index) => {
+            if (!ts.isIdentifier(parameter.name)) {
+                return this.context.contractError(
+                    parameter,
+                    `Expected pinned ${symbolName} parameters to be named.`,
+                );
+            }
+            const name = parameter.name.text;
+            if (index === 0) {
+                if (parameter.type?.getText(file) !== "Mat4Storage") {
+                    this.context.contractError(
+                        parameter,
+                        `Expected pinned ${symbolName} to write a ` +
+                            "Mat4Storage target first.",
+                    );
+                }
+                bindings.set(name, { cpp: "out", type: "f32" });
+                return;
+            }
+            const cpp = scalars.get(name);
+            if (!cpp) {
+                return this.context.contractError(
+                    parameter,
+                    `Pinned ${symbolName} parameter '${name}' has no C++ ` +
+                        "spelling in this emission.",
+                );
+            }
+            bindings.set(name, { cpp, type: "scalar" });
+            signature.push(`double ${cpp}`);
+        });
+        const lowerer = new PinnedNumericLowerer(file, { bindings, calls });
+        const body = declaration.body!.statements
+            .flatMap((statement) => lowerer.statement(statement, "    "))
+            .join("\n");
+        return `// ${this.context.provenance(modulePath, symbolName)}
+void ${cppName}(
+    ${signature.join(",\n    ")}) {
+${body}
+}`;
+    }
+
     /** A literal element read `base[<n>]`, or a contract error. */
     private pinnedElementIndex(
         expression: ts.Expression,
@@ -3496,57 +3581,50 @@ ${lifted.fragmentBody}
     }
 
     /**
-     * Per-term anchors for the perspective writer the projection emissions
-     * transcribe: every pinned store is required, shape-checked, and no
-     * pinned store may exist that the emission does not carry. Rows [10]
-     * and [14] anchor the reverse-Z depth range, which is the only
-     * convention this renderer writes.
+     * The reverse-Z anchor: rows [10] and [14] of the pinned perspective
+     * writer map near -> 1 and far -> 0, which is the projection half of
+     * the convention `pinned_depth_state.hpp` derives its compare and
+     * clear from. The writer itself is translated whole from its own AST
+     * (`lowerPinnedMatrixWriter`), so the emission cannot drift from the
+     * pin; what this guards is the CONVENTION the depth-state consumers
+     * assume — a pin that remapped the depth range would lower faithfully
+     * here while the dither seeds and near-plane handling keyed to a far
+     * plane of 0 went quietly stale, so it fails generation by name
+     * instead.
      */
-    private assertPinnedPerspectiveWriter(): void {
+    private assertReverseZProjectionRows(): void {
         const { file, declaration } = this.context.functionDeclaration(
-            "src/math/mat4-perspective-lh-to-ref.ts",
+            perspectiveMatrixModule,
             "mat4PerspectiveLHToRef",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "tan"),
-            "1 / Math.tan(fov * 0.5)",
-            "Pinned perspective focal term",
         );
         this.context.assertExpressionShape(
             this.context.variableInitializer(declaration, "range"),
             "far - near",
             "Pinned perspective depth range",
         );
-        const expected = new Map<number, string>([
-            [0, "tan / aspect"],
-            [5, "tan"],
+        const rows = new Map<number, string>([
             [10, "-near / range"],
-            [11, "1"],
             [14, "(far * near) / range"],
         ]);
-        const stores = this.pinnedElementStores(declaration, "out");
-        if (stores.length !== expected.size) {
-            this.context.contractError(
-                declaration,
-                `Pinned perspective writer gained or lost stores (${stores.length} of ${expected.size}); the projection emissions no longer cover it.`,
-            );
-        }
-        for (const store of stores) {
+        for (const store of this.pinnedElementStores(declaration, "out")) {
             const index = this.context.numericValue(
                 store.left.argumentExpression,
                 file,
             );
-            const shape = expected.get(index);
-            if (shape === undefined) {
-                this.context.contractError(
-                    store.left,
-                    `Pinned perspective writer stores out[${index}], which the projection emissions do not carry.`,
-                );
-            }
+            const shape = rows.get(index);
+            if (shape === undefined) continue;
             this.context.assertExpressionShape(
                 store.right,
                 shape,
-                `Pinned perspective row ${index}`,
+                `Pinned reverse-Z projection row ${index}`,
+            );
+            rows.delete(index);
+        }
+        if (rows.size !== 0) {
+            this.context.contractError(
+                declaration,
+                "Pinned perspective writer no longer stores the reverse-Z " +
+                    `depth rows (${[...rows.keys()].join(", ")}).`,
             );
         }
     }

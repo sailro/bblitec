@@ -226,12 +226,16 @@ test("the perspective and multiply anchors accept the pinned writers", () => {
         new LoweringContext(),
     ).lowerRenderPlan({});
     // The pin's own depth rows stay in the emission -- there is no second
-    // convention to select between -- and the multiply keeps the pinned
-    // accumulation shape.
-    assert.match(plan.source, /projection\[10\] = static_cast<float>\(-camera\.near_plane \/ range\);/);
+    // convention to select between; they now arrive through the writer
+    // translated whole from the pinned AST -- and the multiply keeps the
+    // pinned accumulation shape.
     assert.match(
         plan.source,
-        /\(camera\.far_plane \* camera\.near_plane\) \/ range/,
+        /out\[static_cast<std::size_t>\(10\.0\)\] = static_cast<float>\(\(\(-near_plane\) \/ range\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /\(\(far_plane \* near_plane\) \/ range\)/,
     );
     assert.match(plan.source, /static_cast<double>\(a\[row\]\) \* b0 \+/);
 });
