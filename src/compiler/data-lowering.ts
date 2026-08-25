@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { pinnedMathSpelling } from "../lowering/pinned-operators.js";
 import {
     foldableMathUnary,
     staticNumberValue,
@@ -10,6 +11,25 @@ import {
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
+
+/**
+ * The one-argument `Math` members scene code may call, each a `<cmath>`
+ * function of the same arity over doubles. The members the pinned-body
+ * layer also accepts spell through the shared pinned table, so the
+ * scene-code compiler and the pinned-body translator cannot disagree about
+ * what a shared member lowers to; the compiler-only extras follow the same
+ * `std::` rule and stay here because no pinned body reaches them. Members
+ * with different semantics (`Math.round`'s tie rule, the seeded
+ * `Math.random`) are dispatched separately below and say why.
+ */
+const mathUnaryCalls: ReadonlyMap<string, string> = new Map([
+    ...(["abs", "ceil", "cos", "floor", "sin", "sqrt", "tan"] as const).map(
+        (name): [string, string] => [name, pinnedMathSpelling(name)],
+    ),
+    ["atan", "std::atan"],
+    ["exp", "std::exp"],
+    ["trunc", "std::trunc"],
+]);
 
 export interface DataLoweringContext {
     readonly checker: ts.TypeChecker;
@@ -893,18 +913,7 @@ export class DataLowerer {
                 };
             }
         }
-        const unary = new Map<string, string>([
-            ["abs", "std::abs"],
-            ["atan", "std::atan"],
-            ["ceil", "std::ceil"],
-            ["cos", "std::cos"],
-            ["exp", "std::exp"],
-            ["floor", "std::floor"],
-            ["sin", "std::sin"],
-            ["sqrt", "std::sqrt"],
-            ["tan", "std::tan"],
-            ["trunc", "std::trunc"],
-        ]).get(method);
+        const unary = mathUnaryCalls.get(method);
         if (unary) {
             if (call.arguments.length !== 1) {
                 this.context.fail(
@@ -926,9 +935,15 @@ export class DataLowerer {
                 );
             }
             const [left, right] = numbers();
+            // `pow` is a shared member, spelled through the pinned table;
+            // `atan2` is compiler-only (no pinned body reaches it) and
+            // follows the same std:: rule here.
+            const spelling = method === "pow"
+                ? pinnedMathSpelling(method)
+                : `std::${method}`;
             return {
                 kind: "number",
-                cpp: `std::${method}(${left}, ${right})`,
+                cpp: `${spelling}(${left}, ${right})`,
                 dataType: { kind: "number" },
             };
         }
@@ -955,6 +970,10 @@ export class DataLowerer {
                     `Math.${method} expects at least two arguments.`,
                 );
             }
+            // Deliberately not the pinned table's `<double>`-pinned 2-arg
+            // spelling: JS max/min are n-ary, so the compiler folds them
+            // as a chain, and every operand it compiles is already a
+            // double, which makes the bare std:: call unambiguous.
             const parts = numbers();
             let cpp = parts[0]!;
             for (const part of parts.slice(1)) {

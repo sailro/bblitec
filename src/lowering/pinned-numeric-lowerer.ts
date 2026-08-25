@@ -785,6 +785,16 @@ export class PinnedNumericLowerer {
                     `std::fmod(${this.expression(node.left)}, ` +
                     `${this.expression(node.right)})`
                 );
+            case ts.SyntaxKind.AsteriskAsteriskToken:
+                // `**` over JS numbers is Number::exponentiate, the same
+                // algorithm ECMA-262 gives `Math.pow`, so it lowers to the
+                // `std::pow` the Math table already maps that call to. The
+                // AST carries the operator's right associativity, so the
+                // spelling needs no parenthesization rule of its own.
+                return (
+                    `std::pow(${this.expression(node.left)}, ` +
+                    `${this.expression(node.right)})`
+                );
             default:
                 return this.fail(node, "binary operator");
         }

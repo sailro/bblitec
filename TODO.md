@@ -48,23 +48,6 @@ act on it — not what was tried.
 
 - [ ] Lower the required class/method/getter/setter/inheritance subset.
 
-## P1 — Port, do not re-derive
-
-- [ ] Retire the hand-written C++ that encodes upstream semantics, leaf by
-  leaf. Two shapes are legitimate — LOWER (walk the pinned AST) or EXECUTE
-  (run the pin and bake); a re-typed formula agrees only until upstream
-  changes it. The templates in `src/lowering/templates/` are ~5,400 lines,
-  of which `gltf-loader-cpp.ts` alone is ~4,600, and `renderer-lowerer.ts`
-  is ~4,600. `pinned-ubo-writer-lowerer.ts` and `pinned-shader-composer.ts`
-  are the mechanisms to reuse. Each leaf is its own measurement: lower or
-  execute it, then prove the generated tree moved only where intended.
-- [ ] Lower the pinned `inverseImageProcessedChannel` whole: the pin carries
-  the full inverse — `src/frame-graph/transmission.ts`, contrast bisection
-  included — and the PAL's `inverse_image_processed_channel` is a float-width
-  transcription of it that today consumes only the lifted
-  `pinned_tone_mapping_scale`. Lowering the body needs a `**` arm in the
-  shared pinned-body translator.
-
 ## P1 — Assets and materials
 
 ### glTF
@@ -171,7 +154,14 @@ act on it — not what was tried.
   (png; png+jpeg; png+webp; png+physics), so the stable shape is one shared
   install dir per combo — a single shared dir would thrash, because vcpkg
   reconciles the installed set to each configure's feature list. Fix the
-  configure-lock bypass ([AUDIT](AUDIT.md) BU-3) first.
+  configure-lock bypass first: `serializeConfigure` wraps only the explicit
+  `cmake -S` call, and when `CMakeLists.txt` or a scene's `features.cmake`
+  is newer than the cache, `cmake --build` re-runs CMake itself inside the
+  parallel build stage — so a change flipping a vcpkg manifest feature
+  across many scenes triggers concurrent manifest installs sharing one
+  download/binary cache, the documented unreliable condition. Treat that
+  staleness as a cache mismatch and run the configure explicitly under the
+  lock before building.
 - [ ] Add `--explain-feature`. The inspection half shipped as `scene -- diff`'s
   pinned-block and shader-arm attribution plus the per-scene
   `feature-activation.json`.

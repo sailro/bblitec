@@ -220,20 +220,22 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     assert.match(plan.source, /local\[15\] = 1\.0;/);
 });
 
-test("the perspective and multiply anchors accept the pinned writers", () => {
-    // Both anchors run inside lowerRenderPlan, so pinned drift throws here.
+test("translates the pinned multiply writer whole", () => {
+    // Pinned drift now flows into different emitted bytes rather than
+    // throwing at a per-term anchor, so the regexes below pin the emission.
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({});
-    // The pin's own depth rows stay in the emission -- there is no second
-    // convention to select between -- and the multiply keeps the pinned
-    // accumulation shape.
-    assert.match(plan.source, /projection\[10\] = static_cast<float>\(-camera\.near_plane \/ range\);/);
+    // The multiply is the pinned writer translated whole — the unrolled
+    // accumulation in the pin's own order, templated on the right
+    // operand's storage; the projection writers' emitted rows are pinned
+    // by the upstream test that owns them ("translates the pinned
+    // perspective writer whole").
+    assert.match(plan.source, /template <typename MatB>\nvoid mat4_multiply_into\(/);
     assert.match(
         plan.source,
-        /\(camera\.far_plane \* camera\.near_plane\) \/ range/,
+        /\(\(\(\(a0 \* b0\) \+ \(a4 \* b1\)\) \+ \(a8 \* b2\)\) \+ \(a12 \* b3\)\)/,
     );
-    assert.match(plan.source, /static_cast<double>\(a\[row\]\) \* b0 \+/);
 });
 
 test("lifts the cubemap-skybox stages from the packaged pin", () => {

@@ -9,8 +9,9 @@
  * generation rather than silently picking a neighbour.
  *
  * That is the same contract `pinned-blend-table.ts` holds for the pin's blend
- * factors, and it is what the projection half of this convention already gets
- * from `assertPinnedPerspectiveWriter`.
+ * factors. The projection half of the same convention is anchored here too:
+ * the depth rows of every pinned projection writer this port translates map
+ * near -> 1 and far -> 0, checked beside the clear value they pair with.
  */
 import ts from "typescript";
 import { floatLiteral } from "../cpp-literals.js";
@@ -89,6 +90,79 @@ function pinnedDepthClearValue(context: LoweringContext): number {
 }
 
 /**
+ * The projection half of the convention, anchored beside its clear value.
+ *
+ * The projection writers themselves are translated whole from their own
+ * ASTs (`lowerPinnedFunction`), so their emissions cannot drift from the
+ * pin. What this guards is the CONVENTION this header's consumers assume —
+ * the dither seeds and near-plane handling are keyed to a far plane of 0 —
+ * so a pin that remapped the depth range would lower faithfully while those
+ * consumers went quietly stale. It fails generation by name instead, for
+ * the perspective writer and the orthographic one alike.
+ */
+const projectionWriters: readonly {
+    module: string;
+    symbol: string;
+    rows: readonly (readonly [number, string])[];
+}[] = [
+    {
+        module: "src/math/mat4-perspective-lh-to-ref.ts",
+        symbol: "mat4PerspectiveLHToRef",
+        rows: [
+            [10, "-near / range"],
+            [14, "(far * near) / range"],
+        ],
+    },
+    {
+        module: "src/math/mat4-ortho-lh-to-ref.ts",
+        symbol: "mat4OrthoOffCenterLHToRef",
+        rows: [
+            [10, "-1 / range"],
+            [14, "far / range"],
+        ],
+    },
+];
+
+function assertReverseZProjectionRows(context: LoweringContext): void {
+    for (const writer of projectionWriters) {
+        const { file, declaration } = context.functionDeclaration(
+            writer.module,
+            writer.symbol,
+        );
+        context.assertExpressionShape(
+            context.variableInitializer(declaration, "range"),
+            "far - near",
+            `Pinned ${writer.symbol} depth range`,
+        );
+        const rows = new Map(writer.rows);
+        for (const store of context.pinnedElementStores(
+            declaration,
+            "out",
+        )) {
+            const index = context.numericValue(
+                store.left.argumentExpression,
+                file,
+            );
+            const shape = rows.get(index);
+            if (shape === undefined) continue;
+            context.assertExpressionShape(
+                store.right,
+                shape,
+                `Pinned ${writer.symbol} reverse-Z row ${index}`,
+            );
+            rows.delete(index);
+        }
+        if (rows.size !== 0) {
+            context.contractError(
+                declaration,
+                `Pinned ${writer.symbol} no longer stores the reverse-Z ` +
+                    `depth rows (${[...rows.keys()].join(", ")}).`,
+            );
+        }
+    }
+}
+
+/**
  * The pin's reverse-depth compare, read from its own declaration.
  *
  * Emitted for every scene: a sprite-only scene registers no SceneContext and
@@ -117,6 +191,7 @@ export function pinnedDepthStateHeader(context: LoweringContext): string {
                 "reverse-Z consumers assume the far plane clears to 0.",
         );
     }
+    assertReverseZProjectionRows(context);
     return `#pragma once
 
 // ${provenance}
@@ -134,9 +209,10 @@ namespace bbl::upstream {
  * targets do name another (\`less-equal\`, standard-Z), which is why this is
  * the reached slice's convention rather than the library's only one.
  *
- * The matching projection is \`mat4PerspectiveLHToRef\`, which maps near to 1
- * and far to 0; \`build_projection\` in the render plan writes those rows and
- * \`assertPinnedPerspectiveWriter\` anchors them term by term.
+ * The matching projections map near to 1 and far to 0: the render plan's
+ * \`mat4_perspective_lh_to_ref\` and \`mat4_ortho_off_center_lh_to_ref\` are
+ * the pinned writers translated whole, and generation anchors both writers'
+ * depth rows beside this header's clear value.
  */
 inline constexpr DepthCompare pinned_depth_compare =
     DepthCompare::${nativeDepthCompare(compare)};

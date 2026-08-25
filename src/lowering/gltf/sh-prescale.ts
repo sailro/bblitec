@@ -267,6 +267,30 @@ function emitPreScaleHarmonics(file: ts.SourceFile): string {
 }
 
 /**
+ * The two Color3 channel helpers the emitted `pre_scale_harmonics` calls,
+ * shared verbatim by every template that interpolates the emission so the
+ * helpers and the emission's call sites cannot drift apart.
+ */
+export const COLOR_CHANNEL_HELPERS_CPP = `float color_channel(
+    const Color3& color,
+    int channel) {
+    return channel == 0
+        ? color.r
+        : channel == 1
+            ? color.g
+            : color.b;
+}
+
+void set_color_channel(
+    Color3& color,
+    int channel,
+    float value) {
+    if (channel == 0) color.r = value;
+    else if (channel == 1) color.g = value;
+    else color.b = value;
+}`;
+
+/**
  * `pre_scale_harmonics` for the glTF loader, emitted from the private
  * `polynomialToPreScaledHarmonics` copy the pinned
  * EXT_lights_image_based feature executes (`ibl-env-assembly.ts`). The

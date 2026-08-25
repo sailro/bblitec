@@ -102,6 +102,16 @@ test("still aliases a buffer bound under the initializer's own text", () => {
     );
 });
 
+test("lowers exponentiation to the pow the Math table already maps", () => {
+    // `c = c ** 2.2` -- the pinned inverse image processing's gamma decode.
+    // JS `**` over numbers is Number::exponentiate, the same algorithm
+    // ECMA-262 gives Math.pow.
+    const emitted = lower("c = c ** 2.2;", [
+        ["c", { cpp: "c", type: "scalar" }],
+    ]);
+    assert.match(emitted, /c = std::pow\(c, 2\.2\);/);
+});
+
 test("lowers the truncating bitwise-or the pin uses as a cast", () => {
     const emitted = lower("const key = value | 0;", [
         ["value", { cpp: "value", type: "scalar" }],

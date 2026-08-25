@@ -136,7 +136,11 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             maxFullMad: 0.007,
             maxForegroundMad: 0.008,
-            dawnThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
+            // Dawn sits at the golden since the .babylon camera reads at
+            // the pin's JavaScript-number width (measured 0.000014 full
+            // and foreground); the ceiling guards the next regression at
+            // well under one display step.
+            dawnThresholds: { maxFullMad: 0.0002, maxForegroundMad: 0.0002 },
             backgroundColor: [174, 129, 107],
             backgroundThreshold: 30,
         },

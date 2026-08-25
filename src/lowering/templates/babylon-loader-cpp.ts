@@ -8,6 +8,7 @@
  */
 export function babylonLoaderCpp(
     provenance: string,
+    cameraDerivation: string,
     lightMeshLists = false,
     diffuseUv2 = false,
     bumpTexture = false,
@@ -37,6 +38,23 @@ using Json = nlohmann::json;
 float number_at(const Json& values, std::size_t index, float fallback) {
     return values.is_array() && index < values.size() && values[index].is_number()
         ? values[index].get<float>()
+        : fallback;
+}
+
+// The camera derivation's reads: the pinned parseBabylonCamera consumes the
+// JSON values as JavaScript numbers, so these stay double up to the record's
+// own stores instead of round-tripping through a float lane.
+double double_at(
+    const Json& object,
+    const char* name,
+    std::size_t index,
+    double fallback) {
+    const auto values = object.find(name);
+    return values != object.end() &&
+            values->is_array() &&
+            index < values->size() &&
+            (*values)[index].is_number()
+        ? (*values)[index].get<double>()
         : fallback;
 }
 
@@ -722,32 +740,7 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                 break;
             }
         }
-        // The pinned loader reads these straight out of the JSON as
-        // JavaScript numbers and hands them to the camera factory at that
-        // precision, so the derivation stays in double up to the record.
-        const Vec3 position =
-            vec3_or(*selected, "position", Vec3{});
-        const Vec3 rotation =
-            vec3_or(*selected, "rotation", Vec3{});
-        const double cosine_pitch =
-            std::cos(static_cast<double>(rotation.x));
-        const Vec3d camera_position{
-            position.x,
-            position.y,
-            position.z,
-        };
-        const Vec3d target{
-            camera_position.x +
-                cosine_pitch *
-                    std::sin(static_cast<double>(rotation.y)),
-            camera_position.y -
-                std::sin(static_cast<double>(rotation.x)),
-            camera_position.z +
-                cosine_pitch *
-                    std::cos(static_cast<double>(rotation.y)),
-        };
-        asset.camera =
-            create_free_camera(engine, camera_position, target);
+${cameraDerivation}
         CameraRecord& camera = engine.cameras[asset.camera.value];
         camera.fov = selected->value("fov", camera.fov);
         camera.near_plane =

@@ -1,11 +1,14 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import {
+    COLOR_CHANNEL_HELPERS_CPP,
+    lowerShPrescaleCpp,
+} from "./gltf-lowerer.js";
 
 interface EnvironmentConstants {
     magic: number[];
     coefficientNames: string[];
     imageType: string;
-    harmonicConstants: number[];
 }
 
 export class EnvironmentLowerer {
@@ -144,7 +147,14 @@ void load_image_skybox(
             .map((value) => `0x${value.toString(16).padStart(2, "0")}`)
             .join(", ");
         const keys = constants.coefficientNames.map((value) => `"${value}"`).join(", ");
-        const harmonic = constants.harmonicConstants.map((value) => this.context.floatLiteral(value));
+        // The same emission the glTF loader carries, from the same pair of
+        // pinned copies with the same divergence cross-check — one
+        // pre_scale_harmonics for both loaders instead of a transcription
+        // beside a lowering.
+        const prescale = lowerShPrescaleCpp(
+            this.context.sourceFile("src/loader-gltf/ibl-env-assembly.ts"),
+            this.context.sourceFile("src/loader-env/load-env.ts"),
+        );
         return {
             modulePath,
             symbolName,
@@ -237,47 +247,9 @@ Color3 parse_color(std::string_view text, std::string_view key, std::size_t star
     return result;
 }
 
-float channel(const Color3& color, int index) {
-    return index == 0 ? color.r : index == 1 ? color.g : color.b;
-}
+${COLOR_CHANNEL_HELPERS_CPP}
 
-void set_channel(Color3& color, int index, float value) {
-    if (index == 0) color.r = value;
-    else if (index == 1) color.g = value;
-    else color.b = value;
-}
-
-std::array<Color3, 9> pre_scale_harmonics(const std::array<Color3, 9>& polynomial) {
-    constexpr float c00xy = ${harmonic[0]};
-    constexpr float c00z = ${harmonic[1]};
-    constexpr float c1 = ${harmonic[2]};
-    constexpr float c2 = ${harmonic[3]};
-    constexpr float c20zz = ${harmonic[4]};
-    constexpr float c20xy = ${harmonic[5]};
-    constexpr float c22 = ${harmonic[6]};
-    std::array<Color3, 9> result{};
-    for (int index = 0; index < 3; ++index) {
-        const float x = channel(polynomial[0], index);
-        const float y = channel(polynomial[1], index);
-        const float z = channel(polynomial[2], index);
-        const float xx = channel(polynomial[3], index);
-        const float yy = channel(polynomial[4], index);
-        const float zz = channel(polynomial[5], index);
-        const float yz = channel(polynomial[6], index);
-        const float zx = channel(polynomial[7], index);
-        const float xy = channel(polynomial[8], index);
-        set_channel(result[0], index, (xx + yy) * c00xy + zz * c00z);
-        set_channel(result[1], index, y * c1);
-        set_channel(result[2], index, z * c1);
-        set_channel(result[3], index, x * c1);
-        set_channel(result[4], index, xy * c2);
-        set_channel(result[5], index, yz * c2);
-        set_channel(result[6], index, zz * c20zz - (xx + yy) * c20xy);
-        set_channel(result[7], index, zx * c2);
-        set_channel(result[8], index, (xx - yy) * c22);
-    }
-    return result;
-}
+${prescale}
 
 std::vector<MipmapEntry> parse_mipmaps(std::string_view manifest) {
     const std::size_t start = manifest.find("\\\"mipmaps\\\"");
@@ -1335,9 +1307,7 @@ void load_hdr_environment(
 
     private extractConstants(): EnvironmentConstants {
         const parserModule = "src/loader-env/env-parse.ts";
-        const loaderModule = "src/loader-env/load-env.ts";
         const parser = this.context.sourceFile(parserModule);
-        const loader = this.context.sourceFile(loaderModule);
         const magicExpression =
             this.context.unwrapExpression(
                 this.context.variableInitializer(
@@ -1402,184 +1372,11 @@ void load_hdr_environment(
                 "Expected environment image-type fallback.",
             );
         }
-        // The constants live inside the pinned pre-scale conversion; scoping
-        // the search to that declaration ties each extracted value to the
-        // function whose term structure is anchored below.
-        const { declaration: preScale } =
-            this.context.functionDeclaration(
-                loaderModule,
-                "polynomialToPreScaledHarmonics",
-            );
-        this.assertHarmonicTermStructure(preScale, loader);
-        const constant = (name: string): number =>
-            this.context.numericValue(
-                this.context.variableInitializer(
-                    preScale,
-                    name,
-                ),
-                loader,
-            );
         return {
             magic,
             coefficientNames,
             imageType: imageType.right.text,
-            harmonicConstants: [
-                constant("C00xy"),
-                constant("C00z"),
-                constant("C1"),
-                constant("C2"),
-                constant("C20zz"),
-                constant("C20xy"),
-                constant("C22"),
-            ],
         };
-    }
-
-    /**
-     * The pre-scale term structure the emitted pre_scale_harmonics
-     * transcribes. The seven constants flow separately through
-     * extractConstants; what is anchored here is which polynomial slot each
-     * pinned term consumes and which constant scales it, term by term, so
-     * an upstream retune of a single harmonic stops generation instead of
-     * shading slightly wrong. Two layouts are pinned alongside the terms:
-     * the input groups (the emitted channel(polynomial[k], index) reads
-     * pair with the pinned poly[3k + i] layout, group by group) and the
-     * stride-4 output slots (the emitted set_channel(result[k], ...) lines
-     * pair with the pinned out[4k + i] stores, in the same order).
-     */
-    private assertHarmonicTermStructure(
-        declaration: ts.FunctionDeclaration,
-        file: ts.SourceFile,
-    ): void {
-        const elementOffset = (
-            expression: ts.Expression,
-            label: string,
-        ): { array: string; offset: number } => {
-            const unwrapped =
-                this.context.unwrapExpression(expression);
-            if (
-                !ts.isElementAccessExpression(unwrapped) ||
-                !ts.isIdentifier(unwrapped.expression)
-            ) {
-                this.context.contractError(
-                    expression,
-                    `Expected ${label} to index a flat array.`,
-                );
-            }
-            const argument = this.context.unwrapExpression(
-                unwrapped.argumentExpression,
-            );
-            if (
-                ts.isIdentifier(argument) &&
-                argument.text === "i"
-            ) {
-                return {
-                    array: unwrapped.expression.text,
-                    offset: 0,
-                };
-            }
-            if (
-                ts.isBinaryExpression(argument) &&
-                argument.operatorToken.kind ===
-                    ts.SyntaxKind.PlusToken &&
-                ts.isIdentifier(argument.right) &&
-                argument.right.text === "i"
-            ) {
-                return {
-                    array: unwrapped.expression.text,
-                    offset: this.context.numericValue(
-                        argument.left,
-                        file,
-                    ),
-                };
-            }
-            return this.context.contractError(
-                argument,
-                `Expected ${label} to offset the channel index.`,
-            );
-        };
-        const groupNames = [
-            "x",
-            "y",
-            "z",
-            "xx",
-            "yy",
-            "zz",
-            "yz",
-            "zx",
-            "xy",
-        ];
-        groupNames.forEach((name, group) => {
-            const source = elementOffset(
-                this.context.variableInitializer(
-                    declaration,
-                    name,
-                ),
-                `poly group '${name}'`,
-            );
-            if (
-                source.array !== "poly" ||
-                source.offset !== group * 3
-            ) {
-                this.context.contractError(
-                    declaration,
-                    `Pinned poly group '${name}' moved from offset ${group * 3}.`,
-                );
-            }
-        });
-        const stores = this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node),
-            )
-            .filter(
-                (expression) =>
-                    expression.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(
-                        expression.left,
-                    ) &&
-                    ts.isIdentifier(
-                        expression.left.expression,
-                    ) &&
-                    expression.left.expression.text === "out",
-            );
-        const expectedTerms = [
-            ["L00", "(xx + yy) * C00xy + zz * C00z"],
-            ["L1-1", "y * C1"],
-            ["L10", "z * C1"],
-            ["L11", "x * C1"],
-            ["L2-2", "xy * C2"],
-            ["L2-1", "yz * C2"],
-            ["L20", "zz * C20zz - (xx + yy) * C20xy"],
-            ["L21", "zx * C2"],
-            ["L22", "(xx - yy) * C22"],
-        ] as const;
-        if (stores.length !== expectedTerms.length) {
-            this.context.contractError(
-                declaration,
-                "Expected nine spherical-harmonic term stores.",
-            );
-        }
-        stores.forEach((store, term) => {
-            const [label, expected] = expectedTerms[term]!;
-            const target = elementOffset(
-                store.left,
-                `harmonic term ${label}`,
-            );
-            if (target.offset !== term * 4) {
-                this.context.contractError(
-                    store,
-                    `Harmonic term ${label} moved from its stride-4 slot.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                store.right,
-                expected,
-                `Harmonic term ${label}`,
-            );
-        });
     }
 
     private assignmentExpression(

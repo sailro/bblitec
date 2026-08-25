@@ -16,7 +16,8 @@ import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
-import { pinnedToneMappingHeader } from "../src/lowering/pinned-tone-mapping.js";
+import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
+import { pinnedInverseImageProcessingHeader } from "../src/lowering/pinned-inverse-image-processing.js";
 import {
     readUpstreamPin,
     UpstreamSourceStore,
@@ -788,8 +789,10 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({ orthographicCamera: true });
-    // src/math/mat4-ortho-lh-to-ref.ts term by term, with the planes
-    // src/camera/orthographic.ts derives from the half-extent.
+    // src/math/mat4-ortho-lh-to-ref.ts translated whole — all sixteen
+    // stores from the pinned declaration's own AST, double locals, one
+    // f32 rounding per store — with the planes src/camera/orthographic.ts
+    // derives from the half-extent folded at the call site.
     assert.match(plan.source, /if \(camera\.orthographic\) \{/);
     assert.match(
         plan.source,
@@ -797,21 +800,30 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
     );
     assert.match(
         plan.source,
-        /projection\[0\] = static_cast<float>\(2\.0 \/ \(right - left\)\);/,
+        /void mat4_ortho_off_center_lh_to_ref\(\n    std::array<float, 16>& out,\n    double left,\n    double right,\n    double bottom,\n    double top,\n    double near_plane,\n    double far_plane\)/,
     );
     assert.match(
         plan.source,
-        /projection\[12\] =\s*static_cast<float>\(\(left \+ right\) \/ \(left - right\)\);/,
+        /out\[static_cast<std::size_t>\(0\.0\)\] = static_cast<float>\(\(2\.0 \/ \(right - left\)\)\);/,
     );
     assert.match(
         plan.source,
-        /projection\[10\] = static_cast<float>\(-1\.0 \/ range\);/,
+        /out\[static_cast<std::size_t>\(12\.0\)\] = static_cast<float>\(\(\(left \+ right\) \/ \(left - right\)\)\);/,
     );
     assert.match(
         plan.source,
-        /projection\[14\] = static_cast<float>\(far_plane \/ range\);/,
+        /out\[static_cast<std::size_t>\(10\.0\)\] = static_cast<float>\(\(\(-1\.0\) \/ range\)\);/,
     );
-    // A perspective-only scene keeps the branch out of its plan.
+    assert.match(
+        plan.source,
+        /out\[static_cast<std::size_t>\(14\.0\)\] = static_cast<float>\(\(far_plane \/ range\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /mat4_ortho_off_center_lh_to_ref\(\n\s*projection,\n\s*-half_width,/,
+    );
+    // A perspective-only scene keeps the branch and the writer out of its
+    // plan.
     const perspective = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan();
@@ -819,6 +831,36 @@ test("lowers the reverse-Z orthographic projection from its pinned writer", () =
         perspective.source,
         /camera\.orthographic/,
     );
+    assert.doesNotMatch(perspective.source, /mat4_ortho/);
+});
+
+test("translates the pinned perspective writer whole for every plan", () => {
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan();
+    // src/math/mat4-perspective-lh-to-ref.ts: the five lanes from the
+    // pinned AST, `Math.tan` as std::tan over doubles, near/far spelled
+    // around the Windows macro names.
+    assert.match(
+        plan.source,
+        /void mat4_perspective_lh_to_ref\(\n    std::array<float, 16>& out,\n    double fov,\n    double aspect,\n    double near_plane,\n    double far_plane\)/,
+    );
+    assert.match(
+        plan.source,
+        /const double tan = \(1\.0 \/ std::tan\(\(fov \* 0\.5\)\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /out\[static_cast<std::size_t>\(10\.0\)\] = static_cast<float>\(\(\(-near_plane\) \/ range\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /out\[static_cast<std::size_t>\(14\.0\)\] = static_cast<float>\(\(\(far_plane \* near_plane\) \/ range\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /mat4_perspective_lh_to_ref\(\n\s*projection,\n\s*camera\.fov,/,
+    );
+    // The hand-typed transcription is gone.
+    assert.doesNotMatch(plan.source, /const double focal/);
 });
 
 test("lowers the reachable upstream light matrix implementation", () => {
@@ -848,12 +890,40 @@ test("emits the pinned surface sample count for every scene shape", () => {
     assert.match(header, pinnedProvenance());
 });
 
-test("emits the pinned tone-mapping scale from the pin's own inverse", () => {
-    const header = pinnedToneMappingHeader(new LoweringContext());
+test("emits the pinned depth convention and anchors both projection writers", () => {
+    // The header derives compare and clear from the pin, and generation
+    // refuses if either pinned projection writer stops mapping
+    // near -> 1 / far -> 0 -- the convention this header's consumers
+    // (dither seeds, near-plane handling) key to a far plane of 0.
+    const header = pinnedDepthStateHeader(new LoweringContext());
     assert.match(
         header,
-        /inline constexpr float pinned_tone_mapping_scale = 1\.5905790328979492f;/,
+        /pinned_depth_compare =\s*DepthCompare::greater_equal;/,
     );
+    assert.match(header, /pinned_depth_clear = 0\.0f;/);
+    assert.match(header, pinnedProvenance());
+});
+
+test("lowers the pinned inverse image processing whole", () => {
+    const header = pinnedInverseImageProcessingHeader(new LoweringContext());
+    // The whole chain, from the pinned declaration's own AST: the clamp
+    // helper, the contrast bisection loop, the `**` gamma as std::pow, the
+    // tone-mapping division by the pin's own literal, and the exposure
+    // conditional -- every intermediate at the f64 width the pin computes at.
+    assert.match(header, /inline double clamp01\(/);
+    assert.match(
+        header,
+        /inline double inverse_image_processed_channel\(\n    double value,\n    double exposure,\n    double contrast,\n    bool tone_mapping\)/,
+    );
+    assert.match(header, /double c = clamp01\(value\);/);
+    assert.match(header, /for \(std::int64_t i = /);
+    assert.match(header, /c = std::pow\(c, 2\.2\)/);
+    assert.match(header, /\/ 1\.5905790328979492\)/);
+    assert.match(
+        header,
+        /\(\(exposure > 0\.0\) \? \(c \/ exposure\) : c\)/,
+    );
+    assert.doesNotMatch(header, /float/);
     assert.match(header, pinnedProvenance());
 });
 
@@ -1049,11 +1119,11 @@ test("composes the thin-instance parent world from the pinned TRS formulas", () 
         plan.header,
         /build_instance_parent_world\(\s*const MeshRecord& mesh\)/,
     );
-    // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle
-    // products, and the mat4MultiplyInto column loop all transcribe into
-    // the emitted helper (through the shared PinnedNumericLowerer, whose
+    // mat4ComposeInto's quaternion basis, eulerToQuat's half-angle terms
+    // and products, and the whole-translated mat4_multiply_into all flow
+    // from the pinned ASTs (through the shared PinnedNumericLowerer, whose
     // parenthesization is explicit); the record's own transform never
-    // reaches it for non-thin-instanced meshes.
+    // reaches the helper for non-thin-instanced meshes.
     assert.match(
         plan.source,
         /\(\(1\.0 - \(2\.0 \* \(yy \+ zz\)\)\) \* scale_x\)/,

@@ -8,11 +8,10 @@
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
-// Always-emitted pinned reads every scene shape carries: the surface sample
-// count and the tone-mapping scale (the effect drivers compile with no
-// renderer_plan.hpp, so these cannot ride that header).
+// An always-emitted pinned read every scene shape carries: the surface
+// sample count (the effect drivers compile with no renderer_plan.hpp, so it
+// cannot ride that header).
 #include <bblite/upstream/pinned_surface.hpp>
-#include <bblite/upstream/pinned_tone_mapping.hpp>
 // The generated material texture-slot table both render backends execute:
 // which record field fills each slot, its sRGB rule, its fallback texel and
 // the pinned binding names it serves. Emitted for every scene beside the
@@ -1689,51 +1688,6 @@ inline upstream::StandardUvTxUniforms standard_uv_transform_block(
 }
 #endif
 #endif
-
-// Inverse image processing for the linear-frame clear color shared by
-// both render backends (moved verbatim from pal_sdl_gpu.cpp).
-inline float inverse_image_processed_channel(
-    float value,
-    float exposure,
-    float contrast,
-    bool tone_mapping) {
-    float color = std::clamp(value, 0.0f, 1.0f);
-    if (contrast < 1.0f) {
-        color = contrast > 0.0f
-            ? std::clamp(
-                  (color - 0.5f * (1.0f - contrast)) / contrast,
-                  0.0f,
-                  1.0f)
-            : 0.5f;
-    } else if (contrast > 1.0f) {
-        const float mix_amount = contrast - 1.0f;
-        float low = 0.0f;
-        float high = 1.0f;
-        for (std::uint32_t index = 0; index < 16; ++index) {
-            const float middle = (low + high) * 0.5f;
-            const float smooth =
-                middle * middle * (3.0f - 2.0f * middle);
-            const float output =
-                middle + (smooth - middle) * mix_amount;
-            if (output < color) {
-                low = middle;
-            } else {
-                high = middle;
-            }
-        }
-        color = (low + high) * 0.5f;
-    }
-    color = std::pow(color, 2.2f);
-    if (tone_mapping) {
-        // The pin has no inverse to lower; only the forward curve's scale
-        // exists, and it travels as the generated
-        // `pinned_tone_mapping_scale` rather than being re-typed here.
-        color =
-            -std::log2(std::max(1.0f - color, 0.000001f)) /
-            upstream::pinned_tone_mapping_scale;
-    }
-    return exposure > 0.0f ? color / exposure : color;
-}
 
 #if BBLITE_GPU_MORPH_STORAGE
 // Storage-buffer morph payloads shared by both render backends (moved

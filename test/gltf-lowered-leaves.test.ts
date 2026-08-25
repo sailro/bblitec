@@ -83,6 +83,23 @@ function mutatedFileAll(
     return doctoredFile(modulePath, needle, replacement, true);
 }
 
+/**
+ * A store serving one doctored module and the real pin for everything
+ * else, for lowerings that take a `LoweringContext` rather than a file.
+ */
+function mutatedStore(
+    modulePath: string,
+    needle: string,
+    replacement: string,
+): UpstreamSourceStore {
+    const doctored = mutatedFile(modulePath, needle, replacement);
+    const patched = new UpstreamSourceStore();
+    const original = patched.getSourceFile.bind(patched);
+    patched.getSourceFile = (path: string): ts.SourceFile =>
+        path === modulePath ? doctored : original(path);
+    return patched;
+}
+
 /** A doctored pin with several exact edits applied in sequence. */
 function mutatedFileEdits(
     modulePath: string,
@@ -802,24 +819,21 @@ test("a changed iridescence default flows into the emitted keys", () => {
 
 /* ───────────────────────────── round 3 ───────────────────────────── */
 
-const expectedMatrixMultiply = `Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
-    // Pinned matrix multiplication runs in JavaScript double
-    // precision over float32 entries and rounds once per component
-    // at the Float32Array store; mirror that exactly.
+// The whole-translated writer's head and first accumulation, plus the
+// by-value wrapper the loader calls. The writer body is the shared
+// translation the render plan also emits, so this test pins the wrapper
+// verbatim and the writer by its load-bearing lines rather than
+// duplicating the full translated body here.
+const expectedMatrixMultiplyWrapper = `Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
     Matrix result{};
-    for (int column = 0; column < 4; ++column) {
-        for (int row = 0; row < 4; ++row) {
-            double sum = 0.0;
-            for (int index = 0; index < 4; ++index) {
-                sum +=
-                    static_cast<double>(left[index * 4 + row]) *
-                    static_cast<double>(right[column * 4 + index]);
-            }
-            result[column * 4 + row] = static_cast<float>(sum);
-        }
-    }
+    mat4_multiply_into(result, 0, left, 0, right, 0);
     return result;
 }`;
+const expectedMultiplyWriterLines = [
+    "template <typename MatB>\nvoid mat4_multiply_into(",
+    "const double a0 = static_cast<double>(a[static_cast<std::size_t>(i)]);",
+    "((((a0 * b0) + (a4 * b1)) + (a8 * b2)) + (a12 * b3))",
+];
 
 const expectedMatrixCompose = `Matrix trs_matrix(
     Vec3 translation,
@@ -1058,11 +1072,16 @@ const expectedPunctualLightLoading = `                const std::string type =
                         "range",
                         std::numeric_limits<float>::max());`;
 
-test("lowers the pinned matrix multiply byte-identically to the shipped loader text", () => {
-    assert.equal(
-        lowerMatrixMultiplyCpp(pinnedFile(multiplyModule)),
-        expectedMatrixMultiply,
-    );
+test("lowers the pinned matrix multiply through the shared translation", () => {
+    const emitted = lowerMatrixMultiplyCpp(new LoweringContext(store));
+    assert.ok(emitted.endsWith(expectedMatrixMultiplyWrapper));
+    for (const line of expectedMultiplyWriterLines) {
+        assert.ok(
+            emitted.includes(line),
+            `multiply emission lost: ${line}`,
+        );
+    }
+    assert.match(emitted, /mat4-multiply-into\.ts#mat4MultiplyInto\./);
 });
 
 test("lowers the pinned TRS compose byte-identically to the shipped loader text", () => {
@@ -1111,7 +1130,7 @@ test("the emitted loader carries every round-3 lowered segment", () => {
     const adapter = new GltfLowerer(new LoweringContext(store))
         .lowerLoaderAdapter();
     for (const segment of [
-        expectedMatrixMultiply,
+        expectedMatrixMultiplyWrapper,
         expectedMatrixCompose,
         expectedMatrixNative,
         expectedIblPolynomial,
@@ -1125,17 +1144,23 @@ test("the emitted loader carries every round-3 lowered segment", () => {
     }
 });
 
-test("a re-associated pinned matrix product refuses generation", () => {
-    assert.throws(
-        () =>
-            lowerMatrixMultiplyCpp(
-                mutatedFile(
-                    multiplyModule,
-                    "dst[d] = a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3;",
-                    "dst[d] = a4 * b1 + a0 * b0 + a8 * b2 + a12 * b3;",
-                ),
+test("a re-associated pinned matrix product flows into the translation", () => {
+    // The canonical-form walk used to refuse this; the whole translation
+    // instead carries whatever the pin says, into the loader and the
+    // render plan from one emission — drift is visible as changed bytes
+    // in both TUs together, never as one TU refusing while the other
+    // silently adopts the new order.
+    const emitted = lowerMatrixMultiplyCpp(
+        new LoweringContext(
+            mutatedStore(
+                multiplyModule,
+                "dst[d] = a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3;",
+                "dst[d] = a4 * b1 + a0 * b0 + a8 * b2 + a12 * b3;",
             ),
-        /canonical column-major product/,
+        ),
+    );
+    assert.ok(
+        emitted.includes("((((a4 * b1) + (a0 * b0)) + (a8 * b2)) + (a12 * b3))"),
     );
 });
 

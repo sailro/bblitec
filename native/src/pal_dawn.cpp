@@ -20,6 +20,8 @@
     defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 
 #include <bblite/upstream/camera_math.hpp>
+// The pin's own inverse image processing, for the linear-frame clear color.
+#include <bblite/upstream/pinned_inverse_image_processing.hpp>
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
 #include <bblite/upstream/frame_graph_geometry.hpp>
 #endif
@@ -8343,20 +8345,22 @@ bool run_dawn_engine(Engine& engine) {
             // The linear frame keeps its multisampled texture for the
             // grab and the per-sample image processing; the clear
             // color inverts the image processing exactly like the
-            // SDL backend and the pinned engine.
+            // SDL backend and the pinned engine. The pin's inverse runs
+            // in f64 and WGPUColor carries doubles, so the value reaches
+            // Dawn at the width the browser hands its own clear value.
             color_attachment.storeOp = WGPUStoreOp_Store;
             color_attachment.clearValue = WGPUColor{
-                inverse_image_processed_channel(
+                upstream::inverse_image_processed_channel(
                     scene.clear_color.r,
                     scene.environment.exposure,
                     scene.environment.contrast,
                     scene.environment.tone_mapping_enabled),
-                inverse_image_processed_channel(
+                upstream::inverse_image_processed_channel(
                     scene.clear_color.g,
                     scene.environment.exposure,
                     scene.environment.contrast,
                     scene.environment.tone_mapping_enabled),
-                inverse_image_processed_channel(
+                upstream::inverse_image_processed_channel(
                     scene.clear_color.b,
                     scene.environment.exposure,
                     scene.environment.contrast,

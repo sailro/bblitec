@@ -59,9 +59,14 @@ import {
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
+    lowerMat4MultiplyWriterCpp,
+    lowerPinnedFunction,
+} from "./pinned-function-lowerer.js";
+import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -334,6 +339,7 @@ const fogWgslModule = "src/shader/wgsl-fog.ts";
 const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
 const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
+const perspectiveMatrixModule = "src/math/mat4-perspective-lh-to-ref.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -538,15 +544,15 @@ export class RendererLowerer {
             options.shaderPrograms ?? [];
         const { shaderVariantTable, shaderVariantEntries } =
             this.loweredShaderVariants(reachedShaderPrograms);
-        // The camera matrix chain the source below emits is anchored
-        // per-term against its pinned writers before anything is returned:
-        // the perspective stores, the multiply accumulation order, and the
-        // view transpose (whose emission is derived from the pinned store
-        // map rather than asserted against it).
-        this.assertPinnedPerspectiveWriter();
-        this.assertPinnedMultiplyWriter();
+        // The camera matrix chain the source below emits comes from the
+        // pinned writers themselves: the multiply and both projection
+        // writers are translated whole from their own ASTs, and the view
+        // transpose's emission is derived from the pinned store map. The
+        // reverse-Z convention the projection rows carry is anchored
+        // beside its clear-value half in `pinned-depth-state.ts`.
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
+        this.assertPinnedAffectsMesh();
         const opaqueOrderStamp =
             this.provedOpaqueOrderStamp();
         // Emitted from the compiler's own table so the generated enum's
@@ -564,7 +570,53 @@ export class RendererLowerer {
         }
         const instancingTrs = options.gpuInstancing
             ? this.pinnedTrsComposition()
-            : { quaternionProducts: "", basisLocals: "", basisStores: "" };
+            : {
+                  halfAngleLocals: "",
+                  quaternionProducts: "",
+                  basisLocals: "",
+                  basisStores: "",
+              };
+        // The projection writers, translated whole from their pinned
+        // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
+        // because Windows headers define the bare names away.
+        const perspectiveWriter = lowerPinnedFunction(
+            this.context,
+            perspectiveMatrixModule,
+            "mat4PerspectiveLHToRef",
+            [
+                { pinned: "out", kind: "mat4", cpp: "out" },
+                { pinned: "fov", kind: "number", cpp: "fov" },
+                { pinned: "aspect", kind: "number", cpp: "aspect" },
+                { pinned: "near", kind: "number", cpp: "near_plane" },
+                { pinned: "far", kind: "number", cpp: "far_plane" },
+            ],
+            {
+                cppName: "mat4_perspective_lh_to_ref",
+                returns: "void",
+                calls: pinnedNumericMathCalls(),
+            },
+        );
+        const orthoWriter = options.orthographicCamera
+            ? lowerPinnedFunction(
+                  this.context,
+                  orthoMatrixModule,
+                  "mat4OrthoOffCenterLHToRef",
+                  [
+                      { pinned: "out", kind: "mat4", cpp: "out" },
+                      { pinned: "left", kind: "number", cpp: "left" },
+                      { pinned: "right", kind: "number", cpp: "right" },
+                      { pinned: "bottom", kind: "number", cpp: "bottom" },
+                      { pinned: "top", kind: "number", cpp: "top" },
+                      { pinned: "near", kind: "number", cpp: "near_plane" },
+                      { pinned: "far", kind: "number", cpp: "far_plane" },
+                  ],
+                  {
+                      cppName: "mat4_ortho_off_center_lh_to_ref",
+                      returns: "void",
+                      calls: pinnedNumericMathCalls(),
+                  },
+              )
+            : "";
         // Under multi-light the pinned lights block owns every light past
         // the primary slot, so the legacy capture block keeps its second
         // analytic slot empty there exactly as the retired uploader did.
@@ -595,6 +647,9 @@ export class RendererLowerer {
                 instancingTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
+                perspectiveWriter,
+                orthoWriter,
+                multiplyWriter: lowerMat4MultiplyWriterCpp(this.context),
             }),
         };
     }
@@ -602,8 +657,7 @@ export class RendererLowerer {
     /**
      * The render-plan preconditions: the adopted render-task symbols must
      * still exist, GPU instancing requires its composed matrix pins, and
-     * an orthographic scene refuses environment backgrounds while its
-     * off-center reverse-Z writer is anchored marker for marker.
+     * an orthographic scene refuses environment backgrounds.
      */
     private assertRenderPlanPins(options: {
         gpuInstancing?: boolean;
@@ -617,15 +671,13 @@ export class RendererLowerer {
             );
         }
         if (options.gpuInstancing) {
-            // The instance parent-world helper transcribes these pinned
-            // modules; assert they still carry the composed symbols.
+            // The instance parent-world helper is translated from these
+            // pinned modules; assert they still carry the composed symbols.
+            // (mat4MultiplyInto needs no entry: the multiply writer
+            // resolves its declaration on every plan.)
             this.context.functionDeclaration(
                 "src/math/mat4-compose-into.ts",
                 "mat4ComposeInto",
-            );
-            this.context.functionDeclaration(
-                "src/math/mat4-multiply-into.ts",
-                "mat4MultiplyInto",
             );
             this.context.functionDeclaration(
                 "src/math/quat-euler.ts",
@@ -644,28 +696,6 @@ export class RendererLowerer {
             throw new Error(
                 "Orthographic cameras are lowered for the scene projection only; environment skyboxes and grounds still build a perspective view-projection.",
             );
-        }
-        if (options.orthographicCamera) {
-            // The reverse-Z off-center writer the projection branch
-            // transcribes term by term.
-            const orthoSource = this.context.store.getSource(
-                orthoMatrixModule,
-            );
-            for (const marker of [
-                "out[0] = 2 / (right - left);",
-                "out[5] = 2 / (top - bottom);",
-                "out[10] = -1 / range;",
-                "out[12] = (left + right) / (left - right);",
-                "out[13] = (top + bottom) / (bottom - top);",
-                "out[14] = far / range;",
-                "out[15] = 1;",
-            ]) {
-                if (!orthoSource.includes(marker)) {
-                    throw new Error(
-                        `Pinned Babylon Lite orthographic projection changed: ${marker}`,
-                    );
-                }
-            }
         }
     }
 
@@ -1257,6 +1287,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
             instancingTrs: {
+                halfAngleLocals: string;
                 quaternionProducts: string;
                 basisLocals: string;
                 basisStores: string;
@@ -1270,6 +1301,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 skyboxCornerRows: string;
                 skyboxIndexRows: string;
             };
+            perspectiveWriter: string;
+            orthoWriter: string;
+            multiplyWriter: string;
         },
     ): string {
         const {
@@ -1280,6 +1314,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             instancingTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
+            perspectiveWriter,
+            orthoWriter,
+            multiplyWriter,
         } = inputs;
         return `// ${this.context.provenance(
                 renderTaskModule,
@@ -1334,26 +1371,15 @@ ${viewMatrixBody}\
 
 namespace {
 
-// src/math/mat4-multiply-into.ts mat4MultiplyInto: the pinned writer
-// accumulates each term in double from two float32 matrices and stores
-// once, where a float accumulator rounds after every product.
+${multiplyWriter}
+
+// The by-value shape every view-projection composition here uses: the
+// pinned writer over whole matrices at offset zero.
 std::array<float, 16> multiply_into(
     const std::array<float, 16>& a,
     const std::array<float, 16>& b) {
     std::array<float, 16> out{};
-    for (int column = 0; column < 4; ++column) {
-        const double b0 = static_cast<double>(b[column * 4]);
-        const double b1 = static_cast<double>(b[column * 4 + 1]);
-        const double b2 = static_cast<double>(b[column * 4 + 2]);
-        const double b3 = static_cast<double>(b[column * 4 + 3]);
-        for (int row = 0; row < 4; ++row) {
-            out[column * 4 + row] = static_cast<float>(
-                static_cast<double>(a[row]) * b0 +
-                static_cast<double>(a[4 + row]) * b1 +
-                static_cast<double>(a[8 + row]) * b2 +
-                static_cast<double>(a[12 + row]) * b3);
-        }
-    }
+    mat4_multiply_into(out, 0, a, 0, b, 0);
     return out;
 }
 
@@ -1708,24 +1734,28 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
     return result;
 }
 
-// src/math/mat4-perspective-lh-to-ref.ts mat4PerspectiveLHToRef, in the
-// same double-then-store-once shape as the rest of the chain. The pin maps
-// near -> 1 and far -> 0 and compares greater-equal
+// The pinned perspective writer, translated whole below. It maps
+// near -> 1 and far -> 0 and the engine compares greater-equal
 // (src/engine/render-target.ts REVERSE_DEPTH_COMPARE), which is the one
 // convention every pinned family renders under, so it is the one this
 // renderer writes -- for the scene's own view and for the skybox's alike.
+${perspectiveWriter}
+${orthoWriter ? `
+${orthoWriter}
+` : ""}\
+
 std::array<float, 16> build_projection(
     const CameraRecord& camera,
     double aspect) {
-    const double focal = 1.0 / std::tan(camera.fov * 0.5);
-    const double range = camera.far_plane - camera.near_plane;
+    // The pinned writer stores only the five perspective lanes and relies
+    // on an already-zero target, which the fresh array provides.
     std::array<float, 16> projection{};
-    projection[0] = static_cast<float>(focal / aspect);
-    projection[5] = static_cast<float>(focal);
-    projection[10] = static_cast<float>(-camera.near_plane / range);
-    projection[11] = 1.0f;
-    projection[14] = static_cast<float>(
-        (camera.far_plane * camera.near_plane) / range);
+    mat4_perspective_lh_to_ref(
+        projection,
+        camera.fov,
+        aspect,
+        camera.near_plane,
+        camera.far_plane);
     return projection;
 }
 
@@ -1737,35 +1767,24 @@ std::array<float, 16> build_view_projection(
 
 ${options.orthographicCamera
     ? `    if (camera.orthographic) {
-        // src/camera/orthographic.ts writeOrthoProjection derives every
-        // plane from the half-extent, then writes
-        // src/math/mat4-ortho-lh-to-ref.ts mat4OrthoOffCenterLHToRef.
-        // The pinned writer runs in JavaScript doubles into a
-        // Float32Array cache, so the terms are computed in double here
-        // and stored as float.
+        // src/camera/orthographic.ts writeOrthoProjection: every plane
+        // derives from the half-extent (the derivation and all seven
+        // call arguments are shape-asserted where the single-extent
+        // record is emitted), and the writer itself is the pinned
+        // mat4OrthoOffCenterLHToRef translated whole above.
         const double half_height =
             static_cast<double>(camera.ortho_half_height);
         const double half_width =
             half_height * static_cast<double>(aspect);
-        const double left = -half_width;
-        const double right = half_width;
-        const double bottom = -half_height;
-        const double top = half_height;
-        const double near_plane =
-            static_cast<double>(camera.near_plane);
-        const double far_plane =
-            static_cast<double>(camera.far_plane);
-        const double range = far_plane - near_plane;
         std::array<float, 16> projection{};
-        projection[0] = static_cast<float>(2.0 / (right - left));
-        projection[5] = static_cast<float>(2.0 / (top - bottom));
-        projection[10] = static_cast<float>(-1.0 / range);
-        projection[12] =
-            static_cast<float>((left + right) / (left - right));
-        projection[13] =
-            static_cast<float>((top + bottom) / (bottom - top));
-        projection[14] = static_cast<float>(far_plane / range);
-        projection[15] = 1.0f;
+        mat4_ortho_off_center_lh_to_ref(
+            projection,
+            -half_width,
+            half_width,
+            -half_height,
+            half_height,
+            camera.near_plane,
+            camera.far_plane);
         return multiply_into(projection, view);
     }
 `
@@ -1819,18 +1838,7 @@ std::array<float, 16> build_instance_parent_world(
         mesh.rotation.x != 0.0f ||
         mesh.rotation.y != 0.0f ||
         mesh.rotation.z != 0.0f) {
-        const double half_x =
-            static_cast<double>(mesh.rotation.x) * 0.5;
-        const double half_y =
-            static_cast<double>(mesh.rotation.y) * 0.5;
-        const double half_z =
-            static_cast<double>(mesh.rotation.z) * 0.5;
-        const double cx = std::cos(half_x);
-        const double sx = std::sin(half_x);
-        const double cy = std::cos(half_y);
-        const double sy = std::sin(half_y);
-        const double cz = std::cos(half_z);
-        const double sz = std::sin(half_z);
+${instancingTrs.halfAngleLocals}\
 ${instancingTrs.quaternionProducts}\
     }
     const double scale_x = mesh.scaling.x;
@@ -1839,26 +1847,12 @@ ${instancingTrs.quaternionProducts}\
 ${instancingTrs.basisLocals}\
     std::array<double, 16> local{};
 ${instancingTrs.basisStores}\
+    // The pinned multiply, translated whole above: the parent is the f32
+    // matrix the loader recorded and the composed TRS stays f64, which is
+    // the pinned accumulation's own width for both.
     std::array<float, 16> result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            // Seed with the first product so signed zeros follow the
-            // pinned a0*b0 + a4*b1 + a8*b2 + a12*b3 evaluation exactly.
-            double sum =
-                static_cast<double>(
-                    mesh.instance_parent_matrix[row]) *
-                local[column * 4];
-            for (std::size_t term = 1; term < 4; ++term) {
-                sum +=
-                    static_cast<double>(
-                        mesh.instance_parent_matrix[
-                            term * 4 + row]) *
-                    local[column * 4 + term];
-            }
-            result[column * 4 + row] =
-                static_cast<float>(sum);
-        }
-    }
+    mat4_multiply_into(
+        result, 0, mesh.instance_parent_matrix, 0, local, 0);
     return result;
 }
 
@@ -3252,6 +3246,10 @@ ${lifted.fragmentBody}
         file: ts.SourceFile,
         expression: ts.Expression,
         rename: ReadonlyMap<string, string>,
+        calls: ReadonlyMap<
+            string,
+            (args: readonly string[]) => string
+        > = new Map(),
     ): string {
         const lowerer = new PinnedNumericLowerer(file, {
             bindings: new Map(
@@ -3262,9 +3260,70 @@ ${lifted.fragmentBody}
                     ],
                 ),
             ),
-            calls: new Map(),
+            calls,
         });
         return lowerer.expression(expression);
+    }
+
+    /**
+     * The pinned per-mesh light predicate, anchored arm by arm. The
+     * emitted `light_affects_mesh` is a representation translation — the
+     * pin keys Sets of string mesh ids where the records key index
+     * vectors — so it cannot be lowered by the numeric translator, and
+     * each arm's fold is justified against the shape asserted here: a
+     * native mesh index is always a present id, so the pin's `!!meshId`
+     * conjunct folds to true and its `!meshId` disjunct folds to false,
+     * leaving exactly the two membership tests the emission carries, in
+     * the pinned precedence (included wins when it is non-empty).
+     */
+    private assertPinnedAffectsMesh(): void {
+        const { declaration } = this.context.functionDeclaration(
+            "src/render/lights-ubo.ts",
+            "affectsMesh",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "included"),
+            "light.includedOnlyMeshIds",
+            "Pinned affectsMesh included source",
+        );
+        const gate = this.context.findNodes(
+            declaration,
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
+        );
+        if (gate.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Pinned affectsMesh no longer forks once on the " +
+                    "included list.",
+            );
+        }
+        this.context.assertExpressionShape(
+            gate[0]!.expression,
+            "included?.size",
+            "Pinned affectsMesh included gate",
+        );
+        const returns = this.context.findNodes(
+            declaration,
+            (node): node is ts.ReturnStatement =>
+                ts.isReturnStatement(node) && node.expression !== undefined,
+        );
+        if (returns.length !== 2) {
+            this.context.contractError(
+                declaration,
+                "Pinned affectsMesh no longer returns the two " +
+                    "membership arms.",
+            );
+        }
+        this.context.assertExpressionShape(
+            returns[0]!.expression!,
+            "!!meshId && included.has(meshId)",
+            "Pinned affectsMesh included arm",
+        );
+        this.context.assertExpressionShape(
+            returns[1]!.expression!,
+            "!meshId || !light.excludedMeshIds?.has(meshId)",
+            "Pinned affectsMesh excluded arm",
+        );
     }
 
     /** A literal element read `base[<n>]`, or a contract error. */
@@ -3287,32 +3346,6 @@ ${lifted.fragmentBody}
         );
     }
 
-    /** Every `<target>[...] = ...` store inside a pinned writer, in order. */
-    private pinnedElementStores(
-        declaration: ts.Node,
-        target: string,
-    ): Array<{ left: ts.ElementAccessExpression; right: ts.Expression }> {
-        return this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(node.left) &&
-                    ts.isIdentifier(node.left.expression) &&
-                    node.left.expression.text === target,
-            )
-            .map((store) => {
-                if (!ts.isElementAccessExpression(store.left)) {
-                    this.context.contractError(
-                        store,
-                        "Expected an element store.",
-                    );
-                }
-                return { left: store.left, right: store.right };
-            });
-    }
 
     /** The `<base>` or `<base> + <n>` offset of a pinned indexed store. */
     private pinnedStoreOffset(
@@ -3382,7 +3415,7 @@ ${lifted.fragmentBody}
                 this.pinnedElementIndex(initializer.whenFalse, "w"),
             );
         }
-        const stores = this.pinnedElementStores(declaration, "v");
+        const stores = this.context.pinnedElementStores(declaration, "v");
         if (stores.length !== 16) {
             this.context.contractError(
                 declaration,
@@ -3493,110 +3526,6 @@ ${lifted.fragmentBody}
             body += line;
         }
         return body;
-    }
-
-    /**
-     * Per-term anchors for the perspective writer the projection emissions
-     * transcribe: every pinned store is required, shape-checked, and no
-     * pinned store may exist that the emission does not carry. Rows [10]
-     * and [14] anchor the reverse-Z depth range, which is the only
-     * convention this renderer writes.
-     */
-    private assertPinnedPerspectiveWriter(): void {
-        const { file, declaration } = this.context.functionDeclaration(
-            "src/math/mat4-perspective-lh-to-ref.ts",
-            "mat4PerspectiveLHToRef",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "tan"),
-            "1 / Math.tan(fov * 0.5)",
-            "Pinned perspective focal term",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "range"),
-            "far - near",
-            "Pinned perspective depth range",
-        );
-        const expected = new Map<number, string>([
-            [0, "tan / aspect"],
-            [5, "tan"],
-            [10, "-near / range"],
-            [11, "1"],
-            [14, "(far * near) / range"],
-        ]);
-        const stores = this.pinnedElementStores(declaration, "out");
-        if (stores.length !== expected.size) {
-            this.context.contractError(
-                declaration,
-                `Pinned perspective writer gained or lost stores (${stores.length} of ${expected.size}); the projection emissions no longer cover it.`,
-            );
-        }
-        for (const store of stores) {
-            const index = this.context.numericValue(
-                store.left.argumentExpression,
-                file,
-            );
-            const shape = expected.get(index);
-            if (shape === undefined) {
-                this.context.contractError(
-                    store.left,
-                    `Pinned perspective writer stores out[${index}], which the projection emissions do not carry.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                store.right,
-                shape,
-                `Pinned perspective row ${index}`,
-            );
-        }
-    }
-
-    /**
-     * Per-term anchors for the pinned matrix multiply the emitted
-     * `multiply_into` loop and the instance-parent accumulation reproduce:
-     * row-stride-4 accumulators and the a0*b0 + a4*b1 + a8*b2 + a12*b3
-     * evaluation order, over exactly sixteen stores.
-     */
-    private assertPinnedMultiplyWriter(): void {
-        const { declaration } = this.context.functionDeclaration(
-            "src/math/mat4-multiply-into.ts",
-            "mat4MultiplyInto",
-        );
-        for (const [name, shape] of [
-            ["a0", "a[i]"],
-            ["a4", "a[i + 4]"],
-            ["a8", "a[i + 8]"],
-            ["a12", "a[i + 12]"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(declaration, name),
-                shape,
-                `Pinned matrix-multiply accumulator ${name}`,
-            );
-        }
-        const stores = this.pinnedElementStores(declaration, "dst");
-        if (stores.length !== 16) {
-            this.context.contractError(
-                declaration,
-                `Pinned matrix multiply gained or lost stores (${stores.length} of 16).`,
-            );
-        }
-        const first = stores[0]!;
-        if (
-            this.context.propertyPath(first.left.argumentExpression)?.join(
-                ".",
-            ) !== "d"
-        ) {
-            this.context.contractError(
-                first.left,
-                "Expected the pinned matrix multiply to store dst[d] first.",
-            );
-        }
-        this.context.assertExpressionShape(
-            first.right,
-            "a0 * b0 + a4 * b1 + a8 * b2 + a12 * b3",
-            "Pinned matrix-multiply accumulation order",
-        );
     }
 
     /**
@@ -3944,7 +3873,7 @@ ${lifted.fragmentBody}
                 selectionGuards[index]![1],
             );
         });
-        const selectionStores = this.pinnedElementStores(
+        const selectionStores = this.context.pinnedElementStores(
             selection,
             "u32",
         );
@@ -4049,8 +3978,8 @@ ${lifted.fragmentBody}
             "light._writeLightUbo(data, headerFloats + count * LIGHT_ENTRY_FLOATS)",
             "Pinned light-entry slot arithmetic",
         );
-        const countStores = this.pinnedElementStores(fill, "_countU32");
-        const headerStores = this.pinnedElementStores(fill, "data");
+        const countStores = this.context.pinnedElementStores(fill, "_countU32");
+        const headerStores = this.context.pinnedElementStores(fill, "data");
         if (countStores.length !== 1 || headerStores.length !== 1) {
             this.context.contractError(
                 fill,
@@ -4247,7 +4176,7 @@ ${lifted.fragmentBody}
             backgroundGroundModule,
             "createBgMeshUBO",
         );
-        const alphaStore = this.pinnedElementStores(
+        const alphaStore = this.context.pinnedElementStores(
             groundUbo.declaration,
             "data",
         ).find(
@@ -4387,7 +4316,7 @@ ${lifted.fragmentBody}
             "src/mesh/create-box.ts",
             "createBoxData",
         );
-        const boxStore = this.pinnedElementStores(
+        const boxStore = this.context.pinnedElementStores(
             box.declaration,
             "positions",
         )[0];
@@ -4420,6 +4349,7 @@ ${lifted.fragmentBody}
      * instance parent-world stays byte-for-byte the pin's composition.
      */
     private pinnedTrsComposition(): {
+        halfAngleLocals: string;
         quaternionProducts: string;
         basisLocals: string;
         basisStores: string;
@@ -4428,20 +4358,38 @@ ${lifted.fragmentBody}
             "src/math/quat-euler.ts",
             "eulerToQuat",
         );
-        for (const [name, shape] of [
-            ["cx", "Math.cos(rx * 0.5)"],
-            ["sx_", "Math.sin(rx * 0.5)"],
-            ["cy", "Math.cos(ry * 0.5)"],
-            ["sy_", "Math.sin(ry * 0.5)"],
-            ["cz", "Math.cos(rz * 0.5)"],
-            ["sz_", "Math.sin(rz * 0.5)"],
-        ] as const) {
-            this.context.assertExpressionShape(
-                this.context.variableInitializer(euler.declaration, name),
-                shape,
-                `Pinned Euler half-angle term ${name}`,
-            );
-        }
+        // The half-angle locals, emitted from the pinned initializers with
+        // the Euler parameters renamed to the record's rotation lanes. One
+        // pair table serves this emission and the quaternion products'
+        // rename below.
+        const rotationRename = new Map<string, string>([
+            ["rx", "static_cast<double>(mesh.rotation.x)"],
+            ["ry", "static_cast<double>(mesh.rotation.y)"],
+            ["rz", "static_cast<double>(mesh.rotation.z)"],
+        ]);
+        const eulerLocalNames: readonly (readonly [string, string])[] = [
+            ["cx", "cx"],
+            ["sx_", "sx"],
+            ["cy", "cy"],
+            ["sy_", "sy"],
+            ["cz", "cz"],
+            ["sz_", "sz"],
+        ];
+        const mathCalls = pinnedNumericMathCalls();
+        const halfAngleLocals = eulerLocalNames
+            .map(
+                ([pinned, cpp]) =>
+                    `        const double ${cpp} = ${this.pinnedNumericExpression(
+                        euler.file,
+                        this.context.variableInitializer(
+                            euler.declaration,
+                            pinned,
+                        ),
+                        rotationRename,
+                        mathCalls,
+                    )};\n`,
+            )
+            .join("");
         const eulerReturn = this.context.findNodes(
             euler.declaration,
             (node): node is ts.ReturnStatement =>
@@ -4460,14 +4408,7 @@ ${lifted.fragmentBody}
                 "Expected the pinned Euler quaternion tuple.",
             );
         }
-        const eulerRename = new Map<string, string>([
-            ["sx_", "sx"],
-            ["sy_", "sy"],
-            ["sz_", "sz"],
-            ["cx", "cx"],
-            ["cy", "cy"],
-            ["cz", "cz"],
-        ]);
+        const eulerRename = new Map<string, string>(eulerLocalNames);
         const quaternionSlots = ["qx", "qy", "qz", "qw"];
         const quaternionProducts = tuple.elements
             .map(
@@ -4527,7 +4468,7 @@ ${lifted.fragmentBody}
             ["ty", "mesh.position.y"],
             ["tz", "mesh.position.z"],
         ]);
-        const stores = this.pinnedElementStores(
+        const stores = this.context.pinnedElementStores(
             compose.declaration,
             "dst",
         );
@@ -4570,7 +4511,12 @@ ${lifted.fragmentBody}
                 storeRename,
             )};\n`;
         }
-        return { quaternionProducts, basisLocals, basisStores };
+        return {
+            halfAngleLocals,
+            quaternionProducts,
+            basisLocals,
+            basisStores,
+        };
     }
 
     /**

@@ -66,12 +66,31 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     cos: "std::cos",
     acos: "std::acos",
     sin: "std::sin",
+    tan: "std::tan",
     sqrt: "std::sqrt",
     abs: "std::abs",
     log2: "std::log2",
     ceil: "std::ceil",
     floor: "std::floor",
 };
+
+/**
+ * The spelling the shared table gives one member, for a consumer outside
+ * the pinned-body layer that must agree with it — the scene-code compiler's
+ * `Math` dispatch reads the members both layers accept through this, so the
+ * two layers cannot drift on what a shared `<cmath>` member lowers to. A
+ * member the table does not carry throws, which is what keeps the shared
+ * list the single authority instead of a fallback.
+ */
+export function pinnedMathSpelling(name: string): string {
+    const spelling = PINNED_MATH_FUNCTIONS[name];
+    if (!spelling) {
+        throw new Error(
+            `Math.${name} is not in the shared pinned cmath table.`,
+        );
+    }
+    return spelling;
+}
 
 /**
  * `PINNED_MATH_FUNCTIONS` as the spelling map `PinnedNumericLowerer` takes:

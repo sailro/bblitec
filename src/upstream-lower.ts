@@ -14,7 +14,7 @@ import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
-import { pinnedToneMappingHeader } from "./lowering/pinned-tone-mapping.js";
+import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
@@ -578,13 +578,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             "upstream/include/bblite/upstream/pinned_surface.hpp",
             pinnedSurfaceHeader(new LoweringContext(this.store)),
         );
-        // The pin's exponential tone-mapping constant, read from its own
-        // inverse and cross-checked against the forward curve, so the PAL's
-        // clear-color inverse names a generated symbol instead of a typed
-        // literal.
+        // The pin's own inverse image processing, translated whole from its
+        // declaration and cross-checked against the forward curve, so the
+        // linear-frame clear color both backends build calls a generated
+        // function instead of a float-width PAL transcription.
         this.tree.write(
-            "upstream/include/bblite/upstream/pinned_tone_mapping.hpp",
-            pinnedToneMappingHeader(new LoweringContext(this.store)),
+            "upstream/include/bblite/upstream/pinned_inverse_image_processing.hpp",
+            pinnedInverseImageProcessingHeader(new LoweringContext(this.store)),
         );
         // The texture-slot table both render backends execute. Emitted for
         // every scene beside the capability defines above (the base slots

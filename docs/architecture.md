@@ -124,7 +124,7 @@ Primary source ownership:
 | `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, WGSL module loading, and the surface capture every driver screenshots through |
 | `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
-| `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, deformation uniforms, and inverse image processing shared byte-identically by both GPU backends |
+| `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, and deformation uniforms shared byte-identically by both GPU backends |
 | `native/src/pal_render_capture.hpp` | the `BBLITE_RENDER_CAPTURE` writer both backends share, `pinnedMaterialBlocks`/`pinnedMeshBlocks` included |
 | `native/src/pal_camera_controls.hpp` | SDL pointer/wheel/key translation into the generated camera inertia math |
 | `native/src/pal_sdl_gpu_sprite.hpp` | the SDL_GPU sprite pass mechanics its `.cpp` driver draws through |

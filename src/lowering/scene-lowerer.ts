@@ -274,12 +274,40 @@ void set_scene_fog(
 }
 `
             : "";
-        // The emitted removal transcribes the pinned mesh branch of
-        // removeFromScene (scene-list removal plus the topology mark);
-        // assert the upstream helper still exists at its module.
+        // The emitted removal is the pinned mesh arm — removeFromScene
+        // dispatches a mesh to removeMeshFromScene, whose scene-list
+        // splice plus mutation mark is what the native erase and
+        // membership bump mirror. Anchored on the splice pair itself
+        // rather than only on the dispatcher's existence, so a
+        // restructured mesh arm refuses generation instead of leaving the
+        // native erase mirroring a branch the pin no longer has.
         this.context.functionDeclaration(
             "src/scene/scene-remove.ts",
             "removeFromScene",
+        );
+        const { declaration: meshRemoval } =
+            this.context.functionDeclaration(
+                "src/scene/scene-remove.ts",
+                "removeMeshFromScene",
+            );
+        const meshSplices = this.context.findNodes(
+            meshRemoval,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                this.context.propertyPath(node.expression)?.join(".") ===
+                    "scene.meshes.splice",
+        );
+        if (meshSplices.length !== 1) {
+            this.context.contractError(
+                meshRemoval,
+                "Pinned removeMeshFromScene no longer splices " +
+                    "scene.meshes exactly once.",
+            );
+        }
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(meshRemoval, "mi2"),
+            "scene.meshes.indexOf(mesh)",
+            "Pinned mesh-removal index",
         );
         // A manager created with this engine owns animation time for the
         // groups attached to it, and a scene it drives has no other way to
