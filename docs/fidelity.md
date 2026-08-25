@@ -832,18 +832,10 @@ record keeps `uv_invert_y` and `invert_y` as separate fields, and why
 reading the upload flag here would flip every textured Standard sample.
 Scene 110 gates the render-target arm and scenes 9 and 24 the absence.
 
-**The emissive texture is sampled at the raw UV, never through its own
-transform.** Every other slot samples through the UV its
-`KHR_texture_transform` builds, and the emissive slot's transform is parsed,
-animated and uploaded exactly like them — but
-`createEmissiveColorFragment` hardcodes
-`textureSample(emissiveTexture,emissiveSampler,input.uv)`, and the composed
-shader an instrumented capture recovers computes `emissiveUV` on the line
-above and then ignores it. The generated fragment matches that. It is only
-observable when a material carries both an emissive texture and a non-identity
-emissive transform, which in this corpus means Scene 39, whose water animates
-one: sampling through the transform scrolls an emissive texture the browser
-holds still.
+**The emissive slot samples through its own UV like every other slot** —
+`emissiveUV` under its transform, `input.uv2` under a `texCoord` of 1 —
+and the composed variants carry whichever arm the material reaches. Scene
+39, whose water animates the emissive transform, gates it.
 
 **The bitangent is a varying.** `pbr-template.ts`'s `tangentBlock` builds
 `B_local = cross(N_local, T_local) * tangent.w` before the world and skin

@@ -175,8 +175,7 @@ can cause:
 5. **Texture sample expressions.** The set of `textureSample(...)` calls
    in the browser's fragments against the generated ones. A sample taken
    against a different UV than the pin is invisible in every uniform and
-   obvious here; scene 39's emissive slot is the corpus case
-   ([fidelity](fidelity.md#shader-contract)).
+   obvious here.
 
 Values are matched rather than blocks: every float tuple the browser
 uploaded is indexed, and each native field is looked up in it, so a

@@ -144,12 +144,11 @@ residual.
   beside the code but drift from it — the large-world page describes a
   `scene._floatingOriginOffset` mirror and a per-frame
   `updateFloatingOriginOffset` that the pinned `floating-origin.ts` says it
-  deleted as "net cost without value", and the post-process page's WGSL
-  outline omits the Y flip the pinned vertex stage writes into `uv`. Where the
+  deleted as "net cost without value". Where the
   two disagree, lower from the source and say so. Drift runs the other way
-  too, which is what makes the page worth reading: the same page states that
-  a pass's pipeline takes its *output target's* sample count, which the source
-  confirms and both backends had hardcoded to one.
+  too, which is what makes the page worth reading: the post-process page
+  states that a pass's pipeline takes its *output target's* sample count,
+  which the source confirms and both backends had hardcoded to one.
 - Generated files include provenance comments and
   `generated/<scene>/upstream/provenance.json`.
 - Optional Tint compilation is pinned separately in `upstream/tint.json`.
