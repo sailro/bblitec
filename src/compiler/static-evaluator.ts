@@ -58,9 +58,6 @@ export class StaticEvaluator {
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
         private readonly narrowOptional: NarrowOptional,
-        private readonly nullishCoalesce: (
-            expression: ts.BinaryExpression,
-        ) => Value | undefined,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -396,24 +393,21 @@ export class StaticEvaluator {
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.QuestionQuestionToken
             ) {
-                // The general data-model `??` in a numeric position: an
-                // optional number selects natively with the fallback
-                // lazy, and a non-nullish left is the result. The static
-                // record fold already ran inside
-                // `resolveStaticExpression` above, so reaching here means
-                // the answer is a run-time value.
-                const value = this.nullishCoalesce(unwrapped);
-                if (
-                    value &&
-                    (value.kind === "number" ||
-                        value.dataType?.kind === "number")
-                ) {
+                // The general `??` in a numeric position, through the one
+                // dispatch every value position owns — the
+                // delegate-and-kind-check shape `resolveCall` uses below.
+                // The static record fold already ran inside
+                // `resolveStaticExpression` above, so this resolves the
+                // run-time arms; a rung added to the value dispatch
+                // reaches numeric positions without a second copy here.
+                const value = this.resolveValue(unwrapped);
+                if (value.kind === "number") {
                     return this.castNumber(value, precision);
                 }
                 this.fail(
                     unwrapped.operatorToken,
-                    "'??' in a numeric position lowers over an optional " +
-                        "number or a value the model proves non-nullish.",
+                    "'??' in a numeric position must select a number, " +
+                        `received ${value.kind}.`,
                 );
             }
             if (
@@ -771,6 +765,18 @@ export class StaticEvaluator {
     ): ts.Expression | undefined {
         const left = this.unwrap(expression.left);
         if (ts.isPropertyAccessExpression(left)) {
+            // Records are identifier-bound, so only those owners are
+            // probed: the probe is a full value compile with emit
+            // authority, and an owner shape whose compilation emits
+            // statements (a call's arguments) must not emit them here
+            // first and again on the value path.
+            const ownerNode = this.unwrap(left.expression);
+            if (
+                !ts.isIdentifier(ownerNode) &&
+                ownerNode.kind !== ts.SyntaxKind.ThisKeyword
+            ) {
+                return undefined;
+            }
             const owner = this.resolveValue(left.expression);
             if (owner.kind === "record") {
                 const name = left.name.text;

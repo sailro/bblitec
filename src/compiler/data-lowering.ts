@@ -457,11 +457,15 @@ export class DataLowerer {
                 expression.right,
                 inner,
             );
-            return {
-                kind: "data",
-                cpp: `(${temp}.has_value() ? (*${temp}) : ${fallback})`,
-                dataType: inner,
-            };
+            // Through `leafValue`, so the select carries the inner
+            // type's own Value kind — an optional number selects as a
+            // number, an optional handle keeps its engine spelling —
+            // instead of a bare "data" every consumer would have to
+            // special-case.
+            return this.leafValue(
+                `(${temp}.has_value() ? (*${temp}) : ${fallback})`,
+                inner,
+            );
         }
         if (
             left.kind === "number" ||
@@ -1513,6 +1517,27 @@ export class DataLowerer {
                 ` ? ${this.compileForSink(unwrapped.whenTrue, dataType)}` +
                 ` : ${this.compileForSink(unwrapped.whenFalse, dataType)})`
             );
+        }
+        // `left ?? right` for a sink is a select the operator already
+        // lowers: the general arm yields the selected value at the left's
+        // inner type, and a sink of that same type takes it. One arm here
+        // closes the string, enum, boolean and container sinks together,
+        // instead of the operator reappearing per scalar compiler; the
+        // number sink stays with its own compiler below, which owns the
+        // float/double precision casts.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken &&
+            dataType.kind !== "number"
+        ) {
+            const selected = this.compileNullishCoalesce(unwrapped);
+            if (
+                selected?.dataType &&
+                dataTypesEqual(selected.dataType, dataType)
+            ) {
+                return selected.cpp;
+            }
         }
         switch (dataType.kind) {
             case "number":

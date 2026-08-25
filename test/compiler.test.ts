@@ -686,22 +686,55 @@ test("'??' outside its lowerable routes refuses by name", () => {
         import {
             createArcRotateCamera,
             createEngine,
-            createSceneContext,
-            registerScene,
-            startEngine,
         } from "@babylonjs/lite";
 
         async function main() {
             const engine = await createEngine({});
-            const scene = createSceneContext(engine);
             const camera = createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 });
             const doubled = camera ?? camera;
-            await registerScene(scene);
-            await startEngine(engine);
         }
         void main();
     `),
         /'\?\?' lowers over a static record property, an asset-derived handle collection, or a data-model value/,
+    );
+});
+
+test("'??' reaches sinks and conditions through the same dispatch", () => {
+    const result = compileSource(`
+        interface Item {
+            weight: number;
+        }
+        interface Bag {
+            primary: Item | null;
+            backup: Item;
+        }
+        function armed(flag: boolean): boolean | null {
+            if (flag) {
+                return true;
+            }
+            return null;
+        }
+        function pick(bag: Bag): number {
+            const chosen: Item = bag.primary ?? bag.backup;
+            return chosen.weight;
+        }
+        const bag: Bag = { primary: null, backup: { weight: 2 } };
+        const weight = pick(bag);
+        let count = 0;
+        if (armed(false) ?? false) {
+            count = count + 1;
+        }
+    `);
+    // The sink arm serves the struct sink from the one select (string and
+    // enum inners follow as soon as the model can produce a null of them);
+    // the condition position routes the selected boolean.
+    assert.match(
+        result.cpp,
+        /const auto (v_bblite_nullish_\d+) = v_fn\d+_bag\.primary;/,
+    );
+    assert.match(
+        result.cpp,
+        /if \(\(v_bblite_nullish_\d+\.has_value\(\) \? \(\*v_bblite_nullish_\d+\) : false\)\)/,
     );
 });
 

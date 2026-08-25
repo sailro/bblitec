@@ -383,8 +383,6 @@ class Compiler
                 this.isBrowserOnlyExpression(expression),
             (value, expression) =>
                 this.dataLowerer.narrowOptional(value, expression),
-            (expression) =>
-                this.dataLowerer.compileNullishCoalesce(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>
@@ -1589,6 +1587,23 @@ class Compiler
                 );
             if (typed) {
                 return typed;
+            }
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                // `if (a ?? b)`: the value dispatch selects, and the
+                // selected value is the condition — the call arm's
+                // delegate-and-kind-check shape below.
+                const value = this.compileValue(unwrapped);
+                if (value.kind === "boolean") {
+                    return value.cpp;
+                }
+                this.fail(
+                    unwrapped.operatorToken,
+                    "'??' in a condition must select a boolean, " +
+                        `received ${value.kind}.`,
+                );
             }
             const operator = new Map<ts.SyntaxKind, string>([
                 [ts.SyntaxKind.EqualsEqualsEqualsToken, "=="],

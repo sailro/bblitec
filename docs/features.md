@@ -127,7 +127,7 @@ analyzable entry file against one engine.
 - **`??` over the data model.** A nullish coalesce lowers by the left
   operand's own type: a static record property still settles at compile
   time, an asset-derived handle collection resolves through its concept,
-  an `optional(T)` evaluates once and selects natively with the fallback
+  a `T | null` optional evaluates once and selects natively with the fallback
   staying lazy exactly as JavaScript leaves it unevaluated, and a value
   the model proves non-nullish is the result with the dead fallback
   discarded. Anything outside those routes fails naming them.
