@@ -88,6 +88,27 @@ export class LoweringContext {
         return result;
     }
 
+    /** Every `<target>[...] = ...` store inside a pinned writer, in order. */
+    public pinnedElementStores(
+        declaration: ts.Node,
+        target: string,
+    ): Array<{ left: ts.ElementAccessExpression; right: ts.Expression }> {
+        return this.findNodes(
+            declaration,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isElementAccessExpression(node.left) &&
+                ts.isIdentifier(node.left.expression) &&
+                node.left.expression.text === target,
+        ).map((store) => {
+            if (!ts.isElementAccessExpression(store.left)) {
+                this.contractError(store, "Expected an element store.");
+            }
+            return { left: store.left, right: store.right };
+        });
+    }
+
     public propertyName(
         name: ts.PropertyName,
     ): string | undefined {

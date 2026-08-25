@@ -220,23 +220,14 @@ test("derives the thin-instance TRS terms from the pinned writers", () => {
     assert.match(plan.source, /local\[15\] = 1\.0;/);
 });
 
-test("the perspective and multiply anchors accept the pinned writers", () => {
+test("the multiply anchor accepts the pinned writer", () => {
     // Both anchors run inside lowerRenderPlan, so pinned drift throws here.
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({});
-    // The pin's own depth rows stay in the emission -- there is no second
-    // convention to select between; they now arrive through the writer
-    // translated whole from the pinned AST -- and the multiply keeps the
-    // pinned accumulation shape.
-    assert.match(
-        plan.source,
-        /out\[static_cast<std::size_t>\(10\.0\)\] = static_cast<float>\(\(\(-near_plane\) \/ range\)\);/,
-    );
-    assert.match(
-        plan.source,
-        /\(\(far_plane \* near_plane\) \/ range\)/,
-    );
+    // The multiply keeps the pinned accumulation shape; the projection
+    // writers' emitted rows are pinned by the upstream test that owns
+    // them ("translates the pinned perspective writer whole").
     assert.match(plan.source, /static_cast<double>\(a\[row\]\) \* b0 \+/);
 });
 

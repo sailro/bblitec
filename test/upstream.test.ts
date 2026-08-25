@@ -16,6 +16,7 @@ import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
+import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { pinnedInverseImageProcessingHeader } from "../src/lowering/pinned-inverse-image-processing.js";
 import {
     readUpstreamPin,
@@ -886,6 +887,20 @@ test("emits the pinned surface sample count for every scene shape", () => {
         header,
         /inline std::uint32_t preferred_sample_count\(\) \{\s*return 4u;/,
     );
+    assert.match(header, pinnedProvenance());
+});
+
+test("emits the pinned depth convention and anchors both projection writers", () => {
+    // The header derives compare and clear from the pin, and generation
+    // refuses if either pinned projection writer stops mapping
+    // near -> 1 / far -> 0 -- the convention this header's consumers
+    // (dither seeds, near-plane handling) key to a far plane of 0.
+    const header = pinnedDepthStateHeader(new LoweringContext());
+    assert.match(
+        header,
+        /pinned_depth_compare =\s*DepthCompare::greater_equal;/,
+    );
+    assert.match(header, /pinned_depth_clear = 0\.0f;/);
     assert.match(header, pinnedProvenance());
 });
 

@@ -9,10 +9,9 @@
  * derive the linear-frame clear color a transmission frame clears to. The
  * PAL used to carry a float-width transcription of that body consuming only
  * a lifted tone-mapping scale; the body is translated here from the pinned
- * declaration's own AST by `PinnedNumericLowerer` instead, so every
- * intermediate keeps the f64 width the pin computes at and an edited
- * bisection or a retuned curve regenerates rather than drifting past a
- * comment.
+ * declaration's own AST instead, so every intermediate keeps the f64 width
+ * the pin computes at and an edited bisection or a retuned curve regenerates
+ * rather than drifting past a comment.
  *
  * The tone-mapping division's literal is still cross-checked against the
  * forward curve's WGSL scale, so the CPU inverse and the GPU forward pass
@@ -20,10 +19,7 @@
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
-import {
-    type PinnedBinding,
-    PinnedNumericLowerer,
-} from "./pinned-numeric-lowerer.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 const transmissionModule = "src/frame-graph/transmission.ts";
@@ -91,83 +87,6 @@ function assertForwardCurveScale(
     }
 }
 
-/**
- * One pinned function of JavaScript numbers, translated statement by
- * statement. The parameter names and type annotations are asserted against
- * the pinned declaration, so a reshaped signature fails generation instead
- * of binding a parameter to the wrong C++ spelling.
- */
-function lowerNumericFunction(
-    context: LoweringContext,
-    module: string,
-    pinnedName: string,
-    parameters: readonly {
-        pinned: string;
-        annotation: "number" | "boolean";
-        cpp: string;
-    }[],
-    cppName: string,
-): string {
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        pinnedName,
-    );
-    if (declaration.parameters.length !== parameters.length) {
-        context.contractError(
-            declaration,
-            `Expected pinned ${pinnedName} to take ` +
-                `${parameters.length} parameter(s).`,
-        );
-    }
-    const bindings = new Map<string, PinnedBinding>();
-    const signature: string[] = [];
-    declaration.parameters.forEach((parameter, index) => {
-        const spec = parameters[index]!;
-        if (
-            !ts.isIdentifier(parameter.name) ||
-            parameter.name.text !== spec.pinned ||
-            parameter.type?.getText(file) !== spec.annotation
-        ) {
-            context.contractError(
-                parameter,
-                `Expected pinned ${pinnedName} parameter ${index} to be ` +
-                    `'${spec.pinned}: ${spec.annotation}'.`,
-            );
-        }
-        bindings.set(spec.pinned, {
-            cpp: spec.cpp,
-            type: spec.annotation === "boolean" ? "bool" : "scalar",
-        });
-        signature.push(
-            `${spec.annotation === "boolean" ? "bool" : "double"} ${spec.cpp}`,
-        );
-    });
-    const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
-        bindings,
-        calls: new Map([
-            ...pinnedNumericMathCalls(),
-            ["clamp01", (args) => `clamp01(${args.join(", ")})`],
-        ]),
-        returnValue: (expression) => {
-            if (!expression) {
-                return context.contractError(
-                    declaration,
-                    `Expected pinned ${pinnedName} to return a value.`,
-                );
-            }
-            return lowerer.expression(expression);
-        },
-    });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
-        .join("\n");
-    return (
-        `// ${context.provenance(module, pinnedName)}\n` +
-        `inline double ${cppName}(\n    ${signature.join(",\n    ")}) {\n` +
-        `${body}\n}`
-    );
-}
-
 /** The always-emitted header carrying the pinned inverse, whole. */
 export function pinnedInverseImageProcessingHeader(
     context: LoweringContext,
@@ -180,31 +99,42 @@ export function pinnedInverseImageProcessingHeader(
         );
     }
     assertForwardCurveScale(context, scale);
-    const clamp = lowerNumericFunction(
+    const calls = new Map([
+        ...pinnedNumericMathCalls(),
+        [
+            "clamp01",
+            (args: readonly string[]) => `clamp01(${args.join(", ")})`,
+        ],
+    ]);
+    const clamp = lowerPinnedFunction(
         context,
         transmissionModule,
         "clamp01",
-        [{ pinned: "v", annotation: "number", cpp: "v" }],
-        "clamp01",
+        [{ pinned: "v", kind: "number", cpp: "v" }],
+        { cppName: "clamp01", returns: "double", inline: true, calls },
     );
-    const inverse = lowerNumericFunction(
+    const inverse = lowerPinnedFunction(
         context,
         transmissionModule,
         "inverseImageProcessedChannel",
         [
-            { pinned: "value", annotation: "number", cpp: "value" },
-            { pinned: "exposure", annotation: "number", cpp: "exposure" },
-            { pinned: "contrast", annotation: "number", cpp: "contrast" },
-            { pinned: "toneMapping", annotation: "boolean", cpp: "tone_mapping" },
+            { pinned: "value", kind: "number", cpp: "value" },
+            { pinned: "exposure", kind: "number", cpp: "exposure" },
+            { pinned: "contrast", kind: "number", cpp: "contrast" },
+            { pinned: "toneMapping", kind: "boolean", cpp: "tone_mapping" },
         ],
-        "inverse_image_processed_channel",
+        {
+            cppName: "inverse_image_processed_channel",
+            returns: "double",
+            inline: true,
+            calls,
+        },
     );
     return `#pragma once
 
-// ${context.provenance(transmissionModule, "inverseImageProcessedChannel")}
-
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace bbl::upstream {
 

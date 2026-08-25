@@ -291,9 +291,13 @@ uploaded matrix in all sixteen elements.
 The compare is not typed here. `pinned-depth-state.ts` reads the pin's own
 declaration and emits `upstream::pinned_depth_compare`, failing generation on
 a spelling this runtime has no enumerator for — the contract
-`pinned-blend-table.ts` holds for the pin's blend factors, and the one
-`assertPinnedPerspectiveWriter` already holds for the projection half of the
-same convention. Each backend translates the enumerator to its own API.
+`pinned-blend-table.ts` holds for the pin's blend factors. The same module
+anchors the projection half of the convention beside the clear value: the
+projection writers are translated whole from their pinned ASTs, and their
+reverse-Z depth rows are shape-asserted so a remapped depth range fails
+generation by name rather than lowering faithfully while the consumers keyed
+to a far plane of 0 go stale. Each backend translates the enumerator to its
+own API.
 
 Two arms of the library sit outside the slice and name their own compare: the
 pin's shadow targets render standard-Z `less-equal`, and a `ShaderMaterial`

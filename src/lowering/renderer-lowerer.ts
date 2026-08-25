@@ -58,10 +58,12 @@ import {
     splitWgslStatements,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -541,11 +543,12 @@ export class RendererLowerer {
             this.loweredShaderVariants(reachedShaderPrograms);
         // The camera matrix chain the source below emits is anchored
         // against its pinned writers before anything is returned: the
-        // reverse-Z projection rows (the writer itself is translated from
-        // its own AST below), the multiply accumulation order, and the
-        // view transpose (whose emission is derived from the pinned store
-        // map rather than asserted against it).
-        this.assertReverseZProjectionRows();
+        // multiply accumulation order, and the view transpose (whose
+        // emission is derived from the pinned store map rather than
+        // asserted against it). The projection writers are translated
+        // whole from their own ASTs below, and the reverse-Z convention
+        // their depth rows carry is anchored beside its clear-value half
+        // in `pinned-depth-state.ts`.
         this.assertPinnedMultiplyWriter();
         this.assertPinnedDrawListRules();
         this.assertPinnedLightSlotPacking();
@@ -570,33 +573,42 @@ export class RendererLowerer {
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
-        const perspectiveWriter = this.lowerPinnedMatrixWriter(
+        const perspectiveWriter = lowerPinnedFunction(
+            this.context,
             perspectiveMatrixModule,
             "mat4PerspectiveLHToRef",
-            "mat4_perspective_lh_to_ref",
-            new Map([
-                ["fov", "fov"],
-                ["aspect", "aspect"],
-                ["near", "near_plane"],
-                ["far", "far_plane"],
-            ]),
-            new Map([
-                ["Math.tan", (args) => `std::tan(${args[0]})`],
-            ]),
+            [
+                { pinned: "out", kind: "mat4", cpp: "out" },
+                { pinned: "fov", kind: "number", cpp: "fov" },
+                { pinned: "aspect", kind: "number", cpp: "aspect" },
+                { pinned: "near", kind: "number", cpp: "near_plane" },
+                { pinned: "far", kind: "number", cpp: "far_plane" },
+            ],
+            {
+                cppName: "mat4_perspective_lh_to_ref",
+                returns: "void",
+                calls: pinnedNumericMathCalls(),
+            },
         );
         const orthoWriter = options.orthographicCamera
-            ? this.lowerPinnedMatrixWriter(
+            ? lowerPinnedFunction(
+                  this.context,
                   orthoMatrixModule,
                   "mat4OrthoOffCenterLHToRef",
-                  "mat4_ortho_off_center_lh_to_ref",
-                  new Map([
-                      ["left", "left"],
-                      ["right", "right"],
-                      ["bottom", "bottom"],
-                      ["top", "top"],
-                      ["near", "near_plane"],
-                      ["far", "far_plane"],
-                  ]),
+                  [
+                      { pinned: "out", kind: "mat4", cpp: "out" },
+                      { pinned: "left", kind: "number", cpp: "left" },
+                      { pinned: "right", kind: "number", cpp: "right" },
+                      { pinned: "bottom", kind: "number", cpp: "bottom" },
+                      { pinned: "top", kind: "number", cpp: "top" },
+                      { pinned: "near", kind: "number", cpp: "near_plane" },
+                      { pinned: "far", kind: "number", cpp: "far_plane" },
+                  ],
+                  {
+                      cppName: "mat4_ortho_off_center_lh_to_ref",
+                      returns: "void",
+                      calls: pinnedNumericMathCalls(),
+                  },
               )
             : "";
         // Under multi-light the pinned lights block owns every light past
@@ -638,8 +650,7 @@ export class RendererLowerer {
     /**
      * The render-plan preconditions: the adopted render-task symbols must
      * still exist, GPU instancing requires its composed matrix pins, and
-     * an orthographic scene refuses environment backgrounds while its
-     * off-center reverse-Z writer is anchored marker for marker.
+     * an orthographic scene refuses environment backgrounds.
      */
     private assertRenderPlanPins(options: {
         gpuInstancing?: boolean;
@@ -3278,79 +3289,6 @@ ${lifted.fragmentBody}
         return lowerer.expression(expression);
     }
 
-    /**
-     * One pinned matrix writer translated whole: a `Mat4Storage` target
-     * followed by JavaScript-number scalars. The target binds as an f32
-     * buffer, so every store rounds where the pin's `Float32Array` store
-     * does and every local keeps the f64 width a JavaScript number is —
-     * the same two rules the shared translator already enforces. The
-     * scalar map is exhaustive both ways, so a pinned parameter this
-     * emission does not spell, or a spelling the pin no longer takes,
-     * fails generation instead of binding positionally.
-     */
-    private lowerPinnedMatrixWriter(
-        modulePath: string,
-        symbolName: string,
-        cppName: string,
-        scalars: ReadonlyMap<string, string>,
-        calls: ReadonlyMap<
-            string,
-            (args: readonly string[]) => string
-        > = new Map(),
-    ): string {
-        const { file, declaration } = this.context.functionDeclaration(
-            modulePath,
-            symbolName,
-        );
-        if (declaration.parameters.length !== scalars.size + 1) {
-            this.context.contractError(
-                declaration,
-                `Expected pinned ${symbolName} to take a target and ` +
-                    `${scalars.size} scalar(s).`,
-            );
-        }
-        const bindings = new Map<string, PinnedBinding>();
-        const signature: string[] = ["std::array<float, 16>& out"];
-        declaration.parameters.forEach((parameter, index) => {
-            if (!ts.isIdentifier(parameter.name)) {
-                return this.context.contractError(
-                    parameter,
-                    `Expected pinned ${symbolName} parameters to be named.`,
-                );
-            }
-            const name = parameter.name.text;
-            if (index === 0) {
-                if (parameter.type?.getText(file) !== "Mat4Storage") {
-                    this.context.contractError(
-                        parameter,
-                        `Expected pinned ${symbolName} to write a ` +
-                            "Mat4Storage target first.",
-                    );
-                }
-                bindings.set(name, { cpp: "out", type: "f32" });
-                return;
-            }
-            const cpp = scalars.get(name);
-            if (!cpp) {
-                return this.context.contractError(
-                    parameter,
-                    `Pinned ${symbolName} parameter '${name}' has no C++ ` +
-                        "spelling in this emission.",
-                );
-            }
-            bindings.set(name, { cpp, type: "scalar" });
-            signature.push(`double ${cpp}`);
-        });
-        const lowerer = new PinnedNumericLowerer(file, { bindings, calls });
-        const body = declaration.body!.statements
-            .flatMap((statement) => lowerer.statement(statement, "    "))
-            .join("\n");
-        return `// ${this.context.provenance(modulePath, symbolName)}
-void ${cppName}(
-    ${signature.join(",\n    ")}) {
-${body}
-}`;
-    }
 
     /** A literal element read `base[<n>]`, or a contract error. */
     private pinnedElementIndex(
@@ -3372,32 +3310,6 @@ ${body}
         );
     }
 
-    /** Every `<target>[...] = ...` store inside a pinned writer, in order. */
-    private pinnedElementStores(
-        declaration: ts.Node,
-        target: string,
-    ): Array<{ left: ts.ElementAccessExpression; right: ts.Expression }> {
-        return this.context
-            .findNodes(
-                declaration,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    ts.isElementAccessExpression(node.left) &&
-                    ts.isIdentifier(node.left.expression) &&
-                    node.left.expression.text === target,
-            )
-            .map((store) => {
-                if (!ts.isElementAccessExpression(store.left)) {
-                    this.context.contractError(
-                        store,
-                        "Expected an element store.",
-                    );
-                }
-                return { left: store.left, right: store.right };
-            });
-    }
 
     /** The `<base>` or `<base> + <n>` offset of a pinned indexed store. */
     private pinnedStoreOffset(
@@ -3467,7 +3379,7 @@ ${body}
                 this.pinnedElementIndex(initializer.whenFalse, "w"),
             );
         }
-        const stores = this.pinnedElementStores(declaration, "v");
+        const stores = this.context.pinnedElementStores(declaration, "v");
         if (stores.length !== 16) {
             this.context.contractError(
                 declaration,
@@ -3581,55 +3493,6 @@ ${body}
     }
 
     /**
-     * The reverse-Z anchor: rows [10] and [14] of the pinned perspective
-     * writer map near -> 1 and far -> 0, which is the projection half of
-     * the convention `pinned_depth_state.hpp` derives its compare and
-     * clear from. The writer itself is translated whole from its own AST
-     * (`lowerPinnedMatrixWriter`), so the emission cannot drift from the
-     * pin; what this guards is the CONVENTION the depth-state consumers
-     * assume — a pin that remapped the depth range would lower faithfully
-     * here while the dither seeds and near-plane handling keyed to a far
-     * plane of 0 went quietly stale, so it fails generation by name
-     * instead.
-     */
-    private assertReverseZProjectionRows(): void {
-        const { file, declaration } = this.context.functionDeclaration(
-            perspectiveMatrixModule,
-            "mat4PerspectiveLHToRef",
-        );
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(declaration, "range"),
-            "far - near",
-            "Pinned perspective depth range",
-        );
-        const rows = new Map<number, string>([
-            [10, "-near / range"],
-            [14, "(far * near) / range"],
-        ]);
-        for (const store of this.pinnedElementStores(declaration, "out")) {
-            const index = this.context.numericValue(
-                store.left.argumentExpression,
-                file,
-            );
-            const shape = rows.get(index);
-            if (shape === undefined) continue;
-            this.context.assertExpressionShape(
-                store.right,
-                shape,
-                `Pinned reverse-Z projection row ${index}`,
-            );
-            rows.delete(index);
-        }
-        if (rows.size !== 0) {
-            this.context.contractError(
-                declaration,
-                "Pinned perspective writer no longer stores the reverse-Z " +
-                    `depth rows (${[...rows.keys()].join(", ")}).`,
-            );
-        }
-    }
-
-    /**
      * Per-term anchors for the pinned matrix multiply the emitted
      * `multiply_into` loop and the instance-parent accumulation reproduce:
      * row-stride-4 accumulators and the a0*b0 + a4*b1 + a8*b2 + a12*b3
@@ -3652,7 +3515,7 @@ ${body}
                 `Pinned matrix-multiply accumulator ${name}`,
             );
         }
-        const stores = this.pinnedElementStores(declaration, "dst");
+        const stores = this.context.pinnedElementStores(declaration, "dst");
         if (stores.length !== 16) {
             this.context.contractError(
                 declaration,
@@ -4022,7 +3885,7 @@ ${body}
                 selectionGuards[index]![1],
             );
         });
-        const selectionStores = this.pinnedElementStores(
+        const selectionStores = this.context.pinnedElementStores(
             selection,
             "u32",
         );
@@ -4127,8 +3990,8 @@ ${body}
             "light._writeLightUbo(data, headerFloats + count * LIGHT_ENTRY_FLOATS)",
             "Pinned light-entry slot arithmetic",
         );
-        const countStores = this.pinnedElementStores(fill, "_countU32");
-        const headerStores = this.pinnedElementStores(fill, "data");
+        const countStores = this.context.pinnedElementStores(fill, "_countU32");
+        const headerStores = this.context.pinnedElementStores(fill, "data");
         if (countStores.length !== 1 || headerStores.length !== 1) {
             this.context.contractError(
                 fill,
@@ -4325,7 +4188,7 @@ ${body}
             backgroundGroundModule,
             "createBgMeshUBO",
         );
-        const alphaStore = this.pinnedElementStores(
+        const alphaStore = this.context.pinnedElementStores(
             groundUbo.declaration,
             "data",
         ).find(
@@ -4465,7 +4328,7 @@ ${body}
             "src/mesh/create-box.ts",
             "createBoxData",
         );
-        const boxStore = this.pinnedElementStores(
+        const boxStore = this.context.pinnedElementStores(
             box.declaration,
             "positions",
         )[0];
@@ -4605,7 +4468,7 @@ ${body}
             ["ty", "mesh.position.y"],
             ["tz", "mesh.position.z"],
         ]);
-        const stores = this.pinnedElementStores(
+        const stores = this.context.pinnedElementStores(
             compose.declaration,
             "dst",
         );
