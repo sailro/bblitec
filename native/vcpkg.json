@@ -26,6 +26,12 @@
         }
       ]
     },
+    "navigation": {
+      "description": "Recast/Detour navigation for scenes reaching navigation:recast — the overlay port pins isaac-mason's fork at the commit the pinned @recast-navigation/wasm builds, so navmesh, query and crowd behaviour matches the browser reference. Zlib-licensed, linked only where the scene's own source creates a navigation plugin.",
+      "dependencies": [
+        "recastnavigation"
+      ]
+    },
     "physics": {
       "description": "Bullet rigid-body solver for scenes reaching physics:world. Zlib-licensed, and linked only where the scene's own source creates a physics world.",
       "dependencies": [

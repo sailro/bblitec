@@ -89,6 +89,11 @@ export const featureSources: Record<Feature, string[]> = {
     // carries is the `HP_*` surface the pin calls on the `hknp` module it
     // is handed -- a third-party library behind a fixed entry-point list,
     // which is the same role SDL plays and so the same boundary.
+    // The Detour/Recast surface the pin calls on the module
+    // createNavigationPluginAsync loads -- the same third-party-
+    // library-behind-a-fixed-entry-point boundary the physics PAL
+    // draws.
+    "navigation:recast": ["src/pal_navigation_recast.cpp"],
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
     "sprite:billboard-axis-locked": [],

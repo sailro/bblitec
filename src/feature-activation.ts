@@ -532,6 +532,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "+ src/particle/particle-billboard.ts",
         consumers: CMAKE,
     },
+    "navigation:recast": {
+        provenance:
+            "src/navigation/navigation.ts createNavigationPluginAsync + " +
+            "the @recast-navigation/generators pipeline (the wasm the pin " +
+            "loads is the same recastnavigation sources the native " +
+            "library links)",
+        consumers: CMAKE,
+    },
     "physics:world": {
         provenance:
             "src/physics/havok.ts createHavokWorld + _stepWorld " +

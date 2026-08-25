@@ -1044,6 +1044,7 @@ export type Feature =
     | "mesh:thin-instances-dynamic"
     | "mesh:torus"
     | "particle:node"
+    | "navigation:recast"
     | "physics:world"
     | "physics:aggregate"
     | "scene:remove"
