@@ -916,19 +916,39 @@ commit the wrapper's own WASM builds (a vcpkg overlay port), with
 numbers stay the pin's: measured equal on the current corpus. The wrapper's
 `recastConfigDefaults` are baked into the PAL verbatim and drift-gated at
 generation against the installed `@recast-navigation/core`, so a bumped
-package that moves a default names the constant to move.
+package that moves a default names the constant to move. Its
+`crowdAgentParamsDefaults` are gated the other way round and reach the PAL
+not at all: the pinned `addAgent` supplies every key that table holds, so
+the wrapper's spread is fully overridden, and what generation checks is
+that this stays true — a package that grows a twelfth default fails
+naming it.
 
-The reached slice: a solo navmesh built from glTF-imported meshes at their
-loaded transform — the merge passes the loader-baked vertices through
-untouched (they already carry the pin's mirrored world, measured equal on
-the corpus, and a scene-code TRS refuses at runtime naming the mesh) with
-the pin's reversed winding over a running vertex base; the numeric config
-subset of `createNavMesh`; `createDebugNavMeshGeometry`'s detached
-triangles with the pin's reversed storage winding; and `raycast`, which
-finds the nearest poly in the wrapper's ±1 half-extents, reports a hit
-exactly when `0 < t < 1`, and lerps the hit point in JS-double width.
-Tiled meshes, tile cache and obstacles, off-mesh connections, crowds, and
-the query family past `raycast` refuse at generation by name.
+The reached slice: a solo navmesh built from the numeric config subset of
+`createNavMesh`, over either mesh kind the corpus casts from. The merge
+applies each caster's own `worldMatrix` as the pin does, and where that
+matrix already is decides the arm: a glTF-imported mesh's vertices carry
+the loader-baked mirrored world (measured equal to the pin's stream on
+the corpus) so its rows are the identity and the positions pass through,
+while a factory mesh keeps local vertices and its transform on the
+record, so its rows are the TRS composed from the pin's own
+`composeTrsLocalMatrix`. A glTF mesh carrying scene-code TRS would need
+both at once and refuses at runtime naming the mesh. Winding is reversed
+over a running vertex base either way.
+
+Beyond the build: `createDebugNavMeshGeometry`'s detached triangles with
+the pin's reversed storage winding; `raycast`, which finds the nearest
+poly in the wrapper's ±1 half-extents, reports a hit exactly when
+`0 < t < 1`, and lerps the hit point in JS-double width;
+`getClosestPoint`, which is the wrapper's own two-call snap
+(`findNearestPoly` for the polygon, then `closestPointOnPoly` for the
+point) at those same half-extents; and a **crowd** — `createNavCrowd`,
+`addAgent` with the pinned module's own `?? 7` / `?? 0` parameter
+defaults resolved before the wrapper's spread sees them, and
+`getAgentPosition` reading the agent's `npos` with the pin's `{0, 0, 0}`
+for an index the crowd never held. Tiled meshes, the tile cache and
+obstacles, off-mesh connections, `agentGoto`, `updateNavCrowd`,
+`computePath` and the rest of the query family refuse at generation by
+name.
 
 ### Frame graph
 

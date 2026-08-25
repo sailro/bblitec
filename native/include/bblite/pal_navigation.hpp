@@ -30,9 +30,21 @@
 
 namespace bbl::pal {
 
-/** One navigation plugin: a navmesh, its query, and later a crowd. */
+/** One navigation plugin: a navmesh and its query. */
 struct NavigationHandle {
     std::uint32_t value = 0;
+};
+
+/** One crowd, built over a plugin's navmesh. */
+struct NavCrowdHandle {
+    std::uint32_t value = 0;
+};
+
+/** A world position as the wrapper's `Vec3` carries one: three floats. */
+struct NavVec3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
 };
 
 /**
@@ -105,5 +117,66 @@ NavRaycastHit navigation_raycast(
     NavigationHandle plugin,
     float start_x, float start_y, float start_z,
     float end_x, float end_y, float end_z);
+
+/**
+ * `NavMeshQuery.findClosestPoint(position, { halfExtents: ±1 })`: the
+ * wrapper resolves the nearest polygon with a null point output and then
+ * asks `closestPointOnPoly` for the point, so the two calls are the
+ * contract rather than `findNearestPoly`'s own `nearestPt`.
+ *
+ * Neither status is reported, because the pinned `getClosestPoint`
+ * inspects neither — it returns the wrapper's output buffer either way,
+ * which is uninitialized memory when the point resolves nothing. There
+ * is no signal to mirror, so a query that resolves nothing reads as the
+ * origin rather than as an outcome a caller could branch on;
+ * `findClosestPointWithin` is the pinned entry point that does report
+ * one, and it is unreached.
+ */
+NavVec3 navigation_closest_point(
+    NavigationHandle plugin,
+    float x, float y, float z);
+
+/**
+ * `new Crowd(navMesh, { maxAgents, maxAgentRadius })`: `dtAllocCrowd`
+ * followed by `init`, over the plugin's own navmesh.
+ */
+NavCrowdHandle navigation_create_crowd(
+    NavigationHandle plugin,
+    int max_agents,
+    float max_agent_radius);
+
+/**
+ * `Crowd.addAgent`'s `dtCrowdAgentParams`, field for field. The three
+ * optional ones carry the values `addAgent` resolved through the
+ * wrapper's `crowdAgentParamsDefaults`; `userData` is that table's own
+ * zero, which no reached call names.
+ */
+struct NavAgentParams {
+    float radius = 0.0f;
+    float height = 0.0f;
+    float max_acceleration = 0.0f;
+    float max_speed = 0.0f;
+    float collision_query_range = 0.0f;
+    float path_optimization_range = 0.0f;
+    float separation_weight = 0.0f;
+    unsigned char update_flags = 0;
+    unsigned char obstacle_avoidance_type = 0;
+    unsigned char query_filter_type = 0;
+};
+
+/** `Crowd.addAgent(position, params)` → the agent index it returned. */
+int navigation_add_agent(
+    NavCrowdHandle crowd,
+    float x, float y, float z,
+    const NavAgentParams& params);
+
+/**
+ * `CrowdAgent.position()`: the agent's `npos`. Absent when the crowd
+ * holds no agent at that index, which is the `?.` the pinned
+ * `getAgentPosition` reads through.
+ */
+std::optional<NavVec3> navigation_agent_position(
+    NavCrowdHandle crowd,
+    int index);
 
 } // namespace bbl::pal

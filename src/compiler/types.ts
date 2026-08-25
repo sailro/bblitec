@@ -694,8 +694,12 @@ export type ValueKind =
     | "physics-world"
     | "physics-aggregate"
     // The navigation plugin: the Detour surface behind the PAL, held the
-    // way `physics-world` holds the solver.
+    // way `physics-world` holds the solver. A crowd is a second handle
+    // over the same seam, because the pin models it as one too --
+    // `NavCrowd` carries its plugin and its `dtCrowd`, and every agent
+    // call takes the crowd rather than the plugin.
     | "navigation"
+    | "navigation-crowd"
     // The Web Audio family. The seam is the pin's own: `src/audio/*.ts`
     // reaches the browser through `AudioContext`/`GainNode`/`AudioParam`
     // and nothing else, so those are the handles -- the same shape

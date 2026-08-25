@@ -105,6 +105,7 @@ Primary source ownership:
 | `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
 | `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own, plus the generated variant-selector and material texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
+| `src/lowering/pinned-trs.ts` | a `MeshRecord`'s local world matrix, from `eulerToQuat` and `mat4ComposeInto`: one home for the two emissions that need it, the thin-instance parent world and the navmesh merge |
 | `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
 | `src/lowering/post-process-lowerer.ts` | the pass's own contracts — internal target, viewport rectangle, bind-group order, blend table — and each effect's `writeUniforms`, emitted from the pin's AST |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
@@ -121,7 +122,7 @@ Primary source ownership:
 | `native/include/bblite/pal_audio.hpp` | the Web Audio contract: the browser surface the pinned audio module calls, which is the seam the pin itself draws |
 | `native/src/pal_audio_labsound.cpp` | that surface over LabSound, a fork of WebKit's own WebAudio ([fidelity](fidelity.md#audio-contract)) |
 | `native/src/pal_audio_sdl_device.hpp` | SDL3 behind LabSound's `lab::AudioDevice`, so the platform stream stays SDL like every other service here |
-| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's own pinned recastnavigation commit, replaying `generateSoloNavMesh` and the Detour query verbatim |
+| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's own pinned recastnavigation commit, replaying `generateSoloNavMesh`, the Detour query and the crowd verbatim |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |

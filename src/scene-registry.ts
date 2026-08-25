@@ -894,6 +894,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene170",
+        name: "Scene 170 - Navigation Crowd",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene170.ts",
+        title: "Babylon Lite Native - Navigation Crowd",
+        parity: {
+            // Byte-identical on both backends: the navmesh, the crowd's
+            // own placement snap and the debug overlay all run the same
+            // pinned recastnavigation commit, and the scene never steps
+            // the crowd — so the agent sits where `addAgent` put it on
+            // both sides.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene175",
         name: "Scene 175 - Navigation Raycast",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene175.ts",

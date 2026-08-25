@@ -543,9 +543,9 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "navigation:recast": {
         provenance:
             "src/navigation/navigation.ts createNavigationPluginAsync + " +
-            "the @recast-navigation/generators pipeline (the wasm the pin " +
-            "loads is the same recastnavigation sources the native " +
-            "library links)",
+            "the @recast-navigation/generators pipeline and the Detour " +
+            "crowd its createNavCrowd builds (the wasm the pin loads is " +
+            "the same recastnavigation sources the native library links)",
         consumers: CMAKE,
     },
     "audio:engine": {

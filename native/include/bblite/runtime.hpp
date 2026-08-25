@@ -725,6 +725,28 @@ struct LineSystemData {
     std::vector<std::uint32_t> line_point_counts;
 };
 
+/**
+ * Which space a geometry's `vertices[].position` lane is already in.
+ *
+ * `PrimitiveKind` does not answer this — it says whether a mesh has real
+ * geometry rather than parametric dimensions, and `createPlane` and
+ * `createMeshFromData` both record `gltf` while keeping local vertices.
+ * A consumer that needs each vertex's world position has to compose what
+ * is missing, so the producer records what it baked:
+ *
+ * - `local`: the builder's own vertices, with the node transform still on
+ *   the `MeshRecord` (every factory mesh).
+ * - `world`: the glTF loader's static arm, which multiplied each position
+ *   through the mirrored node world before storing it.
+ * - `mirrored_local`: the glTF loader's animated and instanced arms, which
+ *   apply the RH-to-LH mirror but leave the node matrix for the draw.
+ */
+enum class VertexSpace : std::uint8_t {
+    local,
+    world,
+    mirrored_local,
+};
+
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
@@ -732,6 +754,7 @@ struct ModelGeometry {
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
+    VertexSpace vertex_space = VertexSpace::local;
     bool has_tangents = false;
     bool flat_normals = false;
     Vec3 bounds_min{};

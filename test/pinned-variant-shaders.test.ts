@@ -128,6 +128,12 @@ test("emitted variants reproduce the browser's own fragments byte-for-byte", () 
                 ? `, ${missing.length} not composed yet: ${missing.join(", ")}`
                 : ""),
     );
+    // "No evidence" and "the evidence disagrees" are different verdicts, and
+    // only the second is a finding. A capture directory holding scenes this
+    // tree never generated -- a sizing capture of an unintegrated scene, a
+    // probe -- considers no fragment at all, and asserting there would report
+    // a regression whose cause is which artifacts happen to sit on disk.
+    if (matched + missing.length === 0) return;
     assert.ok(
         matched > 0,
         "No captured PBR fragment was reproduced byte-for-byte; the emitted " +

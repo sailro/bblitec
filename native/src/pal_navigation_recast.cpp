@@ -12,6 +12,7 @@
 
 #include <bblite/pal_navigation.hpp>
 
+#include <DetourCrowd.h>
 #include <DetourNavMesh.h>
 #include <DetourNavMeshBuilder.h>
 #include <DetourNavMeshQuery.h>
@@ -49,6 +50,27 @@ NavigationPluginState& plugin_state(NavigationHandle handle) {
     }
     return *plugins()[handle.value];
 }
+
+/** One `Crowd`: `dtAllocCrowd()` and the navmesh it was init'd over. */
+struct NavCrowdState {
+    std::unique_ptr<dtCrowd, void (*)(dtCrowd*)> crowd{
+        nullptr, [](dtCrowd* value) { dtFreeCrowd(value); }};
+};
+
+std::vector<std::unique_ptr<NavCrowdState>>& crowds() {
+    static std::vector<std::unique_ptr<NavCrowdState>> states;
+    return states;
+}
+
+NavCrowdState& crowd_state(NavCrowdHandle handle) {
+    if (handle.value >= crowds().size() || !crowds()[handle.value]) {
+        throw std::runtime_error("Invalid navigation crowd handle.");
+    }
+    return *crowds()[handle.value];
+}
+
+/** `NavMeshQuery.defaultQueryHalfExtents`. */
+constexpr float default_query_half_extents[3] = {1.0f, 1.0f, 1.0f};
 
 /** recastConfigDefaults, verbatim. */
 struct ResolvedBuildConfig {
@@ -429,12 +451,11 @@ NavRaycastHit navigation_raycast(
     }
     const float start[3] = {start_x, start_y, start_z};
     const float end[3] = {end_x, end_y, end_z};
-    const float half_extents[3] = {1.0f, 1.0f, 1.0f};
 
     dtPolyRef nearest_ref = 0;
     float nearest_point[3] = {0.0f, 0.0f, 0.0f};
     const dtStatus nearest_status = state.query->findNearestPoly(
-        start, half_extents, &state.filter, &nearest_ref,
+        start, default_query_half_extents, &state.filter, &nearest_ref,
         nearest_point);
     if (dtStatusFailed(nearest_status) || nearest_ref == 0) {
         return NavRaycastHit{};
@@ -451,6 +472,100 @@ NavRaycastHit navigation_raycast(
         return NavRaycastHit{};
     }
     return NavRaycastHit{true, t};
+}
+
+// NavMeshQuery::findClosestPoint (recast-navigation-js's own glue):
+// resolve the nearest polygon asking for no point, then take the point
+// from closestPointOnPoly. The two-call shape is the contract — the
+// point findNearestPoly would have written is a different value on a
+// query whose position sits off the polygon.
+NavVec3 navigation_closest_point(
+    NavigationHandle plugin,
+    float x, float y, float z) {
+    NavigationPluginState& state = plugin_state(plugin);
+    if (!state.nav_mesh || !state.query) {
+        throw std::runtime_error(
+            "No navmesh generated. Call createNavMesh first.");
+    }
+    const float position[3] = {x, y, z};
+    dtPolyRef poly_ref = 0;
+    const dtStatus nearest_status = state.query->findNearestPoly(
+        position, default_query_half_extents, &state.filter, &poly_ref,
+        nullptr);
+    if (dtStatusFailed(nearest_status)) {
+        return NavVec3{};
+    }
+    NavVec3 point{};
+    bool over_poly = false;
+    state.query->closestPointOnPoly(
+        poly_ref, position, &point.x, &over_poly);
+    return point;
+}
+
+// new Crowd(navMesh, { maxAgents, maxAgentRadius }): allocCrowd then
+// init over the plugin's navmesh. dtCrowd builds its own query and
+// filters; the wrapper changes neither.
+NavCrowdHandle navigation_create_crowd(
+    NavigationHandle plugin,
+    int max_agents,
+    float max_agent_radius) {
+    NavigationPluginState& state = plugin_state(plugin);
+    if (!state.nav_mesh) {
+        throw std::runtime_error(
+            "No navmesh generated. Call createNavMesh first.");
+    }
+    dtCrowd* crowd = dtAllocCrowd();
+    if (!crowd ||
+        !crowd->init(max_agents, max_agent_radius,
+                     state.nav_mesh.get())) {
+        dtFreeCrowd(crowd);
+        throw std::runtime_error(
+            "createNavCrowd failed: Failed to initialize crowd");
+    }
+    auto owned = std::make_unique<NavCrowdState>();
+    owned->crowd.reset(crowd);
+    crowds().push_back(std::move(owned));
+    return NavCrowdHandle{
+        static_cast<std::uint32_t>(crowds().size() - 1)};
+}
+
+// Crowd.addAgent: the wrapper fills every dtCrowdAgentParams field it
+// declares from the spread of its defaults over the caller's object,
+// leaving the rest of the struct at its own zero-initialization.
+int navigation_add_agent(
+    NavCrowdHandle crowd,
+    float x, float y, float z,
+    const NavAgentParams& params) {
+    NavCrowdState& state = crowd_state(crowd);
+    dtCrowdAgentParams agent_params{};
+    agent_params.radius = params.radius;
+    agent_params.height = params.height;
+    agent_params.maxAcceleration = params.max_acceleration;
+    agent_params.maxSpeed = params.max_speed;
+    agent_params.collisionQueryRange = params.collision_query_range;
+    agent_params.pathOptimizationRange = params.path_optimization_range;
+    agent_params.separationWeight = params.separation_weight;
+    agent_params.updateFlags = params.update_flags;
+    agent_params.obstacleAvoidanceType = params.obstacle_avoidance_type;
+    agent_params.queryFilterType = params.query_filter_type;
+    const float position[3] = {x, y, z};
+    return state.crowd->addAgent(position, &agent_params);
+}
+
+// CrowdAgent.position(): the agent's npos. `dtCrowdAgent::active` is the
+// same set the wrapper keeps in its own `agents` map — `init` clears it
+// for every slot in the pool and `addAgent` sets it — so an index the
+// scene never added reads as absent here exactly as `getAgent` reports
+// null upstream. `dtCrowd::getAgent` bounds-checks the index itself.
+std::optional<NavVec3> navigation_agent_position(
+    NavCrowdHandle crowd,
+    int index) {
+    const dtCrowdAgent* agent =
+        crowd_state(crowd).crowd->getAgent(index);
+    if (!agent || !agent->active) {
+        return std::nullopt;
+    }
+    return NavVec3{agent->npos[0], agent->npos[1], agent->npos[2]};
 }
 
 } // namespace bbl::pal
