@@ -695,7 +695,7 @@ test("'??' outside its lowerable routes refuses by name", () => {
         }
         void main();
     `),
-        /'\?\?' lowers over a static record property, an asset-derived handle collection, or a data-model value/,
+        /'\?\?' lowers over a static record property, an asset-derived handle collection, a handle a search produced, or a data-model value/,
     );
 });
 
@@ -1506,7 +1506,7 @@ test("compiles generated mesh data and the file-texture contract", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::create_mesh_from_data\(v_engine, v_cube\.positions, v_cube\.normals, v_cube\.indices, v_cube\.uvs, \{\}, \{\}, \{\}\)/,
+        /bbl::create_mesh_from_data\(v_engine, "[^"]+", v_cube\.positions, v_cube\.normals, v_cube\.indices, v_cube\.uvs, \{\}, \{\}, \{\}\)/,
     );
     // The pool is adopted by name; the capacity expression itself is not
     // part of the contract.
@@ -5339,4 +5339,52 @@ test("every pinned package spelling reaches the served module", () => {
                 isBabylonModule(`${packageName}/mesh/a`),
         );
     }
+});
+
+test("a mesh search by name selects at run time, with an indexed fallback and the record names the factories pin", () => {
+    const result = compileSource(
+        `
+        import {
+            createEngine,
+            createSceneContext,
+            createSphere,
+            addToScene,
+            registerScene,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const sphere = createSphere(engine, { diameter: 1 });
+            sphere.name = "hero";
+            addToScene(scene, sphere);
+            const found = scene.meshes.find(
+                (m) => m.name === "hero",
+            ) ?? scene.meshes[0];
+            if (!found) {
+                throw new Error("no mesh");
+            }
+            found.position.y = 1;
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+
+        void main();
+        `,
+        { fileName: "examples/mesh-name-find.ts" },
+    );
+    // The scene's write lands on the record the factory named.
+    assert.match(result.cpp, /\.name = "hero";/);
+    // The search is the loaded loop over record names, and the miss
+    // selects the fallback...
+    assert.match(result.cpp, /\.name == "hero"/);
+    assert.match(
+        result.cpp,
+        /_found_\d+ \? \w*_match_\d+ : \w*_at_\d+/,
+    );
+    // ...and the fallback is the guarded element read whose flag
+    // composes into the scene's own not-found guard.
+    assert.match(result.cpp, /_present_\d+ = \w+ < v_scene\.meshes\.size\(\)/);
+    assert.match(result.cpp, /_found_\d+ \|\| \w*_present_\d+/);
 });

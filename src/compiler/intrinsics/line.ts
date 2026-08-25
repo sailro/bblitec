@@ -42,6 +42,7 @@ export interface LineIntrinsicContext
     compileColor4(expression: ts.Expression): string;
     compileBoolean(expression: ts.Expression): string;
     compileStringLiteral(expression: ts.Expression): string;
+    cppString(value: string): string;
     requireDefaultEngine(node: ts.Node): string;
     reachLineMaterial(
         node: ts.Node,
@@ -125,7 +126,7 @@ export function compileLineIntrinsic(
                 [...LINE_SYSTEM_OPTIONS],
                 "Reached line systems support name, lines, colors, color, vertex alpha, thin instances and a material.",
             );
-            requireStaticName(context, options);
+            const meshName = staticNameOption(context, options);
             const { lines, colors } = compileGeometry(
                 context,
                 options,
@@ -204,6 +205,7 @@ export function compileLineIntrinsic(
                 kind: "mesh",
                 cpp:
                     `bbl::create_line_system(${engine.cpp}, ` +
+                    `${context.cppString(meshName)}, ` +
                     `${lines.cpp}, ${colors?.cpp ?? "{}"}, ` +
                     `${materialCpp})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
@@ -286,6 +288,19 @@ function requireStaticName(
     if (name) {
         context.compileStringLiteral(name);
     }
+}
+
+/**
+ * The mesh name a line system carries: the static `name` option, or the
+ * pinned `options.name ?? "lineSystem"` fallback the lowering asserts in
+ * the whole createMeshFromData call shape.
+ */
+function staticNameOption(
+    context: LineIntrinsicContext,
+    options: ts.ObjectLiteralExpression,
+): string {
+    const name = context.objectProperty(options, "name");
+    return name ? context.compileStringLiteral(name) : "lineSystem";
 }
 
 /** Every line scene compiles the generated flatten and draws it. */

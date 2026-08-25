@@ -28,6 +28,12 @@ import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerPunctualLightsCpp } from "./punctual-lights.js";
 import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
 import { lowerShPrescaleCpp } from "./sh-prescale.js";
+import {
+    coalescedPropertyDefault,
+    collectNodes,
+    refuseModule,
+    unwrapPin,
+} from "./shared.js";
 
 /**
  * What a scene's assets and reached features decide about the emitted
@@ -713,6 +719,10 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                   parserFile,
               )
             : { parentWriter: "", loading: "", poseRefresh: "" };
+        const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(
+            this.context.sourceFile("src/loader-gltf/load-gltf.ts"),
+            this.context.sourceFile("src/loader-gltf/gltf-share.ts"),
+        );
         return {
             modulePath,
             symbolName,
@@ -742,9 +752,59 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,
+                    gltfMeshNamePrefix,
                 },
                 options,
             ),
         };
     }
+}
+
+/**
+ * The pinned glTF mesh naming: one record per primitive named
+ * `json.meshes[json.nodes[m._nodeIndex].mesh].name || gltf_mesh_<i>`,
+ * where `i` runs over the extraction walk (nodes in order, primitives in
+ * order — the same walk the generated loader performs, and unsupported
+ * topologies throw on both sides, so the counters agree). The `||`
+ * fallback also covers an authored empty string. Both the tight path
+ * (load-gltf.ts) and the shared-primitive path (gltf-share.ts) spell the
+ * rule; they must agree for the emitted prefix to serve either.
+ */
+function pinnedGltfMeshNamePrefix(
+    loadGltfFile: ts.SourceFile,
+    shareFile: ts.SourceFile,
+): string {
+    const prefixIn = (file: ts.SourceFile): string | undefined => {
+        const fallback = collectNodes(
+            file,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node),
+        )
+            .map((node) =>
+                coalescedPropertyDefault(
+                    node,
+                    ts.SyntaxKind.BarBarToken,
+                )
+            )
+            .find(
+                (candidate) =>
+                    candidate?.key === "name" &&
+                    ts.isTemplateExpression(
+                        unwrapPin(candidate.fallback),
+                    ),
+            );
+        return fallback
+            ? (unwrapPin(fallback.fallback) as ts.TemplateExpression)
+                  .head.text
+            : undefined;
+    };
+    const tight = prefixIn(loadGltfFile);
+    const shared = prefixIn(shareFile);
+    if (tight === undefined || tight.length === 0 || tight !== shared) {
+        refuseModule(
+            "loadGltf",
+            "no longer names primitive meshes with one shared fallback prefix",
+        );
+    }
+    return tight;
 }

@@ -322,6 +322,14 @@ const propertyRules: readonly PropertyRule[] = [
         record: ["cameras", "name"],
     },
     {
+        // The pinned Mesh name — see MeshRecord::name for who fills it.
+        owner: "mesh",
+        property: "name",
+        value: "data",
+        dataType: { kind: "string" },
+        record: ["meshes", "name"],
+    },
+    {
         owner: "scene",
         property: "clearColor",
         value: "color4",

@@ -147,6 +147,12 @@ export interface GltfLoaderLoweredSegments {
     gltfCameraParentWriter: string;
     gltfCameraLoading: string;
     gltfCameraPoseRefresh: string;
+    /**
+     * The pinned primitive-mesh fallback-name prefix
+     * (`gltf_mesh_` in `<mesh name> || gltf_mesh_<i>`), read from both
+     * the tight and shared-primitive paths, which must agree.
+     */
+    gltfMeshNamePrefix: string;
 }
 
 /** One lowered glTF extension default: the JSON key and the C++ literal. */
@@ -2303,6 +2309,12 @@ ${animationPointer ? `    animation_runtime->light_nodes =
         animation_runtime->skins.push_back(
             std::move(runtime_skin));
     }
+    // One record per primitive, named the pinned way:
+    // \`json.meshes[node.mesh].name || ${lowered.gltfMeshNamePrefix}<i>\`
+    // with i the extraction-walk counter — the same node-major,
+    // primitive-minor order as the pin, and unsupported topologies throw
+    // on both sides, so the counters agree.
+    std::size_t gltf_mesh_counter = 0;
     for (std::size_t node_index = 0; node_index < node_json.size(); ++node_index) {
         const JsonObject& node = node_json[node_index].as_object();
         const ts::JsonValue* mesh_value = optional(node, "mesh");
@@ -2933,6 +2945,12 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             }
 ` : ""}            engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
+            const std::string authored_name = string_or(mesh, "name");
+            record.name = authored_name.empty()
+                ? "${lowered.gltfMeshNamePrefix}" +
+                    std::to_string(gltf_mesh_counter)
+                : authored_name;
+            ++gltf_mesh_counter;
             record.primitive = PrimitiveKind::gltf;
             record.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
             record.baked_world_scale = std::max({

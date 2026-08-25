@@ -970,6 +970,29 @@ export function emitPropertyAssignment(
 
         if (
             target.kind === "mesh" &&
+            property === "name"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "mesh name",
+            );
+            const name = context.compileValue(
+                expression.right,
+            );
+            context.expectKind(
+                name,
+                "string",
+                expression.right,
+            );
+            context.emit(
+                `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].name = ${name.cpp};`,
+            );
+            return;
+        }
+
+        if (
+            target.kind === "mesh" &&
             property === "material"
         ) {
             requireSimpleAssignment(

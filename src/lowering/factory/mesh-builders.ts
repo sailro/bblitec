@@ -15,6 +15,35 @@ import { pinnedNumericMathCalls } from "../pinned-operators.js";
  * `factory-lowerer.ts`.
  */
 export class MeshBuilderLowerer {
+    /**
+     * The pinned name literal a mesh factory passes to
+     * createMeshFromData — `createSphere(engine, options)` returns
+     * `createMeshFromData(engine, "sphere", ...)` — flowed into the
+     * emitted record so scene code finds factory meshes by the pin's own
+     * names.
+     */
+    private pinnedFactoryMeshName(symbol: string): string {
+        const { declaration } =
+            this.context.functionDeclaration(
+                "src/mesh/mesh-factories.ts",
+                symbol,
+            );
+        const call = this.context.callExpression(
+            declaration,
+            "createMeshFromData",
+        );
+        const name = call.arguments[1]
+            ? this.context.unwrapExpression(call.arguments[1])
+            : undefined;
+        if (!name || !ts.isStringLiteral(name)) {
+            this.context.contractError(
+                declaration,
+                `Expected ${symbol} to pass its literal mesh name to createMeshFromData.`,
+            );
+        }
+        return name.text;
+    }
+
     public constructor(protected readonly context: LoweringContext) {}
 
     /**
@@ -1457,6 +1486,20 @@ export class MeshBuilderLowerer {
                 modulePath,
                 "createMeshFromData",
             );
+        // The record's `name` comes second, right after the engine — the
+        // compiled intrinsic maps the scene's argument 1 onto it, and the
+        // factory literals above are read from the same position.
+        const nameParameter = meshFromData.parameters[1];
+        if (
+            !nameParameter ||
+            !ts.isIdentifier(nameParameter.name) ||
+            nameParameter.name.text !== "name"
+        ) {
+            this.context.contractError(
+                meshFromData,
+                "Expected createMeshFromData to take the mesh name second.",
+            );
+        }
         const aabbCall = this.context.findNodes(
             meshFromData,
             (node): node is ts.CallExpression =>
@@ -1589,6 +1632,7 @@ ${boxAddFaceCalls}
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::box;
+    mesh.name = "${this.pinnedFactoryMeshName("createBox")}";
     mesh.dimensions = Vec3{width, height, depth};
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
@@ -1649,6 +1693,7 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::ground;
+    mesh.name = "${this.pinnedFactoryMeshName("createGround")}";
     mesh.dimensions = Vec3{
         static_cast<float>(options.width),
         0.0f,
@@ -1675,6 +1720,7 @@ ${planeVertices}
     }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
+    mesh.name = "${this.pinnedFactoryMeshName("createPlane")}";
     mesh.primitive = PrimitiveKind::gltf;
     mesh.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1749,6 +1795,7 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
+    mesh.name = "${this.pinnedFactoryMeshName("createSphere")}";
     mesh.dimensions = Vec3{
         static_cast<float>(options.diameter_x),
         static_cast<float>(options.diameter_y),
@@ -1905,6 +1952,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::torus;
+    mesh.name = "${this.pinnedFactoryMeshName("createTorus")}";
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1914,6 +1962,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
 
 MeshHandle create_mesh_from_data(
     Engine& engine,
+    const std::string& name,
     const std::vector<float>& positions,
     const std::vector<float>& normals,
     const std::vector<std::uint32_t>& indices,
@@ -1986,6 +2035,7 @@ MeshHandle create_mesh_from_data(
     }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
+    mesh.name = name;
     mesh.primitive = PrimitiveKind::gltf;
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);

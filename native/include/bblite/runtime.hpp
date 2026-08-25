@@ -746,6 +746,13 @@ struct ModelGeometry {
 };
 
 struct MeshRecord {
+    /**
+     * The pinned Mesh name: the factory literal (`"sphere"`, `"box"`, …),
+     * the caller's string for createMeshFromData, the glTF loader's
+     * `json.meshes[node.mesh].name || gltf_mesh_<i>`, or whatever the
+     * scene assigned. Scene code finds meshes by it.
+     */
+    std::string name;
     PrimitiveKind primitive = PrimitiveKind::box;
     Vec3 position{};
     Vec3 rotation{};
@@ -1834,6 +1841,7 @@ void set_morph_target_weights(
 MeshHandle create_torus(Engine& engine, TorusOptions options);
 MeshHandle create_mesh_from_data(
     Engine& engine,
+    const std::string& name,
     const std::vector<float>& positions,
     const std::vector<float>& normals,
     const std::vector<std::uint32_t>& indices,
@@ -1872,6 +1880,7 @@ LineSystemData create_line_system_data(
     const std::vector<std::vector<Vec4>>& colors);
 MeshHandle create_line_system(
     Engine& engine,
+    const std::string& name,
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors,
     MaterialHandle material);

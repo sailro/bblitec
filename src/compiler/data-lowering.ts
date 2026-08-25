@@ -424,8 +424,12 @@ export class DataLowerer {
      * after the handle-collection concept and the static-record fold have
      * both declined.
      *
-     * Two arms, decided by the left operand's own type:
+     * Three arms, decided by the left operand's own shape:
      *
+     *  - a handle a search produced (`optionalFoundCpp`) selects on its
+     *    found flag — a generation-resolved find is the result outright,
+     *    a loaded search emits the ternary, and a fallback that can
+     *    itself miss composes its flag into the result's;
      *  - an `optional(T)` left evaluates once into a temporary and
      *    selects natively. The right side compiles for the inner type's
      *    own sink and stays inside the ternary, so it is evaluated only
@@ -445,6 +449,49 @@ export class DataLowerer {
         expression: ts.BinaryExpression,
     ): Value | undefined {
         const left = this.context.compileValue(expression.left);
+        if (left.optionalFoundCpp !== undefined) {
+            // A handle a search produced: upstream's `find` yields
+            // `undefined` on a miss, and `??` selects the fallback
+            // exactly then. A generation-resolved find carries the
+            // constant "true" and is the result outright; a loaded
+            // search selects on its found flag. The fallback must be
+            // the same handle kind; a fallback that can itself miss
+            // composes its flag into the result's.
+            if (left.optionalFoundCpp === "true") {
+                return left;
+            }
+            const fallback = this.context.compileValue(
+                expression.right,
+            );
+            if (fallback.kind !== left.kind) {
+                this.context.fail(
+                    expression.right,
+                    `A missed search's fallback must be the same ` +
+                        `handle kind; expected ${left.kind}, received ` +
+                        `${fallback.kind}.`,
+                );
+            }
+            // A fallback that can itself miss (an indexed element) keeps
+            // the question open: the composed flag is what a scene's own
+            // not-found guard then reads. Both operands are guarded
+            // temporaries, so the select is safe either way.
+            const composedFound =
+                fallback.optionalFoundCpp !== undefined
+                    ? `(${left.optionalFoundCpp} || ${fallback.optionalFoundCpp})`
+                    : undefined;
+            return {
+                kind: left.kind,
+                cpp:
+                    `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
+                    `${fallback.cpp})`,
+                ...(left.engineCpp !== undefined
+                    ? { engineCpp: left.engineCpp }
+                    : {}),
+                ...(composedFound !== undefined
+                    ? { optionalFoundCpp: composedFound }
+                    : {}),
+            };
+        }
         if (
             left.kind === "data" &&
             left.dataType?.kind === "optional"
