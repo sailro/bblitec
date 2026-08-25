@@ -923,9 +923,8 @@ inline bool pinned_lists_have_pinned_draws(
 
 #if BBLITE_PINNED_MATERIALS
 
-/** The identity, for every draw whose world is already composed elsewhere:
- *  a skinned palette that carries everything, vertices baked with their
- *  world, or a scene-authored mesh whose TRS the vertex bake composes. */
+/** The identity, for a skinned draw whose palette already carries everything,
+ *  and for the two families whose vertices are baked with their world. */
 inline std::array<float, 16> pinned_identity_world() {
     return {
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -976,11 +975,9 @@ inline std::array<float, 16> pinned_instanced_world(
  * Skinned draws take the identity (the palette carries everything), an
  * animated no-skin mesh takes its single palette entry as the pin's
  * finalWorld, a thin-instanced or LOCAL_POSITION draw takes the real node
- * world beside unbaked position data, a scene-authored mesh takes the
- * identity (its TRS reaches the draw through the transformed-vertices
- * bake), and every loader-baked mesh takes the bare mirror. Shared
- * because the same chain decides the block in the SDL draw and both of
- * Dawn's write sites.
+ * world beside unbaked position data, and everything else takes the bare
+ * mirror over baked vertices. Shared because the same chain decides the
+ * block in the SDL draw and both of Dawn's write sites.
  */
 inline std::array<float, 16> pinned_draw_world(
     bool skeleton_draw,
@@ -1001,14 +998,6 @@ inline std::array<float, 16> pinned_draw_world(
         return outer_draw_world(
             pinned_instanced_world(record),
             record);
-    }
-    if (record.scene_authored) {
-        // The pin packs a scene-code mesh's own worldMatrix — TRS with
-        // no RH→LH mirror. That TRS reaches the draw through the
-        // transformed-vertices bake, so the block stays identity; the
-        // mirror below compensates only for the loader-baked vertices
-        // that dropped the pin's root conversion.
-        return outer_draw_world(pinned_identity_world(), record);
     }
     return outer_draw_world(pinned_mesh_world(), record);
 }

@@ -314,6 +314,7 @@ async function compile(idOrSource: string): Promise<void> {
             runBuffered({}, (run) =>
                 run(process.execPath, compilerArguments(scene)),
             ),
+        "compiled",
     );
 }
 
@@ -413,6 +414,7 @@ async function parity(
                             childEnvironment,
                         ),
                 ),
+            "measured within their gates",
         );
         return;
     }
@@ -476,6 +478,13 @@ async function runConcurrently<T>(
     limit: number,
     describe: (item: T) => string,
     body: (item: T) => Promise<void>,
+    /**
+     * What a clean sweep should say it did ("built", "measured within
+     * their gates"). A run that only speaks up to complain reads as green
+     * whenever its verdict scrolls past or a pipeline swallows its exit
+     * code, so a whole-registry pass states the positive result too.
+     */
+    completed?: string,
 ): Promise<void> {
     const queue = [...items];
     const failures: string[] = [];
@@ -502,6 +511,9 @@ async function runConcurrently<T>(
         throw new Error(
             `${failures.length} of ${items.length} failed:\n  ${failures.join("\n  ")}`,
         );
+    }
+    if (completed !== undefined && items.length > 1) {
+        console.log(`All ${items.length} scenes ${completed}.`);
     }
 }
 
@@ -579,6 +591,7 @@ async function buildScenes(
         inFlight,
         (scene) => scene.id,
         (scene) => runSceneBuild(scene, jobsPerScene, true),
+        "built",
     );
 }
 
