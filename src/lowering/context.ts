@@ -453,6 +453,33 @@ export class LoweringContext {
     }
 
     /**
+     * The count form of the contract above: the pinned body states the
+     * shape `count` times, no more and no fewer. One home so every
+     * lowerer counts the same way.
+     */
+    public expectShapeCount(
+        root: ts.Node,
+        expected: string,
+        label: string,
+        count = 1,
+    ): void {
+        const found = this.findNodes(
+            root,
+            (node): node is ts.Expression =>
+                this.expressionMatchesShape(
+                    node as ts.Expression,
+                    expected,
+                ),
+        ).length;
+        if (found !== count) {
+            this.contractError(
+                root,
+                `Expected ${label} (${expected}) ${count} time(s), found ${found}.`,
+            );
+        }
+    }
+
+    /**
      * The fingerprint of an expected shape, parsed once per process: it is
      * a pure function of the string, and the shape helpers ask for the
      * same handful of strings across every scene compiled in one run.

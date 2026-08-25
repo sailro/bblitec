@@ -24,7 +24,15 @@ act on it — not what was tried.
 - [ ] Route inline return expressions through double precision: inlined value
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
-  inlined function.
+  inlined function. Same family, found by scene 175's tube: a record's number
+  lanes are compiled at the default float width when the record is built, so
+  a double sink consuming a lane later gets a float-truncated expression (a
+  `static_cast<float>` baked into `Value.cpp`, or a static lane formatted
+  `0.1f`) where the pin computes in JS doubles — ~1e-8 on the tube path, sub-
+  gate but wrong-by-construction. The fix is a width model, not a call-site
+  patch: keep `Value.cpp` at JS-double width (or tag the formatted width) and
+  let each sink cast once, then re-measure the whole corpus — float wraps
+  currently bake into stored cpp all over, so this moves bytes everywhere.
 - [ ] Support off-center orthographic planes: `enableOrthographicCamera` accepts
   explicit `left`/`right`/`bottom`/`top` bounds replacing the half-extent
   derivation, and `disableOrthographicCamera` restores the perspective
@@ -249,7 +257,7 @@ and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
 user-input or external-service contract.
 
-**Defer (33 scenes):** 41, 42, 44-49, 100-106, 153, 164, 170-175, 180, 181,
+**Defer (32 scenes):** 41, 42, 44-49, 100-106, 153, 164, 170-174, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
 
 No audited scene requires audio, touch, gamepad, AR, or VR. Add any future scene
@@ -320,7 +328,8 @@ that does to the deferred lane by default.
   built in the entry file, 272 `cloneTransformNode` and
   `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scenes 38, 43: support `createCylinder` and `createTube`.
+- [ ] Scenes 38, 43: support `createCylinder`. 43's `createTube` blocker
+  cleared with scene 175's tube slice; re-probe it for the next one.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
@@ -696,10 +705,13 @@ earlier compiler error.
     every body control past creation (impulse, velocity, motion-type
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
-- [ ] Scenes 170-175: add Recast navigation behind an explicit dependency
-  boundary. First blockers: `createNavigationPluginAsync` (170, 172, 173)
-  and mesh names read in a `find` callback (`m.name` — 171, 174, 175,
-  re-probed after `??` generalized over the data model).
+- [ ] Scenes 170-174: extend the navigation slice past what scene 175
+  measures. The subsystem shipped with 175 — the `navigation:recast` PAL
+  over the wrapper's own pinned recastnavigation commit, the solo-navmesh
+  build, debug geometry, and `raycast` ([features](docs/features.md)) — so
+  what remains is each scene's own surface, refused by name today: crowds
+  and agents, `computePath`, `getClosestPointToMesh`, off-mesh connections,
+  tiled meshes and the tile cache with obstacles.
 - [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
   through `CanvasRenderingContext2D`, not Babylon Lite rendering. First blocker:
   animation manager options past `engine`.

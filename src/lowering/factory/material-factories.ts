@@ -954,10 +954,6 @@ MaterialHandle create_pbr_material(
     material.environment_intensity = options.environment_intensity;
     material.base_color_factor.a = options.alpha;
     material.reflectance = options.reflectance;
-    material.alpha_mode =
-        options.alpha < 1.0f
-            ? MaterialAlphaMode::blend
-            : MaterialAlphaMode::opaque;
     material.unlit = options.unlit;
     material.double_sided = options.double_sided;
     material.specular_aa = options.specular_aa;
@@ -973,9 +969,7 @@ MaterialHandle create_pbr_material(
     material.specular_weight = options.metallic_f0_factor;
     material.has_ior = false;
     material.has_volume = options.has_volume;
-    if (material.transmission_factor > 0.0f) {
-        material.alpha_mode = MaterialAlphaMode::blend;
-    }
+    derive_material_alpha_mode(material);
     material.has_occlusion_texture = true;
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};

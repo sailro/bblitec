@@ -36,6 +36,15 @@ if(
     list(APPEND VCPKG_MANIFEST_FEATURES "physics")
 endif()
 
+# The navigation toolset, same shape: a scene that creates no navigation
+# plugin installs and links nothing.
+if(
+    "navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES
+    AND NOT "navigation" IN_LIST VCPKG_MANIFEST_FEATURES
+)
+    list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
+endif()
+
 project(babylon_lite_native LANGUAGES CXX)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
@@ -491,6 +500,23 @@ if("physics:world" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_link_libraries(
         bblite_native
         PRIVATE BulletDynamics BulletCollision LinearMath
+    )
+endif()
+
+# The navigation toolset is reached only through
+# `bblite/pal_navigation.hpp`, whose implementation is one translation
+# unit the feature list selects (`featureSources`). Nothing generated
+# names Recast.
+if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
+    find_package(recastnavigation CONFIG REQUIRED)
+    target_link_libraries(
+        bblite_native
+        PRIVATE
+            RecastNavigation::Recast
+            RecastNavigation::Detour
+            RecastNavigation::DetourCrowd
+            RecastNavigation::DetourTileCache
+            RecastNavigation::DebugUtils
     )
 endif()
 

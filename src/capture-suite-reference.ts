@@ -200,6 +200,22 @@ export function pinnedPackageSpecifiers(source: string): string {
         .replaceAll(
             `"${physicsEngineModulePackage}"`,
             `"/node_modules/${physicsEngineModulePackage}/lib/esm/HavokPhysics_es.js"`,
+        )
+        // The navigation wrapper the pin dynamic-imports, resolved the
+        // way Havok is: each bare specifier to its package's own ESM
+        // entry. The wasm binary itself comes off the pinned lab/public
+        // proxy through the scene's `locateFile`.
+        .replaceAll(
+            '"@recast-navigation/core"',
+            '"/node_modules/@recast-navigation/core/dist/index.mjs"',
+        )
+        .replaceAll(
+            '"@recast-navigation/generators"',
+            '"/node_modules/@recast-navigation/generators/dist/index.mjs"',
+        )
+        .replaceAll(
+            '"@recast-navigation/wasm/wasm"',
+            '"/node_modules/@recast-navigation/wasm/dist/recast-navigation.wasm.js"',
         );
 }
 

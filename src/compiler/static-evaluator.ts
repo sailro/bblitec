@@ -86,25 +86,18 @@ export class StaticEvaluator {
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
             if (value?.kind === "record") {
-                return `${type}{${["x", "y", "z"]
-                    .map((name) =>
-                        this.numberValue(
-                            value.recordProperties?.[name] ??
-                                this.fail(
-                                    unwrapped,
-                                    `Vec3 record is missing '${name}'.`,
-                                ),
-                            unwrapped,
-                        ),
-                    )
-                    .join(", ")}}`;
+                return this.vec3FromRecord(
+                    value,
+                    unwrapped,
+                    precision,
+                );
             }
         }
         const tuple = this.tupleElements(unwrapped, 3);
         if (tuple) {
             return `${type}{${tuple
                 .map((value) =>
-                    this.numberValue(value, unwrapped),
+                    this.numberValue(value, unwrapped, precision),
                 )
                 .join(", ")}}`;
         }
@@ -137,6 +130,36 @@ export class StaticEvaluator {
             unwrapped,
             "Expected a Vec3 array [x, y, z] or object { x, y, z }.",
         );
+    }
+
+    /**
+     * A native vector from a record's x/y/z lanes. A static lane
+     * re-formats at the sink's width -- its stored cpp was formatted for
+     * a float sink, and a bare float literal would round a double sink's
+     * component a step early -- while a runtime lane is a JS double and
+     * narrows exactly at a float sink.
+     */
+    public vec3FromRecord(
+        value: Value,
+        node: ts.Node,
+        precision: "float" | "double" = "float",
+    ): string {
+        const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
+        const lanes = ["x", "y", "z"].map((name) => {
+            const lane = value.recordProperties?.[name];
+            if (!lane || lane.kind !== "number") {
+                this.fail(
+                    node,
+                    `Vec3 record is missing numeric '${name}'.`,
+                );
+            }
+            return lane.staticNumber !== undefined
+                ? precision === "float"
+                    ? cppFloatLiteral(lane.staticNumber)
+                    : cppDoubleLiteral(lane.staticNumber)
+                : this.castNumber(lane, precision);
+        });
+        return `${type}{${lanes.join(", ")}}`;
     }
 
     public compileVec2(expression: ts.Expression): string {
@@ -600,9 +623,12 @@ export class StaticEvaluator {
         value: Value,
         precision: "float" | "double",
     ): string {
+        // A static lane arrives pre-formatted at its width; every
+        // runtime number is a JS double and narrows exactly at the
+        // float sink, the way the pinned Float32Array store rounds it.
         if (
             precision === "float" &&
-            value.dataType?.kind === "number"
+            value.staticNumber === undefined
         ) {
             return `static_cast<float>(${value.cpp})`;
         }
@@ -914,6 +940,7 @@ export class StaticEvaluator {
     private numberValue(
         value: Value,
         node: ts.Node,
+        precision: "float" | "double" = "float",
     ): string {
         if (value.kind !== "number") {
             this.fail(
@@ -921,7 +948,7 @@ export class StaticEvaluator {
                 `Expected numeric tuple element, received ${value.kind}.`,
             );
         }
-        return value.cpp;
+        return this.castNumber(value, precision);
     }
 
     private staticText(
