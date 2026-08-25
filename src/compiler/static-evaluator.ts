@@ -58,6 +58,9 @@ export class StaticEvaluator {
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
         private readonly narrowOptional: NarrowOptional,
+        private readonly nullishCoalesce: (
+            expression: ts.BinaryExpression,
+        ) => Value | undefined,
         private readonly lookup: Lookup,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
@@ -389,6 +392,30 @@ export class StaticEvaluator {
             )})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                // The general data-model `??` in a numeric position: an
+                // optional number selects natively with the fallback
+                // lazy, and a non-nullish left is the result. The static
+                // record fold already ran inside
+                // `resolveStaticExpression` above, so reaching here means
+                // the answer is a run-time value.
+                const value = this.nullishCoalesce(unwrapped);
+                if (
+                    value &&
+                    (value.kind === "number" ||
+                        value.dataType?.kind === "number")
+                ) {
+                    return this.castNumber(value, precision);
+                }
+                this.fail(
+                    unwrapped.operatorToken,
+                    "'??' in a numeric position lowers over an optional " +
+                        "number or a value the model proves non-nullish.",
+                );
+            }
             if (
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.BarBarToken
@@ -725,7 +752,7 @@ export class StaticEvaluator {
     }
 
     /**
-     * `options.x ?? fallback` over a static record.
+     * `options.x ?? fallback` over a static record, or undefined.
      *
      * Babylon Lite reads its option records this way throughout, and a
      * record literal settles the question at compile time: the property
@@ -734,12 +761,14 @@ export class StaticEvaluator {
      * the property is `undefined` and the fallback is the value. Neither
      * arm needs a native null, and resolving to the winning *expression*
      * rather than to a value keeps its precision for whichever consumer
-     * asked. A `??` over anything else fails rather than being lowered to
-     * a runtime test that nothing reaches.
+     * asked. A `??` over anything else returns undefined: the value path
+     * lowers it over the data model instead, and a genuinely static
+     * position that then needs a compile-time answer fails as that
+     * position, naming what it needed.
      */
-    public resolveNullish(
+    public tryResolveNullish(
         expression: ts.BinaryExpression,
-    ): ts.Expression {
+    ): ts.Expression | undefined {
         const left = this.unwrap(expression.left);
         if (ts.isPropertyAccessExpression(left)) {
             const owner = this.resolveValue(left.expression);
@@ -751,10 +780,7 @@ export class StaticEvaluator {
                     : expression.right;
             }
         }
-        this.fail(
-            expression.operatorToken,
-            "'??' is lowered over a static record property, whose presence decides the value at compile time.",
-        );
+        return undefined;
     }
 
     public resolveStaticExpression(
@@ -767,10 +793,18 @@ export class StaticEvaluator {
             unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.QuestionQuestionToken
         ) {
-            return this.resolveStaticExpression(
-                this.resolveNullish(unwrapped),
-                resolving,
-            );
+            // A static record settles the `??` here; anything else stays
+            // unresolved so the value path can lower it over the data
+            // model. A position that genuinely needs a compile-time
+            // number then fails as that position, naming what it needed.
+            const resolved = this.tryResolveNullish(unwrapped);
+            if (resolved) {
+                return this.resolveStaticExpression(
+                    resolved,
+                    resolving,
+                );
+            }
+            return unwrapped;
         }
         if (!ts.isIdentifier(unwrapped)) {
             return unwrapped;

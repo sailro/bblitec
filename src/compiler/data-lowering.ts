@@ -419,6 +419,61 @@ export class DataLowerer {
         return value;
     }
 
+    /**
+     * `left ?? right` over the data model — the general operator, taken
+     * after the handle-collection concept and the static-record fold have
+     * both declined.
+     *
+     * Two arms, decided by the left operand's own type:
+     *
+     *  - an `optional(T)` left evaluates once into a temporary and
+     *    selects natively. The right side compiles for the inner type's
+     *    own sink and stays inside the ternary, so it is evaluated only
+     *    when the left is null — JavaScript's own laziness (its
+     *    materialization prep, like a conditional branch's, is emitted
+     *    unconditionally, which is the established stance for
+     *    effect-free preparation);
+     *  - a left the model already proves non-nullish (a number, boolean,
+     *    string, or non-optional data value) IS the result, and the dead
+     *    right side is discarded exactly as JavaScript never evaluates
+     *    it.
+     *
+     * Anything else returns undefined and the caller's refusal names the
+     * routes.
+     */
+    public compileNullishCoalesce(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        const left = this.context.compileValue(expression.left);
+        if (
+            left.kind === "data" &&
+            left.dataType?.kind === "optional"
+        ) {
+            const inner = left.dataType.inner;
+            const temp =
+                this.context.allocateTemporaryCppName("nullish");
+            this.context.emit(`const auto ${temp} = ${left.cpp};`);
+            const fallback = this.compileForSink(
+                expression.right,
+                inner,
+            );
+            return {
+                kind: "data",
+                cpp: `(${temp}.has_value() ? (*${temp}) : ${fallback})`,
+                dataType: inner,
+            };
+        }
+        if (
+            left.kind === "number" ||
+            left.kind === "boolean" ||
+            left.kind === "string" ||
+            (left.kind === "data" && left.dataType !== undefined)
+        ) {
+            return left;
+        }
+        return undefined;
+    }
+
     private propertyRead(
         ownerValue: Value,
         access: ts.PropertyAccessExpression,

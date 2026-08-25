@@ -140,7 +140,7 @@ export class ExpressionLowerer {
         ) {
             // An engine handle collection first: the materialized asset
             // decides `container.animationGroups ?? []`, generalizing the
-            // static-record rule below to asset-derived collections.
+            // static-record rule to asset-derived collections.
             const collection =
                 this.context.handleCollections.resolveNullishCollection(
                     unwrapped,
@@ -148,8 +148,30 @@ export class ExpressionLowerer {
             if (collection) {
                 return collection;
             }
-            return this.compileValue(
-                this.context.evaluator.resolveNullish(unwrapped),
+            // A static record settles the question at compile time: the
+            // winning expression re-compiles with its precision kept.
+            const folded =
+                this.context.evaluator.tryResolveNullish(unwrapped);
+            if (folded) {
+                return this.compileValue(folded);
+            }
+            // The general operator over the data model: an optional
+            // selects natively with the right side lazy, and a left the
+            // model proves non-nullish is the result.
+            const general =
+                this.context.dataLowerer.compileNullishCoalesce(
+                    unwrapped,
+                );
+            if (general) {
+                return general;
+            }
+            this.context.fail(
+                unwrapped.operatorToken,
+                "'??' lowers over a static record property, an " +
+                    "asset-derived handle collection, or a data-model " +
+                    "value (an optional selects at run time; a " +
+                    "non-nullish left is the result). This operand is " +
+                    "none of those.",
             );
         }
         if (

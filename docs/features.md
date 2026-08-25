@@ -119,6 +119,18 @@ analyzable entry file against one engine.
   materialized asset resolves immediately. `window.location.search` reads as
   the query the scene's reference pose is captured at, so a scene that
   branches on one takes the branch its golden was captured under.
+  `canvas.width`/`canvas.height` read as the engine's configured size — a
+  compile-time fold that is exact until a window resize, which no measured
+  pose performs; a scene re-reading them per frame to track resizes needs
+  the live render-target size instead, a gap recorded on that scene's own
+  entry (scene 53) in [TODO](../TODO.md).
+- **`??` over the data model.** A nullish coalesce lowers by the left
+  operand's own type: a static record property still settles at compile
+  time, an asset-derived handle collection resolves through its concept,
+  an `optional(T)` evaluates once and selects natively with the fallback
+  staying lazy exactly as JavaScript leaves it unevaluated, and a value
+  the model proves non-nullish is the result with the dead fallback
+  discarded. Anything outside those routes fails naming them.
 - **Material tracking.** `installPbrTracking` and `installStdTracking` define
   value-preserving accessors so a later write marks the material's UBO dirty.
   Generation already emits the re-upload for every property a scene writes, so

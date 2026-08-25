@@ -21,11 +21,6 @@ act on it — not what was tried.
 - [ ] Lower string-literal switch discriminants.
 - [ ] Add discriminated unions and numeric-literal narrowing beyond the
   checker's null analysis.
-- [ ] Generalize the contracts Scene 50 folds at compile time: a nullish operand
-  that is not a static record property, and a callback that escapes its call
-  site, both fail explicitly. `canvas.width`/`canvas.height` name the engine's
-  configured size; a scene reading them after a resize needs the live
-  render-target size from the pinned `getRenderTargetSize`.
 - [ ] Route inline return expressions through double precision: inlined value
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
@@ -39,7 +34,10 @@ act on it — not what was tried.
 
 ### Closures and async
 
-- [ ] Classify escaping and non-escaping closures.
+- [ ] Classify escaping and non-escaping closures. A callback that escapes
+  its call site fails explicitly today; every reached instance (scene 52's
+  `onSceneDispose`, scene 300's `renderer._beforeUpdate.push`, the
+  `EffectRenderer` per-frame `update`) is tracked by its own entry.
 - [ ] Lower general render/update callbacks.
 - [ ] Define ownership for escaping captures.
 - [ ] Generalize immediate AOT promises and dynamic-import dispatch.
@@ -192,7 +190,9 @@ rather than the import.
 scenes 25 and 36; the physics lane re-swept after the prototype below):
 a folded value compared against a mutable counter 7 (all physics),
 engine options beyond msaaSamples/requiredLimits 7 (large-world),
-`receiveShadows` 6, `??` over a non-static-record operand 6,
+`receiveShadows` 6 (the `??` cluster is gone — the operator now lowers
+over the data model, and its five scenes re-probed onto mesh names ×3,
+`container._gaussianSplats`, and a group's `mask`),
 PBR options beyond the reached set 3, a four-argument call 3, an unsupported
 constructor expression 3, `createNavigationPluginAsync` 3.
 Node materials shipped twenty of the thirty-one scenes reaching
@@ -290,11 +290,9 @@ that does to the deferred lane by default.
   or image skyboxes are rotation-invariant or unrelated; the remaining
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
-- [ ] Scenes 171, 174, 175, 226, 251: lower `??` over an operand that is
-  not a static record property — 226 `container._gaussianSplats ?? []`; the
-  Recast lane's operands remain. An asset-derived `animationGroups ?? []`
-  now lowers through the handle-collection concept (scene 158), so 251's
-  first blocker has moved; re-probe it.
+- [ ] Scene 251: lower a group's `mask` assignment (`walk.mask`), the
+  glTF-animation entry's slice; its earlier `??` blockers are gone now
+  that the operator lowers over the data model.
 - [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
   reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
   spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
@@ -357,7 +355,13 @@ that does to the deferred lane by default.
     premultiplied atlas and blend behind it.
   - Scene 52: `onSceneDispose`, then the HUD-over-scene composition the native
     renderers refuse.
-  - Scene 53: depth-hosted layers, then `spriteBlendOpaque`.
+  - Scene 53: depth-hosted layers, then `spriteBlendOpaque`. Its
+    before-render loop also re-reads `canvas.width`/`canvas.height` to
+    detect resizes, where the compile-time fold to the configured size is
+    only pose-equivalent: integrating it needs those reads, in callback
+    context, lowered to the live render-target size (the engine already
+    acquires it every frame; the pinned `getRenderTargetSize` is the same
+    read, and no corpus scene calls it today).
   - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
@@ -694,8 +698,9 @@ earlier compiler error.
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
 - [ ] Scenes 170-175: add Recast navigation behind an explicit dependency
-  boundary. First blockers: `createNavigationPluginAsync` (170, 172, 173) and
-  `??` over a non-static-record operand (171, 174, 175).
+  boundary. First blockers: `createNavigationPluginAsync` (170, 172, 173)
+  and mesh names read in a `find` callback (`m.name` — 171, 174, 175,
+  re-probed after `??` generalized over the data model).
 - [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
   through `CanvasRenderingContext2D`, not Babylon Lite rendering. First blocker:
   animation manager options past `engine`.

@@ -383,6 +383,8 @@ class Compiler
                 this.isBrowserOnlyExpression(expression),
             (value, expression) =>
                 this.dataLowerer.narrowOptional(value, expression),
+            (expression) =>
+                this.dataLowerer.compileNullishCoalesce(expression),
             (identifier) => this.lookup(identifier),
             (node, message) => this.fail(node, message),
             (expression) =>

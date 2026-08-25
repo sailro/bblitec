@@ -653,6 +653,58 @@ test("keeps closures over entry locals on the inline path", () => {
     );
 });
 
+test("lowers '??' over the data model", () => {
+    const result = compileSource(`
+        interface Slot {
+            fallback: number;
+            current: number | null;
+        }
+        function pick(slot: Slot): number {
+            return slot.current ?? slot.fallback;
+        }
+        const slot: Slot = { fallback: 4, current: null };
+        const viaFunction = pick(slot);
+        const atTopLevel = slot.current ?? 6;
+        const identity = (atTopLevel ?? 987654) + viaFunction;
+    `);
+    // An optional left evaluates once into a temporary and selects
+    // natively, with the fallback inside the ternary -- JavaScript's own
+    // laziness.
+    assert.match(
+        result.cpp,
+        /const auto (v_bblite_nullish_\d+) = [^;]+;\s*return \(\1\.has_value\(\) \? \(\*\1\) : v_fn\d+_slot\.fallback\);/,
+    );
+    // A left the model proves non-nullish IS the result: the dead right
+    // side is discarded exactly as JavaScript never evaluates it.
+    assert.doesNotMatch(result.cpp, /987654/);
+});
+
+test("'??' outside its lowerable routes refuses by name", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            registerScene,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const camera = createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 });
+            const doubled = camera ?? camera;
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `),
+        /'\?\?' lowers over a static record property, an asset-derived handle collection, or a data-model value/,
+    );
+});
+
 test("lowers interface-typed structs, optionals, and enums", () => {
     const result = compileSource(`
         type Tag = "idle" | "busy";
