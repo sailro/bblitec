@@ -380,14 +380,14 @@ void create_nav_mesh(
             mesh.scaling.z != 1.0f) {
             throw std::runtime_error(
                 "createNavMesh is lowered for glTF-imported meshes at "
-                "their loaded transform; mesh \"" + mesh.name +
-                "\" carries scene-code TRS the merge does not compose "
+                "their loaded transform; mesh '" + mesh.name +
+                "' carries scene-code TRS the merge does not compose "
                 "yet.");
         }
         if (mesh.geometry >= engine.geometries.size()) {
             throw std::runtime_error(
-                "Mesh \\"" + mesh.name +
-                "\\" missing CPU geometry for navmesh");
+                "Mesh '" + mesh.name +
+                "' missing CPU geometry for navmesh");
         }
         const ModelGeometry& geometry =
             engine.geometries[mesh.geometry];

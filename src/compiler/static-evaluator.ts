@@ -95,6 +95,7 @@ export class StaticEvaluator {
                                     `Vec3 record is missing '${name}'.`,
                                 ),
                             unwrapped,
+                            precision,
                         ),
                     )
                     .join(", ")}}`;
@@ -104,7 +105,7 @@ export class StaticEvaluator {
         if (tuple) {
             return `${type}{${tuple
                 .map((value) =>
-                    this.numberValue(value, unwrapped),
+                    this.numberValue(value, unwrapped, precision),
                 )
                 .join(", ")}}`;
         }
@@ -600,9 +601,12 @@ export class StaticEvaluator {
         value: Value,
         precision: "float" | "double",
     ): string {
+        // A static lane arrives pre-formatted at its width; every
+        // runtime number is a JS double and narrows exactly at the
+        // float sink, the way the pinned Float32Array store rounds it.
         if (
             precision === "float" &&
-            value.dataType?.kind === "number"
+            value.staticNumber === undefined
         ) {
             return `static_cast<float>(${value.cpp})`;
         }
@@ -914,6 +918,7 @@ export class StaticEvaluator {
     private numberValue(
         value: Value,
         node: ts.Node,
+        precision: "float" | "double" = "float",
     ): string {
         if (value.kind !== "number") {
             this.fail(
@@ -921,7 +926,13 @@ export class StaticEvaluator {
                 `Expected numeric tuple element, received ${value.kind}.`,
             );
         }
-        return value.cpp;
+        // A static lane arrives pre-formatted at its width; a runtime
+        // read is a JS double and narrows exactly at this store, the way
+        // the pinned Float32Array store rounds it.
+        return value.staticNumber !== undefined ||
+                precision === "double"
+            ? value.cpp
+            : `static_cast<float>(${value.cpp})`;
     }
 
     private staticText(

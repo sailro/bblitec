@@ -227,6 +227,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         source: "upstream/src/physics.cpp",
         features: ["physics:world"],
     },
+    {
+        source: "upstream/src/navigation.cpp",
+        features: ["navigation:recast"],
+    },
 ];
 
 export function reachedGeneratedSources(
