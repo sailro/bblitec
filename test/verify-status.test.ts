@@ -8,8 +8,8 @@ import {
 const table = [
     "| Scene | Preview | SDL_GPU | Dawn | Coverage |",
     "| ---: | :-: | :-: | :-: | --- |",
-    '| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | $\\color{#1a7f37}{\\textsf{0.061}} / \\color{#cf222e}{\\textsf{1.457}}$ | $\\color{#1a7f37}{\\textsf{0.005}} / \\color{#1a7f37}{\\textsf{0.123}}$ | punctual lights |',
-    '| runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | $\\color{#1a7f37}{\\textsf{0.000}} / \\color{#1a7f37}{\\textsf{0.001}}$ | $\\color{#1a7f37}{\\textsf{0.000}} / \\color{#1a7f37}{\\textsf{0.001}}$ | thin-instance pools |',
+    '| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | $\\color{#1a7f37}{\\textsf{0.061}} / \\color{#cf222e}{\\textsf{1.457}}$ | 0.005 / 0.123 | punctual lights |',
+    '| runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | thin-instance pools |',
     "| not a scene row | no image | no numbers | | |",
 ].join("\n");
 

@@ -55,17 +55,29 @@ export function parsePublishedRows(
             line,
         )?.[1];
         if (!sceneId) continue;
-        const cells = [
-            ...line.matchAll(
-                /color\{(#[0-9a-f]{6})\}\{\\textsf\{([0-9.]+)\}\}/g,
-            ),
-        ];
-        if (cells.length !== 4) continue;
+        // Two cell forms: a value in the green band prints plain, and a
+        // cell holding any yellow/red value keeps the colored math span.
+        // (GitHub stops rendering math expressions after a few hundred
+        // per page, so the table cannot colour its default state.)
+        const colors: string[] = [];
+        const values: string[] = [];
+        for (const cell of line.matchAll(
+            /\| (?:([0-9.]+) \/ ([0-9.]+)|\$\\color\{(#[0-9a-f]{6})\}\{\\textsf\{([0-9.]+)\}\} \/ \\color\{(#[0-9a-f]{6})\}\{\\textsf\{([0-9.]+)\}\}\$)(?= \|)/g,
+        )) {
+            if (cell[1] !== undefined) {
+                colors.push(GREEN, GREEN);
+                values.push(cell[1]!, cell[2]!);
+            } else {
+                colors.push(cell[3]!, cell[5]!);
+                values.push(cell[4]!, cell[6]!);
+            }
+        }
+        if (values.length !== 4) continue;
         rows.push({
             sceneId,
             line: index + 1,
-            colors: cells.map((cell) => cell[1]!),
-            values: cells.map((cell) => cell[2]!),
+            colors,
+            values,
         });
     }
     return rows;
