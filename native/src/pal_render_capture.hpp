@@ -436,6 +436,7 @@ inline const char* material_kind_name(upstream::RenderMaterialKind kind) {
         case upstream::RenderMaterialKind::standard: return "standard";
         case upstream::RenderMaterialKind::grid: return "grid";
         case upstream::RenderMaterialKind::shader: return "shader";
+        case upstream::RenderMaterialKind::node: return "node";
     }
     return "unknown";
 }

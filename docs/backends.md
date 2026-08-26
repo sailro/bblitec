@@ -39,11 +39,12 @@ pwsh -File tools\build-dawn.ps1
   options** — stale trees no-op silently.
 - Configuration: monolithic `webgpu_dawn` shared library, D3D12
   backend, `DAWN_USE_BUILT_DXC=ON`, targets `webgpu_dawn` **and**
-  `dxcompiler`, installed to `artifacts/tools/dawn`.
-- Deployment: `webgpu_dawn.dll` and Dawn's built `dxcompiler.dll` and
-  `dxil.dll` must sit beside the executable; Dawn resolves them
+  `dxcompiler`, and `copy_dxil_dll`, installed to `artifacts/tools/dawn`.
+- Deployment: `webgpu_dawn.dll`, Dawn's built `dxcompiler.dll`, and the
+  Windows SDK `dxil.dll` selected by Dawn must sit beside the executable.
+  Dawn loads the validator before the compiler and resolves both
   module-relative with hardened LoadLibraryEx flags, exactly as Chrome
-  deploys them. The native CMake `POST_BUILD` step copies all three.
+  deploys them. The native CMake `POST_BUILD` step copies all three DLLs.
   FXC (`d3dcompiler_47.dll`) is not deployed: it is reached only when
   Dawn force-disables `use_dxc` on adapters below shader model 6, and
   the PAL preloads it from the executable directory or System32 (Dawn's
@@ -52,9 +53,10 @@ pwsh -File tools\build-dawn.ps1
   An SDK copy placed beside the executable still takes priority.
 
 The compiled backend set is the CMake `BBLITE_BACKEND` selection:
-`SDL_GPU`, `DAWN`, or `BOTH`. `scene-command` passes `BOTH` whenever
-the installed Dawn library exists and `SDL_GPU` otherwise; set the
-`BBLITE_BACKEND` environment variable to override (a single-backend
+`SDL_GPU`, `DAWN`, or `BOTH`. Windows development scene commands default to
+`BOTH` and require the installed pinned Dawn library; Linux and macOS default
+to `SDL_GPU`. Set the `BBLITE_BACKEND` environment variable or pass `--backend`
+to override (a single-backend
 shape compiles the other backend out, `run_engine` defaults to the
 compiled backend, and requesting an absent backend fails explicitly).
 In `BOTH` builds, select at runtime:
@@ -149,6 +151,9 @@ through DXC as a stopgap; MSL untested). Neither backend is validated
 on a non-Windows machine, and the goldens are Chrome on D3D12 — Dawn
 on Vulkan/Metal shares the front-end but not the backend codegen, so
 structural bit-parity there would need same-platform references.
+`scene -- process` therefore defaults to D3D12 on Windows, Metal on macOS,
+and Vulkan elsewhere. `--shader all` is reserved for an explicit portability
+sweep; it is not paid on every development build.
 
 **Validation strictness.** WebGPU validates what D3D12 through
 SDL_GPU tolerates: a depth-stencil pipeline drawing into a depth-less
@@ -158,9 +163,9 @@ variant. Strictness costs integration effort (superset pipeline
 layouts, device-limit requests derived from task records, per-variant
 attachment states) and pays it back as an always-on conformance check.
 
-**Startup model.** SDL_GPU loads content-addressed offline DXIL — no
-compilation at startup, but generation must run DXC and the shader
-cache machinery. Dawn compiles WGSL at startup through the in-process
+**Startup model.** SDL_GPU loads the host-selected content-addressed offline
+artifact — no compilation at startup, but processing must run the selected
+shader toolchain and cache machinery. Dawn compiles WGSL at startup through the in-process
 Tint+DXC — no offline step, no cache, no register normalization, at
 the cost of first-frame compile time.
 

@@ -151,20 +151,6 @@ act on it — not what was tried.
 ## P1 — Developer experience
 
 - [ ] Add portable CMake presets.
-- [ ] Share one `VCPKG_INSTALLED_DIR` across build trees. Each build directory
-  carries its own ~49 MB copy of `vcpkg_installed` (~140 trees, ~9 GB as of
-  2026-08-24). Exactly four manifest-feature combos exist across the corpus
-  (png; png+jpeg; png+webp; png+physics), so the stable shape is one shared
-  install dir per combo — a single shared dir would thrash, because vcpkg
-  reconciles the installed set to each configure's feature list. Fix the
-  configure-lock bypass first: `serializeConfigure` wraps only the explicit
-  `cmake -S` call, and when `CMakeLists.txt` or a scene's `features.cmake`
-  is newer than the cache, `cmake --build` re-runs CMake itself inside the
-  parallel build stage — so a change flipping a vcpkg manifest feature
-  across many scenes triggers concurrent manifest installs sharing one
-  download/binary cache, the documented unreliable condition. Treat that
-  staleness as a cache mismatch and run the configure explicitly under the
-  lock before building.
 - [ ] Add `--explain-feature`. The inspection half shipped as `scene -- diff`'s
   pinned-block and shader-arm attribution plus the per-scene
   `feature-activation.json`.
@@ -1027,5 +1013,4 @@ Both backends stay long-term as mutually validating implementations;
   this path.
 - [ ] Reduce the release payload further: trim the Dawn DLL set through Dawn
   build options (a DXC-less build changes rendering, so the compiler stays),
-  ship only the CRT DLLs the exe imports, drop SPIR-V from D3D12-only packages
-  once packaging can declare a target driver, and evaluate packed native assets.
+  ship only the CRT DLLs the exe imports, and evaluate packed native assets.

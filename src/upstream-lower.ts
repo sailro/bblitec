@@ -1837,7 +1837,7 @@ ${shadow.blurFragmentWgsl}`,
 
         // The pin's composed variants join the deployed shader set. They need
         // no specialization: the pinned Tint consumes their own
-        // `@group`/`@binding` scheme unchanged for HLSL, MSL and SPIR-V, and
+        // `@group`/`@binding` scheme unchanged for every offline target, and
         // the HLSL register normalization already re-addresses them for
         // SDL_GPU's dense convention.
         // The declarations both composed material families read: one

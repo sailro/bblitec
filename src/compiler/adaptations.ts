@@ -352,7 +352,7 @@ export function compileAdaptations(
             id: "sdl-gpu-shader-backends",
             category: "rendering",
             sourceSemantics: "Babylon Lite composes WGSL and renders through WebGPU.",
-            nativeSemantics: "The compiler emits native-specialized WGSL; pinned Tint produces HLSL/MSL, register normalization and DXC produce SDL-compatible DXIL/SPIR-V, and SDL_GPU selects the native backend.",
+            nativeSemantics: "The compiler emits native-specialized WGSL; pinned Tint produces the target-selected HLSL or MSL source, register normalization and DXC produce the selected SDL-compatible DXIL or SPIR-V artifact, and SDL_GPU selects the native backend.",
             risk: "high",
             validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
         });
@@ -404,7 +404,7 @@ export function compileAdaptations(
             id: "typed-reached-shader-variants",
             category: "rendering",
             sourceSemantics: `Babylon Lite composes the reached custom WGSL shader variant(s): ${context.reachedShaderPrograms.map(({ name }) => name).join(", ")}.`,
-            nativeSemantics: "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits HLSL/MSL; register normalization and DXC emit SDL-compatible DXIL/SPIR-V.",
+            nativeSemantics: "The compiler validates reached WGSL, attributes, uniforms, and fixed-function state, lowers the supported WGSL subset into typed shader IR, reflects interfaces and uniform layouts, and emits native-specialized WGSL. Pinned Tint emits the target-selected HLSL or MSL source; register normalization and DXC emit the selected SDL-compatible DXIL or SPIR-V artifact.",
             risk: "high",
             validation: [
                 "shader variant compiler tests",

@@ -1,11 +1,29 @@
 param(
     [string]$Dxc = $env:DXC_PATH,
     [string]$Tint = $env:TINT_PATH,
-    [string]$Scene
+    [string]$Scene,
+    [string]$Target = $env:BBLITE_SHADER_TARGET
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+if (-not $Target) {
+    $Target = if ($IsWindows) {
+        "d3d12"
+    } elseif ($IsMacOS) {
+        "metal"
+    } else {
+        "vulkan"
+    }
+}
+$Target = $Target.ToLowerInvariant()
+if ($Target -notin @("d3d12", "vulkan", "metal", "all")) {
+    throw "Shader target must be d3d12|vulkan|metal|all (got '$Target')."
+}
+$emitDxil = $Target -in @("d3d12", "all")
+$emitSpirv = $Target -in @("vulkan", "all")
+$emitMsl = $Target -in @("metal", "all")
+$needsDxc = $emitDxil -or $emitSpirv
 $shaderDirectories = if ($Scene) {
     @((Join-Path $root "generated\$Scene\upstream\shaders"))
 } else {
@@ -20,7 +38,7 @@ if ($shaderDirectories.Count -eq 0) {
     throw "No generated shader directories found. Run a compile:<scene> command first."
 }
 
-if (-not $Dxc) {
+if ($needsDxc -and -not $Dxc) {
     $local = Join-Path $root "tools\shader-compiler\vcpkg_installed\x64-windows\tools\directx-dxc\dxc.exe"
     if (Test-Path $local) {
         $Dxc = $local
@@ -32,8 +50,11 @@ if (-not $Dxc) {
     }
 }
 
-if (-not $Dxc -or -not (Test-Path $Dxc)) {
-    throw "SPIR-V-capable dxc not found. Install tools/shader-compiler/vcpkg.json or set DXC_PATH."
+if ($needsDxc -and (-not $Dxc -or -not (Test-Path $Dxc))) {
+    throw "DXC not found for the $Target shader target. Install tools/shader-compiler/vcpkg.json or set DXC_PATH."
+}
+if ($Dxc -and -not (Test-Path $Dxc)) {
+    throw "DXC compiler not found: $Dxc"
 }
 if (-not $Tint) {
     $tintExecutable = if ($IsWindows) { "tint.exe" } else { "tint" }
@@ -55,7 +76,9 @@ if ($nativeWgslFiles.Count -gt 0 -and -not $Tint) {
     throw "Reached WGSL shaders require pinned Tint. Run tools/build-tint.ps1 or set TINT_PATH."
 }
 
-$env:PATH = "$(Split-Path -Parent $Dxc);$env:PATH"
+if ($needsDxc) {
+    $env:PATH = "$(Split-Path -Parent $Dxc);$env:PATH"
+}
 
 $cacheRoot = Join-Path $root "artifacts\shader-cache"
 New-Item -ItemType Directory -Path $cacheRoot -Force | Out-Null
@@ -80,13 +103,17 @@ function Get-StringSha256 {
     }
 }
 
-$compilerFiles = @(
-    $Dxc,
-    (Join-Path (Split-Path -Parent $Dxc) "dxcompiler.dll"),
-    (Join-Path (Split-Path -Parent $Dxc) "dxil.dll")
-) |
-    Where-Object { Test-Path $_ } |
-    Sort-Object -Unique
+$compilerFiles = if ($needsDxc) {
+    @(
+        $Dxc,
+        (Join-Path (Split-Path -Parent $Dxc) "dxcompiler.dll"),
+        (Join-Path (Split-Path -Parent $Dxc) "dxil.dll")
+    ) |
+        Where-Object { Test-Path $_ } |
+        Sort-Object -Unique
+} else {
+    @()
+}
 $compilerIdentity = @(
     $compilerFiles |
         ForEach-Object {
@@ -94,19 +121,19 @@ $compilerIdentity = @(
         }
 ) -join "|"
 $compilerHash = Get-StringSha256 $compilerIdentity
-$cacheFlagIdentity =
-    "dxil:$($dxilFlags -join ',')|spirv:$($spirvFlags -join ',')"
-
 function Get-ShaderCacheKey {
     param(
         [System.IO.FileInfo]$Source,
         [string]$Profile,
-        [string]$EntryPoint
+        [string]$EntryPoint,
+        [ValidateSet("dxil", "spirv")]
+        [string]$Kind
     )
 
     $sourceHash = (Get-FileHash $Source.FullName -Algorithm SHA256).Hash
+    $flags = if ($Kind -eq "dxil") { $dxilFlags } else { $spirvFlags }
     $payload =
-        "$compilerHash|$Profile|$EntryPoint|$cacheFlagIdentity|$sourceHash"
+        "$compilerHash|$Kind|$Profile|$EntryPoint|$($flags -join ',')|$sourceHash"
     return Get-StringSha256 $payload
 }
 
@@ -114,9 +141,9 @@ function Get-ShaderCacheKey {
 # The Tint half of the cache, content-addressed exactly like the DXC half.
 #
 # Tint used to run twice per deployed stage on every invocation — a
-# measured 1m50 corpus no-op. A stage's four Tint-derived artifacts
-# (.hlsl after the register compaction, .msl, .tint-reflection.txt and
-# the .slots sidecar the compaction publishes) are pure functions of:
+# measured 1m50 corpus no-op. A stage's target-derived artifacts are
+# `.hlsl` after register compaction, reflection and `.slots`, plus `.msl`
+# only for a Metal or all-target build. They are pure functions of:
 #   - the pinned Tint binary,
 #   - THIS SCRIPT (the compaction, demotion and slot-publication passes
 #     live here, so the whole script's hash keys the entry — any edit to
@@ -125,7 +152,7 @@ function Get-ShaderCacheKey {
 #   - the stage's WGSL bytes,
 #   - the declared entry point, the pinned-bindings declaration (it
 #     selects the remap-vs-normalize pass), the stage kind (the remap's
-#     register spaces differ per stage), and the fixed output-format set.
+#     register spaces differ per stage), and the selected output-format set.
 # The binding cross-check and the uniform-buffer cap run at fill time;
 # the cap is additionally re-checked on every deployed .hlsl below, so a
 # cache hit never lets it sleep.
@@ -137,9 +164,10 @@ $tintIdentityHash = if ($Tint) {
 } else {
     ""
 }
-$tintArtifactExtensions = @(
-    ".hlsl", ".msl", ".tint-reflection.txt", ".slots"
-)
+$tintArtifactExtensions = @(".hlsl", ".tint-reflection.txt", ".slots")
+if ($emitMsl) {
+    $tintArtifactExtensions += ".msl"
+}
 
 function Get-TintCacheBase {
     param(
@@ -153,7 +181,7 @@ function Get-TintCacheBase {
     $payload = (
         "tint:$tintIdentityHash|script:$scriptIdentityHash|" +
         "entry:$EntryPoint|pinned:$PinnedBindings|vertex:$IsVertex|" +
-        "formats:hlsl,msl,reflection,slots|wgsl:$sourceHash"
+        "formats:$($tintArtifactExtensions -join ',')|wgsl:$sourceHash"
     )
     return Join-Path $cacheRoot "tint-$(Get-StringSha256 $payload)"
 }
@@ -573,10 +601,10 @@ function Demote-PinnedVariantUniformBlocks {
     Storage buffers have their own budget of eight, so the stage keeps
     every pinned struct, name and expression and only the block's address
     space changes -- the same contract as the register remap.
-    The demoted source feeds every SDL-facing artifact (HLSL, DXIL,
-    SPIR-V, MSL, and the .slots sidecar, where each block becomes an
-    `r` row the PAL binds a real buffer against); the `.native.wgsl`
-    Dawn consumes keeps the pin's uniform declarations.
+    The demoted source feeds the selected SDL-facing artifact path and
+    the `.slots` sidecar, where each block becomes an `r` row the PAL
+    binds a real buffer against. The `.native.wgsl` Dawn consumes keeps
+    the pin's uniform declarations.
 
     Returns the demoted source path, written beside the stage.
     #>
@@ -603,7 +631,7 @@ function Demote-PinnedVariantUniformBlocks {
         )
     }
     # Tint infers the input format from the extension, so the temp must
-    # end in .wgsl; it is removed after the HLSL and MSL arms consume it.
+    # end in .wgsl; it is removed after HLSL and the optional MSL arm consume it.
     $demotedPath = "$OutputBase.pending-sdl.wgsl"
     Set-Content $demotedPath $demoted
     return $demotedPath
@@ -741,6 +769,18 @@ $usedTint = $false
 # form) — real restructuring risk for seconds of gain on a stage that no
 # longer dominates.
 foreach ($shaderDirectory in $shaderDirectories) {
+    # Generation normally gives this stage a fresh directory, but a direct
+    # target switch must not leave the old platform's deployable artifact
+    # behind for CMake to snapshot.
+    $unrequestedPatterns = @()
+    if (-not $emitDxil) { $unrequestedPatterns += "*.dxil" }
+    if (-not $emitSpirv) { $unrequestedPatterns += "*.spv" }
+    if (-not $emitMsl) { $unrequestedPatterns += "*.msl" }
+    foreach ($pattern in $unrequestedPatterns) {
+        foreach ($stale in Get-ChildItem $shaderDirectory -Filter $pattern -File) {
+            Remove-Item -LiteralPath $stale.FullName
+        }
+    }
     $directoryNativeWgsl = @(
         Get-ChildItem $shaderDirectory -Filter "*.native.wgsl"
     )
@@ -766,7 +806,7 @@ foreach ($shaderDirectory in $shaderDirectories) {
             $isPinnedComposed = [bool]$declared.pinnedBindings
             $entryPoint = [string]$declared.entryPoint
             # The Tint half is content-addressed like the DXC half: on a
-            # hit the four Tint-derived artifacts come from the cache
+            # hit the selected Tint-derived artifacts come from the cache
             # byte-for-byte, published through the same no-churn compare
             # as a fresh run.
             $tintCacheBase = Get-TintCacheBase `
@@ -889,12 +929,17 @@ foreach ($shaderDirectory in $shaderDirectories) {
                 Normalize-TintHlslBindings $pendingHlsl
             }
             Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
-            $pendingMsl = "$outputBase.pending-msl"
-            & $Tint $sdlSource --entry-point $entryPoint --format msl --output-name $pendingMsl
-            if ($LASTEXITCODE -ne 0) {
-                throw "Tint MSL generation failed for $($source.FullName)."
+            if ($emitMsl) {
+                $pendingMsl = "$outputBase.pending-msl"
+                & $Tint $sdlSource `
+                    --entry-point $entryPoint `
+                    --format msl `
+                    --output-name $pendingMsl
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Tint MSL generation failed for $($source.FullName)."
+                }
+                Move-IfDifferent $pendingMsl "$outputBase.msl"
             }
-            Move-IfDifferent $pendingMsl "$outputBase.msl"
             if ($sdlSource -ne $source.FullName) {
                 Remove-Item $sdlSource
             }
@@ -925,68 +970,106 @@ foreach ($shaderDirectory in $shaderDirectories) {
         # all. A deployed stage over the cap is corrupting D3D12 command
         # buffers today regardless of what the binary cache holds.
         Assert-UniformBufferCap $source.FullName $source.FullName
-        $cacheKey = Get-ShaderCacheKey -Source $source -Profile $profile -EntryPoint $entryPoint
-        $cachedDxil = Join-Path $cacheRoot "$cacheKey.dxil"
-        $cachedSpirv = Join-Path $cacheRoot "$cacheKey.spv"
-        if (
-            (Test-ShaderCacheBinary $cachedDxil "dxil") -and
-            (Test-ShaderCacheBinary $cachedSpirv "spirv")
-        ) {
-            Copy-Item $cachedDxil "$outputBase.dxil" -Force
-            Copy-Item $cachedSpirv "$outputBase.spv" -Force
+        if (-not $needsDxc) { continue }
+
+        $cachedDxil = $null
+        $cachedSpirv = $null
+        $dxilCached = -not $emitDxil
+        $spirvCached = -not $emitSpirv
+        if ($emitDxil) {
+            $dxilKey = Get-ShaderCacheKey `
+                -Source $source `
+                -Profile $profile `
+                -EntryPoint $entryPoint `
+                -Kind dxil
+            $cachedDxil = Join-Path $cacheRoot "$dxilKey.dxil"
+            $dxilCached = Test-ShaderCacheBinary $cachedDxil "dxil"
+        }
+        if ($emitSpirv) {
+            $spirvKey = Get-ShaderCacheKey `
+                -Source $source `
+                -Profile $profile `
+                -EntryPoint $entryPoint `
+                -Kind spirv
+            $cachedSpirv = Join-Path $cacheRoot "$spirvKey.spv"
+            $spirvCached = Test-ShaderCacheBinary $cachedSpirv "spirv"
+        }
+        if ($dxilCached -and $spirvCached) {
+            if ($emitDxil) {
+                Copy-IfDifferent $cachedDxil "$outputBase.dxil"
+            }
+            if ($emitSpirv) {
+                Copy-IfDifferent $cachedSpirv "$outputBase.spv"
+            }
             $reused += 1
             continue
         }
         $temporarySuffix = "$PID-$([Guid]::NewGuid().ToString('N'))"
-        $temporaryDxil = "$cachedDxil.$temporarySuffix.tmp"
-        $temporarySpirv = "$cachedSpirv.$temporarySuffix.tmp"
+        $temporaryDxil = $null
+        $temporarySpirv = $null
         try {
-            & $Dxc -T $profile -E $entryPoint @dxilFlags -Fo $temporaryDxil $source.FullName
-            if ($LASTEXITCODE -ne 0) {
-                throw "DXIL compilation failed for $($source.FullName)."
+            if ($emitDxil -and -not $dxilCached) {
+                $temporaryDxil = "$cachedDxil.$temporarySuffix.tmp"
+                & $Dxc -T $profile -E $entryPoint `
+                    @dxilFlags -Fo $temporaryDxil $source.FullName
+                if ($LASTEXITCODE -ne 0) {
+                    throw "DXIL compilation failed for $($source.FullName)."
+                }
+                if (-not (Test-ShaderCacheBinary $temporaryDxil "dxil")) {
+                    throw "DXIL compiler produced an invalid binary for $($source.FullName)."
+                }
+                Move-Item $temporaryDxil $cachedDxil -Force
             }
-            & $Dxc @spirvFlags -T $profile -E $entryPoint -Fo $temporarySpirv $source.FullName
-            if ($LASTEXITCODE -ne 0) {
-                throw "SPIR-V compilation failed for $($source.FullName)."
+            if ($emitSpirv -and -not $spirvCached) {
+                $temporarySpirv = "$cachedSpirv.$temporarySuffix.tmp"
+                & $Dxc @spirvFlags -T $profile -E $entryPoint `
+                    -Fo $temporarySpirv $source.FullName
+                if ($LASTEXITCODE -ne 0) {
+                    throw "SPIR-V compilation failed for $($source.FullName)."
+                }
+                if (-not (Test-ShaderCacheBinary $temporarySpirv "spirv")) {
+                    throw "SPIR-V compiler produced an invalid binary for $($source.FullName)."
+                }
+                Move-Item $temporarySpirv $cachedSpirv -Force
             }
-            if (-not (Test-ShaderCacheBinary $temporaryDxil "dxil")) {
-                throw "DXIL compiler produced an invalid binary for $($source.FullName)."
-            }
-            if (-not (Test-ShaderCacheBinary $temporarySpirv "spirv")) {
-                throw "SPIR-V compiler produced an invalid binary for $($source.FullName)."
-            }
-            Move-Item $temporaryDxil $cachedDxil -Force
-            Move-Item $temporarySpirv $cachedSpirv -Force
         } finally {
-            if (Test-Path $temporaryDxil) {
+            if ($temporaryDxil -and (Test-Path $temporaryDxil)) {
                 Remove-Item -LiteralPath $temporaryDxil
             }
-            if (Test-Path $temporarySpirv) {
+            if ($temporarySpirv -and (Test-Path $temporarySpirv)) {
                 Remove-Item -LiteralPath $temporarySpirv
             }
         }
-        Copy-Item $cachedDxil "$outputBase.dxil" -Force
-        Copy-Item $cachedSpirv "$outputBase.spv" -Force
+        if ($emitDxil) {
+            Copy-IfDifferent $cachedDxil "$outputBase.dxil"
+        }
+        if ($emitSpirv) {
+            Copy-IfDifferent $cachedSpirv "$outputBase.spv"
+        }
         $compiled += 1
     }
     # [ordered]: a plain hashtable serializes its keys in bucket order,
     # which varies between processes, so the record's bytes differed from
     # run to run with identical content — defeating both the generated-tree
     # digest and the Move-IfDifferent guard below.
-    $compilerRecord = if ($directoryNativeWgsl.Count -gt 0) {
+    $compilerRecord = [ordered]@{
+        backend = if ($directoryNativeWgsl.Count -gt 0) {
+            "tint-wgsl"
+        } else {
+            "dxc-hlsl"
+        }
+        target = $Target
+    }
+    if ($directoryNativeWgsl.Count -gt 0) {
         $pin = Get-Content (Join-Path $root "upstream\tint.json") -Raw |
             ConvertFrom-Json
-        [ordered]@{
-            backend = "tint-wgsl"
-            tintCommit = $pin.commit
-            tintSha256 = (Get-FileHash $Tint -Algorithm SHA256).Hash
-            dxilCompilerSha256 = (Get-FileHash $Dxc -Algorithm SHA256).Hash
-        }
-    } else {
-        [ordered]@{
-            backend = "dxc-hlsl"
-            dxilCompilerSha256 = (Get-FileHash $Dxc -Algorithm SHA256).Hash
-        }
+        $compilerRecord["tintCommit"] = $pin.commit
+        $compilerRecord["tintSha256"] =
+            (Get-FileHash $Tint -Algorithm SHA256).Hash
+    }
+    if ($needsDxc) {
+        $compilerRecord["dxcCompilerSha256"] =
+            (Get-FileHash $Dxc -Algorithm SHA256).Hash
     }
     # Rewriting an unchanged record would make the shader directory look
     # newer than the snapshot CMake copied from it, which re-runs the
@@ -999,8 +1082,12 @@ foreach ($shaderDirectory in $shaderDirectories) {
     Move-IfDifferent $pendingCompilerRecord $compilerRecordPath
 }
 
-$backend = if ($usedTint) { "Tint WGSL plus DXC" } else { "DXC HLSL" }
-Write-Output "$backend compiled $compiled shader variants; reused $reused cached variants."
+$backend = if ($usedTint) { "Tint WGSL" } else { "HLSL" }
+$dxcStep = if ($needsDxc) { " plus DXC" } else { "" }
+Write-Output (
+    "$backend$dxcStep target $Target compiled $compiled shader variants; " +
+    "reused $reused cached variants."
+)
 if ($usedTint) {
     Write-Output (
         "Tint stages: $tintCompiled transpiled, " +

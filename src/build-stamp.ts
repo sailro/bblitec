@@ -297,3 +297,35 @@ export function readCacheConfiguration(
     }
     return values;
 }
+
+/**
+ * Whether CMake would regenerate a build tree before compiling it.
+ *
+ * `CMakeCache.txt` is configuration state, not a generation timestamp:
+ * CMake leaves its mtime unchanged when a successful configure does not
+ * change any cached value. `cmake.check_cache` is the generator-owned marker
+ * refreshed by that configure, so it records that newer configure inputs were
+ * already consumed.
+ */
+export function generatorWouldReconfigure(
+    buildDirectory: string,
+    generatedDirectory: string,
+    repositoryRoot = process.cwd(),
+): boolean {
+    const generationMarker = resolve(
+        buildDirectory,
+        "CMakeFiles",
+        "cmake.check_cache",
+    );
+    if (!existsSync(generationMarker)) return true;
+    const generationTime = statSync(generationMarker).mtimeMs;
+    const configureInputs = [
+        resolve(repositoryRoot, "native", "CMakeLists.txt"),
+        resolve(repositoryRoot, "native", "vcpkg.json"),
+        resolve(generatedDirectory, "features.cmake"),
+    ];
+    return configureInputs.some(
+        (input) =>
+            existsSync(input) && statSync(input).mtimeMs > generationTime,
+    );
+}

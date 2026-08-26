@@ -50,6 +50,7 @@
     "@recast-navigation/wasm": "0.43.1",
     "@types/node": "^22.15.0",
     "@types/pngjs": "^6.0.5",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "playwright-core": "^1.62.1",
     "pngjs": "^7.0.0",
     "ts-prune": "^0.10.3",

@@ -7,7 +7,7 @@
 // buildinfo). This script stamps the compiler's inputs into
 // `dist/.build-stamp` and SKIPS the clean+tsc when the stamp matches;
 // anything else — a missing stamp, an unreadable one, a changed file, a
-// new file, a deleted file, a different TypeScript version — rebuilds
+// new file, a deleted file, a different compiler/API version — rebuilds
 // exactly the way `build` always has and then writes the stamp. Every
 // uncertain case falls through to the rebuild, so the failure mode is
 // "rebuild more", never "run stale dist". `npm run clean:dist` still
@@ -63,23 +63,42 @@ function listFiles(directory, prefix, out) {
 
 /**
  * The compiler-input stamp: one line per file (`path\tsize\tmtimeMs`)
- * over src/, test/, tsconfig.json and package.json, prefixed with a
- * format version and the TypeScript compiler's own version — an
- * `npm install` that moves tsc changes the emitted JavaScript with no
- * source edit at all. Returns undefined when anything cannot be
- * statted, which the caller treats as "rebuild".
+ * over src/, test/, tsconfig.json, package.json and package-lock.json,
+ * prefixed with a
+ * format version and both TypeScript versions. The Go compiler emits
+ * this project while the legacy JavaScript package remains the runtime
+ * compiler API used by bblitec itself. An `npm install` can move either
+ * dependency without a source edit. Returns undefined when anything
+ * cannot be statted, which the caller treats as "rebuild".
  */
 function computeStamp() {
     const files = [];
     for (const directory of ["src", "test"]) {
         listFiles(join(root, directory), directory, files);
     }
-    for (const single of ["tsconfig.json", "package.json"]) {
+    for (const single of [
+        "tsconfig.json",
+        "package.json",
+        "package-lock.json",
+    ]) {
         files.push({ path: join(root, single), relative: single });
     }
-    let typescriptVersion;
+    let nativeCompilerVersion;
+    let compilerApiVersion;
     try {
-        typescriptVersion = JSON.parse(
+        nativeCompilerVersion = JSON.parse(
+            readFileSync(
+                join(
+                    root,
+                    "node_modules",
+                    "@typescript",
+                    "native",
+                    "package.json",
+                ),
+                "utf8",
+            ),
+        ).version;
+        compilerApiVersion = JSON.parse(
             readFileSync(
                 join(root, "node_modules", "typescript", "package.json"),
                 "utf8",
@@ -88,7 +107,9 @@ function computeStamp() {
     } catch {
         return undefined;
     }
-    const lines = [`v1 typescript=${typescriptVersion}`];
+    const lines = [
+        `v2 native=${nativeCompilerVersion} api=${compilerApiVersion}`,
+    ];
     files.sort((left, right) =>
         left.relative < right.relative ? -1 : 1,
     );
@@ -126,10 +147,17 @@ if (
 }
 
 run(join(root, "tools", "clean-dist.mjs"), []);
-run(join(root, "node_modules", "typescript", "bin", "tsc"), [
-    "-p",
-    join(root, "tsconfig.json"),
-]);
+run(
+    join(
+        root,
+        "node_modules",
+        "@typescript",
+        "native",
+        "bin",
+        "tsc",
+    ),
+    ["-p", join(root, "tsconfig.json")],
+);
 if (stamp !== undefined) {
     mkdirSync(join(root, "dist"), { recursive: true });
     writeFileSync(stampPath, `${stamp}\n`);
