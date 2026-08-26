@@ -67,6 +67,7 @@
  * throws by name below — the wave-D worklist, not a silent approximation.
  */
 import ts from "typescript";
+import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import type { LoweringContext } from "./lowering/context.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
@@ -153,12 +154,6 @@ export interface PinnedStandardComposeOptions {
      * `MSH_RECEIVE_SHADOWS` needs it and refuses without it.
      */
     shadowLights?: readonly ShadowLightSlot[];
-}
-
-/** One shadow-casting light, as the pinned receiver fragment names it. */
-export interface ShadowLightSlot {
-    lightIndex: number;
-    shadowType: "esm" | "pcf" | "csm";
 }
 
 /** The subset of a pinned std extension the composition path reads. */
@@ -708,7 +703,7 @@ export interface PinnedStandardSelector {
 }
 
 /** A numeric pinned constant, evaluated from its own declaration. */
-function pinnedNumericConstant(
+export function pinnedNumericConstant(
     context: LoweringContext,
     modulePath: string,
     name: string,
@@ -1859,13 +1854,6 @@ inline constexpr std::uint32_t std_msh_has_morph_targets =
     ${mesh("MSH_HAS_MORPH_TARGETS")}u;
 inline constexpr std::uint32_t std_msh_has_thin_instances =
     ${mesh("MSH_HAS_THIN_INSTANCES")}u;
-// The receive bit rides the static table (a mesh's receiveShadows cannot
-// change here), but a DEPTH-ONLY view of a receiving mesh has to drop it:
-// rebuildSingle derives receiveShadows as !shadowOutput && ..., so the
-// caster pass composes without the shadow fragment.
-inline constexpr std::uint32_t std_msh_receive_shadows =
-    ${mesh("MSH_RECEIVE_SHADOWS")}u;
-
 // src/material/standard/standard-flags.ts NEEDS_UV -- the mask
 // writeStdMaterialData's textureLevel parameter is derived from
 // ((features & NEEDS_UV) != 0 ? 1 : 0, standard-renderable.ts).

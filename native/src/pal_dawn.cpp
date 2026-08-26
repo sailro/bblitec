@@ -526,7 +526,7 @@ struct DawnState : DawnDevice {
     // the same index names a different texture in two of them and each needs
     // its own layout.
     WGPUBindGroupLayout pinned_frame_layout = nullptr;
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     /**
      * The receiver side of the shadow family.
      *
@@ -554,6 +554,9 @@ struct DawnState : DawnDevice {
     /** Per receiving variant: two variants can declare different rows. */
     std::vector<WGPUBindGroupLayout> shadow_layouts;
     std::vector<WGPUBindGroup> shadow_groups;
+    /** The same, over the PBR family's own variant table. */
+    std::vector<WGPUBindGroupLayout> pbr_shadow_layouts;
+    std::vector<WGPUBindGroup> pbr_shadow_groups;
 #if BBLITE_SHADOWS_ESM
     /**
      * One ESM generator's separable blur, built from what its own factory
@@ -743,7 +746,7 @@ struct DawnState : DawnDevice {
     }
 
     void release_frame_graph_textures() {
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
         // The receiver group holds a view of a shadow map's depth texture,
         // which the loop below is about to release; a resize rebuilds both.
         // The layout beside it is shape-only and survives.
@@ -751,6 +754,10 @@ struct DawnState : DawnDevice {
             if (group) wgpuBindGroupRelease(group);
         }
         shadow_groups.clear();
+        for (WGPUBindGroup group : pbr_shadow_groups) {
+            if (group) wgpuBindGroupRelease(group);
+        }
+        pbr_shadow_groups.clear();
 #endif
         for (DawnRenderTarget& target : render_targets) {
             if (
@@ -971,7 +978,7 @@ struct DawnState : DawnDevice {
         if (mip_vertex_module) wgpuShaderModuleRelease(mip_vertex_module);
         release_render_tasks();
         release_frame_graph_textures();
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
         // The receiver group already went with the frame-graph textures it
         // views; what remains is the generator-owned state, which outlives
         // a resize.
@@ -979,6 +986,9 @@ struct DawnState : DawnDevice {
             if (buffer) wgpuBufferRelease(buffer);
         }
         for (WGPUBindGroupLayout layout : shadow_layouts) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
+        }
+        for (WGPUBindGroupLayout layout : pbr_shadow_layouts) {
             if (layout) wgpuBindGroupLayoutRelease(layout);
         }
         if (shadow_comparison_sampler) {
@@ -1500,6 +1510,80 @@ WGPUTextureFormat compressed_texture_format(std::string_view name) {
         "Dawn has no compressed texture format for '" +
         std::string(name) + "'.");
 }
+
+/**
+ * One family's cache slot for a variant, grown to that family's table.
+ *
+ * The two receiver caches are indexed by variant and sized by whichever
+ * variant table the family composes, so which vector and which count is the
+ * caller's to say and the resize is not written twice.
+ */
+template <typename T>
+T& shadow_cache_slot(
+    std::vector<T>& cache,
+    std::size_t variants,
+    std::size_t variant) {
+    if (cache.size() < variants) cache.resize(variants, nullptr);
+    return cache[variant];
+}
+
+#if BBLITE_PINNED_MATERIAL_VARIANTS
+/**
+ * One reflected group-1 row as a layout entry.
+ *
+ * The rows are one shape for both composed material families, so their
+ * mapping onto WebGPU's entry is one function: a new `PinnedBindingKind` arm
+ * is added once rather than in each family's loop. `depth_emissive` is the
+ * Standard family's own trap -- a record whose emissive is the depth render
+ * texture binds that pair unfilterable, with a non-filtering sampler.
+ */
+WGPUBindGroupLayoutEntry variant_layout_entry(
+    const upstream::PinnedVariantBinding& binding,
+    bool depth_emissive) {
+    WGPUBindGroupLayoutEntry layout_entry =
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    layout_entry.binding = binding.binding;
+    // Group 1 is shared, so a binding declared only in the vertex stage --
+    // the bone palette is the one -- must not be visible to the fragment.
+    layout_entry.visibility = 0;
+    if (binding.vertex) layout_entry.visibility |= WGPUShaderStage_Vertex;
+    if (binding.fragment) {
+        layout_entry.visibility |= WGPUShaderStage_Fragment;
+    }
+    switch (binding.kind) {
+        case upstream::PinnedBindingKind::sampler:
+            layout_entry.sampler.type = depth_emissive
+                ? WGPUSamplerBindingType_NonFiltering
+                : WGPUSamplerBindingType_Filtering;
+            break;
+        case upstream::PinnedBindingKind::storageBuffer:
+            // The morph arms' deltas and weights.
+            layout_entry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+            break;
+        case upstream::PinnedBindingKind::uniformBuffer:
+            // A group-1 uniform block past mesh and material: the vertex
+            // `up` block, the geometry arms' gpUniforms, and a displaced
+            // `mat`/`mesh` block riding a reflected row.
+            layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
+            break;
+        default:
+            // An rgba32float texture read with textureLoad cannot be bound
+            // as filterable; the pin's bone palette is exactly that.
+            layout_entry.texture.sampleType =
+                binding.kind ==
+                        upstream::PinnedBindingKind::texture2dLoad ||
+                    depth_emissive
+                    ? WGPUTextureSampleType_UnfilterableFloat
+                    : WGPUTextureSampleType_Float;
+            layout_entry.texture.viewDimension =
+                binding.kind == upstream::PinnedBindingKind::textureCube
+                    ? WGPUTextureViewDimension_Cube
+                    : WGPUTextureViewDimension_2D;
+            break;
+    }
+    return layout_entry;
+}
+#endif
 
 /**
  * A texture whose bytes are already blocks: the container's own mip chain,
@@ -2268,6 +2352,35 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
     return state.pinned_frame_layout;
 }
 
+/**
+ * A composed family's pipeline layout: the shared frame group, the variant's
+ * own draw group, and the receiver's group 2 where the variant composed one.
+ *
+ * One builder because the shape is the pin's rather than either family's --
+ * both compose the same shadow core into the same third group, and a
+ * non-receiver simply declares two.
+ */
+WGPUPipelineLayout composed_pipeline_layout(
+    DawnState& state,
+    WGPUBindGroupLayout draw_layout,
+    WGPUBindGroupLayout shadow_layout,
+    WGPUPipelineLayout& slot,
+    const char* failure) {
+    if (slot) return slot;
+    std::array<WGPUBindGroupLayout, 3> groups{
+        pinned_frame_layout_for(state),
+        draw_layout,
+        shadow_layout,
+    };
+    WGPUPipelineLayoutDescriptor descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.bindGroupLayoutCount = shadow_layout ? 3u : 2u;
+    descriptor.bindGroupLayouts = groups.data();
+    slot = wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
+    if (!slot) dawn_error(failure);
+    return slot;
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * Group 1 for one variant: the mesh block, the material block, then exactly the
@@ -2306,43 +2419,9 @@ WGPUBindGroupLayout pinned_draw_layout_for(
     uniform(0, WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
     uniform(1, WGPUShaderStage_Fragment);
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PbrVariantBinding& binding =
-            upstream::pbr_variant_bindings[entry.first_binding + index];
-        WGPUBindGroupLayoutEntry layout_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        layout_entry.binding = binding.binding;
-        // Group 1 is shared, so a binding declared only in the vertex stage --
-        // the bone palette is the one -- must not be visible to the fragment.
-        layout_entry.visibility = 0;
-        if (binding.vertex) layout_entry.visibility |= WGPUShaderStage_Vertex;
-        if (binding.fragment) {
-            layout_entry.visibility |= WGPUShaderStage_Fragment;
-        }
-        if (binding.kind == upstream::PbrBindingKind::sampler) {
-            layout_entry.sampler.type = WGPUSamplerBindingType_Filtering;
-        } else if (
-            binding.kind == upstream::PbrBindingKind::storageBuffer) {
-            // The morph arms' deltas and weights.
-            layout_entry.buffer.type =
-                WGPUBufferBindingType_ReadOnlyStorage;
-        } else if (
-            binding.kind == upstream::PbrBindingKind::uniformBuffer) {
-            // A group-1 uniform block past mesh and material: the geometry
-            // arms' gpUniforms.
-            layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        } else {
-            // An rgba32float texture read with textureLoad cannot be bound as
-            // filterable; the pin's bone palette is exactly that.
-            layout_entry.texture.sampleType =
-                binding.kind == upstream::PbrBindingKind::texture2dLoad
-                    ? WGPUTextureSampleType_UnfilterableFloat
-                    : WGPUTextureSampleType_Float;
-            layout_entry.texture.viewDimension =
-                binding.kind == upstream::PbrBindingKind::textureCube
-                    ? WGPUTextureViewDimension_Cube
-                    : WGPUTextureViewDimension_2D;
-        }
-        entries.push_back(layout_entry);
+        entries.push_back(variant_layout_entry(
+            upstream::pbr_variant_bindings[entry.first_binding + index],
+            false));
     }
     WGPUBindGroupLayoutDescriptor descriptor =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
@@ -2356,32 +2435,6 @@ WGPUBindGroupLayout pinned_draw_layout_for(
     return state.pinned_draw_layouts[variant];
 }
 
-WGPUPipelineLayout pinned_pipeline_layout_for(
-    DawnState& state,
-    std::size_t variant) {
-    if (state.pinned_pipeline_layouts.size() < upstream::pbr_variants.size()) {
-        state.pinned_pipeline_layouts.resize(
-            upstream::pbr_variants.size(),
-            nullptr);
-    }
-    if (state.pinned_pipeline_layouts[variant]) {
-        return state.pinned_pipeline_layouts[variant];
-    }
-    std::array<WGPUBindGroupLayout, 2> groups{
-        pinned_frame_layout_for(state),
-        pinned_draw_layout_for(state, variant),
-    };
-    WGPUPipelineLayoutDescriptor descriptor =
-        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = groups.size();
-    descriptor.bindGroupLayouts = groups.data();
-    state.pinned_pipeline_layouts[variant] =
-        wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!state.pinned_pipeline_layouts[variant]) {
-        dawn_error("pinned variant pipeline layout creation failed.");
-    }
-    return state.pinned_pipeline_layouts[variant];
-}
 #endif
 
 // The per-pass scene and lights buffers, sized by the pin's own structs.
@@ -2705,11 +2758,11 @@ WGPUBindGroup build_pinned_draw_group(
     material_entry.size = entry.material_ubo_bytes;
     entries.push_back(material_entry);
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::PbrVariantBinding& binding =
+        const upstream::PinnedVariantBinding& binding =
             upstream::pbr_variant_bindings[entry.first_binding + index];
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
-        if (binding.kind == upstream::PbrBindingKind::uniformBuffer) {
+        if (binding.kind == upstream::PinnedBindingKind::uniformBuffer) {
             // The geometry arms' gpUniforms, per task.
             if (binding.name != "gp" || !geometry_params) {
                 dawn_error(
@@ -2722,7 +2775,7 @@ WGPUBindGroup build_pinned_draw_group(
             entries.push_back(group_entry);
             continue;
         }
-        if (binding.kind == upstream::PbrBindingKind::storageBuffer) {
+        if (binding.kind == upstream::PinnedBindingKind::storageBuffer) {
             // The morph arms' storage, by the pin's own names. These are the
             // same buffers the transcribed stage read: the upload loop
             // maintains the deltas and the {count, vertexCount}-headed
@@ -2746,7 +2799,7 @@ WGPUBindGroup build_pinned_draw_group(
         }
         const PinnedResource resource =
             pinned_resource_for(state, mesh, binding.name);
-        if (binding.kind == upstream::PbrBindingKind::sampler) {
+        if (binding.kind == upstream::PinnedBindingKind::sampler) {
             group_entry.sampler = resource.sampler;
         } else {
             group_entry.textureView = resource.view;
@@ -2937,18 +2990,24 @@ void write_pinned_geometry_task(
                 continue;
             }
             if (draw.item_index >= state.meshes.size()) continue;
+            pal::PinnedVariantKey geometry_key;
             const std::size_t variant = pinned_variant_for_draw(
                 scene,
                 engine,
                 draw,
-                static_cast<std::size_t>(task.geometry.shader_index));
+                static_cast<std::size_t>(task.geometry.shader_index),
+                &geometry_key);
             if (variant == std::numeric_limits<std::size_t>::max()) {
                 dawn_error(
                     ("PBR draw for mesh " +
                      std::to_string(draw.item.mesh.value) +
                      ", material " +
                      std::to_string(draw.item.material.value) +
-                     " resolves no pinned variant in a geometry task.")
+                     " resolves no pinned variant in a geometry task: " +
+                     pal::pinned_variant_request(
+                         geometry_key,
+                         static_cast<std::size_t>(
+                             task.geometry.shader_index)))
                         .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
@@ -3105,124 +3164,11 @@ std::pair<WGPUTexture, WGPUTextureView> dawn_render_target_texture(
     return {target.sampled_color, target.sampled_color_view};
 }
 
-#if BBLITE_STANDARD_VARIANTS > 0
-/**
- * Group 1 for one Standard variant: the mesh block, the `mat` block, then
- * exactly the resources the composed stages declare — textures with their
- * samplers, the vertex `up` block, the geometry arms' `gp`, the morph
- * storage pair. `unfilterable_emissive` keys the depth-emissive trap: a
- * record whose emissive is the depth render texture binds eT as
- * unfilterable-float with a non-filtering sampler.
- */
-WGPUBindGroupLayout standard_draw_layout_for(
-    DawnState& state,
-    std::size_t variant,
-    bool unfilterable_emissive) {
-    const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
-    if (
-        state.standard_draw_layouts.size() <
-        upstream::standard_variants.size() * 2) {
-        state.standard_draw_layouts.resize(
-            upstream::standard_variants.size() * 2,
-            nullptr);
-    }
-    if (state.standard_draw_layouts[key]) {
-        return state.standard_draw_layouts[key];
-    }
-    const upstream::StandardVariantEntry& entry =
-        upstream::standard_variants[variant];
-    // The composed stages own the group-1 binding map. Bindings 0 and 1
-    // are the hand-managed mesh and material blocks — except when the
-    // reflected rows occupy them: a morph variant's storage pair claims
-    // bindings 1-2, which pushes `mat` out to a reflected uniform row of
-    // its own (scene 252's is at 3). A fixed entry under an occupied
-    // binding would duplicate it, which Dawn refuses at layout creation,
-    // so each fixed entry yields to the rows.
-    bool rows_occupy_binding_0 = false;
-    bool rows_occupy_binding_1 = false;
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::StandardVariantBinding& binding =
-            upstream::standard_variant_bindings[
-                entry.first_binding + index];
-        if (binding.binding == 0) rows_occupy_binding_0 = true;
-        if (binding.binding == 1) rows_occupy_binding_1 = true;
-    }
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(2 + entry.binding_count);
-    if (!rows_occupy_binding_0) {
-        WGPUBindGroupLayoutEntry mesh_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        mesh_entry.binding = 0;
-        mesh_entry.visibility =
-            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(mesh_entry);
-    }
-    if (!rows_occupy_binding_1) {
-        WGPUBindGroupLayoutEntry material_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        material_entry.binding = 1;
-        material_entry.visibility = WGPUShaderStage_Fragment;
-        material_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(material_entry);
-    }
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::StandardVariantBinding& binding =
-            upstream::standard_variant_bindings[
-                entry.first_binding + index];
-        WGPUBindGroupLayoutEntry layout_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        layout_entry.binding = binding.binding;
-        layout_entry.visibility = 0;
-        if (binding.vertex) layout_entry.visibility |= WGPUShaderStage_Vertex;
-        if (binding.fragment) {
-            layout_entry.visibility |= WGPUShaderStage_Fragment;
-        }
-        const bool depth_emissive = unfilterable_emissive &&
-            (binding.name == "eT" || binding.name == "eS");
-        if (binding.kind == upstream::StandardBindingKind::sampler) {
-            layout_entry.sampler.type = depth_emissive
-                ? WGPUSamplerBindingType_NonFiltering
-                : WGPUSamplerBindingType_Filtering;
-        } else if (
-            binding.kind ==
-            upstream::StandardBindingKind::storageBuffer) {
-            layout_entry.buffer.type =
-                WGPUBufferBindingType_ReadOnlyStorage;
-        } else if (
-            binding.kind ==
-            upstream::StandardBindingKind::uniformBuffer) {
-            // The vertex `up` block, the geometry arms' gpUniforms, and a
-            // displaced `mat`/`mesh` block riding a reflected row.
-            layout_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        } else {
-            layout_entry.texture.sampleType =
-                binding.kind ==
-                        upstream::StandardBindingKind::texture2dLoad ||
-                    depth_emissive
-                    ? WGPUTextureSampleType_UnfilterableFloat
-                    : WGPUTextureSampleType_Float;
-            layout_entry.texture.viewDimension =
-                binding.kind ==
-                        upstream::StandardBindingKind::textureCube
-                    ? WGPUTextureViewDimension_Cube
-                    : WGPUTextureViewDimension_2D;
-        }
-        entries.push_back(layout_entry);
-    }
-    WGPUBindGroupLayoutDescriptor descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.standard_draw_layouts[key] =
-        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.standard_draw_layouts[key]) {
-        dawn_error("standard variant draw bind group layout creation failed.");
-    }
-    return state.standard_draw_layouts[key];
-}
-
-#if BBLITE_STANDARD_SHADOWS
+// The receiver's shared machinery: the samplers, the map view, and the two
+// builders that read a composed group-2 row span. Both material families wrap
+// one pinned shadow core, so their rows are one shape and this is one
+// implementation; each family adds only its own cache vectors beside it.
+#if BBLITE_SHADOW_RECEIVERS
 /** The two samplers a receiver row may name, built once. */
 void ensure_shadow_samplers(DawnState& state) {
     if (!state.shadow_comparison_sampler) {
@@ -3446,42 +3392,39 @@ WGPUTextureView shadow_map_view(
  * exactly as group 1's are, so neither the shape nor the stage visibility is
  * decided here.
  */
-WGPUBindGroupLayout shadow_layout_for(DawnState& state, std::size_t variant) {
-    if (
-        state.shadow_layouts.size() < upstream::standard_variants.size()) {
-        state.shadow_layouts.resize(
-            upstream::standard_variants.size(),
-            nullptr);
-    }
-    if (state.shadow_layouts[variant]) return state.shadow_layouts[variant];
-    const std::span<const upstream::StandardShadowBinding> rows =
-        pal::shadow_rows(variant);
+WGPUBindGroupLayout shadow_layout_for(
+    DawnState& state,
+    std::span<const upstream::PinnedShadowBinding> rows,
+    // The cache slot, so both material families share one builder: the rows
+    // are the shadow family's whichever wrapper composed them.
+    WGPUBindGroupLayout& slot) {
+    if (slot) return slot;
     std::vector<WGPUBindGroupLayoutEntry> entries;
     entries.reserve(rows.size());
-    for (const upstream::StandardShadowBinding& row : rows) {
+    for (const upstream::PinnedShadowBinding& row : rows) {
         WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
         entry.binding = row.binding;
         entry.visibility = 0;
         if (row.vertex) entry.visibility |= WGPUShaderStage_Vertex;
         if (row.fragment) entry.visibility |= WGPUShaderStage_Fragment;
         switch (row.kind) {
-            case upstream::StandardBindingKind::textureDepth2d:
+            case upstream::PinnedBindingKind::textureDepth2d:
                 entry.texture.sampleType = WGPUTextureSampleType_Depth;
                 entry.texture.viewDimension =
                     WGPUTextureViewDimension_2D;
                 break;
-            case upstream::StandardBindingKind::texture2d:
+            case upstream::PinnedBindingKind::texture2d:
                 entry.texture.sampleType = WGPUTextureSampleType_Float;
                 entry.texture.viewDimension =
                     WGPUTextureViewDimension_2D;
                 break;
-            case upstream::StandardBindingKind::samplerComparison:
+            case upstream::PinnedBindingKind::samplerComparison:
                 entry.sampler.type = WGPUSamplerBindingType_Comparison;
                 break;
-            case upstream::StandardBindingKind::sampler:
+            case upstream::PinnedBindingKind::sampler:
                 entry.sampler.type = WGPUSamplerBindingType_Filtering;
                 break;
-            case upstream::StandardBindingKind::uniformBuffer:
+            case upstream::PinnedBindingKind::uniformBuffer:
                 entry.buffer.type = WGPUBufferBindingType_Uniform;
                 break;
             default:
@@ -3497,12 +3440,11 @@ WGPUBindGroupLayout shadow_layout_for(DawnState& state, std::size_t variant) {
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    state.shadow_layouts[variant] =
-        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.shadow_layouts[variant]) {
+    slot = wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!slot) {
         dawn_error("shadow receiver bind group layout creation failed.");
     }
-    return state.shadow_layouts[variant];
+    return slot;
 }
 
 /**
@@ -3515,13 +3457,10 @@ WGPUBindGroup shadow_group_for(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
-    std::size_t variant) {
-    if (state.shadow_groups.size() < upstream::standard_variants.size()) {
-        state.shadow_groups.resize(
-            upstream::standard_variants.size(),
-            nullptr);
-    }
-    if (state.shadow_groups[variant]) return state.shadow_groups[variant];
+    std::span<const upstream::PinnedShadowBinding> rows,
+    WGPUBindGroupLayout& layout_slot,
+    WGPUBindGroup& slot) {
+    if (slot) return slot;
     ensure_shadow_samplers(state);
     // The scene's generators in `scene.lights` order: that walk IS the
     // ordinal each row names.
@@ -3533,11 +3472,9 @@ WGPUBindGroup shadow_group_for(
         if (handle.value >= engine.shadow_generators.size()) continue;
         generators.push_back(handle);
     }
-    const std::span<const upstream::StandardShadowBinding> rows =
-        pal::shadow_rows(variant);
     std::vector<WGPUBindGroupEntry> entries;
     entries.reserve(rows.size());
-    for (const upstream::StandardShadowBinding& row : rows) {
+    for (const upstream::PinnedShadowBinding& row : rows) {
         if (row.light >= generators.size()) {
             dawn_error(
                 ("a composed shadow binding names light " +
@@ -3549,18 +3486,18 @@ WGPUBindGroup shadow_group_for(
         WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
         entry.binding = row.binding;
         switch (row.role) {
-            case upstream::StandardShadowRole::map:
+            case upstream::PinnedShadowRole::map:
                 entry.textureView = shadow_map_view(state, engine, handle);
                 break;
-            case upstream::StandardShadowRole::map_sampler:
+            case upstream::PinnedShadowRole::map_sampler:
                 // Which sampler is the ROW's to say: a PCF map is compared,
                 // an ESM one is filtered.
                 entry.sampler = row.kind ==
-                        upstream::StandardBindingKind::samplerComparison
+                        upstream::PinnedBindingKind::samplerComparison
                     ? state.shadow_comparison_sampler
                     : state.shadow_filtering_sampler;
                 break;
-            case upstream::StandardShadowRole::info:
+            case upstream::PinnedShadowRole::info:
                 entry.buffer = state.shadow_uniforms[handle.value];
                 entry.size = sizeof(upstream::ShadowInfoUniforms);
                 break;
@@ -3568,17 +3505,99 @@ WGPUBindGroup shadow_group_for(
         entries.push_back(entry);
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    descriptor.layout = shadow_layout_for(state, variant);
+    descriptor.layout = shadow_layout_for(state, rows, layout_slot);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    state.shadow_groups[variant] =
-        wgpuDeviceCreateBindGroup(state.device, &descriptor);
-    if (!state.shadow_groups[variant]) {
+    slot = wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!slot) {
         dawn_error("shadow receiver bind group creation failed.");
     }
-    return state.shadow_groups[variant];
+    return slot;
 }
 
+#endif
+
+#if BBLITE_STANDARD_SHADOWS
+
+WGPUBindGroupLayout standard_shadow_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    return shadow_layout_for(
+        state,
+        pal::standard_shadow_rows(variant),
+        shadow_cache_slot(
+            state.shadow_layouts,
+            upstream::standard_variants.size(),
+            variant));
+}
+
+WGPUBindGroup standard_shadow_group_for(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    std::size_t variant) {
+    return shadow_group_for(
+        state,
+        scene,
+        engine,
+        pal::standard_shadow_rows(variant),
+        shadow_cache_slot(
+            state.shadow_layouts,
+            upstream::standard_variants.size(),
+            variant),
+        shadow_cache_slot(
+            state.shadow_groups,
+            upstream::standard_variants.size(),
+            variant));
+}
+#endif
+
+#if BBLITE_PBR_SHADOWS
+WGPUBindGroupLayout pbr_shadow_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    return shadow_layout_for(
+        state,
+        pal::pbr_shadow_rows(variant),
+        shadow_cache_slot(
+            state.pbr_shadow_layouts,
+            upstream::pbr_variants.size(),
+            variant));
+}
+
+WGPUBindGroup pbr_shadow_group_for(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    std::size_t variant) {
+    return shadow_group_for(
+        state,
+        scene,
+        engine,
+        pal::pbr_shadow_rows(variant),
+        shadow_cache_slot(
+            state.pbr_shadow_layouts,
+            upstream::pbr_variants.size(),
+            variant),
+        shadow_cache_slot(
+            state.pbr_shadow_groups,
+            upstream::pbr_variants.size(),
+            variant));
+}
+#else
+inline WGPUBindGroupLayout pbr_shadow_layout_for(DawnState&, std::size_t) {
+    return nullptr;
+}
+inline WGPUBindGroup pbr_shadow_group_for(
+    DawnState&,
+    const Scene&,
+    const Engine&,
+    std::size_t) {
+    return nullptr;
+}
+#endif
+
+#if BBLITE_SHADOW_RECEIVERS
 /**
  * The per-frame half: the generators' matrices and their receiver blocks.
  *
@@ -3659,13 +3678,17 @@ void write_shadow_generators(
         state.shadow_light_count += 1;
     }
 }
-#else
+#endif
+
+#if !BBLITE_STANDARD_SHADOWS
 // A Standard scene that reaches no generator: every call site below still
 // compiles, and each answers "no shadows" rather than being conditioned out.
-inline WGPUBindGroupLayout shadow_layout_for(DawnState&, std::size_t) {
+inline WGPUBindGroupLayout standard_shadow_layout_for(
+    DawnState&,
+    std::size_t) {
     return nullptr;
 }
-inline WGPUBindGroup shadow_group_for(
+inline WGPUBindGroup standard_shadow_group_for(
     DawnState&,
     const Scene&,
     const Engine&,
@@ -3674,43 +3697,107 @@ inline WGPUBindGroup shadow_group_for(
 }
 #endif
 
-/** Whether this composed variant carries the pin's shadow fragment. */
-bool standard_variant_receives_shadows(std::size_t variant) {
-    return (upstream::standard_variants[variant].mesh_features &
-            upstream::std_msh_receive_shadows) != 0;
-}
-
-WGPUPipelineLayout standard_pipeline_layout_for(
+#if BBLITE_STANDARD_VARIANTS > 0
+/**
+ * Group 1 for one Standard variant: the mesh block, the `mat` block, then
+ * exactly the resources the composed stages declare — textures with their
+ * samplers, the vertex `up` block, the geometry arms' `gp`, the morph
+ * storage pair. `unfilterable_emissive` keys the depth-emissive trap: a
+ * record whose emissive is the depth render texture binds eT as
+ * unfilterable-float with a non-filtering sampler.
+ */
+WGPUBindGroupLayout standard_draw_layout_for(
     DawnState& state,
     std::size_t variant,
     bool unfilterable_emissive) {
     const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
     if (
-        state.standard_pipeline_layouts.size() <
+        state.standard_draw_layouts.size() <
         upstream::standard_variants.size() * 2) {
-        state.standard_pipeline_layouts.resize(
+        state.standard_draw_layouts.resize(
             upstream::standard_variants.size() * 2,
             nullptr);
     }
-    if (state.standard_pipeline_layouts[key]) {
-        return state.standard_pipeline_layouts[key];
+    if (state.standard_draw_layouts[key]) {
+        return state.standard_draw_layouts[key];
     }
-    const bool receives = standard_variant_receives_shadows(variant);
-    std::array<WGPUBindGroupLayout, 3> groups{
-        pinned_frame_layout_for(state),
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    // The composed stages own the group-1 binding map. Bindings 0 and 1
+    // are the hand-managed mesh and material blocks — except when the
+    // reflected rows occupy them: a morph variant's storage pair claims
+    // bindings 1-2, which pushes `mat` out to a reflected uniform row of
+    // its own (scene 252's is at 3). A fixed entry under an occupied
+    // binding would duplicate it, which Dawn refuses at layout creation,
+    // so each fixed entry yields to the rows.
+    bool rows_occupy_binding_0 = false;
+    bool rows_occupy_binding_1 = false;
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::PinnedVariantBinding& binding =
+            upstream::standard_variant_bindings[
+                entry.first_binding + index];
+        if (binding.binding == 0) rows_occupy_binding_0 = true;
+        if (binding.binding == 1) rows_occupy_binding_1 = true;
+    }
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    entries.reserve(2 + entry.binding_count);
+    if (!rows_occupy_binding_0) {
+        WGPUBindGroupLayoutEntry mesh_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        mesh_entry.binding = 0;
+        mesh_entry.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(mesh_entry);
+    }
+    if (!rows_occupy_binding_1) {
+        WGPUBindGroupLayoutEntry material_entry =
+            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        material_entry.binding = 1;
+        material_entry.visibility = WGPUShaderStage_Fragment;
+        material_entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(material_entry);
+    }
+    for (std::size_t index = 0; index < entry.binding_count; ++index) {
+        const upstream::PinnedVariantBinding& binding =
+            upstream::standard_variant_bindings[
+                entry.first_binding + index];
+        entries.push_back(variant_layout_entry(
+            binding,
+            unfilterable_emissive &&
+                (binding.name == "eT" || binding.name == "eS")));
+    }
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.standard_draw_layouts[key] =
+        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!state.standard_draw_layouts[key]) {
+        dawn_error("standard variant draw bind group layout creation failed.");
+    }
+    return state.standard_draw_layouts[key];
+}
+
+
+WGPUPipelineLayout standard_pipeline_layout_for(
+    DawnState& state,
+    std::size_t variant,
+    bool unfilterable_emissive) {
+    // The depth-emissive trap keys its own layout, so this family's cache is
+    // twice its variant table.
+    const std::size_t key = variant * 2 + (unfilterable_emissive ? 1 : 0);
+    return composed_pipeline_layout(
+        state,
         standard_draw_layout_for(state, variant, unfilterable_emissive),
-        receives ? shadow_layout_for(state, variant) : nullptr,
-    };
-    WGPUPipelineLayoutDescriptor descriptor =
-        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.bindGroupLayoutCount = receives ? 3u : 2u;
-    descriptor.bindGroupLayouts = groups.data();
-    state.standard_pipeline_layouts[key] =
-        wgpuDeviceCreatePipelineLayout(state.device, &descriptor);
-    if (!state.standard_pipeline_layouts[key]) {
-        dawn_error("standard variant pipeline layout creation failed.");
-    }
-    return state.standard_pipeline_layouts[key];
+        pal::standard_variant_receives_shadows(variant)
+            ? standard_shadow_layout_for(state, variant)
+            : nullptr,
+        shadow_cache_slot(
+            state.standard_pipeline_layouts,
+            upstream::standard_variants.size() * 2,
+            key),
+        "standard variant pipeline layout creation failed.");
 }
 
 /**
@@ -3754,7 +3841,7 @@ WGPUBindGroup build_standard_draw_group(
     bool rows_occupy_binding_0 = false;
     bool rows_occupy_binding_1 = false;
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::StandardVariantBinding& binding =
+        const upstream::PinnedVariantBinding& binding =
             upstream::standard_variant_bindings[
                 entry.first_binding + index];
         if (binding.binding == 0) rows_occupy_binding_0 = true;
@@ -3777,12 +3864,12 @@ WGPUBindGroup build_standard_draw_group(
         entries.push_back(material_entry);
     }
     for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        const upstream::StandardVariantBinding& binding =
+        const upstream::PinnedVariantBinding& binding =
             upstream::standard_variant_bindings[
                 entry.first_binding + index];
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
-        if (binding.kind == upstream::StandardBindingKind::uniformBuffer) {
+        if (binding.kind == upstream::PinnedBindingKind::uniformBuffer) {
             if (binding.name == "up") {
                 group_entry.buffer = uv_uniforms;
                 group_entry.size =
@@ -3828,7 +3915,7 @@ WGPUBindGroup build_standard_draw_group(
             entries.push_back(group_entry);
             continue;
         }
-        if (binding.kind == upstream::StandardBindingKind::storageBuffer) {
+        if (binding.kind == upstream::PinnedBindingKind::storageBuffer) {
 #if BBLITE_GPU_MORPH_STORAGE
             if (binding.name == "morphDeltas") {
                 group_entry.buffer = mesh.morph_deltas;
@@ -3912,7 +3999,7 @@ WGPUBindGroup build_standard_draw_group(
                  std::string(binding.name) + "'.")
                     .c_str());
         }
-        if (binding.kind == upstream::StandardBindingKind::sampler) {
+        if (binding.kind == upstream::PinnedBindingKind::sampler) {
             group_entry.sampler = sampler;
         } else {
             group_entry.textureView = view;
@@ -4185,6 +4272,33 @@ void write_standard_geometry_task(
             }
         }
     }
+}
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
+/**
+ * The PBR family's pipeline layout, with the receiver's group 2 where the
+ * variant composed one.
+ *
+ * Written beside the Standard one and after the shadow builders for the same
+ * reason: a receiving variant's third group is the shadow family's, and both
+ * families read the same rows.
+ */
+
+WGPUPipelineLayout pinned_pipeline_layout_for(
+    DawnState& state,
+    std::size_t variant) {
+    return composed_pipeline_layout(
+        state,
+        pinned_draw_layout_for(state, variant),
+        pal::pbr_variant_receives_shadows(variant)
+            ? pbr_shadow_layout_for(state, variant)
+            : nullptr,
+        shadow_cache_slot(
+            state.pinned_pipeline_layouts,
+            upstream::pbr_variants.size(),
+            variant),
+        "pinned variant pipeline layout creation failed.");
 }
 #endif
 
@@ -7084,7 +7198,6 @@ bool run_dawn_engine(Engine& engine) {
                 data,
                 material_slot_srgb(
                     slot_row.srgb,
-                    slot_data,
                     material,
                     standard_material),
                 material_slot_fallback(
@@ -8251,7 +8364,7 @@ bool run_dawn_engine(Engine& engine) {
             engine,
             camera,
             matrix);
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
         // The shadow generators' matrices and their receiver blocks, before
         // the caster pass reads the first and the receiving draws read the
         // second.
@@ -8436,11 +8549,14 @@ bool run_dawn_engine(Engine& engine) {
                         // block is retired: a PBR draw that resolves no
                         // variant is an error naming the mesh, matching the
                         // SDL_GPU backend.
+                        pal::PinnedVariantKey pinned_key;
                         const std::size_t variant =
                             pinned_variant_for_draw(
                                 scene,
                                 engine,
-                                draw);
+                                draw,
+                                std::numeric_limits<std::size_t>::max(),
+                                &pinned_key);
                         if (
                             variant ==
                             std::numeric_limits<std::size_t>::max()) {
@@ -8449,7 +8565,8 @@ bool run_dawn_engine(Engine& engine) {
                                  std::to_string(draw.item.mesh.value) +
                                  ", material " +
                                  std::to_string(draw.item.material.value) +
-                                 " resolves no pinned variant.")
+                                 " resolves no pinned variant: " +
+                                 pal::pinned_variant_request(pinned_key))
                                     .c_str());
                         }
                         {
@@ -8663,7 +8780,7 @@ bool run_dawn_engine(Engine& engine) {
                         task_matrix.data(),
                         64);
                 }
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
                 // A shadow caster pass renders from the light. The pin gives
                 // it a camera facade whose view and view-projection caches it
                 // pins to the light-space matrices; there is no facade here,
@@ -8859,7 +8976,18 @@ bool run_dawn_engine(Engine& engine) {
                         pinned_instance_buffer,
                         pinned_instances,
                         mesh.indices,
-                        mesh.index_count);
+                        mesh.index_count,
+                        // The receiver's group 2, under the pin's own test:
+                        // `meshShadowLights.length > 0 && bindings._shadowBGL`
+                        // -- which is exactly "this variant composed the
+                        // shadow fragment".
+                        pal::pbr_variant_receives_shadows(variant)
+                            ? pbr_shadow_group_for(
+                                  state,
+                                  scene,
+                                  engine,
+                                  variant)
+                            : nullptr);
                     continue;
                 }
 #endif
@@ -8923,7 +9051,7 @@ bool run_dawn_engine(Engine& engine) {
                     // Only a draw whose composed fragment declares the
                     // shadow group binds it, which is the pin's own test.
                     const bool receives =
-                        standard_variant_receives_shadows(variant);
+                        pal::standard_variant_receives_shadows(variant);
                     encode_variant_draw(
                         list_pass,
                         standard_variant_pipeline(
@@ -8948,7 +9076,7 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.indices,
                         mesh.index_count,
                         receives
-                            ? shadow_group_for(state, scene, engine, variant)
+                            ? standard_shadow_group_for(state, scene, engine, variant)
                             : nullptr);
                     continue;
                 }
@@ -9460,7 +9588,7 @@ bool run_dawn_engine(Engine& engine) {
                 const std::uint32_t samples = target_record.swapchain
                     ? 1u
                     : task_sample_count(state, target_record.samples);
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
                 if (
                     task.render.shadow_generator.value <
                         engine.shadow_generators.size()) {
@@ -9897,13 +10025,15 @@ bool run_dawn_engine(Engine& engine) {
                             if (
                                 draw.item.material_kind ==
                                 upstream::RenderMaterialKind::pbr) {
+                                pal::PinnedVariantKey geometry_key;
                                 const std::size_t variant =
                                     pinned_variant_for_draw(
                                         scene,
                                         engine,
                                         draw,
                                         static_cast<std::size_t>(
-                                            task.geometry.shader_index));
+                                            task.geometry.shader_index),
+                                        &geometry_key);
                                 if (
                                     variant ==
                                     std::numeric_limits<
@@ -9913,7 +10043,12 @@ bool run_dawn_engine(Engine& engine) {
                                          std::to_string(
                                              draw.item.mesh.value) +
                                          " resolves no pinned variant in "
-                                         "a geometry task.")
+                                         "a geometry task: " +
+                                         pal::pinned_variant_request(
+                                             geometry_key,
+                                             static_cast<std::size_t>(
+                                                 task.geometry
+                                                     .shader_index)))
                                             .c_str());
                                 }
                                 const auto draw_state_it =

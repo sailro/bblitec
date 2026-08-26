@@ -748,6 +748,11 @@ function emitExpression(state: WriterState, expression: ts.Expression): string {
         const text = node.text;
         return /[.e]/i.test(text) ? `${text}f` : `${text}.0f`;
     }
+    // A writer comparing one of our own booleans against a literal — the
+    // pin's `usePhysicalLightFalloff === false ? 0 : 1`. The operand already
+    // lowered to a native `bool`, so the literal is C++'s own.
+    if (node.kind === ts.SyntaxKind.TrueKeyword) return "true";
+    if (node.kind === ts.SyntaxKind.FalseKeyword) return "false";
     if (
         ts.isPrefixUnaryExpression(node) &&
         node.operator === ts.SyntaxKind.MinusToken

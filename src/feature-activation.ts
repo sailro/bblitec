@@ -374,6 +374,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "caller passing false)",
         consumers: ["features.cmake", "renderer plan", "variant table"],
     },
+    "material:pbr-gamma-albedo": {
+        provenance:
+            "src/material/pbr/set-gamma-albedo.ts (the ext contributes one " +
+            "feature bit and the base template's sRGB decode block; no " +
+            "fragment slot, UBO field or binding of its own)",
+        consumers: ["features.cmake", "variant table"],
+    },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
         consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
@@ -1207,6 +1214,51 @@ function capabilityRows(
                     "variant"
                 : "not reached",
             "src/material/standard/fragments/std-shadow-fragment.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_PBR_SHADOWS",
+            "capability",
+            (has("shadow:pcf") || has("shadow:esm")) &&
+                variantCount > 0,
+            [
+                // The same conjunction for the other receiver family:
+                // `createPbrShadowFragment` wraps the same pinned core, so a
+                // scene reaching a generator with no PBR variant compiles
+                // none of the PBR receiver's bind path.
+                [
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        variantCount > 0,
+                    "scene source reached a shadow generator and the scene " +
+                        "composes PBR variants",
+                ],
+            ],
+            has("shadow:pcf") || has("shadow:esm")
+                ? "reached a shadow generator but composes no PBR variant"
+                : "not reached",
+            "src/material/pbr/fragments/pbr-shadow-fragment.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_SHADOW_RECEIVERS",
+            "capability",
+            (has("shadow:pcf") || has("shadow:esm")) &&
+                (standardVariantCount > 0 || variantCount > 0),
+            [
+                // The generator half, which no material family owns: the
+                // maps, samplers, receiver blocks and caster pass exist for
+                // whichever family composed a receiver to sample them.
+                [
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        (standardVariantCount > 0 || variantCount > 0),
+                    "scene source reached a shadow generator and the scene " +
+                        "composes a receiver in some family",
+                ],
+            ],
+            has("shadow:pcf") || has("shadow:esm")
+                ? "reached a shadow generator but composes no receiver"
+                : "not reached",
+            "src/shader/fragments/shadow-fragment-core.ts",
             ["render_capabilities.hpp"],
         ),
         checkedRow(

@@ -89,6 +89,13 @@ export class SceneMaterialRecorder {
         this.sceneMaterialForSetter("setPbrSkybox", index).skyboxMode = true;
     }
 
+    public recordScenePbrGammaAlbedo(index: number | undefined): void {
+        this.sceneMaterialForSetter(
+            "setPbrGammaAlbedo",
+            index,
+        ).gammaAlbedo = true;
+    }
+
     public recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,

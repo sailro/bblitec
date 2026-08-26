@@ -77,9 +77,18 @@ act on it — not what was tried.
 
 - [ ] Extend scene-code spot lights past the reached colour pair: the pinned
   light also exposes `angle`, `exponent`, and `range` as settable properties,
-  whose setters fail explicitly. One composition stays out: a spot landing in
-  the first PBR analytic slot refuses at run time, because that slot encodes
-  the light kind in `lightDirection.w` and carries no cone.
+  whose setters fail explicitly.
+- [ ] Carry `usePhysicalLightFalloff` past the creation option. Scene 179
+  writes it as a property on a loader-returned material
+  (`mat.usePhysicalLightFalloff = true` over `scene.meshes`), where scenes 22,
+  141, 215 and 217 all pass it to `createPbrMaterial`; the lane is a plain
+  record field, so what the assignment needs is the material-property writer
+  reaching it, not a new contract.
+- [ ] Extend `setPbrGammaAlbedo` past the one material scene 22 decodes. The
+  setter itself is the whole port — the pin's extension contributes one
+  feature bit and the base template's own decode block — but only a
+  scene-code material reaches it here, because the glTF loader never stamps
+  `_gammaAlbedo`. No corpus scene asks for more.
 - [ ] Extend Standard vertex colors past RGB: the pinned
   `std-vertex-color-fragment.ts` also consumes `vColor.a` under the
   `mesh.hasVertexAlpha` opt-in (output alpha, the vertex-alpha alpha test, the
@@ -163,7 +172,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-102 corpus scenes remain unregistered; measured scenes are in
+99 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -190,8 +199,9 @@ engine options beyond msaaSamples/requiredLimits 7 (large-world),
 a folded value compared against a mutable counter 7 (all physics),
 an unsupported constructor expression 5,
 `createGroundFromHeightMap` 3, a four-argument call 3.
-Scene 18 is the one of those eight the shadow family finished; the seven
-that remain each hide a second subsystem, which is the entry below.
+The shadow family finished three of them — 18, then 4 and 22 with the ESM
+directional generator, the heightmap ground and the PBR receiver — and the
+rest each hide a second subsystem, which is the entry below.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
@@ -237,7 +247,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (74 scenes):** 4, 16, 17, 20, 22, 38, 43,
+**Integrate first (73 scenes):** 16, 17, 20, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 165, 171-174, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
@@ -411,6 +421,20 @@ below rather than blocking a scene here.
   with one uniform binding at zero and no texture machinery, so it would
   compose onto the same table rather than needing a second one.
 
+- [ ] Resolve SDL_GPU's shadow binding names to their composed rows once per
+  variant, the way the Dawn backend already resolves the whole group once.
+  Both backends bind group 2 from the same reflected rows, but SDL_GPU binds
+  by NAME through the `.slots` sidecar, so `shadow_row_for` walks the
+  variant's rows per binding name per stage per receiving draw
+  (`shadow_resource_for` walks them twice, once for the map and once for its
+  companion sampler). Scene 22's receiver declares six rows and reads eight
+  shadow-named bindings, so it is ~100 string compares a frame there and
+  grows as `bindings x shadow-lights x receiving draws`. The rows and the
+  slot name list are both fixed per variant, so the answer belongs beside the
+  slots `ensure_pinned_slots` already caches: a `vector<const
+  PinnedShadowBinding*>` parallel to each stage's slot list, filled once. The
+  material-slot table is asked first already, so an ordinary base-colour or
+  ORM binding no longer pays for it.
 - [ ] Three per-frame costs the scene-less drivers share with their siblings,
   filed together because fixing one family alone would make the tree less
   consistent rather than more. (a) `pal_sdl_gpu_sprite.cpp` and
@@ -474,20 +498,23 @@ below rather than blocking a scene here.
   ascending order, so each clip's are one contiguous run — record
   `[first, last)` per clip beside the vectors and iterate that, keeping
   the `track.clip` test so correctness never depends on the grouping.
-- [ ] Extend the shadow family past the slice scenes 4 and 18 measure.
+- [ ] Extend the shadow family past the slice scenes 4, 18 and 22 measure.
   Shipped: the pinned PCF spot and ESM directional generators, their maps
   and samplers, the caster pass under the pin's standard-Z exception, the
-  ESM caster's own material view and its two-pass separable blur, and the
-  Standard receiver fragment composed per shadow-casting light over a
-  reflected group 2 ([features](docs/features.md#shadows)). Each remaining
-  item fails by name:
+  ESM caster's own material view and its two-pass separable blur, and BOTH
+  material families' receiver fragments composed per shadow-casting light
+  over a reflected group 2 ([features](docs/features.md#shadows)). Each
+  remaining item fails by name:
   - `createPcfDirectionalShadowGenerator` and the cascaded family
     (`csm-*`), neither reached by a corpus scene at this pin.
-  - a PBR or node receiver: `pbr-shadow-fragment.ts` and
-    `node-shadow.ts` are the pin's own siblings of the Standard fragment
-    this port composes, and each needs its family's group-2 wiring.
-    Scene 22's ground is a PBR material, so it wants this as well as the
-    ESM generator.
+  - a node receiver: `node-shadow.ts` is the third sibling of the one
+    pinned core the two material families already wrap, and it needs the
+    node family's own group-2 wiring.
+  - a PBR CASTER. `material/pbr/esm-shadow-view.ts` and
+    `material/pbr/no-color-view.ts` are the pin's own PBR caster views;
+    the generated shadow task takes the PBR no-colour one already, but no
+    corpus scene casts from a PBR material through the ESM generator, so
+    that view's `_esmShadowDepthCode` reaches no composition here.
   - the generator options past the two factories' own reached sets:
     `normalBias` and `forceRefreshEveryFrame` are unreached, and
     `setShadowCasterMaxCascade` is CSM-only.
@@ -531,9 +558,9 @@ below rather than blocking a scene here.
   patches, with an upstream issue, so it self-retires by failing to apply.
   It is not there yet only because this vcpkg fetches its registry on
   demand and carries no `ports` tree to base a portfile on.
-- [ ] Scenes 22, 47, 111, 164, 207: what each still wants now that the ESM
-  generator and the heightmap ground ship — 22 a PBR receiver fragment and
-  `setPbrGammaAlbedo`, 47 `createCylinder`/`createCapsule` and the physics
+- [ ] Scenes 47, 111, 164, 207: what each still wants now that the ESM
+  generator, the heightmap ground and the PBR receiver ship —
+  47 `createCylinder`/`createCapsule` and the physics
   family, 111 a PCF directional beside the two shipped filters plus a node
   receiver, 164 the ESM generator's remaining options, and 207 the
   large-world family (`useFloatingOrigin`, `useHighPrecisionMatrix`), which
@@ -558,10 +585,6 @@ below rather than blocking a scene here.
 - [ ] Scenes 113, 129: support mesh names.
 - [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
 - [ ] Scene 149: support the reached constructor expression.
-- [ ] Scenes 4, 22: support `createGroundFromHeightMap`, then the ESM
-  directional generator above; 22 additionally wants `setPbrGammaAlbedo` and
-  a PBR receiver. Measured by stripped probe: those are the whole chain, and
-  both come back clean behind them.
 - [ ] Scene 140: the ESM directional generator above, then a node material.
   Its browser-derived booleans fold for the bare reference query and its
   `ground.receiveShadows` assignment now lowers.

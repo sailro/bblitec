@@ -759,15 +759,18 @@ SolidTexture create_solid_texture(
 
 namespace bbl {
 
-// Attaches a loaded base-color image to a created PBR material. The base
-// color slot always samples sRGB natively, matching the srgb: true contract
-// the compiler validated at the call site.
+// Attaches a loaded base-color image to a created PBR material. The slot's
+// encoding travels with the image, because upstream keeps the format on the
+// Texture2D its caller loaded: loadTexture2D's own srgb option picked
+// rgba8unorm-srgb or plain rgba8unorm, and a material that decodes the
+// albedo in its own fragment (setPbrGammaAlbedo) loads the second.
 void set_material_base_color_file(
     Engine& engine,
     MaterialHandle material,
     FileTexture texture) {
-    engine.materials[material.value].base_color_texture =
-        std::move(texture.data);
+    MaterialRecord& record = engine.materials[material.value];
+    record.base_color_srgb = texture.srgb;
+    record.base_color_texture = std::move(texture.data);
 }
 
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
@@ -945,7 +948,7 @@ MaterialHandle create_pbr_material(
     // the factors would double-apply against the composed fragment, which
     // samples the slot and declares no factor field for them.
     material.base_color_fallback = options.base_color.texel;
-    material.base_color_fallback_srgb = false;
+    material.base_color_srgb = false;
     material.orm_fallback = options.orm.texel;
     material.base_color_factor = {1.0f, 1.0f, 1.0f, 1.0f};
     material.roughness_factor = options.roughness_factor;
@@ -965,6 +968,7 @@ MaterialHandle create_pbr_material(
     material.attenuation_color = options.attenuation_color;
     material.attenuation_distance = options.attenuation_distance;
     material.occlusion_strength = options.occlusion_strength;
+    material.use_physical_light_falloff = options.use_physical_light_falloff;
     material.metallic_f0_factor = options.metallic_f0_factor;
     material.specular_weight = options.metallic_f0_factor;
     material.has_ior = false;

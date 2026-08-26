@@ -15,7 +15,6 @@ import { executeModuleGraph } from "./executed-module-graph.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
-import type { ShadowGeneratorManifest } from "./compiler/types.js";
 import type { GeneratedTree } from "./generated-tree.js";
 import {
     assertArmsCovered,
@@ -47,9 +46,9 @@ import {
 import {
     babylonRenderableCount,
     composeSceneStandardVariants,
-    type ShadowLightSlot,
     type StandardSceneComposition,
 } from "./pinned-standard-variants.js";
+import { pinnedShadowFilter } from "./pinned-shadow-slots.js";
 import {
     reachedDiffuseUv2,
     reachedStandardBump,
@@ -73,6 +72,11 @@ export interface ComposedScenePipeline {
     linearImageProcessing: boolean;
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
+    /**
+     * The pin's mesh bits per PBR renderable, in the runtime's own handle
+     * order: the primitive's attributes, plus `MSH_RECEIVE_SHADOWS` where
+     * the mesh receives. Both halves of the pin's own key.
+     */
     renderableMeshFeatures: number[];
     pinnedVariants: readonly PinnedVariantManifestEntry[];
     runtimeMeshFeatures: number | undefined;
@@ -178,6 +182,55 @@ export async function composeScenePipeline({
         }
         renderableMeshFeatures.push(await proceduralRenderableFeatures());
     }
+    const shadowLights = result.manifest.shadowGenerators.map(
+        (generator) => ({
+            lightIndex: generator.lightIndex,
+            // The filter comes off the pinned factory the manifest's kind
+            // names, which is the same `_shadowType` field `pbr-renderable.ts`
+            // reads to build its own slots -- so a generator family added
+            // here without a receiver arm refuses rather than composing a
+            // neighbour's fragment.
+            shadowType: pinnedShadowFilter(generator.kind),
+        }),
+    );
+    // `rebuildSingle` computes `receiveShadows` as `mesh.receiveShadows &&
+    // hasSomeShadows`, so a scene with no generator composes no receiver
+    // even where a mesh asked for one.
+    const receiveShadowsBit = shadowLights.length > 0
+        ? await pinnedReceiveShadowsBit()
+        : 0;
+    // The scene's own meshes follow every asset renderable, in creation
+    // order, so a receiver's row is its creation index in that tail.
+    const sceneMeshRowBase =
+        renderableMeshFeatures.length - result.manifest.sceneMeshes.length;
+    // The runtime fallback for meshes created after registration is read
+    // BEFORE the receive bit is ORed on, because it describes an ATTRIBUTE
+    // set: a mesh a scene builds at run time carries the builders'
+    // attributes and receives no shadow, so reading it after the OR would
+    // make it ambiguous for every scene that has both a receiver and an
+    // ordinary mesh. Scene code can keep creating meshes after registration
+    // -- the runtime sweep spawns per-frame boxes from one compiled call
+    // site -- so handles past the static table take this fallback when every
+    // scene-code mesh shares one attribute set, and refuse otherwise.
+    const sceneMeshAttributeValues = new Set(
+        renderableMeshFeatures.slice(sceneMeshRowBase),
+    );
+    const runtimeMeshFeatures =
+        result.manifest.sceneMeshes.length === 0
+            ? await proceduralRenderableFeatures()
+            : sceneMeshAttributeValues.size === 1
+                ? [...sceneMeshAttributeValues][0]!
+                : undefined;
+    // Each receiver's bit onto its own row, in place: from here on this walk
+    // is the pin's own composition key -- the primitive's attributes plus
+    // `MSH_RECEIVE_SHADOWS` -- and both family tables read it. An asset
+    // renderable never carries the bit, because an imported mesh refuses at
+    // the assignment.
+    for (const index of result.manifest.shadowReceiverMeshes) {
+        const row = sceneMeshRowBase + index;
+        renderableMeshFeatures[row] =
+            (renderableMeshFeatures[row] ?? 0) | receiveShadowsBit;
+    }
     let materialIndexBase = 0;
     let assetMetallicReflectanceRegistered = false;
     for (const asset of gltfAssets) {
@@ -235,6 +288,22 @@ export async function composeScenePipeline({
                     linearImageProcessing,
                     metallicReflectanceRegistered:
                         assetMetallicReflectanceRegistered,
+                    ...(shadowLights.length > 0
+                        ? {
+                            shadowLights,
+                            // `light_affects_mesh` can answer false only for
+                            // a light naming the meshes it applies to, and
+                            // only the `.babylon` loader fills those lists --
+                            // so without such an asset every light in
+                            // `scene.lights` affects every mesh, and a scene
+                            // with a generator has at least one. The
+                            // no-light arm is then unreachable for a
+                            // receiver, exactly as the single-light one is.
+                            perMeshLightLists: result.manifest.assets.some(
+                                (asset) => asset.kind === "babylon",
+                            ),
+                        }
+                        : {}),
                 },
             )),
         );
@@ -245,61 +314,15 @@ export async function composeScenePipeline({
     // fragment where Babylon composes a fragment per feature set, and this is
     // that set, written by the pin rather than transcribed here.
     const pinnedVariants = writePinnedPbrVariants(tree, composedVariants);
-    // Scene code can keep creating meshes after registration -- the runtime
-    // sweep spawns per-frame boxes from one compiled call site -- so handles
-    // past the static table take this fallback when every scene-code mesh
-    // shares one attribute set, and refuse otherwise.
-    const sceneMeshRows = renderableMeshFeatures.slice(
-        renderableMeshFeatures.length - result.manifest.sceneMeshes.length,
-    );
-    const sceneMeshFeatureValues = new Set(sceneMeshRows);
-    const runtimeMeshFeatures =
-        result.manifest.sceneMeshes.length === 0
-            ? await proceduralRenderableFeatures()
-            : sceneMeshFeatureValues.size === 1
-                ? [...sceneMeshFeatureValues][0]!
-                : undefined;
     // The Standard family's pinned composition: every standard scene
     // composes its variants through the pin, and both GPU PALs draw them —
     // the transcribed standard fragment is retired.
     let standardComposition: StandardSceneComposition | undefined;
     let standardRenderableMeshFeatures: number[] | undefined;
-    // `rebuildSingle` derives `MSH_RECEIVE_SHADOWS` from
-    // `mesh.receiveShadows && hasSomeShadows`, so the bit is a property of
-    // the mesh and belongs on its row of the Standard table -- the family
-    // whose receiver fragment this port composes. The PBR table stays
-    // untouched: a PBR receiver refuses at its own assignment.
-    // The receiver fragment the pin composes follows the generator's own
-    // filter, so the manifest kind maps onto `ShadowLightSlot`'s rather
-    // than the PCF arm being assumed; a family added without a receiver arm
-    // then refuses at composition instead of composing the wrong one.
-    const pinnedShadowType = (
-        kind: ShadowGeneratorManifest["kind"],
-    ): ShadowLightSlot["shadowType"] => {
-        if (kind === "pcf-spot") return "pcf";
-        if (kind === "esm-directional") return "esm";
-        throw new Error(`No receiver fragment composes for '${kind}'.`);
-    };
-    const shadowLights = result.manifest.shadowGenerators.map(
-        (generator) => ({
-            lightIndex: generator.lightIndex,
-            // The generator family decides which receiver fragment the pin
-            // composes, so the manifest's own kind is what carries it: a
-            // family added without a receiver arm refuses at composition.
-            shadowType: pinnedShadowType(generator.kind),
-        }),
-    );
-    // The scene-code rows the Standard table keys on, with each receiver's
-    // bit ORed onto its own creation-ordered row. `sceneMeshRows` is the
-    // same tail `runtimeMeshFeatures` reads above -- the scene's own meshes
-    // follow every asset renderable, in creation order.
-    const receiveBit = shadowLights.length > 0
-        ? await pinnedReceiveShadowsBit()
-        : 0;
-    const standardSceneMeshFeatures = sceneMeshRows.map((bits, index) =>
-        result.manifest.shadowReceiverMeshes.includes(index)
-            ? bits | receiveBit
-            : bits,
+    // The scene-code rows the Standard table keys on: the same walk both
+    // families read, sliced to the scene's own meshes.
+    const standardSceneMeshFeatures = renderableMeshFeatures.slice(
+        sceneMeshRowBase,
     );
     if (result.manifest.features.includes("material:standard")) {
         const babylonAssets = result.manifest.assets

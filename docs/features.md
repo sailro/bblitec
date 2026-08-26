@@ -622,10 +622,11 @@ Standard, PBR, and GridMaterial records, no-color material views, Standard
 cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones
 behind `enableStandardVertexColors`, the opt-in `setPbrUnlit`, `setPbrSkybox`,
 `setPbrEmissive`, `setPbrClearCoat`, `setPbrSheen`, `setPbrIridescence`,
-`setPbrAnisotropy`, and the reached `setPbrSubsurface` translucency/thickness
-shape, plus scene-local custom shader variants driven through their reflected
-uniform offsets. Scene-code PBR also carries the static `enableSpecularAA`
-creation option into the pin's derivative roughness arm. A setter stamps the
+`setPbrAnisotropy`, `setPbrGammaAlbedo`, and the reached `setPbrSubsurface`
+translucency/thickness shape, plus scene-local custom shader variants driven
+through their reflected uniform offsets. Scene-code PBR also carries the
+static `enableSpecularAA` and `usePhysicalLightFalloff` creation options into
+the pin's derivative roughness arm and its punctual falloff lane. A setter stamps the
 material the call names, so a scene carrying several scene-code materials
 reaches each of them independently.
 
@@ -693,11 +694,23 @@ rather than with a draw; the line family is the one reached material that
 names the second one, and both backends translate the same generated
 enumerator.
 
+A PBR material also states two things about how its albedo and its punctual
+lights are read. `setPbrGammaAlbedo` is the pin's opt-in sRGB decode: the
+extension contributes one feature bit and the base template's own
+`pow(baseColorSample.rgb, 2.2)` block, with no fragment slot, UBO field or
+binding of its own — so it is composition input and nothing else, and the
+image it decodes is loaded in a linear format because the encoding travels
+with the texture rather than with the slot (`loadTexture2D`'s `srgb` option
+picks the format upstream keeps on the `Texture2D`). `usePhysicalLightFalloff`
+is the opposite shape: every composed punctual arm carries both the physical
+inverse-square falloff and the Standard-style linear range with its spot
+exponent, and the material UBO's `lightFalloffMode` lane selects one per draw.
+
 Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
-scale, shared texture scaling, transmission, IOR, volume, dispersion,
-clearcoat, sheen, iridescence, anisotropy, and the spec-gloss workflow
-replacement.
+scale, shared texture scaling, the punctual falloff mode, transmission, IOR,
+volume, dispersion, clearcoat, sheen, iridescence, anisotropy, and the
+spec-gloss workflow replacement.
 
 ### Node materials
 
@@ -996,14 +1009,23 @@ call for the same reason.
 
 **Compile time: which fragment a receiver composes.** `mesh.receiveShadows`
 turns into the pin's `MSH_RECEIVE_SHADOWS`, which is a composition key rather
-than a uniform lane: the receiving mesh's variant carries
-`createStdShadowFragment`'s per-light varyings, bindings and sampling code,
-named after each light's index in `scene.lights`. So the scene's shadow-light
-slots are composition input, and a light added at a different position
-composes a different fragment. The caster draws through its own material's
-no-colour view — the same arm a scene-code `createStandardNoColorMaterialView`
-reaches — with the receive bit dropped, exactly as `rebuildSingle` computes
-`receiveShadows` as `!shadowOutput && ...`.
+than a uniform lane: the receiving mesh's variant carries the shadow
+fragment's per-light varyings, bindings and sampling code, named after each
+light's index in `scene.lights`. So the scene's shadow-light slots are
+composition input, and a light added at a different position composes a
+different fragment. The caster draws through its own material's no-colour view
+— the same arm a scene-code `createStandardNoColorMaterialView` reaches — with
+the receive bit dropped, exactly as `rebuildSingle` computes `receiveShadows`
+as `!shadowOutput && ...`.
+
+**Both material families receive.** `createStdShadowFragment` and
+`createPbrShadowFragment` are two wrappers around one pinned core, differing
+in which fragment slot the sampling code lands in, so this port composes them
+through one path and reflects one shape of group-2 row for either. The PBR
+receiver carries one more of the pin's own rules with it: `rebuildSingle`
+resolves `lightCount === 1 && !receiveShadows ? 1 : 2`, so a receiving PBR
+mesh never lands on the single-light arm — its shadow factor is applied inside
+the multi-light loop — and generation composes no such pair.
 
 **The ESM directional generator.**
 `createEsmDirectionalShadowGenerator(engine, light, cfg)` differs from the
@@ -1032,8 +1054,10 @@ binding's TYPE from its own light's filter, so a scene mixing the two
 filters declares a `texture_2d<f32>` beside a `texture_depth_2d`, and a
 plain `sampler` beside a `sampler_comparison`, in one group. A layout driven
 by a light count could not express that, so the group is read out of the
-composed text into `standard_shadow_bindings` exactly as group 1 is, and
-both backends build their layout and their resources from those rows.
+composed text exactly as group 1 is, and both backends build their layout
+and their resources from those rows — one row shape and one builder for
+either material family, because the rows describe the shadow family rather
+than the material one.
 
 **Run time: two passes and one exception.** The caster pass is a depth-only
 render task over the generator's map (an ESM one stores a colour beside that
@@ -1047,10 +1071,11 @@ the pin's group 2, and `shadowFactors[lightIndex]` scales that light's diffuse
 and specular contribution.
 
 What refuses at generation, by name: the PCF directional and cascaded
-generators, a PBR or node receiver (each reaches its own pinned fragment), a
-`receiveShadows` written to anything but `true` (the variant is selected at
-generation), an imported mesh as caster or receiver, and every generator
-option past the two factories' own reached sets (`mapSize`, `bias`,
+generators, a node receiver (`node-shadow.ts` is the third sibling of that one
+core, and needs the node family's group-2 wiring), a `receiveShadows` written
+to anything but `true` (the variant is selected at generation), an imported
+mesh as caster or receiver, and every generator option past the two factories'
+own reached sets (`mapSize`, `bias`,
 `darkness`, `near`, `far` for the spot; those plus `depthScale`,
 `blurKernel`, `blurScale`, `frustumEdgeFalloff` and the two ortho bounds for
 the directional) — `normalBias` and `forceRefreshEveryFrame` among them.

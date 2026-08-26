@@ -563,6 +563,12 @@ struct PbrMaterialOptions {
     float attenuation_distance = 1.0f;
     float occlusion_strength = 1.0f;
     float metallic_f0_factor = 1.0f;
+    // The pin's `usePhysicalLightFalloff`, whose default is true: a point or
+    // spot light attenuates by inverse square, and the spot cone by the
+    // physical exponential. False takes the Standard-style linear range and
+    // spot exponent instead. Both arms are composed into every punctual
+    // fragment; this is the lane that selects one (`_writeMaterialData`).
+    bool use_physical_light_falloff = true;
 };
 
 struct GridMaterialOptions {
@@ -1404,6 +1410,10 @@ struct MaterialRecord {
     bool has_volume = false;
     bool skybox_mode = false;
     bool specular_aa = false;
+    // `usePhysicalLightFalloff`, the pin's own default-true property. The
+    // composed punctual arms carry both falloffs and select on the material
+    // UBO's `lightFalloffMode`, which `_writeMaterialData` fills from here.
+    bool use_physical_light_falloff = true;
     bool has_occlusion_texture = false;
     // glTF occlusionTexture.strength, which the fragment mixes toward 1. The
     // pin forces its reflectance ext on when this is animated so the mix
@@ -1504,11 +1514,17 @@ struct MaterialRecord {
     // bytes is the browser's effective base color.
     std::array<std::uint8_t, 4> base_color_fallback{
         255, 255, 255, 255};
-    // False for a scene-code solid texture: the pin's createSolidTexture2D
-    // writes its rounded texel into a 1x1 rgba8unorm sampled without decode,
-    // where the glTF factor bake above targets the sRGB view. The slot's
-    // upload honours this when no image bytes exist.
-    bool base_color_fallback_srgb = true;
+    // The base-colour slot's own texture FORMAT, which upstream keeps on the
+    // `Texture2D` rather than on the material: `loadTexture2D` picks
+    // `rgba8unorm-srgb` or `rgba8unorm` from its caller's `srgb` option
+    // (texture-2d.ts), and the glTF loader passes true for this slot
+    // (gltf-pbr-builder.ts) as does the texture-less factor bake, which
+    // writes an sRGB texel. False for a scene-code solid texture -- the pin's
+    // createSolidTexture2D writes its rounded texel into a 1x1 rgba8unorm
+    // sampled without decode -- and false for a `loadTexture2D` result the
+    // scene did not ask sRGB for, which is how a gamma-albedo material feeds
+    // the decode to its own fragment instead.
+    bool base_color_srgb = true;
     // Set by the loader's whiteFallback path: an animated base colour factor
     // on an image-less material bakes a white texel and keeps the live factor
     // in the record for the pointer writer. The pin seeds `mat.alpha` from

@@ -18,6 +18,8 @@
 import {
     importPinnedModule,
 } from "./pinned-shader-composer.js";
+import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
+import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
 
 /** The material fields the pin's feature derivation and extensions read. */
 export interface PinnedMaterialInput {
@@ -238,6 +240,17 @@ export interface PinnedComposeOptions {
         attachments: readonly string[];
         emitColor: boolean;
     };
+    /**
+     * The scene's shadow-casting lights, in `scene.lights` order.
+     *
+     * `pbr-renderable.ts` hands the composer one array for the whole scene
+     * build and the composer splices `createPbrShadowFragment(slots)` for
+     * any renderable whose mesh bits carry `MSH_RECEIVE_SHADOWS` — so this
+     * is the scene half of the receiver, and the mesh bit is the per-draw
+     * half. A receiver composed without them refuses rather than composing
+     * a fragment whose bindings name no light.
+     */
+    shadowLights?: readonly ShadowLightSlot[];
 }
 
 interface PinnedComposeFn {
@@ -272,6 +285,38 @@ export async function composePinnedPbrVariant(
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
     const { features, features2 } = await pinnedMaterialFeatures(material);
+    // `rebuildSingle` gates the shadow fragment on the mesh bit and
+    // `buildPbrRenderables` imports the module only when a scene has both a
+    // generator and an affected light, so the two travel together here: the
+    // bit without the slots would compose bindings naming no light, and the
+    // slots without the bit compose nothing at all.
+    const shadowLights = options.shadowLights ?? [];
+    const receivesShadows =
+        ((options.meshFeatures ?? 0) & await pinnedReceiveShadowsBit()) !== 0;
+    if (receivesShadows && shadowLights.length === 0) {
+        throw new Error(
+            "A PBR receiver variant needs the scene's shadow-light slots: " +
+                "`createPbrShadowFragment` names every varying and binding " +
+                "after the light's index in `scene.lights`.",
+        );
+    }
+    if (
+        receivesShadows &&
+        shadowLights.some((slot) => slot.shadowType === "csm")
+    ) {
+        throw new Error(
+            "The CSM PBR receiver fragment is not composable: it resolves " +
+                "through the cascaded receiver registry, which this port " +
+                "does not build.",
+        );
+    }
+    const pbrShadow = receivesShadows
+        ? await importPinnedModule<{
+            createPbrShadowFragment: (
+                slots: readonly ShadowLightSlot[],
+            ) => unknown;
+        }>("material/pbr/fragments/pbr-shadow-fragment.js")
+        : undefined;
     const [compose, templateExt, flatNormal, fog, thinInstance] =
         await Promise.all([
         importPinnedModule<{
@@ -314,8 +359,8 @@ export async function composePinnedPbrVariant(
         _fogBlock: fog.PBR_FOG_BLOCK,
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
         _flatNormalWgsl: flatNormal.FLAT_NORMAL_WGSL,
-        _createPbrShadowFragment: null,
-        _shadowLights: [],
+        _createPbrShadowFragment: pbrShadow?.createPbrShadowFragment ?? null,
+        _shadowLights: shadowLights,
         _createThinInstanceFragment:
             thinInstance.createThinInstanceFragment,
     });

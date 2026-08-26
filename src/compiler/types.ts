@@ -328,6 +328,21 @@ export interface ScenePbrMaterialManifest {
     metallicF0Factor?: number;
     /** The pin's opt-in geometric-normal derivative roughness floor. */
     enableSpecularAA?: boolean;
+    /**
+     * Present only when the scene turned the pin's default-true
+     * `usePhysicalLightFalloff` off, which is the shape `_writeMaterialData`
+     * reads (`=== false ? 0 : 1`). It selects a punctual arm at run time and
+     * composes nothing, so it rides the manifest for the record rather than
+     * for the composer.
+     */
+    usePhysicalLightFalloff?: false;
+    /**
+     * Stamped by the pin's `setPbrGammaAlbedo`: `mat._gammaAlbedo = true`,
+     * which the gamma extension's `detect` turns into
+     * `PBR_HAS_GAMMA_ALBEDO` and the base template's decode slot turns into
+     * `pow(baseColorSample.rgb, 2.2)`.
+     */
+    gammaAlbedo?: boolean;
     doubleSided: boolean;
     transmission: number;
     ior: number;
@@ -1155,6 +1170,7 @@ export type Feature =
     | "material:sheen"
     | "material:sheen-albedo-scaling"
     | "material:clearcoat-f0-remap"
+    | "material:pbr-gamma-albedo"
     | "material:iridescence"
     | "material:anisotropy"
     | "material:metallic-reflectance"

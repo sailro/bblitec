@@ -1556,28 +1556,39 @@ test("keeps data URL asset payloads out of the generated manifest", () => {
     assert.match(asset.output, /^[0-9a-f]{8}-inline\.png$/);
 });
 
-test("requires srgb base-color file textures", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                import {
-                    createEngine,
-                    createPbrMaterial,
-                    createSolidTexture2D,
-                    loadTexture2D,
-                } from "@babylonjs/lite";
+test("carries a base-color image's own encoding, either way", () => {
+    // Upstream keeps the format on the `Texture2D` `loadTexture2D` built
+    // (`opts.srgb ?? false` picks `rgba8unorm-srgb` or `rgba8unorm`), so the
+    // slot samples what the scene asked for. A material that decodes its own
+    // albedo — `setPbrGammaAlbedo` — loads the linear one.
+    const load = (options: string) =>
+        compileSource(`
+            import {
+                createEngine,
+                createPbrMaterial,
+                createSolidTexture2D,
+                loadTexture2D,
+            } from "@babylonjs/lite";
 
-                async function main() {
-                    const engine = await createEngine({});
-                    const texture = await loadTexture2D(engine, "/textures/nme/ebf71b300f43563f.png");
-                    const material = createPbrMaterial({
-                        baseColorTexture: texture,
-                        ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
-                    });
-                }
-            `),
-        /Base-color file textures require srgb: true/,
-    );
+            async function main() {
+                const engine = await createEngine({});
+                const texture = await loadTexture2D(engine, "/textures/nme/ebf71b300f43563f.png"${options});
+                const material = createPbrMaterial({
+                    baseColorTexture: texture,
+                    ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                });
+            }
+        `).cpp;
+    // `load_file_texture`'s last argument is the requested encoding, and the
+    // attach carries it onto the record's own base-colour lane.
+    assert.match(load(", { srgb: true }"), /bbl::load_file_texture\([^\n]+, true\)/);
+    assert.match(load(""), /bbl::load_file_texture\([^\n]+, false\)/);
+    for (const options of [", { srgb: true }", ""]) {
+        assert.match(
+            load(options),
+            /bbl::set_material_base_color_file\(/,
+        );
+    }
 });
 
 test("carries scene-code PBR occlusion strength into composition and runtime", () => {
@@ -1604,7 +1615,7 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
     );
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^\n]+, 0\.0f, 1\.0f\}\)/,
+        /\.occlusion_strength = 0\.0f, \.metallic_f0_factor = 1\.0f/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -1632,7 +1643,7 @@ test("carries scene-code PBR occlusion strength into composition and runtime", (
     );
     assert.match(
         defaultResult.cpp,
-        /PbrMaterialOptions\{[^\n]+, 1\.0f, 1\.0f\}\)/,
+        /\.occlusion_strength = 1\.0f, \.metallic_f0_factor = 1\.0f/,
     );
 
     assert.throws(
@@ -1706,7 +1717,7 @@ test("carries scene-code PBR specular AA into composition and runtime", () => {
     );
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^\n]+, false, false, true, false, 0\.0f/,
+        /\.double_sided = false, \.specular_aa = true, \.skybox_mode = false/,
     );
 
     assert.throws(
@@ -1890,7 +1901,7 @@ test("preserves scene-code internal metallic F0 creation state", () => {
     );
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^\n]+, 1\.0f, 0\.95f\}\)/,
+        /\.occlusion_strength = 1\.0f, \.metallic_f0_factor = 0\.95f/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -1904,7 +1915,7 @@ test("preserves scene-code internal metallic F0 creation state", () => {
     );
     assert.match(
         defaultResult.cpp,
-        /PbrMaterialOptions\{[^\n]+, 1\.0f, 1\.0f\}\)/,
+        /\.occlusion_strength = 1\.0f, \.metallic_f0_factor = 1\.0f/,
     );
 
     assert.throws(
@@ -3665,7 +3676,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     assert.match(result.cpp, /\.environment\.contrast = 1\.66f/);
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.0f, 0\.7f, 0\.5f, 0\.2f, false, false, false, false, 0\.0f, 1\.5f/,
+        /\.environment_intensity = 0\.7f, \.alpha = 0\.5f, \.reflectance = 0\.2f/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -3755,7 +3766,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     );
     assert.match(
         result.cpp,
-        /PbrMaterialOptions\{[^}]*0\.1f, 0\.4f, 1\.0f, 0\.0f, 1\.0f, 0\.04f, false, false, false, false, 0\.0f, 1\.5f/,
+        /\.metallic_factor = 0\.1f, \.roughness_factor = 0\.4f, \.direct_intensity = 1\.0f/,
     );
     assert.match(
         result.cpp,
