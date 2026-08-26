@@ -75,6 +75,34 @@ export interface CompileManifest {
     /** Every scene-code material creation, any family, for the handle count. */
     sceneMaterialCount: number;
     sceneMeshes: SceneMeshManifest[];
+    /** Every shadow generator a scene built, in reach order. */
+    shadowGenerators: ShadowGeneratorManifest[];
+    /** The `sceneMeshes` entries `mesh.receiveShadows = true` marked. */
+    shadowReceiverMeshes: number[];
+}
+
+/**
+ * One `create*ShadowGenerator` call, in reach order.
+ *
+ * Everything here is what the composed receiver fragment is keyed by or what
+ * the PAL sizes its resources from; the light-space matrices themselves are
+ * computed at run time from the light, exactly as `renderPcfShadowMap`
+ * recomputes them when the light moves.
+ */
+export interface ShadowGeneratorManifest {
+    /**
+     * The pinned filter. Only spot-light PCF is reached, and composition
+     * maps it onto the receiver fragment's own `shadowType` — so a
+     * generator family added here without a receiver arm refuses at
+     * composition rather than composing the PCF one.
+     */
+    kind: "pcf-spot";
+    /**
+     * Which `scene.lights` slot the owning light occupies. The pinned
+     * receiver fragment suffixes every varying and binding with it, so a
+     * light added at a different position composes a different fragment.
+     */
+    lightIndex: number;
 }
 
 /**
@@ -743,6 +771,12 @@ export type ValueKind =
     | "billboard-system"
     | "sprite-renderer"
     | "splat-mesh"
+    // The `ShadowGenerator` a filter factory returns. It holds GPU state
+    // (a depth map, a comparison sampler, two uniform buffers), so it is a
+    // native handle rather than a compile-time record -- but which lights
+    // and meshes it joins is generation's to resolve, since the composed
+    // receiver fragment is keyed by the scene's shadow-light slots.
+    | "shadow-generator"
     | "string"
     | "task"
     | "texture"
@@ -823,6 +857,27 @@ export interface Value {
      * the assignment stored.
      */
     scenePbrMaterialIndex?: number;
+    /**
+     * Which `sceneMeshes` entry this mesh value names, so a scene-code
+     * mesh can be resolved to the runtime handle the composed variant
+     * tables are keyed by: the asset renderables come first, in load
+     * order, and the scene meshes follow in creation order.
+     */
+    sceneMeshIndex?: number;
+    /**
+     * Which `scene.lights` slot a light was added at. The pin's shadow
+     * receiver fragment names its per-light varyings and bindings by that
+     * index (`shadowTex_0`, `shadowFactors[0]`), so it is composition
+     * input rather than a runtime lookup.
+     */
+    sceneLightIndex?: number;
+    /**
+     * Which `shadowGenerators` entry a light was given, so
+     * `setShadowTaskCasterMeshes(light.shadowGenerator, ...)` reaches the
+     * record the assignment stored -- the same object identity
+     * `scenePbrMaterialIndex` carries for a material.
+     */
+    shadowGeneratorIndex?: number;
     /**
      * Set on a read whose value can differ between two evaluations of the
      * same expression -- a clock, not a constant.
@@ -1115,6 +1170,12 @@ export type Feature =
     | "physics:world"
     | "physics:aggregate"
     | "scene:remove"
+    // The shadow family, split the way upstream splits it: the filter's own
+    // resources and receiver composition (`shadow:pcf`), and the scene-owned
+    // frame-graph task that schedules them (`shadow:task`), which
+    // `registerSceneWithShadowSupport` is the only way to reach.
+    | "shadow:pcf"
+    | "shadow:task"
     | "sprite:2d"
     | "sprite:uv-scroll"
     | "sprite:custom-shader"

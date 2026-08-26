@@ -679,6 +679,25 @@ struct GpuState {
     std::map<std::size_t, SDL_GPUGraphicsPipeline*> standard_variant_pipelines;
     std::vector<PinnedStageSlots> standard_vertex_slots;
     std::vector<PinnedStageSlots> standard_fragment_slots;
+#if BBLITE_STANDARD_SHADOWS
+    /**
+     * The receiver side of the shadow family, one entry per generator.
+     *
+     * The map is the generator's depth target; the block is the pin's
+     * `shadowInfo_N` receiver UBO, kept both as bytes (the vertex stage
+     * reads it as a uniform) and as a real buffer (the fragment reads it
+     * as a storage buffer, because the shader compile demotes it out of
+     * SDL_GPU's four uniform slots -- the same treatment the geometry
+     * tasks' `gp` block takes).
+     */
+    struct ShadowGenerator {
+        SDL_GPUTexture* map = nullptr;
+        SDL_GPUBuffer* info = nullptr;
+        upstream::ShadowInfoUniforms block{};
+    };
+    std::vector<ShadowGenerator> shadow_generators;
+    SDL_GPUSampler* shadow_comparison_sampler = nullptr;
+#endif
 #endif
 #if BBLITE_NODE_VARIANTS > 0
     // The node family's pipelines and slot maps, cached the same way.
@@ -1642,18 +1661,141 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
         standard_stage_name(entry.fragment_shader));
 }
 
+#if BBLITE_STANDARD_SHADOWS
+/**
+ * The generators' matrices, their maps and their receiver blocks.
+ *
+ * `renderPcfShadowMap` recomputes the light matrix when the light moved and
+ * re-uploads the receiver UBO with it; the caster pass then renders through
+ * the biased copy. The record's values are rebuilt each frame, which is the
+ * same result for a static light and the right one for a moving one. The
+ * receiver block is uploaded as a storage buffer as well as kept as bytes,
+ * because the composed fragment reads it through the demoted binding while
+ * the vertex stage reads it as a uniform.
+ */
+void update_shadow_generators(
+    GpuState& state,
+    const Scene& scene,
+    Engine& engine) {
+    if (engine.shadow_generators.empty()) return;
+    if (state.shadow_generators.size() < engine.shadow_generators.size()) {
+        state.shadow_generators.resize(engine.shadow_generators.size());
+    }
+    if (!state.shadow_comparison_sampler) {
+        SDL_GPUSamplerCreateInfo info{};
+        // The pinned generator's own sampler: a comparison sampler under
+        // `less`, with linear filtering so the hardware averages the four
+        // comparisons each of the nine PCF taps takes.
+        info.enable_compare = true;
+        info.compare_op = SDL_GPU_COMPAREOP_LESS;
+        info.min_filter = SDL_GPU_FILTER_LINEAR;
+        info.mag_filter = SDL_GPU_FILTER_LINEAR;
+        info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        state.shadow_comparison_sampler =
+            SDL_CreateGPUSampler(state.device, &info);
+        if (!state.shadow_comparison_sampler) {
+            gpu_error("SDL_CreateGPUSampler shadow comparison");
+        }
+    }
+    std::size_t slot = 0;
+    for (const LightHandle light : scene.lights) {
+        if (light.value >= engine.lights.size()) continue;
+        const ShadowGeneratorHandle handle =
+            engine.lights[light.value].shadow_generator;
+        if (handle.value >= engine.shadow_generators.size()) continue;
+        ShadowGeneratorRecord& generator =
+            engine.shadow_generators[handle.value];
+        upstream::update_pcf_spot_shadow(
+            generator,
+            engine.lights[light.value]);
+        GpuState::ShadowGenerator& gpu = state.shadow_generators[slot++];
+        const upstream::ShadowInfoUniforms block =
+            upstream::shadow_info_block(generator);
+        const bool moved = !gpu.info ||
+            std::memcmp(&block, &gpu.block, sizeof(block)) != 0;
+        gpu.block = block;
+        if (
+            generator.task.value < engine.frame_tasks.size() &&
+            engine.frame_tasks[generator.task.value].render.target.value <
+                state.render_targets.size()) {
+            gpu.map = state.render_targets[
+                engine.frame_tasks[generator.task.value]
+                    .render.target.value].depth;
+        }
+        if (!gpu.map) gpu_error("a shadow generator has no rendered map.");
+        if (!gpu.info) {
+            gpu.info = upload_buffer(
+                state.device,
+                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                &gpu.block,
+                sizeof(gpu.block));
+        } else if (moved) {
+            // `update_buffer` costs a transfer buffer and a second command
+            // submit, so it runs only when the light actually moved --
+            // which is the same skip `renderPcfShadowMap`'s own version
+            // check makes.
+            update_buffer(
+                state.device,
+                gpu.info,
+                &gpu.block,
+                sizeof(gpu.block));
+        }
+    }
+}
+#endif
+
 /**
  * Which of our resources the pin's own name for a Standard binding refers
  * to. The name->slot rows are the generated `standard_binding_resources`;
  * the cube reflection pair and the two render-texture slots are the
  * resources outside the material slot table.
  */
+#if BBLITE_STANDARD_SHADOWS
+/**
+ * The generator a pinned shadow binding names, or npos.
+ *
+ * `createShadowFragment` suffixes every name with the light's index in
+ * `scene.lights` (`shadowTex_0`, `shadowComp_0`, `shadowInfo_0`), and the
+ * generators are collected in that same order, so the suffix is the index
+ * into this backend's own table.
+ */
+std::size_t shadow_generator_for_binding(
+    const GpuState& state,
+    const std::string& name,
+    const char* prefix) {
+    const std::size_t length = std::strlen(prefix);
+    if (name.size() <= length || name.compare(0, length, prefix) != 0) {
+        return std::numeric_limits<std::size_t>::max();
+    }
+    const std::size_t index =
+        static_cast<std::size_t>(std::stoul(name.substr(length)));
+    return index < state.shadow_generators.size()
+        ? index
+        : std::numeric_limits<std::size_t>::max();
+}
+#endif
+
 PinnedResource standard_resource_for(
     GpuState& state,
     const GpuMesh& mesh,
     const MaterialRecord* material,
     const StandardRenderTextures& render_textures,
     const std::string& name) {
+#if BBLITE_STANDARD_SHADOWS
+    {
+        const std::size_t generator =
+            shadow_generator_for_binding(state, name, "shadowTex_");
+        if (generator != std::numeric_limits<std::size_t>::max()) {
+            return {
+                state.shadow_generators[generator].map,
+                state.shadow_comparison_sampler,
+            };
+        }
+    }
+#endif
     for (
         const upstream::StandardBindingResource& row :
         upstream::standard_binding_resources) {
@@ -1708,9 +1850,14 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     GpuState& state,
     std::size_t variant,
     upstream::RenderPipelineKind kind,
-    const FrameTaskRecord* geometry_task = nullptr) {
+    const FrameTaskRecord* geometry_task = nullptr,
+    // The pin's one exception to this port's depth convention: a shadow
+    // caster pass renders standard-Z into the generator's own
+    // `depth32float` map, at one sample.
+    bool shadow_pass = false) {
     const std::size_t key =
-        variant * 64 + static_cast<std::size_t>(kind);
+        variant * 128 + static_cast<std::size_t>(kind) * 2 +
+        (shadow_pass ? 1 : 0);
     const auto existing = state.standard_variant_pipelines.find(key);
     if (existing != state.standard_variant_pipelines.end()) {
         return existing->second;
@@ -1796,15 +1943,19 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
+    info.depth_stencil_state.compare_op =
+        gpu_depth_compare(pass_depth_compare(shadow_pass));
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
-    info.multisample_state.sample_count = state.sample_count;
+    info.multisample_state.sample_count =
+        shadow_pass ? SDL_GPU_SAMPLECOUNT_1 : state.sample_count;
     info.target_info.color_target_descriptions =
         entry.no_color_output ? nullptr : &color_target;
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
-    info.target_info.depth_stencil_format = state.depth_format;
+    info.target_info.depth_stencil_format = shadow_pass
+        ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
+        : state.depth_format;
     info.target_info.has_depth_stencil_target = true;
     // A geometry-output MRT variant draws into its task's own
     // attachments, exactly as the PBR sibling does; the class list and
@@ -1884,14 +2035,18 @@ void draw_standard_variant(
     const FrameTaskRecord* geometry_task = nullptr,
     const PinnedGeometryParams* geometry_params = nullptr,
     StandardRenderTextures render_textures = {},
-    SDL_GPUBuffer* geometry_params_buffer = nullptr) {
+    SDL_GPUBuffer* geometry_params_buffer = nullptr,
+    // Drawing the shadow map, so the pipeline renders standard-Z into the
+    // generator's own single-sample depth32float target.
+    bool shadow_pass = false) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         standard_variant_pipeline(
             state,
             variant,
             draw.pipeline,
-            geometry_task);
+            geometry_task,
+            shadow_pass);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -1937,6 +2092,16 @@ void draw_standard_variant(
             }
             return {geometry_params, sizeof(*geometry_params)};
         }
+#if BBLITE_STANDARD_SHADOWS
+        const std::size_t shadow =
+            shadow_generator_for_binding(state, block, "shadowInfo_");
+        if (shadow != std::numeric_limits<std::size_t>::max()) {
+            return {
+                &state.shadow_generators[shadow].block,
+                sizeof(upstream::ShadowInfoUniforms),
+            };
+        }
+#endif
         return {};
     };
     push_stage_uniforms(
@@ -1979,7 +2144,15 @@ void draw_standard_variant(
         true,
         "standard variant fragment",
         [&](const std::string& name) -> SDL_GPUBuffer* {
-            return name == "gp" ? geometry_params_buffer : nullptr;
+            if (name == "gp") return geometry_params_buffer;
+#if BBLITE_STANDARD_SHADOWS
+            const std::size_t shadow =
+                shadow_generator_for_binding(state, name, "shadowInfo_");
+            if (shadow != std::numeric_limits<std::size_t>::max()) {
+                return state.shadow_generators[shadow].info;
+            }
+#endif
+            return nullptr;
         });
     const PinnedStageSlots& vertex_slots =
         state.standard_vertex_slots[variant];
@@ -2908,9 +3081,14 @@ void create_frame_graph_textures(
                               SDL_GPU_TEXTUREUSAGE_SAMPLER);
         }
         if (record.has_depth) {
+            // A shadow map states its own format: the pinned generator
+            // creates `depth32float` where every other attachment takes the
+            // device's own preferred sampled-depth format.
             target.depth = create_frame_texture(
                 state.device,
-                state.depth_format,
+                record.shadow_map
+                    ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
+                    : state.depth_format,
                 samples,
                 target.width,
                 target.height,
@@ -3323,6 +3501,20 @@ void release(GpuState& state) {
     if (state.depth_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.depth_sampler);
     }
+#if BBLITE_STANDARD_SHADOWS
+    for (const GpuState::ShadowGenerator& generator : state.shadow_generators) {
+        if (generator.info) {
+            SDL_ReleaseGPUBuffer(state.device, generator.info);
+        }
+    }
+    state.shadow_generators.clear();
+    if (state.shadow_comparison_sampler) {
+        SDL_ReleaseGPUSampler(
+            state.device,
+            state.shadow_comparison_sampler);
+        state.shadow_comparison_sampler = nullptr;
+    }
+#endif
 #if BBLITE_PBR_VARIANTS > 0
     if (state.pinned_bone_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.pinned_bone_sampler);
@@ -5646,6 +5838,9 @@ bool run_gpu_engine(Engine& engine) {
                     swapchain_format,
                     width,
                     height);
+#if BBLITE_STANDARD_SHADOWS
+                update_shadow_generators(state, scene, engine);
+#endif
                 SDL_PushGPUVertexUniformData(
                     command,
                     0,
@@ -5756,7 +5951,16 @@ bool run_gpu_engine(Engine& engine) {
                                           const upstream::RenderDrawLists& draw_lists,
                                           [[maybe_unused]] const FrameTaskRecord* geometry_task,
                                           [[maybe_unused]] const PinnedGeometryParams* geometry_params,
-                                          [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer) {
+                                          [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer,
+                                          // Set when this pass renders one
+                                          // generator's shadow map: the
+                                          // pass block takes the light's
+                                          // own matrices and every pipeline
+                                          // renders standard-Z.
+                                          [[maybe_unused]] const
+                                              ShadowGeneratorRecord*
+                                                  shadow_generator =
+                                                      nullptr) {
                     bool scene_matrix_bound = true;
                     // One dispatch for both passes; only the sources
                     // differ (`secondary_pipeline_for`).
@@ -5782,13 +5986,35 @@ bool run_gpu_engine(Engine& engine) {
                     // The pass's scene and lights blocks, once per pass
                     // rather than per draw: their builders run camera and
                     // view math whose repetition was pure cost.
-                    const upstream::SceneUniforms pass_scene_block =
+                    upstream::SceneUniforms pass_scene_block =
                         pinned_scene_block(
                             scene,
                             engine,
                             draw_camera,
                             draw_matrix);
+#if BBLITE_STANDARD_SHADOWS
+                    // The pin installs the light-space matrices on a camera
+                    // facade whose caches it pins, so its caster pass reads
+                    // them straight back. There is no facade here: the pass
+                    // block takes the generator's own biased view-projection
+                    // and its light-space view directly.
+                    if (shadow_generator) {
+                        pass_scene_block.viewProjection =
+                            shadow_generator->caster_view_projection;
+                        pass_scene_block.view =
+                            shadow_generator->caster_view;
+                    }
+#endif
+                    // A caster pass declares no lights block in either
+                    // stage -- its fragment is the no-colour view -- so
+                    // building the pin's 16-entry array for it would be
+                    // ~2 KB zeroed and copied per frame for nothing.
                     const std::vector<std::uint8_t> pass_lights_block =
+#if BBLITE_STANDARD_SHADOWS
+                        shadow_generator
+                            ? std::vector<std::uint8_t>{}
+                            :
+#endif
                         pinned_lights_block(scene, engine);
 #endif
                     const auto draw_list =
@@ -5923,7 +6149,8 @@ bool run_gpu_engine(Engine& engine) {
                                     material_render_textures(
                                         material,
                                         source_texture),
-                                    geometry_params_buffer);
+                                    geometry_params_buffer,
+                                    shadow_generator != nullptr);
                                 continue;
                             }
 #else
@@ -6120,15 +6347,81 @@ bool run_gpu_engine(Engine& engine) {
                                     static_cast<double>(height)
                                 : static_cast<double>(target.width) /
                                     static_cast<double>(target.height);
-                        const std::array<float, 16> task_matrix =
-                            upstream::build_view_projection(
+                        // A shadow task renders from the light, not from
+                        // a camera: the generator's own matrices replace
+                        // both of these below, so building and pushing a
+                        // camera view-projection first would be a dead pass
+                        // over the camera basis and a dead push.
+                        const bool shadow_task =
+                            task.render.shadow_generator.value !=
+                            invalid_handle;
+                        const std::array<float, 16> task_matrix = shadow_task
+                            ? std::array<float, 16>{}
+                            : upstream::build_view_projection(
                                 task_camera,
                                 task_aspect);
-                        SDL_PushGPUVertexUniformData(
-                            command,
-                            0,
-                            task_matrix.data(),
-                            sizeof(task_matrix));
+                        if (!shadow_task) {
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                0,
+                                task_matrix.data(),
+                                sizeof(task_matrix));
+                        }
+#if BBLITE_STANDARD_SHADOWS
+                        if (
+                            !target_record.has_color &&
+                            task.render.shadow_generator.value <
+                                engine.shadow_generators.size()) {
+                            if (!target_record.has_depth || !target.depth) {
+                                throw std::runtime_error(
+                                    "Shadow render task has no depth attachment.");
+                            }
+                            const ShadowGeneratorRecord& generator =
+                                engine.shadow_generators[
+                                    task.render.shadow_generator.value];
+                            SDL_GPUDepthStencilTargetInfo shadow_depth{};
+                            shadow_depth.texture = target.depth;
+                            // The pin's own shadow target clears to ITS
+                            // far value, which standard-Z puts at 1 where
+                            // this port's reverse-Z puts it at 0.
+                            shadow_depth.clear_depth =
+                                pass_depth_clear(true);
+                            shadow_depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                            shadow_depth.store_op = SDL_GPU_STOREOP_STORE;
+                            shadow_depth.stencil_load_op =
+                                SDL_GPU_LOADOP_DONT_CARE;
+                            shadow_depth.stencil_store_op =
+                                SDL_GPU_STOREOP_DONT_CARE;
+                            SDL_GPURenderPass* shadow_pass =
+                                SDL_BeginGPURenderPass(
+                                    command,
+                                    nullptr,
+                                    0,
+                                    &shadow_depth);
+                            SDL_PushGPUVertexUniformData(
+                                command,
+                                0,
+                                generator.caster_view_projection.data(),
+                                sizeof(generator.caster_view_projection));
+                            draw_scene(
+                                shadow_pass,
+                                nullptr,
+                                nullptr,
+                                nullptr,
+                                nullptr,
+                                {},
+                                {},
+                                generator.caster_view_projection,
+                                task_camera,
+                                task_draw_lists[handle.value],
+                                nullptr,
+                                nullptr,
+                                nullptr,
+                                &generator);
+                            SDL_EndGPURenderPass(shadow_pass);
+                            continue;
+                        }
+#endif
                         if (!target_record.has_color) {
                             if (!target_record.has_depth || !target.depth) {
                                 throw std::runtime_error(

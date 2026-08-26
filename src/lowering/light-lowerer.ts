@@ -637,6 +637,7 @@ LightHandle create_spot_light(
     light.exponent = exponent;
     light.cos_half_angle = static_cast<float>(
         std::cos(angle * ${this.context.doubleLiteral(coneHalfFactor)}));
+    light.angle = angle;
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();

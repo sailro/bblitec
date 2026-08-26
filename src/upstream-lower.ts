@@ -16,6 +16,10 @@ import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
+import {
+    pinnedShadowHeader,
+    shadowFactorySource,
+} from "./lowering/shadow-lowerer.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
@@ -534,6 +538,20 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_REFLECTION ${standardReflection ? 1 : 0}
+// The shadow family: the generator's own resources and the composed
+// receiver arm. Reached by the scene's own generator factory, which is
+// where upstream keeps its shadow scheduling code out of an ordinary
+// bundle too. The second define is the conjunction both PALs gate on --
+// the receiver fragment is the Standard family's, so a scene composing no
+// Standard variant compiles no shadow code even having reached a
+// generator.
+#define BBLITE_SHADOWS ${features.includes("shadow:pcf") ? 1 : 0}
+#define BBLITE_STANDARD_SHADOWS ${
+                features.includes("shadow:pcf") &&
+                    (options.pinnedStandardVariants ?? []).length > 0
+                    ? 1
+                    : 0
+            }
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
 
@@ -1665,6 +1683,20 @@ ${composed.wgsl}`,
         // statements moves.
         if (features.includes("audio:engine")) {
             new AudioLowerer(context).assertEngineGraphContract();
+        }
+        // The shadow family. The pinned math is a header both backends
+        // execute; the factories build the same depth-only render task the
+        // pin's own `ensurePcfShadowTaskState` builds.
+        if (features.includes("shadow:pcf")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_shadow.hpp",
+                pinnedShadowHeader(context),
+            );
+            this.writeSource(
+                "upstream/src/shadow.cpp",
+                shadowFactorySource(context),
+                generated,
+            );
         }
         if (features.includes("navigation:recast")) {
             this.writeSource(

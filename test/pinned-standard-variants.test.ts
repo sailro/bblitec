@@ -479,6 +479,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             sceneMaterials: true,
             sceneMeshFeatureValues: [0],
             geometryTasks: [],
+        shadowLights: [],
         },
         () => {
             throw new Error("no assets to read");
@@ -541,6 +542,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             sceneMaterials: true,
             sceneMeshFeatureValues: [0],
             geometryTasks: [],
+        shadowLights: [],
         },
         () => {
             throw new Error("no assets to read");
@@ -629,6 +631,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             sceneMaterials: false,
             sceneMeshFeatureValues: [],
             geometryTasks: [],
+        shadowLights: [],
         },
         () => document,
     );

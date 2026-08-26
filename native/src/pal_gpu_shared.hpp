@@ -39,6 +39,45 @@
 #if BBLITE_STANDARD_VARIANTS > 0
 #include <bblite/upstream/standard_variants.hpp>
 #endif
+// The pinned shadow family: the light-space matrices, the receiver block,
+// the generator's defaults and the standard-Z depth state its map takes.
+// `BBLITE_STANDARD_SHADOWS` is generation's own answer to "does this scene
+// reach a shadow generator AND compose the Standard receiver", which is
+// what gates every shadow line in both PALs.
+#if BBLITE_STANDARD_SHADOWS
+#include <bblite/upstream/pinned_shadow.hpp>
+#endif
+#include <bblite/upstream/pinned_depth_state.hpp>
+
+namespace bbl::pal {
+
+/**
+ * The depth state one pass takes: the pin's own convention, or the shadow
+ * target's exception to it.
+ *
+ * `createShadowRenderTarget` is the single place upstream names another
+ * compare and another clear, and generation emits both from that descriptor
+ * — so a pass asks here rather than either backend typing standard-Z out.
+ */
+inline DepthCompare pass_depth_compare(bool shadow_pass) {
+#if BBLITE_STANDARD_SHADOWS
+    if (shadow_pass) return upstream::shadow_map_depth_compare;
+#else
+    (void)shadow_pass;
+#endif
+    return upstream::pinned_depth_compare;
+}
+
+inline float pass_depth_clear(bool shadow_pass) {
+#if BBLITE_STANDARD_SHADOWS
+    if (shadow_pass) return upstream::shadow_map_depth_clear;
+#else
+    (void)shadow_pass;
+#endif
+    return upstream::pinned_depth_clear;
+}
+
+} // namespace bbl::pal
 // The node family's compiled graphs: one entry per graph the scene parsed,
 // each naming its stages, its vertex inputs and its uniform block. It hoists
 // the shared scene/lights mirrors when neither header above is emitted, so
@@ -1520,6 +1559,13 @@ inline StandardVariantKey standard_variant_key(
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::std_msh_has_thin_instances;
         }
+    }
+    // `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`,
+    // so a depth-only view of a mesh that also receives is composed without
+    // the shadow fragment and its key carries no receive bit.
+    if (material.no_color) {
+        key.mesh_features &= ~static_cast<std::size_t>(
+            upstream::std_msh_receive_shadows);
     }
     if (
         draw.item.geometry < engine.geometries.size() &&

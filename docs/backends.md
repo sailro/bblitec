@@ -268,6 +268,15 @@ Regression guards, each measured rather than assumed:
   captured thin-instance matrices are bit-identical), and environment
   horizon occlusion composes only for normal-mapped materials. Each
   contract is canonical in [fidelity](fidelity.md).
+- **A depth texture and a comparison sampler declare untemplated in HLSL,
+  and the slots sidecar has to see them.** Tint emits a `texture_depth_2d`
+  as a bare `Texture2D` and its comparison sampler as
+  `SamplerComparisonState`, neither of which the sidecar's declaration
+  match originally accepted — so both were silently dropped from the
+  receiver's `.slots`, and the storage rebase counted one texture short as
+  well. Scene 18 is the first stage in the tree to declare either;
+  every other generated stage uses the templated forms, so the widened
+  match adds rows and moves none.
 - **Scene 33's backend delta is the scene-colour grab.** SDL_GPU runs
   the pinned per-sample image-processing fragment at 4x through the
   vendored SDL patch, leaving the foreground step (0.010 versus 0.007)
@@ -405,6 +414,19 @@ Only the GPU API layer differs:
   pin's own `mesh.world * instanceWorld` with the recorded parent TRS,
   and a LOCAL_POSITION geometry arm the recorded node world over the
   raw local lanes.
+- **Shadows**: the caster pass is a depth-only render task over the
+  generator's own `depth32float` map, rendered from the light's biased
+  view-projection through the composed no-colour variants, at standard-Z
+  (`less-equal`, cleared to 1) and one sample. A receiving draw binds the
+  pin's group 2 — the map, the comparison sampler and the receiver block —
+  built once per frame graph and shared across receivers, which is the
+  cache `rebuildSingle` keys by the layout for the same reason. Dawn builds
+  that layout from the generator count (three bindings per light, in
+  `scene.lights` order) rather than by reflection, since
+  `createShadowFragment` fixes the shape; SDL_GPU binds it from the
+  `.slots` sidecar like every other composed stage, where the receiver
+  block appears as an `r` row because the demotion moved it out of the
+  four-uniform cap.
 - **Frame graph**: tasks replace the main pass exactly like the SDL
   task loop. Color render tasks draw their
   `build_render_task_draw_lists` lists into render targets with

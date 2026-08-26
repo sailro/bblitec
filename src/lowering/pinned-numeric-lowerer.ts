@@ -94,6 +94,14 @@ export interface PinnedNumericScope {
      * nothing and a bare `return;` is emitted.
      */
     returnValue?: (expression: ts.Expression | undefined) => string;
+    /**
+     * Which of `calls`' pinned names return a 4x4 matrix rather than a
+     * number, so a `const` bound to one declares the matrix instead of a
+     * double. The translator carries no types of its own, and the caller
+     * owns every spelling in `calls`, so the caller is what can answer
+     * this — a name outside `calls` is a contract error either way.
+     */
+    matrixCalls?: ReadonlySet<string>;
     /** This body uses `||` only to join boolean conditions. */
     booleanOr?: boolean;
     /** This body uses `&&` only to join boolean conditions. */
@@ -316,6 +324,23 @@ export class PinnedNumericLowerer {
                 continue;
             }
             const initializer = this.unwrap(declaration.initializer);
+            // A call the caller declared matrix-valued binds the fixed
+            // matrix, so a later element read indexes it rather than
+            // indexing a double.
+            if (
+                this.scope.matrixCalls &&
+                ts.isCallExpression(initializer) &&
+                ts.isIdentifier(initializer.expression) &&
+                this.scope.matrixCalls.has(initializer.expression.text)
+            ) {
+                this.scope.bindings.set(name, { cpp: name, type: "f32" });
+                lines.push(
+                    `${indent}${isConst ? "const " : ""}` +
+                        `std::array<float, 16> ${name} = ` +
+                        `${this.expression(declaration.initializer)};`,
+                );
+                continue;
+            }
             const isBoolean =
                 initializer.kind === ts.SyntaxKind.TrueKeyword ||
                 initializer.kind === ts.SyntaxKind.FalseKeyword;
@@ -378,21 +403,53 @@ export class PinnedNumericLowerer {
                     `reinterpret_cast<const ${element}*>(${source.cpp});`,
             };
         }
+        // `new F32(otherTypedArray)` COPIES it; only `new F32(count)`
+        // allocates. Reading the argument as a length would compile and
+        // produce a differently-sized buffer of zeros -- the pin's
+        // `biasViewProjection` starts from a copy of the matrix it biases,
+        // which that reading would silently turn into zeros. The copy takes
+        // the source's own storage, so a fixed-length source stays fixed.
+        if (
+            source &&
+            (source.type === "f32" || source.type === "f32-view") &&
+            constructor === "F32"
+        ) {
+            return {
+                type: "f32",
+                declare: (name) => `auto ${name} = ${source.cpp};`,
+            };
+        }
+        // A constant length is a constant length: `new F32(16)` is a fixed
+        // matrix or vector, not a run-time sized buffer, so it allocates
+        // nothing. The two shapes zero-initialize and store identically,
+        // which is what keeps this a storage choice rather than a
+        // behavioural one.
+        const literal = ts.isNumericLiteral(this.unwrap(argument))
+            ? Number((this.unwrap(argument) as ts.NumericLiteral).text)
+            : undefined;
+        const fixed = literal !== undefined && Number.isInteger(literal) &&
+                literal > 0
+            ? literal
+            : undefined;
         const count = this.expression(argument);
         if (constructor === "F32") {
             return {
                 type: "f32",
                 declare: (name) =>
-                    `std::vector<float> ${name}(` +
-                    `static_cast<std::size_t>(${count}), 0.0f);`,
+                    fixed !== undefined
+                        ? `std::array<float, ${fixed}> ${name}{};`
+                        : `std::vector<float> ${name}(` +
+                            `static_cast<std::size_t>(${count}), 0.0f);`,
             };
         }
         if (constructor === "U32") {
             return {
                 type: "u32",
                 declare: (name) =>
-                    `std::vector<std::uint32_t> ${name}(` +
-                    `static_cast<std::size_t>(${count}), 0u);`,
+                    fixed !== undefined
+                        ? `std::array<std::uint32_t, ${fixed}> ${name}{};`
+                        : `std::vector<std::uint32_t> ${name}(` +
+                            `static_cast<std::size_t>(${count}), 0u);`,
             };
         }
         return undefined;

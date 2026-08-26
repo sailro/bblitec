@@ -162,7 +162,7 @@ export function compileMeshIntrinsic(
             );
             // The streams decide the mesh half of the variant key, in the
             // pin's own argument order: uvs, uv2s, tangents, colors.
-            context.recordSceneMesh("from-data", {
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
                 hasUv2: optional[1] !== "{}",
                 hasTangents: optional[2] !== "{}",
                 hasColors: optional[3] !== "{}",
@@ -170,6 +170,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:from-data", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_mesh_from_data(${engine.cpp}, ` +
                     `${name.cpp}, ` +
@@ -303,7 +304,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createBox": {
-            context.recordSceneMesh("box");
+            const sceneMeshIndex = context.recordSceneMesh("box");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -318,6 +319,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:box", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_box(${engine.cpp}, ` +
                     `bbl::BoxOptions{${options.join(", ")}})`,
@@ -328,7 +330,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createGround": {
-            context.recordSceneMesh("ground");
+            const sceneMeshIndex = context.recordSceneMesh("ground");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -349,6 +351,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:ground", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_ground(${engine.cpp}, ` +
                     `bbl::GroundOptions{${options[0]}, ` +
@@ -361,7 +364,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createPlane": {
-            context.recordSceneMesh("plane");
+            const sceneMeshIndex = context.recordSceneMesh("plane");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -376,6 +379,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:plane", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_plane(${engine.cpp}, ` +
                     `bbl::PlaneOptions{${options.join(", ")}})`,
@@ -386,7 +390,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createSphere": {
-            context.recordSceneMesh("sphere");
+            const sceneMeshIndex = context.recordSceneMesh("sphere");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -401,6 +405,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:sphere", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_sphere(${engine.cpp}, ` +
                     `bbl::SphereOptions{${options.join(", ")}})`,
@@ -624,7 +629,7 @@ export function compileMeshIntrinsic(
             // outside it (the lowering pins the defaults that keep them
             // unreachable), and the radius/tessellation defaults stay
             // unduplicated by requiring the scene to name both.
-            context.recordSceneMesh("from-data", {
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
                 hasUv2: false,
                 hasTangents: false,
                 hasColors: false,
@@ -683,6 +688,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:from-data", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_tube(${engine.cpp}, ` +
                     `std::vector<bbl::Vec3d>{${points.join(", ")}}, ` +
@@ -694,7 +700,7 @@ export function compileMeshIntrinsic(
         }
 
         case "createTorus": {
-            context.recordSceneMesh("torus");
+            const sceneMeshIndex = context.recordSceneMesh("torus");
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
@@ -709,6 +715,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:torus", call);
             return {
                 kind: "mesh",
+                sceneMeshIndex,
                 cpp:
                     `bbl::create_torus(${engine.cpp}, ` +
                     `bbl::TorusOptions{${options.join(", ")}})`,

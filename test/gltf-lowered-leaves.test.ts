@@ -1034,6 +1034,8 @@ const expectedPunctualLightLoading = `                const std::string type =
                         : 0.7853981633974483f;
                     light.cos_half_angle =
                         std::cos(outer_cone_angle);
+                    light.angle =
+                        static_cast<double>(outer_cone_angle) * 2.0;
                 }
                 light.position = Vec3{
                     -light_world[12],

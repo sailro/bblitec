@@ -160,6 +160,7 @@ import type {
     PostProcessTaskManifest,
     ResolvedCompileOptions,
     SceneMeshManifest,
+    ShadowGeneratorManifest,
     ScenePbrClearCoatManifest,
     ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
@@ -332,6 +333,10 @@ class Compiler
         [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
     private readonly sceneMeshes: SceneMeshManifest[] = [];
+    private readonly shadowGenerators: ShadowGeneratorManifest[] = [];
+    private readonly shadowReceiverMeshes = new Set<number>();
+    /** How many lights `addToScene` has added, which is their slot order. */
+    private sceneLightCount = 0;
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
         [];
     private reachedPlainSpriteLayer = false;
@@ -471,6 +476,10 @@ class Compiler
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMeshes: this.sceneMeshes,
+                shadowGenerators: this.shadowGenerators,
+                shadowReceiverMeshes: [
+                    ...this.shadowReceiverMeshes,
+                ].sort((left, right) => left - right),
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
                 effects: this.reachedEffects_,
                 plainSpriteLayer: this.reachedPlainSpriteLayer,
@@ -3379,6 +3388,32 @@ class Compiler
         this.sceneSpriteCustomShaders.push(shader);
     }
 
+    /**
+     * Records one shadow generator, returning its reach index.
+     *
+     * Its casters do not land here: the pin keeps them as a lazy task input
+     * rather than on the generator, and what generation needs from
+     * `setShadowTaskCasterMeshes` is only that the caster materials compose
+     * a no-colour view — which is the feature it reaches, not a list.
+     */
+    public recordShadowGenerator(entry: {
+        kind: "pcf-spot";
+        lightIndex: number;
+    }): number {
+        this.shadowGenerators.push({ ...entry });
+        return this.shadowGenerators.length - 1;
+    }
+
+    /** `mesh.receiveShadows = true`, by scene-mesh index. */
+    public recordShadowReceiver(sceneMeshIndex: number): void {
+        this.shadowReceiverMeshes.add(sceneMeshIndex);
+    }
+
+    /** The scene slot the next `addToScene(scene, light)` fills. */
+    public nextSceneLightIndex(): number {
+        return this.sceneLightCount++;
+    }
+
     /** Records a scene-code mesh creation for the per-renderable variant key. */
     public recordSceneMesh(
         kind: string,
@@ -3387,7 +3422,7 @@ class Compiler
             hasTangents: boolean;
             hasColors: boolean;
         },
-    ): void {
+    ): number {
         this.sceneMeshes.push({
             kind,
             gltfAssetsBefore: [...this.assets.values()].filter(
@@ -3395,6 +3430,7 @@ class Compiler
             ).length,
             ...(streams ?? {}),
         });
+        return this.sceneMeshes.length - 1;
     }
 
     /**

@@ -22,6 +22,8 @@ export interface SceneIntrinsicContext
         node: ts.Node,
     ): void;
     compileFrameCallback(expression: ts.Expression): string;
+    /** The `scene.lights` slot the next added light fills. */
+    nextSceneLightIndex(): number;
     requireEngine(value: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
@@ -63,6 +65,13 @@ export function compileSceneIntrinsic(
                 );
             }
             context.expectSameEngine(scene, resource, call);
+            // The slot this light lands in. `scene.lights` order is what the
+            // pin's shadow receiver fragment names its per-light varyings
+            // and bindings by, so a generator's light has to be added
+            // before the generator is created.
+            if (resource.kind === "light") {
+                resource.sceneLightIndex = context.nextSceneLightIndex();
+            }
             // A container's entity takes the pin's entity walk alone: its
             // animation groups, per-frame tick, camera and clear colour
             // belong to the container arm, which a scene iterating

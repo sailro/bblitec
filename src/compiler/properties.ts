@@ -59,6 +59,14 @@ interface PropertyRead {
      */
     carriesScenePbrMaterial?: true;
     /**
+     * Carries the owner's shadow-generator identity onto the value read,
+     * the same way the material rule carries its record: `light.shadowGenerator`
+     * is how the corpus hands the generator to `setShadowTaskCasterMeshes`,
+     * and the manifest entry is what tells generation which casters that
+     * registration named.
+     */
+    carriesShadowGenerator?: true;
+    /**
      * Carries the owner's `isDepthTexture` and `renderTextureSource` onto
      * the value read, for a read that names the owner's own attachment.
      */
@@ -415,6 +423,16 @@ const propertyRules: readonly PropertyRule[] = [
         carriesScenePbrMaterial: true,
     },
     {
+        // The corpus creates a generator, assigns it to its light, and then
+        // reads it back off the light to register the casters -- so this
+        // read has to resolve the same manifest entry the assignment stored.
+        owner: "light",
+        property: "shadowGenerator",
+        value: "shadow-generator",
+        record: ["lights", "shadow_generator"],
+        carriesShadowGenerator: true,
+    },
+    {
         // Read as plain data, which is what lets `g.name !== "swimming"`
         // compile through the ordinary comparison path.
         owner: "animation-group",
@@ -563,6 +581,10 @@ export function readProperty(
                   scenePbrMaterialIndex:
                       owner.scenePbrMaterialIndex,
               }
+            : {}),
+        ...(rule.carriesShadowGenerator &&
+        owner.shadowGeneratorIndex !== undefined
+            ? { shadowGeneratorIndex: owner.shadowGeneratorIndex }
             : {}),
         ...(rule.carriesNodeParticleSet &&
         owner.nodeParticleSetIndex !== undefined

@@ -518,6 +518,7 @@ RenderTargetHandle create_render_target(
         options.height_ratio,
         options.format,
         options.has_format,
+        options.shadow_map,
     });
     return RenderTargetHandle{
         static_cast<std::uint32_t>(engine.render_targets.size() - 1)};
