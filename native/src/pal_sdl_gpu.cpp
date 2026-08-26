@@ -86,7 +86,8 @@ namespace {
     return SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 }
 
-SDL_GPUCullMode gpu_cull_mode(upstream::RenderCullMode cull) {
+[[maybe_unused]] SDL_GPUCullMode gpu_cull_mode(
+    upstream::RenderCullMode cull) {
     return cull == upstream::RenderCullMode::none
         ? SDL_GPU_CULLMODE_NONE
         : SDL_GPU_CULLMODE_BACK;
@@ -983,7 +984,7 @@ PinnedResource shadow_resource_for(
  * to own -- which is how the PBR family came to draw its casters under the
  * main pass's reverse-Z state.
  */
-void apply_pass_depth_state(
+[[maybe_unused]] void apply_pass_depth_state(
     SDL_GPUGraphicsPipelineCreateInfo& info,
     const GpuState& state,
     bool shadow_pass) {

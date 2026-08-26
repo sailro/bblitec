@@ -163,8 +163,9 @@ ${generatedSourceLines}
 `;
 }
 
-function markUnreferencedNumericLocals(body: string[]): void {
-    const declaration = /^(\s*)(double )([A-Za-z_][A-Za-z0-9_]*) = /;
+function markUnreferencedLocals(body: string[]): void {
+    const declaration =
+        /^(\s*)((?:auto|double) )([A-Za-z_][A-Za-z0-9_]*) = /;
     const counts = new Map<string, number>();
     for (const line of body) {
         for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
@@ -283,7 +284,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
     }
     // The body is finished, so a local nothing referenced is now
     // decidable — mark those, and only those.
-    markUnreferencedNumericLocals(body);
+    markUnreferencedLocals(body);
     const preamble =
         preambleSections.length > 0
             ? `\n${preambleSections.join("\n\n")}\n`

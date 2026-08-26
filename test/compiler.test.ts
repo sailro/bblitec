@@ -2199,7 +2199,7 @@ test("lowers numeric for and while loops", () => {
     );
     assert.match(
         result.cpp,
-        /while \(\(v_fn0_remaining > 0\.0\)\)/,
+        /while \(v_fn0_remaining > 0\.0\)/,
     );
     assert.match(result.cpp, /v_fn0_remaining--/);
 });
@@ -2222,7 +2222,7 @@ test("lowers break and continue in runtime loops", () => {
 
     assert.match(result.cpp, /continue;/);
     assert.match(result.cpp, /break;/);
-    assert.match(result.cpp, /while \(\(v_index < 10\.0\)\)/);
+    assert.match(result.cpp, /while \(v_index < 10\.0\)/);
 });
 
 test("keeps the for incrementor reachable from continue", () => {
@@ -2241,7 +2241,7 @@ test("keeps the for incrementor reachable from continue", () => {
 
     assert.match(
         result.cpp,
-        /for \(; \(v_block\d+_index < bblscene::count\(\)\); v_block\d+_index\+\+\) \{/,
+        /for \(; v_block\d+_index < bblscene::count\(\); v_block\d+_index\+\+\) \{/,
     );
     assert.match(result.cpp, /continue;/);
 });
@@ -2755,7 +2755,7 @@ test("folds browser query predicates inside a runtime condition", () => {
 
     assert.doesNotMatch(compileSource(source).cpp, /\.position\.x = 3\.0f/);
     const queried = compileSource(source, { search: "?seekTime=0.5" });
-    assert.match(queried.cpp, /if \(\(v_frameCount == 10\.0\)\)/);
+    assert.match(queried.cpp, /if \(v_frameCount == 10\.0\)/);
     assert.match(queried.cpp, /\.position\.x = 3\.0f/);
 });
 
@@ -3762,7 +3762,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     assert.match(result.cpp, /v_frame\+\+/);
     assert.match(
         result.cpp,
-        /if \(\(!\(v_added\) && \(v_frame >= 20\.0\)\)\)/,
+        /if \(\(!\(v_added\) && v_frame >= 20\.0\)\)/,
     );
     assert.match(
         result.cpp,
@@ -3770,7 +3770,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
     );
     assert.match(
         result.cpp,
-        /if \(\(v_added && \(v_frame >= \(20\.0 \+ 150\.0\)\)\)\)/,
+        /if \(\(v_added && v_frame >= \(20\.0 \+ 150\.0\)\)\)/,
     );
     assert.doesNotMatch(result.cpp, /dataset|drawCallCount/);
     assert.deepEqual(result.manifest.generatedSources, [
@@ -4463,6 +4463,40 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
         result.cpp,
         /\[\[maybe_unused\]\] double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
     );
+});
+
+test("keeps generated scene locals and equality conditions warning-clean", () => {
+    const compileScene = (id: string) => {
+        const sourcePath =
+            `corpus/babylon-lite/lab/lite/src/lite/${id}.ts`;
+        return compileSource(
+            readFileSync(resolve(sourcePath), "utf8"),
+            { fileName: sourcePath },
+        ).cpp;
+    };
+
+    const navigation = compileScene("scene170");
+    assert.match(navigation, /if \(v_frame == 3\.0\)/);
+    assert.doesNotMatch(navigation, /if \(\(v_frame == 3\.0\)\)/);
+
+    const splat = compileScene("scene120");
+    assert.match(
+        splat,
+        /\[\[maybe_unused\]\] auto v_splat = bbl::load_splat/,
+    );
+
+    const importedCamera = compileScene("scene250");
+    assert.match(
+        importedCamera,
+        /\[\[maybe_unused\]\] bool v_bblite_asset_camera_found_\d+ = false;/,
+    );
+
+    const discardedMarker = compileScene("scene175");
+    assert.match(
+        discardedMarker,
+        /static_cast<void>\(v_fn\d+_sphere\);/,
+    );
+    assert.doesNotMatch(discardedMarker, /^\s*v_fn\d+_sphere;$/m);
 });
 
 test("compiles Babylon Lite scene 216 PBR fog", () => {

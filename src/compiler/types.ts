@@ -903,6 +903,12 @@ export function isNodeParticleValue(kind: ValueKind): boolean {
 export interface Value {
     kind: ValueKind;
     cpp: string;
+    /**
+     * A reached user function was inlined and left this value as its
+     * result. If its call is used as a statement, C++ needs an explicit
+     * discard instead of a bare value expression.
+     */
+    requiresExplicitDiscard?: boolean;
     dataType?: DataType;
     dataStore?: "f32" | "u32";
     /**

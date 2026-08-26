@@ -1444,7 +1444,11 @@ export class StatementLowerer {
                 value.kind !== "engine" &&
                 value.cpp.length > 0
             ) {
-                context.emit(`${value.cpp};`);
+                context.emit(
+                    value.requiresExplicitDiscard
+                        ? `static_cast<void>(${value.cpp});`
+                        : `${value.cpp};`,
+                );
             }
             return;
         }
