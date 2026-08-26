@@ -135,6 +135,10 @@ struct SplatMeshHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct ShadowGeneratorHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 enum class PrimitiveKind {
     babylon,
     box,
@@ -275,6 +279,8 @@ struct RenderTargetOptions {
     /** The colour format, when the target does not take the surface's. */
     TextureFormatClass format = TextureFormatClass::rgba8_unorm;
     bool has_format = false;
+    /** See `RenderTargetRecord::shadow_map`. */
+    bool shadow_map = false;
 };
 
 enum class RenderTextureSource {
@@ -317,6 +323,18 @@ struct RenderTaskOptions {
      * the task's own target is multisampled, which is the pin's rule.
      */
     RenderTargetHandle resolve_target{};
+    /**
+     * The generator this pass renders the shadow map for.
+     *
+     * The pin builds a `RenderTask` per PCF generator and installs the
+     * light-space matrices on a camera facade whose caches it pins
+     * (`updateShadowCameraBase`), so the pass reads them straight back
+     * instead of composing a perspective from a camera record. There is no
+     * such facade here: the task names its generator and the frame builds
+     * the pass's scene block from that generator's own biased
+     * view-projection.
+     */
+    ShadowGeneratorHandle shadow_generator{};
 };
 
 struct RenderTaskMesh {
@@ -477,6 +495,18 @@ struct RenderTargetRecord {
     double height_ratio = 1.0;
     TextureFormatClass format = TextureFormatClass::rgba8_unorm;
     bool has_format = false;
+    /**
+     * This target is a shadow generator's own map
+     * (`createShadowRenderTarget`), which is the pin's ONE exception to
+     * every convention the frame's attachments take: a `depth32float`
+     * format sampled through a comparison sampler, standard-Z rather than
+     * this port's reverse-Z, and a far clear of 1 rather than 0.
+     *
+     * The flag says which target it is; the four values it implies are the
+     * `shadow_map_depth_*` constants generation emits from the pinned
+     * descriptor, so no PAL types one out.
+     */
+    bool shadow_map = false;
 };
 
 struct FrameTaskRecord {
@@ -1523,6 +1553,14 @@ struct LightRecord {
     // cone angle the light stores, so the cosine of the half-angle is the
     // cosine of outerConeAngle.
     float cos_half_angle = 1.0f;
+    /**
+     * The full cone angle the cosine above was taken of, at the width the
+     * pinned factory holds it (a JavaScript number). Shading reads only the
+     * cosine; a spot PCF shadow projection reads the angle itself, as the
+     * perspective FOV `_computeSpotLightMatrix` builds its volume from. It
+     * is written wherever `cos_half_angle` is, so the two never disagree.
+     */
+    double angle = 0.0;
     // Spot falloff exponent. The pinned Standard lighting function raises the
     // cone cosine to it, so a higher value sharpens the edge. A glTF spot
     // carries no exponent and the PBR path shades cones by inverse-square
@@ -1538,6 +1576,13 @@ struct LightRecord {
     // a light created in scene code gets.
     std::vector<std::uint32_t> included_meshes;
     std::vector<std::uint32_t> excluded_meshes;
+    /**
+     * `light.shadowGenerator`. The pin's `ShadowTask` walks `scene.lights`
+     * and renders each light's generator, and `standard-renderable.ts`
+     * collects the receiver slots from the same walk, so the generator
+     * hangs off the light in both directions.
+     */
+    ShadowGeneratorHandle shadow_generator{};
 };
 
 // Every scalar the pinned camera factories hold is a plain JavaScript
@@ -1681,6 +1726,34 @@ struct AssetRecord {
     std::function<void(std::size_t, float)> set_clip_additive;
 };
 
+/**
+ * One `ShadowGenerator`, as the PCF spot factory builds it.
+ *
+ * The pin keeps the GPU objects on the generator (a `depth32float` map, a
+ * comparison sampler, the params UBO and the receiver UBO); those are the
+ * PAL's, so the record carries only the values that decide them plus the
+ * two matrices `renderPcfShadowMap` refreshes — the unbiased one the
+ * receiver samples with, and the biased one the caster pass renders
+ * through.
+ */
+struct ShadowGeneratorRecord {
+    std::uint32_t map_size = 512;
+    double bias = 0.0;
+    double darkness = 0.0;
+    double near_plane = 1.0;
+    double far_plane = 10000.0;
+    /** `sg._lightMatrix` — unbiased, what the receiver samples with. */
+    std::array<float, 16> light_matrix{};
+    /** The shadow camera's view, from the pinned light-space basis. */
+    std::array<float, 16> caster_view{};
+    /** That camera's view-projection, with the pinned clip-space bias. */
+    std::array<float, 16> caster_view_projection{};
+    /** The `ShadowTask` inputs `setShadowTaskCasterMeshes` registered. */
+    std::vector<MeshHandle> caster_meshes;
+    /** The depth-only render task the task state built for this map. */
+    TaskHandle task{};
+};
+
 struct Engine {
     EngineOptions options{};
     /**
@@ -1733,6 +1806,7 @@ struct Engine {
     std::vector<SplatMeshRecord> splat_meshes;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
+    std::vector<ShadowGeneratorRecord> shadow_generators;
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
@@ -2217,6 +2291,31 @@ RenderTextureRef geometry_task_output_texture(TaskHandle task);
 RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
+
+/**
+ * `PcfSpotlightShadowGeneratorConfig`, as the reached slice resolves it.
+ *
+ * `mapSize` sizes a GPU texture, so it is decided at generation; the rest
+ * are the pinned `??` defaults or what the scene passed, at the JavaScript
+ * width the pin holds them (a spot's projection near/far reach the
+ * perspective volume before any float store).
+ */
+struct PcfSpotShadowOptions {
+    std::uint32_t map_size = 512;
+    double bias = 0.0;
+    double darkness = 0.0;
+    double near_plane = 1.0;
+    double far_plane = 10000.0;
+};
+
+ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    PcfSpotShadowOptions options);
+void set_shadow_task_caster_meshes(
+    Engine& engine,
+    ShadowGeneratorHandle generator,
+    std::vector<MeshHandle> caster_meshes);
 void add_render_task_mesh(
     Engine& engine,
     TaskHandle task,
@@ -2525,6 +2624,13 @@ void register_sprite_renderer(
     SpriteRendererHandle renderer);
 
 void register_scene(Scene& scene);
+/**
+ * `registerSceneWithShadowSupport`: the ordinary registration plus the
+ * scene-owned shadow task, which the pin installs ahead of the render task
+ * the scene already carries. Upstream keeps the two entry points apart so an
+ * ordinary bundle retains no shadow scheduling code at all.
+ */
+void register_scene_with_shadow_support(Scene& scene);
 void enable_scene_transmission(Scene& scene);
 void load_image_skybox(
     Scene& scene,

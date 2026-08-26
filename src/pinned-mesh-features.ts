@@ -15,6 +15,7 @@ import type { JsonObject } from "./gltf-document.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 interface MeshFeatureBits {
+    MSH_RECEIVE_SHADOWS: number;
     MSH_HAS_TANGENTS: number;
     MSH_HAS_SKELETON: number;
     MSH_HAS_MORPH_TARGETS: number;
@@ -60,6 +61,19 @@ export async function pinnedMeshFeaturesFromPrimitive(
     // thin-instance arm: the per-instance matrix as four vec4 attributes.
     if (options.instanced) features |= bit.MSH_HAS_THIN_INSTANCES;
     return features;
+}
+
+/**
+ * The pin's own `MSH_RECEIVE_SHADOWS`.
+ *
+ * `rebuildSingle` ORs it through `_computeMeshFeatures(mesh, receiveShadows)`
+ * where `receiveShadows` is `mesh.receiveShadows && hasSomeShadows`, so the
+ * bit belongs to the mesh's row of the variant key rather than to its
+ * material. Read from the pin rather than restated, like every other bit
+ * this module hands out.
+ */
+export async function pinnedReceiveShadowsBit(): Promise<number> {
+    return (await meshFeatureBits()).MSH_RECEIVE_SHADOWS;
 }
 
 /**

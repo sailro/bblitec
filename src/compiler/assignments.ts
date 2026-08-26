@@ -394,6 +394,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
      * inventory can cite file:line.
      */
     reachFeature(feature: Feature, site: ts.Node): void;
+    /** `mesh.receiveShadows = true`, by scene-mesh index. */
+    recordShadowReceiver(sceneMeshIndex: number): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -994,6 +996,84 @@ export function emitPropertyAssignment(
             context.emit(
                 `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].name = ${name.cpp};`,
             );
+            return;
+        }
+
+        // `mesh.receiveShadows` is a composition key and nothing else:
+        // `_computeMeshFeatures` turns it into `MSH_RECEIVE_SHADOWS`, which
+        // selects the fragment carrying the per-light sampling, and every
+        // consumer downstream — the variant selector, both backends' bind
+        // decision — reads that composed word rather than a record lane. So
+        // the assignment records the receiver for composition and emits
+        // nothing, exactly as the material-tracking installers do.
+        if (
+            target.kind === "mesh" &&
+            property === "receiveShadows"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "mesh receiveShadows",
+            );
+            const enabled = context.compileValue(expression.right);
+            context.expectKind(enabled, "boolean", expression.right);
+            if (enabled.cpp !== "true") {
+                context.fail(
+                    expression.right,
+                    "Only `receiveShadows = true` is lowered: the composed " +
+                        "variant is selected at generation, so a value the " +
+                        "scene computes would need both fragments.",
+                );
+            }
+            if (target.sceneMeshIndex === undefined) {
+                context.fail(
+                    left.expression,
+                    "Shadow receiving is lowered for a scene-code mesh: an " +
+                        "imported one composes through its asset's own " +
+                        "variant rows.",
+                );
+            }
+            if (target.scenePbrMaterialIndex !== undefined) {
+                context.fail(
+                    left.expression,
+                    "Shadow receiving is composed for the Standard family: " +
+                        "the PBR receiver reaches its own pinned fragment " +
+                        "(pbr-shadow-fragment.ts), which this port does not " +
+                        "compose.",
+                );
+            }
+            context.recordShadowReceiver(target.sceneMeshIndex);
+            return;
+        }
+
+        if (
+            target.kind === "light" &&
+            property === "shadowGenerator"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "light shadowGenerator",
+            );
+            const generator = context.compileValue(expression.right);
+            context.expectKind(
+                generator,
+                "shadow-generator",
+                expression.right,
+            );
+            context.expectSameEngine(target, generator, expression);
+            context.emit(
+                `${context.requireEngine(target, expression)}.lights[${target.cpp}.value].shadow_generator = ${generator.cpp};`,
+            );
+            // The pin's `ShadowTask` walks `scene.lights` and its receiver
+            // slots come from the same walk, so the generator has to be
+            // reachable from the light -- and a later
+            // `setShadowTaskCasterMeshes(light.shadowGenerator, ...)` reads
+            // it back off the light, which is what this carries.
+            if (generator.shadowGeneratorIndex !== undefined) {
+                target.shadowGeneratorIndex =
+                    generator.shadowGeneratorIndex;
+            }
             return;
         }
 

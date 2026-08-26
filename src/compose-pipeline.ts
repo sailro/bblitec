@@ -15,6 +15,7 @@ import { executeModuleGraph } from "./executed-module-graph.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
+import type { ShadowGeneratorManifest } from "./compiler/types.js";
 import type { GeneratedTree } from "./generated-tree.js";
 import {
     assertArmsCovered,
@@ -27,7 +28,10 @@ import {
     type PinnedMaterialArms,
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
-import { pinnedMeshFeaturesFromPrimitive } from "./pinned-mesh-features.js";
+import {
+    pinnedMeshFeaturesFromPrimitive,
+    pinnedReceiveShadowsBit,
+} from "./pinned-mesh-features.js";
 import {
     nodeVariantStageStems,
     type NodeVariantManifestEntry,
@@ -43,6 +47,7 @@ import {
 import {
     babylonRenderableCount,
     composeSceneStandardVariants,
+    type ShadowLightSlot,
     type StandardSceneComposition,
 } from "./pinned-standard-variants.js";
 import {
@@ -244,12 +249,10 @@ export async function composeScenePipeline({
     // sweep spawns per-frame boxes from one compiled call site -- so handles
     // past the static table take this fallback when every scene-code mesh
     // shares one attribute set, and refuse otherwise.
-    const sceneMeshFeatureValues = new Set(
-        renderableMeshFeatures.slice(
-            renderableMeshFeatures.length -
-                result.manifest.sceneMeshes.length,
-        ),
+    const sceneMeshRows = renderableMeshFeatures.slice(
+        renderableMeshFeatures.length - result.manifest.sceneMeshes.length,
     );
+    const sceneMeshFeatureValues = new Set(sceneMeshRows);
     const runtimeMeshFeatures =
         result.manifest.sceneMeshes.length === 0
             ? await proceduralRenderableFeatures()
@@ -261,6 +264,42 @@ export async function composeScenePipeline({
     // the transcribed standard fragment is retired.
     let standardComposition: StandardSceneComposition | undefined;
     let standardRenderableMeshFeatures: number[] | undefined;
+    // `rebuildSingle` derives `MSH_RECEIVE_SHADOWS` from
+    // `mesh.receiveShadows && hasSomeShadows`, so the bit is a property of
+    // the mesh and belongs on its row of the Standard table -- the family
+    // whose receiver fragment this port composes. The PBR table stays
+    // untouched: a PBR receiver refuses at its own assignment.
+    // The receiver fragment the pin composes follows the generator's own
+    // filter, so the manifest kind maps onto `ShadowLightSlot`'s rather
+    // than the PCF arm being assumed; a family added without a receiver arm
+    // then refuses at composition instead of composing the wrong one.
+    const pinnedShadowType = (
+        kind: ShadowGeneratorManifest["kind"],
+    ): ShadowLightSlot["shadowType"] => {
+        if (kind === "pcf-spot") return "pcf";
+        throw new Error(`No receiver fragment composes for '${kind}'.`);
+    };
+    const shadowLights = result.manifest.shadowGenerators.map(
+        (generator) => ({
+            lightIndex: generator.lightIndex,
+            // The generator family decides which receiver fragment the pin
+            // composes, so the manifest's own kind is what carries it: a
+            // family added without a receiver arm refuses at composition.
+            shadowType: pinnedShadowType(generator.kind),
+        }),
+    );
+    // The scene-code rows the Standard table keys on, with each receiver's
+    // bit ORed onto its own creation-ordered row. `sceneMeshRows` is the
+    // same tail `runtimeMeshFeatures` reads above -- the scene's own meshes
+    // follow every asset renderable, in creation order.
+    const receiveBit = shadowLights.length > 0
+        ? await pinnedReceiveShadowsBit()
+        : 0;
+    const standardSceneMeshFeatures = sceneMeshRows.map((bits, index) =>
+        result.manifest.shadowReceiverMeshes.includes(index)
+            ? bits | receiveBit
+            : bits,
+    );
     if (result.manifest.features.includes("material:standard")) {
         const babylonAssets = result.manifest.assets
             .filter((asset) => asset.kind === "babylon")
@@ -316,13 +355,9 @@ export async function composeScenePipeline({
                 ),
                 sceneMaterials: sceneStandardMaterials,
                 sceneMeshFeatureValues: [
-                    ...new Set(
-                        renderableMeshFeatures.slice(
-                            renderableMeshFeatures.length -
-                                result.manifest.sceneMeshes.length,
-                        ),
-                    ),
+                    ...new Set(standardSceneMeshFeatures),
                 ],
+                shadowLights,
                 geometryTasks: result.manifest.geometryOutputTasks.map(
                     (task, index) => ({
                         index,
@@ -339,14 +374,13 @@ export async function composeScenePipeline({
         // zero rows sized by the loader's own walk), then the scene-code
         // meshes.
         standardRenderableMeshFeatures = [];
-        let gltfCursor = 0;
         for (const asset of result.manifest.assets) {
             if (asset.kind === "gltf") {
-                const rows = await gltfRenderableFeatures(
-                    resolve(outputPath, "assets", asset.output),
+                standardRenderableMeshFeatures.push(
+                    ...(await gltfRenderableFeatures(
+                        resolve(outputPath, "assets", asset.output),
+                    )),
                 );
-                standardRenderableMeshFeatures.push(...rows);
-                gltfCursor += rows.length;
             } else if (asset.kind === "babylon") {
                 const count = babylonRenderableCount(
                     readFileSync(
@@ -359,9 +393,7 @@ export async function composeScenePipeline({
                 }
             }
         }
-        standardRenderableMeshFeatures.push(
-            ...renderableMeshFeatures.slice(gltfCursor),
-        );
+        standardRenderableMeshFeatures.push(...standardSceneMeshFeatures);
     }
     // Every node graph the scene parsed, compiled by the pin's own emitter
     // and pipeline builder. The index is the scene's reach order, which is

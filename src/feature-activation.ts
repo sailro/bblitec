@@ -475,6 +475,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/scene/scene-remove.ts",
         consumers: CMAKE,
     },
+    "shadow:pcf": {
+        provenance: "src/shadow/pcf-spotlight-shadow-generator.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
+    "shadow:task": {
+        provenance: "src/frame-graph/shadow-task.ts",
+        consumers: CMAKE,
+    },
     "sprite:2d": {
         provenance: "src/sprite/sprite-2d.ts",
         consumers: CMAKE,
@@ -1129,6 +1137,41 @@ function capabilityRows(
                 "isCube); upstream-lower derives the define from the " +
                 "composed set through the same variantBindings walk",
             ["render_capabilities.hpp", "material_texture_slots.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_SHADOWS",
+            "capability",
+            has("shadow:pcf"),
+            [
+                [
+                    has("shadow:pcf"),
+                    "scene source reached shadow:pcf",
+                ],
+            ],
+            "not reached",
+            "src/shadow/pcf-spotlight-shadow-generator.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_STANDARD_SHADOWS",
+            "capability",
+            has("shadow:pcf") && standardVariantCount > 0,
+            [
+                // One reason, because the define is a CONJUNCTION: the
+                // receiver fragment this port composes is the Standard
+                // family's, so a scene reaching a generator with no
+                // Standard variant compiles no shadow code at all.
+                [
+                    has("shadow:pcf") && standardVariantCount > 0,
+                    "scene source reached shadow:pcf and the scene " +
+                        "composes Standard variants",
+                ],
+            ],
+            has("shadow:pcf")
+                ? "reached shadow:pcf but composes no Standard variant"
+                : "not reached",
+            "src/material/standard/fragments/std-shadow-fragment.ts",
+            ["render_capabilities.hpp"],
         ),
         checkedRow(
             "BBLITE_IMAGE_SKYBOX",

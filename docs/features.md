@@ -79,6 +79,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
 | [Physics](#physics) | Run | rigid bodies, primitive shapes, one fixed step per frame — over a substituted solver |
+| [Shadows](#shadows) | Compile → Run | the receiver fragment composed per shadow-casting light at generation; the caster pass, the map and the comparison sampling at run time |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
 | [Fullscreen effects](#fullscreen-effects) | Compile → Run | the caller's WGSL wrapped in the pin's own vertex stage at generation; the swapchain renderer or the frame-graph task at run time |
@@ -944,6 +945,49 @@ accumulator), containers, heightfields, constraints, queries, triggers,
 collision events, the character controller, the debug viewer, floating
 origin, and every body control past creation.
 
+### Shadows
+
+Percentage-closer-filtered shadows for a spot light: the caster pass, the
+generator's own map, and the receiver's nine-tap comparison filter.
+
+`createPcfSpotlightShadowGenerator(engine, light, cfg)` owns the GPU state —
+a `depth32float` map at `mapSize`, a comparison sampler under the pin's own
+`less`, and the receiver block — while the casters are a *task* input
+(`setShadowTaskCasterMeshes`), which is where upstream keeps them too.
+`registerSceneWithShadowSupport` is what installs the scheduling: it is
+`registerScene` plus the scene-owned shadow task, unshifted ahead of the
+scene's own render task, and the split exists upstream so an ordinary bundle
+retains no shadow code at all. This port keeps it as a different generated
+call for the same reason.
+
+**Compile time: which fragment a receiver composes.** `mesh.receiveShadows`
+turns into the pin's `MSH_RECEIVE_SHADOWS`, which is a composition key rather
+than a uniform lane: the receiving mesh's variant carries
+`createStdShadowFragment`'s per-light varyings, bindings and sampling code,
+named after each light's index in `scene.lights`. So the scene's shadow-light
+slots are composition input, and a light added at a different position
+composes a different fragment. The caster draws through its own material's
+no-colour view — the same arm a scene-code `createStandardNoColorMaterialView`
+reaches — with the receive bit dropped, exactly as `rebuildSingle` computes
+`receiveShadows` as `!shadowOutput && ...`.
+
+**Run time: two passes and one exception.** The caster pass is a depth-only
+render task over the generator's map, rendered from the light: standard-Z
+(`less-equal`, cleared to the far value 1), which is the pin's own one
+exception to this port's reverse-Z convention, and the pin's clip-space bias
+baked into the *caster's* view-projection alone — the receiver samples with
+the unbiased matrix, and biasing both would shift the comparison twice. The
+receiver then binds the map, the comparison sampler and the receiver block as
+the pin's group 2, and `shadowFactors[lightIndex]` scales that light's diffuse
+and specular contribution.
+
+What refuses at generation, by name: the ESM directional generator (its
+blurred colour map and 33-tap kernel), the PCF directional and cascaded
+generators, a PBR or node receiver (each reaches its own pinned fragment), a
+`receiveShadows` written to anything but `true` (the variant is selected at
+generation), an imported mesh as caster or receiver, and every generator
+option past `mapSize`, `bias`, `darkness`, `near` and `far`.
+
 ### Navigation
 
 Runtime Recast/Detour navigation behind the same boundary shape physics
@@ -1158,6 +1202,7 @@ before it trusts a measurement.
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
 | Compressed textures | which container the device's formats select, and a Basis file transcoded into one | the container parsed, its blocks uploaded, its own chain sampled |
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
+| Shadows | which receiver variant carries the pin's shadow fragment, and the per-light slots it names | the caster pass, the map, the light-space matrices, the comparison sampling |
 | Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, the textures the scene supplied, and the per-mesh light selection that block carries |
 | Fullscreen effects | the caller's fragment wrapped in the pin's own vertex stage, and the bind-group layout the descriptor declared | the pass, its uniform bytes, and the textures the scene bound |
 
@@ -1261,6 +1306,12 @@ build error with a source location, not a silently different image.
   siblings, which is how the corpus composes one document out of another; a
   package import refuses, because that is the boundary keeping the route to
   plain data
+- shadows cover the pinned PCF spot generator over Standard receivers. The
+  ESM directional generator, the PCF directional and cascaded ones, a PBR or
+  node receiver, an imported mesh as caster or receiver, a computed
+  `receiveShadows`, and every generator option past `mapSize`, `bias`,
+  `darkness`, `near` and `far` each fail at generation naming what they
+  reached
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
   (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,

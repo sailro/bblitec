@@ -303,12 +303,58 @@ own API.
 Two arms of the library sit outside the slice and name their own compare: the
 pin's shadow targets render standard-Z `less-equal`, and a `ShaderMaterial`
 may pass `depthCompare` (its default is `"greater-equal"`; a scene naming one
-refuses at compilation today).
+refuses at compilation today). The first of those is reached — the shadow
+contract below carries it.
 
 `FragDepthBlock` composes because of it: the block hands a graph
 `@builtin(frag_depth)`, so the value it returns is a depth in that
 convention, and a renderer ordering depth the other way would occlude by its
 inverse. Scene 84 measures the block at 0.000 on both backends.
+
+**A shadow map is the pin's one standard-Z target, and its bias reaches one
+of the two matrices.** `createShadowRenderTarget` names `dFormat:
+"depth32float"`, `_depthCompare: "less-equal"` and `_depthClearValue: 1` at
+one sample, so a caster pass is the one place this port clears depth to the
+far value 1 and compares the other way. The compare and the clear are
+*emitted* from that declaration as `shadow_map_depth_compare` and
+`shadow_map_depth_clear`, beside the `pinned_depth_state.hpp` pair they are
+the exception to and for the same reason — a PAL constant would agree with
+the pin only until it moved. The format and the sample count are checked
+there instead of emitted: both decide which texture a backend creates rather
+than a value it uploads, and a pin naming another of either fails generation
+by name.
+`renderPcfShadowMap` then packs the *unbiased* view-projection into
+`sg._lightMatrix` — what the receiver samples with — and hands
+`biasViewProjection`'s copy to the shadow camera, which is what the caster
+renders through. Baking Babylon's clip-space linear bias (halved for WebGPU's
+[0, 1] range, added into each column's z row) into both would shift the
+comparison twice, so the two matrices stay apart on the record. The
+light-space basis, the spot volume from `light.angle`, the 4x4 multiply and
+the bias are each lowered from their own pinned declarations; the cone angle
+itself is written wherever `cos_half_angle` is, so the two can never disagree.
+Scene 18 measures 0.000 on both backends with every pixel of the foreground
+exact.
+
+**A shadow receiver is a composed variant, not a uniform lane.**
+`_computeMeshFeatures(mesh, receiveShadows)` turns `mesh.receiveShadows &&
+hasSomeShadows` into `MSH_RECEIVE_SHADOWS`, and `rebuildSingle` splices
+`createStdShadowFragment(slots)` after the vertex-colour fragment and before
+the thin-instance one — so the receiver's varyings, its group-2 bindings and
+its nine-tap comparison filter are all named after each light's index in
+`scene.lights`. Generation composes exactly that, which is what makes the
+receiver stage byte-identical to the browser's. The depth-only view of the
+same mesh drops the bit, because `rebuildSingle` derives `receiveShadows` as
+`!shadowOutput && ...`, and both the composition and the runtime selector
+strip it for a no-colour material.
+
+The receiver's group 2 costs SDL_GPU a uniform slot it does not have: scene,
+lights, mesh and mat spend the four the backend allows before `shadowInfo_N`
+arrives. It takes the same treatment the geometry tasks' `gp` block already
+takes — demoted to a read-only storage buffer for the SDL-facing artifacts
+alone, with the `.native.wgsl` Dawn consumes keeping the pin's uniform
+declaration. The layouts agree because every member of the block is
+16-byte-aligned (a mat4 and two vec4s), which is the same argument that
+licenses the `gp` demotion.
 
 **A depth convention cannot move a coverage mask, but it can move a
 varying — through the near-plane clipper.** Unclipped geometry is

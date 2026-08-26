@@ -4742,6 +4742,8 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                         // cos(angle / 2), so the cosine is of the value.
                         light.cos_half_angle =
                             std::cos(mix(a.x, b.x));
+                        light.angle =
+                            static_cast<double>(mix(a.x, b.x)) * 2.0;
                         break;
                 }
             }

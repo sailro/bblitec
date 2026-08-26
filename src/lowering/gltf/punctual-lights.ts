@@ -751,6 +751,8 @@ export function lowerPunctualLightsCpp(
         `                        : ${spotDefaultLiteral};`,
         "                    light.cos_half_angle =",
         "                        std::cos(outer_cone_angle);",
+        "                    light.angle =",
+        "                        static_cast<double>(outer_cone_angle) * 2.0;",
         "                }",
         "                light.position = Vec3{",
         `                    ${laneSign(0, 1)}light_world[` +

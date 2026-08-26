@@ -36,6 +36,7 @@ export interface IntrinsicCallContext {
     /** Records a scene-code mesh creation for the per-renderable variant key. */
     /** Counts one scene-code material creation of any family. */
     recordSceneMaterialSlot(): number;
+    /** Records a scene-code mesh creation and returns its creation index. */
     recordSceneMesh(
         kind: string,
         streams?: {
@@ -43,5 +44,5 @@ export interface IntrinsicCallContext {
             hasTangents: boolean;
             hasColors: boolean;
         },
-    ): void;
+    ): number;
 }

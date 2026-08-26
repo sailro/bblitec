@@ -235,6 +235,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         source: "upstream/src/navigation.cpp",
         features: ["navigation:recast"],
     },
+    {
+        source: "upstream/src/shadow.cpp",
+        features: ["shadow:pcf"],
+    },
 ];
 
 export function reachedGeneratedSources(

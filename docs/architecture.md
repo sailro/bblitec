@@ -88,6 +88,8 @@ Primary source ownership:
 | `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted rather than restated |
 | `src/compiler/intrinsics/audio.ts` | the Babylon half of the audio surface: the engine lifecycle a scene reaches, and every sound/bus/spatial entry point that refuses by name |
 | `src/compiler/audio-surface.ts` | the browser half: the Web Audio method calls and property writes a scene makes on the context the engine hands back (its reads live in the property-rule table) |
+| `src/lowering/shadow-lowerer.ts` | the shadow family: the pinned light-space basis, the spot volume, the 4x4 multiply and the caster's clip-space bias, each lowered from its own AST, beside the generator's GPU contracts asserted against the declarations that state them -- and the depth-only render task the pin's own `ensurePcfShadowTaskState` builds |
+| `src/compiler/intrinsics/shadow.ts` | which shadow surface a scene reached: the generator factory, its caster-mesh task input, and the registration that installs the scene-owned shadow task |
 | `src/lowering/line-lowerer.ts` | the line family: the polyline flatten emitted as C++ from its own pinned declaration, and the `ShaderMaterial` `createLineMaterial` composes -- its two stages folded out of that module's own text builders |
 | `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
 | `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation's seed: recorded for the executed bake, refused where lowered code would also answer it |
@@ -278,6 +280,11 @@ The current generated slice includes:
   PAL supplies, because the pin already takes that solver as a parameter.
   The one deliberately non-bit-faithful family here
   ([fidelity](fidelity.md#physics-contract))
+- percentage-closer-filtered spot shadows: the pinned generator's own
+  `depth32float` map and comparison sampler, a caster pass rendering the
+  material's no-colour view from the light under the pin's standard-Z
+  exception, and the receiver fragment the pin composes per shadow-casting
+  light
 - polyline systems: the pin's own flatten into one indexed mesh, drawn by the
   `ShaderMaterial` its line material composes, at the `line-list` topology
   that material names -- with per-point colours, a fixed-topology update, and

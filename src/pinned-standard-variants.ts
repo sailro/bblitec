@@ -144,6 +144,21 @@ export interface PinnedStandardComposeOptions {
         attachments: readonly string[];
         emitColor: boolean;
     };
+    /**
+     * The scene's shadow-casting lights, in `scene.lights` order — the
+     * slots `rebuildSingle` hands `shadowFragment`. Every receiving mesh in
+     * a build shares them (the pin keys its shadow bind group on the
+     * layout alone for exactly that reason), so this is a scene input
+     * rather than a per-material one; a variant whose mesh carries
+     * `MSH_RECEIVE_SHADOWS` needs it and refuses without it.
+     */
+    shadowLights?: readonly ShadowLightSlot[];
+}
+
+/** One shadow-casting light, as the pinned receiver fragment names it. */
+export interface ShadowLightSlot {
+    lightIndex: number;
+    shadowType: "esm" | "pcf" | "csm";
 }
 
 /** The subset of a pinned std extension the composition path reads. */
@@ -450,13 +465,24 @@ export async function composePinnedStandardVariant(
                 "HAS_SKELETON, and no reached scene enables it.",
         );
     }
+    const shadowLights = options.shadowLights ?? [];
     if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
-        throw new Error(
-            "Pinned Standard received shadows are not composable yet: the " +
-                "shadow fragment (createStdShadowFragment) is built from the " +
-                "scene's shadow-generator slots, which this port does not " +
-                "carry.",
-        );
+        if (shadowLights.length === 0) {
+            throw new Error(
+                "A Standard receiver variant needs the scene's " +
+                    "shadow-light slots: `createStdShadowFragment` names " +
+                    "every varying and binding after the light's index in " +
+                    "`scene.lights`.",
+            );
+        }
+        if (shadowLights.some((slot) => slot.shadowType !== "pcf")) {
+            throw new Error(
+                "Only the PCF filter's receiver fragment is composable: " +
+                    "the ESM arm reads a blurred colour map this port does " +
+                    "not build, and the CSM arm resolves through the " +
+                    "cascaded receiver registry.",
+            );
+        }
     }
     if (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) {
         throw new Error(
@@ -502,11 +528,19 @@ export async function composePinnedStandardVariant(
             ),
         );
     }
-    // `rebuildSingle` splices the thin-instance fragment after the
-    // vertex-colour one (the shadow fragment between them throws above), so
-    // the composed order is the pin's own. The colourless form is pushed
-    // unrewritten, exactly as the renderable does when the pool carries no
-    // instance colours.
+    // `rebuildSingle` splices the shadow fragment after the vertex-colour
+    // one and before the thin-instance one, so the composed order is the
+    // pin's own.
+    if (meshFeatures & meshBits.MSH_RECEIVE_SHADOWS) {
+        const shadow = await importPinnedModule<{
+            createStdShadowFragment: (
+                slots: readonly ShadowLightSlot[],
+            ) => unknown;
+        }>("material/standard/fragments/std-shadow-fragment.js");
+        fragments.push(shadow.createStdShadowFragment(shadowLights));
+    }
+    // The colourless thin-instance form is pushed unrewritten, exactly as
+    // the renderable does when the pool carries no instance colours.
     if (meshFeatures & meshBits.MSH_HAS_THIN_INSTANCES) {
         fragments.push(thinInstance.createThinInstanceFragment(false));
     }
@@ -1246,6 +1280,12 @@ export interface StandardSceneCompositionInput {
     sceneMaterials: boolean;
     /** Distinct mesh-feature values of the scene-code meshes. */
     sceneMeshFeatureValues: readonly number[];
+    /**
+     * The scene's shadow-casting lights, in `scene.lights` order. Empty for
+     * a scene with no generator, which is what makes `rebuildSingle`'s
+     * `hasSomeShadows` false and leaves every mesh's receive bit clear.
+     */
+    shadowLights: readonly ShadowLightSlot[];
     geometryTasks: readonly {
         index: number;
         attachments: readonly string[];
@@ -1447,6 +1487,7 @@ export async function composeSceneStandardVariants(
         MSH_HAS_MORPH_TARGETS: number;
         MSH_HAS_THIN_INSTANCES: number;
         MSH_HAS_VERTEX_COLOR: number;
+        MSH_RECEIVE_SHADOWS: number;
     }>("material/mesh-features.js");
     const flags = await importPinnedModule<{
         NO_COLOR_OUTPUT: number;
@@ -1546,6 +1587,7 @@ export async function composeSceneStandardVariants(
         const composed = await composePinnedStandardVariant(material, {
             ...options,
             meshFeatures,
+            shadowLights: input.shadowLights,
         });
         const text = `${composed.vertexWgsl} ${composed.fragmentWgsl}`;
         let index = byText.get(text);
@@ -1595,9 +1637,12 @@ export async function composeSceneStandardVariants(
                 ...vertexColors,
             });
             if (input.noColorViews && input.sceneMaterials) {
+                // `rebuildSingle` computes `receiveShadows` as
+                // `!shadowOutput && ...`, so a depth-only view of a mesh
+                // that also receives composes WITHOUT the shadow fragment.
                 await add(
                     material,
-                    meshFeatures,
+                    meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
                     features | flags.NO_COLOR_OUTPUT,
                     {
                         fog: input.fog,
@@ -1774,6 +1819,12 @@ inline constexpr std::uint32_t std_msh_has_morph_targets =
     ${mesh("MSH_HAS_MORPH_TARGETS")}u;
 inline constexpr std::uint32_t std_msh_has_thin_instances =
     ${mesh("MSH_HAS_THIN_INSTANCES")}u;
+// The receive bit rides the static table (a mesh's receiveShadows cannot
+// change here), but a DEPTH-ONLY view of a receiving mesh has to drop it:
+// rebuildSingle derives receiveShadows as !shadowOutput && ..., so the
+// caster pass composes without the shadow fragment.
+inline constexpr std::uint32_t std_msh_receive_shadows =
+    ${mesh("MSH_RECEIVE_SHADOWS")}u;
 
 // src/material/standard/standard-flags.ts NEEDS_UV -- the mask
 // writeStdMaterialData's textureLevel parameter is derived from

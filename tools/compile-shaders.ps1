@@ -400,17 +400,23 @@ function Write-StageSlots {
     SDL_GPU's convention; the sidecar names them as their own `r` class,
     rebased to storage slot 0, which is the index
     SDL_BindGPUVertexStorageBuffers takes.
+
+    Two declaration shapes carry no template argument and both reach this
+    from the shadow receivers: a `texture_depth_2d` emits as a bare
+    `Texture2D`, and its comparison sampler as `SamplerComparisonState`.
+    Matching only the templated forms dropped BOTH from the sidecar and left
+    the storage rebase counting one texture short.
     #>
     param([string]$Path, [string]$normalized)
 
     $sampledCount = [regex]::Matches(
         $normalized,
-        "Texture\w*<[^>]+>\s+\w+\s*:\s*register\(t\d+"
+        "Texture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(t\d+"
     ).Count
     $slots = @(
         [regex]::Matches(
             $normalized,
-            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*<[^>]+>|SamplerState)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
+            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
         ) |
             ForEach-Object {
                 $storage = $_.Groups[3].Success
@@ -519,42 +525,81 @@ function Assert-UniformBufferCap {
     }
 }
 
-function Demote-PinnedVariantGpBlock {
+function Get-DemotableUniformBlocks {
     <#
     .SYNOPSIS
-    Rewrites a pinned stage's `gp` uniform block to a read-only storage
-    buffer, for stages SDL_GPU cannot otherwise express.
+    The uniform blocks of a pinned stage this backend may move to storage.
+
+    .DESCRIPTION
+    A block is demotable when nothing but the stage reads it and its
+    members are all 16-byte aligned, so the std140 and std430 layouts of
+    it agree: the frame graph's `gp` params, and the shadow receiver's
+    `shadowInfo_N` blocks (a mat4 and two vec4s). Both are read-only in
+    every composed stage that declares them. Returned in demotion order,
+    `gp` first, so a stage carrying both spends the cheaper one first.
+    #>
+    param([string]$Wgsl)
+
+    $names = @()
+    if ($Wgsl -match "var\s*<\s*uniform\s*>\s*gp\s*:") {
+        $names += "gp"
+    }
+    foreach (
+        $match in [regex]::Matches(
+            $Wgsl,
+            "var\s*<\s*uniform\s*>\s*(shadowInfo_\d+)\s*:"
+        )
+    ) {
+        $names += $match.Groups[1].Value
+    }
+    return $names
+}
+
+function Demote-PinnedVariantUniformBlocks {
+    <#
+    .SYNOPSIS
+    Rewrites named uniform blocks of a pinned stage to read-only storage
+    buffers, for stages SDL_GPU cannot otherwise express.
 
     .DESCRIPTION
     SDL_GPU caps uniform buffers at four per stage
     (MAX_UNIFORM_BUFFERS_PER_STAGE), and its release build skips the
     validation: a fifth block corrupts the D3D12 command buffer's
-    fixed-size slot arrays instead of failing. The composed Standard
-    geometry fragments reach five -- scene, lights, mesh and mat spend
-    the whole budget before the geometry tasks' gp block arrives.
+    fixed-size slot arrays instead of failing. Two composed families reach
+    five: the Standard geometry fragments (scene, lights, mesh and mat
+    spend the whole budget before the geometry tasks' gp block arrives)
+    and the shadow receivers (the same four before the receiver block).
 
     Storage buffers have their own budget of eight, so the stage keeps
-    every pinned struct, name and expression and only the gp block's
-    address space changes -- the same contract as the register remap.
+    every pinned struct, name and expression and only the block's address
+    space changes -- the same contract as the register remap.
     The demoted source feeds every SDL-facing artifact (HLSL, DXIL,
-    SPIR-V, MSL, and the .slots sidecar, where the block becomes an
+    SPIR-V, MSL, and the .slots sidecar, where each block becomes an
     `r` row the PAL binds a real buffer against); the `.native.wgsl`
-    Dawn consumes keeps the pin's uniform declaration.
+    Dawn consumes keeps the pin's uniform declarations.
 
     Returns the demoted source path, written beside the stage.
     #>
-    param([string]$SourcePath, [string]$OutputBase, [int]$UniformCount)
+    param(
+        [string]$SourcePath,
+        [string]$OutputBase,
+        [int]$UniformCount,
+        [string[]]$Blocks
+    )
 
     $wgsl = Get-Content $SourcePath -Raw
-    $demoted = [regex]::Replace(
-        $wgsl,
-        "var\s*<\s*uniform\s*>\s*gp\s*:",
-        "var<storage, read> gp:"
-    )
+    $demoted = $wgsl
+    foreach ($block in $Blocks) {
+        $demoted = [regex]::Replace(
+            $demoted,
+            "var\s*<\s*uniform\s*>\s*$block\s*:",
+            "var<storage, read> ${block}:"
+        )
+    }
     if ($demoted -eq $wgsl) {
         throw (
             "$SourcePath declares $UniformCount uniform blocks; SDL_GPU " +
-            "caps a stage at 4 and only a gp block is demotable."
+            "caps a stage at 4 and none of them is demotable."
         )
     }
     # Tint infers the input format from the extension, so the temp must
@@ -809,11 +854,18 @@ foreach ($shaderDirectory in $shaderDirectories) {
             $sdlSource = $source.FullName
             $uniformCount = (Get-HlslUniformBufferNames $pendingHlsl).Count
             if ($uniformCount -gt 4) {
-                if ($wgsl -match "var\s*<\s*uniform\s*>\s*gp\s*:") {
-                    $sdlSource = Demote-PinnedVariantGpBlock `
+                $demotable = @(Get-DemotableUniformBlocks $wgsl)
+                if ($demotable.Count -gt 0) {
+                    # Every demotable block moves. No composed stage in the
+                    # tree declares more than one, so spending them all is
+                    # what the overflow needs; a stage that grew a second
+                    # kind would want the order above rather than a count.
+                    $chosen = $demotable
+                    $sdlSource = Demote-PinnedVariantUniformBlocks `
                         $source.FullName `
                         $outputBase `
-                        $uniformCount
+                        $uniformCount `
+                        $chosen
                     & $Tint $sdlSource `
                         --entry-point $entryPoint `
                         --format hlsl `
@@ -823,7 +875,8 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     }
                     Assert-UniformBufferCap `
                         $pendingHlsl `
-                        "$($source.FullName) (after demoting gp)"
+                        ("$($source.FullName) (after demoting " +
+                         "$($chosen -join ', '))")
                 } else {
                     Assert-UniformBufferCap $pendingHlsl $source.FullName
                 }

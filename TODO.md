@@ -163,7 +163,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-103 corpus scenes remain unregistered; measured scenes are in
+102 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -182,15 +182,16 @@ module is invisible in a compile probe, because
 the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
-**Largest first-blocker clusters** (swept against 1.23.0 on 2026-08-23, after
-scenes 25 and 36; the physics lane re-swept after the prototype below):
-a folded value compared against a mutable counter 7 (all physics),
+**Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-26,
+before scene 18 shipped; the physics lane re-swept after the prototype
+below):
+`receiveShadows` 8 (18, 65, 66, 72, 140, 214, 215, 271),
 engine options beyond msaaSamples/requiredLimits 7 (large-world),
-`receiveShadows` 6 (the `??` cluster is gone — the operator now lowers
-over the data model, and its five scenes re-probed onto mesh names ×3,
-`container._gaussianSplats`, and a group's `mask`),
-PBR options beyond the reached set 3, a four-argument call 3, an unsupported
-constructor expression 3, `createNavigationPluginAsync` 3.
+a folded value compared against a mutable counter 7 (all physics),
+an unsupported constructor expression 5,
+`createGroundFromHeightMap` 3, a four-argument call 3.
+Scene 18 is the one of those eight the shadow family finished; the seven
+that remain each hide a second subsystem, which is the entry below.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
@@ -236,7 +237,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (75 scenes):** 4, 16-18, 20, 22, 38, 43,
+**Integrate first (74 scenes):** 4, 16, 17, 20, 22, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 165, 171-174, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
@@ -442,7 +443,64 @@ below rather than blocking a scene here.
   ascending order, so each clip's are one contiguous run — record
   `[first, last)` per clip beside the vectors and iterate that, keeping
   the `track.clip` test so correctness never depends on the grouping.
-- [ ] Scenes 65, 66, 72, 214, 215, 271: support `receiveShadows`.
+- [ ] Extend the shadow family past the slice scene 18 measures. Shipped:
+  the pinned PCF spot generator, its `depth32float` map and comparison
+  sampler, the caster pass under the pin's standard-Z exception, and the
+  Standard receiver fragment composed per shadow-casting light
+  ([features](docs/features.md#shadows)). Each remaining item fails by name:
+  - `createEsmDirectionalShadowGenerator`, which is four textures, a
+    two-pass 33-tap Gaussian and an ESM-encoded colour map rather than a
+    depth comparison — the arm scenes 4, 22, 65, 66, 140, 214 and 215
+    reach. `composePinnedStandardVariant` refuses its
+    `ESM_SHADOW_OUTPUT` caster arm separately, because the depth code is
+    supplied per material by the ESM view's `_esmShadowDepthCode`.
+  - `createPcfDirectionalShadowGenerator` and the cascaded family
+    (`csm-*`), neither reached by a corpus scene at this pin.
+  - a PBR or node receiver: `pbr-shadow-fragment.ts` and
+    `node-shadow.ts` are the pin's own siblings of the Standard fragment
+    this port composes, and each needs its family's group-2 wiring.
+    Scene 22's ground is a PBR material, so it wants this as well as the
+    ESM generator.
+  - the generator options past `mapSize`, `bias`, `darkness`, `near` and
+    `far`: `normalBias` and `forceRefreshEveryFrame` are unreached, and
+    `setShadowCasterMaxCascade` is CSM-only.
+  - a caster or receiver that is an imported mesh, and a `receiveShadows`
+    the scene computes — the variant is selected at generation, so the
+    second would need both fragments composed and a runtime choice.
+  - the shadow map is re-rendered every frame. `renderPcfShadowMap` skips
+    the pass when neither the casters' nor the light's world-matrix
+    version moved; this port rebuilds the matrices each frame instead,
+    which is the same image and a wasted pass for a static light. The
+    receiver UBO already takes that skip (it re-uploads only when its
+    bytes moved); the pass itself does not.
+  - **the receiver's group 2 is built by hand in the Dawn PAL and joined
+    by name in the SDL one, where every other composed group is a
+    generated table.** `variantBindings` (src/pinned-pbr-variant-cpp.ts)
+    reflects `@group(1)` out of the composed WGSL for exactly this reason,
+    and the shadow group is the only composed bind group in the tree not
+    read from those rows: Dawn types the per-light order, sample types and
+    visibility into C++ from a light count, and SDL parses the light index
+    back out of `shadowInfo_0` with a prefix compare. Nothing can drift
+    inside the reached slice — `createShadowFragment` fixes the shape and
+    every other filter refuses at composition — but the ESM arm declares
+    `texture_2d<f32>` and a plain sampler in the same group, so this is
+    what the ESM wave has to fix first. The shape: give `variantBindings`
+    a group parameter plus the two kinds the `.slots` widening already
+    needed (`textureDepth2d`, `samplerComparison`), and emit
+    `standard_shadow_bindings` beside `standard_variant_bindings`.
+  - **a shadow task names its generator on `RenderTaskOptions`, where the
+    pin gives the task a camera facade.** `updateShadowCameraBase` pins the
+    light-space view and view-projection onto a `Camera` whose caches the
+    pass reads straight back, so upstream's shadow pass is an ordinary
+    camera pass; here it is a branch in each backend's task loop, beside a
+    near-duplicate branch for a task with its own camera. One consumer
+    makes that proportionate today; the cascaded generator, which renders
+    several light-space passes per light, is where it stops being.
+- [ ] Scenes 65, 66, 72, 214, 215, 271: what each still wants beside the
+  shadow generator above — 65 a node material with a `shadowGenerators`
+  option, 66 morph deltas behind a gzip graph, 72 an NME `blockLoader`,
+  214/215 `createTorusKnot` plus mulberry32 closures, 271 `unregisterScene`
+  and a frame yield.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.
@@ -460,8 +518,13 @@ below rather than blocking a scene here.
 - [ ] Scenes 113, 129: support mesh names.
 - [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
 - [ ] Scene 149: support the reached constructor expression.
-- [ ] Scene 140: support the reached `ground.receiveShadows` assignment. Its
-  browser-derived booleans now fold for the bare reference query.
+- [ ] Scenes 4, 22: support `createGroundFromHeightMap`, then the ESM
+  directional generator above; 22 additionally wants `setPbrGammaAlbedo` and
+  a PBR receiver. Measured by stripped probe: those are the whole chain, and
+  both come back clean behind them.
+- [ ] Scene 140: the ESM directional generator above, then a node material.
+  Its browser-derived booleans fold for the bare reference query and its
+  `ground.receiveShadows` assignment now lowers.
 - [ ] Scene 144: support `createBloomPostProcessTask`. Its chain is four
   passes over the composite machinery scene 148 shipped, but its merge is
   built by calling `createPostProcessTask` directly with an inline `_shader`,

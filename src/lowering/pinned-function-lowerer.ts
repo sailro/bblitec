@@ -31,8 +31,11 @@ export interface PinnedFunctionParameter {
      * `number`/`boolean` are JavaScript scalars and become `double`/`bool`;
      * `mat4` is the pin's `Mat4Storage` and becomes an f32 array reference,
      * so every store through it rounds where the pin's store does.
+     * `matrix` is a `Float32Array` the body only reads — the fixed matrix
+     * by const reference, which is what the shadow family's own
+     * `Float32Array` parameters are.
      */
-    kind: "number" | "boolean" | "mat4";
+    kind: "number" | "boolean" | "mat4" | "matrix";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
      * where C++ forbids it (`near`/`far` are Windows macro names).
@@ -51,6 +54,10 @@ const parameterKinds: Readonly<
     mat4: {
         annotation: "Mat4Storage",
         declare: (cpp) => `std::array<float, 16>& ${cpp}`,
+    },
+    matrix: {
+        annotation: "Float32Array",
+        declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
 };
 
@@ -156,12 +163,30 @@ export function lowerPinnedFunction(
     parameters: readonly PinnedFunctionParameter[],
     options: {
         cppName: string;
-        /** `void` emits no return contract; `double` wires `returnValue`. */
-        returns: "void" | "double";
+        /**
+         * `void` emits no return contract and `double` wires the value
+         * through unchanged; a `{ type, value }` pair is a caller-owned
+         * return — the emitted C++ type, and how a returned expression
+         * becomes it (a `new F32([...])` literal, an object literal the
+         * caller mirrors as a struct). The lowerer is passed in so the
+         * hook can translate the returned expression's own parts.
+         */
+        returns:
+            | "void"
+            | "double"
+            | {
+                  type: string;
+                  value: (
+                      lowerer: PinnedNumericLowerer,
+                      expression: ts.Expression | undefined,
+                  ) => string;
+              };
         /** Emit `inline` — for a function landing in a generated header. */
         inline?: boolean;
         /** Calls the body may make. The caller owns the whole map. */
         calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
+        /** See `PinnedNumericScope.matrixCalls`. */
+        matrixCalls?: ReadonlySet<string>;
     },
 ): string {
     const { file, declaration } = context.functionDeclaration(
@@ -193,7 +218,7 @@ export function lowerPinnedFunction(
         }
         bindings.set(spec.pinned, {
             cpp: spec.cpp,
-            type: spec.kind === "mat4"
+            type: spec.kind === "mat4" || spec.kind === "matrix"
                 ? "f32"
                 : spec.kind === "boolean"
                   ? "bool"
@@ -204,11 +229,17 @@ export function lowerPinnedFunction(
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: options.calls ?? new Map(),
-        ...(options.returns === "double"
-            ? {
+        ...(options.matrixCalls ? { matrixCalls: options.matrixCalls } : {}),
+        ...(options.returns === "void"
+            ? {}
+            : {
                   returnValue: (
                       expression: ts.Expression | undefined,
                   ): string => {
+                      const returns = options.returns;
+                      if (typeof returns !== "string") {
+                          return returns.value(lowerer, expression);
+                      }
                       if (!expression) {
                           return context.contractError(
                               declaration,
@@ -218,15 +249,17 @@ export function lowerPinnedFunction(
                       }
                       return lowerer.expression(expression);
                   },
-              }
-            : {}),
+              }),
     });
     const body = declaration.body!.statements
         .flatMap((statement) => lowerer.statement(statement, "    "))
         .join("\n");
+    const returnType = typeof options.returns === "string"
+        ? options.returns
+        : options.returns.type;
     return (
         `// ${context.provenance(modulePath, symbolName)}\n` +
-        `${options.inline ? "inline " : ""}${options.returns} ` +
+        `${options.inline ? "inline " : ""}${returnType} ` +
         `${options.cppName}(\n    ${signature.join(",\n    ")}) {\n` +
         `${body}\n}`
     );

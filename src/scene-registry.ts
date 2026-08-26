@@ -2197,6 +2197,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene18",
+        name: "Scene 18 - PCF Spotlight Shadows",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene18.ts",
+        title: "Babylon Lite Native - PCF Spotlight Shadows",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-gltf-sparse",
         name: "Regression - glTF Sparse Accessors",
         source: "examples/regression-gltf-sparse.ts",
