@@ -1126,6 +1126,16 @@ struct SpriteRendererRecord {
     std::vector<Sprite2DLayerHandle> layers;
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
     bool clear = true;
+    // `disposeSpriteRenderer` is idempotent upstream and every entry point
+    // it owns checks this first, so the flag is the pin's own state rather
+    // than a native lifetime device.
+    bool disposed = false;
+    // Bumped whenever the layer list itself changes (add / remove / dispose).
+    // Each backend builds one `SpriteLayerGpu` per layer, indexed positionally
+    // against this vector, so a changed list has to rebuild that pass -- the
+    // same version-compare shape `mesh_membership_version` already gives a
+    // scene whose mesh set moved.
+    std::uint64_t layers_version = 0;
 };
 
 /**
@@ -2567,6 +2577,10 @@ struct BillboardSpriteProps {
 
 struct Sprite2DProps {
     Vec2 position_px{};
+    // `addSprite2DIndex` throws without `positionPx`; `updateSprite2DIndex`
+    // takes a `Partial<Sprite2DProps>`, where an omitted position preserves
+    // the slot's own. Both arms write this explicitly.
+    bool has_position_px = false;
     Vec2 size_px{};
     bool has_size_px = false;
     float frame = 0.0f;
@@ -2666,6 +2680,14 @@ double add_sprite_2d_index(
     Engine& engine,
     Sprite2DLayerHandle layer,
     Sprite2DProps props);
+void update_sprite_2d_index(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    double index,
+    Sprite2DProps props);
+void clear_sprite_2d_layer(
+    Engine& engine,
+    Sprite2DLayerHandle layer);
 EffectWrapperHandle create_effect_wrapper(
     Engine& engine,
     std::uint32_t variant);
@@ -2696,6 +2718,16 @@ void add_sprite_renderer_layer(
     Engine& engine,
     SpriteRendererHandle renderer,
     Sprite2DLayerHandle layer);
+bool remove_sprite_renderer_layer(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    Sprite2DLayerHandle layer);
+void dispose_sprite_renderer(
+    Engine& engine,
+    SpriteRendererHandle renderer);
+void unregister_sprite_renderer(
+    Engine& engine,
+    SpriteRendererHandle renderer);
 void register_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer);

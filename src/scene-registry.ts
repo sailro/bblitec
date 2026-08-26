@@ -615,6 +615,34 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-sprite-layer-arms",
+        name: "Regression - Sprite Layer Arms",
+        source: "examples/regression-sprite-layer-arms.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Sprite Layer Arms",
+        buildDirectory:
+            "native/build-regression-sprite-layer-arms-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-sprite-layer-arms/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-sprite-layer-arms",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 26],
+            backgroundThreshold: 30,
+            // The layer list settles inside the zero-delay timeout the
+            // engine drains after frame zero, so anything past frame one
+            // captures the same still state on both sides.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "8",
+            },
+        },
+    },
+    {
         id: "regression-instanced-ground",
         name: "Regression - Instanced Ground",
         source: "examples/regression-instanced-ground.ts",

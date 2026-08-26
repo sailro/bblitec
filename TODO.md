@@ -339,11 +339,21 @@ below rather than blocking a scene here.
     `rgba8unorm-srgb` and so changes how a texel decodes rather than how it
     is sampled. The four sampler overrides shipped with scenes 283/284/301;
     no reached call passes `srgb`.
-  - `updateSprite2DIndex`, `removeSprite2DIndex`, `setSprite2DFrameIndex`,
-    `clearSprite2DLayer` and the Handle API: the writer is lowered for the add
-    arm only; the update arm's "preserve what was not supplied" resolution needs
-    the previous instance read back. The billboard writer has the same shape
-    and the same gap.
+  - `removeSprite2DIndex`, `setSprite2DFrameIndex` and the Handle API. The
+    writer now carries both arms — `updateSprite2DIndex` and
+    `clearSprite2DLayer` shipped with `regression-sprite-layer-arms`, beside
+    the three renderer-list entry points — so what these two still want is
+    the swap-remove and its saved-size carry, not the preserve rules. The
+    billboard writer keeps the add arm only and has the same shape.
+  - `createSpriteAtlasFromFrames`, which doom's status bar builds its atlas
+    with. **Its blocker is the data model, not the sprite path**: a
+    `SpriteAtlasFrameSource` carries `pixels: Uint8Array`, and
+    `src/compiler/data-types.ts` maps only `Float32Array` and `Uint32Array`
+    (40 references across seven files carry the `f32array`/`u32array` pair;
+    a `u8array` kind would join them). Even closed it lands no demo on its
+    own: doom's call also needs `Array.map` with an inlined arrow returning a
+    struct, a `Map<string, T>`, and the runtime IWAD read none of this
+    repository has. `appendSpriteAtlasFrames` sits behind the same gap.
   - the billboard arms past the two orientations, two depth paths and the
     custom shader that scenes 54, 55, 56, 57, 94 and 98 measure. Scene 118
     needs `marker.name`; scene 59 wants the sprite animation manager; scene
@@ -413,6 +423,27 @@ below rather than blocking a scene here.
   (c) A module carrying both entry points deploys twice under two stems with
   identical bytes; SDL_GPU needs both compiles, Dawn loads only one, so the
   second file is dead weight there. The post-process family does all three.
+  (d) A sprite layer whose instance data moved re-uploads through a
+  transfer buffer created and released that same frame
+  (`update_buffer`, `pal_sdl_gpu_shared.hpp`), plus its own command-buffer
+  submit. `updateSprite2DIndex` and `clearSprite2DLayer` are what put that
+  on the per-frame path — before them the corpus only added sprites at
+  setup, so the version compare held forever after frame zero. A persistent
+  per-layer transfer buffer helps every sprite scene; uploading only the
+  dirty span needs a destination offset on `update_buffer`, which hardcodes
+  zero, and a dirty range on the record the pin already tracks
+  (`_dirtyMin`/`_dirtyMax`) and this port does not.
+
+- [ ] Share the sprite and billboard option-pair emitters. Every
+  `Sprite2DProps` field travels as "a value, and whether the caller named
+  it", and `sprite2DPropsCpp` now writes that pair seven times;
+  `addBillboardSpriteIndex` writes the same six inline
+  (`src/compiler/intrinsics/sprite.ts`). Three emitters — an optional
+  float, an optional vec4, an optional bool with its default — retire both
+  copies. The whole tail cannot be one helper: `BillboardSpriteProps` puts
+  `pivot` between `rotation` and `color`. Worth doing when the billboard
+  family grows its own update arm, which is the same two-arm shape the 2D
+  writer now carries.
 
 - [ ] Carry a `ShaderMaterial`'s own `depthCompare` through lowering.
   `src/material/shader/shader-material.ts` defaults it to `"greater-equal"`

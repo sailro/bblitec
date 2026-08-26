@@ -77,11 +77,6 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 handle,
                 swapchain_format));
         }
-        // The first registered renderer owns the frame's clear, exactly as
-        // the first rendering context does upstream.
-        const SpriteRendererRecord& first =
-            engine.sprite_renderers
-                [engine.registered_sprite_renderers.front().value];
 
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
@@ -109,6 +104,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
             // pinned loop's order and, on D3D12, the only legal one: an
             // upload and a draw cannot share two open command lists.
             for (SpritePass& pass : passes) {
+                // A scene callback may have added, removed or disposed a
+                // layer since the last frame; the GPU mirror is addressed
+                // by position, so it is rebuilt before anything reads it.
+                sync_sprite_pass_layers(device, engine, pass);
                 upload_sprite_pass(device, engine, pass, delta_ms);
             }
 
@@ -172,6 +171,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
 
             SDL_GPUColorTargetInfo color_target{};
             color_target.texture = color;
+            // Re-derived every frame: `disposeSpriteRenderer` unregisters,
+            // so the front of the list can move (pal_gpu_shared.hpp).
+            const SpriteRendererRecord& first = sprite_clear_owner(engine);
             color_target.clear_color = SDL_FColor{
                 first.clear_value.r,
                 first.clear_value.g,
