@@ -46,6 +46,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:sheen": [],
     "material:sheen-albedo-scaling": [],
     "material:clearcoat-f0-remap": [],
+    "material:pbr-gamma-albedo": [],
     "material:iridescence": [],
     "material:anisotropy": [],
     "material:metallic-reflectance": [],

@@ -3314,6 +3314,10 @@ class Compiler
         this.sceneMaterials.recordScenePbrSkybox(index);
     }
 
+    public recordScenePbrGammaAlbedo(index: number | undefined): void {
+        this.sceneMaterials.recordScenePbrGammaAlbedo(index);
+    }
+
     public recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,

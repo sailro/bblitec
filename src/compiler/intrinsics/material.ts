@@ -30,6 +30,7 @@ export interface MaterialIntrinsicContext
     recordScenePbrNoColorView(sourceIndex: number | undefined): number;
     recordScenePbrUnlit(index: number | undefined): void;
     recordScenePbrSkybox(index: number | undefined): void;
+    recordScenePbrGammaAlbedo(index: number | undefined): void;
     recordSceneMaterialSlot(): number;
     recordScenePbrClearCoat(
         clearCoat: ScenePbrClearCoatManifest,
@@ -210,13 +211,13 @@ export function compileMaterialIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const engine =
                 context.requireDefaultEngine(call);
-            const [
+            const {
                 baseColor,
                 orm,
-                metallic,
-                roughness,
-                direct,
-                environment,
+                metallicFactor,
+                roughnessFactor,
+                directIntensity,
+                environmentIntensity,
                 alpha,
                 reflectance,
                 unlit,
@@ -224,7 +225,7 @@ export function compileMaterialIntrinsic(
                 enableSpecularAA,
                 skyboxMode,
                 transmission,
-                ior,
+                indexOfRefraction,
                 thickness,
                 useThicknessAsDepth,
                 hasVolume,
@@ -232,8 +233,9 @@ export function compileMaterialIntrinsic(
                 attenuationDistance,
                 occlusionStrength,
                 metallicF0Factor,
+                usePhysicalLightFalloff,
                 scenePbrMaterialIndex,
-            ] = context.compilePbrMaterialOptions(
+            } = context.compilePbrMaterialOptions(
                 call.arguments[0]!,
             );
             context.expectSameEngine(baseColor, orm, call);
@@ -256,32 +258,45 @@ export function compileMaterialIntrinsic(
                 );
             }
             // A loaded base-color image pairs with the neutral white
-            // factor texel and attaches after creation; the base color
-            // slot always samples sRGB natively, so the load must have
-            // requested srgb: true.
+            // factor texel and attaches after creation, carrying its own
+            // encoding: upstream keeps the sRGB/linear choice on the
+            // `Texture2D` `loadTexture2D` built, so the slot samples what
+            // the scene asked for rather than what the family assumes.
             const baseColorCpp = baseColor.textureFile
                 ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
                 : baseColor.cpp;
-            if (
-                baseColor.textureFile &&
-                !baseColor.textureFile.srgb
-            ) {
-                context.fail(
-                    call,
-                    "Base-color file textures require srgb: true (the native base color slot always samples sRGB).",
-                );
-            }
+            // Designated rather than positional: the option list is long
+            // enough that a member emitted at the wrong index would compile
+            // and shade wrong, which is the hazard `CompiledPbrMaterialOptions`
+            // stopped being a tuple to avoid. C++20 requires them in
+            // declaration order, so a reordered `PbrMaterialOptions` is a
+            // compile error here rather than a silent remap.
             const creation =
                 `bbl::create_pbr_material(${engine}, ` +
-                `bbl::PbrMaterialOptions{${baseColorCpp}, ` +
-                `${orm.cpp}, ${metallic}, ${roughness}, ` +
-                `${direct}, ${environment}, ${alpha}, ` +
-                `${reflectance}, ${unlit}, ${doubleSided}, ` +
-                `${enableSpecularAA}, ${skyboxMode}, ${transmission}, ${ior}, ` +
-                 `${thickness}, ${useThicknessAsDepth}, ` +
-                 `${hasVolume}, ${attenuationColor}, ` +
-                 `${attenuationDistance}, ${occlusionStrength}, ` +
-                 `${metallicF0Factor}})`;
+                `bbl::PbrMaterialOptions{` +
+                `.base_color = ${baseColorCpp}, ` +
+                `.orm = ${orm.cpp}, ` +
+                `.metallic_factor = ${metallicFactor}, ` +
+                `.roughness_factor = ${roughnessFactor}, ` +
+                `.direct_intensity = ${directIntensity}, ` +
+                `.environment_intensity = ${environmentIntensity}, ` +
+                `.alpha = ${alpha}, ` +
+                `.reflectance = ${reflectance}, ` +
+                `.unlit = ${unlit}, ` +
+                `.double_sided = ${doubleSided}, ` +
+                `.specular_aa = ${enableSpecularAA}, ` +
+                `.skybox_mode = ${skyboxMode}, ` +
+                `.transmission_factor = ${transmission}, ` +
+                `.index_of_refraction = ${indexOfRefraction}, ` +
+                `.thickness = ${thickness}, ` +
+                `.use_thickness_as_depth = ${useThicknessAsDepth}, ` +
+                `.has_volume = ${hasVolume}, ` +
+                `.attenuation_color = ${attenuationColor}, ` +
+                `.attenuation_distance = ${attenuationDistance}, ` +
+                `.occlusion_strength = ${occlusionStrength}, ` +
+                `.metallic_f0_factor = ${metallicF0Factor}, ` +
+                `.use_physical_light_falloff = ` +
+                `${usePhysicalLightFalloff}})`;
             if (baseColor.textureFile) {
                 const temporary =
                     context.allocateTemporaryCppName(
@@ -621,6 +636,26 @@ export function compileMaterialIntrinsic(
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp}, ${color})`,
             };
+        }
+
+        case "setPbrGammaAlbedo": {
+            // src/material/pbr/set-gamma-albedo.ts stamps
+            // `mat._gammaAlbedo = true` and registers the gamma extension,
+            // whose whole contribution is one feature bit and the base
+            // template's decode block — "No fragment slot / UBO field /
+            // binding of its own", as the pinned ext says. So the mark is
+            // composition input and nothing else reaches run time: the
+            // material's own variant already carries
+            // `pow(baseColorSample.rgb, 2.2)`, and the slot it decodes is
+            // linear because the scene loaded a linear texture into it.
+            context.expectArgumentCount(call, 1, 1);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            context.recordScenePbrGammaAlbedo(
+                material.scenePbrMaterialIndex,
+            );
+            context.reachFeature("material:pbr-gamma-albedo", call);
+            return { kind: "void", cpp: "" };
         }
 
         case "setPbrUnlit":

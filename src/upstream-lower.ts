@@ -75,6 +75,7 @@ import {
     meshUniformsBlock,
     lightUniformsBlock,
     pinnedPbrVariantsHeader,
+    pinnedSharedVariantDecls,
     pinnedStandardVariantsHeader,
     sceneUniformsStruct,
     variantBindings,
@@ -176,6 +177,13 @@ const pinnedLightKinds = [
  * defines gate the includes. `meshFragmentWgsl` is the composed fragment whose
  * `MeshUniforms` declaration is widest — absent for the node family, which
  * declares its own mesh block instead.
+ *
+ * The shared variant declarations — the binding-kind enumeration, the two
+ * reflected row structs, the pin's own receive bit — hoist on the same
+ * condition but not from here: they are referenced by the header's own
+ * tables, so they belong inside it while these sit after its namespace.
+ * `hoistsSharedDeclarations` is that one condition, so the two cannot
+ * disagree about which header carries them.
  */
 function sharedPinnedMirrors(
     context: LoweringContext,
@@ -578,6 +586,29 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 (features.includes("shadow:pcf") ||
                         features.includes("shadow:esm")) &&
                     (options.pinnedStandardVariants ?? []).length > 0
+                    ? 1
+                    : 0
+            }
+// The PBR family's own half of the receiver, gated the same way: both
+// families wrap one pinned shadow core, so a scene reaching the filter
+// compiles the receiver code for whichever families composed a variant.
+#define BBLITE_PBR_SHADOWS ${
+                (features.includes("shadow:pcf") ||
+                        features.includes("shadow:esm")) &&
+                    (options.pinnedVariants ?? []).length > 0
+                    ? 1
+                    : 0
+            }
+// The GENERATOR half, which is family-free: the maps, the samplers, the
+// receiver UBOs, the caster pass and their release path exist whenever a
+// scene reaches a generator AND some family composes a receiver to sample
+// it. Stated once here rather than as a disjunction each PAL re-derives at
+// every site, so the node family joins by moving this line.
+#define BBLITE_SHADOW_RECEIVERS ${
+                (features.includes("shadow:pcf") ||
+                        features.includes("shadow:esm")) &&
+                    ((options.pinnedStandardVariants ?? []).length > 0 ||
+                        (options.pinnedVariants ?? []).length > 0)
                     ? 1
                     : 0
             }
@@ -1818,6 +1849,21 @@ ${shadow.blurFragmentWgsl}`,
         // `@group`/`@binding` scheme unchanged for HLSL, MSL and SPIR-V, and
         // the HLSL register normalization already re-addresses them for
         // SDL_GPU's dense convention.
+        // The declarations both composed material families read: one
+        // reflection, one row shape, one header with its own guard, so
+        // neither family's presence decides where the other finds them.
+        if (
+            (options.pinnedVariants ?? []).length > 0 ||
+            (options.pinnedStandardVariants ?? []).length > 0
+        ) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_variant_bindings.hpp",
+                pinnedSharedVariantDecls(
+                    context,
+                    "src/pinned-pbr-variant-cpp.ts pinnedSharedVariantDecls",
+                ),
+            );
+        }
         if ((options.pinnedVariants ?? []).length > 0) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pbr_variants.hpp",
@@ -1887,9 +1933,14 @@ ${shadow.blurFragmentWgsl}`,
                         ),
                 );
             }
-            const sharedMirrors = (options.pinnedVariants ?? []).length > 0
-                ? ""
-                : sharedPinnedMirrors(context, features, widestStandardMesh);
+            // The per-pass mirrors ride whichever family header comes
+            // first; the shared variant declarations are their own header,
+            // so only this one is a hoist decision now.
+            const hoistsSharedDeclarations =
+                (options.pinnedVariants ?? []).length === 0;
+            const sharedMirrors = hoistsSharedDeclarations
+                ? sharedPinnedMirrors(context, features, widestStandardMesh)
+                : "";
             this.tree.write(
                 "upstream/include/bblite/upstream/standard_variants.hpp",
                 pinnedStandardVariantsHeader(

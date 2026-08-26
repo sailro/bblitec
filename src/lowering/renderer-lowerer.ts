@@ -1902,14 +1902,6 @@ PbrUniforms build_pbr_uniforms(
             return;
         }
         const LightRecord& light = engine.lights[handle.value];
-        if (light.kind == LightKind::spot) {
-            // The primary slot encodes its kind in lightDirection.w across
-            // three branches and carries no cone; only the extra-light slots
-            // do. No reached scene puts a spot first, so this refuses rather
-            // than shading it as a directional light.
-            throw std::runtime_error(
-                "Reached PBR lighting supports a spot light only outside the primary slot.");
-        }
         const Vec3 matrix_direction{
             light.local_matrix[8],
             light.local_matrix[9],
@@ -1926,6 +1918,13 @@ PbrUniforms build_pbr_uniforms(
                   matrix_direction.z / matrix_length,
               }
             : light.direction;
+        // The kind tag this struct encodes -- 0 hemispheric, 1 point,
+        // 2 directional -- is the retired transcribed fragment's own, and it
+        // has no spot: that fragment is gone and every PBR draw now binds the
+        // pin's own lights block, which the capture dumps beside this one
+        // with the cone in it. So a spot writes its direction and colour,
+        // which this layout CAN say, and tags itself -1, which is no kind at
+        // all rather than a neighbour's.
         light_direction =
             light.kind == LightKind::point
                 ? std::array<float, 4>{
@@ -1940,7 +1939,9 @@ PbrUniforms build_pbr_uniforms(
                       direction.z,
                       light.kind == LightKind::directional
                           ? 2.0f
-                          : 0.0f,
+                          : light.kind == LightKind::spot
+                              ? -1.0f
+                              : 0.0f,
                   };
         light_color = {
             light.diffuse_color.r,

@@ -1033,15 +1033,6 @@ export function emitPropertyAssignment(
                         "variant rows.",
                 );
             }
-            if (target.scenePbrMaterialIndex !== undefined) {
-                context.fail(
-                    left.expression,
-                    "Shadow receiving is composed for the Standard family: " +
-                        "the PBR receiver reaches its own pinned fragment " +
-                        "(pbr-shadow-fragment.ts), which this port does not " +
-                        "compose.",
-                );
-            }
             context.recordShadowReceiver(target.sceneMeshIndex);
             return;
         }

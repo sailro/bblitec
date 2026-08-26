@@ -50,11 +50,23 @@ work is not started, or not finished, until it has been passed.
    gh api "repos/BabylonJS/Babylon-Lite/contents/docs/lite/architecture/29-post-process.md?ref=$(node -p "require('./upstream/babylon-lite.json').sourceVersion")" --jq .content | base64 -d
    ```
 
-3. **Before pushing: run `/simplify` over the complete body of work**, not
-   over the last commit. When it finds the deeper fix — a mechanism this
-   repository already owns, a re-derivation to delete, a contract to move —
-   do that fix in the same pass and revalidate. Work is not deferred out of
-   the current task because it reaches outside the diff.
+3. **Run `/simplify` over the complete body of work BEFORE the full
+   validation sweep**, not before pushing and not over the last commit.
+   The sweep is the expensive step — a full `process all` plus
+   `parity all --differential` is the better part of 20 minutes — and
+   `/simplify` has never once come back empty, so running it after the
+   sweep guarantees a second sweep. The order is: the work builds and its
+   own scene measures, then `/simplify`, then apply everything it found,
+   then one sweep over the result.
+
+   **Apply what it finds, including what reaches outside the diff.** A
+   mechanism this repository already owns, a re-derivation to delete, a
+   contract to move, a duplicated table, a half-gated symmetry: those are
+   the findings, and deferring them to `TODO.md` is how the file grows
+   without the tree improving. Filing is for work that is genuinely
+   blocked on something else — a capability that does not exist yet, a
+   measurement nobody has taken — and the entry then says what unblocks
+   it. "It is outside the scene I was integrating" is not a blocker.
 
 ## Diagnose by capture, not by inference
 

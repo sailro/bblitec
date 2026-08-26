@@ -184,6 +184,18 @@ decode of those bytes is the reference — a CPU transcription of the
 IEC formula measurably disagrees with the GPU's table; scene 255
 gates the texel-level port. The record keeps the raw alpha for the
 pinned blend semantics.
+**The base-colour slot's encoding is its texture's, not its family's.**
+`loadTexture2D` picks `rgba8unorm-srgb` or `rgba8unorm` from its caller's
+own `srgb` option and the format then lives on the `Texture2D`, so the
+material samples what the scene loaded: the glTF loader passes true for this
+slot, the texture-less factor bake writes an sRGB texel, a
+`createSolidTexture2D` texel is linear and sampled without decode, and a
+scene that decodes its own albedo in the fragment (`setPbrGammaAlbedo`,
+whose extension contributes `pow(rgb, 2.2)` and nothing else) loads the
+linear one. The record carries that choice as one lane rather than the slot
+assuming an image is sRGB, which is what lets those five cases share one
+rule; Scene 22 gates the linear-image arm and every glTF scene the sRGB one.
+
 An **animated** base color factor inverts that bake. `whiteFallback` in
 `animation-pointer-basecolor.ts` swaps the factor for `[1,1,1,1]` before
 the upload whenever a `KHR_animation_pointer` channel drives it and the

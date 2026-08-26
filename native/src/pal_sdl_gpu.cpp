@@ -679,7 +679,7 @@ struct GpuState {
     std::map<std::size_t, SDL_GPUGraphicsPipeline*> standard_variant_pipelines;
     std::vector<PinnedStageSlots> standard_vertex_slots;
     std::vector<PinnedStageSlots> standard_fragment_slots;
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     /**
      * The receiver side of the shadow family, one entry per generator.
      *
@@ -836,6 +836,112 @@ bool append_variant_attribute(
 #endif
 
 #if BBLITE_PINNED_MATERIALS
+#if BBLITE_SHADOW_RECEIVERS
+/**
+ * The composed group-2 row one binding name belongs to, or null.
+ *
+ * `createShadowFragment` names every binding after its light's slot in
+ * `scene.lights` AND picks its type from that light's filter, so both facts
+ * are reflected into the generated rows. Reading the row is what keeps this
+ * backend from parsing a name to answer either -- the same discipline
+ * `standard_binding_resources` already holds for the group-1 slots. Taken as
+ * a span so both material families' receivers resolve through one lookup:
+ * they wrap one pinned core, so their rows are one shape.
+ */
+const upstream::PinnedShadowBinding* shadow_row_for(
+    std::span<const upstream::PinnedShadowBinding> rows,
+    const std::string& name) {
+    for (const upstream::PinnedShadowBinding& row : rows) {
+        if (name == row.name) return &row;
+    }
+    return nullptr;
+}
+
+/** The sampler row declared beside one light's map. */
+const upstream::PinnedShadowBinding* shadow_sampler_row_for(
+    std::span<const upstream::PinnedShadowBinding> rows,
+    std::uint32_t light) {
+    for (const upstream::PinnedShadowBinding& row : rows) {
+        if (
+            row.light == light &&
+            row.role == upstream::PinnedShadowRole::map_sampler) {
+            return &row;
+        }
+    }
+    return nullptr;
+}
+
+/**
+ * The map-and-sampler pair one group-2 texture name resolves to, or an empty
+ * pair when the name is not a receiver binding.
+ */
+/**
+ * The receiver block one group-2 name resolves to, or null.
+ *
+ * The buffer half of `shadow_resource_for`'s question: the vertex stage reads
+ * the block as a uniform and the fragment as a storage buffer, because the
+ * shader compile demotes it out of SDL_GPU's four uniform slots -- so both
+ * stages ask by name, for both material families, through one lookup.
+ */
+inline SDL_GPUBuffer* shadow_info_buffer_for(
+    const GpuState& state,
+    std::span<const upstream::PinnedShadowBinding> rows,
+    const std::string& name) {
+    const upstream::PinnedShadowBinding* row = shadow_row_for(rows, name);
+    if (row == nullptr) return nullptr;
+    if (row->light >= state.shadow_generators.size()) {
+        gpu_error("a composed shadow binding names a missing light.");
+    }
+    return state.shadow_generators[row->light].info;
+}
+
+/** The same block as uniform bytes, for the stage that kept it a uniform. */
+inline PinnedStageBlock shadow_info_uniform_for(
+    const GpuState& state,
+    std::span<const upstream::PinnedShadowBinding> rows,
+    const std::string& block) {
+    const upstream::PinnedShadowBinding* row = shadow_row_for(rows, block);
+    if (row == nullptr) return {};
+    if (row->light >= state.shadow_generators.size()) {
+        gpu_error("a composed shadow block names a missing light.");
+    }
+    return {
+        &state.shadow_generators[row->light].block,
+        sizeof(upstream::ShadowInfoUniforms),
+    };
+}
+
+PinnedResource shadow_resource_for(
+    const GpuState& state,
+    std::span<const upstream::PinnedShadowBinding> rows,
+    const std::string& name) {
+    const upstream::PinnedShadowBinding* row = shadow_row_for(rows, name);
+    if (row == nullptr) return {};
+    if (row->light >= state.shadow_generators.size()) {
+        gpu_error("a composed shadow binding names a missing light.");
+    }
+    // SDL_GPU binds a texture and its sampler as one pair, resolved from
+    // the TEXTURE's name -- so which sampler this map takes is the
+    // paired row's to say, not this one's: a PCF map's companion is
+    // declared `sampler_comparison`, an ESM map's a plain `sampler`.
+    const upstream::PinnedShadowBinding* companion =
+        shadow_sampler_row_for(rows, row->light);
+    if (!companion) {
+        gpu_error(
+            ("a composed shadow map '" + std::string(row->name) +
+             "' declares no sampler beside it.")
+                .c_str());
+    }
+    return {
+        state.shadow_generators[row->light].map,
+        companion->kind ==
+                upstream::PinnedBindingKind::samplerComparison
+            ? state.shadow_comparison_sampler
+            : state.shadow_filtering_sampler,
+    };
+}
+#endif
+
 /**
  * The scene-owned pair one slot source names, or an empty pair.
  *
@@ -876,7 +982,8 @@ PinnedResource state_resource_for(
 PinnedResource pinned_resource_for(
     const GpuState& state,
     const GpuMesh& mesh,
-    const std::string& name) {
+    const std::string& name,
+    [[maybe_unused]] std::size_t variant) {
     const upstream::MaterialTextureSlot* slot =
         material_slot_for_binding(name);
     if (slot != nullptr) {
@@ -901,6 +1008,21 @@ PinnedResource pinned_resource_for(
             }
         }
     }
+#if BBLITE_PBR_SHADOWS
+    // The receiver's group 2, resolved from its own composed rows exactly as
+    // the Standard family's is: this backend binds by name, so group 2 joins
+    // the same lookup rather than being a separate bind call. Asked AFTER the
+    // slot table because the two name sets are disjoint and a material
+    // texture is the common case -- walking the shadow rows first would make
+    // every base-colour and ORM binding pay for it.
+    if (const PinnedResource shadow = shadow_resource_for(
+            state,
+            pal::pbr_shadow_rows(variant),
+            name);
+        shadow.texture != nullptr) {
+        return shadow;
+    }
+#endif
     gpu_error(
         ("pinned variant declares an unmapped resource '" + name + "'.")
             .c_str());
@@ -1286,6 +1408,17 @@ void draw_pinned_variant(
             }
             return {geometry_params, sizeof(*geometry_params)};
         }
+#if BBLITE_PBR_SHADOWS
+        // The receiver block, one per shadow-casting light, named after that
+        // light's slot -- read off the composed row rather than parsed.
+        if (const PinnedStageBlock info = shadow_info_uniform_for(
+                state,
+                pal::pbr_shadow_rows(pinned_variant),
+                block);
+            info.data != nullptr) {
+            return info;
+        }
+#endif
         return {};
     };
     push_stage_uniforms(
@@ -1309,7 +1442,7 @@ void draw_pinned_variant(
         "pinned variant fragment",
         [&](const std::string& name) {
             const PinnedResource resource =
-                pinned_resource_for(state, mesh, name);
+                pinned_resource_for(state, mesh, name, pinned_variant);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -1321,7 +1454,20 @@ void draw_pinned_variant(
         true,
         "pinned variant fragment",
         [&](const std::string& name) -> SDL_GPUBuffer* {
-            return name == "gp" ? geometry_params_buffer : nullptr;
+            if (name == "gp") return geometry_params_buffer;
+#if BBLITE_PBR_SHADOWS
+            // The receiver blocks the shader compile demoted out of the
+            // uniform slots, the same way the geometry arms' gp block is:
+            // SDL_GPU caps those at four per stage and a receiving PBR
+            // fragment spends all four on scene, lights, mesh and material.
+            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
+                    state,
+                    pal::pbr_shadow_rows(pinned_variant),
+                    name)) {
+                return info;
+            }
+#endif
+            return nullptr;
         });
     // The vertex stage's own textures -- the skeleton
     // arm's bone palette -- in the same `.slots` order as
@@ -1336,11 +1482,23 @@ void draw_pinned_variant(
         false,
         "pinned variant vertex",
         [&](const std::string& name) -> SDL_GPUBuffer* {
+            // Cast unconditionally: which arms below compile is a capability
+            // question, and a compound negative would have to be re-derived
+            // every time one is added.
+            (void)name;
 #if BBLITE_GPU_MORPH_STORAGE
             if (name == "morphDeltas") return mesh.morph_deltas;
             if (name == "morph") return mesh.morph_weights;
-#else
-            (void)name;
+#endif
+#if BBLITE_PBR_SHADOWS
+            // A receiver whose vertex stage also overflows the four uniform
+            // slots has its own receiver blocks demoted there too.
+            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
+                    state,
+                    pal::pbr_shadow_rows(pinned_variant),
+                    name)) {
+                return info;
+            }
 #endif
             return nullptr;
         });
@@ -1351,7 +1509,7 @@ void draw_pinned_variant(
         "pinned variant vertex",
         [&](const std::string& name) {
             const PinnedResource resource =
-                pinned_resource_for(state, mesh, name);
+                pinned_resource_for(state, mesh, name, pinned_variant);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -1685,7 +1843,7 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
         standard_stage_name(entry.fragment_shader));
 }
 
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
 /**
  * The generators' matrices, their maps and their receiver blocks.
  *
@@ -1969,42 +2127,6 @@ void update_shadow_generators(
  * the cube reflection pair and the two render-texture slots are the
  * resources outside the material slot table.
  */
-#if BBLITE_STANDARD_SHADOWS
-/**
- * The composed group-2 row one binding name belongs to, or null.
- *
- * `createShadowFragment` names every binding after its light's slot in
- * `scene.lights` AND picks its type from that light's filter, so both facts
- * are reflected into `standard_shadow_bindings` at generation. Reading the
- * row is what keeps this backend from parsing a name to answer either --
- * the same discipline `standard_binding_resources` already holds for the
- * group-1 slots.
- */
-const upstream::StandardShadowBinding* shadow_row_for(
-    std::size_t variant,
-    const std::string& name) {
-    for (const upstream::StandardShadowBinding& row :
-         pal::shadow_rows(variant)) {
-        if (name == row.name) return &row;
-    }
-    return nullptr;
-}
-
-/** The sampler row declared beside one light's map. */
-const upstream::StandardShadowBinding* shadow_sampler_row_for(
-    std::size_t variant,
-    std::uint32_t light) {
-    for (const upstream::StandardShadowBinding& row :
-         pal::shadow_rows(variant)) {
-        if (
-            row.light == light &&
-            row.role == upstream::StandardShadowRole::map_sampler) {
-            return &row;
-        }
-    }
-    return nullptr;
-}
-#endif
 
 PinnedResource standard_resource_for(
     GpuState& state,
@@ -2013,33 +2135,6 @@ PinnedResource standard_resource_for(
     const StandardRenderTextures& render_textures,
     const std::string& name,
     [[maybe_unused]] std::size_t variant) {
-#if BBLITE_STANDARD_SHADOWS
-    if (const upstream::StandardShadowBinding* row =
-            shadow_row_for(variant, name)) {
-        if (row->light >= state.shadow_generators.size()) {
-            gpu_error("a composed shadow binding names a missing light.");
-        }
-        // SDL_GPU binds a texture and its sampler as one pair, resolved from
-        // the TEXTURE's name -- so which sampler this map takes is the
-        // paired row's to say, not this one's: a PCF map's companion is
-        // declared `sampler_comparison`, an ESM map's a plain `sampler`.
-        const upstream::StandardShadowBinding* companion =
-            shadow_sampler_row_for(variant, row->light);
-        if (!companion) {
-            gpu_error(
-                ("a composed shadow map '" + std::string(row->name) +
-                 "' declares no sampler beside it.")
-                    .c_str());
-        }
-        return {
-            state.shadow_generators[row->light].map,
-            companion->kind ==
-                    upstream::StandardBindingKind::samplerComparison
-                ? state.shadow_comparison_sampler
-                : state.shadow_filtering_sampler,
-        };
-    }
-#endif
     for (
         const upstream::StandardBindingResource& row :
         upstream::standard_binding_resources) {
@@ -2076,6 +2171,18 @@ PinnedResource standard_resource_for(
         }
         break;
     }
+#if BBLITE_STANDARD_SHADOWS
+    // Group 2, after the slot table for the reason the PBR resolver asks in
+    // that order: the two name sets are disjoint, and a material texture is
+    // the common case.
+    if (const PinnedResource shadow = shadow_resource_for(
+            state,
+            pal::standard_shadow_rows(variant),
+            name);
+        shadow.texture != nullptr) {
+        return shadow;
+    }
+#endif
     gpu_error(
         ("standard variant declares an unmapped resource '" + name + "'.")
             .c_str());
@@ -2337,12 +2444,12 @@ void draw_standard_variant(
             return {geometry_params, sizeof(*geometry_params)};
         }
 #if BBLITE_STANDARD_SHADOWS
-        if (const upstream::StandardShadowBinding* row =
-                shadow_row_for(variant, block)) {
-            return {
-                &state.shadow_generators[row->light].block,
-                sizeof(upstream::ShadowInfoUniforms),
-            };
+        if (const PinnedStageBlock info = shadow_info_uniform_for(
+                state,
+                pal::standard_shadow_rows(variant),
+                block);
+            info.data != nullptr) {
+            return info;
         }
 #endif
 #if BBLITE_SHADOWS_ESM
@@ -2409,9 +2516,11 @@ void draw_standard_variant(
         [&](const std::string& name) -> SDL_GPUBuffer* {
             if (name == "gp") return geometry_params_buffer;
 #if BBLITE_STANDARD_SHADOWS
-            if (const upstream::StandardShadowBinding* row =
-                    shadow_row_for(variant, name)) {
-                return state.shadow_generators[row->light].info;
+            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
+                    state,
+                    pal::standard_shadow_rows(variant),
+                    name)) {
+                return info;
             }
 #endif
             return nullptr;
@@ -2425,6 +2534,7 @@ void draw_standard_variant(
         false,
         "standard variant vertex",
         [&](const std::string& name) -> SDL_GPUBuffer* {
+            (void)name;
 #if BBLITE_GPU_MORPH_STORAGE
             if (name == "morphDeltas") return mesh.morph_deltas;
             if (name == "morph") return mesh.morph_weights;
@@ -2432,13 +2542,12 @@ void draw_standard_variant(
 #if BBLITE_STANDARD_SHADOWS
             // A receiver whose vertex stage also overflows SDL_GPU's four
             // uniform slots has its own receiver blocks demoted there too.
-            if (const upstream::StandardShadowBinding* row =
-                    shadow_row_for(variant, name)) {
-                return state.shadow_generators[row->light].info;
+            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
+                    state,
+                    pal::standard_shadow_rows(variant),
+                    name)) {
+                return info;
             }
-#endif
-#if !BBLITE_GPU_MORPH_STORAGE && !BBLITE_STANDARD_SHADOWS
-            (void)name;
 #endif
             return nullptr;
         });
@@ -3772,7 +3881,7 @@ void release(GpuState& state) {
     if (state.depth_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.depth_sampler);
     }
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     for (const GpuState::ShadowGenerator& generator : state.shadow_generators) {
         if (generator.info) {
             SDL_ReleaseGPUBuffer(state.device, generator.info);
@@ -5625,7 +5734,6 @@ bool run_gpu_engine(Engine& engine) {
                     data ? *data : empty,
                     material_slot_srgb(
                         slot_row.srgb,
-                        data,
                         material,
                         standard_material),
                     material_slot_fallback(
@@ -6115,7 +6223,7 @@ bool run_gpu_engine(Engine& engine) {
                     swapchain_format,
                     width,
                     height);
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
                 update_shadow_generators(state, scene, engine);
 #endif
                 SDL_PushGPUVertexUniformData(
@@ -6269,7 +6377,7 @@ bool run_gpu_engine(Engine& engine) {
                             engine,
                             draw_camera,
                             draw_matrix);
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
                     // The pin installs the light-space matrices on a camera
                     // facade whose caches it pins, so its caster pass reads
                     // them straight back. There is no facade here: the pass
@@ -6287,7 +6395,7 @@ bool run_gpu_engine(Engine& engine) {
                     // building the pin's 16-entry array for it would be
                     // ~2 KB zeroed and copied per frame for nothing.
                     const std::vector<std::uint8_t> pass_lights_block =
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
                         shadow_generator
                             ? std::vector<std::uint8_t>{}
                             :
@@ -6323,17 +6431,21 @@ bool run_gpu_engine(Engine& engine) {
                             if (
                                 draw_item.material_kind ==
                                 upstream::RenderMaterialKind::pbr) {
+                                const std::size_t task_shader =
+                                    geometry_task
+                                        ? static_cast<std::size_t>(
+                                              geometry_task->geometry
+                                                  .shader_index)
+                                        : std::numeric_limits<
+                                              std::size_t>::max();
+                                pal::PinnedVariantKey pinned_key;
                                 const std::size_t pinned_variant =
                                     pinned_variant_for_draw(
                                         scene,
                                         engine,
                                         draw,
-                                        geometry_task
-                                            ? static_cast<std::size_t>(
-                                                  geometry_task->geometry
-                                                      .shader_index)
-                                            : std::numeric_limits<
-                                                  std::size_t>::max());
+                                        task_shader,
+                                        &pinned_key);
                                 if (
                                     pinned_variant ==
                                     std::numeric_limits<
@@ -6346,7 +6458,10 @@ bool run_gpu_engine(Engine& engine) {
                                          std::to_string(
                                              draw_item.material.value) +
                                          " resolves no pinned variant in a "
-                                         "render task.")
+                                         "render task: " +
+                                         pal::pinned_variant_request(
+                                             pinned_key,
+                                             task_shader))
                                             .c_str());
                                 }
                                 ensure_pinned_slots(state, pinned_variant);
@@ -6644,7 +6759,7 @@ bool run_gpu_engine(Engine& engine) {
                                 task_matrix.data(),
                                 sizeof(task_matrix));
                         }
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
                         if (
                             task.render.shadow_generator.value <
                                 engine.shadow_generators.size()) {
@@ -7722,10 +7837,16 @@ bool run_gpu_engine(Engine& engine) {
                     // the transcribed fragment is retired, so a draw the
                     // shared gate refuses is an error naming the mesh rather
                     // than a silent fallback.
+                    pal::PinnedVariantKey pinned_key;
                     const std::size_t pinned_variant =
                         item.material_kind ==
                             upstream::RenderMaterialKind::pbr
-                            ? pinned_variant_for_draw(scene, engine, draw)
+                            ? pinned_variant_for_draw(
+                                  scene,
+                                  engine,
+                                  draw,
+                                  std::numeric_limits<std::size_t>::max(),
+                                  &pinned_key)
                             : std::numeric_limits<std::size_t>::max();
                     if (
                         item.material_kind ==
@@ -7737,7 +7858,8 @@ bool run_gpu_engine(Engine& engine) {
                              std::to_string(item.mesh.value) +
                              ", material " +
                              std::to_string(item.material.value) +
-                             " resolves no pinned variant.")
+                             " resolves no pinned variant: " +
+                             pal::pinned_variant_request(pinned_key))
                                 .c_str());
                     }
                     if (

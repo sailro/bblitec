@@ -90,30 +90,40 @@ export interface MaterialOptionContext
  * appended `scenePbrMaterials` index that is this material's compile-time
  * identity.
  */
-export type CompiledPbrMaterialOptions = [
-    Value,
-    Value,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    string,
-    number,
-];
+/**
+ * What a reached `createPbrMaterial` settled.
+ *
+ * Named rather than positional: every field but the two textures and the
+ * manifest row is a C++ expression string, so a tuple lets an entry inserted
+ * at the wrong index compile and emit the wrong option. The argument list is
+ * written out once, at the call site, from these names.
+ */
+export interface CompiledPbrMaterialOptions {
+    baseColor: Value;
+    orm: Value;
+    metallicFactor: string;
+    roughnessFactor: string;
+    directIntensity: string;
+    environmentIntensity: string;
+    alpha: string;
+    reflectance: string;
+    unlit: string;
+    doubleSided: string;
+    enableSpecularAA: string;
+    skyboxMode: string;
+    transmission: string;
+    indexOfRefraction: string;
+    thickness: string;
+    useThicknessAsDepth: string;
+    hasVolume: string;
+    attenuationColor: string;
+    attenuationDistance: string;
+    occlusionStrength: string;
+    metallicF0Factor: string;
+    usePhysicalLightFalloff: string;
+    /** The row `composeScenePbrVariants` composes this material from. */
+    scenePbrMaterialIndex: number;
+}
 
 /** What a reached `setPbrAnisotropy` settled: the emitted arguments, and the
  *  manifest the composition input reads. Its numbers come from the pinned AST
@@ -372,8 +382,9 @@ export function compilePbrMaterialOptions(
             "doubleSided",
             "transmissive",
             "subsurface",
+            "usePhysicalLightFalloff",
         ],
-        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, skybox mode, and transmission subsurface fields.",
     );
     const baseColorExpression = context.objectProperty(object, "baseColorTexture");
     const ormExpression = context.objectProperty(object, "ormTexture");
@@ -406,6 +417,10 @@ export function compilePbrMaterialOptions(
         "enableSpecularAA",
     );
     const doubleSided = context.objectProperty(object, "doubleSided");
+    const physicalLightFalloff = context.objectProperty(
+        object,
+        "usePhysicalLightFalloff",
+    );
     const transmissive = context.objectProperty(object, "transmissive");
     const subsurfaceExpression = context.objectProperty(object, "subsurface");
     let transmission = pinnedDefaultFloatCpp("transmissionIntensity");
@@ -537,6 +552,19 @@ export function compilePbrMaterialOptions(
         "PBR enableSpecularAA",
     );
     const enableSpecularAACpp = staticEnableSpecularAA ? "true" : "false";
+    // The pin's own default is true (`usePhysicalLightFalloff === false ? 0
+    // : 1` in `_writeMaterialData`), so an absent option and an explicit
+    // `true` are one value. It is a uniform lane rather than a composition
+    // key: every punctual arm carries both falloffs and selects on it.
+    const staticPhysicalLightFalloff = compileOptionalStaticBoolean(
+        context,
+        physicalLightFalloff,
+        true,
+        "PBR usePhysicalLightFalloff",
+    );
+    const physicalLightFalloffCpp = staticPhysicalLightFalloff
+        ? "true"
+        : "false";
     // The resolved option values, in creation order, for the pinned
     // composer: the pin's `createPbrMaterial` is `{...props}`, so these
     // ARE the material record its feature derivation reads. Every value
@@ -566,31 +594,37 @@ export function compilePbrMaterialOptions(
         transmission: Number.parseFloat(transmission),
         ior: Number.parseFloat(ior),
         thickness: Number.parseFloat(thickness),
+        ...(staticPhysicalLightFalloff
+            ? {}
+            : { usePhysicalLightFalloff: false }),
     }) - 1;
-    return [
+    return {
         baseColor,
         orm,
-        metallicCpp,
-        roughnessCpp,
-        directCpp,
-        environmentCpp,
-        alphaCpp,
-        reflectanceCpp,
-        "false",
-        doubleSidedCpp,
-        enableSpecularAACpp,
-        "false",
+        metallicFactor: metallicCpp,
+        roughnessFactor: roughnessCpp,
+        directIntensity: directCpp,
+        environmentIntensity: environmentCpp,
+        alpha: alphaCpp,
+        reflectance: reflectanceCpp,
+        // `setPbrUnlit` and `setPbrSkybox` are the opt-ins that raise these;
+        // the creation options carry neither.
+        unlit: "false",
+        doubleSided: doubleSidedCpp,
+        enableSpecularAA: enableSpecularAACpp,
+        skyboxMode: "false",
         transmission,
-        ior,
+        indexOfRefraction: ior,
         thickness,
         useThicknessAsDepth,
         hasVolume,
         attenuationColor,
         attenuationDistance,
-        occlusionStrengthCpp,
-        metallicF0FactorCpp,
-        sceneMaterialIndex,
-    ];
+        occlusionStrength: occlusionStrengthCpp,
+        metallicF0Factor: metallicF0FactorCpp,
+        usePhysicalLightFalloff: physicalLightFalloffCpp,
+        scenePbrMaterialIndex: sceneMaterialIndex,
+    };
 }
 
 /** A setter option that is absent through an inlined optional record field. */

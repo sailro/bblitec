@@ -2249,6 +2249,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene22",
+        name: "Scene 22 - PBR Shadow Receiver",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene22.ts",
+        title: "Babylon Lite Native - PBR Shadows",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-gltf-sparse",
         name: "Regression - glTF Sparse Accessors",
         source: "examples/regression-gltf-sparse.ts",

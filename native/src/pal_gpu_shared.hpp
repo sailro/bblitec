@@ -315,7 +315,6 @@ inline const TextureData* material_slot_texture(
 /** Whether one slot uploads through an sRGB view, per the table's rule. */
 inline bool material_slot_srgb(
     upstream::MaterialTextureSrgb rule,
-    const TextureData* data,
     const MaterialRecord* material,
     bool standard_material) {
     switch (rule) {
@@ -326,15 +325,13 @@ inline bool material_slot_srgb(
         case upstream::MaterialTextureSrgb::srgb_unless_standard:
             return !standard_material;
         case upstream::MaterialTextureSrgb::base_color:
-            // A slot with image bytes keeps the sRGB contract; a bare
-            // fallback texel takes the material's own encoding -- the pin's
-            // scene-code solid textures are rgba8unorm, sampled without
-            // decode.
+            // The slot's encoding is its TEXTURE's, which upstream stores as
+            // the `Texture2D`'s own format: the record carries it for the
+            // image and the fallback texel alike, so an image is not assumed
+            // to be sRGB because it is an image. Standard uploads linear
+            // whatever the record says.
             return !standard_material &&
-                (data && data->has_image()
-                     ? true
-                     : material == nullptr ||
-                         material->base_color_fallback_srgb);
+                (material == nullptr || material->base_color_srgb);
     }
     return false;
 }
@@ -1053,9 +1050,10 @@ inline std::array<float, 16> pinned_draw_world(
  * `createShadowFragment` emits three per shadow-casting light and the
  * generated table stores them contiguously, so the slice is the variant's
  * own half-open range -- spelled here rather than at each backend's every
- * lookup.
+ * lookup. Both material families wrap that one core, so their rows are one
+ * shape and a backend builds either family's group 2 from one walk.
  */
-inline std::span<const upstream::StandardShadowBinding> shadow_rows(
+inline std::span<const upstream::PinnedShadowBinding> standard_shadow_rows(
     std::size_t variant) {
     const upstream::StandardVariantEntry& entry =
         upstream::standard_variants[variant];
@@ -1065,6 +1063,33 @@ inline std::span<const upstream::StandardShadowBinding> shadow_rows(
         entry.shadow_binding_count,
     };
 }
+
+/** Whether a composed Standard variant carries the pin's shadow fragment. */
+inline bool standard_variant_receives_shadows(std::size_t variant) {
+    return upstream::standard_variants[variant].shadow_binding_count != 0;
+}
+#else
+inline bool standard_variant_receives_shadows(std::size_t) { return false; }
+#endif
+
+#if BBLITE_PBR_SHADOWS
+/** The same slice over the PBR family's own composed rows. */
+inline std::span<const upstream::PinnedShadowBinding> pbr_shadow_rows(
+    std::size_t variant) {
+    const upstream::PbrVariantEntry& entry =
+        upstream::pbr_variants[variant];
+    return {
+        upstream::pbr_shadow_bindings.data() + entry.first_shadow_binding,
+        entry.shadow_binding_count,
+    };
+}
+
+/** Whether a composed PBR variant carries the pin's shadow fragment. */
+inline bool pbr_variant_receives_shadows(std::size_t variant) {
+    return upstream::pbr_variants[variant].shadow_binding_count != 0;
+}
+#else
+inline bool pbr_variant_receives_shadows(std::size_t) { return false; }
 #endif
 
 #if BBLITE_SHADOWS_ESM
@@ -1365,6 +1390,127 @@ inline bool pinned_variant_skeleton(std::size_t variant) {
         std::string_view::npos;
 }
 
+/**
+ * The key one PBR draw composes under.
+ *
+ * Split from the lookup for the reason the Standard family's own key is: a
+ * miss reports what it asked for, and recomputing the key at the error site
+ * would print something subtly different -- the pin's own
+ * `lightCount === 1 && !receiveShadows ? 1 : 2` fold and the mesh row's
+ * feature-source redirect both happen here, after the raw reads.
+ */
+struct PinnedVariantKey {
+    std::uint32_t material_index = 0;
+    std::size_t mesh_features = 0;
+    std::uint32_t light_mode = 0;
+    std::string_view single_light_type;
+    bool tone_mapping = false;
+    /** Why the key is unusable, when it is; empty once `resolved`. */
+    std::string refusal;
+    bool resolved = false;
+};
+
+inline PinnedVariantKey pinned_variant_key(
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw) {
+    PinnedVariantKey key;
+    if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
+        key.refusal = "the draw names no PBR material";
+        return key;
+    }
+    // The table names the FIRST `pbr_variant_material_count` handles: the
+    // assets' materials in document order, then every scene-code creation in
+    // creation order. What has to hold is that a handle the table names is
+    // still the material generation composed for -- so what is checked is
+    // the handle, not the count. Records appended past the table are the
+    // shadow caster VIEWS `registerSceneWithShadowSupport` builds, and one
+    // of those draws through its own no-colour variant rather than a row
+    // here; a miss is then reported by the selector rather than guessed at.
+    key.material_index = draw.item.material.value;
+    if (key.material_index >= upstream::pbr_variant_material_count) {
+        key.refusal = "material " + std::to_string(key.material_index) +
+            " is past the " +
+            std::to_string(upstream::pbr_variant_material_count) +
+            " the composed table names";
+        return key;
+    }
+    // The mesh half of the key comes per renderable: generation writes one
+    // entry per runtime mesh handle in the loader's own creation order, so a
+    // material drawn under two attribute sets resolves each mesh's own
+    // variant instead of collapsing to the per-material ambiguity.
+    std::uint32_t feature_mesh = draw.item.mesh.value;
+    if (
+        draw.item.mesh.value < engine.meshes.size() &&
+        engine.meshes[draw.item.mesh.value]
+                .feature_source_mesh != invalid_handle) {
+        feature_mesh = engine.meshes[draw.item.mesh.value]
+            .feature_source_mesh;
+    }
+    key.mesh_features =
+        feature_mesh <
+            upstream::pbr_renderable_mesh_features.size()
+            ? upstream::pbr_renderable_mesh_features[feature_mesh]
+            // Scene code can keep creating meshes after registration, all
+            // from the fixed-set builders; a scene whose builders disagree
+            // publishes npos here and such a draw refuses.
+            : upstream::pbr_runtime_mesh_features;
+    if (key.mesh_features == std::numeric_limits<std::size_t>::max()) {
+        key.refusal =
+            "the scene's runtime meshes carry no single attribute set";
+        return key;
+    }
+    // The light mode, walked the way `writeMeshLightSelection` walks it: how
+    // many of the scene's lights affect this mesh decides which arm the pin
+    // composed.
+    std::uint32_t light_count = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
+            continue;
+        }
+        ++light_count;
+        key.single_light_type = upstream::pinned_single_light_type(light);
+    }
+    // The receive bit rides the mesh row rather than the material, which is
+    // why it is read back from the mesh half of the key; the arm it selects
+    // comes from the generated lookup generation composed against, so the
+    // two cannot disagree about which variants exist.
+    key.light_mode = upstream::pinned_pbr_light_mode(
+        light_count,
+        (key.mesh_features &
+            static_cast<std::size_t>(upstream::pinned_msh_receive_shadows)) !=
+            0);
+    if (key.light_mode != 1) key.single_light_type = "";
+    key.tone_mapping = scene.environment.tone_mapping_enabled;
+    key.resolved = true;
+    return key;
+}
+
+/**
+ * What a failed PBR variant lookup was asked for.
+ *
+ * The same diagnostic the Standard family carries, built from the key the
+ * lookup actually used rather than from a second derivation: a miss means
+ * the runtime derivation and the composed selector table disagree, and a key
+ * that differed from the one that missed would name the wrong half.
+ */
+inline std::string pinned_variant_request(
+    const PinnedVariantKey& key,
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    if (!key.resolved) return "no key: " + key.refusal;
+    return "material " + std::to_string(key.material_index) +
+        ", mesh features " + std::to_string(key.mesh_features) +
+        ", light mode " + std::to_string(key.light_mode) +
+        ", single light '" + std::string(key.single_light_type) + "'" +
+        ", tone mapping " + (key.tone_mapping ? "on" : "off") +
+        ", geometry task " +
+        (geometry_task == std::numeric_limits<std::size_t>::max()
+             ? std::string("none")
+             : std::to_string(geometry_task));
+}
+
 inline std::size_t pinned_variant_for_draw(
     const Scene& scene,
     const Engine& engine,
@@ -1372,17 +1518,11 @@ inline std::size_t pinned_variant_for_draw(
     // The geometry-output task the draw belongs to, npos for the colour
     // passes: the selector table keys on it, so a geometry draw resolves
     // its own MRT arm and never a colour variant.
-    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    std::size_t geometry_task = std::numeric_limits<std::size_t>::max(),
+    // Filled with the key the lookup used, so a miss reports that key
+    // rather than a second derivation of it.
+    PinnedVariantKey* key_out = nullptr) {
     if (upstream::pbr_variants.empty()) {
-        return std::numeric_limits<std::size_t>::max();
-    }
-    if (draw.item.material_kind != upstream::RenderMaterialKind::pbr) {
-        return std::numeric_limits<std::size_t>::max();
-    }
-    // Scene code that creates its own material shifts every handle away from
-    // the glTF index the table is keyed by, so the correspondence is only used
-    // when the engine holds exactly the asset's materials.
-    if (engine.materials.size() != upstream::pbr_variant_material_count) {
         return std::numeric_limits<std::size_t>::max();
     }
     // A mesh whose node transform is not baked into its vertices carries it
@@ -1418,48 +1558,9 @@ inline std::size_t pinned_variant_for_draw(
             has_bones = true;
         }
     }
-    const std::uint32_t material_index = draw.item.material.value;
-    // The mesh half of the key comes per renderable: generation writes one
-    // entry per runtime mesh handle in the loader's own creation order, so a
-    // material drawn under two attribute sets resolves each mesh's own
-    // variant instead of collapsing to the per-material ambiguity.
-    std::uint32_t feature_mesh = draw.item.mesh.value;
-    if (
-        draw.item.mesh.value < engine.meshes.size() &&
-        engine.meshes[draw.item.mesh.value]
-                .feature_source_mesh != invalid_handle) {
-        feature_mesh = engine.meshes[draw.item.mesh.value]
-            .feature_source_mesh;
-    }
-    const std::size_t mesh_features =
-        feature_mesh <
-            upstream::pbr_renderable_mesh_features.size()
-            ? upstream::pbr_renderable_mesh_features[feature_mesh]
-            // Scene code can keep creating meshes after registration, all
-            // from the fixed-set builders; a scene whose builders disagree
-            // publishes npos here and such a draw refuses.
-            : upstream::pbr_runtime_mesh_features;
-    if (mesh_features == std::numeric_limits<std::size_t>::max()) {
-        return std::numeric_limits<std::size_t>::max();
-    }
-    // The light mode, walked the way `writeMeshLightSelection` walks it: how
-    // many of the scene's lights affect this mesh decides which arm the pin
-    // composed. Shadow receivers always take the loop, which the corpus does
-    // not reach on this path yet.
-    std::uint32_t light_count = 0;
-    std::string_view single_light_type;
-    for (const LightHandle handle : scene.lights) {
-        if (handle.value >= engine.lights.size()) continue;
-        const LightRecord& light = engine.lights[handle.value];
-        if (!upstream::light_affects_mesh(light, draw.item.mesh.value)) {
-            continue;
-        }
-        ++light_count;
-        single_light_type = upstream::pinned_single_light_type(light);
-    }
-    const std::uint32_t light_mode =
-        light_count == 0 ? 0u : light_count == 1 ? 1u : 2u;
-    if (light_mode != 1) single_light_type = "";
+    const PinnedVariantKey key = pinned_variant_key(scene, engine, draw);
+    if (!key.resolved) return std::numeric_limits<std::size_t>::max();
+    if (key_out) *key_out = key;
     // Every light mode. All three read the same lights block, whose writers index
     // the pin's own light world matrix; the block itself was diffed against the
     // browser's (`artifacts/capture/scene7/buffers.json`, 1040 bytes beside the
@@ -1472,11 +1573,11 @@ inline std::size_t pinned_variant_for_draw(
     // own `refractionTexture` slot. The earlier 17.8-MAD refusal here was
     // the guard missing from the composed fragments, not pass structure.
     const std::size_t variant = upstream::pbr_variant_for(
-        material_index,
-        static_cast<std::uint32_t>(mesh_features),
-        light_mode,
-        single_light_type,
-        scene.environment.tone_mapping_enabled,
+        key.material_index,
+        static_cast<std::uint32_t>(key.mesh_features),
+        key.light_mode,
+        key.single_light_type,
+        key.tone_mapping,
         geometry_task);
     if (variant == std::numeric_limits<std::size_t>::max()) {
         return std::numeric_limits<std::size_t>::max();
@@ -1648,7 +1749,7 @@ inline StandardVariantKey standard_variant_key(
 #endif
     ) {
         key.mesh_features &= ~static_cast<std::size_t>(
-            upstream::std_msh_receive_shadows);
+            upstream::pinned_msh_receive_shadows);
     }
     if (
         draw.item.geometry < engine.geometries.size() &&

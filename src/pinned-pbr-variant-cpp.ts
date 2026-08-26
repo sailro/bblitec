@@ -17,13 +17,17 @@
  */
 import ts from "typescript";
 import { floatLiteral } from "./cpp-literals.js";
+import { pinnedLightModeCpp } from "./pinned-light-mode.js";
 import type { LoweringContext } from "./lowering/context.js";
 import {
     lowerPinnedUboWriter,
     type UboFieldSlot,
 } from "./lowering/pinned-ubo-writer-lowerer.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
-import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
+import {
+    pinnedNumericConstant,
+    type PinnedStandardVariantManifestEntry,
+} from "./pinned-standard-variants.js";
 
 /**
  * The float lanes a scalar or vector UBO field spans, shared by the PBR and
@@ -63,10 +67,12 @@ const baseWriter = {
         metallicFactor: "material.metallic_factor",
         roughnessFactor: "material.roughness_factor",
         normalTextureScale: "material.normal_texture_scale",
-        // Nothing sets the pin's `usePhysicalLightFalloff`: the generated
-        // punctual path is the physical inverse-square mode unconditionally
-        // (docs/fidelity.md), which is the pin's own default.
-        usePhysicalLightFalloff: null as string | null,
+        // The pin's default-true `usePhysicalLightFalloff`, which its own
+        // writer folds into the `lightFalloffMode` lane as
+        // `=== false ? 0 : 1`. Every composed punctual arm carries both
+        // falloffs and selects on that lane, so this is a value rather than
+        // a composition key.
+        usePhysicalLightFalloff: "material.use_physical_light_falloff",
     },
     vectorProperties: { baseColorFactor: 4 },
 } as const;
@@ -1042,6 +1048,115 @@ export function sceneUniformsStruct(
 }
 
 /**
+ * The declarations both composed material families read.
+ *
+ * `variantBindings` reflects group 1 and group 2 out of the composed WGSL with
+ * one walk for either family, so the rows it yields are one shape; declaring
+ * them per family would be two spellings of one reflection, and would force
+ * each backend to carry a second copy of the layout and bind-group builders.
+ * The receive bit is shared for the same reason: one pinned
+ * `material/mesh-features.ts` serves both. Emitted into whichever family
+ * header a scene reaches first, exactly like the scene/lights/mesh mirrors
+ * beside it.
+ */
+export function pinnedSharedVariantDecls(
+    context: LoweringContext,
+    provenance: string,
+): string {
+    const receiveShadowsBit = pinnedNumericConstant(
+        context,
+        "src/material/mesh-features.ts",
+        "MSH_RECEIVE_SHADOWS",
+    );
+    return `// ${provenance}
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+
+namespace bbl::upstream {
+
+// src/material/mesh-features.ts MSH_RECEIVE_SHADOWS, evaluated from its own
+// declaration. The bit rides each family's static per-handle mesh table (a
+// mesh's receiveShadows cannot change here), and a DEPTH-ONLY view of a
+// receiving mesh drops it: rebuildSingle derives receiveShadows as
+// \`!shadowOutput && ...\`, so a caster pass composes without the shadow
+// fragment.
+inline constexpr std::uint32_t pinned_msh_receive_shadows =
+    ${receiveShadowsBit}u;
+
+enum class PinnedBindingKind {
+    texture2d,
+    // Read with textureLoad rather than sampled: rgba32float, which WebGPU
+    // refuses to bind as filterable. The pin's bone palette is one.
+    texture2dLoad,
+    textureCube,
+    // The shadow receiver's two: a PCF map is a depth texture read through a
+    // comparison sampler, an ESM one an ordinary float texture read through
+    // an ordinary sampler, and the pin puts whichever the scene's generators
+    // produce into the same group.
+    textureDepth2d,
+    sampler,
+    samplerComparison,
+    // A read-only storage buffer; the morph arms' deltas and weights.
+    storageBuffer,
+    // A group-1 uniform block past mesh (0) and material (1): the Standard UV
+    // transform block, and the geometry arms' gpUniforms. Every uniform block
+    // of another group is that group's own.
+    uniformBuffer,
+};
+
+/**
+ * One row of a variant's group 1, beyond the two uniform blocks.
+ *
+ * The indices are dense and assigned in extension registration order, so the
+ * same index names a different texture in two variants: a PAL builds a
+ * variant's group-1 layout and bind group from its own row range, never from
+ * a shared slot order.
+ */
+struct PinnedVariantBinding {
+    std::uint32_t binding;
+    std::string_view name;
+    PinnedBindingKind kind;
+    /** Which stages declare it; group 1 is shared by both. */
+    bool vertex;
+    bool fragment;
+};
+
+/** What one group-2 row serves for its light. */
+enum class PinnedShadowRole {
+    map,
+    map_sampler,
+    info,
+};
+
+/**
+ * One row of a receiver's group 2, read out of the composed text like the
+ * group-1 rows above.
+ *
+ * \`light\` is the ordinal in the scene's shadow-generator walk, which is what
+ * turns the pin's own \`shadowTex_<lightIndex>\` naming into a join a backend
+ * can make without parsing a name.
+ */
+struct PinnedShadowBinding {
+    std::uint32_t binding;
+    std::string_view name;
+    PinnedBindingKind kind;
+    PinnedShadowRole role;
+    std::uint32_t light;
+    bool vertex;
+    bool fragment;
+};
+
+${pinnedLightModeCpp()}
+
+} // namespace bbl::upstream
+`;
+}
+
+/**
  * Emits `upstream/pbr_variants.hpp`: one struct per variant plus the table that
  * names each variant's stages and byte size.
  */
@@ -1062,6 +1177,7 @@ export function pinnedPbrVariantsHeader(
     const table: string[] = [];
     // Filled as the variants are emitted, so the indices match the table order.
     const selectors: string[] = [];
+    const pbrShadowRows: string[] = [];
     const bindingRows: string[] = [];
     const attributeRows: string[] = [];
     // One case per variant for the type-erased material writer: each variant
@@ -1358,6 +1474,17 @@ export function pinnedPbrVariantsHeader(
             variant.vertexWgsl,
             variant.fragmentWgsl,
         );
+        // Group 2, when the variant composed the receiver fragment. Reflected
+        // rather than counted: `createShadowFragment` picks each binding's
+        // TYPE from its own light's filter, so an ESM directional beside a
+        // PCF spot declares a float texture next to a depth one in the same
+        // group and a layout built from a light count could not tell them
+        // apart.
+        const shadowBindings = variantBindings(
+            variant.vertexWgsl,
+            variant.fragmentWgsl,
+            2,
+        );
         // The MRT arm's target count: the geometry rewrite declares one
         // FragmentOutput location per attachment (plus the optional trailing
         // colour); a colour fragment has one and a depth-only view none.
@@ -1374,6 +1501,7 @@ export function pinnedPbrVariantsHeader(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
                 `"${variant.fragment}", ${totalBytes}, ` +
                 `${bindingRows.length}, ${bindings.length}, ` +
+                `${pbrShadowRows.length}, ${shadowBindings.length}, ` +
                 `${attributeRows.length}, ${attributes.length}, ` +
                 `${
                     bindings.filter((binding) =>
@@ -1401,6 +1529,17 @@ export function pinnedPbrVariantsHeader(
                         : "false"
                 }},`,
         );
+        for (const entry of shadowBindings) {
+            const slot = shadowBindingSlot(entry.name);
+            pbrShadowRows.push(
+                `    {${entry.binding}, "${entry.name}", ` +
+                    `PinnedBindingKind::${entry.kind}, ` +
+                    `PinnedShadowRole::${slot.role}, ` +
+                    `${slot.light}u, ` +
+                    `${entry.vertex ? "true" : "false"}, ` +
+                    `${entry.fragment ? "true" : "false"}},`,
+            );
+        }
         for (const attribute of attributes) {
             attributeRows.push(
                 `    {${attribute.location}, "${attribute.name}", ` +
@@ -1410,7 +1549,7 @@ export function pinnedPbrVariantsHeader(
         for (const entry of bindings) {
             bindingRows.push(
                 `    {${entry.binding}, "${entry.name}", ` +
-                    `PbrBindingKind::${entry.kind}, ` +
+                    `PinnedBindingKind::${entry.kind}, ` +
                     `${entry.vertex ? "true" : "false"}, ` +
                     `${entry.fragment ? "true" : "false"}},`,
             );
@@ -1431,6 +1570,7 @@ export function pinnedPbrVariantsHeader(
 #include <cstring>
 #include <limits>
 
+#include <bblite/upstream/pinned_variant_bindings.hpp>
 #include <bblite/runtime.hpp>
 ${
         lightKinds.length > 0
@@ -1465,38 +1605,22 @@ ${meshUniformsBlock(variants[0]!.fragmentWgsl, meshLightIndexWordOffset)}
 
 ${blocks.join("\n\n")}
 
-// What the pin's fragment declares in group 1, beyond the two uniform blocks.
-//
-// The indices are dense and assigned in extension registration order, so the
-// same index names a different texture in two variants: a PAL builds this
-// variant's group-1 layout and bind group from its own row range, never from a
-// shared slot order.
-enum class PbrBindingKind {
-    texture2d,
-    // Read with textureLoad rather than sampled: rgba32float, which WebGPU
-    // refuses to bind as filterable. The pin's bone palette is one.
-    texture2dLoad,
-    textureCube,
-    sampler,
-    // A read-only storage buffer; the morph arms' deltas and weights.
-    storageBuffer,
-    // A group-1 uniform block past mesh (0) and material (1): the geometry
-    // arms' gpUniforms.
-    uniformBuffer,
-};
-
-struct PbrVariantBinding {
-    std::uint32_t binding;
-    std::string_view name;
-    PbrBindingKind kind;
-    /** Which stages declare it; group 1 is shared by both. */
-    bool vertex;
-    bool fragment;
-};
-
-inline constexpr std::array<PbrVariantBinding, ${bindingRows.length}>
+inline constexpr std::array<PinnedVariantBinding, ${bindingRows.length}>
     pbr_variant_bindings{{
 ${bindingRows.join("\n")}
+}};
+
+/**
+ * The receiver's group, read out of the composed text like the group above.
+ *
+ * \`createPbrShadowFragment\` wraps the same core \`createStdShadowFragment\`
+ * wraps, so the rows are the shadow family's rather than the material
+ * family's: three per shadow-casting light, each typed from that light's own
+ * filter.
+ */
+inline constexpr std::array<PinnedShadowBinding, ${pbrShadowRows.length}>
+    pbr_shadow_bindings{{
+${pbrShadowRows.join("\n")}
 }};
 
 // The vertex inputs one variant's stage declares, in location order. A PAL
@@ -1522,6 +1646,9 @@ struct PbrVariantEntry {
     /** Half-open range into the binding table above. */
     std::size_t first_binding;
     std::size_t binding_count;
+    /** Half-open range into the shadow (group 2) binding table. */
+    std::size_t first_shadow_binding;
+    std::size_t shadow_binding_count;
     /** Half-open range into the attribute table above. */
     std::size_t first_attribute;
     std::size_t attribute_count;
@@ -1583,11 +1710,11 @@ ${selectors.join("\n")}
  * How many materials the composed asset declares.
  *
  * The generated glTF loader appends one MaterialRecord per glTF material, in
- * document order, so a scene whose materials all come from that asset has
- * \`MaterialHandle::value\` equal to the glTF index this table is keyed by. A PAL
- * checks that — \`engine.materials.size() == pbr_variant_material_count\` — before
- * using a handle as a key, because scene code that creates its own material
- * would shift the correspondence.
+ * document order, then every scene-code creation follows in creation order,
+ * so a handle below this count names the material this table was composed
+ * for. A PAL checks the HANDLE against it before using one as a key: records
+ * appended past it are the shadow caster views the scene's own shadow task
+ * builds, and those draw through their own no-colour variants.
  */
 inline constexpr std::size_t pbr_variant_material_count =
     ${materialCount};
@@ -2110,10 +2237,12 @@ enum class MaterialTextureSrgb {
     /** sRGB for the PBR family, linear for Standard. */
     srgb_unless_standard,
     /**
-     * The base-colour rule: a slot with image bytes keeps the sRGB
-     * contract; a bare fallback texel takes the record's own encoding --
-     * the pin's scene-code solid textures are rgba8unorm, sampled without
-     * decode. Standard uploads linear either way.
+     * The base-colour rule: the record's own encoding, which is where this
+     * port keeps what upstream keeps on the \`Texture2D\` -- the format
+     * \`loadTexture2D\` picked from its caller's \`srgb\` option. The glTF
+     * loader passes true and so does the texture-less factor bake; a
+     * scene-code solid texture is rgba8unorm and so is a load that asked
+     * for no decode. Standard uploads linear either way.
      */
     base_color,
 };
@@ -2561,7 +2690,7 @@ export function pinnedStandardVariantsHeader(
         for (const entry of bindings) {
             bindingRows.push(
                 `    {${entry.binding}, "${entry.name}", ` +
-                    `StandardBindingKind::${entry.kind}, ` +
+                    `PinnedBindingKind::${entry.kind}, ` +
                     `${entry.vertex ? "true" : "false"}, ` +
                     `${entry.fragment ? "true" : "false"}},`,
             );
@@ -2570,8 +2699,8 @@ export function pinnedStandardVariantsHeader(
             const slot = shadowBindingSlot(entry.name);
             shadowRows.push(
                 `    {${entry.binding}, "${entry.name}", ` +
-                    `StandardBindingKind::${entry.kind}, ` +
-                    `StandardShadowRole::${slot.role}, ` +
+                    `PinnedBindingKind::${entry.kind}, ` +
+                    `PinnedShadowRole::${slot.role}, ` +
                     `${slot.light}u, ` +
                     `${entry.vertex ? "true" : "false"}, ` +
                     `${entry.fragment ? "true" : "false"}},`,
@@ -2589,6 +2718,7 @@ export function pinnedStandardVariantsHeader(
 #include <cstdint>
 #include <string_view>
 
+#include <bblite/upstream/pinned_variant_bindings.hpp>
 #include <bblite/runtime.hpp>
 
 namespace bbl::upstream {
@@ -2653,67 +2783,17 @@ ${uvWriterBody}
 }
 
 // What each composed variant declares in group 1, past the hand-managed
-// mesh (0) and material (1) blocks — the same reading discipline as
-// pbr_variants.hpp, with Standard-named types so both headers can coexist
-// in one translation unit.
-enum class StandardBindingKind {
-    texture2d,
-    texture2dLoad,
-    textureCube,
-    // The shadow receiver's two: a PCF map is a depth texture read through a
-    // comparison sampler, an ESM one an ordinary float texture read through
-    // an ordinary sampler, and the pin puts whichever the scene's generators
-    // produce into the same group.
-    textureDepth2d,
-    sampler,
-    samplerComparison,
-    storageBuffer,
-    // A group-1 uniform block past mesh (0) and material (1): the UV
-    // transform block \`up\`, and the geometry arms' gpUniforms.
-    uniformBuffer,
-};
-
-struct StandardVariantBinding {
-    std::uint32_t binding;
-    std::string_view name;
-    StandardBindingKind kind;
-    bool vertex;
-    bool fragment;
-};
-
-inline constexpr std::array<StandardVariantBinding, ${bindingRows.length}>
+// mesh (0) and material (1) blocks -- the same reading discipline, and the
+// same reflected rows, as pbr_variants.hpp.
+inline constexpr std::array<PinnedVariantBinding, ${bindingRows.length}>
     standard_variant_bindings{{
 ${bindingRows.join("\n")}
 }};
 
-/** What one group-2 row serves for its light. */
-enum class StandardShadowRole {
-    /** The generator's own map. */
-    map,
-    /** The sampler that map is read through. */
-    map_sampler,
-    /** That generator's receiver block. */
-    info,
-};
-
 /**
  * The receiver's group, read out of the composed text like the group above.
- *
- * \`light\` is the ordinal in the scene's shadow-generator walk, which is what
- * turns the pin's own \`shadowTex_<lightIndex>\` naming into a join a backend
- * can make without parsing a name.
  */
-struct StandardShadowBinding {
-    std::uint32_t binding;
-    std::string_view name;
-    StandardBindingKind kind;
-    StandardShadowRole role;
-    std::uint32_t light;
-    bool vertex;
-    bool fragment;
-};
-
-inline constexpr std::array<StandardShadowBinding, ${shadowRows.length}>
+inline constexpr std::array<PinnedShadowBinding, ${shadowRows.length}>
     standard_shadow_bindings{{
 ${shadowRows.join("\n")}
 }};

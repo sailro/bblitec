@@ -39,6 +39,9 @@ import {
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
+import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
+import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
+import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
 import type { ScenePbrMaterialManifest } from "./compiler/types.js";
 import {
     pinnedMeshFeaturesFromPrimitive,
@@ -726,6 +729,8 @@ interface ScenePbrSetters {
     setPbrSubsurface: PinnedLayerSetter<Record<string, unknown>>;
     setPbrEmissive: PinnedLayerSetter<readonly number[]>;
     setPbrMetallicReflectance: PinnedLayerSetter<Record<string, unknown>>;
+    /** The only one that takes the material alone: it stamps a boolean. */
+    setPbrGammaAlbedo: (material: Record<string, unknown>) => void;
 }
 
 let scenePbrSettersPromise: Promise<ScenePbrSetters> | undefined;
@@ -740,6 +745,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             subsurface,
             emissive,
             reflectance,
+            gammaAlbedo,
         ] =
             await Promise.all([
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
@@ -763,6 +769,9 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
                 importPinnedModule<
                     Pick<ScenePbrSetters, "setPbrMetallicReflectance">
                 >("material/pbr/set-metallic-reflectance.js"),
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrGammaAlbedo">>(
+                    "material/pbr/set-gamma-albedo.js",
+                ),
             ]);
         return {
             setPbrSheen: sheen.setPbrSheen,
@@ -773,6 +782,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             setPbrEmissive: emissive.setPbrEmissive,
             setPbrMetallicReflectance:
                 reflectance.setPbrMetallicReflectance,
+            setPbrGammaAlbedo: gammaAlbedo.setPbrGammaAlbedo,
         };
     })();
     return scenePbrSettersPromise;
@@ -786,6 +796,18 @@ export async function composeScenePbrVariants(
     scene: {
         linearImageProcessing?: boolean;
         metallicReflectanceRegistered?: boolean;
+        /**
+         * The scene's shadow-casting lights in `scene.lights` order, which
+         * the pin hands the composer once for the whole build.
+         */
+        shadowLights?: readonly ShadowLightSlot[];
+        /**
+         * Whether any light in this scene names the meshes it applies to,
+         * which only a `.babylon` asset's lights do. Without one, every
+         * light affects every mesh, so no renderable's light count is zero
+         * -- which is the port's own half of `pinnedReceiverReachesArm`.
+         */
+        perMeshLightLists?: boolean;
     } = {},
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
@@ -805,6 +827,13 @@ export async function composeScenePbrVariants(
         materials.some(
             (material) => material.metallicReflectance !== undefined,
         );
+    // The bit comes from the one accessor that reads it off the pin, not
+    // from the caller: a caller that passed the slots and forgot the bit
+    // would compose a receiver's single-light arm AND splice the shadow
+    // fragment into it, which is two deployed stages no draw can select.
+    const receiveBit = scene.shadowLights && scene.shadowLights.length > 0
+        ? await pinnedReceiveShadowsBit()
+        : 0;
     const variants: PinnedRenderableVariant[] = [];
     for (const material of materials) {
         // `createPbrMaterial` is `{...props}`. Carry the resolved scene option
@@ -965,6 +994,12 @@ export async function composeScenePbrVariants(
         if (material.emissiveColor) {
             setters.setPbrEmissive(input, material.emissiveColor);
         }
+        // One boolean and a registration, so the setter is the whole port:
+        // its ext's `detect` turns the stamp into PBR_HAS_GAMMA_ALBEDO and
+        // the base template asks the ext for the decode block.
+        if (material.gammaAlbedo) {
+            setters.setPbrGammaAlbedo(input);
+        }
         if (material.transmission > 0) {
             throw new Error(
                 "A scene-code transmissive material has no composed arm yet; " +
@@ -983,10 +1018,28 @@ export async function composeScenePbrVariants(
             : {};
         for (const meshFeatures of featureSets) {
         for (const arm of arms) {
+            // A receiving mesh reaches fewer arms than the scene does, from
+            // the port's one statement of the pin's own light-mode rule --
+            // the same statement the generated lookup the runtime keys with
+            // is enumerated from. Composing a pair no draw can select
+            // deploys a compiled stage and its artifacts for nothing.
+            if (
+                receiveBit !== 0 &&
+                (meshFeatures & receiveBit) !== 0 &&
+                !pinnedReceiverReachesArm(
+                    arm.lightMode,
+                    scene.perMeshLightLists === true,
+                )
+            ) {
+                continue;
+            }
             const variant = await composePinnedPbrVariant(input, {
                 ...arm.options,
                 ...noColor,
                 meshFeatures,
+                ...(scene.shadowLights
+                    ? { shadowLights: scene.shadowLights }
+                    : {}),
             });
             variants.push({
                 materialIndex:

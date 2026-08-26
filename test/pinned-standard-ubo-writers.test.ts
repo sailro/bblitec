@@ -191,15 +191,15 @@ test("emits the Standard header with the pin's own offsets", async () => {
     assert.match(header, /"normal-map\|std-fog"/);
     assert.match(
         header,
-        /\{\d+, "dT", StandardBindingKind::texture2d, false, true\},/,
+        /\{\d+, "dT", PinnedBindingKind::texture2d, false, true\},/,
     );
     assert.match(
         header,
-        /\{\d+, "dS", StandardBindingKind::sampler, false, true\},/,
+        /\{\d+, "dS", PinnedBindingKind::sampler, false, true\},/,
     );
     assert.match(
         header,
-        /\{\d+, "up", StandardBindingKind::uniformBuffer, true, false\},/,
+        /\{\d+, "up", PinnedBindingKind::uniformBuffer, true, false\},/,
     );
     // Attributes are the pin's own, densely numbered per variant.
     assert.match(
