@@ -695,6 +695,8 @@ function pcfSpotDefaults(context: LoweringContext): PinnedPcfSpotDefaults {
 interface PinnedShadowTarget {
     /** `dFormat`, as the pin spells it. */
     format: string;
+    /** `samples`. */
+    samples: number;
     /** `_depthCompare`, as this runtime's own enumerator. */
     compare: string;
     /** `_depthClearValue`. */
@@ -784,13 +786,14 @@ function assertPcfResourceContracts(
     ) as ts.ObjectLiteralExpression;
     // The one sample count this runtime has no enumerator for: a
     // multisampled shadow map would need a resolve before the receiver
-    // could sample it, which the pin does not build.
-    if (
-        context.numericValue(
-            context.propertyInitializer(targetLiteral, "samples"),
-            baseFile,
-        ) !== 1
-    ) {
+    // could sample it, which the pin does not build. Read rather than
+    // asserted away: what the PALs apply is this value, so a pin that
+    // changed it would change what they apply and not merely fail here.
+    const samples = context.numericValue(
+        context.propertyInitializer(targetLiteral, "samples"),
+        baseFile,
+    );
+    if (samples !== 1) {
         context.contractError(
             targetLiteral,
             "Pinned shadow render target is no longer single-sample.",
@@ -809,6 +812,7 @@ function assertPcfResourceContracts(
     }
     return {
         format,
+        samples,
         compare: nativeDepthCompare(
             context.stringValue(
                 context.propertyInitializer(targetLiteral, "_depthCompare"),
@@ -1049,6 +1053,8 @@ inline constexpr double pcf_spot_unbounded_far = ${
 inline constexpr DepthCompare shadow_map_depth_compare =
     DepthCompare::${target.compare};
 inline constexpr float shadow_map_depth_clear = ${floatLiteral(target.clear)};
+/** \`samples\` on that same descriptor. */
+inline constexpr std::uint32_t shadow_map_samples = ${target.samples}u;
 
 /**
  * The receiver block the composed fragment declares

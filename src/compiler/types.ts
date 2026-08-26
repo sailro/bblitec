@@ -89,6 +89,17 @@ export interface CompileManifest {
  * computed at run time from the light, exactly as `renderPcfShadowMap`
  * recomputes them when the light moves.
  */
+/** One mesh `setShadowTaskCasterMeshes` named, and what it carries. */
+export interface ShadowCasterManifest {
+    /** Its `sceneMeshes` row. */
+    meshIndex: number;
+    /**
+     * Its `scenePbrMaterials` row, or `null` for a material of another
+     * family -- which still takes a runtime handle.
+     */
+    pbrMaterial: number | null;
+}
+
 export interface ShadowGeneratorManifest {
     /**
      * The pinned filter. Composition maps it onto the receiver fragment's
@@ -117,6 +128,24 @@ export interface ShadowGeneratorManifest {
         blurKernel?: number;
         blurScale?: number;
     };
+    /**
+     * One entry per mesh `setShadowTaskCasterMeshes` named, in the order it
+     * named them.
+     *
+     * `registerSceneWithShadowSupport` builds one caster material VIEW per
+     * caster at run time and appends it to `engine.materials`, so these are
+     * material creations generation never sees at a call site. Every caster
+     * takes a handle; only a scene-code PBR one needs a composed row, since
+     * a PBR view resolves its variant by material HANDLE and a handle the
+     * table never named resolves nothing. The Standard family keys on
+     * feature bits and reads `no_color` off the record instead.
+     *
+     * The mesh row rides along because the view composes over that mesh's
+     * own attribute set and no other: a caster view is drawn on its casters
+     * and nowhere else, which is the same narrowing the pin gets for free
+     * by composing per renderable.
+     */
+    casters: ShadowCasterManifest[];
 }
 
 /**
@@ -288,6 +317,17 @@ export interface ScenePbrMaterialManifest {
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */
     noColorView?: boolean;
+    /**
+     * The attribute sets this material's variants compose over, when they
+     * are fewer than the scene's.
+     *
+     * A scene-code material can be assigned to any renderable, so by
+     * default the composition covers every distinct set in the scene. A
+     * shadow caster's no-colour view is the exception: it is drawn on its
+     * own caster and nowhere else, so composing it against the scene's
+     * whole product deploys stage pairs no draw can select.
+     */
+    meshFeatureSets?: readonly number[];
     /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
     sheen?: ScenePbrSheenManifest;
     /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */

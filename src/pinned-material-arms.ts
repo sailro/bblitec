@@ -1016,7 +1016,9 @@ export async function composeScenePbrVariants(
                   ).PBR2_NO_COLOR_OUTPUT,
               }
             : {};
-        for (const meshFeatures of featureSets) {
+        // A material that names its own sets composes over those: a
+        // caster's no-colour view is drawn on its caster and nowhere else.
+        for (const meshFeatures of material.meshFeatureSets ?? featureSets) {
         for (const arm of arms) {
             // A receiving mesh reaches fewer arms than the scene does, from
             // the port's one statement of the pin's own light-mode rule --

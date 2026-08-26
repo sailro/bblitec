@@ -2315,6 +2315,36 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        // Retires when a corpus scene reaches an ESM generator with no
+        // PCF one beside it.
+        id: "regression-shadow-esm-only",
+        name: "Regression - ESM Shadows Without PCF",
+        source: "examples/regression-shadow-esm-only.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - ESM Shadows Without PCF",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        // Retires when a corpus scene casts a shadow from a PBR mesh with
+        // no Standard material in the scene.
+        id: "regression-shadow-pbr-only",
+        name: "Regression - PBR Shadow Receiver Without Standard",
+        source: "examples/regression-shadow-pbr-only.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - PBR Shadows Without Standard",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

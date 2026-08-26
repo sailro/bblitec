@@ -970,6 +970,17 @@ enum class RenderPipelineKind {
     node_opaque_none,
 };
 
+/**
+ * How many kinds the enum above names.
+ *
+ * A backend keys its pipeline cache by variant, kind and a handful of
+ * per-pass flags, and the multiplier that separates the variant from the
+ * kind has to be at least this. Emitted beside the enum so a kind added
+ * here widens every key rather than silently colliding with one.
+ */
+inline constexpr std::size_t render_pipeline_kind_count =
+    static_cast<std::size_t>(RenderPipelineKind::node_opaque_none) + 1;
+
 enum class RenderStage {
     skybox,
     opaque,

@@ -27,6 +27,9 @@
 //   a new activation unit cannot land without naming what it mirrors.
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { Feature } from "./compiler/types.js";
+import {
+    shadowCapabilities,
+} from "./shadow-capabilities.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 import type { UpstreamEmitOptions } from "./upstream-lower.js";
 
@@ -809,6 +812,16 @@ function capabilityRows(
     const has = (feature: Feature): boolean => features.includes(feature);
     const variantCount = (emit.pinnedVariants ?? []).length;
     const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
+    // What the header will SAY, from the same record the emitter writes it
+    // from. The rows below state their reasons from the reached features
+    // directly -- `has("shadow:pcf") || has("shadow:esm")` rather than the
+    // shared predicate -- so `checkedRow` compares two derivations and not
+    // one expression against itself.
+    const shadows = shadowCapabilities({
+        features,
+        standardVariants: standardVariantCount,
+        pbrVariants: variantCount,
+    });
     const nodeVariantCount = (emit.nodeVariants ?? []).length;
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
@@ -1156,7 +1169,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_SHADOWS",
             "capability",
-            has("shadow:pcf") || has("shadow:esm"),
+            shadows.reached,
             [
                 [
                     has("shadow:pcf"),
@@ -1174,7 +1187,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_SHADOWS_ESM",
             "capability",
-            has("shadow:esm") && standardVariantCount > 0,
+            shadows.esm,
             [
                 // One reason, because the define is a CONJUNCTION: every
                 // site that reads it is Standard-family code, so a scene
@@ -1195,8 +1208,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_STANDARD_SHADOWS",
             "capability",
-            (has("shadow:pcf") || has("shadow:esm")) &&
-                standardVariantCount > 0,
+            shadows.standard,
             [
                 // One reason, because the define is a CONJUNCTION: the
                 // receiver fragment this port composes is the Standard
@@ -1209,7 +1221,7 @@ function capabilityRows(
                         "composes Standard variants",
                 ],
             ],
-            has("shadow:pcf") || has("shadow:esm")
+            shadows.reached
                 ? "reached a shadow generator but composes no Standard " +
                     "variant"
                 : "not reached",
@@ -1219,8 +1231,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_PBR_SHADOWS",
             "capability",
-            (has("shadow:pcf") || has("shadow:esm")) &&
-                variantCount > 0,
+            shadows.pbr,
             [
                 // The same conjunction for the other receiver family:
                 // `createPbrShadowFragment` wraps the same pinned core, so a
@@ -1233,7 +1244,7 @@ function capabilityRows(
                         "composes PBR variants",
                 ],
             ],
-            has("shadow:pcf") || has("shadow:esm")
+            shadows.reached
                 ? "reached a shadow generator but composes no PBR variant"
                 : "not reached",
             "src/material/pbr/fragments/pbr-shadow-fragment.ts",
@@ -1242,8 +1253,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_SHADOW_RECEIVERS",
             "capability",
-            (has("shadow:pcf") || has("shadow:esm")) &&
-                (standardVariantCount > 0 || variantCount > 0),
+            shadows.receivers,
             [
                 // The generator half, which no material family owns: the
                 // maps, samplers, receiver blocks and caster pass exist for
@@ -1255,7 +1265,7 @@ function capabilityRows(
                         "composes a receiver in some family",
                 ],
             ],
-            has("shadow:pcf") || has("shadow:esm")
+            shadows.reached
                 ? "reached a shadow generator but composes no receiver"
                 : "not reached",
             "src/shader/fragments/shadow-fragment-core.ts",

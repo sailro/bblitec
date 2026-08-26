@@ -1010,11 +1010,21 @@ Before pushing compiler, renderer, shader-interface, loader, animation, or PAL
 changes, run the canonical full validation sequence once:
 
 ```powershell
+npm run simplify:verify
 npm test
 npm run scenes:process
 npm run scenes:parity
 npm run status:verify
 ```
+
+`simplify:verify` is gate 3 as a command: it fails until
+`docs/reviews/<content-hash>.json` records the `/simplify` angles run and, per
+finding, whether it was applied — and for an unapplied one, what blocks it and
+where it is filed. The hash is over the branch's own diff against `main`, so
+applying the findings changes it and the record is written last;
+`npm run simplify:record` prints the path. It runs first because the sweep
+below is the expensive step and a review that follows it guarantees a second
+one.
 
 `scenes:process` *is* compile, shaders and build. `npm run scene -- validate
 all` bundles the same three stages plus parity and `status:verify` behind one

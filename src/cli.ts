@@ -765,6 +765,7 @@ async function main(): Promise<void> {
         linearImageProcessing,
         gltfAssets,
         materialIndexBase,
+        casterViewCount,
         renderableMeshFeatures,
         pinnedVariants,
         runtimeMeshFeatures,
@@ -952,11 +953,14 @@ async function main(): Promise<void> {
                     : {}),
             }
             : {}),
-        // The runtime's material-handle count: the assets' materials plus
-        // every scene-code creation of any family, since handles are
-        // creation-ordered across families.
+        // Every handle the runtime will hold: the assets' materials, the
+        // scene's own creations of any family (handles are creation-ordered
+        // across families), then one caster material view per shadow caster,
+        // which `registerSceneWithShadowSupport` appends.
         pinnedMaterialCount:
-            materialIndexBase + result.manifest.sceneMaterialCount,
+            materialIndexBase +
+            result.manifest.sceneMaterialCount +
+            casterViewCount,
         renderableMeshFeatures,
         pinnedSkeletonPalette,
         ...(runtimeMeshFeatures !== undefined

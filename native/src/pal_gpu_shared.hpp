@@ -41,10 +41,15 @@
 #endif
 // The pinned shadow family: the light-space matrices, the receiver block,
 // the generator's defaults and the standard-Z depth state its map takes.
-// `BBLITE_STANDARD_SHADOWS` is generation's own answer to "does this scene
-// reach a shadow generator AND compose the Standard receiver", which is
-// what gates every shadow line in both PALs.
-#if BBLITE_STANDARD_SHADOWS
+// None of that is a material family's, so the header and the depth state
+// below ride `BBLITE_SHADOW_RECEIVERS` -- generation's own answer to "does
+// this scene reach a shadow generator AND compose a receiver in SOME
+// family". `BBLITE_SHADOWS_ESM` is a Standard conjunction, because what it
+// gates includes the caster's own material view and only the Standard
+// family has one -- so a scene reaching the ESM filter with no Standard
+// variant is refused at generation rather than compiled to a define of
+// zero.
+#if BBLITE_SHADOW_RECEIVERS
 #include <bblite/upstream/pinned_shadow.hpp>
 #endif
 #if BBLITE_SHADOWS_ESM
@@ -53,6 +58,28 @@
 #include <bblite/upstream/pinned_depth_state.hpp>
 
 namespace bbl::pal {
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/**
+ * A pipeline cache key over a variant, its pipeline kind and the per-pass
+ * flags that change fixed-function state.
+ *
+ * The multiplier separating the variant from the kind is the enum's own
+ * size, so a kind added upstream widens every key instead of colliding with
+ * one -- which the hand-rolled multipliers could not promise: the tightest
+ * of them left five spare kinds, and nothing would have failed at the
+ * sixth.
+ */
+inline std::size_t variant_pipeline_key(
+    std::size_t variant,
+    upstream::RenderPipelineKind kind,
+    std::initializer_list<bool> flags) {
+    std::size_t key = variant * upstream::render_pipeline_kind_count +
+        static_cast<std::size_t>(kind);
+    for (const bool flag : flags) key = key * 2 + (flag ? 1 : 0);
+    return key;
+}
+#endif
 
 /**
  * The depth state one pass takes: the pin's own convention, or the shadow
@@ -63,7 +90,7 @@ namespace bbl::pal {
  * — so a pass asks here rather than either backend typing standard-Z out.
  */
 inline DepthCompare pass_depth_compare(bool shadow_pass) {
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     if (shadow_pass) return upstream::shadow_map_depth_compare;
 #else
     (void)shadow_pass;
@@ -72,12 +99,33 @@ inline DepthCompare pass_depth_compare(bool shadow_pass) {
 }
 
 inline float pass_depth_clear(bool shadow_pass) {
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     if (shadow_pass) return upstream::shadow_map_depth_clear;
 #else
     (void)shadow_pass;
 #endif
     return upstream::pinned_depth_clear;
+}
+
+
+/**
+ * How many samples a pass rasterizes at.
+ *
+ * The third field of the same exception: `createShadowRenderTarget` names
+ * one sample, because a multisampled map would need a resolve before the
+ * receiver could sample it and the pin builds none. Emitted from that
+ * descriptor beside the compare and the clear, so all three answer from one
+ * reading of the pin rather than two read and one typed.
+ */
+inline std::uint32_t pass_depth_samples(
+    bool shadow_pass,
+    std::uint32_t scene_samples) {
+#if BBLITE_SHADOW_RECEIVERS
+    if (shadow_pass) return upstream::shadow_map_samples;
+#else
+    (void)shadow_pass;
+#endif
+    return scene_samples;
 }
 
 } // namespace bbl::pal
@@ -1135,6 +1183,105 @@ inline void esm_shadow_casters(
 }
 #endif
 
+#if BBLITE_SHADOW_RECEIVERS
+/**
+ * The scene's generators in `scene.lights` order.
+ *
+ * That walk IS the ordinal every shadow contract names: the pin's own
+ * `ShadowTask` schedules one render task per generator in it, the composed
+ * receiver numbers its group-2 rows in it, and `build_shadow_task` pushes
+ * caster views in it. Stated once so a backend that keys densely and one
+ * that keys by handle cannot disagree about which generator is light `n`.
+ */
+template <typename Visit>
+inline void for_each_shadow_generator(
+    const Scene& scene,
+    const Engine& engine,
+    Visit&& visit) {
+    std::size_t slot = 0;
+    for (const LightHandle light : scene.lights) {
+        if (light.value >= engine.lights.size()) continue;
+        const ShadowGeneratorHandle handle =
+            engine.lights[light.value].shadow_generator;
+        if (handle.value >= engine.shadow_generators.size()) continue;
+        visit(handle, light, slot++);
+    }
+}
+
+/** The refresh's own carriers, kept by each backend across frames. */
+struct ShadowRefreshState {
+    /** Refilled per generator by the ESM caster fold, never reallocated. */
+    std::vector<upstream::ShadowCaster> casters;
+    /**
+     * The receiver block each generator last uploaded, by handle, against
+     * which the next frame's is compared. `renderPcfShadowMap` re-uploads
+     * only when the light moved, and for a static one these 96 bytes are
+     * identical every frame.
+     */
+    std::vector<upstream::ShadowInfoUniforms> blocks;
+    /** Whether `blocks[handle]` holds an upload yet. */
+    std::vector<bool> uploaded;
+};
+
+/**
+ * Refresh every generator the scene's lights name, then hand each to the
+ * backend.
+ *
+ * What is shared is the refresh and the dirty test: the ESM fit re-reads
+ * its casters' world bounds every frame because it is sized to them and
+ * not to the light, the PCF spot rebuilds from the light's live position
+ * and direction, and the receiver block that falls out is re-uploaded only
+ * when it moved. All of that is engine-side math with one right answer.
+ *
+ * What stays per backend is the resource each keeps for a generator, which
+ * is what the visitor receives: the record, its own handle, its dense
+ * position in the light order, the block, and whether that block is new.
+ */
+template <typename Visit>
+inline void refresh_shadow_generators(
+    const Scene& scene,
+    Engine& engine,
+    ShadowRefreshState& refresh,
+    Visit&& visit) {
+    if (refresh.blocks.size() < engine.shadow_generators.size()) {
+        refresh.blocks.resize(engine.shadow_generators.size());
+        refresh.uploaded.resize(engine.shadow_generators.size(), false);
+    }
+    for_each_shadow_generator(
+        scene,
+        engine,
+        [&](
+            ShadowGeneratorHandle handle,
+            LightHandle light,
+            std::size_t slot) {
+            ShadowGeneratorRecord& generator =
+                engine.shadow_generators[handle.value];
+#if BBLITE_SHADOWS_ESM
+            if (generator.filter == ShadowFilter::esm_directional) {
+                esm_shadow_casters(engine, generator, refresh.casters);
+                upstream::update_esm_directional_shadow(
+                    generator,
+                    engine.lights[light.value],
+                    refresh.casters);
+            } else
+#endif
+            upstream::update_pcf_spot_shadow(
+                generator,
+                engine.lights[light.value]);
+            const upstream::ShadowInfoUniforms block =
+                upstream::shadow_info_block(generator);
+            const bool moved = !refresh.uploaded[handle.value] ||
+                std::memcmp(
+                    &block,
+                    &refresh.blocks[handle.value],
+                    sizeof(block)) != 0;
+            refresh.blocks[handle.value] = block;
+            refresh.uploaded[handle.value] = true;
+            visit(generator, handle, slot, block, moved);
+        });
+}
+#endif
+
 
 #if BBLITE_PINNED_MATERIALS
 /**
@@ -1288,7 +1435,7 @@ inline void pinned_mesh_light_selection(
     block.lc = count;
 }
 
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIAL_VARIANTS
 inline upstream::MeshUniforms pinned_mesh_block(
     const Scene& scene,
     const Engine& engine,

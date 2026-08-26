@@ -1,3 +1,5 @@
+import type { ScenePbrMaterialManifest } from "./compiler/types.js";
+import { pbrNoColorView } from "./compiler/scene-materials.js";
 // The pinned variant-composition orchestration.
 //
 // Everything between "the manifest and assets are settled" and "the
@@ -72,6 +74,12 @@ export interface ComposedScenePipeline {
     linearImageProcessing: boolean;
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
+    /**
+     * How many caster material views `registerSceneWithShadowSupport` will
+     * append past the scene's own materials. The runtime's material-handle
+     * count includes them, because a PBR view's handle has to name a row.
+     */
+    casterViewCount: number;
     /**
      * The pin's mesh bits per PBR renderable, in the runtime's own handle
      * order: the primitive's attributes, plus `MSH_RECEIVE_SHADOWS` where
@@ -182,7 +190,15 @@ export async function composeScenePipeline({
         }
         renderableMeshFeatures.push(await proceduralRenderableFeatures());
     }
-    const shadowLights = result.manifest.shadowGenerators.map(
+    // The generators in `scene.lights` order, which is the ordinal every
+    // shadow contract names: the composed receiver's group-2 rows, the
+    // shadow task's own scheduling, and the caster views it appends. One
+    // list, so the composition and the runtime cannot disagree about which
+    // generator is light `n`.
+    const generatorsByLight = [...result.manifest.shadowGenerators].sort(
+        (left, right) => left.lightIndex - right.lightIndex,
+    );
+    const shadowLights = generatorsByLight.map(
         (generator) => ({
             lightIndex: generator.lightIndex,
             // The filter comes off the pinned factory the manifest's kind
@@ -263,6 +279,60 @@ export async function composeScenePipeline({
         composedVariants.push(...variants);
         materialIndexBase += gltfMaterialCount(path);
     }
+    // The caster material VIEWS `registerSceneWithShadowSupport` appends at
+    // run time, composed here because a PBR view resolves its variant by
+    // material HANDLE and a handle the table never named resolves nothing.
+    //
+    // The order is the pin's own scheduling walk -- `scene.lights` in order,
+    // and within each light its generator's casters in the order
+    // `setShadowTaskCasterMeshes` named them -- which is the order the
+    // generated `shadow.cpp` pushes them, so the handles line up by
+    // construction rather than by a second rule. A Standard caster
+    // contributes nothing: that family keys on feature bits and reads
+    // `no_color` off the record, so its view resolves with no row at all.
+    const casterViews: ScenePbrMaterialManifest[] = [];
+    let casterViewCount = 0;
+    for (const generator of generatorsByLight) {
+        for (const caster of generator.casters) {
+            // EVERY caster takes a handle: `build_shadow_task` appends a
+            // view for each, whichever family the caster's material
+            // belongs to. Only a scene-code PBR one needs a composed row,
+            // so the counter and the row list advance apart -- a Standard
+            // caster ahead of a PBR one would otherwise hand the PBR view
+            // the Standard view's handle.
+            const materialsBefore =
+                result.manifest.sceneMaterialCount + casterViewCount;
+            casterViewCount += 1;
+            if (caster.pbrMaterial === null) continue;
+            const source =
+                result.manifest.scenePbrMaterials[caster.pbrMaterial];
+            if (!source) {
+                throw new Error(
+                    "A shadow caster names scene PBR material " +
+                        `${caster.pbrMaterial}, which the scene did not ` +
+                        "create.",
+                );
+            }
+            // Composed over its own caster's attribute set and no other:
+            // the view is drawn on that mesh in the caster pass and
+            // nowhere else, which is the narrowing the pin gets for free
+            // by composing per renderable. The scene-wide product would
+            // deploy a stage pair per arm and per attribute set, all but
+            // one of them a `return;` fragment no draw can select.
+            casterViews.push({
+                ...pbrNoColorView(source, materialsBefore),
+                meshFeatureSets: [
+                    renderableMeshFeatures[
+                        sceneMeshRowBase + caster.meshIndex
+                    ] ?? 0,
+                ],
+            });
+        }
+    }
+    const scenePbrMaterials = [
+        ...result.manifest.scenePbrMaterials,
+        ...casterViews,
+    ];
     if (result.manifest.scenePbrMaterials.length > 0) {
         for (const material of result.manifest.scenePbrMaterials) {
             if (material.gltfAssetsBefore !== gltfAssets.length) {
@@ -275,7 +345,7 @@ export async function composeScenePipeline({
         }
         composedVariants.push(
             ...(await composeScenePbrVariants(
-                result.manifest.scenePbrMaterials,
+                scenePbrMaterials,
                 sceneArms,
                 materialIndexBase,
                 [
@@ -480,6 +550,7 @@ export async function composeScenePipeline({
         linearImageProcessing,
         gltfAssets,
         materialIndexBase,
+        casterViewCount,
         renderableMeshFeatures,
         pinnedVariants,
         runtimeMeshFeatures,

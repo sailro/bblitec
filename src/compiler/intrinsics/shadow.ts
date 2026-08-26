@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type { ShadowCasterManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
@@ -41,6 +41,10 @@ export interface ShadowIntrinsicContext
             blurScale?: number;
         };
     }): number;
+    recordShadowCasters(
+        generatorIndex: number,
+        casters: readonly ShadowCasterManifest[],
+    ): void;
     esmGeneratorOrdinal(): number;
 }
 
@@ -290,6 +294,7 @@ export function compileShadowIntrinsic(
                 call.arguments[1]!,
             );
             const emitted: string[] = [];
+            const casters: ShadowCasterManifest[] = [];
             for (const element of array.elements) {
                 const mesh = context.compileValue(element);
                 context.expectKind(mesh, "mesh", element);
@@ -302,6 +307,15 @@ export function compileShadowIntrinsic(
                     );
                 }
                 emitted.push(mesh.cpp);
+                // What the mesh carries WHEN it is named a caster: a
+                // material assigned after this call would change which
+                // view the task builds, and every reached scene assigns
+                // it first. `null` is a material of another family, which
+                // still takes a runtime handle.
+                casters.push({
+                    meshIndex: mesh.sceneMeshIndex,
+                    pbrMaterial: mesh.scenePbrMaterialIndex ?? null,
+                });
             }
             if (emitted.length === 0) {
                 context.fail(
@@ -310,6 +324,10 @@ export function compileShadowIntrinsic(
                         "map; no reached scene registers one.",
                 );
             }
+            context.recordShadowCasters(
+                generator.shadowGeneratorIndex,
+                casters,
+            );
             // The caster pass draws each mesh through its material's own
             // no-colour view, which is the same composition arm scene 116
             // reaches from scene code.

@@ -439,6 +439,44 @@ export function variantLayout(
 }
 
 /** A C++ identifier for a variant key such as `ibl|reflectance|refraction`. */
+/** What a composed fragment stage writes, and how many targets it names. */
+interface VariantColorOutput {
+    noColorOutput: boolean;
+    colorTargetCount: number;
+}
+
+/**
+ * The colour targets a composed fragment stage declares.
+ *
+ * Read off the ENTRY POINT's return clause, never off the text: the fragment's
+ * own input struct numbers its varyings with `@location(n)` too -- the first of
+ * them is `@location(0) worldPos` -- so asking whether the source mentions
+ * `@location(0)` answers "colour" for a no-colour view, whose entry point
+ * returns nothing at all. The three forms the pin composes are that void one,
+ * `-> @location(0) vec4<f32>` for a colour pass, and `-> FragmentOutput` for
+ * the geometry rewrite, whose struct names one location per attachment plus
+ * the optional trailing colour.
+ *
+ * Both variant tables read it here rather than each deriving it, because a
+ * derivation stated twice is what let the two disagree: the PBR half answered
+ * "colour" for every no-colour view it ever composed, and a depth-only
+ * pipeline built with a colour target is what Dawn refuses outright.
+ */
+function variantColorOutput(fragmentWgsl: string): VariantColorOutput {
+    const fragmentOutputStruct = fragmentWgsl.match(
+        /struct FragmentOutput \{[^}]*\}/,
+    );
+    const hasColorReturn = fragmentWgsl.includes("-> @location(0)");
+    return {
+        noColorOutput: !hasColorReturn && !fragmentOutputStruct,
+        colorTargetCount: fragmentOutputStruct
+            ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? []).length
+            : hasColorReturn
+                ? 1
+                : 0,
+    };
+}
+
 /** One vertex input a variant's own vertex stage declares. */
 interface VariantAttribute {
     location: number;
@@ -1485,18 +1523,9 @@ export function pinnedPbrVariantsHeader(
             variant.fragmentWgsl,
             2,
         );
-        // The MRT arm's target count: the geometry rewrite declares one
-        // FragmentOutput location per attachment (plus the optional trailing
-        // colour); a colour fragment has one and a depth-only view none.
-        const fragmentOutputStruct = variant.fragmentWgsl.match(
-            /struct FragmentOutput \{[^}]*\}/,
+        const { noColorOutput, colorTargetCount } = variantColorOutput(
+            variant.fragmentWgsl,
         );
-        const colorTargetCount = fragmentOutputStruct
-            ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? [])
-                .length
-            : variant.fragmentWgsl.includes("@location(0)")
-                ? 1
-                : 0;
         table.push(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
                 `"${variant.fragment}", ${totalBytes}, ` +
@@ -1513,11 +1542,7 @@ export function pinnedPbrVariantsHeader(
                         binding.kind === "sampler" && binding.fragment
                     ).length
                 }, ` +
-                `${
-                    variant.fragmentWgsl.includes("@location(0)")
-                        ? "false"
-                        : "true"
-                }, ` +
+                `${noColorOutput ? "true" : "false"}, ` +
                 `${colorTargetCount}, ` +
                 // The geometry LOCAL_POSITION arm's varying reads the raw
                 // `position` attribute, which this backend maps onto the
@@ -2643,22 +2668,9 @@ export function pinnedStandardVariantsHeader(
             variant.fragmentWgsl,
             2,
         );
-        const fragmentOutputStruct = variant.fragmentWgsl.match(
-            /struct FragmentOutput \{[^}]*\}/,
+        const { noColorOutput, colorTargetCount } = variantColorOutput(
+            variant.fragmentWgsl,
         );
-        // The Standard fragment's *input* struct also numbers its varyings
-        // with `@location(n)`, so a colour output is detected off the entry
-        // point's own return type — `-> @location(0)` — which the
-        // NO_COLOR_OUTPUT arm drops and the MRT rewrite replaces with
-        // `-> FragmentOutput`.
-        const hasColorReturn =
-            variant.fragmentWgsl.includes("-> @location(0)");
-        const colorTargetCount = fragmentOutputStruct
-            ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? [])
-                .length
-            : hasColorReturn
-                ? 1
-                : 0;
         table.push(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
                 `"${variant.fragment}", ${variant.features}, ` +
@@ -2666,11 +2678,7 @@ export function pinnedStandardVariantsHeader(
                 `${bindingRows.length}, ${bindings.length}, ` +
                 `${shadowRows.length}, ${shadowBindings.length}, ` +
                 `${attributeRows.length}, ${attributes.length}, ` +
-                `${
-                    hasColorReturn || fragmentOutputStruct
-                        ? "false"
-                        : "true"
-                }, ` +
+                `${noColorOutput ? "true" : "false"}, ` +
                 `${colorTargetCount}, ` +
                 // The LOCAL_POSITION geometry arm reads the raw position
                 // attribute for its varying, so the draw binds the local

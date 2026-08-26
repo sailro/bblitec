@@ -1,4 +1,5 @@
 import type { Feature } from "./types.js";
+import { reachesShadowGenerator } from "../shadow-capabilities.js";
 
 /**
  * The output projection: the feature→sources authority and the renders
@@ -244,7 +245,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         : "";
     // The shadow family: main.cpp names the pinned generator defaults its
     // factory call resolves an omitted option to.
-    const shadowInclude = features.includes("shadow:pcf")
+    const shadowInclude = reachesShadowGenerator(features)
         ? "#include <bblite/upstream/pinned_shadow.hpp>\n"
         : "";
     const cameraMathInclude =

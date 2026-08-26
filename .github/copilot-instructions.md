@@ -39,12 +39,14 @@ work is not started, or not finished, until it has been passed.
    and the capability you are about to build is usually already half-built
    somewhere the page you skipped would have named.
 2. **Before porting a Babylon Lite feature: read that feature's own upstream
-   page** — what it is worth and how to read it are under
-   [Pinned upstream](#pinned-upstream), including that a remark about
-   Babylon.js is not a statement about the target. Getting the page is the
-   only part that is mechanical: the published site renders through a
-   client-side app, so fetch it at the pinned commit, which is also the
-   version that matches the code.
+   page.** Not after the first refusal, not when something looks wrong —
+   before writing any code. It is the cheapest step in this workflow and
+   every session that skipped it paid for the skip. What the page is worth
+   and how to read it are under [Pinned upstream](#pinned-upstream),
+   including that a remark about Babylon.js is not a statement about the
+   target. Getting the page is the only part that is mechanical: the
+   published site renders through a client-side app, so fetch it at the
+   pinned commit, which is also the version that matches the code.
 
    ```bash
    gh api "repos/BabylonJS/Babylon-Lite/contents/docs/lite/architecture/29-post-process.md?ref=$(node -p "require('./upstream/babylon-lite.json').sourceVersion")" --jq .content | base64 -d
@@ -59,6 +61,16 @@ work is not started, or not finished, until it has been passed.
    own scene measures, then `/simplify`, then apply everything it found,
    then one sweep over the result.
 
+   **Every branch that becomes a pull request, whatever its size.** There
+   is no "too small to review" exemption and no "this is only a fix"
+   exemption: a three-file branch that moves preprocessor blocks and edits
+   a table row is exactly the shape whose defects hide, and a branch that
+   is *itself* a fix for something a review would have caught is the last
+   one to skip. Judging a change too small is the rationalisation that
+   costs the second sweep — the gate is cheap and the judgement is not
+   trustworthy. Skipped once already, on the PR immediately after this
+   paragraph was written.
+
    **Apply what it finds, including what reaches outside the diff.** A
    mechanism this repository already owns, a re-derivation to delete, a
    contract to move, a duplicated table, a half-gated symmetry: those are
@@ -67,6 +79,15 @@ work is not started, or not finished, until it has been passed.
    blocked on something else — a capability that does not exist yet, a
    measurement nobody has taken — and the entry then says what unblocks
    it. "It is outside the scene I was integrating" is not a blocker.
+
+   **The gate is a command, not this paragraph.** `npm run
+   simplify:verify` fails until `docs/reviews/<content-hash>.json` records
+   the angles run and, per finding, whether it was applied — and for an
+   unapplied one, what blocks it and where it is filed. The hash is over
+   the branch's own diff, so applying the findings changes it and the
+   record is written last. `npm run simplify:record` prints the path.
+   It runs first in the validation sequence below, and first in the pull
+   request template, because a skip is then visible in the diff.
 
 ## Diagnose by capture, not by inference
 
@@ -255,6 +276,7 @@ in `docs/development.md` for compiler, renderer, loader, shader, animation, or
 PAL milestones:
 
 ```powershell
+npm run simplify:verify
 npm test
 npm run scenes:process
 npm run scenes:parity

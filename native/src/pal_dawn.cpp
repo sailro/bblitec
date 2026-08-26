@@ -515,6 +515,7 @@ struct DawnState : DawnDevice {
     // groups interchangeable across shader variants.
     std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
     WGPUPipelineLayout mesh_pipeline_layout = nullptr;
+
 #if BBLITE_PINNED_MATERIALS
     // Babylon Lite's own grouping, which its composed fragments declare:
     // group 0 carries the per-pass scene block and the lights array, group 1
@@ -541,8 +542,6 @@ struct DawnState : DawnDevice {
     WGPUSampler shadow_comparison_sampler = nullptr;
     WGPUSampler shadow_filtering_sampler = nullptr;
     std::vector<WGPUBuffer> shadow_uniforms;
-    /** What each receiver UBO last held, so a static light re-uploads none. */
-    std::vector<upstream::ShadowInfoUniforms> shadow_blocks;
 #if BBLITE_SHADOWS_ESM
     /**
      * `sg._shadowParamsUBO`, one per generator: the bias and depth scale the
@@ -577,14 +576,21 @@ struct DawnState : DawnDevice {
         WGPUBindGroup vertical = nullptr;
     };
     std::vector<EsmBlur> esm_blurs;
-    /** Refilled per frame by the caster fold, never reallocated. */
-    std::vector<upstream::ShadowCaster> esm_casters;
 #endif
+    /**
+     * Refilled per generator by the caster fold, never reallocated.
+     *
+     * It belongs to the shadow walk rather than to the ESM half: the walk
+     * runs whenever this build has receivers at all, and a carrier that
+     * existed only under the ESM define would make the shared walk's own
+     * signature depend on which filters the scene reached.
+     */
+    /** The shared walk's carriers, whose layout it owns. */
+    pal::ShadowRefreshState shadow_refresh;
 #endif
-    /** How many of `scene.lights` carry a generator, in that order. */
-    std::size_t shadow_light_count = 0;
     WGPUBindGroup pinned_frame_group = nullptr;
 #endif
+
 #if BBLITE_PBR_VARIANTS > 0
     std::vector<WGPUBindGroupLayout> pinned_draw_layouts;
     std::vector<WGPUPipelineLayout> pinned_pipeline_layouts;
@@ -3462,16 +3468,16 @@ WGPUBindGroup shadow_group_for(
     WGPUBindGroup& slot) {
     if (slot) return slot;
     ensure_shadow_samplers(state);
-    // The scene's generators in `scene.lights` order: that walk IS the
-    // ordinal each row names.
+    // The walk IS the ordinal each row names, so it is the shared one --
+    // the refresh that rebuilds these generators' matrices visits them in
+    // the same order, and a second spelling here could disagree.
     std::vector<ShadowGeneratorHandle> generators;
-    for (const LightHandle light : scene.lights) {
-        if (light.value >= engine.lights.size()) continue;
-        const ShadowGeneratorHandle handle =
-            engine.lights[light.value].shadow_generator;
-        if (handle.value >= engine.shadow_generators.size()) continue;
-        generators.push_back(handle);
-    }
+    pal::for_each_shadow_generator(
+        scene,
+        engine,
+        [&](ShadowGeneratorHandle handle, LightHandle, std::size_t) {
+            generators.push_back(handle);
+        });
     std::vector<WGPUBindGroupEntry> entries;
     entries.reserve(rows.size());
     for (const upstream::PinnedShadowBinding& row : rows) {
@@ -3611,29 +3617,31 @@ void write_shadow_generators(
     DawnState& state,
     const Scene& scene,
     Engine& engine) {
-    state.shadow_light_count = 0;
     if (engine.shadow_generators.empty()) return;
     if (state.shadow_uniforms.size() < engine.shadow_generators.size()) {
         state.shadow_uniforms.resize(
             engine.shadow_generators.size(),
             nullptr);
-        state.shadow_blocks.resize(engine.shadow_generators.size());
 #if BBLITE_SHADOWS_ESM
         state.shadow_params.resize(engine.shadow_generators.size(), nullptr);
 #endif
     }
-    for (const LightHandle light : scene.lights) {
-        if (light.value >= engine.lights.size()) continue;
-        const ShadowGeneratorHandle handle =
-            engine.lights[light.value].shadow_generator;
-        if (handle.value >= engine.shadow_generators.size()) continue;
-        ShadowGeneratorRecord& generator =
-            engine.shadow_generators[handle.value];
+    pal::refresh_shadow_generators(
+        scene,
+        engine,
+        state.shadow_refresh,
+        [&](
+            [[maybe_unused]] const ShadowGeneratorRecord& generator,
+            ShadowGeneratorHandle handle,
+            std::size_t,
+            const upstream::ShadowInfoUniforms& block,
+            bool moved) {
 #if BBLITE_SHADOWS_ESM
-        // The ESM fit is sized to the CASTERS, not to the light's own cone,
-        // so it re-reads their world bounds every frame.
-        if (generator.filter == ShadowFilter::esm_directional) {
-            if (!state.shadow_params[handle.value]) {
+            // `shadow_params_block` reads what the factory fixed -- bias,
+            // depth scale, texel size -- so it is built once and outlives
+            // every refresh.
+            if (generator.filter == ShadowFilter::esm_directional &&
+                !state.shadow_params[handle.value]) {
                 const std::array<float, 8> params =
                     upstream::shadow_params_block(generator);
                 state.shadow_params[handle.value] = create_buffer(
@@ -3642,41 +3650,22 @@ void write_shadow_generators(
                     params.data(),
                     params.size() * sizeof(float));
             }
-            pal::esm_shadow_casters(engine, generator, state.esm_casters);
-            upstream::update_esm_directional_shadow(
-                generator,
-                engine.lights[light.value],
-                state.esm_casters);
-        } else
 #endif
-        upstream::update_pcf_spot_shadow(
-            generator,
-            engine.lights[light.value]);
-        const upstream::ShadowInfoUniforms block =
-            upstream::shadow_info_block(generator);
-        if (!state.shadow_uniforms[handle.value]) {
-            state.shadow_uniforms[handle.value] = create_buffer(
-                state,
-                WGPUBufferUsage_Uniform,
-                &block,
-                sizeof(block));
-        } else if (std::memcmp(
-                       &block,
-                       &state.shadow_blocks[handle.value],
-                       sizeof(block)) != 0) {
-            // Only when the light moved: for a static one the 96 bytes are
-            // identical every frame, which is the same skip
-            // `renderPcfShadowMap`'s own version check makes.
-            wgpuQueueWriteBuffer(
-                state.queue,
-                state.shadow_uniforms[handle.value],
-                0,
-                &block,
-                sizeof(block));
-        }
-        state.shadow_blocks[handle.value] = block;
-        state.shadow_light_count += 1;
-    }
+            if (!state.shadow_uniforms[handle.value]) {
+                state.shadow_uniforms[handle.value] = create_buffer(
+                    state,
+                    WGPUBufferUsage_Uniform,
+                    &block,
+                    sizeof(block));
+            } else if (moved) {
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    state.shadow_uniforms[handle.value],
+                    0,
+                    &block,
+                    sizeof(block));
+            }
+        });
 }
 #endif
 
@@ -4638,6 +4627,27 @@ bool append_variant_attribute(
 }
 #endif
 
+/**
+ * The pass-dependent depth state, applied the same way by all three family
+ * builders.
+ *
+ * `createShadowRenderTarget` is the pin's ONE exception to this port's
+ * depth convention, and it moves the compare and the attachment format
+ * together (the sample count arrives as `samples`, which the caster pass
+ * already passes as the pin's own). A caster is drawn through whichever
+ * family its own material belongs to, so a builder that answered this for
+ * itself would be right only for the casters that family happens to own.
+ */
+void apply_pass_depth_state(
+    WGPUDepthStencilState& depth_stencil,
+    bool shadow_pass) {
+    depth_stencil.format = shadow_pass
+        ? WGPUTextureFormat_Depth32Float
+        : WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.depthCompare =
+        dawn_depth_compare(pal::pass_depth_compare(shadow_pass));
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * The render pipeline for one composed variant.
@@ -4657,9 +4667,16 @@ WGPURenderPipeline pinned_variant_pipeline(
     // The geometry-output task an MRT variant draws in. A geometry variant
     // is composed for exactly one task, so the variant-keyed cache stays
     // valid with the task's targets baked into its pipeline.
-    const FrameTaskRecord* geometry_task = nullptr) {
-    const std::size_t key = variant * 64 +
-        static_cast<std::size_t>(kind) * 2 + (has_depth ? 1 : 0);
+    const FrameTaskRecord* geometry_task = nullptr,
+    // The pin's one exception to this port's depth convention: a shadow
+    // caster pass renders standard-Z into the generator's own
+    // `depth32float` map. The Standard sibling takes the same flag -- a
+    // caster is drawn through whichever family its own material belongs
+    // to, so a depth state either family answered alone would be right
+    // only for the casters that family happens to own.
+    bool shadow_pass = false) {
+    const std::size_t key =
+        pal::variant_pipeline_key(variant, kind, {shadow_pass, has_depth});
     auto& map = state.pinned_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -4736,15 +4753,13 @@ WGPURenderPipeline pinned_variant_pipeline(
     descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    apply_pass_depth_state(depth_stencil, shadow_pass);
     // A no-color view draws in the depth-only tasks, which write depth
     // whatever the material's own alpha would have said.
     depth_stencil.depthWriteEnabled =
         !entry.no_color_output && traits.transparent
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
-    depth_stencil.depthCompare =
-        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -4823,14 +4838,18 @@ WGPURenderPipeline standard_variant_pipeline(
     // colour format is that generator's own recorded row, so two generators
     // whose factories returned different formats build different pipelines.
     std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key = variant * 512 +
-        static_cast<std::size_t>(kind) * 8 +
-        (shadow_pass ? 4 : 0) +
-        (has_depth ? 2 : 0) + (unfilterable_emissive ? 1 : 0) +
+    const std::size_t key =
+        pal::variant_pipeline_key(
+            variant,
+            kind,
+            {shadow_pass, has_depth, unfilterable_emissive}) +
         (esm_shadow_index == invalid_handle
             ? 0
-            : (esm_shadow_index + 1) * 512 *
-                upstream::standard_variants.size());
+            : (esm_shadow_index + 1) *
+                pal::variant_pipeline_key(
+                    upstream::standard_variants.size(),
+                    upstream::RenderPipelineKind{},
+                    {false, false, false}));
     auto& map = state.standard_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -4901,15 +4920,11 @@ WGPURenderPipeline standard_variant_pipeline(
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = shadow_pass
-        ? WGPUTextureFormat_Depth32Float
-        : WGPUTextureFormat_Depth24PlusStencil8;
+    apply_pass_depth_state(depth_stencil, shadow_pass);
     depth_stencil.depthWriteEnabled =
         !entry.no_color_output && traits.transparent
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
-    depth_stencil.depthCompare =
-        dawn_depth_compare(pass_depth_compare(shadow_pass));
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -5110,10 +5125,13 @@ WGPURenderPipeline node_variant_pipeline(
     std::size_t variant,
     upstream::RenderPipelineKind kind,
     std::uint32_t samples,
-    bool has_depth) {
+    bool has_depth,
+    // The shadow target's own depth state, taken by every family: a node
+    // material casts through its own no-colour view exactly as the other
+    // two do.
+    bool shadow_pass = false) {
     const std::size_t key =
-        variant * 256 + static_cast<std::size_t>(kind) * 2 +
-        (has_depth ? 1 : 0);
+        pal::variant_pipeline_key(variant, kind, {shadow_pass, has_depth});
     auto& map = state.node_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -5183,10 +5201,8 @@ WGPURenderPipeline node_variant_pipeline(
     descriptor.primitive.cullMode =
         dawn_cull_mode(pipeline_kind_traits(kind).cull);
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    apply_pass_depth_state(depth_stencil, shadow_pass);
     depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
-    depth_stencil.depthCompare =
-        dawn_depth_compare(upstream::pinned_depth_compare);
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -8961,7 +8977,9 @@ bool run_dawn_engine(Engine& engine) {
                             variant,
                             draw.pipeline,
                             samples,
-                            pass_has_depth),
+                            pass_has_depth,
+                            nullptr,
+                            shadow_pass),
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),
@@ -9103,7 +9121,8 @@ bool run_dawn_engine(Engine& engine) {
                             draw.item.shader_variant,
                             draw.pipeline,
                             samples,
-                            pass_has_depth),
+                            pass_has_depth,
+                            shadow_pass),
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),

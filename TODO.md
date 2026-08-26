@@ -505,16 +505,47 @@ below rather than blocking a scene here.
   material families' receiver fragments composed per shadow-casting light
   over a reflected group 2 ([features](docs/features.md#shadows)). Each
   remaining item fails by name:
-  - `createPcfDirectionalShadowGenerator` and the cascaded family
-    (`csm-*`), neither reached by a corpus scene at this pin.
-  - a node receiver: `node-shadow.ts` is the third sibling of the one
-    pinned core the two material families already wrap, and it needs the
-    node family's own group-2 wiring.
-  - a PBR CASTER. `material/pbr/esm-shadow-view.ts` and
-    `material/pbr/no-color-view.ts` are the pin's own PBR caster views;
-    the generated shadow task takes the PBR no-colour one already, but no
-    corpus scene casts from a PBR material through the ESM generator, so
-    that view's `_esmShadowDepthCode` reaches no composition here.
+  - `createPcfDirectionalShadowGenerator`, reached by FIVE corpus scenes
+    (66, 72, 111, 140, 207) and the only missing import in four of them --
+    though each hides more behind it, so the strip probe rather than the
+    import list is what sizes them. The cascaded family (`csm-*`) is
+    reached by none at this pin.
+  - a node receiver, which finishes scenes 65 and 141 -- ONE contract each
+    by strip probe, the best scenes-per-contract left outside the physics
+    lane. It is NOT the group 2 the two material families share:
+    `node-shadow.ts` appends three bindings per light to the GRAPH's own
+    group 1, continuing its binding run, and mixes the factor by the
+    `meshU.receivesShadow` uniform rather than selecting a variant -- so
+    `mesh.receiveShadows` is a composition key for two families and a
+    per-mesh value for the third. Both scenes also CAST from their node
+    material, and `material/node/esm-shadow-view.ts` is the caster half:
+    small in itself, but `parseNodeMaterialFromSnippet` exposes neither the
+    ESM depth code nor the no-colour output, so composing that variant means
+    driving the pin's `node-renderable.ts` rebuild against a recording
+    device rather than the parse path this port drives today. Size that
+    first. 141 additionally wants the PBR ESM caster view, and its graph
+    module (`shared/scene65-nme.ts`, a one-line re-export of scene 63's) is
+    not in the corpus yet.
+  - a PBR caster through the ESM generator.
+    `material/pbr/no-color-view.ts` is the PCF half and ships, gated by
+    `regression-shadow-pbr-only`: the compose pipeline appends one caster
+    view per PBR caster in the pin's scheduling order, and both PALs give
+    the PBR family the shadow pass's own depth state.
+    `material/pbr/esm-shadow-view.ts` is the ESM half, and no corpus scene
+    casts from a PBR material through that generator, so its
+    `_esmShadowDepthCode` reaches no composition here.
+  - a caster view's composed arms. The view is drawn on its own caster and
+    nowhere else, so it composes over that mesh's attribute set alone --
+    but still over every light-mode arm the scene has, and a no-colour
+    fragment is `return;` after two texture samples. On
+    `regression-shadow-pbr-only` that is three stage pairs where one does
+    any work; their vertex stages are byte-identical and their fragments
+    differ only in dead declarations ahead of a void entry point. Deploying
+    one arm's text for another arm's key would diverge from what the pin
+    composes for that key, which is exactly what the `diff` report's
+    shader-arm match measures, so the fix is to compose only the arms a
+    caster's own draw reaches -- and nothing has measured which those are
+    for a non-receiving mesh. Unblocks by measuring that.
   - the generator options past the two factories' own reached sets:
     `normalBias` and `forceRefreshEveryFrame` are unreached, and
     `setShadowCasterMaxCascade` is CSM-only.

@@ -61,6 +61,11 @@ import type {
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
 import {
+    assertShadowCapabilities,
+    reachesShadowGenerator,
+    shadowCapabilities,
+} from "./shadow-capabilities.js";
+import {
     EffectLowerer,
     effectStageStems,
 } from "./lowering/effect-lowerer.js";
@@ -538,6 +543,16 @@ class GeneratedSourceWriter {
                 ).map((binding) => binding.name)
             ),
         );
+        // The shadow family's five defines, derived once: they are not
+        // independent, and every `#if` nesting decision in both PALs rests
+        // on the containment between them.
+        const shadowInputs = {
+            features,
+            standardVariants: (options.pinnedStandardVariants ?? []).length,
+            pbrVariants: (options.pinnedVariants ?? []).length,
+        };
+        assertShadowCapabilities(shadowInputs);
+        const shadows = shadowCapabilities(shadowInputs);
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -565,53 +580,27 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // the receiver fragment is the Standard family's, so a scene composing no
 // Standard variant compiles no shadow code even having reached a
 // generator.
-#define BBLITE_SHADOWS ${
-                features.includes("shadow:pcf") ||
-                    features.includes("shadow:esm")
-                    ? 1
-                    : 0
-            }
+#define BBLITE_SHADOWS ${shadows.reached ? 1 : 0}
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the
 // receiver's group-2 rows), so a scene reaching the filter with no Standard
 // variant compiles none of it.
-#define BBLITE_SHADOWS_ESM ${
-                features.includes("shadow:esm") &&
-                    (options.pinnedStandardVariants ?? []).length > 0
-                    ? 1
-                    : 0
-            }
-#define BBLITE_STANDARD_SHADOWS ${
-                (features.includes("shadow:pcf") ||
-                        features.includes("shadow:esm")) &&
-                    (options.pinnedStandardVariants ?? []).length > 0
-                    ? 1
-                    : 0
-            }
+#define BBLITE_SHADOWS_ESM ${shadows.esm ? 1 : 0}
+#define BBLITE_STANDARD_SHADOWS ${shadows.standard ? 1 : 0}
 // The PBR family's own half of the receiver, gated the same way: both
 // families wrap one pinned shadow core, so a scene reaching the filter
 // compiles the receiver code for whichever families composed a variant.
-#define BBLITE_PBR_SHADOWS ${
-                (features.includes("shadow:pcf") ||
-                        features.includes("shadow:esm")) &&
-                    (options.pinnedVariants ?? []).length > 0
-                    ? 1
-                    : 0
-            }
+#define BBLITE_PBR_SHADOWS ${shadows.pbr ? 1 : 0}
 // The GENERATOR half, which is family-free: the maps, the samplers, the
-// receiver UBOs, the caster pass and their release path exist whenever a
-// scene reaches a generator AND some family composes a receiver to sample
-// it. Stated once here rather than as a disjunction each PAL re-derives at
-// every site, so the node family joins by moving this line.
-#define BBLITE_SHADOW_RECEIVERS ${
-                (features.includes("shadow:pcf") ||
-                        features.includes("shadow:esm")) &&
-                    ((options.pinnedStandardVariants ?? []).length > 0 ||
-                        (options.pinnedVariants ?? []).length > 0)
-                    ? 1
-                    : 0
-            }
+// receiver UBOs, the caster pass, the standard-Z depth state and their
+// release path exist whenever a scene reaches a generator AND some family
+// composes a receiver to sample it. Written as the UNION of the family
+// defines rather than as a third expression over the same inputs, so the
+// containment every #if nesting decision depends on is syntactic rather
+// than three derivations happening to agree -- and a family added above
+// joins by appearing here.
+#define BBLITE_SHADOW_RECEIVERS (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
 
@@ -1190,7 +1179,12 @@ ${wgsl}`,
             }
         }
         const nodeParticles = options.nodeParticles ?? [];
-        if (nodeParticles.length > 0) {
+        // Gated on the FEATURE the source table declares this file for, not
+        // on "the scene built a set": `particle:node` is reached by the draw
+        // and registration calls, so a scene that builds a set and never
+        // draws one would otherwise emit a file the table does not declare
+        // and refuse generation. No corpus scene does that today.
+        if (features.includes("particle:node")) {
             // The frozen bake and the two pinned functions that turn it into
             // the billboard family's own calls.
             this.writeSource(
@@ -1751,10 +1745,7 @@ ${composed.wgsl}`,
         // The shadow family. The pinned math is a header both backends
         // execute; the factories build the same depth-only render task the
         // pin's own `ensurePcfShadowTaskState` builds.
-        if (
-            features.includes("shadow:pcf") ||
-            features.includes("shadow:esm")
-        ) {
+        if (reachesShadowGenerator(features)) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_shadow.hpp",
                 pinnedShadowHeader(context),
