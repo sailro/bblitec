@@ -460,10 +460,10 @@ process.
 | | SDL_GPU | Dawn |
 | --- | --- | --- |
 | WGSL compiled | offline, during generation | in-process, at startup, as shader modules and pipelines are created |
-| Toolchain | pinned Tint CLI → HLSL → register normalization → DXC → DXIL/SPIR-V; MSL straight from Tint | Dawn's embedded Tint → HLSL → its own built DXC → DXIL |
-| Artifacts | `.dxil`/`.spv`/`.msl` deployed beside the executable | none — the `.native.wgsl` text ships instead |
+| Toolchain | pinned Tint CLI → target-selected HLSL/MSL; normalized HLSL → DXC → selected DXIL/SPIR-V | Dawn's embedded Tint → HLSL → its own built DXC → DXIL |
+| Artifacts | the selected `.dxil`, `.spv`, or `.msl` deployed beside the executable | none — the `.native.wgsl` text ships instead |
 | Cache | `artifacts/shader-cache`, content-addressed, reused across scenes | none |
-| Runtime payload | no compiler | `webgpu_dawn.dll` plus Dawn's own `dxcompiler.dll`/`dxil.dll` |
+| Runtime payload | no compiler | `webgpu_dawn.dll`, Dawn's own `dxcompiler.dll`, and Dawn's selected Windows SDK `dxil.dll` |
 | Startup | no shader work | first-frame compile cost |
 | A new platform costs | its own offline path, one per target | nothing — Dawn's Tint emits HLSL, SPIR-V, or MSL itself |
 
@@ -474,6 +474,11 @@ The SDL_GPU offline paths:
 | D3D12 | WGSL → Tint HLSL → normalized registers/signatures → DXC DXIL |
 | Vulkan | WGSL → Tint HLSL → normalization → DXC SPIR-V |
 | Metal | WGSL → Tint MSL |
+
+Processing defaults to the current host's one target; `--shader all` is an
+explicit cross-target compiler check. Switching target also removes stale
+non-target artifacts, so deployment cannot accidentally hide a missing
+compile behind a previous `all` run.
 
 Tint *can* emit SPIR-V directly, but its separate WGSL texture and sampler
 binding numbers do not satisfy SDL_GPU's dense corresponding-slot contract, so
@@ -1305,7 +1310,7 @@ before it trusts a measurement.
 | --- | --- | --- |
 | glTF assets | download, Draco/meshopt decode, upstream feature-predicate specialization, capability defines | parse, build meshes/materials/skins, deindex, strip expansion, upload |
 | Environments | HDR and DDS packaged (GGX prefilter, SH projection); BRDF LUT integrated | `.env` parsed, RGBD decoded, cubes uploaded and sampled |
-| Shaders | composition, specialization and reflection for both backends, plus DXIL/SPIR-V/MSL for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
+| Shaders | composition, specialization and reflection for both backends, plus the selected DXIL, SPIR-V, or MSL target for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
 | Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass, the billboard sort |
 | Node particles | the graph parsed, built and simulated by the pin, its particle state baked | nothing of the simulation; the billboard or Sprite2D layers it folds to draw like any others |
 | Animation | property clips and groups lowered to typed records | glTF channel data read from the asset; all evaluation and seeking |

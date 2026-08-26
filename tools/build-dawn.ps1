@@ -78,7 +78,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 & $CMake --build $build `
-    --target webgpu_dawn --target dxcompiler `
+    --target webgpu_dawn --target dxcompiler --target copy_dxil_dll `
     --config Release `
     --parallel
 if ($LASTEXITCODE -ne 0) {
@@ -90,9 +90,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Dawn install failed."
 }
 
-# Deploy Dawn's own-built DXC beside the module: with
-# DAWN_USE_BUILT_DXC the D3D12 backend loads this exact dxcompiler.dll
-# (version-matched to the pin) instead of FXC when use_dxc is enabled.
+# Deploy Dawn's own-built DXC and the validator DLL selected by Dawn's
+# copy_dxil_dll target. With DAWN_USE_BUILT_DXC the D3D12 backend loads
+# both beside webgpu_dawn.dll when use_dxc is enabled.
 $builtDxc = Get-ChildItem -Recurse (Join-Path $build "third_party") `
     -Filter "dxcompiler.dll" -ErrorAction SilentlyContinue |
     Where-Object { $_.FullName -match "Release" } |
@@ -105,6 +105,13 @@ if (-not $builtDxc) {
     throw "Dawn's built dxcompiler.dll was not found in the build tree."
 }
 Copy-Item $builtDxc.FullName (Join-Path $output "bin") -Force
+$builtDxil = Get-ChildItem (Join-Path $build "Release") `
+    -Filter "dxil.dll" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not $builtDxil) {
+    throw "Dawn's selected dxil.dll was not found in the build tree."
+}
+Copy-Item $builtDxil.FullName (Join-Path $output "bin") -Force
 
 # FXC (d3dcompiler_47.dll) is intentionally not installed: it is only
 # reached when Dawn force-disables use_dxc on adapters below shader

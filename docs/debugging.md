@@ -307,8 +307,8 @@ both `scene -- measure` measurements, the MAD between the two frames —
 that is the arm's exact contribution to the residual — and both frames
 against the golden when the scene has one; artifacts land in
 `artifacts/capture/<id>/probe-variants/`. One limit: the probe is
-Dawn-only — SDL_GPU consumes the offline `.dxil`/`.spv` beside the
-WGSL, which only `tools/compile-shaders.ps1` refreshes, so an SDL_GPU
+Dawn-only — SDL_GPU consumes its target-selected offline shader artifact
+beside the WGSL, which only `tools/compile-shaders.ps1` refreshes, so an SDL_GPU
 run would measure the unedited compiled artifacts. That is the point:
 the probe is an ephemeral measurement, and what it finds flows back
 into generation, never into a hand-edited shader.

@@ -1357,21 +1357,6 @@ float dot(Vec3 left, Vec3 right) {
     return left.x * right.x + left.y * right.y + left.z * right.z;
 }
 
-Vec3 normalize(Vec3 value) {
-    const float length = std::sqrt(dot(value, value));
-    return length > 0.000001f
-        ? Vec3{value.x / length, value.y / length, value.z / length}
-        : Vec3{};
-}
-
-Vec3 cross(Vec3 left, Vec3 right) {
-    return Vec3{
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    };
-}
-
 } // namespace
 
 // src/camera/camera.ts getViewMatrix: the rotation is the transpose of

@@ -77,7 +77,7 @@ file(
 # Native GPU render backend selection. BOTH compiles the dual-backend
 # development binary (the differential gate); SDL_GPU and DAWN produce
 # single-backend release shapes whose runtime payloads follow the
-# compiled set (offline DXIL/SPIR-V versus WGSL text, Dawn DLLs).
+# compiled set (target-selected offline SDL shader versus WGSL text, Dawn DLLs).
 set(
     BBLITE_BACKEND
     "SDL_GPU"
@@ -356,8 +356,9 @@ if(BBLITE_BACKEND_DAWN)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
     if(BBLITE_DAWN_LIBRARY_TYPE STREQUAL "SHARED_LIBRARY")
-        # Dawn resolves its built DXC DLLs relative to the loaded
-        # module, matching how Chrome deploys them beside chrome.dll.
+        # Dawn resolves its DXC and validator DLLs relative to the
+        # loaded module, matching how Chrome deploys them beside
+        # chrome.dll.
         # FXC (d3dcompiler_47.dll) is not deployed: the PAL preloads it
         # from the executable directory or System32, so only an
         # intentionally placed SDK copy ever ships. A static Dawn
@@ -374,11 +375,12 @@ if(BBLITE_BACKEND_DAWN)
         )
     endif()
     # Whether the installed Dawn carries its built DXC
-    # (tools/build-dawn.ps1 deploys dxcompiler.dll into bin; the
-    # minimal FXC-only install has no bin at all). An FXC-only library
+    # (tools/build-dawn.ps1 deploys dxcompiler.dll and dxil.dll into
+    # bin; the minimal FXC-only install has no bin at all). An FXC-only library
     # force-ignores the use_dxc toggle with a console warning, so the
     # request is only worth making when DXC is actually present.
-    if(EXISTS "${BBLITE_DAWN_DIR}/bin/dxcompiler.dll")
+    if(EXISTS "${BBLITE_DAWN_DIR}/bin/dxcompiler.dll" AND
+       EXISTS "${BBLITE_DAWN_DIR}/bin/dxil.dll")
         target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=1)
     else()
         target_compile_definitions(bblite_native PRIVATE BBLITE_DAWN_DXC=0)
@@ -626,8 +628,35 @@ else()
 endif()
 
 if(BBLITE_MINSIZE)
-    if(MSVC)
-        target_compile_options(bblite_native PRIVATE /GL /Gw /Zc:inline)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(MSVC)
+            # clang-cl needs LLVM LTO rather than MSVC's /GL. Keep the
+            # Microsoft ABI and COFF section switches so the same static
+            # dependencies remain link-compatible.
+            target_compile_options(
+                bblite_native
+                PRIVATE /clang:-Oz /clang:-flto /Gy /Gw /Zc:inline
+            )
+            target_link_options(
+                bblite_native
+                PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
+            )
+        else()
+            target_compile_options(
+                bblite_native PRIVATE -Oz -flto -ffunction-sections
+                -fdata-sections
+            )
+            target_link_options(
+                bblite_native PRIVATE -flto -Wl,--gc-sections
+            )
+        endif()
+    elseif(MSVC)
+        # The scene command configures Release even for this opt-in shape.
+        # Override Release's /O2 /Ob2 for the application just as the trimmed
+        # dependency builds do; the later options win in MSVC's command line.
+        target_compile_options(
+            bblite_native PRIVATE /O1 /Ob1 /GL /Gw /Zc:inline
+        )
         # /MAP emits the linker map beside the executable for
         # tools/map-size-report.mjs attribution.
         target_link_options(
@@ -637,7 +666,7 @@ if(BBLITE_MINSIZE)
     else()
         target_compile_options(
             bblite_native
-            PRIVATE -ffunction-sections -fdata-sections
+            PRIVATE -Os -ffunction-sections -fdata-sections
         )
         target_link_options(bblite_native PRIVATE -Wl,--gc-sections)
     endif()

@@ -24,7 +24,7 @@ Generated scenes contain:
 | `upstream/shaders/*.wgsl` | reached custom material source before typed IR lowering |
 | `upstream/shaders/*.native.wgsl` | the deployed stages passed to Tint: custom and generated WGSL specialized for SDL bindings, locations, and depth; pinned composed variants unchanged in the pin's own scheme |
 | `upstream/shaders/*.tint-reflection.txt` | Tint entry-point resource bindings checked against native WGSL |
-| `upstream/shaders/shader-compiler.json` | pinned compiler backend and executable hashes |
+| `upstream/shaders/shader-compiler.json` | selected offline target and participating compiler hashes |
 
 Current intentional adaptations include browser-wrapper erasure, immediate AOT
 `await`, compile-time asset materialization (drawn sprite atlases, HDR
@@ -84,9 +84,9 @@ Generated shaders preserve upstream markers for:
 
 The custom-material WGSL pipeline reflects uniform layout, binding order,
 attributes, varyings, stages, and entry points; PAL shader creation consumes
-the reflected uniform-buffer counts. Pinned Tint emits native HLSL/MSL from
-the specialized WGSL; register normalization and DXC produce SDL-compatible
-DXIL/SPIR-V.
+the reflected uniform-buffer counts. Pinned Tint emits the target-selected
+HLSL or MSL from the specialized WGSL; register normalization and DXC produce
+the selected SDL-compatible DXIL or SPIR-V artifact.
 The project-owned `audit-shader-frame-graph` differential gate is pixel-exact
 against pinned Babylon Lite and verifies that alpha-card and circular-cutout
 materials retain their pipelines and uniforms when a frame-graph render task
@@ -1296,8 +1296,8 @@ factor becomes the extension's `specularFactor` and reflectance returns to its
 default, which is also how the pin resolves the two extensions against each
 other — the specular factor overwrites the one the index of refraction seeded.
 
-DXC stays mandatory on the SDL_GPU offline paths — Tint emits no DXIL, and
-Vulkan temporarily recompiles normalized Tint HLSL through DXC
+DXC stays mandatory on the SDL_GPU D3D12 and Vulkan offline paths — Tint
+emits no DXIL, and Vulkan temporarily recompiles normalized Tint HLSL through DXC
 ([features](features.md#stage-2-compiling-wgsl-for-the-device) tabulates the
 paths and the binding-remap gap).
 

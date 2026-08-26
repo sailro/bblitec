@@ -58,8 +58,8 @@ export class GeneratedTree {
      * every file new; pruning afterwards keeps deletions correct without
      * touching the files that stayed the same.
      *
-     * Shader compilation runs after generation and writes its DXIL, HLSL,
-     * MSL, SPIR-V and reflection outputs into the same tree, so those are
+     * Shader compilation runs after generation and writes its target-selected
+     * binary/source and reflection outputs into the same tree, so those are
      * kept while the WGSL they were compiled from is still emitted, and
      * deleted with it when a scene stops reaching that shader.
      */
@@ -86,8 +86,8 @@ export class GeneratedTree {
 
     /**
      * A downstream shader artifact whose source WGSL this run emitted.
-     * `pbr.vert.native.wgsl` compiles to `pbr.vert.dxil` and friends, and
-     * `shader-compiler.json` records the toolchain for the directory.
+     * `pbr.vert.native.wgsl` compiles to the selected offline artifact and
+     * intermediates, and `shader-compiler.json` records the target/toolchain.
      */
     private isLiveShaderArtifact(key: string): boolean {
         const match =

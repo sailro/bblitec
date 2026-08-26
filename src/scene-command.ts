@@ -9,10 +9,9 @@ import {
     readdirSync,
     renameSync,
     rmSync,
-    statSync,
     writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
     backendFileToken,
     canonicalBackend,
@@ -43,7 +42,9 @@ import {
 import {
     computeBuildStamp,
     deployedPayloads,
+    generatorWouldReconfigure,
     payloadOrphans,
+    readCacheConfiguration,
 } from "./build-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 // The instrumented capture, the diff/uniforms readers and the compose
@@ -65,7 +66,15 @@ import {
     parseDigestBaseline,
 } from "./generated-tree.js";
 import { verifyStatus } from "./verify-status.js";
-import { readCacheConfiguration } from "./build-stamp.js";
+import {
+    canonicalCompiledBackend,
+    canonicalDevelopmentCompiler,
+    canonicalOfflineShaderTarget,
+    defaultDevelopmentBackend,
+    DEVELOPMENT_VCPKG_INSTALL,
+    developmentVcpkgFeatures,
+    hostOfflineShaderTarget,
+} from "./build-options.js";
 
 function run(
     command: string,
@@ -179,9 +188,12 @@ function latestDirectory(root: string): string | undefined {
     return directories[0];
 }
 
-function windowsNinjaEnvironment(): {
+function windowsNinjaEnvironment(
+    requestedCompiler: "auto" | "msvc" | "clangcl",
+): {
     environment: NodeJS.ProcessEnv;
     ninja: string;
+    compiler: string;
 } {
     const programFilesX86 =
         process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
@@ -240,12 +252,37 @@ function windowsNinjaEnvironment(): {
             "Unable to locate MSVC, Windows SDK, or Ninja. Override BBLITE_CMAKE_GENERATOR to use another generator.",
         );
     }
+    const msvcCompiler = join(msvc, "bin", "Hostx64", "x64", "cl.exe");
+    const clangCompiler = join(
+        vsRoot,
+        "VC",
+        "Tools",
+        "Llvm",
+        "x64",
+        "bin",
+        "clang-cl.exe",
+    );
+    const compiler =
+        requestedCompiler === "msvc"
+            ? msvcCompiler
+            : requestedCompiler === "clangcl"
+                ? clangCompiler
+                : existsSync(clangCompiler)
+                    ? clangCompiler
+                    : msvcCompiler;
+    if (!existsSync(compiler)) {
+        throw new Error(
+            `The requested development compiler is not installed: ${compiler}.`,
+        );
+    }
     const sdkVersion = sdk.slice(dirname(sdk).length + 1);
     return {
         ninja,
+        compiler,
         environment: {
             ...process.env,
             PATH: [
+                dirname(compiler),
                 join(msvc, "bin", "Hostx64", "x64"),
                 join(sdkRoot, "bin", sdkVersion, "x64"),
                 dirname(ninja),
@@ -661,38 +698,6 @@ function cacheMatchesConfiguration(
 }
 
 /**
- * True when `cmake --build` would re-run CMake itself before compiling.
- *
- * The generator re-configures whenever a configure input is newer than
- * the cache — and it does that INSIDE the build step, which runs up to
- * 32 scenes in parallel with no lock. Configuring is where vcpkg runs,
- * and concurrent vcpkg use is the documented unreliable condition
- * (`serializeConfigure`), so a change that touches every scene's
- * configure — a `CMakeLists.txt` edit, a `features.cmake` flip that
- * moves the vcpkg manifest features, a `vcpkg.json` edit — must be
- * treated as a cache mismatch here so the explicit configure runs under
- * the lock first and the parallel build finds nothing left to
- * regenerate.
- */
-function generatorWouldReconfigure(
-    buildDirectory: string,
-    generatedDirectory: string,
-): boolean {
-    const cachePath = resolve(buildDirectory, "CMakeCache.txt");
-    if (!existsSync(cachePath)) return true;
-    const cacheTime = statSync(cachePath).mtimeMs;
-    const configureInputs = [
-        resolve("native", "CMakeLists.txt"),
-        resolve("native", "vcpkg.json"),
-        resolve(generatedDirectory, "features.cmake"),
-    ];
-    return configureInputs.some(
-        (input) =>
-            existsSync(input) && statSync(input).mtimeMs > cacheTime,
-    );
-}
-
-/**
  * `--cold` reconfigures every build directory it touches instead of
  * trusting the cache comparison. Nothing should need it -- a mismatch
  * reconfigures on its own -- but the pre-push validation run has the
@@ -709,10 +714,59 @@ async function withColdBuild(
     await withEnvironment("BBLITE_COLD_BUILD", "1", body);
 }
 
+/** Build/process flags which shape the compiled tree, not the runtime. */
+async function withBuildOptions(
+    command: "build" | "process",
+    rest: string[],
+    body: () => Promise<void>,
+): Promise<void> {
+    const parsed = parseFlags(
+        rest,
+        {
+            value:
+                command === "process"
+                    ? ["--backend", "--compiler", "--shader"]
+                    : ["--backend", "--compiler"],
+            boolean: ["--cold"],
+        },
+        command,
+    );
+    const requestedBackend = parsed.values.get("--backend");
+    const requestedCompiler = parsed.values.get("--compiler");
+    const requestedShader = parsed.values.get("--shader");
+    const withBackend = async (next: () => Promise<void>): Promise<void> => {
+        if (requestedBackend === undefined) return next();
+        await withEnvironment(
+            "BBLITE_BACKEND",
+            canonicalCompiledBackend(requestedBackend, command),
+            next,
+        );
+    };
+    const withCompiler = async (next: () => Promise<void>): Promise<void> => {
+        if (requestedCompiler === undefined) return next();
+        await withEnvironment(
+            "BBLITE_DEV_COMPILER",
+            canonicalDevelopmentCompiler(requestedCompiler),
+            next,
+        );
+    };
+    const withShader = async (next: () => Promise<void>): Promise<void> => {
+        if (requestedShader === undefined) return next();
+        await withEnvironment(
+            "BBLITE_SHADER_TARGET",
+            canonicalOfflineShaderTarget(requestedShader),
+            next,
+        );
+    };
+    await withBackend(() =>
+        withCompiler(() => withShader(() => withColdBuild(rest, body))),
+    );
+}
+
 /**
  * The generator, toolchain environment and backend selection every scene
  * shares. Resolving it per scene meant running `vswhere` and rebuilding
- * the MSVC environment 58 times for one answer, and the backend
+ * the MSVC environment once per scene for one answer, and the backend
  * validation only reported a bad `BBLITE_BACKEND` once the first scene
  * reached it.
  */
@@ -720,6 +774,13 @@ interface SharedBuildSetup {
     generator: string;
     ninja: ReturnType<typeof windowsNinjaEnvironment> | undefined;
     backend: string;
+    vcpkg:
+        | {
+              toolchain: string;
+              installedDirectory: string;
+              manifestFeatures: string;
+          }
+        | undefined;
 }
 
 let sharedBuildSetup: SharedBuildSetup | undefined;
@@ -729,11 +790,15 @@ function buildSetup(): SharedBuildSetup {
     const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
     const ninja =
         process.platform === "win32" && generator === "Ninja"
-            ? windowsNinjaEnvironment()
+            ? windowsNinjaEnvironment(
+                  canonicalDevelopmentCompiler(
+                      process.env.BBLITE_DEV_COMPILER ?? "auto",
+                  ),
+              )
             : undefined;
-    // Backend selection: BOTH (the dual-backend differential binary)
-    // whenever the pinned Dawn library is installed
-    // (tools/build-dawn.ps1), SDL_GPU otherwise. Set
+    // Backend selection: BOTH (the dual-backend differential binary) for
+    // development. A missing pinned Dawn install is an incomplete dev setup,
+    // not a reason to silently reduce validation to SDL_GPU. Set
     // BBLITE_BACKEND=SDL_GPU|DAWN|BOTH to override;
     // BBLITE_GPU_BACKEND still selects at runtime in BOTH builds.
     const dawnInstalled = existsSync(
@@ -748,19 +813,40 @@ function buildSetup(): SharedBuildSetup {
             `BBLITE_BACKEND must be SDL_GPU, DAWN, or BOTH (got '${requestedBackend}').`,
         );
     }
-    if (
-        (requestedBackend === "DAWN" || requestedBackend === "BOTH") &&
-        !dawnInstalled
-    ) {
+    const backend =
+        requestedBackend ?? defaultDevelopmentBackend(process.platform);
+    if ((backend === "DAWN" || backend === "BOTH") && !dawnInstalled) {
         throw new Error(
-            `BBLITE_BACKEND=${requestedBackend} requires the pinned Dawn library; run pwsh -File tools/build-dawn.ps1 first.`,
+            `BBLITE_BACKEND=${backend} requires the pinned Dawn library; run pwsh -File tools/build-dawn.ps1 first.`,
         );
     }
+    const vcpkgRoot = process.env.VCPKG_ROOT;
+    const vcpkg =
+        vcpkgRoot === undefined
+            ? undefined
+            : {
+                  toolchain: join(
+                      vcpkgRoot,
+                      "scripts",
+                      "buildsystems",
+                      "vcpkg.cmake",
+                  ),
+                  installedDirectory: join(
+                      resolve(
+                          process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
+                              join("artifacts", "vcpkg-installed"),
+                      ),
+                      DEVELOPMENT_VCPKG_INSTALL,
+                  ),
+                  manifestFeatures: developmentVcpkgFeatures(
+                      readFileSync(resolve("native", "vcpkg.json"), "utf8"),
+                  ).join(";"),
+              };
     sharedBuildSetup = {
         generator,
         ninja,
-        backend:
-            requestedBackend ?? (dawnInstalled ? "BOTH" : "SDL_GPU"),
+        backend,
+        vcpkg,
     };
     return sharedBuildSetup;
 }
@@ -791,12 +877,49 @@ function pruneDeployedOrphans(scene: (typeof scenes)[number]): void {
     }
 }
 
+/**
+ * CMake cannot change CMAKE_CXX_COMPILER in an existing cache. Native build
+ * trees are disposable, so an explicit or automatic dev-compiler change
+ * rebuilds just that scene rather than failing halfway through configure.
+ */
+function resetCompilerMismatch(
+    buildDirectory: string,
+    compiler: string | undefined,
+): void {
+    if (compiler === undefined) return;
+    const cache = readCacheConfiguration(buildDirectory);
+    const cached = cache?.CMAKE_CXX_COMPILER;
+    if (
+        cached === undefined ||
+        resolve(cached).toLowerCase() === resolve(compiler).toLowerCase()
+    ) {
+        return;
+    }
+    const nativeRoot = resolve("native");
+    const target = resolve(buildDirectory);
+    const withinNative = relative(nativeRoot, target);
+    if (
+        withinNative === "" ||
+        withinNative.startsWith("..") ||
+        isAbsolute(withinNative)
+    ) {
+        throw new Error(
+            `Refusing to replace compiler cache outside native/: ${target}.`,
+        );
+    }
+    console.log(
+        `build: compiler changed from ${cached} to ${compiler}; ` +
+            `recreating disposable tree ${buildDirectory}.`,
+    );
+    rmSync(target, { recursive: true, force: true });
+}
+
 async function runSceneBuild(
     scene: (typeof scenes)[number],
     jobsPerScene: number | undefined,
     captureOutput: boolean,
 ): Promise<void> {
-    const { generator, ninja, backend } = buildSetup();
+    const { generator, ninja, backend, vcpkg } = buildSetup();
     const configureArguments = [
         "-S",
         "native",
@@ -821,17 +944,14 @@ async function runSceneBuild(
     if (ninja) {
         configureArguments.push(
             `-DCMAKE_MAKE_PROGRAM=${ninja.ninja}`,
+            `-DCMAKE_CXX_COMPILER=${ninja.compiler}`,
         );
     }
-    const vcpkgRoot = process.env.VCPKG_ROOT;
-    if (vcpkgRoot) {
+    if (vcpkg) {
         configureArguments.push(
-            `-DCMAKE_TOOLCHAIN_FILE=${join(
-                vcpkgRoot,
-                "scripts",
-                "buildsystems",
-                "vcpkg.cmake",
-            )}`,
+            `-DCMAKE_TOOLCHAIN_FILE=${vcpkg.toolchain}`,
+            `-DVCPKG_INSTALLED_DIR=${vcpkg.installedDirectory}`,
+            `-DVCPKG_MANIFEST_FEATURES=${vcpkg.manifestFeatures}`,
         );
     }
     const environment = ninja?.environment ?? process.env;
@@ -847,6 +967,10 @@ async function runSceneBuild(
     await runBuffered(
         { buffer: captureOutput, label: `--- ${scene.id}\n` },
         async (run) => {
+            resetCompilerMismatch(
+                scene.buildDirectory,
+                ninja?.compiler,
+            );
             if (
                 !cacheMatchesConfiguration(
                     scene.buildDirectory,
@@ -883,7 +1007,16 @@ async function runSceneBuild(
 }
 
 function compileShaders(sceneId?: string): void {
-    const arguments_ = ["-File", "tools/compile-shaders.ps1"];
+    const target = hostOfflineShaderTarget(
+        process.platform,
+        process.env.BBLITE_SHADER_TARGET,
+    );
+    const arguments_ = [
+        "-File",
+        "tools/compile-shaders.ps1",
+        "-Target",
+        target,
+    ];
     if (sceneId) arguments_.push("-Scene", sceneId);
     run(process.platform === "win32" ? "pwsh.exe" : "pwsh", arguments_);
 }
@@ -1160,8 +1293,8 @@ async function runSeekBracketCapture(
  * the probe is an ephemeral measurement, and what it finds flows back
  * into generation, never into a hand-edited shader.
  *
- * Dawn-only by construction: SDL_GPU consumes the offline `.dxil`/`.spv`
- * beside the WGSL, which only `tools/compile-shaders.ps1` refreshes, so
+ * Dawn-only by construction: SDL_GPU consumes the target-selected offline
+ * artifact beside the WGSL, which only `tools/compile-shaders.ps1` refreshes, so
  * an SDL_GPU run would measure the unedited compiled artifacts.
  */
 async function runProbeVariants(
@@ -1193,7 +1326,7 @@ async function runProbeVariants(
     ) {
         throw new Error(
             "probe-variants: the probe is Dawn-only — Dawn compiles the deployed " +
-                ".native.wgsl at startup, while SDL_GPU consumes the offline .dxil/.spv " +
+                ".native.wgsl at startup, while SDL_GPU consumes its selected offline artifact " +
                 "beside it, which only tools/compile-shaders.ps1 refreshes " +
                 "(docs/debugging.md rung 6).",
         );
@@ -1917,13 +2050,11 @@ async function main(): Promise<void> {
         return;
     }
     if (command === "build" && id) {
-        parseFlags(rest, { boolean: ["--cold"] }, "build");
-        await withColdBuild(rest, () => build(id));
+        await withBuildOptions("build", rest, () => build(id));
         return;
     }
     if (command === "process" && id) {
-        parseFlags(rest, { boolean: ["--cold"] }, "process");
-        await withColdBuild(rest, () => processScene(id));
+        await withBuildOptions("process", rest, () => processScene(id));
         return;
     }
     if (command === "parity" && id) {

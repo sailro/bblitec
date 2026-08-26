@@ -71,7 +71,8 @@ namespace {
  * `buildPrimitiveState`'s own table, in SDL_GPU's names. A triangle strip
  * never reaches here: the loader expands one into the list it describes.
  */
-SDL_GPUPrimitiveType gpu_primitive_type(MeshTopology topology) {
+[[maybe_unused]] SDL_GPUPrimitiveType gpu_primitive_type(
+    MeshTopology topology) {
     switch (topology) {
         case MeshTopology::points:
             return SDL_GPU_PRIMITIVETYPE_POINTLIST;
@@ -91,7 +92,7 @@ SDL_GPUCullMode gpu_cull_mode(upstream::RenderCullMode cull) {
         : SDL_GPU_CULLMODE_BACK;
 }
 
-SDL_GPUFrontFace gpu_front_face(bool clockwise) {
+[[maybe_unused]] SDL_GPUFrontFace gpu_front_face(bool clockwise) {
     return clockwise
         ? SDL_GPU_FRONTFACE_CLOCKWISE
         : SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
@@ -952,7 +953,7 @@ PinnedResource shadow_resource_for(
  * node alike -- wants the same answer, so the pairing is stated once here
  * rather than per family.
  */
-PinnedResource state_resource_for(
+[[maybe_unused]] PinnedResource state_resource_for(
     const GpuState& state,
     upstream::MaterialTextureSource source) {
     switch (source) {

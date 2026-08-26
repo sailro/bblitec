@@ -5,17 +5,19 @@
 - Node.js 22.12+
 - CMake 3.24+
 - Ninja
-- a C++20 compiler
+- a C++20 compiler (Visual Studio's bundled clang-cl is recommended for the
+  Windows development loop; MSVC remains the shipping default)
 - vcpkg
-- PowerShell and DXC for shader compilation
+- PowerShell, pinned Tint for shader compilation, pinned Dawn for the default
+  Windows dual-backend build, and DXC for D3D12/Vulkan
 - Chrome or Edge with WebGPU for exact HDR GGX asset prefiltering and browser references
 - a GPU to run what is built. bblitec renders through SDL_GPU or Dawn and
   carries no software renderer, so a device that cannot be brought up fails
   the run rather than degrading it
 
-The documented Windows toolchain is MSVC 14.51 with Windows SDK
-10.0.26100.0. Linux and macOS use the same generated sources with their native
-CMake generator and SDL_GPU backend.
+Development scene builds select clang-cl when it is installed and fall back
+to MSVC. Shipping builds use MSVC. Linux and macOS use the same generated
+sources with their native CMake generator and SDL_GPU backend.
 
 ## Core workflow
 
@@ -421,10 +423,14 @@ Generation:
 Generation must finish before shader compilation and native build. Do not run
 those phases concurrently.
 
-Every `npm run scene -- ...` invocation first runs `npm run build`, which
+Every `npm run scene -- ...` invocation first runs `npm run build`. Changed
+inputs compile with the TypeScript 7.0.2 native Go compiler from
+`@typescript/native`; the TypeScript 5.9 package remains installed because
+bblitec imports its JavaScript compiler API for AST analysis. The wrapper
 skips the clean and `tsc` when `dist/.build-stamp` still matches the sources
-(any doubt rebuilds; `npm run clean:dist` forces cold) — so editing TypeScript
-while one is running still risks a mixed `dist`. For a chain of
+and both TypeScript packages (any doubt rebuilds; `npm run clean:dist` forces
+cold) — so editing TypeScript while one is running still risks a mixed
+`dist`. For a chain of
 several operations, build once and call `node dist/src/scene-command.js <op>
 <scene>` directly, which leaves `dist` frozen while sources change. That
 freezes generation entirely: its only inputs are the compiled `dist` and the
@@ -473,17 +479,29 @@ cmake --build native\build-scene1-release --config Release
 ```
 
 Ninja is the default on every platform. On Windows, the scene command locates
-Visual Studio, the latest MSVC toolset, the Windows SDK, and Visual Studio's
-bundled Ninja without requiring a Developer Command Prompt. Set
-`BBLITE_CMAKE_GENERATOR` to override the default. Never reuse one build
-directory with a different generator; all build trees are ignored and safe to
-delete.
+Visual Studio, the latest MSVC toolset, the Windows SDK, Visual Studio's
+bundled Ninja, and the optional bundled clang-cl without requiring a Developer
+Command Prompt. `--compiler auto|clangcl|msvc` selects the development
+compiler; `auto` prefers clang-cl and falls back to MSVC. Set
+`BBLITE_DEV_COMPILER` for the same persistent choice and
+`BBLITE_CMAKE_GENERATOR` to override the generator. If the selected compiler
+differs from the one cached by CMake, the command replaces only that disposable
+scene build tree. Never reuse one build directory with a different generator;
+all build trees are ignored and safe to delete.
 
 Scenes build several at a time, but their CMake *configure* steps are
 serialized, because that is where vcpkg runs and concurrent vcpkg use is
-unreliable — it shares a download and binary cache between otherwise
-independent build directories. Compiling and linking touch nothing shared. A
-warm tree skips configure entirely, so the lock is normally uncontended.
+unreliable. Every development scene shares one full install at
+`artifacts\vcpkg-installed\development-full`. Its feature list is derived from
+every feature key in `native\vcpkg.json`, so adding a manifest feature
+automatically adds it to the reusable development set; one scene cannot
+reconcile another scene's packages away. This deliberately spends development
+disk space once to make switching among and building all scenes cheap. Set
+`BBLITE_VCPKG_INSTALLED_ROOT` to relocate the disposable shared cache.
+Compiling and linking touch nothing shared. A warm tree skips configure
+entirely, so the lock is normally uncontended. Shipping does not use this
+superset: its exact static tree contains only the selected scene/backend's
+reached dependencies.
 
 How many scenes run at once is configurable per stage; see
 [Build switches](#build-switches).
@@ -492,19 +510,6 @@ Set `VCPKG_ROOT` before configuring a new build directory. If a directory was
 first configured without the toolchain, delete that specific
 `native\build-<scene>-release` directory and configure it again; adding the
 toolchain to an existing cache is not reliable.
-
-The default follows the Release Scene 1 measurement on the development Windows
-machine under the same MSVC toolchain:
-
-| Workload | Visual Studio 18 | Ninja |
-| --- | ---: | ---: |
-| clean build | 17.77 s | 4.33 s |
-| no-op build | 1.16 s | 0.08 s |
-| one-file rebuild | 2.53 s | 2.21 s |
-
-The generator does not affect the image: the two 1280x720 Scene 1 captures are
-byte-identical (`MAD 0.000`) and both measure `0.001` full MAD against the
-pinned Babylon Lite golden.
 
 Override the generator only when needed:
 
@@ -522,14 +527,15 @@ executable. `BBLITE_ASSET_DIR` and `BBLITE_GPU_SHADER_DIR` remain explicit
 overrides for diagnostics and unusual layouts.
 
 Shader compilation uses `artifacts\shader-cache` for both halves of the
-offline path: the DXC half is keyed by source, profile, DXC
-executable/codegen DLLs and the exact invocation flags, and the Tint half
-(`tint-*` entries holding HLSL/MSL/reflection/`.slots`) by the Tint
-executable, the source WGSL, the entry point and the script itself — so a
-warm corpus pass reports `0 transpiled, N replayed`. DXIL and SPIR-V are
-validated and atomically published, so interrupted or malformed entries are
-rebuilt instead of reused. Identical variants are reused across scenes; the
-cache is disposable. The step also enforces SDL_GPU's four-uniform-buffer
+offline path: each requested DXC format is independently keyed by source,
+profile, DXC executable/codegen DLLs and its exact invocation flags, and the
+Tint half (`tint-*` entries holding HLSL, reflection, `.slots`, and MSL when
+requested) by the Tint executable, the source WGSL, the entry point, the
+selected outputs and the script itself — so a warm corpus pass reports `0
+transpiled, N replayed`. Requested binaries are validated and atomically
+published, so interrupted or malformed entries are rebuilt instead of
+reused. Identical variants are reused across scenes; the cache is disposable.
+The step also enforces SDL_GPU's four-uniform-buffer
 stage cap on every compiled stage, refusing by block name (release SDL
 corrupts the D3D12 command buffer past it), with the `gp` demotion keyed on
 the block's own declaration rather than a filename.
@@ -543,9 +549,33 @@ pwsh -File tools\build-tint.ps1
 Build the pinned Dawn library (same source pin, shared checkout) with
 `pwsh -File tools\build-dawn.ps1`. The CMake `BBLITE_BACKEND`
 selection (`SDL_GPU`, `DAWN`, or `BOTH`) picks the compiled backend
-set: scene builds default to `BOTH` once `artifacts\tools\dawn`
-exists and `SDL_GPU` otherwise, and the `BBLITE_BACKEND` environment
-variable overrides the default. In `BOTH` builds
+set. Windows development scene builds default to `BOTH` and require
+`artifacts\tools\dawn`; Linux and macOS retain the SDL_GPU default. The
+`BBLITE_BACKEND` environment variable overrides the default. `build` and
+`process` also accept
+`--backend sdl_gpu|dawn|both`. An explicit single backend is available for
+focused diagnosis or backend-specific timing. Shipping is always one exact
+backend:
+
+```powershell
+npm run scene -- process scene1
+npm run scene -- build scene1 --backend sdl_gpu
+```
+
+`process` also accepts `--shader d3d12|vulkan|metal|all`. It defaults to the
+one target the host can execute (`d3d12` on Windows, `metal` on macOS,
+`vulkan` elsewhere), removing stale non-target artifacts from the generated
+tree. Use `all` only for a deliberate portability/compiler sweep:
+
+```powershell
+npm run scene -- process all --backend sdl_gpu --shader d3d12
+npm run scene -- process scene1 --backend sdl_gpu --shader all
+```
+
+`BBLITE_SHADER_TARGET` is the environment equivalent. Plain `build` does not
+run the shader compiler, so the selector intentionally belongs to `process`.
+
+In `BOTH` builds
 `BBLITE_GPU_BACKEND=dawn` selects Dawn at runtime — the parity
 harness forwards the environment and labels its reports with the
 active backend; single-backend builds default to their compiled
@@ -553,34 +583,37 @@ backend and fail explicitly when the other one is requested. See
 [backends](backends.md).
 
 Reached WGSL shaders require `artifacts\tools\tint\tint.exe` (or `TINT_PATH`).
-Tint validates WGSL and emits HLSL/MSL. DXC must compile HLSL to DXIL for
-D3D12; it also temporarily emits SPIR-V until Tint resource bindings are
-remapped to SDL_GPU's dense texture/sampler convention. Each shader directory
-records the selected backend in `shader-compiler.json`.
+Tint validates WGSL and emits the source required by the selected target:
+HLSL for D3D12/Vulkan and MSL for Metal. DXC compiles normalized HLSL to DXIL
+for D3D12; it temporarily emits SPIR-V for Vulkan until Tint resource bindings
+are remapped to SDL_GPU's dense texture/sampler convention. Each shader
+directory records the selected target and participating tool hashes in
+`shader-compiler.json`.
 
 ## Build switches
 
 The CMake cache variables that shape a native build (see
-[Minimal-size builds](#minimal-size-builds) for the size-optimized
+[Minimal-size shipping builds](#minimal-size-shipping-builds) for the size-optimized
 combination):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `BBLITE_GENERATED_DIR` | required | directory produced by bblitec (`main.cpp`, `features.cmake`) |
-| `BBLITE_BACKEND` | `SDL_GPU` | compiled GPU backend set: `SDL_GPU`, `DAWN`, or `BOTH`; `scene -- build` defaults to `BOTH` once the Dawn library is installed and honors the `BBLITE_BACKEND` environment variable |
+| `BBLITE_BACKEND` | Windows: `BOTH`; other hosts: `SDL_GPU` | compiled GPU backend set: `SDL_GPU`, `DAWN`, or `BOTH`; Windows development commands require the pinned Dawn install by default and honor the `BBLITE_BACKEND` environment variable |
 | `BBLITE_DAWN_DIR` | `artifacts/tools/dawn` | installed Dawn package root; point at `artifacts/tools/dawn-min` for the minimal static FXC-only library |
 | `BBLITE_SDL_DIR` | empty | subsystem-trimmed static SDL3 root (`tools/build-sdl-min.ps1`); empty selects the toolchain (vcpkg) SDL3 |
 | `BBLITE_LABSOUND_DIR` | `artifacts/tools/labsound` | installed pinned LabSound root (`tools/build-labsound.ps1`); required only by a scene reaching `audio:engine` |
-| `BBLITE_MINSIZE` | `OFF` | whole-program optimization and dead-stripping (`/GL /Gw`, `/LTCG /OPT:REF /OPT:ICF`) plus a `/MAP` linker map for `tools/map-size-report.mjs` |
+| `BBLITE_MINSIZE` | `OFF` | size-first compilation (MSVC `/O1 /Ob1 /GL`; clang-cl `/clang:-Oz /clang:-flto`; non-MSVC Clang `-Oz -flto`; `-Os` elsewhere), whole-program optimization and dead-stripping plus a `/MAP` linker map for `tools/map-size-report.mjs` on Windows |
 | `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
 | `CMAKE_MSVC_RUNTIME_LIBRARY` | toolchain | pass `MultiThreaded$<$<CONFIG:Debug>:Debug>` with the static triplet; vcpkg does not flip the project's own CRT |
 
 Generation additionally writes `BBLITE_IMAGE_CODECS` into
-`features.cmake` (the image codecs the scene's materialized assets
-reach). The build maps it onto vcpkg manifest features before
-`project()`, so JPEG support is compiled and deployed only for scenes
-that actually carry JPEG content; a generated directory that carries no
-list falls back to the png+jpeg pair.
+`features.cmake` (the image codecs the scene's materialized assets reach).
+The exact shipping configure maps that list onto vcpkg manifest features
+before `project()`, so JPEG or WebP support is linked only when the selected
+scene carries that content; a generated directory that carries no list falls
+back to the png+jpeg pair. Development scene commands instead pass the full
+manifest feature set described above.
 
 ### Concurrency
 
@@ -591,7 +624,7 @@ single-scene invocation ignores them and takes the whole machine.
 | Variable | Default | Bound by |
 | --- | --- | --- |
 | `BBLITE_PARALLEL_COMPILES` | hardware threads | threads alone — a generating Node process is small |
-| `BBLITE_PARALLEL_SCENES` | `min(threads, RAM / 2GB) / jobs` | threads and memory, at roughly 2 GB per MSVC process for the heaviest translation unit |
+| `BBLITE_PARALLEL_SCENES` | `min(threads, RAM / 2GB) / jobs` | threads and memory, conservatively budgeted at roughly 2 GB per native compiler process from the heaviest MSVC translation unit |
 | `BBLITE_SCENE_BUILD_JOBS` | `1` | measured: see below |
 | `BBLITE_PARALLEL_PARITY` | `8` | GPU throughput; a flat number because GPU memory measured too small to bind |
 
@@ -619,15 +652,14 @@ GPU throughput binds instead. All 57 scenes: 195.5s at one, 100.0s at two,
 Eight sits at the knee without assuming a workstation GPU. Every level produces
 byte-identical differential reports, so raising it on a known machine is safe.
 
-## Minimal-size builds
+## Minimal-size shipping builds
 
-The minimal release shape statically links everything into one
-executable per backend. Measured on Scene 1: 2.3 MB SDL_GPU (with the
-two vendored SDL patches compiled in) and 7.7 MB Dawn, versus 5.9 MB
-across 17 files and 37.8 MB across 21 files for the dynamic packages,
-at identical parity — the minimal Scene 1 executable measures the same
-0.001/0.007 as the dynamic build. A physics scene folds Bullet into the
-same shape: Scene 40 measures 2.5 MB.
+"Shipping", "release/demo", and "mini" all mean this one shape. There is no
+second dynamic demo variant: every published demo ZIP is aggressively trimmed
+to one scene and one backend, uses the static CRT and exact static
+dependencies, and enables whole-program size optimization and dead stripping.
+The current static examples are 2.3 MB for Scene 1 SDL_GPU, 7.7 MB for Scene 1
+Dawn, and 2.5 MB for the Bullet-backed Scene 40 SDL_GPU executable.
 
 Build the trimmed dependencies once:
 
@@ -663,10 +695,11 @@ cmake -S native -B native\build-scene1-min-sdl `
 cmake --build native\build-scene1-min-sdl --config Release --parallel
 ```
 
-The Dawn shape adds `-DBBLITE_BACKEND=DAWN` and
+The Dawn shape substitutes `-DBBLITE_BACKEND=DAWN` and
 `-DBBLITE_DAWN_DIR="$PWD\artifacts\tools\dawn-min"`. Package with
-`tools/package-demo.ps1 -BuildDirectory <dir> -Variant min`; static
-layouts are detected automatically and ship no runtime or CRT DLLs.
+`tools/package-demo.ps1 -Scene scene1 -BuildDirectory <dir>`. The packager
+refuses a development, dynamic, dual-backend, or non-`BBLITE_MINSIZE` tree;
+shipping packages contain no runtime or CRT DLLs.
 Attribute the executable's bytes after any change:
 
 ```powershell
@@ -932,8 +965,9 @@ translation units, and the same sources must digest identically either way.
 
 Generation rewrites a file only when its bytes change and prunes what a run no
 longer emits, so an unchanged scene rebuilds nothing. `scene -- process`
-reconfigures only when the CMake cache differs from the values it would pass;
-`--cold` forces the configure regardless.
+reconfigures only when the CMake cache differs from the values it would pass or
+a configure input is newer than CMake's `CMakeFiles/cmake.check_cache`
+generation marker. `--cold` forces the configure regardless.
 
 ## Proving a change moved nothing
 
@@ -1072,29 +1106,24 @@ container's own collection — and a scene that names none seeks
 scene driving its clips through its own manager has to name them, since it
 never registers them with the scene.
 
-## Portable demo packages
+## Shipping demo packages
 
-Package any built numbered scene:
+Package the exact Scene 1 SDL_GPU mini tree (the default build directory is
+`native\build-scene1-min-sdl`):
 
 ```powershell
-npm run package:demo -- -Scene scene243
+npm run package:demo -- -Scene scene1
 ```
 
-The payload follows the `BBLITE_BACKEND` the build directory was configured
-with (read from its CMake cache): `SDL_GPU` ships offline DXIL/SPIR-V
-shaders with their `.slots` binding sidecars and no Dawn DLLs, `DAWN`
-ships WGSL text plus
-`webgpu_dawn.dll`/`dxcompiler.dll`/`dxil.dll` and the Dawn license
-(no FXC — see [backends](backends.md#building-and-running)), and
-`BOTH` ships the dual-backend binary with both shader sets plus a
-`run-<scene>-dawn.cmd` launcher. `jpeg62.dll` and the libjpeg-turbo
-notice ship only when the scene's `BBLITE_IMAGE_CODECS` reaches JPEG.
-Statically linked builds (vcpkg `x64-windows-static` with
-`BBLITE_MINSIZE`, Dawn from
-`tools/build-dawn-min.ps1`) are detected by the absence of runtime
-DLLs beside the executable and ship the executable alone; `-Variant`
-appends a token to the package name. Text shader intermediates (HLSL,
-MSL, reflection dumps) never ship. The archive is written to
+For another scene or Dawn tree, pass `-BuildDirectory <dir>` explicitly. The
+packager reads the cache and requires one backend, `BBLITE_MINSIZE=ON`, the
+`x64-windows-static` triplet, the `MultiThreaded` static CRT, and no runtime
+dependency DLLs. SDL_GPU ships
+only offline D3D12 DXIL shaders with their `.slots` binding sidecars; it does
+not ship SPIR-V. Dawn ships only the reached native WGSL text and uses the
+static FXC-only library from `tools/build-dawn-min.ps1`. Reached assets and
+the notices for statically linked dependencies remain in the ZIP. Text shader
+intermediates (HLSL, MSL, reflection dumps) never ship. The archive is written to
 `artifacts\releases\bblitec-<scene>-<backend>-windows-x64.zip`, and
 the README embeds the scene's current parity numbers when
 `artifacts\parity\<scene>` reports exist.

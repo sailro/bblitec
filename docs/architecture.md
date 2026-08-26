@@ -307,9 +307,10 @@ The current generated slice includes:
   context of its own or by a frame-graph task into a render target
 - linear RGBA16F opaque/transmission rendering followed by one final
   image-processing pass
-- reached custom WGSL lowered through a typed shader IR into reflected HLSL/MSL
-- pinned Tint compilation from native-specialized reached WGSL to HLSL/MSL;
-  DXC emits SDL-layout-compatible DXIL/SPIR-V
+- reached custom WGSL lowered through a typed shader IR into target-selected
+  reflected shader sources
+- pinned Tint compilation from native-specialized reached WGSL to HLSL or
+  MSL; DXC emits the selected SDL-layout-compatible DXIL or SPIR-V artifact
 - generated GridMaterial WGSL compiled exclusively through Tint
 - generated frame-graph blit/depth and diagnostic WGSL compiled through Tint
 - generated ground and cubemap-skybox WGSL compiled through Tint
@@ -318,7 +319,7 @@ The current generated slice includes:
   geometry MRT — executed verbatim on both backends, selected per renderable
 - directional, hemispheric, point, and spot Standard shading through the
   pin's own lights block and per-mesh light selection
-- content-addressed DXIL/SPIR-V reuse across identical scene shader variants
+- per-format content-addressed shader reuse across identical scene variants
 
 Each scene records:
 
@@ -343,7 +344,8 @@ Each scene records:
   compaction — the only authority on SDL_GPU slot order
   ([backends](backends.md#dawn-backend-architecture-nativesrcpal_dawncpp))
 - `upstream/shaders/*.tint-reflection.txt`: Tint binding reflection check
-- `upstream/shaders/shader-compiler.json`: selected offline compiler backend
+- `upstream/shaders/shader-compiler.json`: selected offline target and
+  participating compiler hashes
 - `upstream/shaders/composition.json`: reached WGSL modules and content hashes
 
 ## Runtime and memory
@@ -427,6 +429,10 @@ architecture and comparison). The SDL_GPU offline shader targets:
 | Windows | Direct3D 12 | Tint HLSL → DXC DXIL |
 | Linux / Android | Vulkan | Tint HLSL → DXC SPIR-V (temporary) |
 | macOS / iOS | Metal | Tint MSL |
+
+`scene -- process` defaults to the current host's row and accepts
+`--shader d3d12|vulkan|metal|all`; `all` is an explicit portability sweep,
+not the development default.
 
 The Dawn backend needs none of these — it compiles the same WGSL
 in-process ([features](features.md#stage-2-compiling-wgsl-for-the-device)).

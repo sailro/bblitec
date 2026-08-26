@@ -4498,7 +4498,9 @@ ${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accum
         // goToFrame's engine argument, which ticks a stopped group's
         // controller where an ordinary pass skips it.
         const auto apply_animation_state =
-            [animation_runtime, &engine, apply_animation_pose](
+            [animation_runtime${
+                animationPointer ? ", &engine" : ""
+            }, apply_animation_pose](
                 std::size_t only_clip,
                 bool force_stopped) {${animationMask ? `
             // The pin's controller resets every node to its rest TRS before
