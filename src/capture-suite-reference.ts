@@ -420,7 +420,12 @@ export async function captureSuiteReference(
     if (existsSync(referencePath) && !force) return;
     // Past the cached-reference early return, the browser is genuinely
     // needed; only now does the harness (playwright + typescript) load.
-    const { screenshotCaptureBrowserArgs, waitForSceneReady, withBrowserPage } =
+    const {
+        hideNonCanvasChrome,
+        screenshotCaptureBrowserArgs,
+        waitForSceneReady,
+        withBrowserPage,
+    } =
         browserHarness();
     const moduleSource = suiteBrowserModule(
         sourcePath,
@@ -449,6 +454,7 @@ export async function captureSuiteReference(
                 options.search,
             );
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
+            await hideNonCanvasChrome(page);
             await page
                 .locator("#renderCanvas")
                 .screenshot({ path: referencePath });

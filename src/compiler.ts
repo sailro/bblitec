@@ -65,6 +65,7 @@ import {
 import {
     compileBoxOptions,
     compileGroundOptions,
+    compileGroundFromHeightMapOptions,
     compilePlaneOptions,
     compileSphereOptions,
     compileTorusOptions,
@@ -1278,6 +1279,12 @@ class Compiler
         expression: ts.Expression,
     ): [string, string, string, string, string] {
         return compileGroundOptions(this, expression);
+    }
+
+    public compileGroundFromHeightMapOptions(
+        expression: ts.Expression,
+    ): [string, string, string, string, string, string, string] {
+        return compileGroundFromHeightMapOptions(this, expression);
     }
 
     public compilePlaneOptions(expression: ts.Expression): [string, string] {
@@ -3396,12 +3403,21 @@ class Compiler
      * `setShadowTaskCasterMeshes` is only that the caster materials compose
      * a no-colour view — which is the feature it reaches, not a list.
      */
-    public recordShadowGenerator(entry: {
-        kind: "pcf-spot";
-        lightIndex: number;
-    }): number {
+    public recordShadowGenerator(entry: ShadowGeneratorManifest): number {
         this.shadowGenerators.push({ ...entry });
         return this.shadowGenerators.length - 1;
+    }
+
+    /**
+     * Which resource row the NEXT ESM generator takes.
+     *
+     * Generation composes one row per ESM factory call, in reach order, so
+     * the ordinal is settled here rather than counted again at run time.
+     */
+    public esmGeneratorOrdinal(): number {
+        return this.shadowGenerators.filter(
+            (generator) => generator.kind === "esm-directional",
+        ).length;
     }
 
     /** `mesh.receiveShadows = true`, by scene-mesh index. */

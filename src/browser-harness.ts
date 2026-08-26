@@ -195,6 +195,35 @@ export async function waitForSceneReady(
 }
 
 /**
+ * Hide everything the demo page draws OUTSIDE its canvas, before the shot.
+ *
+ * **This port does not reproduce DOM content.** A corpus scene may append
+ * its own HTML controls to `document.body` -- scene 4's two toggle buttons
+ * are the reached case -- and they are positioned over the canvas, so a
+ * canvas-clipped screenshot composites them in. The native runtime has no
+ * DOM and draws none of it, so leaving them in the golden would measure a
+ * browser widget against a renderer that cannot have one: scene 4's buttons
+ * alone are 19,800 pixels at MAD 51, against 0.000 everywhere else.
+ *
+ * What is measured is therefore the CANVAS, and the goldens say so. Every
+ * scene keeps its own page otherwise: this hides siblings of the canvas, it
+ * does not touch the scene, the canvas, or anything the scene drew into it.
+ * A scene whose behaviour depends on that DOM (a control that must be
+ * clicked before the frame under test) is out of scope for the same reason
+ * -- see docs/fidelity.md.
+ */
+export async function hideNonCanvasChrome(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const canvas = document.getElementById("renderCanvas");
+        for (const element of Array.from(document.body.children)) {
+            if (element !== canvas) {
+                (element as HTMLElement).style.visibility = "hidden";
+            }
+        }
+    });
+}
+
+/**
  * Serve one page module, wait for the global it installs, and return what
  * that global's call resolved to.
  *

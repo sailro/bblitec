@@ -24,6 +24,7 @@ import {
     type UpstreamEmitOptions,
 } from "./upstream-lower.js";
 import { emitAssetSpecializations } from "./asset-specializer.js";
+import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import {
     composeComposite,
     composePostProcess,
@@ -788,6 +789,15 @@ async function main(): Promise<void> {
             }),
         ),
     );
+    // Each ESM generator runs its own factory too, for the same reason: the
+    // four textures it builds and the two blur stages it compiles -- whose
+    // tap table is folded from this scene's `blurKernel` -- are the
+    // factory's answer, not something this repo can restate.
+    const esmShadows = await Promise.all(
+        result.manifest.shadowGenerators
+            .filter((generator) => generator.kind === "esm-directional")
+            .map((generator) => composeEsmShadow(generator.esm ?? {})),
+    );
     // A composite runs its own factory instead: which passes it records, over
     // which intermediates and at which sizes, is the factory's answer.
     const postProcessComposites = await Promise.all(
@@ -882,6 +892,7 @@ async function main(): Promise<void> {
         nodeVisibility: specializationFeatures.nodeVisibility,
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
+        ...(esmShadows.length > 0 ? { esmShadows } : {}),
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
         standardLights: reachedStandardLights(reachedBabylonLights),

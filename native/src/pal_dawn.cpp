@@ -539,11 +539,44 @@ struct DawnState : DawnDevice {
      * and the shared group.
      */
     WGPUSampler shadow_comparison_sampler = nullptr;
+    WGPUSampler shadow_filtering_sampler = nullptr;
     std::vector<WGPUBuffer> shadow_uniforms;
     /** What each receiver UBO last held, so a static light re-uploads none. */
     std::vector<upstream::ShadowInfoUniforms> shadow_blocks;
-    WGPUBindGroupLayout shadow_layout = nullptr;
-    WGPUBindGroup shadow_group = nullptr;
+#if BBLITE_SHADOWS_ESM
+    /**
+     * `sg._shadowParamsUBO`, one per generator: the bias and depth scale the
+     * ESM caster's own material view reads while writing its exponential
+     * depth. Written once, because neither value has a setter.
+     */
+    std::vector<WGPUBuffer> shadow_params;
+#endif
+    /** Per receiving variant: two variants can declare different rows. */
+    std::vector<WGPUBindGroupLayout> shadow_layouts;
+    std::vector<WGPUBindGroup> shadow_groups;
+#if BBLITE_SHADOWS_ESM
+    /**
+     * One ESM generator's separable blur, built from what its own factory
+     * recorded. The pin blurs the ESM map horizontally into `blur_h` and
+     * then vertically into `blur_v`, and `blur_v` IS `sg._depthTexture` --
+     * the texture the receiver samples.
+     */
+    struct EsmBlur {
+        WGPUTexture blur_h = nullptr;
+        WGPUTextureView blur_h_view = nullptr;
+        WGPUTexture blur_v = nullptr;
+        WGPUTextureView blur_v_view = nullptr;
+        WGPURenderPipeline pipeline = nullptr;
+        WGPUBindGroupLayout layout = nullptr;
+        WGPUBuffer horizontal_uniforms = nullptr;
+        WGPUBuffer vertical_uniforms = nullptr;
+        WGPUBindGroup horizontal = nullptr;
+        WGPUBindGroup vertical = nullptr;
+    };
+    std::vector<EsmBlur> esm_blurs;
+    /** Refilled per frame by the caster fold, never reallocated. */
+    std::vector<upstream::ShadowCaster> esm_casters;
+#endif
 #endif
     /** How many of `scene.lights` carry a generator, in that order. */
     std::size_t shadow_light_count = 0;
@@ -714,10 +747,10 @@ struct DawnState : DawnDevice {
         // The receiver group holds a view of a shadow map's depth texture,
         // which the loop below is about to release; a resize rebuilds both.
         // The layout beside it is shape-only and survives.
-        if (shadow_group) {
-            wgpuBindGroupRelease(shadow_group);
-            shadow_group = nullptr;
+        for (WGPUBindGroup group : shadow_groups) {
+            if (group) wgpuBindGroupRelease(group);
         }
+        shadow_groups.clear();
 #endif
         for (DawnRenderTarget& target : render_targets) {
             if (
@@ -945,9 +978,14 @@ struct DawnState : DawnDevice {
         for (WGPUBuffer buffer : shadow_uniforms) {
             if (buffer) wgpuBufferRelease(buffer);
         }
-        if (shadow_layout) wgpuBindGroupLayoutRelease(shadow_layout);
+        for (WGPUBindGroupLayout layout : shadow_layouts) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
+        }
         if (shadow_comparison_sampler) {
             wgpuSamplerRelease(shadow_comparison_sampler);
+        }
+        if (shadow_filtering_sampler) {
+            wgpuSamplerRelease(shadow_filtering_sampler);
         }
 #endif
         for (auto& sided : depth_only_pipelines) {
@@ -3185,86 +3223,13 @@ WGPUBindGroupLayout standard_draw_layout_for(
 }
 
 #if BBLITE_STANDARD_SHADOWS
-/**
- * Group 2 for a shadow-receiving Standard draw.
- *
- * `createShadowFragment` declares three bindings per shadow-casting light,
- * in `scene.lights` order and always in the same shape — the depth map, the
- * comparison sampler, then the receiver UBO — so the layout follows from the
- * generator count rather than from reflection, exactly as `rebuildSingle`
- * builds its entries from `meshShadowGens` with a running binding counter.
- */
-WGPUBindGroupLayout shadow_layout_for(DawnState& state) {
-    if (state.shadow_layout) return state.shadow_layout;
-    if (state.shadow_light_count == 0) {
-        dawn_error(
-            "a shadow-receiving Standard variant reached layout creation "
-            "with no shadow generators.");
-    }
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(state.shadow_light_count * 3);
-    for (
-        std::size_t light = 0;
-        light < state.shadow_light_count;
-        ++light) {
-        WGPUBindGroupLayoutEntry texture_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        texture_entry.binding =
-            static_cast<std::uint32_t>(entries.size());
-        texture_entry.visibility = WGPUShaderStage_Fragment;
-        texture_entry.texture.sampleType = WGPUTextureSampleType_Depth;
-        texture_entry.texture.viewDimension =
-            WGPUTextureViewDimension_2D;
-        entries.push_back(texture_entry);
-        WGPUBindGroupLayoutEntry sampler_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampler_entry.binding =
-            static_cast<std::uint32_t>(entries.size());
-        sampler_entry.visibility = WGPUShaderStage_Fragment;
-        sampler_entry.sampler.type = WGPUSamplerBindingType_Comparison;
-        entries.push_back(sampler_entry);
-        WGPUBindGroupLayoutEntry uniform_entry =
-            WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        uniform_entry.binding =
-            static_cast<std::uint32_t>(entries.size());
-        // The vertex stage reads `lightMatrix` out of the same block the
-        // fragment reads `shadowsInfo` from, which is why the pinned
-        // fragment declares it VERTEX|FRAGMENT.
-        uniform_entry.visibility =
-            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        uniform_entry.buffer.type = WGPUBufferBindingType_Uniform;
-        entries.push_back(uniform_entry);
-    }
-    WGPUBindGroupLayoutDescriptor descriptor =
-        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    state.shadow_layout =
-        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
-    if (!state.shadow_layout) {
-        dawn_error("shadow receiver bind group layout creation failed.");
-    }
-    return state.shadow_layout;
-}
-
-/**
- * Group 2 itself, built once per frame graph and shared by every receiver.
- *
- * `rebuildSingle` walks the scene's shadow generators in order and pushes
- * the depth view, the sampler and the receiver UBO per generator against one
- * running binding counter; the cache it keys by the layout is what makes the
- * group shared across receiving meshes, and that is what this reproduces.
- */
-WGPUBindGroup shadow_group_for(
-    DawnState& state,
-    const Scene& scene,
-    const Engine& engine) {
-    if (state.shadow_group) return state.shadow_group;
+/** The two samplers a receiver row may name, built once. */
+void ensure_shadow_samplers(DawnState& state) {
     if (!state.shadow_comparison_sampler) {
         WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
-        // The pinned generator's own sampler: a comparison sampler under
+        // The pinned PCF generator's own sampler: a comparison sampler under
         // `less`, with linear filtering so the hardware averages the four
-        // comparisons each of the nine PCF taps takes.
+        // comparisons each of the nine taps takes.
         descriptor.compare = WGPUCompareFunction_Less;
         descriptor.magFilter = WGPUFilterMode_Linear;
         descriptor.minFilter = WGPUFilterMode_Linear;
@@ -3274,48 +3239,344 @@ WGPUBindGroup shadow_group_for(
             dawn_error("shadow comparison sampler creation failed.");
         }
     }
-    std::vector<WGPUBindGroupEntry> entries;
-    std::uint32_t binding = 0;
+    if (!state.shadow_filtering_sampler) {
+        // The pinned ESM generator reads its blurred map through
+        // `getBilinearSampler`. Its two filters are what the factory asked
+        // its device for; everything else it left at WebGPU's defaults,
+        // which are Dawn's defaults too.
+        WGPUSamplerDescriptor descriptor = WGPU_SAMPLER_DESCRIPTOR_INIT;
+#if BBLITE_SHADOWS_ESM
+        const auto& blur_sampler =
+            upstream::esm_shadow_resources[0].blur_sampler;
+        descriptor.magFilter =
+            blur_sampler.magnify == upstream::EsmFilter::linear
+                ? WGPUFilterMode_Linear
+                : WGPUFilterMode_Nearest;
+        descriptor.minFilter =
+            blur_sampler.minify == upstream::EsmFilter::linear
+                ? WGPUFilterMode_Linear
+                : WGPUFilterMode_Nearest;
+#endif
+        state.shadow_filtering_sampler =
+            wgpuDeviceCreateSampler(state.device, &descriptor);
+        if (!state.shadow_filtering_sampler) {
+            dawn_error("shadow filtering sampler creation failed.");
+        }
+    }
+}
+
+#if BBLITE_SHADOWS_ESM
+WGPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format) {
+    return format == upstream::EsmTextureFormat::depth32_float
+        ? WGPUTextureFormat_Depth32Float
+        : WGPUTextureFormat_RGBA16Float;
+}
+
+/**
+ * One generator's blur halves and the pipeline that fills them.
+ *
+ * Every descriptor here is what the pinned factory asked its device for when
+ * generation ran it: the two extents and their format, the bind-group
+ * layout's three entries, and the two texel steps. Built once, on the frame
+ * the generator's own map first exists.
+ */
+DawnState::EsmBlur& ensure_esm_blur(
+    DawnState& state,
+    WGPUTextureView source,
+    std::uint32_t esm_index) {
+    if (state.esm_blurs.size() <= esm_index) {
+        state.esm_blurs.resize(esm_index + 1);
+    }
+    DawnState::EsmBlur& blur = state.esm_blurs[esm_index];
+    if (blur.pipeline) return blur;
+    const upstream::EsmShadowResources& resources =
+        upstream::esm_shadow_resources[esm_index];
+    const upstream::EsmTextureDescriptor& half = resources.textures[2];
+    const auto create_half = [&](WGPUTexture& texture, WGPUTextureView& view) {
+        texture = create_frame_texture(
+            state,
+            esm_texture_format(half.format),
+            1,
+            half.width,
+            half.height,
+            WGPUTextureUsage_RenderAttachment |
+                WGPUTextureUsage_TextureBinding);
+        view = wgpuTextureCreateView(texture, nullptr);
+    };
+    create_half(blur.blur_h, blur.blur_h_view);
+    create_half(blur.blur_v, blur.blur_v_view);
+
+    const std::string stem = "shadow-blur-" + std::to_string(esm_index);
+    WGPUShaderModule vertex_module = load_wgsl_module(state, stem + ".vert");
+    WGPUShaderModule fragment_module = load_wgsl_module(state, stem + ".frag");
+    WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+    // The one target `blurPipeline` declares, as the factory declared it.
+    target.format = esm_texture_format(resources.blur_target_format);
+    target.writeMask = WGPUColorWriteMask_All;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = fragment_module;
+    fragment.entryPoint = {"main", WGPU_STRLEN};
+    fragment.targetCount = 1;
+    fragment.targets = &target;
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    // No explicit layout: the composed WGSL already declares the group, and
+    // taking the pipeline's own is what every other pass here does.
+    descriptor.vertex.module = vertex_module;
+    descriptor.vertex.entryPoint = {"main", WGPU_STRLEN};
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    descriptor.fragment = &fragment;
+    blur.pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!blur.pipeline) dawn_error("ESM blur pipeline creation failed.");
+    blur.layout = wgpuRenderPipelineGetBindGroupLayout(blur.pipeline, 0);
+    wgpuShaderModuleRelease(vertex_module);
+    wgpuShaderModuleRelease(fragment_module);
+
+    ensure_shadow_samplers(state);
+    const auto bind = [&](
+                          WGPUBuffer& uniforms,
+                          WGPUBindGroup& group,
+                          const std::array<float, 4>& direction,
+                          WGPUTextureView read) {
+        uniforms = create_buffer(
+            state,
+            WGPUBufferUsage_Uniform,
+            direction.data(),
+            direction.size() * sizeof(float));
+        std::array<WGPUBindGroupEntry, 3> group_entries{};
+        for (WGPUBindGroupEntry& entry : group_entries) {
+            entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        }
+        group_entries[0].binding = 0;
+        group_entries[0].buffer = uniforms;
+        group_entries[0].size = direction.size() * sizeof(float);
+        group_entries[1].binding = 1;
+        group_entries[1].textureView = read;
+        group_entries[2].binding = 2;
+        group_entries[2].sampler = state.shadow_filtering_sampler;
+        WGPUBindGroupDescriptor group_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        group_descriptor.layout = blur.layout;
+        group_descriptor.entryCount = group_entries.size();
+        group_descriptor.entries = group_entries.data();
+        group = wgpuDeviceCreateBindGroup(state.device, &group_descriptor);
+    };
+    bind(
+        blur.horizontal_uniforms,
+        blur.horizontal,
+        resources.blur_directions[0],
+        source);
+    bind(
+        blur.vertical_uniforms,
+        blur.vertical,
+        resources.blur_directions[1],
+        blur.blur_h_view);
+    return blur;
+}
+
+/** The pin's two blur passes, run straight after the caster pass. */
+void run_esm_blur(
+    DawnState& state,
+    WGPUCommandEncoder encoder,
+    WGPUTextureView source,
+    std::uint32_t esm_index) {
+    const DawnState::EsmBlur& blur = ensure_esm_blur(state, source, esm_index);
+    const auto pass = [&](WGPUTextureView view, WGPUBindGroup group) {
+        WGPURenderPassColorAttachment attachment =
+            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        attachment.view = view;
+        attachment.loadOp = WGPULoadOp_Clear;
+        attachment.storeOp = WGPUStoreOp_Store;
+        attachment.clearValue = {0.0, 0.0, 0.0, 0.0};
+        WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        descriptor.colorAttachmentCount = 1;
+        descriptor.colorAttachments = &attachment;
+        WGPURenderPassEncoder render =
+            wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+        wgpuRenderPassEncoderSetPipeline(render, blur.pipeline);
+        wgpuRenderPassEncoderSetBindGroup(render, 0, group, 0, nullptr);
+        wgpuRenderPassEncoderDraw(render, 3, 1, 0, 0);
+        wgpuRenderPassEncoderEnd(render);
+        wgpuRenderPassEncoderRelease(render);
+    };
+    pass(blur.blur_h_view, blur.horizontal);
+    pass(blur.blur_v_view, blur.vertical);
+}
+#endif
+
+/** The view a generator's map is sampled through. */
+WGPUTextureView shadow_map_view(
+    DawnState& state,
+    const Engine& engine,
+    ShadowGeneratorHandle handle) {
+    const ShadowGeneratorRecord& generator =
+        engine.shadow_generators[handle.value];
+    if (
+        generator.task.value >= engine.frame_tasks.size() ||
+        engine.frame_tasks[generator.task.value].render.target.value >=
+            state.render_targets.size()) {
+        dawn_error("a shadow generator has no rendered map.");
+    }
+    const DawnRenderTarget& map = state.render_targets[
+        engine.frame_tasks[generator.task.value].render.target.value];
+#if BBLITE_SHADOWS_ESM
+    // The ESM receiver samples `sg._depthTexture`, which the pinned factory
+    // set to the SECOND blur half -- not the depth buffer the caster pass
+    // wrote.
+    if (generator.filter == ShadowFilter::esm_directional) {
+        const DawnState::EsmBlur& blur = ensure_esm_blur(
+            state,
+            map.sampled_color_view,
+            generator.esm_index);
+        return blur.blur_v_view;
+    }
+#endif
+    return map.depth_sampled_view;
+}
+
+/**
+ * Group 2 for a shadow-receiving Standard draw, from the composed rows.
+ *
+ * `createShadowFragment` numbers three bindings per shadow-casting light and
+ * picks each one's TYPE from that light's own filter, so a scene mixing an
+ * ESM directional with a PCF spot declares a float texture and a plain
+ * sampler beside a depth texture and a comparison one -- in one group. The
+ * generated `standard_shadow_bindings` rows are the reflection of that text,
+ * exactly as group 1's are, so neither the shape nor the stage visibility is
+ * decided here.
+ */
+WGPUBindGroupLayout shadow_layout_for(DawnState& state, std::size_t variant) {
+    if (
+        state.shadow_layouts.size() < upstream::standard_variants.size()) {
+        state.shadow_layouts.resize(
+            upstream::standard_variants.size(),
+            nullptr);
+    }
+    if (state.shadow_layouts[variant]) return state.shadow_layouts[variant];
+    const std::span<const upstream::StandardShadowBinding> rows =
+        pal::shadow_rows(variant);
+    std::vector<WGPUBindGroupLayoutEntry> entries;
+    entries.reserve(rows.size());
+    for (const upstream::StandardShadowBinding& row : rows) {
+        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        entry.binding = row.binding;
+        entry.visibility = 0;
+        if (row.vertex) entry.visibility |= WGPUShaderStage_Vertex;
+        if (row.fragment) entry.visibility |= WGPUShaderStage_Fragment;
+        switch (row.kind) {
+            case upstream::StandardBindingKind::textureDepth2d:
+                entry.texture.sampleType = WGPUTextureSampleType_Depth;
+                entry.texture.viewDimension =
+                    WGPUTextureViewDimension_2D;
+                break;
+            case upstream::StandardBindingKind::texture2d:
+                entry.texture.sampleType = WGPUTextureSampleType_Float;
+                entry.texture.viewDimension =
+                    WGPUTextureViewDimension_2D;
+                break;
+            case upstream::StandardBindingKind::samplerComparison:
+                entry.sampler.type = WGPUSamplerBindingType_Comparison;
+                break;
+            case upstream::StandardBindingKind::sampler:
+                entry.sampler.type = WGPUSamplerBindingType_Filtering;
+                break;
+            case upstream::StandardBindingKind::uniformBuffer:
+                entry.buffer.type = WGPUBufferBindingType_Uniform;
+                break;
+            default:
+                dawn_error(
+                    ("a composed shadow binding '" +
+                     std::string(row.name) +
+                     "' has a kind group 2 cannot bind.")
+                        .c_str());
+        }
+        entries.push_back(entry);
+    }
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    state.shadow_layouts[variant] =
+        wgpuDeviceCreateBindGroupLayout(state.device, &descriptor);
+    if (!state.shadow_layouts[variant]) {
+        dawn_error("shadow receiver bind group layout creation failed.");
+    }
+    return state.shadow_layouts[variant];
+}
+
+/**
+ * Group 2 itself, one per receiving variant and shared by every mesh drawn
+ * through it -- which is the cache `rebuildSingle` keys by the layout for the
+ * same reason. Each row names its role and its light, so the resource it
+ * wants is a lookup rather than a name parse.
+ */
+WGPUBindGroup shadow_group_for(
+    DawnState& state,
+    const Scene& scene,
+    const Engine& engine,
+    std::size_t variant) {
+    if (state.shadow_groups.size() < upstream::standard_variants.size()) {
+        state.shadow_groups.resize(
+            upstream::standard_variants.size(),
+            nullptr);
+    }
+    if (state.shadow_groups[variant]) return state.shadow_groups[variant];
+    ensure_shadow_samplers(state);
+    // The scene's generators in `scene.lights` order: that walk IS the
+    // ordinal each row names.
+    std::vector<ShadowGeneratorHandle> generators;
     for (const LightHandle light : scene.lights) {
         if (light.value >= engine.lights.size()) continue;
         const ShadowGeneratorHandle handle =
             engine.lights[light.value].shadow_generator;
         if (handle.value >= engine.shadow_generators.size()) continue;
-        const ShadowGeneratorRecord& generator =
-            engine.shadow_generators[handle.value];
-        if (
-            generator.task.value >= engine.frame_tasks.size() ||
-            engine.frame_tasks[generator.task.value].render.target.value >=
-                state.render_targets.size()) {
-            dawn_error("a shadow generator has no rendered map.");
+        generators.push_back(handle);
+    }
+    const std::span<const upstream::StandardShadowBinding> rows =
+        pal::shadow_rows(variant);
+    std::vector<WGPUBindGroupEntry> entries;
+    entries.reserve(rows.size());
+    for (const upstream::StandardShadowBinding& row : rows) {
+        if (row.light >= generators.size()) {
+            dawn_error(
+                ("a composed shadow binding names light " +
+                 std::to_string(row.light) +
+                 ", which carries no generator.")
+                    .c_str());
         }
-        const DawnRenderTarget& map = state.render_targets[
-            engine.frame_tasks[generator.task.value]
-                .render.target.value];
-        WGPUBindGroupEntry texture_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        texture_entry.binding = binding++;
-        texture_entry.textureView = map.depth_sampled_view;
-        entries.push_back(texture_entry);
-        WGPUBindGroupEntry sampler_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        sampler_entry.binding = binding++;
-        sampler_entry.sampler = state.shadow_comparison_sampler;
-        entries.push_back(sampler_entry);
-        WGPUBindGroupEntry uniform_entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        uniform_entry.binding = binding++;
-        uniform_entry.buffer = state.shadow_uniforms[handle.value];
-        uniform_entry.size = sizeof(upstream::ShadowInfoUniforms);
-        entries.push_back(uniform_entry);
+        const ShadowGeneratorHandle handle = generators[row.light];
+        WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+        entry.binding = row.binding;
+        switch (row.role) {
+            case upstream::StandardShadowRole::map:
+                entry.textureView = shadow_map_view(state, engine, handle);
+                break;
+            case upstream::StandardShadowRole::map_sampler:
+                // Which sampler is the ROW's to say: a PCF map is compared,
+                // an ESM one is filtered.
+                entry.sampler = row.kind ==
+                        upstream::StandardBindingKind::samplerComparison
+                    ? state.shadow_comparison_sampler
+                    : state.shadow_filtering_sampler;
+                break;
+            case upstream::StandardShadowRole::info:
+                entry.buffer = state.shadow_uniforms[handle.value];
+                entry.size = sizeof(upstream::ShadowInfoUniforms);
+                break;
+        }
+        entries.push_back(entry);
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    descriptor.layout = shadow_layout_for(state);
+    descriptor.layout = shadow_layout_for(state, variant);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
-    state.shadow_group =
+    state.shadow_groups[variant] =
         wgpuDeviceCreateBindGroup(state.device, &descriptor);
-    if (!state.shadow_group) {
+    if (!state.shadow_groups[variant]) {
         dawn_error("shadow receiver bind group creation failed.");
     }
-    return state.shadow_group;
+    return state.shadow_groups[variant];
 }
 
 /**
@@ -3338,6 +3599,9 @@ void write_shadow_generators(
             engine.shadow_generators.size(),
             nullptr);
         state.shadow_blocks.resize(engine.shadow_generators.size());
+#if BBLITE_SHADOWS_ESM
+        state.shadow_params.resize(engine.shadow_generators.size(), nullptr);
+#endif
     }
     for (const LightHandle light : scene.lights) {
         if (light.value >= engine.lights.size()) continue;
@@ -3346,6 +3610,26 @@ void write_shadow_generators(
         if (handle.value >= engine.shadow_generators.size()) continue;
         ShadowGeneratorRecord& generator =
             engine.shadow_generators[handle.value];
+#if BBLITE_SHADOWS_ESM
+        // The ESM fit is sized to the CASTERS, not to the light's own cone,
+        // so it re-reads their world bounds every frame.
+        if (generator.filter == ShadowFilter::esm_directional) {
+            if (!state.shadow_params[handle.value]) {
+                const std::array<float, 8> params =
+                    upstream::shadow_params_block(generator);
+                state.shadow_params[handle.value] = create_buffer(
+                    state,
+                    WGPUBufferUsage_Uniform,
+                    params.data(),
+                    params.size() * sizeof(float));
+            }
+            pal::esm_shadow_casters(engine, generator, state.esm_casters);
+            upstream::update_esm_directional_shadow(
+                generator,
+                engine.lights[light.value],
+                state.esm_casters);
+        } else
+#endif
         upstream::update_pcf_spot_shadow(
             generator,
             engine.lights[light.value]);
@@ -3378,13 +3662,14 @@ void write_shadow_generators(
 #else
 // A Standard scene that reaches no generator: every call site below still
 // compiles, and each answers "no shadows" rather than being conditioned out.
-inline WGPUBindGroupLayout shadow_layout_for(DawnState&) {
+inline WGPUBindGroupLayout shadow_layout_for(DawnState&, std::size_t) {
     return nullptr;
 }
 inline WGPUBindGroup shadow_group_for(
     DawnState&,
     const Scene&,
-    const Engine&) {
+    const Engine&,
+    std::size_t) {
     return nullptr;
 }
 #endif
@@ -3414,7 +3699,7 @@ WGPUPipelineLayout standard_pipeline_layout_for(
     std::array<WGPUBindGroupLayout, 3> groups{
         pinned_frame_layout_for(state),
         standard_draw_layout_for(state, variant, unfilterable_emissive),
-        receives ? shadow_layout_for(state) : nullptr,
+        receives ? shadow_layout_for(state, variant) : nullptr,
     };
     WGPUPipelineLayoutDescriptor descriptor =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
@@ -3520,6 +3805,20 @@ WGPUBindGroup build_standard_draw_group(
                 // displace binding 0 the same way.
                 group_entry.buffer = mesh_uniforms;
                 group_entry.size = sizeof(upstream::MeshUniforms);
+#if BBLITE_SHADOWS_ESM
+            } else if (
+                binding.name == "shadowParams" &&
+                material &&
+                material->esm_shadow_generator.value <
+                    state.shadow_params.size() &&
+                state.shadow_params[
+                    material->esm_shadow_generator.value]) {
+                // The ESM caster's own block, from the generator its view
+                // was built for.
+                group_entry.buffer = state.shadow_params[
+                    material->esm_shadow_generator.value];
+                group_entry.size = 8 * sizeof(float);
+#endif
             } else {
                 dawn_error(
                     ("standard variant declares an unmapped uniform "
@@ -4405,11 +4704,19 @@ WGPURenderPipeline standard_variant_pipeline(
     // The pin's one exception to this port's depth convention: a shadow
     // caster pass renders standard-Z into the generator's own
     // `depth32float` map.
-    bool shadow_pass = false) {
+    bool shadow_pass = false,
+    // Which ESM generator's map this pass writes, when it writes one. The
+    // colour format is that generator's own recorded row, so two generators
+    // whose factories returned different formats build different pipelines.
+    std::uint32_t esm_shadow_index = invalid_handle) {
     const std::size_t key = variant * 512 +
         static_cast<std::size_t>(kind) * 8 +
         (shadow_pass ? 4 : 0) +
-        (has_depth ? 2 : 0) + (unfilterable_emissive ? 1 : 0);
+        (has_depth ? 2 : 0) + (unfilterable_emissive ? 1 : 0) +
+        (esm_shadow_index == invalid_handle
+            ? 0
+            : (esm_shadow_index + 1) * 512 *
+                upstream::standard_variants.size());
     auto& map = state.standard_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -4494,6 +4801,18 @@ WGPURenderPipeline standard_variant_pipeline(
     descriptor.multisample.mask = ~0u;
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = state.frame_color_format;
+#if BBLITE_SHADOWS_ESM
+    // An ESM caster variant draws into ONE generator's map -- the task that
+    // owns this pass names it -- so the format is that generator's own row
+    // rather than an assumption that every ESM map agrees.
+    if (
+        (entry.features & upstream::standard_esm_shadow_output_flag) &&
+        esm_shadow_index != invalid_handle) {
+        color_target.format = esm_texture_format(
+            upstream::esm_shadow_resources[esm_shadow_index].textures[0]
+                .format);
+    }
+#endif
     WGPUBlendState blend{};
     if (traits.transparent) {
         blend = blend_state_from(transparent_blend);
@@ -8460,9 +8779,14 @@ bool run_dawn_engine(Engine& engine) {
                                         // own depth32float map, which is
                                         // the pin's one exception to this
                                         // port's depth convention.
-                                        bool shadow_pass = false) {
+                                        bool shadow_pass = false,
+                                        // Which ESM generator's map it
+                                        // writes, when it writes one.
+                                        std::uint32_t esm_shadow_index =
+                                            invalid_handle) {
             (void)frame_group;
             (void)shadow_pass;
+            (void)esm_shadow_index;
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
                 if (draw.item_index >= state.meshes.size()) continue;
@@ -8610,7 +8934,8 @@ bool run_dawn_engine(Engine& engine) {
                             pass_has_depth,
                             (standard_state.group_key & 1) != 0,
                             nullptr,
-                            shadow_pass),
+                            shadow_pass,
+                            esm_shadow_index),
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),
@@ -8623,7 +8948,7 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.indices,
                         mesh.index_count,
                         receives
-                            ? shadow_group_for(state, scene, engine)
+                            ? shadow_group_for(state, scene, engine, variant)
                             : nullptr);
                     continue;
                 }
@@ -9137,7 +9462,6 @@ bool run_dawn_engine(Engine& engine) {
                     : task_sample_count(state, target_record.samples);
 #if BBLITE_STANDARD_SHADOWS
                 if (
-                    !target_record.has_color &&
                     task.render.shadow_generator.value <
                         engine.shadow_generators.size()) {
                     if (!target_record.has_depth || !target.depth) {
@@ -9157,15 +9481,44 @@ bool run_dawn_engine(Engine& engine) {
                     shadow_attachment.stencilLoadOp = WGPULoadOp_Undefined;
                     shadow_attachment.stencilStoreOp =
                         WGPUStoreOp_Undefined;
+                    // An ESM caster pass STORES a colour: the exponential
+                    // depth its material view writes. A PCF one has no
+                    // colour attachment at all, which is the difference
+                    // between the two pinned targets.
+                    WGPURenderPassColorAttachment shadow_color =
+                        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                    if (target_record.has_color) {
+                        if (!target.color_view) {
+                            throw std::runtime_error(
+                                "ESM shadow task has no colour "
+                                "attachment.");
+                        }
+                        shadow_color.view = target.color_view;
+                        shadow_color.loadOp = WGPULoadOp_Clear;
+                        shadow_color.storeOp = WGPUStoreOp_Store;
+                        // `createRenderTask({ clrColor: {0,0,0,0} })`.
+                        shadow_color.clearValue = {0.0, 0.0, 0.0, 0.0};
+                    }
                     WGPURenderPassDescriptor shadow_descriptor =
                         WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-                    shadow_descriptor.colorAttachmentCount = 0;
+                    shadow_descriptor.colorAttachmentCount =
+                        target_record.has_color ? 1u : 0u;
+                    shadow_descriptor.colorAttachments =
+                        target_record.has_color ? &shadow_color : nullptr;
                     shadow_descriptor.depthStencilAttachment =
                         &shadow_attachment;
                     WGPURenderPassEncoder shadow_pass_encoder =
                         wgpuCommandEncoderBeginRenderPass(
                             encoder,
                             &shadow_descriptor);
+                    const ShadowGeneratorRecord& shadow_generator =
+                        engine.shadow_generators[
+                            task.render.shadow_generator.value];
+                    const std::uint32_t esm_shadow_index =
+                        shadow_generator.filter ==
+                            ShadowFilter::esm_directional
+                            ? shadow_generator.esm_index
+                            : invalid_handle;
                     WGPURenderPipeline shadow_bound = nullptr;
                     draw_list_into(
                         shadow_pass_encoder,
@@ -9174,7 +9527,8 @@ bool run_dawn_engine(Engine& engine) {
                         shadow_bound,
                         true,
                         render_task.pinned_frame_group,
-                        true);
+                        true,
+                        esm_shadow_index);
                     draw_list_into(
                         shadow_pass_encoder,
                         render_task.draw_lists.transparent,
@@ -9182,9 +9536,21 @@ bool run_dawn_engine(Engine& engine) {
                         shadow_bound,
                         true,
                         render_task.pinned_frame_group,
-                        true);
+                        true,
+                        esm_shadow_index);
                     wgpuRenderPassEncoderEnd(shadow_pass_encoder);
                     wgpuRenderPassEncoderRelease(shadow_pass_encoder);
+#if BBLITE_SHADOWS_ESM
+                    // `renderEsmShadowMap` blurs the map it just drew, in
+                    // two passes, before anything samples it.
+                    if (esm_shadow_index != invalid_handle) {
+                        run_esm_blur(
+                            state,
+                            encoder,
+                            target.sampled_color_view,
+                            esm_shadow_index);
+                    }
+#endif
                     continue;
                 }
 #endif

@@ -1401,6 +1401,19 @@ struct MaterialRecord {
     float occlusion_strength = 1.0f;
     bool unlit = false;
     bool no_color = false;
+    /**
+     * An ESM caster view: `createStandardEsmShadowMaterialView` clears the
+     * blend bit and sets `ESM_SHADOW_OUTPUT`, so this view writes the
+     * exponential depth into a colour attachment rather than nothing.
+     */
+    bool esm_shadow = false;
+    /**
+     * Which generator's caster block this view reads. `getEsmShadowView`
+     * builds one view per material PER GENERATOR, closing over that
+     * generator's own `_shadowParamsUBO`, so the bias and depth scale a
+     * caster draw sees are its generator's.
+     */
+    ShadowGeneratorHandle esm_shadow_generator{};
     bool disable_lighting = false;
     bool has_emissive_render_texture = false;
     // `material.diffuseTexture = <createRenderTargetTexture output>`: the
@@ -1736,7 +1749,15 @@ struct AssetRecord {
  * receiver samples with, and the biased one the caster pass renders
  * through.
  */
+/** Which pinned filter a generator is, which decides both its resources
+ *  and how its receiver block packs. */
+enum class ShadowFilter {
+    pcf_spot,
+    esm_directional,
+};
+
 struct ShadowGeneratorRecord {
+    ShadowFilter filter = ShadowFilter::pcf_spot;
     std::uint32_t map_size = 512;
     double bias = 0.0;
     double darkness = 0.0;
@@ -1752,6 +1773,17 @@ struct ShadowGeneratorRecord {
     std::vector<MeshHandle> caster_meshes;
     /** The depth-only render task the task state built for this map. */
     TaskHandle task{};
+    /** ESM only: the two lanes the receiver block packs. */
+    double depth_scale = 0.0;
+    double frustum_edge_falloff = 0.0;
+    /** ESM only: the ortho volume the caster fit projects into. */
+    double ortho_min_z = 1.0;
+    double ortho_max_z = 10000.0;
+    /**
+     * ESM only: this generator's ordinal among the ESM ones, which is the
+     * row generation emitted its recorded resources under.
+     */
+    std::uint32_t esm_index = 0;
 };
 
 struct Engine {
@@ -1980,6 +2012,18 @@ std::string asset_path(const std::string& relative_path);
 
 MeshHandle create_box(Engine& engine, BoxOptions options);
 MeshHandle create_ground(Engine& engine, GroundOptions options);
+/**
+ * The pinned heightmap ground: the grid above, displaced by an image.
+ *
+ * `height_map` names the packaged image beside the executable; the pin reads
+ * it through a canvas, so what the displacement sees is RGBA8 either way.
+ */
+MeshHandle create_ground_from_height_map(
+    Engine& engine,
+    GroundOptions options,
+    double min_height,
+    double max_height,
+    const char* height_map);
 MeshHandle create_plane(Engine& engine, PlaneOptions options);
 MeshHandle create_sphere(Engine& engine, SphereOptions options);
 SphereMeshData create_sphere_data(SphereOptions options);
@@ -2206,6 +2250,10 @@ MaterialHandle create_pbr_material(
 MaterialHandle create_standard_no_color_material_view(
     Engine& engine,
     MaterialHandle source);
+MaterialHandle create_standard_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(
     Engine& engine,
     MaterialHandle source);
@@ -2308,10 +2356,39 @@ struct PcfSpotShadowOptions {
     double far_plane = 10000.0;
 };
 
+/**
+ * `createEsmDirectionalShadowGenerator`'s options, in its own order.
+ *
+ * `blur_kernel` is here for the record rather than for a run-time read: the
+ * blur fragment's tap table is folded from it at generation, so a value that
+ * disagreed with the deployed shader would be a silent fork.
+ */
+struct EsmDirectionalShadowOptions {
+    std::uint32_t map_size = 1024;
+    double depth_scale = 50.0;
+    double bias = 0.00005;
+    std::uint32_t blur_kernel = 1;
+    std::uint32_t blur_scale = 2;
+    double darkness = 0.0;
+    double frustum_edge_falloff = 0.0;
+    double ortho_min_z = 1.0;
+    double ortho_max_z = 10000.0;
+    /**
+     * Which row of the generated resource table is this generator's.
+     * Generation composed one row per ESM factory call, in reach order, so
+     * the ordinal is a compile-time value like the three above it.
+     */
+    std::uint32_t esm_index = 0;
+};
+
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
     Engine& engine,
     LightHandle light,
     PcfSpotShadowOptions options);
+ShadowGeneratorHandle create_esm_directional_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    EsmDirectionalShadowOptions options);
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

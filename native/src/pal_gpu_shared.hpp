@@ -47,6 +47,9 @@
 #if BBLITE_STANDARD_SHADOWS
 #include <bblite/upstream/pinned_shadow.hpp>
 #endif
+#if BBLITE_SHADOWS_ESM
+#include <bblite/upstream/esm_shadow.hpp>
+#endif
 #include <bblite/upstream/pinned_depth_state.hpp>
 
 namespace bbl::pal {
@@ -96,6 +99,7 @@ inline float pass_depth_clear(bool shadow_pass) {
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1042,6 +1046,71 @@ inline std::array<float, 16> pinned_draw_world(
 }
 #endif
 
+#if BBLITE_STANDARD_SHADOWS
+/**
+ * The composed group-2 rows one variant declares.
+ *
+ * `createShadowFragment` emits three per shadow-casting light and the
+ * generated table stores them contiguously, so the slice is the variant's
+ * own half-open range -- spelled here rather than at each backend's every
+ * lookup.
+ */
+inline std::span<const upstream::StandardShadowBinding> shadow_rows(
+    std::size_t variant) {
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    return {
+        upstream::standard_shadow_bindings.data() +
+            entry.first_shadow_binding,
+        entry.shadow_binding_count,
+    };
+}
+#endif
+
+#if BBLITE_SHADOWS_ESM
+/**
+ * The casters `computeDirectionalLightMatrix` folds, as it reads them.
+ *
+ * The pin walks `Mesh` objects and takes `worldMatrix`, `boundMin` and
+ * `boundMax` off each; composing a world matrix is this layer's, so the
+ * carrier is filled here and the fold stays the pin's. A mesh with no
+ * geometry takes the pin's own `?? [...]` fallback, which the generated
+ * header carries from its literal.
+ */
+inline void esm_shadow_casters(
+    const Engine& engine,
+    const ShadowGeneratorRecord& generator,
+    std::vector<upstream::ShadowCaster>& casters) {
+    casters.clear();
+    casters.reserve(generator.caster_meshes.size());
+    for (const MeshHandle handle : generator.caster_meshes) {
+        if (handle.value >= engine.meshes.size()) continue;
+        const MeshRecord& record = engine.meshes[handle.value];
+        upstream::ShadowCaster caster;
+        caster.world = upstream::shadow_caster_world(record);
+        if (record.geometry < engine.geometries.size()) {
+            const ModelGeometry& geometry =
+                engine.geometries[record.geometry];
+            caster.bounds_min = {
+                geometry.bounds_min.x,
+                geometry.bounds_min.y,
+                geometry.bounds_min.z,
+            };
+            caster.bounds_max = {
+                geometry.bounds_max.x,
+                geometry.bounds_max.y,
+                geometry.bounds_max.z,
+            };
+        } else {
+            caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
+            caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
+        }
+        casters.push_back(caster);
+    }
+}
+#endif
+
+
 #if BBLITE_PINNED_MATERIALS
 /**
  * The pin's per-pass scene block.
@@ -1537,6 +1606,15 @@ inline StandardVariantKey standard_variant_key(
     if (material.no_color) {
         key.features |= upstream::standard_no_color_output_flag;
     }
+#if BBLITE_SHADOWS_ESM
+    if (material.esm_shadow) {
+        // `createStandardEsmShadowMaterialView` clears the blend bit before
+        // setting its own, so the key says both.
+        key.features = (key.features &
+            ~upstream::standard_alpha_blend_flag) |
+            upstream::standard_esm_shadow_output_flag;
+    }
+#endif
     std::uint32_t feature_mesh = draw.item.mesh.value;
     if (
         draw.item.mesh.value < engine.meshes.size() &&
@@ -1563,7 +1641,12 @@ inline StandardVariantKey standard_variant_key(
     // `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`,
     // so a depth-only view of a mesh that also receives is composed without
     // the shadow fragment and its key carries no receive bit.
-    if (material.no_color) {
+    if (
+        material.no_color
+#if BBLITE_SHADOWS_ESM
+        || material.esm_shadow
+#endif
+    ) {
         key.mesh_features &= ~static_cast<std::size_t>(
             upstream::std_msh_receive_shadows);
     }

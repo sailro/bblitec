@@ -443,17 +443,13 @@ below rather than blocking a scene here.
   ascending order, so each clip's are one contiguous run — record
   `[first, last)` per clip beside the vectors and iterate that, keeping
   the `track.clip` test so correctness never depends on the grouping.
-- [ ] Extend the shadow family past the slice scene 18 measures. Shipped:
-  the pinned PCF spot generator, its `depth32float` map and comparison
-  sampler, the caster pass under the pin's standard-Z exception, and the
-  Standard receiver fragment composed per shadow-casting light
-  ([features](docs/features.md#shadows)). Each remaining item fails by name:
-  - `createEsmDirectionalShadowGenerator`, which is four textures, a
-    two-pass 33-tap Gaussian and an ESM-encoded colour map rather than a
-    depth comparison — the arm scenes 4, 22, 65, 66, 140, 214 and 215
-    reach. `composePinnedStandardVariant` refuses its
-    `ESM_SHADOW_OUTPUT` caster arm separately, because the depth code is
-    supplied per material by the ESM view's `_esmShadowDepthCode`.
+- [ ] Extend the shadow family past the slice scenes 4 and 18 measure.
+  Shipped: the pinned PCF spot and ESM directional generators, their maps
+  and samplers, the caster pass under the pin's standard-Z exception, the
+  ESM caster's own material view and its two-pass separable blur, and the
+  Standard receiver fragment composed per shadow-casting light over a
+  reflected group 2 ([features](docs/features.md#shadows)). Each remaining
+  item fails by name:
   - `createPcfDirectionalShadowGenerator` and the cascaded family
     (`csm-*`), neither reached by a corpus scene at this pin.
   - a PBR or node receiver: `pbr-shadow-fragment.ts` and
@@ -461,33 +457,24 @@ below rather than blocking a scene here.
     this port composes, and each needs its family's group-2 wiring.
     Scene 22's ground is a PBR material, so it wants this as well as the
     ESM generator.
-  - the generator options past `mapSize`, `bias`, `darkness`, `near` and
-    `far`: `normalBias` and `forceRefreshEveryFrame` are unreached, and
+  - the generator options past the two factories' own reached sets:
+    `normalBias` and `forceRefreshEveryFrame` are unreached, and
     `setShadowCasterMaxCascade` is CSM-only.
   - a caster or receiver that is an imported mesh, and a `receiveShadows`
     the scene computes — the variant is selected at generation, so the
     second would need both fragments composed and a runtime choice.
-  - the shadow map is re-rendered every frame. `renderPcfShadowMap` skips
-    the pass when neither the casters' nor the light's world-matrix
-    version moved; this port rebuilds the matrices each frame instead,
-    which is the same image and a wasted pass for a static light. The
-    receiver UBO already takes that skip (it re-uploads only when its
-    bytes moved); the pass itself does not.
-  - **the receiver's group 2 is built by hand in the Dawn PAL and joined
-    by name in the SDL one, where every other composed group is a
-    generated table.** `variantBindings` (src/pinned-pbr-variant-cpp.ts)
-    reflects `@group(1)` out of the composed WGSL for exactly this reason,
-    and the shadow group is the only composed bind group in the tree not
-    read from those rows: Dawn types the per-light order, sample types and
-    visibility into C++ from a light count, and SDL parses the light index
-    back out of `shadowInfo_0` with a prefix compare. Nothing can drift
-    inside the reached slice — `createShadowFragment` fixes the shape and
-    every other filter refuses at composition — but the ESM arm declares
-    `texture_2d<f32>` and a plain sampler in the same group, so this is
-    what the ESM wave has to fix first. The shape: give `variantBindings`
-    a group parameter plus the two kinds the `.slots` widening already
-    needed (`textureDepth2d`, `samplerComparison`), and emit
-    `standard_shadow_bindings` beside `standard_variant_bindings`.
+  - **the shadow map is re-rendered every frame, and the ESM generator
+    made that expensive.** Both pinned generators open with the same outer
+    gate — `renderEsmShadowMap` returns before the matrix fit, the caster
+    pass AND both blur passes when neither the casters' nor the light's
+    version moved. This port implements only the inner one: the receiver
+    UBO re-uploads solely when its 96 bytes moved, but the passes always
+    run. For scene 4 with a static light and an unrotated torus that is a
+    1024x1024 caster pass plus two 512x512 33-tap blurs per frame for a
+    bit-identical map. The port has the version signal it needs
+    (`MeshRecord::transform_version`, which the caster fold already reads
+    through `shadow_caster_world`), so the gate is portable; what it needs
+    beside it is a way for a frame-graph task to skip its own pass.
   - **a shadow task names its generator on `RenderTaskOptions`, where the
     pin gives the task a camera facade.** `updateShadowCameraBase` pins the
     light-space view and view-projection onto a `Camera` whose caches the
@@ -501,6 +488,28 @@ below rather than blocking a scene here.
   option, 66 morph deltas behind a gzip graph, 72 an NME `blockLoader`,
   214/215 `createTorusKnot` plus mulberry32 closures, 271 `unregisterScene`
   and a frame yield.
+- [ ] Correct SDL_image's greyscale palette in the dependency rather than
+  at the PAL boundary. A PNG with no `PLTE` of its own is expanded over a
+  ramp SDL_image builds as `(i * 255) / ncolors` (`IMG_libpng.c`), where the
+  last entry has to land on 255 — so an 8-bit grey 146 decodes as 145 and
+  the ramp tops out at 254. Measured on scene 4, whose terrain sat one
+  displacement step low across most of the mesh.
+  `native/src/pal_sdl.cpp` corrects the ramp where the file carries no
+  palette, which is the only case where the right one is derivable; the
+  proper home is an overlay port beside the two `native/vcpkg-overlay-ports/sdl3`
+  patches, with an upstream issue, so it self-retires by failing to apply.
+  It is not there yet only because this vcpkg fetches its registry on
+  demand and carries no `ports` tree to base a portfile on.
+- [ ] Scenes 22, 47, 111, 164, 207: what each still wants now that the ESM
+  generator and the heightmap ground ship — 22 a PBR receiver fragment and
+  `setPbrGammaAlbedo`, 47 `createCylinder`/`createCapsule` and the physics
+  family, 111 a PCF directional beside the two shipped filters plus a node
+  receiver, 164 the ESM generator's remaining options, and 207 the
+  large-world family (`useFloatingOrigin`, `useHighPrecisionMatrix`), which
+  is a subsystem rather than a shadow gap: its whole point is the
+  eye-relative light matrix. Ranking by missing IMPORT alone hid that —
+  scene 207 reads as one missing name and is really scenes 200-209's
+  engine-option family.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.

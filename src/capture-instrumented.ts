@@ -22,6 +22,7 @@ import {
 } from "./capture-suite-reference.js";
 import {
     screenshotCaptureBrowserArgs,
+    hideNonCanvasChrome,
     waitForSceneReady,
     withBrowserPage,
 } from "./browser-harness.js";
@@ -323,6 +324,7 @@ export async function runInstrumentedCapture(
             mkdirSync(captureShadersDirectory(outputDirectory), {
                 recursive: true,
             });
+            await hideNonCanvasChrome(page);
             await page.locator("#renderCanvas").screenshot({
                 path: join(outputDirectory, "screenshot.png"),
             });

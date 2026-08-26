@@ -277,6 +277,7 @@ export async function composeScenePipeline({
         kind: ShadowGeneratorManifest["kind"],
     ): ShadowLightSlot["shadowType"] => {
         if (kind === "pcf-spot") return "pcf";
+        if (kind === "esm-directional") return "esm";
         throw new Error(`No receiver fragment composes for '${kind}'.`);
     };
     const shadowLights = result.manifest.shadowGenerators.map(
@@ -324,6 +325,9 @@ export async function composeScenePipeline({
                 ),
                 noColorViews: result.manifest.features.includes(
                     "material:no-color-view",
+                ),
+                esmShadowViews: result.manifest.features.includes(
+                    "shadow:esm",
                 ),
                 emissiveRenderTexture: result.manifest.features.includes(
                     "material:standard-emissive-render-texture",

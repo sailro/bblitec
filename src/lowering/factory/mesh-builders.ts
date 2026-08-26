@@ -51,7 +51,10 @@ export class MeshBuilderLowerer {
      * stream. The setter is emitted only where one is reached, the way the
      * rest of this unit's surface follows what the scene touches.
      */
-    public lowerMeshFactories(instanceColors = false): LoweredSource {
+    public lowerMeshFactories(
+        instanceColors = false,
+        heightMapGround = false,
+    ): LoweredSource {
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
@@ -204,6 +207,60 @@ export class MeshBuilderLowerer {
                 )
                 .join("\n");
         };
+        /**
+         * The pin's displacement pass, lowered from its own body.
+         *
+         * It returns nothing and mutates the record the grid builder above
+         * produced, so it binds that record's three arrays rather than
+         * producing new ones -- the same translator, a different shape.
+         */
+        const lowerPinnedHeightmap = (): string => {
+            const { file, declaration } =
+                this.context.functionDeclaration(
+                    groundModule,
+                    "applyHeightmap",
+                );
+            if (!declaration.body) {
+                this.context.contractError(
+                    declaration,
+                    "Expected the pinned heightmap pass to have a body.",
+                );
+            }
+            const bindings = new Map<string, PinnedBinding>([
+                ["ground.positions", { cpp: "data.positions", type: "f32" }],
+                ["ground.normals", { cpp: "data.normals", type: "f32" }],
+                ["ground.indices", { cpp: "data.indices", type: "u32" }],
+                ["heightmapData", { cpp: "pixels", type: "u8-view" }],
+                ["hmWidth", { cpp: "hm_width", type: "scalar" }],
+                ["hmHeight", { cpp: "hm_height", type: "scalar" }],
+                ["subdivisions", { cpp: "subdivisions", type: "scalar" }],
+                ["minHeight", { cpp: "min_height", type: "scalar" }],
+                ["maxHeight", { cpp: "max_height", type: "scalar" }],
+            ]);
+            const lowerer = new PinnedNumericLowerer(file, {
+                bindings,
+                calls: meshMathCalls,
+                methods: new Map([
+                    [
+                        "fill",
+                        (receiver, args) =>
+                            `std::fill(${receiver}.begin(), ` +
+                            `${receiver}.end(), ` +
+                            `static_cast<float>(${args[0]}))`,
+                    ],
+                ]),
+                // NOT booleanOr: this body's two `|| 1` guards select a
+                // VALUE (a zero-length normal falls back to 1), which the
+                // C++ operator would flatten to a bool.
+                maybeUnusedConst: true,
+            });
+            return declaration.body.statements
+                .flatMap((statement) =>
+                    lowerer.statement(statement, "    "),
+                )
+                .join("\n");
+        };
+        const heightmapBody = heightMapGround ? lowerPinnedHeightmap() : "";
         const groundBuilderBody = lowerPinnedMeshBuilder(
             groundFile,
             ground,
@@ -1587,7 +1644,10 @@ void set_thin_instance_colors(
                 "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, src/morph/create-morph-targets.ts, src/mesh/create-torus.ts defaults, and src/math/compute-aabb.ts bounds folding",
             )}
 #include <bblite/runtime.hpp>
-
+${heightMapGround ? `#include <bblite/js_data.hpp>
+#include <bblite/pal.hpp>
+#include <bblite/pal_image.hpp>
+` : ""}
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -1705,6 +1765,55 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
     return MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
+${!heightMapGround ? "" : `// The pin's displacement pass, translated from its own body: it reads the
+// image's luminance into the grid's Y and then rebuilds the normals. The
+// image reaches it as RGBA8 because that is what the pin's own canvas
+// readback hands it.
+static void pinned_apply_heightmap(
+    PinnedMeshData& data,
+    const std::vector<std::uint8_t>& pixels,
+    double hm_width,
+    double hm_height,
+    double subdivisions,
+    double min_height,
+    double max_height) {
+${heightmapBody}
+}
+
+MeshHandle create_ground_from_height_map(
+    Engine& engine,
+    GroundOptions options,
+    double min_height,
+    double max_height,
+    const char* height_map) {
+    PinnedMeshData data =
+        pinned_create_flat_ground_data(options);
+    const pal::DecodedImage image = pal::decode_image(
+        ts::ArrayBuffer(
+            pal::read_binary_file(asset_path(height_map))));
+    pinned_apply_heightmap(
+        data,
+        image.rgba,
+        static_cast<double>(image.width),
+        static_cast<double>(image.height),
+        static_cast<double>(options.subdivisions),
+        min_height,
+        max_height);
+    // The pin hands the displaced arrays to the same factory the flat
+    // ground uses, so the bounds fold and the mesh name come from there
+    // rather than from a second spelling of either.
+    return create_mesh_from_data(
+        engine,
+        "ground",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`}
 MeshHandle create_plane(Engine& engine, PlaneOptions options) {
     const float half_width = options.width * 0.5f;
     const float half_height = options.height * 0.5f;

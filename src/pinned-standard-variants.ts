@@ -475,12 +475,11 @@ export async function composePinnedStandardVariant(
                     "`scene.lights`.",
             );
         }
-        if (shadowLights.some((slot) => slot.shadowType !== "pcf")) {
+        if (shadowLights.some((slot) => slot.shadowType === "csm")) {
             throw new Error(
-                "Only the PCF filter's receiver fragment is composable: " +
-                    "the ESM arm reads a blurred colour map this port does " +
-                    "not build, and the CSM arm resolves through the " +
-                    "cascaded receiver registry.",
+                "The CSM receiver fragment is not composable: it resolves " +
+                    "through the cascaded receiver registry, which this " +
+                    "port does not build.",
             );
         }
     }
@@ -494,12 +493,24 @@ export async function composePinnedStandardVariant(
     }
     let features = await pinnedStandardMaterialFeatures(material);
     const passFeatures = options.passFeatures ?? 0;
+    // The ESM caster pass. `rebuildSingle` reads the depth code off the
+    // material view the ESM generator built for this caster, so the view is
+    // what this asks too -- the constant lives in one pinned module and is
+    // never re-typed here.
+    let esmShadowDepthCode = "";
     if ((features | passFeatures) & flags.ESM_SHADOW_OUTPUT) {
-        throw new Error(
-            "Pinned Standard ESM shadow output is not composable yet: the " +
-                "depth code is supplied per material by the ESM shadow view " +
-                "(_esmShadowDepthCode), which this port does not build.",
-        );
+        const esm = await importPinnedModule<{
+            createStandardEsmShadowMaterialView: (
+                source: unknown,
+                shadowParamsUBO: unknown,
+            ) => { readonly _esmShadowDepthCode: string };
+        }>("material/standard/esm-shadow-view.js");
+        esmShadowDepthCode = esm.createStandardEsmShadowMaterialView(
+            material,
+            // The view only stores this buffer for the renderable to bind;
+            // composing reads the depth code beside it.
+            null,
+        )._esmShadowDepthCode;
     }
     // `rebuildSingle` adds the vertex-alpha bits before the extension loop,
     // so `_frag(features, ...)` sees them exactly as it does upstream.
@@ -607,7 +618,7 @@ export async function composePinnedStandardVariant(
         features | passFeatures,
         meshFeatures,
         fragments,
-        "",
+        esmShadowDepthCode,
         sceneShader,
     );
     return {
@@ -1252,6 +1263,15 @@ export interface StandardSceneCompositionInput {
     /** `material:no-color-view` reached: depth-only views over the
      *  scene-code materials. */
     noColorViews: boolean;
+    /**
+     * Whether a scene-code material also composes the ESM caster view.
+     *
+     * The ESM generator draws its casters through
+     * `createStandardEsmShadowMaterialView`, which is a DIFFERENT view from
+     * the depth-only one a PCF caster takes: it writes the exponential depth
+     * into a colour attachment.
+     */
+    esmShadowViews: boolean;
     /** `material:standard-emissive-render-texture` reached: scene code
      *  hands a depth attachment to `setStandardEmissiveTexture`. */
     emissiveRenderTexture: boolean;
@@ -1491,6 +1511,8 @@ export async function composeSceneStandardVariants(
     }>("material/mesh-features.js");
     const flags = await importPinnedModule<{
         NO_COLOR_OUTPUT: number;
+        ESM_SHADOW_OUTPUT: number;
+        MATERIAL_ALPHA_BLEND: number;
     }>("material/standard/standard-flags.js");
     // The material feature values reachable, derivation by the pin itself.
     const materialInputs: PinnedStandardMaterialInput[] = [];
@@ -1636,18 +1658,36 @@ export async function composeSceneStandardVariants(
                 fog: input.fog,
                 ...vertexColors,
             });
-            if (input.noColorViews && input.sceneMaterials) {
-                // `rebuildSingle` computes `receiveShadows` as
-                // `!shadowOutput && ...`, so a depth-only view of a mesh
-                // that also receives composes WITHOUT the shadow fragment.
+            // Every caster view a shadow generator draws through, from
+            // the one contract `rebuildSingle` states: it derives
+            // `receiveShadows` as `!shadowOutput && ...`, so a caster view
+            // of a receiving mesh composes WITHOUT the shadow fragment, and
+            // it passes `null` for the scene shader, so none of them fogs.
+            // Only the bits each view's own factory sets differ.
+            const casterViews = [
+                {
+                    reached: input.noColorViews,
+                    clear: 0,
+                    set: flags.NO_COLOR_OUTPUT,
+                },
+                {
+                    // The ESM view clears the blend bit before setting its
+                    // own, which its pinned factory does too.
+                    reached: input.esmShadowViews,
+                    clear: flags.MATERIAL_ALPHA_BLEND,
+                    set: flags.ESM_SHADOW_OUTPUT,
+                },
+            ];
+            for (const view of casterViews) {
+                if (!view.reached || !input.sceneMaterials) continue;
                 await add(
                     material,
                     meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
-                    features | flags.NO_COLOR_OUTPUT,
+                    (features & ~view.clear) | view.set,
                     {
-                        fog: input.fog,
+                        fog: false,
                         ...vertexColors,
-                        passFeatures: flags.NO_COLOR_OUTPUT,
+                        passFeatures: view.set,
                     },
                 );
             }
@@ -1835,6 +1875,11 @@ inline constexpr std::uint32_t standard_needs_uv_mask = ${flag("NEEDS_UV")}u;
 // (src/material/standard/no-color-view.ts).
 inline constexpr std::uint32_t standard_no_color_output_flag =
     ${flag("NO_COLOR_OUTPUT")}u;
+
+// The pass bit an ESM caster material view ORs onto its features, after
+// clearing the blend bit (src/material/standard/esm-shadow-view.ts).
+inline constexpr std::uint32_t standard_esm_shadow_output_flag =
+    ${flag("ESM_SHADOW_OUTPUT")}u;
 
 // The blend bits the pipeline state keys on (standard-pipeline.ts
 // getOrCreateStandardPipeline: needsBlend = HAS_OPACITY_TEXTURE ||

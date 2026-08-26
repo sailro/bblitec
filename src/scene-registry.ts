@@ -2209,6 +2209,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene4",
+        name: "Scene 4 - ESM Directional and PCF Spot Shadows",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene4.ts",
+        title: "Babylon Lite Native - Shadows",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-gltf-sparse",
         name: "Regression - glTF Sparse Accessors",
         source: "examples/regression-gltf-sparse.ts",

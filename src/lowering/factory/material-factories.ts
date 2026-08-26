@@ -1404,8 +1404,9 @@ MaterialHandle create_standard_material(Engine& engine) {
         };
     }
 
-    public lowerNoColorMaterialViews(): LoweredSource {
+    public lowerNoColorMaterialViews(esmShadows = false): LoweredSource {
         const standardModule = "src/material/standard/no-color-view.ts";
+        const esmModule = "src/material/standard/esm-shadow-view.ts";
         const pbrModule = "src/material/pbr/no-color-view.ts";
         const viewModule = "src/material/material-view.ts";
         const dirtyModule = "src/material/material-dirty.ts";
@@ -1420,6 +1421,13 @@ MaterialHandle create_standard_material(Engine& engine) {
                 "createPbrNoColorMaterialView",
                 "PBR2_NO_COLOR_OUTPUT",
             ],
+            ...(esmShadows
+                ? ([[
+                    esmModule,
+                    "createStandardEsmShadowMaterialView",
+                    "ESM_SHADOW_OUTPUT",
+                ]] as const)
+                : []),
         ] as const) {
             const { declaration } =
                 this.context.functionDeclaration(
@@ -1499,7 +1507,10 @@ MaterialHandle create_standard_material(Engine& engine) {
         return {
             modulePath: viewModule,
             symbolName:
-                "createStandardNoColorMaterialView,createPbrNoColorMaterialView,markMaterialUboDirty",
+                "createStandardNoColorMaterialView,createPbrNoColorMaterialView,markMaterialUboDirty" +
+                (esmShadows
+                    ? ",createStandardEsmShadowMaterialView"
+                    : ""),
             header: "",
             source: `// ${this.context.provenance(
                 viewModule,
@@ -1545,6 +1556,30 @@ MaterialHandle create_pbr_no_color_material_view(
     MaterialHandle source) {
     return create_no_color_material_view(engine, source, false);
 }
+${!esmShadows ? "" : `
+// The ESM caster's view. Same inheritance, a different pass bit: the
+// selector clears the blend flag and ORs ESM_SHADOW_OUTPUT, which is what
+// \`createStandardEsmShadowMaterialView\` does to the feature word.
+MaterialHandle create_standard_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator) {
+    if (source.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid source material handle.");
+    }
+    const MaterialRecord& source_record = engine.materials[source.value];
+    if (!source_record.standard_material) {
+        throw std::runtime_error(
+            "An ESM shadow material view requires a Standard source.");
+    }
+    MaterialRecord view = source_record;
+    view.esm_shadow = true;
+    view.esm_shadow_generator = generator;
+    engine.materials.push_back(std::move(view));
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+`}
 
 void mark_material_ubo_dirty(
     Engine& engine,

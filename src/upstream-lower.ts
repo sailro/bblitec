@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
@@ -17,6 +18,8 @@ import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import {
+    esmBlurStem,
+    esmShadowHeader,
     pinnedShadowHeader,
     shadowFactorySource,
 } from "./lowering/shadow-lowerer.js";
@@ -280,6 +283,14 @@ export interface UpstreamEmitOptions {
     /** Every `createEffectWrapper` descriptor, in reach order. */
     effects: readonly EffectManifest[];
     /**
+     * What each ESM shadow generator's own factory built, in reach order.
+     *
+     * Present only when a scene reaches one; the resources and both blur
+     * stages are read by running the pinned factory, so this carries its
+     * answers rather than a description of them.
+     */
+    esmShadows?: readonly ComposedEsmShadow[];
+    /**
      * Whether a layer or system draws with the stock program. A scene whose
      * every one opts into a custom shader never loads it, so it is not
      * composed here either.
@@ -537,6 +548,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${options.standardBump ? 1 : 0}
+
 #define BBLITE_MATERIAL_STANDARD_REFLECTION ${standardReflection ? 1 : 0}
 // The shadow family: the generator's own resources and the composed
 // receiver arm. Reached by the scene's own generator factory, which is
@@ -545,9 +557,26 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // the receiver fragment is the Standard family's, so a scene composing no
 // Standard variant compiles no shadow code even having reached a
 // generator.
-#define BBLITE_SHADOWS ${features.includes("shadow:pcf") ? 1 : 0}
+#define BBLITE_SHADOWS ${
+                features.includes("shadow:pcf") ||
+                    features.includes("shadow:esm")
+                    ? 1
+                    : 0
+            }
+// The ESM generator's own half: four textures and a separable blur. A
+// CONJUNCTION for the same reason the define below is -- every site that
+// reads it is Standard-family code (the caster's own material view, the
+// receiver's group-2 rows), so a scene reaching the filter with no Standard
+// variant compiles none of it.
+#define BBLITE_SHADOWS_ESM ${
+                features.includes("shadow:esm") &&
+                    (options.pinnedStandardVariants ?? []).length > 0
+                    ? 1
+                    : 0
+            }
 #define BBLITE_STANDARD_SHADOWS ${
-                features.includes("shadow:pcf") &&
+                (features.includes("shadow:pcf") ||
+                        features.includes("shadow:esm")) &&
                     (options.pinnedStandardVariants ?? []).length > 0
                     ? 1
                     : 0
@@ -1627,7 +1656,9 @@ ${composed.wgsl}`,
         if (features.includes("material:no-color-view")) {
             this.writeSource(
                 "upstream/src/material_views.cpp",
-                factories.lowerNoColorMaterialViews(),
+                factories.lowerNoColorMaterialViews(
+                    features.includes("shadow:esm"),
+                ),
                 generated,
             );
         }
@@ -1635,6 +1666,7 @@ ${composed.wgsl}`,
             features.includes("mesh:box") ||
             features.includes("mesh:from-data") ||
             features.includes("mesh:ground") ||
+            features.includes("mesh:ground-heightmap") ||
             features.includes("mesh:morph-targets") ||
             features.includes("mesh:plane") ||
             features.includes("mesh:sphere") ||
@@ -1647,6 +1679,7 @@ ${composed.wgsl}`,
                 "upstream/src/mesh_factories.cpp",
                 factories.lowerMeshFactories(
                     features.includes("mesh:thin-instance-colors"),
+                    features.includes("mesh:ground-heightmap"),
                 ),
                 generated,
             );
@@ -1687,16 +1720,64 @@ ${composed.wgsl}`,
         // The shadow family. The pinned math is a header both backends
         // execute; the factories build the same depth-only render task the
         // pin's own `ensurePcfShadowTaskState` builds.
-        if (features.includes("shadow:pcf")) {
+        if (
+            features.includes("shadow:pcf") ||
+            features.includes("shadow:esm")
+        ) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_shadow.hpp",
                 pinnedShadowHeader(context),
             );
             this.writeSource(
                 "upstream/src/shadow.cpp",
-                shadowFactorySource(context),
+                shadowFactorySource(
+                    context,
+                    features.includes("shadow:esm"),
+                ),
                 generated,
             );
+        }
+        if (features.includes("shadow:esm")) {
+            // What each generator's own factory built. The two blur stages
+            // deploy like any other composed pair -- each is one module
+            // naming `main`, which is the variant family's shape -- and the
+            // resource table beside them carries the descriptors the same
+            // recording produced.
+            const esmShadows = options.esmShadows ?? [];
+            const provenance = context.provenance(
+                "src/shadow/esm-directional-shadow-generator.ts",
+                "createEsmDirectionalShadowGenerator",
+            );
+            for (const [index, shadow] of esmShadows.entries()) {
+                composedShaders.push(
+                    {
+                        output:
+                            `upstream/shaders/${
+                                esmBlurStem(index)
+                            }.vert.native.wgsl`,
+                        data: `// ${provenance}
+${shadow.blurVertexWgsl}`,
+                        family: "variant",
+                    },
+                    {
+                        output:
+                            `upstream/shaders/${
+                                esmBlurStem(index)
+                            }.frag.native.wgsl`,
+                        data: `// ${provenance}
+${shadow.blurFragmentWgsl}`,
+                        family: "variant",
+                    },
+                );
+            }
+            this.tree.write(
+                "upstream/include/bblite/upstream/esm_shadow.hpp",
+                esmShadowHeader(provenance, esmShadows),
+            );
+            generated.push({
+                modulePath: "src/shadow/esm-directional-shadow-generator.ts",
+                symbolName: "createEsmDirectionalShadowGenerator",
+            });
         }
         if (features.includes("navigation:recast")) {
             this.writeSource(
