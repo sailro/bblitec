@@ -673,12 +673,6 @@ struct GpuState {
     // pair together.
     SDL_GPUSampler* pinned_bone_sampler = nullptr;
 #endif
-#if BBLITE_STANDARD_VARIANTS > 0
-    // The Standard family's composed pipelines and slot maps, keyed and
-    // cached exactly like the PBR ones.
-    std::map<std::size_t, SDL_GPUGraphicsPipeline*> standard_variant_pipelines;
-    std::vector<PinnedStageSlots> standard_vertex_slots;
-    std::vector<PinnedStageSlots> standard_fragment_slots;
 #if BBLITE_SHADOW_RECEIVERS
     /**
      * The receiver side of the shadow family, one entry per generator.
@@ -722,6 +716,13 @@ struct GpuState {
     std::vector<upstream::ShadowCaster> esm_casters;
 #endif
 #endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+    // The Standard family's composed pipelines and slot maps, keyed and
+    // cached exactly like the PBR ones.
+    std::map<std::size_t, SDL_GPUGraphicsPipeline*> standard_variant_pipelines;
+    std::vector<PinnedStageSlots> standard_vertex_slots;
+    std::vector<PinnedStageSlots> standard_fragment_slots;
 #endif
 #if BBLITE_NODE_VARIANTS > 0
     // The node family's pipelines and slot maps, cached the same way.
@@ -1818,31 +1819,6 @@ void draw_node_variant(
 }
 #endif
 
-#if BBLITE_STANDARD_VARIANTS > 0
-/** The stem the shader compiler deployed a Standard variant's stage under. */
-std::string standard_stage_name(std::string_view file) {
-    return "variant-std-" +
-        std::string(file.substr(0, file.find(".wgsl")));
-}
-
-void ensure_standard_slots(GpuState& state, std::size_t variant) {
-    if (
-        state.standard_vertex_slots.size() <
-        upstream::standard_variants.size()) {
-        state.standard_vertex_slots.resize(
-            upstream::standard_variants.size());
-        state.standard_fragment_slots.resize(
-            upstream::standard_variants.size());
-    }
-    if (!state.standard_vertex_slots[variant].uniforms.empty()) return;
-    const upstream::StandardVariantEntry& entry =
-        upstream::standard_variants[variant];
-    state.standard_vertex_slots[variant] = read_pinned_stage_slots(
-        standard_stage_name(entry.vertex_shader));
-    state.standard_fragment_slots[variant] = read_pinned_stage_slots(
-        standard_stage_name(entry.fragment_shader));
-}
-
 #if BBLITE_SHADOW_RECEIVERS
 /**
  * The generators' matrices, their maps and their receiver blocks.
@@ -2120,6 +2096,32 @@ void update_shadow_generators(
     }
 }
 #endif
+
+#if BBLITE_STANDARD_VARIANTS > 0
+/** The stem the shader compiler deployed a Standard variant's stage under. */
+std::string standard_stage_name(std::string_view file) {
+    return "variant-std-" +
+        std::string(file.substr(0, file.find(".wgsl")));
+}
+
+void ensure_standard_slots(GpuState& state, std::size_t variant) {
+    if (
+        state.standard_vertex_slots.size() <
+        upstream::standard_variants.size()) {
+        state.standard_vertex_slots.resize(
+            upstream::standard_variants.size());
+        state.standard_fragment_slots.resize(
+            upstream::standard_variants.size());
+    }
+    if (!state.standard_vertex_slots[variant].uniforms.empty()) return;
+    const upstream::StandardVariantEntry& entry =
+        upstream::standard_variants[variant];
+    state.standard_vertex_slots[variant] = read_pinned_stage_slots(
+        standard_stage_name(entry.vertex_shader));
+    state.standard_fragment_slots[variant] = read_pinned_stage_slots(
+        standard_stage_name(entry.fragment_shader));
+}
+
 
 /**
  * Which of our resources the pin's own name for a Standard binding refers

@@ -41,10 +41,11 @@
 #endif
 // The pinned shadow family: the light-space matrices, the receiver block,
 // the generator's defaults and the standard-Z depth state its map takes.
-// `BBLITE_STANDARD_SHADOWS` is generation's own answer to "does this scene
-// reach a shadow generator AND compose the Standard receiver", which is
-// what gates every shadow line in both PALs.
-#if BBLITE_STANDARD_SHADOWS
+// None of it belongs to a material family, so it rides
+// `BBLITE_SHADOW_RECEIVERS` -- generation's own answer to "does this scene
+// reach a shadow generator AND compose a receiver in SOME family" -- while
+// each family's own define gates only its bind path.
+#if BBLITE_SHADOW_RECEIVERS
 #include <bblite/upstream/pinned_shadow.hpp>
 #endif
 #if BBLITE_SHADOWS_ESM
