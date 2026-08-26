@@ -99,6 +99,7 @@ SDL_GPUFrontFace gpu_front_face(bool clockwise) {
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
+
 #if BBLITE_PBR_VARIANTS > 0
     // The same vertices in Babylon's own convention: X unmirrored and
     // `tangent.w` back to its authored sign, paired with the mirroring world
@@ -713,15 +714,8 @@ struct GpuState {
     };
     std::vector<EsmBlur> esm_blurs;
 #endif
-    /**
-     * Refilled per generator by the caster fold, never reallocated.
-     *
-     * It belongs to the shadow walk rather than to the ESM half: the walk
-     * runs whenever this build has receivers at all, and a carrier that
-     * existed only under the ESM define would make the shared walk's own
-     * signature depend on which filters the scene reached.
-     */
-    std::vector<upstream::ShadowCaster> esm_casters;
+    /** The shared walk's carriers, whose layout it owns. */
+    pal::ShadowRefreshState shadow_refresh;
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -976,6 +970,34 @@ PinnedResource state_resource_for(
 }
 #endif
 
+/**
+ * The pass-dependent depth state, applied the same way by all three family
+ * builders.
+ *
+ * `createShadowRenderTarget` is the pin's ONE exception to this port's
+ * depth convention, and it moves three things at once: the compare, the
+ * sample count and the attachment format. A caster is drawn through
+ * whichever family its own material belongs to, so a builder that answered
+ * this for itself would be right only for the casters that family happens
+ * to own -- which is how the PBR family came to draw its casters under the
+ * main pass's reverse-Z state.
+ */
+void apply_pass_depth_state(
+    SDL_GPUGraphicsPipelineCreateInfo& info,
+    const GpuState& state,
+    bool shadow_pass) {
+    info.depth_stencil_state.compare_op =
+        gpu_depth_compare(pal::pass_depth_compare(shadow_pass));
+    info.depth_stencil_state.enable_depth_test = true;
+    info.multisample_state.sample_count = shadow_pass
+        ? task_sample_count(state, pal::pass_depth_samples(true, 1))
+        : state.sample_count;
+    info.target_info.depth_stencil_format = shadow_pass
+        ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
+        : state.depth_format;
+    info.target_info.has_depth_stencil_target = true;
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * Which of our resources the pin's own name for a binding refers to.
@@ -1091,8 +1113,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     // would be right only for the casters that family happens to own.
     bool shadow_pass = false) {
     const std::size_t key =
-        variant * 128 + static_cast<std::size_t>(kind) * 2 +
-        (shadow_pass ? 1 : 0);
+        pal::variant_pipeline_key(variant, kind, {shadow_pass});
     const auto existing = state.pinned_pipelines.find(key);
     if (existing != state.pinned_pipelines.end()) return existing->second;
     ensure_pinned_slots(state, variant);
@@ -1179,22 +1200,14 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     info.rasterizer_state.front_face =
         gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op =
-        gpu_depth_compare(pass_depth_compare(shadow_pass));
-    info.depth_stencil_state.enable_depth_test = true;
+    apply_pass_depth_state(info, state, shadow_pass);
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
-    info.multisample_state.sample_count =
-        shadow_pass ? SDL_GPU_SAMPLECOUNT_1 : state.sample_count;
     // A depth-only view's fragment writes no colour target, and the pass it
     // draws in carries none either.
     info.target_info.color_target_descriptions =
         entry.no_color_output ? nullptr : &color_target;
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
-    info.target_info.depth_stencil_format = shadow_pass
-        ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
-        : state.depth_format;
-    info.target_info.has_depth_stencil_target = true;
     // A geometry-output MRT variant draws into its task's own attachments:
     // one target per attachment in the shared class list, plus the
     // optional trailing colour output, at the task's sample count -- the
@@ -1611,8 +1624,13 @@ void ensure_node_slots(GpuState& state, std::size_t variant) {
 SDL_GPUGraphicsPipeline* node_variant_pipeline(
     GpuState& state,
     std::size_t variant,
-    upstream::RenderPipelineKind kind) {
-    const std::size_t key = variant * 64 + static_cast<std::size_t>(kind);
+    upstream::RenderPipelineKind kind,
+    // The shadow target's own depth state, taken by every family: a node
+    // material casts through its own no-colour view exactly as the other
+    // two do.
+    bool shadow_pass = false) {
+    const std::size_t key =
+        pal::variant_pipeline_key(variant, kind, {shadow_pass});
     const auto existing = state.node_variant_pipelines.find(key);
     if (existing != state.node_variant_pipelines.end()) {
         return existing->second;
@@ -1688,14 +1706,10 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
-    info.depth_stencil_state.enable_depth_test = true;
+    apply_pass_depth_state(info, state, shadow_pass);
     info.depth_stencil_state.enable_depth_write = true;
-    info.multisample_state.sample_count = state.sample_count;
     info.target_info.color_target_descriptions = &color_target;
     info.target_info.num_color_targets = 1;
-    info.target_info.depth_stencil_format = state.depth_format;
-    info.target_info.has_depth_stencil_target = true;
     SDL_GPUGraphicsPipeline* pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &info);
     if (!pipeline) {
@@ -1728,9 +1742,10 @@ void draw_node_variant(
     const upstream::RenderDrawCommand& draw,
     const GpuMesh& mesh,
     std::size_t variant,
-    SDL_GPUGraphicsPipeline*& bound_pipeline) {
+    SDL_GPUGraphicsPipeline*& bound_pipeline,
+    bool shadow_pass = false) {
     SDL_GPUGraphicsPipeline* variant_pipeline =
-        node_variant_pipeline(state, variant, draw.pipeline);
+        node_variant_pipeline(state, variant, draw.pipeline, shadow_pass);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -2054,56 +2069,51 @@ void update_shadow_generators(
     pal::refresh_shadow_generators(
         scene,
         engine,
-        state.esm_casters,
+        state.shadow_refresh,
         [&](
-            ShadowGeneratorRecord& generator,
+            const ShadowGeneratorRecord& generator,
             ShadowGeneratorHandle,
-            std::size_t slot) {
-        // This backend keys its per-generator resources densely, by the
-        // generator's position in the scene's light order -- which is the
-        // order the shared walk visits them in.
-        GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
-        const upstream::ShadowInfoUniforms block =
-            upstream::shadow_info_block(generator);
-        const bool moved = !gpu.info ||
-            std::memcmp(&block, &gpu.block, sizeof(block)) != 0;
-        gpu.block = block;
-        if (
-            generator.task.value < engine.frame_tasks.size() &&
-            engine.frame_tasks[generator.task.value].render.target.value <
-                state.render_targets.size()) {
-            const GpuRenderTarget& target = state.render_targets[
+            std::size_t slot,
+            const upstream::ShadowInfoUniforms& block,
+            bool moved) {
+            GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
+            // Kept densely beside the map and the buffer because
+            // `shadow_info_uniform_for` binds it by a composed row's LIGHT
+            // ordinal, which is this slot and not the generator's handle.
+            gpu.block = block;
+            if (
+                generator.task.value < engine.frame_tasks.size() &&
                 engine.frame_tasks[generator.task.value]
-                    .render.target.value];
+                        .render.target.value < state.render_targets.size()) {
+                const GpuRenderTarget& target = state.render_targets[
+                    engine.frame_tasks[generator.task.value]
+                        .render.target.value];
 #if BBLITE_SHADOWS_ESM
-            if (generator.filter == ShadowFilter::esm_directional) {
-                // `sg._depthTexture` is the SECOND blur half, never the
-                // depth buffer the caster pass wrote.
-                gpu.map =
-                    ensure_esm_blur(state, generator, target.color).blur_v;
-            } else
+                if (generator.filter == ShadowFilter::esm_directional) {
+                    // `sg._depthTexture` is the SECOND blur half, never the
+                    // depth buffer the caster pass wrote.
+                    gpu.map =
+                        ensure_esm_blur(state, generator, target.color)
+                            .blur_v;
+                } else
 #endif
-            gpu.map = target.depth;
-        }
-        if (!gpu.map) gpu_error("a shadow generator has no rendered map.");
-        if (!gpu.info) {
-            gpu.info = upload_buffer(
-                state.device,
-                SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                &gpu.block,
-                sizeof(gpu.block));
-        } else if (moved) {
-            // `update_buffer` costs a transfer buffer and a second command
-            // submit, so it runs only when the light actually moved --
-            // which is the same skip `renderPcfShadowMap`'s own version
-            // check makes.
-            update_buffer(
-                state.device,
-                gpu.info,
-                &gpu.block,
-                sizeof(gpu.block));
-        }
-    });
+                gpu.map = target.depth;
+            }
+            if (!gpu.map) {
+                gpu_error("a shadow generator has no rendered map.");
+            }
+            if (!gpu.info) {
+                gpu.info = upload_buffer(
+                    state.device,
+                    SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                    &block,
+                    sizeof(block));
+            } else if (moved) {
+                // `update_buffer` costs a transfer buffer and a second
+                // command submit, so it runs only when the block moved.
+                update_buffer(state.device, gpu.info, &block, sizeof(block));
+            }
+        });
 }
 #endif
 
@@ -2219,8 +2229,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     // `depth32float` map, at one sample.
     bool shadow_pass = false) {
     const std::size_t key =
-        variant * 128 + static_cast<std::size_t>(kind) * 2 +
-        (shadow_pass ? 1 : 0);
+        pal::variant_pipeline_key(variant, kind, {shadow_pass});
     const auto existing = state.standard_variant_pipelines.find(key);
     if (existing != state.standard_variant_pipelines.end()) {
         return existing->second;
@@ -2306,20 +2315,12 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op =
-        gpu_depth_compare(pass_depth_compare(shadow_pass));
-    info.depth_stencil_state.enable_depth_test = true;
+    apply_pass_depth_state(info, state, shadow_pass);
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
-    info.multisample_state.sample_count =
-        shadow_pass ? SDL_GPU_SAMPLECOUNT_1 : state.sample_count;
     info.target_info.color_target_descriptions =
         entry.no_color_output ? nullptr : &color_target;
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
-    info.target_info.depth_stencil_format = shadow_pass
-        ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
-        : state.depth_format;
-    info.target_info.has_depth_stencil_target = true;
     // A geometry-output MRT variant draws into its task's own
     // attachments, exactly as the PBR sibling does; the class list and
     // its count assertion are the shared `geometry_target_classes`.
@@ -6568,6 +6569,21 @@ bool run_gpu_engine(Engine& engine) {
                                     "transcribed fragment is retired.");
                             }
 #endif
+                            // A node material in a task pass has no arm
+                            // here, and the secondary path below would
+                            // read its graph index as a shader-variant
+                            // index -- an answer, from the wrong table.
+                            // The main-pass dispatcher draws the family;
+                            // composing its caster view is what a node
+                            // caster still needs.
+                            if (
+                                draw_item.material_kind ==
+                                upstream::RenderMaterialKind::node) {
+                                gpu_error(
+                                    "Node draw in a task pass; the node "
+                                    "family composes no task-pass view "
+                                    "yet.");
+                            }
                             SDL_GPUGraphicsPipeline* pipeline =
                                 pipeline_for(draw.pipeline, draw.item.shader_variant);
                             if (!pipeline) {

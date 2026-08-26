@@ -12,9 +12,13 @@
 // performs is what the CPU raster path reads, and `test/upstream.test.ts` is
 // what holds the setters to it.
 //
-// Temporary: the corpus scenes that reach these setters (4, 22, 141, 207, 223)
-// are each blocked on another contract, so this stands in until one of them
-// compiles and then retires.
+// Scenes 4 and 22 now ship and both write `light.position.set` at scene
+// scope, so the position half is corpus-measured. The DIRECTION half is not:
+// scene 4's `spot.direction.set` sits inside an `onBeforeRender` behind an
+// `orbitingSpot` toggle a button turns on, so the shipped golden compiles
+// that write without ever running it. This gate retires when a corpus scene
+// renders a cone the direction setter moved -- 141, 207 and 223 each reach
+// one, and each is blocked on another contract.
 
 import {
     addToScene,

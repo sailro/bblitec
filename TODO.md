@@ -526,11 +526,14 @@ below rather than blocking a scene here.
     first. 141 additionally wants the PBR ESM caster view, and its graph
     module (`shared/scene65-nme.ts`, a one-line re-export of scene 63's) is
     not in the corpus yet.
-  - a PBR CASTER. `material/pbr/esm-shadow-view.ts` and
-    `material/pbr/no-color-view.ts` are the pin's own PBR caster views;
-    the generated shadow task takes the PBR no-colour one already, but no
-    corpus scene casts from a PBR material through the ESM generator, so
-    that view's `_esmShadowDepthCode` reaches no composition here.
+  - a PBR caster through the ESM generator.
+    `material/pbr/no-color-view.ts` is the PCF half and ships, gated by
+    `regression-shadow-pbr-only`: the compose pipeline appends one caster
+    view per PBR caster in the pin's scheduling order, and both PALs give
+    the PBR family the shadow pass's own depth state.
+    `material/pbr/esm-shadow-view.ts` is the ESM half, and no corpus scene
+    casts from a PBR material through that generator, so its
+    `_esmShadowDepthCode` reaches no composition here.
   - the generator options past the two factories' own reached sets:
     `normalBias` and `forceRefreshEveryFrame` are unreached, and
     `setShadowCasterMaxCascade` is CSM-only.

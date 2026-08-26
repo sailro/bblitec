@@ -14,6 +14,7 @@
 // the compiler tests) and, since the emitter loop follows the same table,
 // the emission order.
 import type { Feature } from "./compiler/types.js";
+import { shadowGeneratorFeatures } from "./shadow-capabilities.js";
 
 export interface GeneratedSourceRule {
     source: string;
@@ -238,7 +239,11 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/shadow.cpp",
-        features: ["shadow:pcf", "shadow:esm"],
+        // Spread rather than spelled: the row and `reachesShadowGenerator`
+        // are the same predicate, and a filter added to one list has to
+        // reach the other or the table declares a source the emitter does
+        // not write.
+        features: [...shadowGeneratorFeatures],
     },
 ];
 

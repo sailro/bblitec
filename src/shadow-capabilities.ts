@@ -15,21 +15,37 @@
  * inventory answers from the reached features. A drift between them is the
  * disagreement the check exists to catch.
  */
+import type { Feature } from "./compiler/types.js";
 
 /**
- * Whether a scene reaches a shadow generator at all.
+ * The features that reach a shadow generator.
  *
  * The two filters are siblings — `createPcfSpotlightShadowGenerator` and
  * `createEsmDirectionalShadowGenerator` build the same maps, the same
  * receiver blocks and the same caster pass — so every consumer wants both,
  * and each site that spelled the disjunction itself was a place they could
- * drift. Two already had.
+ * drift. Two already had. Consumers that need the list rather than the
+ * predicate — the generated-source rule, whose own row is an ANY over
+ * features — take it from here, so the containment is structural.
+ */
+export const shadowGeneratorFeatures: readonly Feature[] = [
+    "shadow:pcf",
+    "shadow:esm",
+];
+
+/**
+ * Whether a scene reaches a shadow generator at all.
+ *
+ * The argument stays a loose string list because a manifest's features are
+ * deliberately open — `feature-activation.ts` carries an unmapped name as
+ * its own drift detector. What is typed is the list above, which is where a
+ * mis-spelling would otherwise compile.
  */
 export function reachesShadowGenerator(
     features: readonly string[],
 ): boolean {
-    return (
-        features.includes("shadow:pcf") || features.includes("shadow:esm")
+    return shadowGeneratorFeatures.some((feature) =>
+        features.includes(feature)
     );
 }
 
