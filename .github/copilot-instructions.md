@@ -39,9 +39,17 @@ work is not started, or not finished, until it has been passed.
    and the capability you are about to build is usually already half-built
    somewhere the page you skipped would have named.
 2. **Before porting a Babylon Lite feature: read that feature's own upstream
-   page** — what it is worth and how to read it are under
-   [Pinned upstream](#pinned-upstream), including that a remark about
-   Babylon.js is not a statement about the target. Getting the page is the
+   page.** Not after the first refusal, not when something looks wrong —
+   before writing any code. Babylon Lite documents its own subsystems under
+   `docs/lite/architecture/`, one page each, and those pages state the
+   preconditions, the exact list of quantities the feature touches, which
+   arms exist, and often the corpus scene that exercises each one. Reading
+   the page routinely replaces a strip probe and hours of reading source,
+   and it is the cheapest step in this whole workflow — every session that
+   skipped it paid for the skip. What the page is worth and how to read it
+   are under [Pinned upstream](#pinned-upstream), including that a remark
+   about Babylon.js is not a statement about the target, and that where the
+   page and the source disagree the source decides. Getting the page is the
    only part that is mechanical: the published site renders through a
    client-side app, so fetch it at the pinned commit, which is also the
    version that matches the code.

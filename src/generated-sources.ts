@@ -237,8 +237,12 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["navigation:recast"],
     },
     {
+        // Either filter brings the factories in: `upstream-lower.ts` writes
+        // this file for `shadow:pcf || shadow:esm`, and the rows here match
+        // ANY of their features, so listing one of the two would refuse
+        // generation for a scene reaching only the other.
         source: "upstream/src/shadow.cpp",
-        features: ["shadow:pcf"],
+        features: ["shadow:pcf", "shadow:esm"],
     },
 ];
 
