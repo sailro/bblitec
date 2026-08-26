@@ -27,12 +27,17 @@ residual is attributed.
 
 ## Building and running
 
-The Dawn library builds once from the same pinned commit as the Tint
-shader compiler (`upstream/tint.json`, one provenance for both):
+The full development bootstrap builds Dawn and Tint from the same pinned
+commit (`upstream/tint.json`, one provenance for both):
 
 ```powershell
-pwsh -File tools\build-dawn.ps1
+npm run dev:setup
+npm run doctor
 ```
+
+`pwsh -File tools\build-dawn.ps1` builds only the development Dawn artifact.
+`tools/build-dawn-min.ps1` builds the separate static FXC-only shipping
+artifact and is not used by development scene commands.
 
 - Source checkout shared with Tint at `.cache/tint/dawn`, build tree
   `.cache/tint/build-dawn`. **Wipe the build tree when changing CMake

@@ -1,0 +1,21 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Visual Studio, compiler, SDK, and Ninja discovery remained embedded in the scene command while setup and doctor needed the same answers; the discovery now has one tested module shared by all three paths",
+      "applied": true
+    },
+    {
+      "summary": "preflight and build setup could each invoke Visual Studio discovery more than once in one command; resolved development and Windows tool sets are now cached for the invocation and invalidated after setup installs artifacts",
+      "applied": true
+    },
+    {
+      "summary": "an invalid explicit NINJA_PATH silently fell through to another Ninja even though explicit CMake, vcpkg, Tint, and DXC overrides fail by name; explicit Ninja selection now follows the same contract",
+      "applied": true
+    },
+    {
+      "summary": "validation input and output fingerprints could walk the same source or generated root repeatedly when several scenes shared a directory; roots are normalized and deduplicated before traversal",
+      "applied": true
+    }
+  ]
+}

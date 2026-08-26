@@ -209,6 +209,9 @@ test("keeps package scene commands registry-driven", () => {
     assert.equal(packageJson.scripts["scenes:compile"], "npm run scene -- compile all");
     assert.equal(packageJson.scripts["scenes:build"], "npm run scene -- build all");
     assert.equal(packageJson.scripts["scenes:process"], "npm run scene -- process all");
+    assert.equal(packageJson.scripts.doctor, "npm run scene -- doctor");
+    assert.equal(packageJson.scripts["dev:setup"], "npm run scene -- setup");
+    assert.equal(packageJson.scripts.sweep, "npm run scene -- validate all");
     // Both published columns are measured every run: the table carries an
     // SDL_GPU and a Dawn number per scene, and a single-backend sweep
     // leaves the second one unverified between manual differential runs.
@@ -225,7 +228,7 @@ test("keeps package scene commands registry-driven", () => {
         sceneCommand,
         /process\.env\.BBLITE_CMAKE_GENERATOR \?\? "Ninja"/,
     );
-    assert.match(sceneCommand, /windowsNinjaEnvironment/);
+    assert.match(sceneCommand, /discoverWindowsBuildTools/);
     assert.match(sceneCommand, /runGeometryOutputDiagnostics/);
     const parityScene = readFileSync("src/parity-scene.ts", "utf8");
     assert.match(parityScene, /windowsHide: true/);

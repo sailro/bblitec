@@ -15,6 +15,7 @@ import {
     comparePayload,
     computeBuildStamp,
     generatorWouldReconfigure,
+    incompatibleCacheEntries,
     readCacheConfiguration,
 } from "../src/build-stamp.js";
 
@@ -87,6 +88,43 @@ test("digests the compiled inputs of a generated scene", (t) => {
     assert.notEqual(
         computeBuildStamp(generated, root).stamp,
         afterGenerated.stamp,
+    );
+});
+
+test("identifies sticky CMake cache changes that require a fresh tree", () => {
+    const cache = {
+        CMAKE_GENERATOR: "Ninja",
+        CMAKE_CXX_COMPILER: "C:/VS/cl.exe",
+        CMAKE_MAKE_PROGRAM: "C:/VS/ninja.exe",
+    };
+    const requested = [
+        "-G",
+        "Ninja",
+        "-DCMAKE_CXX_COMPILER=C:/VS/clang-cl.exe",
+        "-DCMAKE_MAKE_PROGRAM=C:/VS/ninja.exe",
+        "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/vcpkg.cmake",
+        "-DVCPKG_INSTALLED_DIR=C:/repo/artifacts/vcpkg",
+    ];
+    assert.deepEqual(
+        incompatibleCacheEntries(cache, requested).map((entry) => entry.name),
+        [
+            "CMAKE_CXX_COMPILER",
+            "CMAKE_TOOLCHAIN_FILE",
+            "VCPKG_INSTALLED_DIR",
+        ],
+        "adding a missing toolchain is incompatible just like changing compilers",
+    );
+    assert.deepEqual(
+        incompatibleCacheEntries(
+            {
+                ...cache,
+                CMAKE_CXX_COMPILER: "C:/VS/clang-cl.exe",
+                CMAKE_TOOLCHAIN_FILE: "C:/vcpkg/vcpkg.cmake",
+                VCPKG_INSTALLED_DIR: "C:/repo/artifacts/vcpkg",
+            },
+            requested,
+        ),
+        [],
     );
 });
 
