@@ -1,3 +1,4 @@
+import type { ScenePbrMaterialManifest } from "./compiler/types.js";
 // The pinned variant-composition orchestration.
 //
 // Everything between "the manifest and assets are settled" and "the
@@ -72,6 +73,12 @@ export interface ComposedScenePipeline {
     linearImageProcessing: boolean;
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
+    /**
+     * How many caster material views `registerSceneWithShadowSupport` will
+     * append past the scene's own materials. The runtime's material-handle
+     * count includes them, because a PBR view's handle has to name a row.
+     */
+    casterViewCount: number;
     /**
      * The pin's mesh bits per PBR renderable, in the runtime's own handle
      * order: the primitive's attributes, plus `MSH_RECEIVE_SHADOWS` where
@@ -263,7 +270,45 @@ export async function composeScenePipeline({
         composedVariants.push(...variants);
         materialIndexBase += gltfMaterialCount(path);
     }
-    if (result.manifest.scenePbrMaterials.length > 0) {
+    // The caster material VIEWS `registerSceneWithShadowSupport` appends at
+    // run time, composed here because a PBR view resolves its variant by
+    // material HANDLE and a handle the table never named resolves nothing.
+    //
+    // The order is the pin's own scheduling walk -- `scene.lights` in order,
+    // and within each light its generator's casters in the order
+    // `setShadowTaskCasterMeshes` named them -- which is the order the
+    // generated `shadow.cpp` pushes them, so the handles line up by
+    // construction rather than by a second rule. A Standard caster
+    // contributes nothing: that family keys on feature bits and reads
+    // `no_color` off the record, so its view resolves with no row at all.
+    const casterViews: ScenePbrMaterialManifest[] = [];
+    for (
+        const generator of [...result.manifest.shadowGenerators].sort(
+            (left, right) => left.lightIndex - right.lightIndex,
+        )
+    ) {
+        for (const row of generator.casterPbrMaterials) {
+            if (row === null) continue;
+            const source = result.manifest.scenePbrMaterials[row];
+            if (!source) {
+                throw new Error(
+                    `A shadow caster names scene PBR material ${row}, ` +
+                        "which the scene did not create.",
+                );
+            }
+            casterViews.push({
+                ...source,
+                materialsBefore:
+                    result.manifest.sceneMaterialCount + casterViews.length,
+                noColorView: true,
+            });
+        }
+    }
+    const scenePbrMaterials = [
+        ...result.manifest.scenePbrMaterials,
+        ...casterViews,
+    ];
+    if (scenePbrMaterials.length > 0) {
         for (const material of result.manifest.scenePbrMaterials) {
             if (material.gltfAssetsBefore !== gltfAssets.length) {
                 throw new Error(
@@ -275,7 +320,7 @@ export async function composeScenePipeline({
         }
         composedVariants.push(
             ...(await composeScenePbrVariants(
-                result.manifest.scenePbrMaterials,
+                scenePbrMaterials,
                 sceneArms,
                 materialIndexBase,
                 [
@@ -480,6 +525,7 @@ export async function composeScenePipeline({
         linearImageProcessing,
         gltfAssets,
         materialIndexBase,
+        casterViewCount: casterViews.length,
         renderableMeshFeatures,
         pinnedVariants,
         runtimeMeshFeatures,

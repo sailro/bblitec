@@ -117,6 +117,20 @@ export interface ShadowGeneratorManifest {
         blurKernel?: number;
         blurScale?: number;
     };
+    /**
+     * One entry per mesh `setShadowTaskCasterMeshes` named, in the order it
+     * named them: which `scenePbrMaterials` row that mesh carries, or `null`
+     * where it carries a material of another family.
+     *
+     * `registerSceneWithShadowSupport` builds one caster material VIEW per
+     * caster at run time and appends it to `engine.materials`, so these are
+     * material creations generation never sees at a call site and must count
+     * anyway — a PBR view resolves its composed variant by material HANDLE,
+     * and a handle the variant table never named resolves nothing. A
+     * Standard caster needs no row: its family keys on feature bits and
+     * reads `no_color` off the record.
+     */
+    casterPbrMaterials: (number | null)[];
 }
 
 /**

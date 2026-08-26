@@ -4653,9 +4653,17 @@ WGPURenderPipeline pinned_variant_pipeline(
     // The geometry-output task an MRT variant draws in. A geometry variant
     // is composed for exactly one task, so the variant-keyed cache stays
     // valid with the task's targets baked into its pipeline.
-    const FrameTaskRecord* geometry_task = nullptr) {
-    const std::size_t key = variant * 64 +
-        static_cast<std::size_t>(kind) * 2 + (has_depth ? 1 : 0);
+    const FrameTaskRecord* geometry_task = nullptr,
+    // The pin's one exception to this port's depth convention: a shadow
+    // caster pass renders standard-Z into the generator's own
+    // `depth32float` map. The Standard sibling takes the same flag -- a
+    // caster is drawn through whichever family its own material belongs
+    // to, so a depth state either family answered alone would be right
+    // only for the casters that family happens to own.
+    bool shadow_pass = false) {
+    const std::size_t key = variant * 128 +
+        static_cast<std::size_t>(kind) * 4 + (shadow_pass ? 2 : 0) +
+        (has_depth ? 1 : 0);
     auto& map = state.pinned_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -4732,7 +4740,9 @@ WGPURenderPipeline pinned_variant_pipeline(
     descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
-    depth_stencil.format = WGPUTextureFormat_Depth24PlusStencil8;
+    depth_stencil.format = shadow_pass
+        ? WGPUTextureFormat_Depth32Float
+        : WGPUTextureFormat_Depth24PlusStencil8;
     // A no-color view draws in the depth-only tasks, which write depth
     // whatever the material's own alpha would have said.
     depth_stencil.depthWriteEnabled =
@@ -4740,7 +4750,7 @@ WGPURenderPipeline pinned_variant_pipeline(
             ? WGPUOptionalBool_False
             : WGPUOptionalBool_True;
     depth_stencil.depthCompare =
-        dawn_depth_compare(upstream::pinned_depth_compare);
+        dawn_depth_compare(pass_depth_compare(shadow_pass));
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -8957,7 +8967,9 @@ bool run_dawn_engine(Engine& engine) {
                             variant,
                             draw.pipeline,
                             samples,
-                            pass_has_depth),
+                            pass_has_depth,
+                            nullptr,
+                            shadow_pass),
                         bound_pipeline,
                         frame_group ? frame_group
                                     : pinned_frame_group(state),

@@ -41,6 +41,10 @@ export interface ShadowIntrinsicContext
             blurScale?: number;
         };
     }): number;
+    recordShadowCasterMaterials(
+        generatorIndex: number,
+        pbrMaterials: readonly (number | null)[],
+    ): void;
     esmGeneratorOrdinal(): number;
 }
 
@@ -290,6 +294,7 @@ export function compileShadowIntrinsic(
                 call.arguments[1]!,
             );
             const emitted: string[] = [];
+            const casterPbrMaterials: (number | null)[] = [];
             for (const element of array.elements) {
                 const mesh = context.compileValue(element);
                 context.expectKind(mesh, "mesh", element);
@@ -302,6 +307,12 @@ export function compileShadowIntrinsic(
                     );
                 }
                 emitted.push(mesh.cpp);
+                // The material the mesh carries WHEN it is named a caster.
+                // Every reached scene assigns it first, and one assigned
+                // afterwards would change which view the task builds, so a
+                // caster with no material yet refuses rather than composing
+                // against a material it does not have.
+                casterPbrMaterials.push(mesh.scenePbrMaterialIndex ?? null);
             }
             if (emitted.length === 0) {
                 context.fail(
@@ -310,6 +321,10 @@ export function compileShadowIntrinsic(
                         "map; no reached scene registers one.",
                 );
             }
+            context.recordShadowCasterMaterials(
+                generator.shadowGeneratorIndex,
+                casterPbrMaterials,
+            );
             // The caster pass draws each mesh through its material's own
             // no-colour view, which is the same composition arm scene 116
             // reaches from scene code.

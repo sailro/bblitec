@@ -1075,9 +1075,17 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     // The geometry-output task an MRT variant draws in. A geometry variant
     // is composed for exactly one task, so the variant-keyed cache stays
     // valid with the task's targets baked into its pipeline.
-    const FrameTaskRecord* geometry_task = nullptr) {
+    const FrameTaskRecord* geometry_task = nullptr,
+    // The pin's one exception to this port's depth convention: a shadow
+    // caster pass renders standard-Z into the generator's own
+    // `depth32float` map, at one sample. The Standard sibling takes the
+    // same flag -- a caster is drawn through whichever family its own
+    // material belongs to, so a depth state either family answered alone
+    // would be right only for the casters that family happens to own.
+    bool shadow_pass = false) {
     const std::size_t key =
-        variant * 64 + static_cast<std::size_t>(kind);
+        variant * 128 + static_cast<std::size_t>(kind) * 2 +
+        (shadow_pass ? 1 : 0);
     const auto existing = state.pinned_pipelines.find(key);
     if (existing != state.pinned_pipelines.end()) return existing->second;
     ensure_pinned_slots(state, variant);
@@ -1164,17 +1172,21 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     info.rasterizer_state.front_face =
         gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
-    info.depth_stencil_state.compare_op = gpu_depth_compare(upstream::pinned_depth_compare);
+    info.depth_stencil_state.compare_op =
+        gpu_depth_compare(pass_depth_compare(shadow_pass));
     info.depth_stencil_state.enable_depth_test = true;
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
-    info.multisample_state.sample_count = state.sample_count;
+    info.multisample_state.sample_count =
+        shadow_pass ? SDL_GPU_SAMPLECOUNT_1 : state.sample_count;
     // A depth-only view's fragment writes no colour target, and the pass it
     // draws in carries none either.
     info.target_info.color_target_descriptions =
         entry.no_color_output ? nullptr : &color_target;
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
-    info.target_info.depth_stencil_format = state.depth_format;
+    info.target_info.depth_stencil_format = shadow_pass
+        ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
+        : state.depth_format;
     info.target_info.has_depth_stencil_target = true;
     // A geometry-output MRT variant draws into its task's own attachments:
     // one target per attachment in the shared class list, plus the
@@ -1339,14 +1351,16 @@ void draw_pinned_variant(
     const PinnedGeometryParams* geometry_params = nullptr,
     // The same block as a buffer, for a fragment whose `gp` the shader
     // compile demoted out of the four uniform slots.
-    SDL_GPUBuffer* geometry_params_buffer = nullptr) {
+    SDL_GPUBuffer* geometry_params_buffer = nullptr,
+    bool shadow_pass = false) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         pinned_variant_pipeline(
             state,
             pinned_variant,
             draw.pipeline,
-            geometry_task);
+            geometry_task,
+            shadow_pass);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -6482,7 +6496,8 @@ bool run_gpu_engine(Engine& engine) {
                                     bound_pipeline,
                                     geometry_task,
                                     geometry_params,
-                                    geometry_params_buffer);
+                                    geometry_params_buffer,
+                                    shadow_generator != nullptr);
                                 continue;
                             }
 #endif

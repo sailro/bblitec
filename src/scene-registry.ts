@@ -2315,6 +2315,38 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        // `shadow:esm` with no `shadow:pcf`: a feature cell no corpus scene
+        // reaches, and the one two predicates had drifted inside.
+        id: "regression-shadow-esm-only",
+        name: "Regression - ESM Shadows Without PCF",
+        source: "examples/regression-shadow-esm-only.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - ESM Shadows Without PCF",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        // A shadow scene with no Standard material, and whose caster is
+        // itself PBR: the cell where the generator-side state, the
+        // standard-Z depth helper and the PBR family's entire shadow-pass
+        // pipeline arm were each gated one family too narrowly.
+        id: "regression-shadow-pbr-only",
+        name: "Regression - PBR Shadow Receiver Without Standard",
+        source: "examples/regression-shadow-pbr-only.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - PBR Shadows Without Standard",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

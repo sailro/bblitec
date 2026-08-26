@@ -3407,9 +3407,24 @@ class Compiler
      * `setShadowTaskCasterMeshes` is only that the caster materials compose
      * a no-colour view — which is the feature it reaches, not a list.
      */
-    public recordShadowGenerator(entry: ShadowGeneratorManifest): number {
-        this.shadowGenerators.push({ ...entry });
+    public recordShadowGenerator(
+        entry: Omit<ShadowGeneratorManifest, "casterPbrMaterials">,
+    ): number {
+        this.shadowGenerators.push({ ...entry, casterPbrMaterials: [] });
         return this.shadowGenerators.length - 1;
+    }
+
+    public recordShadowCasterMaterials(
+        generatorIndex: number,
+        pbrMaterials: readonly (number | null)[],
+    ): void {
+        const generator = this.shadowGenerators[generatorIndex];
+        if (!generator) {
+            throw new Error(
+                `Shadow generator ${generatorIndex} was never recorded.`,
+            );
+        }
+        generator.casterPbrMaterials = [...pbrMaterials];
     }
 
     /**

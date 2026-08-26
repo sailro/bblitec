@@ -1491,10 +1491,20 @@ export function pinnedPbrVariantsHeader(
         const fragmentOutputStruct = variant.fragmentWgsl.match(
             /struct FragmentOutput \{[^}]*\}/,
         );
+        // The PBR fragment's *input* struct also numbers its varyings with
+        // `@location(n)` -- `@location(0) worldPos` is the first of them --
+        // so a colour output is detected off the entry point's own return
+        // type, exactly as the Standard sibling does it. Asking whether the
+        // text mentions `@location(0)` anywhere answered "colour" for every
+        // no-colour view ever composed, and a depth-only pipeline built with
+        // a colour target is what Dawn refuses outright.
+        const hasColorReturn = variant.fragmentWgsl.includes(
+            "-> @location(0)",
+        );
         const colorTargetCount = fragmentOutputStruct
             ? (fragmentOutputStruct[0].match(/@location\(\d+\)/g) ?? [])
                 .length
-            : variant.fragmentWgsl.includes("@location(0)")
+            : hasColorReturn
                 ? 1
                 : 0;
         table.push(
@@ -1514,7 +1524,7 @@ export function pinnedPbrVariantsHeader(
                     ).length
                 }, ` +
                 `${
-                    variant.fragmentWgsl.includes("@location(0)")
+                    hasColorReturn || fragmentOutputStruct
                         ? "false"
                         : "true"
                 }, ` +
