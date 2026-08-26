@@ -841,6 +841,26 @@ per-sprite instance writes, and the straight-alpha blend, on both GPU
 backends from one generated WGSL pair. The pinned renderer split and
 instance layout are in [fidelity](fidelity.md#shader-contract).
 
+A sprite already added can be edited, and a layer can be emptied.
+`updateSprite2DIndex` rewrites one slot from a `Partial<Sprite2DProps>`
+where every field the caller omits keeps the value already there, and
+`clearSprite2DLayer` drops a layer's count and its size shadow without
+touching the instance floats. Both go through the pin's own single
+writer, whose two arms — add and update — are the only place the
+preserve rules live; which quantity each rule reads back, and why the
+size cannot come from the instance data, is in
+[fidelity](fidelity.md#shader-contract).
+
+A renderer's layer list is live too: `addSpriteRendererLayer`,
+`removeSpriteRendererLayer` and `disposeSpriteRenderer` each move it
+after the renderer exists. Both backends keep one GPU record per layer,
+keyed by that layer as the pin keys its own, so a moved list adds and
+drops records rather than rebuilding the set — a version compare says
+when to walk it, the same shape a scene whose mesh set changed takes.
+Disposing also unregisters, which is what stops the frame loop walking
+that renderer and moves the frame's clear to whichever context is now
+first.
+
 A layer opts into per-sprite UV scroll by setting an offset: the first
 `setSprite2DUvOffset` widens that layer's instance layout in place, adds the
 attribute the pin stashes for it, and selects the shader variant that adds the

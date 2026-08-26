@@ -1268,6 +1268,7 @@ void write_bridge_sprites(
     for (std::size_t i = 0; i < system.particle_count; ++i) {
         const BakedParticle& particle = system.particles[i];
         Sprite2DProps props;
+        props.has_position_px = true;
         props.position_px = Vec2{
             static_cast<float>(
                 bridge.origin_x +

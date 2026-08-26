@@ -2186,13 +2186,30 @@ inline void reject_uncomposed_sprites(const Engine& engine) {
 }
 
 /**
- * A sprite renderer's layers in draw order: `spriteRendererUpdate` sorts
- * the renderer's layers by `order` every frame, so registration order is
- * not the draw order -- `layer.order` is. The sort is stable, which is
- * what decides equal orders. Returned as indices into `renderer.layers`
- * because each backend keeps its per-layer GPU state in registration
- * order; both used to carry this walk verbatim.
+ * The renderer that owns the frame's clear, re-derived per frame.
+ *
+ * Upstream `startEngine` walks `engine._renderingContexts` in registration
+ * order and the first one clears. `disposeSpriteRenderer` unregisters, so
+ * the owner is whoever is at the FRONT NOW rather than whoever was there
+ * when the driver started -- a driver that read it once would keep clearing
+ * with a disposed renderer's colour.
+ *
+ * With every renderer disposed there is no owner, and upstream simply draws
+ * nothing while the canvas keeps its last pixels -- not an answer a
+ * swapchain can give on its first frame. A default-constructed record
+ * stands in, so the fallback is the pinned `createSpriteRenderer` default
+ * (`clear` true, `clearValue ?? {0,0,0,1}`) read off the record's own
+ * initializers rather than spelled again in each backend. No reached scene
+ * disposes its last renderer.
  */
+inline const SpriteRendererRecord& sprite_clear_owner(
+    const Engine& engine) {
+    static const SpriteRendererRecord none{};
+    if (engine.registered_sprite_renderers.empty()) return none;
+    return engine.sprite_renderers
+        [engine.registered_sprite_renderers.front().value];
+}
+
 inline std::vector<std::size_t> sprite_layer_draw_order(
     const Engine& engine,
     const SpriteRendererRecord& renderer) {

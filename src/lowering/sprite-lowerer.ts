@@ -399,6 +399,190 @@ export class SpriteLowerer {
         );
     }
 
+    /**
+     * The update arm of the same writer.
+     *
+     * `addSprite2DIndex` passes `prev === null` and every unsupplied field
+     * takes a documented default; `updateSprite2DIndex` passes the slot's own
+     * floats back in and every unsupplied field takes the *previous* value.
+     * The lowered writer carries both arms, so the expressions that read
+     * `prev` are pinned here exactly as the add arm's defaults already are --
+     * they are the whole of what "preserve what was not supplied" means, and
+     * a slot that started reading a different index would preserve the wrong
+     * quantity while still compiling.
+     */
+    private assertUpdateArm(): void {
+        const { declaration } = this.context.functionDeclaration(
+            layerModule,
+            "writeInstance",
+        );
+        const preserved: ReadonlyArray<[string, string]> = [
+            ["isAdd", "prev === null"],
+            [
+                "posX",
+                "props.positionPx ? props.positionPx[0] : prev![0]!",
+            ],
+            [
+                "posY",
+                "props.positionPx ? props.positionPx[1] : prev![1]!",
+            ],
+            ["prevFlipX", "!isAdd && prev![4]! > prev![6]!"],
+            ["prevFlipY", "!isAdd && prev![5]! > prev![7]!"],
+            ["rotation", "props.rotation ?? (prev ? prev[8]! : 0)"],
+        ];
+        for (const [name, source] of preserved) {
+            this.context.assertExpressionShape(
+                this.context.variableInitializer(
+                    declaration,
+                    name,
+                ),
+                source,
+                `writeInstance ${name}`,
+            );
+        }
+        // The preserved quantities that are assigned inside an else branch
+        // rather than initialized. Each is matched as the whole assignment,
+        // because the element access alone also appears on the write side of
+        // the shadow and inside the flip reads. Each states where the
+        // previous value comes from: the size shadow, the zeroed GPU size
+        // (which is how a hidden sprite is stored), and the UV endpoints.
+        const branchArms: readonly string[] = [
+            "trueW = layer._savedSize[savedBase]!",
+            "trueH = layer._savedSize[savedBase + 1]!",
+            "visible = prev![2]! !== 0 || prev![3]! !== 0",
+            "uMin = prev![4]!",
+            "vMin = prev![5]!",
+            "uMax = prev![6]!",
+            "vMax = prev![7]!",
+        ];
+        for (const source of branchArms) {
+            this.context.expectShapeCount(
+                declaration,
+                source,
+                `writeInstance ${source}`,
+            );
+        }
+        // `updateSprite2DIndex` is the only caller that hands `prev` over,
+        // and the slot it hands over is the one it is about to rewrite.
+        const update = this.context.functionDeclaration(
+            layerModule,
+            "updateSprite2DIndex",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                update.declaration,
+                "prev",
+            ),
+            "layer._instanceData.subarray(base, base + layer._instanceFloatsPerSprite)",
+            "updateSprite2DIndex prev",
+        );
+    }
+
+    /**
+     * `clearSprite2DLayer` drops the count without touching the instance
+     * floats, so what it must get right is the size shadow and the version.
+     * The shadow is cleared over the *old* count so a later re-add starts
+     * from zero rather than inheriting a stale size, and the version bump is
+     * what makes each backend re-upload.
+     */
+    private assertClearLayer(): void {
+        const { declaration } = this.context.functionDeclaration(
+            layerModule,
+            "clearSprite2DLayer",
+        );
+        const statements: ReadonlyArray<[string, string]> = [
+            [
+                "layer._savedSize.fill(0, 0, count * SAVED_SIZE_FLOATS_PER_SPRITE)",
+                "clearSprite2DLayer shadow clear",
+            ],
+            [
+                "_setSprite2DCount(layer, 0)",
+                "clearSprite2DLayer count reset",
+            ],
+            [
+                "(layer._version + 1) | 0",
+                "clearSprite2DLayer version bump",
+            ],
+        ];
+        for (const [source, label] of statements) {
+            this.context.expectShapeCount(
+                declaration,
+                source,
+                label,
+            );
+        }
+        // The early return is why an empty layer does not bump the version:
+        // clearing nothing is not an edit, and a bump would re-upload.
+        this.context.expectShapeCount(
+            declaration,
+            "count === 0",
+            "clearSprite2DLayer empty guard",
+        );
+    }
+
+    /**
+     * The renderer's own membership rules, which are not a list's defaults.
+     * Adding a layer already present is a no-op rather than a second draw;
+     * removing one reports whether it was there; disposing is idempotent and
+     * every entry point the renderer owns tests the flag first.
+     */
+    private assertRendererMembership(): void {
+        const add = this.context.functionDeclaration(
+            rendererModule,
+            "addSpriteRendererLayer",
+        );
+        this.context.expectShapeCount(
+            add.declaration,
+            "sr.layers.includes(layer)",
+            "addSpriteRendererLayer membership test",
+        );
+        this.context.expectShapeCount(
+            add.declaration,
+            "sr._disposed",
+            "addSpriteRendererLayer disposed guard",
+        );
+        const remove = this.context.functionDeclaration(
+            rendererModule,
+            "removeSpriteRendererLayer",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                remove.declaration,
+                "index",
+            ),
+            "sr.layers.indexOf(layer)",
+            "removeSpriteRendererLayer lookup",
+        );
+        this.context.expectShapeCount(
+            remove.declaration,
+            "index < 0",
+            "removeSpriteRendererLayer absent test",
+        );
+        const dispose = this.context.functionDeclaration(
+            rendererModule,
+            "disposeSpriteRenderer",
+        );
+        this.context.expectShapeCount(
+            dispose.declaration,
+            "sr._disposed",
+            "disposeSpriteRenderer flag",
+            2,
+        );
+        this.context.expectShapeCount(
+            dispose.declaration,
+            "unregisterSpriteRenderer(sr)",
+            "disposeSpriteRenderer unregister",
+        );
+        // Every "a disposed renderer draws nothing" claim on both backends
+        // comes from the rebuild seeing an empty list, so the statement that
+        // empties it is the contract rather than an implementation detail.
+        this.context.expectShapeCount(
+            dispose.declaration,
+            "sr._layers.length = 0",
+            "disposeSpriteRenderer layer clear",
+        );
+    }
+
     /** `base` is `slotIndex * layer._instanceFloatsPerSprite`. */
     private assertInstanceBase(): void {
         const { declaration } = this.context.functionDeclaration(
@@ -920,19 +1104,22 @@ export class SpriteLowerer {
         this.assertAtlasLoader();
         this.assertInstanceBase();
         this.assertInstanceSlots();
+        this.assertUpdateArm();
+        this.assertClearLayer();
+        this.assertRendererMembership();
         this.assertLayerUbo();
         const fxUboBytes = this.assertFxUbo();
         this.assertQuad();
 
         const provenance = this.context.provenance(
             layerModule,
-            "createSprite2DLayer, addSprite2DIndex",
+            "createSprite2DLayer, addSprite2DIndex, updateSprite2DIndex, clearSprite2DLayer",
             `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha, ${rendererModule}#createSpriteRenderer`,
         );
         return {
             modulePath: layerModule,
             symbolName:
-                "createSprite2DLayer,addSprite2DIndex,loadSpriteAtlas,createSpriteRenderer",
+                "createSprite2DLayer,addSprite2DIndex,updateSprite2DIndex,clearSprite2DLayer,loadSpriteAtlas,createSpriteRenderer,addSpriteRendererLayer,removeSpriteRendererLayer,disposeSpriteRenderer",
             header: `#pragma once
 
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
@@ -1256,21 +1443,20 @@ Sprite2DLayerHandle create_sprite_2d_layer(
             engine.sprite_layers.size() - 1u)};
 }
 
-double add_sprite_2d_index(
-    Engine& engine,
-    Sprite2DLayerHandle layer_handle,
-    Sprite2DProps props) {
-    Sprite2DLayerRecord& layer =
-        engine.sprite_layers[layer_handle.value];
-    const SpriteAtlasRecord& atlas =
-        engine.sprite_atlases[layer.atlas.value];
-    const std::uint32_t index = layer.count;
-    if (index >= layer.capacity) {
-        grow_sprite_capacity(layer, index + 1u);
-    }
+namespace {
 
-    // writeInstance, add arm (\`prev === null\`): unspecified fields take
-    // their documented defaults rather than a previous value.
+// writeInstance: one writer, two arms. \`prev === null\` is the add arm,
+// where an unspecified field takes its documented default; an update hands
+// the slot's own floats back in, and an unspecified field takes the value
+// already there. The pin shares this body between addSprite2DIndex and
+// updateSprite2DIndex, so this port shares it too -- two writers would be
+// two places for a slot to drift.
+void write_sprite_instance(
+    Sprite2DLayerRecord& layer,
+    const SpriteAtlasRecord& atlas,
+    std::uint32_t index,
+    const Sprite2DProps& props,
+    bool is_add) {
     const std::size_t base =
         static_cast<std::size_t>(index) *
         layer.instance_floats_per_sprite;
@@ -1283,7 +1469,13 @@ double add_sprite_2d_index(
               atlas,
               static_cast<double>(props.frame))]
         : SpriteFrame{};
+    // The pin's \`prev\` is a subarray view onto the slot being rewritten. It
+    // needs no alias here: every preserved read below is guarded by
+    // \`is_add\` and happens before the write phase at the end.
 
+    // props.sizePx -> the frame's own size -> the previous TRUE size. The
+    // shadow is what makes that last arm unambiguous: a hidden sprite's GPU
+    // size is zeroed, so the instance floats cannot answer it.
     float true_w = 0.0f;
     float true_h = 0.0f;
     if (props.has_size_px) {
@@ -1292,12 +1484,20 @@ double add_sprite_2d_index(
     } else if (has_frame) {
         true_w = frame.source_size_px.x;
         true_h = frame.source_size_px.y;
+    } else if (!is_add) {
+        true_w = layer.saved_size[saved_base];
+        true_h = layer.saved_size[saved_base + 1u];
     }
     layer.saved_size[saved_base] = true_w;
     layer.saved_size[saved_base + 1u] = true_h;
 
+    // A previous sprite was hidden exactly when its GPU size was zeroed.
     const bool visible =
-        props.has_visible ? props.visible : true;
+        props.has_visible
+            ? props.visible
+            : (is_add ||
+               layer.instance_data[base + 2u] != 0.0f ||
+               layer.instance_data[base + 3u] != 0.0f);
 
     float u_min = 0.0f;
     float v_min = 0.0f;
@@ -1308,16 +1508,31 @@ double add_sprite_2d_index(
         v_min = frame.uv_min.y;
         u_max = frame.uv_max.x;
         v_max = frame.uv_max.y;
+    } else if (!is_add) {
+        u_min = layer.instance_data[base + 4u];
+        v_min = layer.instance_data[base + 5u];
+        u_max = layer.instance_data[base + 6u];
+        v_max = layer.instance_data[base + 7u];
     }
     // flipX/flipY are absolute orientation flags resolved against the flip
-    // already baked into the endpoints; on add there is no previous
-    // orientation, so an omitted flag leaves them as the frame wrote them.
+    // already baked into the endpoints, so re-sending the same value every
+    // frame is idempotent. An omitted flag preserves the orientation the
+    // slot already had, which is what keeps a frame change from unflipping
+    // a sprite; on add there is no previous orientation, so it is false.
     const bool current_flip_x = u_min > u_max;
     const bool current_flip_y = v_min > v_max;
+    const bool prev_flip_x =
+        !is_add &&
+        layer.instance_data[base + 4u] >
+            layer.instance_data[base + 6u];
+    const bool prev_flip_y =
+        !is_add &&
+        layer.instance_data[base + 5u] >
+            layer.instance_data[base + 7u];
     const bool wants_flip_x =
-        props.has_flip_x ? props.flip_x : false;
+        props.has_flip_x ? props.flip_x : prev_flip_x;
     const bool wants_flip_y =
-        props.has_flip_y ? props.flip_y : false;
+        props.has_flip_y ? props.flip_y : prev_flip_y;
     if (current_flip_x != wants_flip_x) {
         std::swap(u_min, u_max);
     }
@@ -1326,10 +1541,25 @@ double add_sprite_2d_index(
     }
 
     const float rotation =
-        props.has_rotation ? props.rotation : 0.0f;
+        props.has_rotation
+            ? props.rotation
+            : (is_add ? 0.0f : layer.instance_data[base + 8u]);
+    // An omitted position preserves the slot's own; the add arm's
+    // \`has_position_px\` is always true, because the pin throws without one.
+    const float pos_x =
+        props.has_position_px
+            ? props.position_px.x
+            : layer.instance_data[base + 0u];
+    const float pos_y =
+        props.has_position_px
+            ? props.position_px.y
+            : layer.instance_data[base + 1u];
+    // The colour is the one block the pin leaves alone on update: without
+    // \`props.color\` the four floats already in place are the answer, so an
+    // update writes them only when the caller supplied one.
 
-    layer.instance_data[base + 0u] = props.position_px.x;
-    layer.instance_data[base + 1u] = props.position_px.y;
+    layer.instance_data[base + 0u] = pos_x;
+    layer.instance_data[base + 1u] = pos_y;
     layer.instance_data[base + 2u] = visible ? true_w : 0.0f;
     layer.instance_data[base + 3u] = visible ? true_h : 0.0f;
     layer.instance_data[base + 4u] = u_min;
@@ -1337,18 +1567,87 @@ double add_sprite_2d_index(
     layer.instance_data[base + 6u] = u_max;
     layer.instance_data[base + 7u] = v_max;
     layer.instance_data[base + 8u] = rotation;
-    layer.instance_data[base + 9u] =
-        props.has_color ? props.color.x : 1.0f;
-    layer.instance_data[base + 10u] =
-        props.has_color ? props.color.y : 1.0f;
-    layer.instance_data[base + 11u] =
-        props.has_color ? props.color.z : 1.0f;
-    layer.instance_data[base + 12u] =
-        props.has_color ? props.color.w : 1.0f;
+    if (props.has_color) {
+        layer.instance_data[base + 9u] = props.color.x;
+        layer.instance_data[base + 10u] = props.color.y;
+        layer.instance_data[base + 11u] = props.color.z;
+        layer.instance_data[base + 12u] = props.color.w;
+    } else if (is_add) {
+        layer.instance_data[base + 9u] = 1.0f;
+        layer.instance_data[base + 10u] = 1.0f;
+        layer.instance_data[base + 11u] = 1.0f;
+        layer.instance_data[base + 12u] = 1.0f;
+    }
+}
 
+} // namespace
+
+double add_sprite_2d_index(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    Sprite2DProps props) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const SpriteAtlasRecord& atlas =
+        engine.sprite_atlases[layer.atlas.value];
+    if (!props.has_position_px) {
+        throw std::runtime_error(
+            "addSprite2DIndex: positionPx required.");
+    }
+    const std::uint32_t index = layer.count;
+    if (index >= layer.capacity) {
+        grow_sprite_capacity(layer, index + 1u);
+    }
+    write_sprite_instance(layer, atlas, index, props, true);
     layer.count = index + 1u;
     layer.version += 1u;
     return static_cast<double>(index);
+}
+
+// sprite-2d.ts#updateSprite2DIndex: rewrite one slot in place, preserving
+// every field the patch did not supply. The range check is the pin's own
+// throw rather than a native guard.
+void update_sprite_2d_index(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    double index_value,
+    Sprite2DProps props) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    if (!(index_value >= 0.0) ||
+        index_value >= static_cast<double>(layer.count)) {
+        throw std::runtime_error(
+            "updateSprite2DIndex: index out of range.");
+    }
+    const SpriteAtlasRecord& atlas =
+        engine.sprite_atlases[layer.atlas.value];
+    write_sprite_instance(
+        layer,
+        atlas,
+        static_cast<std::uint32_t>(index_value),
+        props,
+        false);
+    layer.version += 1u;
+}
+
+// sprite-2d.ts#clearSprite2DLayer: drop the count and the size shadow, and
+// leave the instance floats where they are -- nothing reads past the count.
+// An already-empty layer returns before the version moves, which is what
+// keeps a per-frame clear on an idle layer from re-uploading.
+void clear_sprite_2d_layer(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const std::uint32_t count = layer.count;
+    if (count == 0u) return;
+    std::fill_n(
+        layer.saved_size.begin(),
+        static_cast<std::size_t>(count) *
+            sprite_saved_size_floats,
+        0.0f);
+    layer.count = 0u;
+    layer.version += 1u;
 }
 
 SpriteRendererHandle create_sprite_renderer(
@@ -1376,16 +1675,82 @@ void add_sprite_renderer_layer(
     Engine& engine,
     SpriteRendererHandle renderer,
     Sprite2DLayerHandle layer) {
+    SpriteRendererRecord& record =
+        engine.sprite_renderers[renderer.value];
+    if (record.disposed) {
+        throw std::runtime_error(
+            "SpriteRenderer has been disposed.");
+    }
     if (layer.value >= engine.sprite_layers.size()) {
         throw std::runtime_error(
             "SpriteRenderer received an unknown layer.");
     }
-    std::vector<Sprite2DLayerHandle>& layers =
-        engine.sprite_renderers[renderer.value].layers;
-    for (const Sprite2DLayerHandle& present : layers) {
-        if (present.value == layer.value) return;
-    }
+    std::vector<Sprite2DLayerHandle>& layers = record.layers;
+    const auto present = std::any_of(
+        layers.begin(),
+        layers.end(),
+        [&](const Sprite2DLayerHandle& candidate) {
+            return candidate.value == layer.value;
+        });
+    if (present) return;
     layers.push_back(layer);
+    record.layers_version += 1u;
+}
+
+// sprite-renderer.ts#removeSpriteRendererLayer: reports whether the layer
+// was a member. Upstream also drops that layer's GPU state here; each
+// backend does the same by rebuilding its pass off \`layers_version\`.
+bool remove_sprite_renderer_layer(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    Sprite2DLayerHandle layer) {
+    SpriteRendererRecord& record =
+        engine.sprite_renderers[renderer.value];
+    std::vector<Sprite2DLayerHandle>& layers = record.layers;
+    const auto found = std::find_if(
+        layers.begin(),
+        layers.end(),
+        [&](const Sprite2DLayerHandle& candidate) {
+            return candidate.value == layer.value;
+        });
+    if (found == layers.end()) return false;
+    layers.erase(found);
+    record.layers_version += 1u;
+    return true;
+}
+
+// sprite-renderer.ts#unregisterSpriteRenderer: drop the renderer from the
+// engine's rendering contexts, which is what stops the frame loop walking
+// it. Its own entry point in the pin, so its own function here.
+void unregister_sprite_renderer(
+    Engine& engine,
+    SpriteRendererHandle renderer) {
+    std::vector<SpriteRendererHandle>& registered =
+        engine.registered_sprite_renderers;
+    const auto found = std::find_if(
+        registered.begin(),
+        registered.end(),
+        [&](const SpriteRendererHandle& candidate) {
+            return candidate.value == renderer.value;
+        });
+    if (found == registered.end()) return;
+    registered.erase(found);
+}
+
+// sprite-renderer.ts#disposeSpriteRenderer: idempotent, and the observable
+// half is the unregistration -- a disposed renderer stops being walked by
+// the frame loop. The pin's remaining work is releasing GPU objects, which
+// each backend does when it sees the emptied layer list.
+void dispose_sprite_renderer(
+    Engine& engine,
+    SpriteRendererHandle renderer) {
+    SpriteRendererRecord& record =
+        engine.sprite_renderers[renderer.value];
+    if (record.disposed) return;
+    unregister_sprite_renderer(engine, renderer);
+    record.disposed = true;
+    record.layers.clear();
+    record.layers_version += 1u;
 }
 
 void register_sprite_renderer(

@@ -74,11 +74,6 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 handle,
                 state.surface_format));
         }
-        // The first registered renderer owns the frame's clear, exactly as
-        // the first rendering context does upstream.
-        const SpriteRendererRecord& first =
-            engine.sprite_renderers
-                [engine.registered_sprite_renderers.front().value];
 
         const std::uint32_t width =
             static_cast<std::uint32_t>(engine.options.width);
@@ -122,6 +117,11 @@ bool run_sprite_dawn_engine(Engine& engine) {
             // Every context updates before any records, which is the
             // pinned loop's order.
             for (DawnSpritePass& pass : passes) {
+                // A scene callback may have added, removed or disposed a
+                // layer since the last frame; the GPU mirror is addressed
+                // by position, so it is rebuilt before anything reads it.
+                sync_dawn_sprite_pass_layers(
+                    state.device, state.queue, engine, pass);
                 upload_dawn_sprite_pass(
                     state.queue, engine, pass, width, height, delta_ms);
             }
@@ -131,6 +131,9 @@ bool run_sprite_dawn_engine(Engine& engine) {
             WGPURenderPassColorAttachment color_attachment =
                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
             color_attachment.view = surface_view;
+            // Re-derived every frame: `disposeSpriteRenderer` unregisters,
+            // so the front of the list can move (pal_gpu_shared.hpp).
+            const SpriteRendererRecord& first = sprite_clear_owner(engine);
             color_attachment.loadOp =
                 first.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
             color_attachment.storeOp = WGPUStoreOp_Store;

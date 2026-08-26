@@ -299,6 +299,72 @@ function numberOption(
 }
 
 /**
+ * One `Sprite2DProps`, as the pinned writer reads it.
+ *
+ * Every field travels as "a value, and whether the caller named it", because
+ * that pair is what `writeInstance` branches on: the add arm turns an unnamed
+ * field into its documented default and the update arm turns it into the
+ * value already in the slot. So the two entry points read the same options
+ * here rather than each resolving defaults its own way — which they cannot
+ * do, since only the native writer can see the previous instance.
+ *
+ * `positionPx` is the one field the two disagree about: `addSprite2DIndex`
+ * throws without one and `updateSprite2DIndex` preserves the slot's own.
+ */
+function sprite2DPropsCpp(
+    context: SpriteIntrinsicContext,
+    props: Value | undefined,
+    call: ts.CallExpression,
+    entryName: string,
+    optionsArgument: ts.Node,
+): string {
+    const positionPx = tupleOption(
+        context,
+        props,
+        "positionPx",
+        call,
+        2,
+    );
+    if (!positionPx && entryName === "addSprite2DIndex") {
+        context.fail(call, "addSprite2DIndex: positionPx required.");
+    }
+    if (property(props, "z")) {
+        context.fail(
+            optionsArgument,
+            "Per-sprite z is only stored by depth-hosted layers, which are not lowered.",
+        );
+    }
+    const sizePx = tupleOption(context, props, "sizePx", call, 2);
+    const color = tupleOption(context, props, "color", call, 4);
+    const frame = property(props, "frame");
+    const rotation = property(props, "rotation");
+    const flipX = property(props, "flipX");
+    const flipY = property(props, "flipY");
+    const visible = property(props, "visible");
+    return (
+        `bbl::Sprite2DProps{` +
+        `bbl::Vec2{${
+            positionPx
+                ? `${positionPx[0]!}, ${positionPx[1]!}`
+                : "0.0f, 0.0f"
+        }}, ${positionPx ? "true" : "false"}, ` +
+        `bbl::Vec2{${
+            sizePx ? `${sizePx[0]!}, ${sizePx[1]!}` : "0.0f, 0.0f"
+        }}, ${sizePx ? "true" : "false"}, ` +
+        `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ` +
+        `${frame ? "true" : "false"}, ` +
+        `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ` +
+        `${rotation ? "true" : "false"}, ` +
+        `bbl::Vec4{${
+            color ? color.join(", ") : "1.0f, 1.0f, 1.0f, 1.0f"
+        }}, ${color ? "true" : "false"}, ` +
+        `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
+        `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
+        `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}}`
+    );
+}
+
+/**
  * The `arity` components of a tuple-valued option, as native float
  * expressions.
  *
@@ -571,44 +637,6 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "addSprite2DIndex",
             );
-            const positionPx = tupleOption(
-                context,
-                props,
-                "positionPx",
-                call,
-                2,
-            );
-            if (!positionPx) {
-                context.fail(
-                    call,
-                    "addSprite2DIndex: positionPx required.",
-                );
-            }
-            if (property(props, "z")) {
-                context.fail(
-                    call.arguments[1]!,
-                    "Per-sprite z is only stored by depth-hosted layers, which are not lowered.",
-                );
-            }
-            const sizePx = tupleOption(
-                context,
-                props,
-                "sizePx",
-                call,
-                2,
-            );
-            const color = tupleOption(
-                context,
-                props,
-                "color",
-                call,
-                4,
-            );
-            const frame = property(props, "frame");
-            const rotation = property(props, "rotation");
-            const flipX = property(props, "flipX");
-            const flipY = property(props, "flipY");
-            const visible = property(props, "visible");
             const engineCpp =
                 layer.engineCpp ??
                 context.requireDefaultEngine(call);
@@ -617,25 +645,79 @@ export function compileSpriteIntrinsic(
                 kind: "number",
                 cpp:
                     `bbl::add_sprite_2d_index(${engineCpp}, ` +
-                    `${layer.cpp}, bbl::Sprite2DProps{` +
-                    `bbl::Vec2{${positionPx[0]!}, ${positionPx[1]!}}, ` +
-                    `bbl::Vec2{${
-                        sizePx
-                            ? `${sizePx[0]!}, ${sizePx[1]!}`
-                            : "0.0f, 0.0f"
-                    }}, ${sizePx ? "true" : "false"}, ` +
-                    `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ` +
-                    `${frame ? "true" : "false"}, ` +
-                    `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ` +
-                    `${rotation ? "true" : "false"}, ` +
-                    `bbl::Vec4{${
-                        color
-                            ? color.join(", ")
-                            : "1.0f, 1.0f, 1.0f, 1.0f"
-                    }}, ${color ? "true" : "false"}, ` +
-                    `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
-                    `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
-                    `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
+                    `${layer.cpp}, ${sprite2DPropsCpp(
+                        context,
+                        props,
+                        call,
+                        "addSprite2DIndex",
+                        call.arguments[1] ?? call,
+                    )})`,
+                engineCpp,
+            };
+        }
+
+        case "updateSprite2DIndex": {
+            // The patch is a `Partial<Sprite2DProps>`: every field the
+            // caller omits keeps the value the slot already holds, which is
+            // why this arm records which fields were supplied rather than
+            // resolving defaults here.
+            context.expectArgumentCount(call, 3, 3);
+            const layer = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                layer,
+                "sprite-layer",
+                call.arguments[0]!,
+            );
+            // `addSprite2DIndex` hands the index back as a JavaScript
+            // number and the pin's range check compares it as one, so it
+            // travels at that width rather than rounding at the call.
+            const index = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const props = optionsRecord(
+                context,
+                call.arguments[2],
+                "updateSprite2DIndex",
+            );
+            const engineCpp =
+                layer.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::update_sprite_2d_index(${engineCpp}, ` +
+                    `${layer.cpp}, ${index}, ${sprite2DPropsCpp(
+                        context,
+                        props,
+                        call,
+                        "updateSprite2DIndex",
+                        call.arguments[2] ?? call,
+                    )})`,
+                engineCpp,
+            };
+        }
+
+        case "clearSprite2DLayer": {
+            context.expectArgumentCount(call, 1, 1);
+            const layer = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                layer,
+                "sprite-layer",
+                call.arguments[0]!,
+            );
+            const engineCpp =
+                layer.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "void",
+                cpp: `bbl::clear_sprite_2d_layer(${engineCpp}, ${layer.cpp})`,
                 engineCpp,
             };
         }
@@ -1145,6 +1227,69 @@ export function compileSpriteIntrinsic(
             return {
                 kind: "void",
                 cpp: `bbl::register_sprite_renderer(${
+                    renderer.engineCpp ??
+                    context.requireDefaultEngine(call)
+                }, ${renderer.cpp})`,
+            };
+        }
+
+        case "addSpriteRendererLayer":
+        case "removeSpriteRendererLayer": {
+            // Both take (renderer, layer) and both move the renderer's layer
+            // list, which each backend rebuilds its pass from. `remove`
+            // returns whether the layer was a member; a scene that reads it
+            // gets that boolean, and one that ignores it emits a statement.
+            context.expectArgumentCount(call, 2, 2);
+            const renderer = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                renderer,
+                "sprite-renderer",
+                call.arguments[0]!,
+            );
+            const layer = context.compileValue(
+                call.arguments[1]!,
+            );
+            context.expectKind(
+                layer,
+                "sprite-layer",
+                call.arguments[1]!,
+            );
+            const engineCpp =
+                renderer.engineCpp ??
+                layer.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("renderer:sprite", call);
+            const removes =
+                importedName === "removeSpriteRendererLayer";
+            const cpp =
+                `bbl::${
+                    removes
+                        ? "remove_sprite_renderer_layer"
+                        : "add_sprite_renderer_layer"
+                }(${engineCpp}, ${renderer.cpp}, ${layer.cpp})`;
+            return {
+                kind: removes ? "boolean" : "void",
+                cpp,
+                engineCpp,
+            };
+        }
+
+        case "disposeSpriteRenderer": {
+            context.expectArgumentCount(call, 1, 1);
+            const renderer = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                renderer,
+                "sprite-renderer",
+                call.arguments[0]!,
+            );
+            context.reachFeature("renderer:sprite", call);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_sprite_renderer(${
                     renderer.engineCpp ??
                     context.requireDefaultEngine(call)
                 }, ${renderer.cpp})`,

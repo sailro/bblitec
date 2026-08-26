@@ -1184,6 +1184,63 @@ gamma are all behind upstream's own hooks and none is emitted. Both GPU
 backends draw it, from one generated WGSL pair and one instance layout, and
 on this scene they agree byte for byte with each other and with the golden.
 
+**One writer, two arms — because only the writer can see the previous
+sprite.** `writeInstance` is shared upstream by `addSprite2DIndex` and
+`updateSprite2DIndex`, and the argument that differs is `prev`: null on an
+add, and the slot's own floats on an update. Every unsupplied field reads
+from it, so this port shares one writer too rather than resolving defaults
+at the two call sites — a caller cannot resolve them, since the previous
+value lives in native memory. Each preserve rule takes its value from a
+different place and the shapes are asserted against the pinned declaration:
+position and rotation from the instance floats, the UV endpoints from the
+slot (whose *order* carries the flip, which is what lets a frame change keep
+a mirrored sprite mirrored), and the true size from the CPU-side shadow —
+which exists precisely because `visible: false` is stored by zeroing the GPU
+size, so the instance data cannot answer what size to restore. Two arms are
+deliberately not symmetric: a supplied `frame` resets the size to that
+frame's own `sourceSizePx`, discarding an explicitly set one, and an update
+that supplies no colour writes no colour floats at all.
+`clearSprite2DLayer` matches its early return as well as its body — an
+already-empty layer does not bump the version, so a per-frame clear on an
+idle layer re-uploads nothing.
+
+**A renderer's layer list is mutable, and each layer's GPU record moves
+with it.** Both backends build one record per layer — pipeline, instance
+buffer, atlas binding — and `addSpriteRendererLayer`,
+`removeSpriteRendererLayer` and `disposeSpriteRenderer` all move that list.
+The pin keys `sr._layerGpu` by the layer object, so adding one compiles only
+the new layer's pipeline and removing one disposes only that layer's entry;
+this port keys by handle for the same reason, and a `layers_version` bump is
+what makes it walk the list again. Rebuilding the whole set instead would be
+observable rather than merely wasteful: a layer's `elapsed_ms` is the clock
+its custom shader's `fx.time` reads, and a rebuild would restart it for
+layers nobody touched.
+
+Releasing the records that are dropped needs no wait on either backend, and
+for two different reasons: SDL_GPU documents every `SDL_ReleaseGPU*` as
+freeing "as soon as it is safe to do so", and a WebGPU object is
+reference-counted with a submitted command buffer holding its own reference.
+(The mesh-set rebuild in the Dawn scene renderer *does* wait, because it
+re-uploads *into* buffers in-flight work reads — a different hazard.)
+
+Unregistering moves one more thing: the frame's clear belongs to whichever
+rendering context is at the *front* of the registered list, which is what
+`startEngine` walks, so both drivers re-derive it per frame. Reading it once
+at startup keeps clearing with a disposed renderer's colour — measured at
+29.105 full MAD against 0.000 on the gate below. The one case upstream
+leaves to the canvas is every renderer being disposed: it draws nothing and
+the page keeps its last pixels, which a swapchain cannot answer on its first
+frame, so the helper falls back to a default-constructed record and the
+pinned `createSpriteRenderer` defaults come off its own initializers. No
+reached scene disposes its last renderer.
+
+`regression-sprite-layer-arms` measures all of it at 0.000 on both backends,
+and each half is A/B-proven rather than assumed: it grows the list from three
+layers to four, gives one late layer an additive blend, and disposes the
+renderer registered *first*. With the synchronisation removed both backends
+fault (`0xC0000005`); with the clear owner read once at startup the frame
+paints the disposed renderer's colour.
+
 **A skybox size of zero asks the loader for the pinned default.** The
 generated loader resolves an unset `skyboxSize` to `createDefaultEnvironment`'s
 20, so the compiler passes zero rather than substituting a size of its own —
