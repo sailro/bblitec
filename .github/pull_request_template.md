@@ -31,6 +31,7 @@ result and exits non-zero on failure; never read one through an unpiped
 `tail` or `grep`.
 -->
 
+- `npm run simplify:verify` —
 - `npm test` —
 - `npm run scenes:process` —
 - `npm run scenes:parity` —

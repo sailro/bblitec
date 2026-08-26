@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type { ShadowCasterManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
@@ -41,9 +41,9 @@ export interface ShadowIntrinsicContext
             blurScale?: number;
         };
     }): number;
-    recordShadowCasterMaterials(
+    recordShadowCasters(
         generatorIndex: number,
-        pbrMaterials: readonly (number | null)[],
+        casters: readonly ShadowCasterManifest[],
     ): void;
     esmGeneratorOrdinal(): number;
 }
@@ -294,7 +294,7 @@ export function compileShadowIntrinsic(
                 call.arguments[1]!,
             );
             const emitted: string[] = [];
-            const casterPbrMaterials: (number | null)[] = [];
+            const casters: ShadowCasterManifest[] = [];
             for (const element of array.elements) {
                 const mesh = context.compileValue(element);
                 context.expectKind(mesh, "mesh", element);
@@ -307,12 +307,15 @@ export function compileShadowIntrinsic(
                     );
                 }
                 emitted.push(mesh.cpp);
-                // The material the mesh carries WHEN it is named a caster.
-                // Every reached scene assigns it first, and one assigned
-                // afterwards would change which view the task builds, so a
-                // caster with no material yet refuses rather than composing
-                // against a material it does not have.
-                casterPbrMaterials.push(mesh.scenePbrMaterialIndex ?? null);
+                // What the mesh carries WHEN it is named a caster: a
+                // material assigned after this call would change which
+                // view the task builds, and every reached scene assigns
+                // it first. `null` is a material of another family, which
+                // still takes a runtime handle.
+                casters.push({
+                    meshIndex: mesh.sceneMeshIndex,
+                    pbrMaterial: mesh.scenePbrMaterialIndex ?? null,
+                });
             }
             if (emitted.length === 0) {
                 context.fail(
@@ -321,9 +324,9 @@ export function compileShadowIntrinsic(
                         "map; no reached scene registers one.",
                 );
             }
-            context.recordShadowCasterMaterials(
+            context.recordShadowCasters(
                 generator.shadowGeneratorIndex,
-                casterPbrMaterials,
+                casters,
             );
             // The caster pass draws each mesh through its material's own
             // no-colour view, which is the same composition arm scene 116

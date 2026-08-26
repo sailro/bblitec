@@ -4,16 +4,13 @@
  * Five defines govern the shadow code in both PALs and they are not
  * independent: the generator half exists whenever SOME family composes a
  * receiver, and each family's own define gates only that family's bind path.
- * Every `#if` nesting decision in the PALs rests on that containment, so the
- * values are computed here and the header is written from them — rather than
- * as separate expressions over the same inputs, which is how the source table
- * came to declare `shadow.cpp` for one filter and the emitter for two.
+ * Every `#if` nesting decision in the PALs rests on that containment, so all
+ * five are computed here and the header is written from them, rather than as
+ * separate expressions over the same inputs.
  *
- * `feature-activation.ts` publishes these as the values it CHECKS its own
- * reasoning against, which only means something while the two are different
- * expressions: this module answers from the emitter's inputs, and the
- * inventory answers from the reached features. A drift between them is the
- * disagreement the check exists to catch.
+ * `feature-activation.ts` checks its own inventory against this record. That
+ * comparison means something only while the two stay different derivations,
+ * so its rows spell their reasons from the reached features directly.
  */
 import type { Feature } from "./compiler/types.js";
 
@@ -59,6 +56,8 @@ export interface ShadowCapabilityInputs {
 }
 
 export interface ShadowCapabilities {
+    /** That a shadow generator is reached at all, under either filter. */
+    reached: boolean;
     /**
      * The ESM generator's own resources: four textures and a separable blur.
      * A Standard conjunction because what it gates includes the caster's own
@@ -85,6 +84,7 @@ export function shadowCapabilities(
     const standard = reached && inputs.standardVariants > 0;
     const pbr = reached && inputs.pbrVariants > 0;
     return {
+        reached,
         esm:
             inputs.features.includes("shadow:esm") &&
             inputs.standardVariants > 0,
@@ -92,4 +92,34 @@ export function shadowCapabilities(
         pbr,
         receivers: standard || pbr,
     };
+}
+
+/**
+ * Refuse a scene whose defines would compile to a runtime that answers
+ * wrongly rather than failing.
+ *
+ * `BBLITE_SHADOWS_ESM` gates the ESM generator's own resources, and every
+ * site that reads it is Standard-family code -- the caster's material view
+ * most of all, since `material/pbr/esm-shadow-view.ts` composes here for
+ * nothing yet. A scene reaching the filter with no Standard variant would
+ * compile that define to zero and then refresh its directional generator
+ * through the PCF spot's matrix builder, which answers rather than failing.
+ *
+ * Separate from `shadowCapabilities` because that function is also asked
+ * what a define WOULD be, over synthetic inputs, by the activation
+ * inventory. Only the emission path enforces.
+ */
+export function assertShadowCapabilities(
+    inputs: ShadowCapabilityInputs,
+): void {
+    if (
+        inputs.features.includes("shadow:esm") &&
+        inputs.standardVariants === 0
+    ) {
+        throw new Error(
+            "A scene reaching the ESM shadow generator composes no " +
+                "Standard variant. The ESM caster view is the Standard " +
+                "family's; the PBR one composes nothing yet.",
+        );
+    }
 }

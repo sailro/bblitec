@@ -1,0 +1,92 @@
+{
+  "branch": "claude/node-shadow-receiver",
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "draw_pinned_variant never took the shadow_pass flag draw_standard_variant takes, so a PBR caster drew into the shadow map under main-pass reverse-Z state",
+      "applied": true
+    },
+    {
+      "summary": "the node family's pipeline builders hardcoded the reverse-Z compare, scene sample count and main depth format in both PALs",
+      "applied": true
+    },
+    {
+      "summary": "SDL_GPU's task-pass dispatcher has no node arm; a node draw fell through to the secondary path, which reads the graph index as a shader-variant index",
+      "applied": true
+    },
+    {
+      "summary": "the shadow pass's depth state was typed four times across two backends; each PAL now has one apply_pass_depth_state its three builders call",
+      "applied": true
+    },
+    {
+      "summary": "the shadow map's single sample was hand-typed in both PALs; shadow_map_samples is now emitted from the pin's own target descriptor",
+      "applied": true
+    },
+    {
+      "summary": "five hand-rolled pipeline cache keys with magic multipliers; the tightest separated variant from kind by 4 where the enum has 26 kinds",
+      "applied": true
+    },
+    {
+      "summary": "no_color_output was derived from @location(0) appearing anywhere in the fragment, which is true of its input struct; the fix copied the Standard sibling instead of extracting it",
+      "applied": true
+    },
+    {
+      "summary": "Dawn's shadow_group_for still spelled the scene.lights walk itself; refresh_shadow_generators also duplicated shadow_info_block and the dirty test in both visitors",
+      "applied": true
+    },
+    {
+      "summary": "esm_casters was declared per PAL under the ESM define, making the shared walk's signature depend on which filters a scene reached",
+      "applied": true
+    },
+    {
+      "summary": "the caster-view handle counter advanced only for scene-code PBR casters, so a Standard caster ahead of a PBR one handed the PBR view the wrong handle",
+      "applied": true
+    },
+    {
+      "summary": "compose-pipeline re-implemented recordScenePbrNoColorView's record shape, and sorted the generator list a second time",
+      "applied": true
+    },
+    {
+      "summary": "caster views composed over the scene's whole arm x mesh-feature product; the largest arm spliced the entire shadow-receiver fragment into a `return;` shader",
+      "applied": true
+    },
+    {
+      "summary": "feature-activation's cross-check compared shadowCapabilities against a syntactic copy of itself, so three rows could never fire",
+      "applied": true
+    },
+    {
+      "summary": "shadowCapabilities returned four of the five defines; BBLITE_SHADOWS was a separate call at each site",
+      "applied": true
+    },
+    {
+      "summary": "BBLITE_SHADOWS_ESM is a Standard conjunction, so an ESM generator with only PBR materials compiled the define to zero and then refreshed a directional generator through the PCF spot's matrix builder",
+      "applied": true
+    },
+    {
+      "summary": "docs/features.md claimed BBLITE_SHADOWS gates that a generator exists; it gates nothing under native/",
+      "applied": true
+    },
+    {
+      "summary": "the shadowGeneratorFeatures disjunction was spelled a third time in the generated-source rule",
+      "applied": true
+    },
+    {
+      "summary": "gate comments written as changelogs rather than durable statements, in both example headers, both registry rows and the shared header",
+      "applied": true
+    },
+    {
+      "summary": "dead code and leftovers: unused type imports in both gates, a superseded comment block in cli.ts, a doc contradicting its own sibling, a comment claiming a refusal the code does not perform, a stray blank run, an over-long docs line, a bare inline TODO",
+      "applied": true
+    },
+    {
+      "summary": "the simplify gate was plain JS in tools/, untestable by the dist/test glob, wrote its record into gitignored artifacts/, hashed untracked binaries through a lossy utf8 decode, and nothing invoked it",
+      "applied": true
+    },
+    {
+      "summary": "collapse a caster view's remaining no-colour arms onto one composed variant with selectors for every reachable light mode; their vertex stages are byte-identical and their fragments differ only in dead declarations before a void entry point",
+      "applied": false,
+      "blockedBy": "Deploying one arm's text for another arm's key would diverge from what the pin composes for that key, which is the faithfulness the diff tool's shader-arm match measures. Narrowing instead of collapsing needs the arms a caster's own draw reaches, and nothing has measured which those are for a non-receiving mesh.",
+      "filedIn": "TODO.md, under the shadow family's remaining items"
+    }
+  ]
+}

@@ -1,18 +1,12 @@
 // Regression gate: a scene whose only shadow filter is the ESM directional.
 //
-// The two filters are siblings and every corpus shadow scene reaches BOTH —
-// scene 4 and scene 22 pair an ESM directional with a PCF spot, and scene 18
-// is PCF alone. So `shadow:esm` without `shadow:pcf` is a configuration the
-// corpus never generates, and two predicates drifted inside it unnoticed:
-// `generated-sources.ts` declared `upstream/src/shadow.cpp` for `shadow:pcf`
-// where the emitter writes it for either, and `output-projection.ts` decided
-// `main.cpp`'s include of the pinned generator defaults the same way. Both
-// refused generation for exactly this scene and for nothing else measured.
+// Every corpus shadow scene reaches both filters or PCF alone, so what this
+// pins is that each predicate over them answers for EITHER: the generated
+// source table must declare `upstream/src/shadow.cpp`, and
+// `output-projection.ts` must give `main.cpp` the pinned generator include.
 //
-// What the golden measures is ordinary: the ESM caster pass writing its
-// exponential depth, the separable blur, and the Standard receiver sampling
-// the blurred map. The point of the gate is the CELL, not the picture — it
-// compiles and builds a feature combination no corpus scene reaches.
+// The picture is ordinary — an ESM caster pass, the separable blur, a
+// Standard receiver sampling the blurred map. The cell is the point.
 //
 // Retire it when a corpus scene reaches an ESM generator with no PCF light.
 
@@ -31,7 +25,6 @@ import {
     attachControl,
     registerSceneWithShadowSupport,
 } from "babylon-lite";
-import type { ArcRotateCamera } from "babylon-lite";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();

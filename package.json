@@ -37,7 +37,8 @@
     "scenes:parity": "npm run scene -- parity all --differential",
     "package:demo": "pwsh -File tools/package-demo.ps1",
     "shaders:build": "pwsh -File tools/compile-shaders.ps1",
-    "simplify:verify": "node tools/simplify-gate.mjs",
+    "simplify:verify": "npm run build && node dist/src/verify-simplify.js",
+    "simplify:record": "npm run build && node dist/src/verify-simplify.js --path",
     "status:verify": "npm run build && node dist/src/verify-status.js",
     "lint:exports": "ts-prune -p tsconfig.json"
   },

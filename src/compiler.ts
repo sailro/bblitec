@@ -161,6 +161,7 @@ import type {
     PostProcessTaskManifest,
     ResolvedCompileOptions,
     SceneMeshManifest,
+    ShadowCasterManifest,
     ShadowGeneratorManifest,
     ScenePbrClearCoatManifest,
     ScenePbrAnisotropyManifest,
@@ -3402,21 +3403,20 @@ class Compiler
     /**
      * Records one shadow generator, returning its reach index.
      *
-     * Its casters do not land here: the pin keeps them as a lazy task input
-     * rather than on the generator, and what generation needs from
-     * `setShadowTaskCasterMeshes` is only that the caster materials compose
-     * a no-colour view — which is the feature it reaches, not a list.
+     * Its casters arrive separately, through `recordShadowCasterMaterials`:
+     * the pin keeps them as a lazy task input rather than on the generator,
+     * and `setShadowTaskCasterMeshes` is the call that names them.
      */
     public recordShadowGenerator(
-        entry: Omit<ShadowGeneratorManifest, "casterPbrMaterials">,
+        entry: Omit<ShadowGeneratorManifest, "casters">,
     ): number {
-        this.shadowGenerators.push({ ...entry, casterPbrMaterials: [] });
+        this.shadowGenerators.push({ ...entry, casters: [] });
         return this.shadowGenerators.length - 1;
     }
 
-    public recordShadowCasterMaterials(
+    public recordShadowCasters(
         generatorIndex: number,
-        pbrMaterials: readonly (number | null)[],
+        casters: readonly ShadowCasterManifest[],
     ): void {
         const generator = this.shadowGenerators[generatorIndex];
         if (!generator) {
@@ -3424,7 +3424,7 @@ class Compiler
                 `Shadow generator ${generatorIndex} was never recorded.`,
             );
         }
-        generator.casterPbrMaterials = [...pbrMaterials];
+        generator.casters = [...casters];
     }
 
     /**

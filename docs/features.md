@@ -172,7 +172,7 @@ rather than left to be read off the guards:
 
 | Define | True when | Gates |
 | --- | --- | --- |
-| `BBLITE_SHADOWS` | the scene reaches either generator | that a shadow generator exists at all |
+| `BBLITE_SHADOWS` | the scene reaches either generator | nothing under `native/`. It is the reach itself, published for the inventory and for a guard that needs the generator without either family's receiver; a scene reaching a generator that composes no receiver renders no shadow, so no `#if` has yet wanted it |
 | `BBLITE_STANDARD_SHADOWS` | above, and Standard variants are composed | the Standard family's receiver bind path only |
 | `BBLITE_PBR_SHADOWS` | above, and PBR variants are composed | the PBR family's receiver bind path only |
 | `BBLITE_SHADOW_RECEIVERS` | the union of the two family defines | the GENERATOR half, which belongs to no family: the maps, the samplers, the receiver blocks, the caster pass, its standard-Z depth state, the per-frame matrix update and the release path |
@@ -182,8 +182,9 @@ The union is emitted as a union — `#define BBLITE_SHADOW_RECEIVERS
 (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)` — so the containment is a
 fact the person writing the guard can see, and a helper's guard can be
 checked against its callers' by reading. All five come from one
-`shadowCapabilities` record, which the activation inventory then checks its
-own reasoning against.
+`shadowCapabilities` record; the activation inventory then checks that record
+against its own derivation from the reached features, which is a check only
+while the two stay different expressions.
 
 The feature list is finalized during compilation, before remote assets are
 materialized, with two deliberate exceptions joined afterwards: an asset's

@@ -28,7 +28,6 @@
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { Feature } from "./compiler/types.js";
 import {
-    reachesShadowGenerator,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
@@ -815,7 +814,9 @@ function capabilityRows(
     const standardVariantCount = (emit.pinnedStandardVariants ?? []).length;
     // What the header will SAY, from the same record the emitter writes it
     // from. The rows below state their reasons from the reached features
-    // instead, so `checkedRow` compares two answers rather than one.
+    // directly -- `has("shadow:pcf") || has("shadow:esm")` rather than the
+    // shared predicate -- so `checkedRow` compares two derivations and not
+    // one expression against itself.
     const shadows = shadowCapabilities({
         features,
         standardVariants: standardVariantCount,
@@ -1168,7 +1169,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_SHADOWS",
             "capability",
-            reachesShadowGenerator(features),
+            shadows.reached,
             [
                 [
                     has("shadow:pcf"),
@@ -1214,13 +1215,13 @@ function capabilityRows(
                 // family's, so a scene reaching a generator with no
                 // Standard variant compiles no shadow code at all.
                 [
-                    (reachesShadowGenerator(features)) &&
+                    (has("shadow:pcf") || has("shadow:esm")) &&
                         standardVariantCount > 0,
                     "scene source reached a shadow generator and the scene " +
                         "composes Standard variants",
                 ],
             ],
-            reachesShadowGenerator(features)
+            shadows.reached
                 ? "reached a shadow generator but composes no Standard " +
                     "variant"
                 : "not reached",
@@ -1237,13 +1238,13 @@ function capabilityRows(
                 // scene reaching a generator with no PBR variant compiles
                 // none of the PBR receiver's bind path.
                 [
-                    (reachesShadowGenerator(features)) &&
+                    (has("shadow:pcf") || has("shadow:esm")) &&
                         variantCount > 0,
                     "scene source reached a shadow generator and the scene " +
                         "composes PBR variants",
                 ],
             ],
-            reachesShadowGenerator(features)
+            shadows.reached
                 ? "reached a shadow generator but composes no PBR variant"
                 : "not reached",
             "src/material/pbr/fragments/pbr-shadow-fragment.ts",
@@ -1258,13 +1259,13 @@ function capabilityRows(
                 // maps, samplers, receiver blocks and caster pass exist for
                 // whichever family composed a receiver to sample them.
                 [
-                    (reachesShadowGenerator(features)) &&
+                    (has("shadow:pcf") || has("shadow:esm")) &&
                         (standardVariantCount > 0 || variantCount > 0),
                     "scene source reached a shadow generator and the scene " +
                         "composes a receiver in some family",
                 ],
             ],
-            reachesShadowGenerator(features)
+            shadows.reached
                 ? "reached a shadow generator but composes no receiver"
                 : "not reached",
             "src/shader/fragments/shadow-fragment-core.ts",

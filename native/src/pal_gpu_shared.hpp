@@ -44,9 +44,11 @@
 // None of that is a material family's, so the header and the depth state
 // below ride `BBLITE_SHADOW_RECEIVERS` -- generation's own answer to "does
 // this scene reach a shadow generator AND compose a receiver in SOME
-// family". `BBLITE_SHADOWS_ESM` is still a Standard conjunction, because
-// what it gates includes the caster's own material view and only the
-// Standard family has one (TODO).
+// family". `BBLITE_SHADOWS_ESM` is a Standard conjunction, because what it
+// gates includes the caster's own material view and only the Standard
+// family has one -- so a scene reaching the ESM filter with no Standard
+// variant is refused at generation rather than compiled to a define of
+// zero.
 #if BBLITE_SHADOW_RECEIVERS
 #include <bblite/upstream/pinned_shadow.hpp>
 #endif
@@ -56,6 +58,28 @@
 #include <bblite/upstream/pinned_depth_state.hpp>
 
 namespace bbl::pal {
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/**
+ * A pipeline cache key over a variant, its pipeline kind and the per-pass
+ * flags that change fixed-function state.
+ *
+ * The multiplier separating the variant from the kind is the enum's own
+ * size, so a kind added upstream widens every key instead of colliding with
+ * one -- which the hand-rolled multipliers could not promise: the tightest
+ * of them left five spare kinds, and nothing would have failed at the
+ * sixth.
+ */
+inline std::size_t variant_pipeline_key(
+    std::size_t variant,
+    upstream::RenderPipelineKind kind,
+    std::initializer_list<bool> flags) {
+    std::size_t key = variant * upstream::render_pipeline_kind_count +
+        static_cast<std::size_t>(kind);
+    for (const bool flag : flags) key = key * 2 + (flag ? 1 : 0);
+    return key;
+}
+#endif
 
 /**
  * The depth state one pass takes: the pin's own convention, or the shadow
@@ -83,25 +107,6 @@ inline float pass_depth_clear(bool shadow_pass) {
     return upstream::pinned_depth_clear;
 }
 
-/**
- * A pipeline cache key over a variant, its pipeline kind and the per-pass
- * flags that change fixed-function state.
- *
- * The multiplier separating the variant from the kind is the enum's own
- * size, so a kind added upstream widens every key instead of colliding with
- * one -- which the hand-rolled multipliers could not promise: the tightest
- * of them left five spare kinds, and nothing would have failed at the
- * sixth.
- */
-inline std::size_t variant_pipeline_key(
-    std::size_t variant,
-    upstream::RenderPipelineKind kind,
-    std::initializer_list<bool> flags) {
-    std::size_t key = variant * upstream::render_pipeline_kind_count +
-        static_cast<std::size_t>(kind);
-    for (const bool flag : flags) key = key * 2 + (flag ? 1 : 0);
-    return key;
-}
 
 /**
  * How many samples a pass rasterizes at.

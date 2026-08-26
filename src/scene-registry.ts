@@ -2316,8 +2316,8 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        // `shadow:esm` with no `shadow:pcf`: a feature cell no corpus scene
-        // reaches, and the one two predicates had drifted inside.
+        // Retires when a corpus scene reaches an ESM generator with no
+        // PCF one beside it.
         id: "regression-shadow-esm-only",
         name: "Regression - ESM Shadows Without PCF",
         source: "examples/regression-shadow-esm-only.ts",
@@ -2331,10 +2331,8 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        // A shadow scene with no Standard material, and whose caster is
-        // itself PBR: the cell where the generator-side state, the
-        // standard-Z depth helper and the PBR family's entire shadow-pass
-        // pipeline arm were each gated one family too narrowly.
+        // Retires when a corpus scene casts a shadow from a PBR mesh with
+        // no Standard material in the scene.
         id: "regression-shadow-pbr-only",
         name: "Regression - PBR Shadow Receiver Without Standard",
         source: "examples/regression-shadow-pbr-only.ts",

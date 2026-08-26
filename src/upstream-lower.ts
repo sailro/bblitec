@@ -61,6 +61,7 @@ import type {
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
 import {
+    assertShadowCapabilities,
     reachesShadowGenerator,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
@@ -545,11 +546,13 @@ class GeneratedSourceWriter {
         // The shadow family's five defines, derived once: they are not
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
-        const shadows = shadowCapabilities({
+        const shadowInputs = {
             features,
             standardVariants: (options.pinnedStandardVariants ?? []).length,
             pbrVariants: (options.pinnedVariants ?? []).length,
-        });
+        };
+        assertShadowCapabilities(shadowInputs);
+        const shadows = shadowCapabilities(shadowInputs);
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -577,7 +580,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // the receiver fragment is the Standard family's, so a scene composing no
 // Standard variant compiles no shadow code even having reached a
 // generator.
-#define BBLITE_SHADOWS ${reachesShadowGenerator(features) ? 1 : 0}
+#define BBLITE_SHADOWS ${shadows.reached ? 1 : 0}
 // The ESM generator's own half: four textures and a separable blur. A
 // CONJUNCTION for the same reason the define below is -- every site that
 // reads it is Standard-family code (the caster's own material view, the

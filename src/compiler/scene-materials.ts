@@ -9,6 +9,25 @@ import type {
 } from "./types.js";
 
 /**
+ * A no-colour view of one scene PBR material, at the runtime handle it will
+ * hold.
+ *
+ * The pin's view is the same material record rendered with
+ * `PBR2_NO_COLOR_OUTPUT`, so the derived entry copies its source whole and
+ * differs only in that bit and in where it lands. Two callers build one:
+ * `createPbrNoColorMaterialView` in scene code, whose handle is the next
+ * creation slot, and the shadow task's caster views, whose handles come
+ * after every scene-code material because `registerSceneWithShadowSupport`
+ * appends them when the scene is registered.
+ */
+export function pbrNoColorView(
+    source: ScenePbrMaterialManifest,
+    materialsBefore: number,
+): ScenePbrMaterialManifest {
+    return { ...source, materialsBefore, noColorView: true };
+}
+
+/**
  * The scene-material manifest recorders: the creation-ordered slot
  * counter every material family bumps, and the PBR entries the setter
  * intrinsics stamp. The entry orchestrator holds one instance and
@@ -64,11 +83,9 @@ export class SceneMaterialRecorder {
             "createPbrNoColorMaterialView",
             sourceIndex,
         );
-        this.scenePbrMaterials.push({
-            ...source,
-            materialsBefore: this.recordSceneMaterialSlot(),
-            noColorView: true,
-        });
+        this.scenePbrMaterials.push(
+            pbrNoColorView(source, this.recordSceneMaterialSlot()),
+        );
         return this.scenePbrMaterials.length - 1;
     }
 

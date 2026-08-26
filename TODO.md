@@ -534,6 +534,18 @@ below rather than blocking a scene here.
     `material/pbr/esm-shadow-view.ts` is the ESM half, and no corpus scene
     casts from a PBR material through that generator, so its
     `_esmShadowDepthCode` reaches no composition here.
+  - a caster view's composed arms. The view is drawn on its own caster and
+    nowhere else, so it composes over that mesh's attribute set alone --
+    but still over every light-mode arm the scene has, and a no-colour
+    fragment is `return;` after two texture samples. On
+    `regression-shadow-pbr-only` that is three stage pairs where one does
+    any work; their vertex stages are byte-identical and their fragments
+    differ only in dead declarations ahead of a void entry point. Deploying
+    one arm's text for another arm's key would diverge from what the pin
+    composes for that key, which is exactly what the `diff` report's
+    shader-arm match measures, so the fix is to compose only the arms a
+    caster's own draw reaches -- and nothing has measured which those are
+    for a non-receiving mesh. Unblocks by measuring that.
   - the generator options past the two factories' own reached sets:
     `normalBias` and `forceRefreshEveryFrame` are unreached, and
     `setShadowCasterMaxCascade` is CSM-only.

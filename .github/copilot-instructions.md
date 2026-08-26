@@ -80,6 +80,15 @@ work is not started, or not finished, until it has been passed.
    measurement nobody has taken — and the entry then says what unblocks
    it. "It is outside the scene I was integrating" is not a blocker.
 
+   **The gate is a command, not this paragraph.** `npm run
+   simplify:verify` fails until `docs/reviews/<content-hash>.json` records
+   the angles run and, per finding, whether it was applied — and for an
+   unapplied one, what blocks it and where it is filed. The hash is over
+   the branch's own diff, so applying the findings changes it and the
+   record is written last. `npm run simplify:record` prints the path.
+   It runs first in the validation sequence below, and first in the pull
+   request template, because a skip is then visible in the diff.
+
 ## Diagnose by capture, not by inference
 
 **This is the habit that matters most in this repository.** A rendering
@@ -267,6 +276,7 @@ in `docs/development.md` for compiler, renderer, loader, shader, animation, or
 PAL milestones:
 
 ```powershell
+npm run simplify:verify
 npm test
 npm run scenes:process
 npm run scenes:parity

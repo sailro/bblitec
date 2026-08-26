@@ -1087,7 +1087,6 @@ void ensure_pinned_slots(GpuState& state, std::size_t variant) {
 }
 
 
-
 /**
  * The graphics pipeline for one composed variant under one pipeline kind.
  *
@@ -1372,6 +1371,8 @@ void draw_pinned_variant(
     // The same block as a buffer, for a fragment whose `gp` the shader
     // compile demoted out of the four uniform slots.
     SDL_GPUBuffer* geometry_params_buffer = nullptr,
+    // Set when this draw is a caster in a shadow pass, which takes the
+    // pin's standard-Z depth state rather than this port's reverse-Z.
     bool shadow_pass = false) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
@@ -2642,8 +2643,6 @@ void dump_deformation_uniforms(
 #endif
 
 
-
-
 /** The SDL enumerator for one shared block format. */
 SDL_GPUTextureFormat compressed_texture_format(std::string_view name) {
     switch (compressed_block_format(name)) {
@@ -2899,8 +2898,6 @@ SDL_GPUTexture* upload_cube_texture(
     }
     return texture;
 }
-
-
 
 
 SDL_GPUTexture* upload_rgbd_texture(SDL_GPUDevice* device, const TextureData& texture_data) {

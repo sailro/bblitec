@@ -1,19 +1,18 @@
-// Regression gate: a shadow scene with no Standard material at all.
+// Regression gate: a shadow scene with no Standard material at all, casting
+// from a PBR mesh.
 //
-// Every corpus shadow scene composes Standard variants — scenes 4 and 18 are
-// Standard throughout, and scene 22 pairs a PBR receiver with Standard
-// spheres. So `BBLITE_PBR_SHADOWS` without `BBLITE_STANDARD_SHADOWS` is a
-// configuration the corpus never builds, and the SDL backend's generator-side
-// state, its per-frame matrix update and the `pinned_shadow.hpp` include all
-// sat under Standard-family conditions inside it. Worse, `pass_depth_compare`
-// and `pass_depth_clear` still answered from the reverse-Z convention rather
-// than the pin's standard-Z shadow-target exception — silently, because a
-// helper that answers cannot fail.
+// Every corpus shadow scene composes Standard variants and casts from a
+// Standard mesh, so what this pins is that the shadow half belongs to the
+// generator and not to one family: the generator-side state rides
+// `BBLITE_SHADOW_RECEIVERS`, `pass_depth_compare` and `pass_depth_clear`
+// answer standard-Z under it, and the caster draws through whichever family
+// its own material belongs to — with that family's pipeline taking the
+// shadow pass's compare, sample count and depth format.
 //
-// So the caster pass in THIS scene is the thing under test: it clears its map
-// to the pin's own far value and compares `less-equal`, and a regression puts
-// the shadow back or takes it away entirely. Both meshes are PBR, which is
-// what keeps `BBLITE_STANDARD_VARIANTS` at zero.
+// The caster pass is what the golden measures. Its map clears to the pin's
+// own far value and compares `less-equal`, so a regression moves the shadow
+// or removes it. Both meshes are PBR, which keeps `BBLITE_STANDARD_VARIANTS`
+// at zero.
 //
 // Retire it when a corpus scene reaches a shadow generator with no Standard
 // material.
@@ -34,7 +33,6 @@ import {
     attachControl,
     registerSceneWithShadowSupport,
 } from "babylon-lite";
-import type { ArcRotateCamera } from "babylon-lite";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
