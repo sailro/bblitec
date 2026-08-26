@@ -91,18 +91,32 @@ export interface CompileManifest {
  */
 export interface ShadowGeneratorManifest {
     /**
-     * The pinned filter. Only spot-light PCF is reached, and composition
-     * maps it onto the receiver fragment's own `shadowType` — so a
-     * generator family added here without a receiver arm refuses at
-     * composition rather than composing the PCF one.
+     * The pinned filter. Composition maps it onto the receiver fragment's
+     * own `shadowType` — so a generator family added here without a
+     * receiver arm refuses at composition rather than composing a
+     * neighbour's.
      */
-    kind: "pcf-spot";
+    kind: "pcf-spot" | "esm-directional";
     /**
      * Which `scene.lights` slot the owning light occupies. The pinned
      * receiver fragment suffixes every varying and binding with it, so a
      * light added at a different position composes a different fragment.
      */
     lightIndex: number;
+    /**
+     * The three ESM options that decide generated artifacts rather than
+     * run-time values, for the generators that carry them.
+     *
+     * `createShadowBlurFragmentWGSL` folds `blurKernel` into the tap offsets
+     * and weights it emits, and `mapSize`/`blurScale` size four textures and
+     * the texel step the blur walks — so all three decide shader TEXT or a
+     * GPU resource and have to reach generation.
+     */
+    esm?: {
+        mapSize?: number;
+        blurKernel?: number;
+        blurScale?: number;
+    };
 }
 
 /**
@@ -1155,6 +1169,7 @@ export type Feature =
     | "mesh:box"
     | "mesh:from-data"
     | "mesh:ground"
+    | "mesh:ground-heightmap"
     | "mesh:lines"
     | "mesh:morph-targets"
     | "mesh:plane"
@@ -1174,6 +1189,7 @@ export type Feature =
     // resources and receiver composition (`shadow:pcf`), and the scene-owned
     // frame-graph task that schedules them (`shadow:task`), which
     // `registerSceneWithShadowSupport` is the only way to reach.
+    | "shadow:esm"
     | "shadow:pcf"
     | "shadow:task"
     | "sprite:2d"

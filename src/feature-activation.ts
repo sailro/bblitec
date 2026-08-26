@@ -439,6 +439,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/create-ground.ts",
         consumers: CMAKE,
     },
+    "mesh:ground-heightmap": {
+        provenance: "src/mesh/create-ground.ts",
+        consumers: CMAKE,
+    },
     "mesh:lines": {
         provenance: "src/mesh/create-line-system.ts",
         consumers: CMAKE,
@@ -474,6 +478,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "scene:remove": {
         provenance: "src/scene/scene-remove.ts",
         consumers: CMAKE,
+    },
+    "shadow:esm": {
+        provenance: "src/shadow/esm-directional-shadow-generator.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
     },
     "shadow:pcf": {
         provenance: "src/shadow/pcf-spotlight-shadow-generator.ts",
@@ -1141,11 +1149,15 @@ function capabilityRows(
         checkedRow(
             "BBLITE_SHADOWS",
             "capability",
-            has("shadow:pcf"),
+            has("shadow:pcf") || has("shadow:esm"),
             [
                 [
                     has("shadow:pcf"),
                     "scene source reached shadow:pcf",
+                ],
+                [
+                    has("shadow:esm"),
+                    "scene source reached shadow:esm",
                 ],
             ],
             "not reached",
@@ -1153,22 +1165,46 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
+            "BBLITE_SHADOWS_ESM",
+            "capability",
+            has("shadow:esm") && standardVariantCount > 0,
+            [
+                // One reason, because the define is a CONJUNCTION: every
+                // site that reads it is Standard-family code, so a scene
+                // reaching the filter with no Standard variant compiles no
+                // ESM code at all.
+                [
+                    has("shadow:esm") && standardVariantCount > 0,
+                    "scene source reached shadow:esm and the scene " +
+                        "composes Standard variants",
+                ],
+            ],
+            has("shadow:esm")
+                ? "reached shadow:esm but composes no Standard variant"
+                : "not reached",
+            "src/shadow/esm-directional-shadow-generator.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
             "BBLITE_STANDARD_SHADOWS",
             "capability",
-            has("shadow:pcf") && standardVariantCount > 0,
+            (has("shadow:pcf") || has("shadow:esm")) &&
+                standardVariantCount > 0,
             [
                 // One reason, because the define is a CONJUNCTION: the
                 // receiver fragment this port composes is the Standard
                 // family's, so a scene reaching a generator with no
                 // Standard variant compiles no shadow code at all.
                 [
-                    has("shadow:pcf") && standardVariantCount > 0,
-                    "scene source reached shadow:pcf and the scene " +
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        standardVariantCount > 0,
+                    "scene source reached a shadow generator and the scene " +
                         "composes Standard variants",
                 ],
             ],
-            has("shadow:pcf")
-                ? "reached shadow:pcf but composes no Standard variant"
+            has("shadow:pcf") || has("shadow:esm")
+                ? "reached a shadow generator but composes no Standard " +
+                    "variant"
                 : "not reached",
             "src/material/standard/fragments/std-shadow-fragment.ts",
             ["render_capabilities.hpp"],

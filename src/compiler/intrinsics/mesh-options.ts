@@ -65,15 +65,31 @@ export function compileBoxOptions(
     return [size, size, size];
 }
 
+/**
+ * `createFlatGroundData`'s own defaults, in the order the native record
+ * takes them. Both ground builders emit this when the scene passes no
+ * options, so the two cannot drift.
+ */
+export const GROUND_OPTION_DEFAULTS: readonly [
+    string,
+    string,
+    string,
+    string,
+    string,
+] = ["1.0", "1.0", "1u", "1.0f", "1.0f"];
+
 export function compileGroundOptions(
     context: MeshOptionContext,
     expression: ts.Expression,
+    // What the heightmap builder adds to the same grid options; validating
+    // here rather than twice keeps ONE list of what a ground option may be.
+    alsoAllowed: readonly string[] = [],
 ): [string, string, string, string, string] {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
         object,
-        ["width", "height", "subdivisions", "uvScale"],
+        ["width", "height", "subdivisions", "uvScale", ...alsoAllowed],
         "Ground options support width, height, subdivisions, and uvScale.",
     );
     const width = context.objectProperty(object, "width");
@@ -105,6 +121,32 @@ export function compileGroundOptions(
             : "1u",
         compiledUvScale[0],
         compiledUvScale[1],
+    ];
+}
+
+/**
+ * The heightmap builder's options: the flat grid's, plus the displacement range.
+ *
+ * The pin builds the grid with `createFlatGroundData(opts)` and then displaces
+ * it, so the grid fields are read by exactly the rule above and only the two
+ * height bounds are this builder's own.
+ */
+export function compileGroundFromHeightMapOptions(
+    context: MeshOptionContext,
+    expression: ts.Expression,
+): [string, string, string, string, string, string, string] {
+    const object = context.expectObjectLiteral(expression);
+    const grid = compileGroundOptions(context, expression, [
+        "minHeight",
+        "maxHeight",
+    ]);
+    const minHeight = context.objectProperty(object, "minHeight");
+    const maxHeight = context.objectProperty(object, "maxHeight");
+    return [
+        ...grid,
+        // Pinned defaults from createGroundFromHeightMap: 0 and 1.
+        minHeight ? context.compileNumber(minHeight, "double") : "0.0",
+        maxHeight ? context.compileNumber(maxHeight, "double") : "1.0",
     ];
 }
 

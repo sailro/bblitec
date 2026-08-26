@@ -1549,6 +1549,34 @@ the per-100 ms RMS rising monotonically as its own
 for exactly this reason, so the browser half of a PCM comparison already
 exists; that comparison is the gate this slice still lacks.
 
+## What is measured: the canvas, not the page
+
+**DOM content is out of scope.** A parity measurement compares the native
+frame against the browser's `#renderCanvas` and nothing else. Before every
+golden screenshot the capture hides the canvas's siblings
+(`hideNonCanvasChrome`, `src/browser-harness.ts`), so anything a demo page
+draws in HTML is absent from both sides of the comparison.
+
+This is a real limitation, not a formatting choice:
+
+- **The native runtime has no DOM and never will at this seam.** It draws a
+  frame; it does not lay out or paint HTML. A page widget left in the golden
+  would measure a browser control against a renderer that cannot have one.
+- **Scenes do append their own controls.** Scene 4 is the reached case — two
+  toggle buttons positioned over the canvas. They are 19,800 pixels at
+  MAD 51 against 0.000 everywhere else in that scene, so they would have
+  been the whole of its residual.
+- **A scene whose rendered output DEPENDS on that DOM is not integrable
+  as-is.** The controls are hidden, not clicked: whatever the page shows on
+  load is what is measured. A scene needing a button pressed first would
+  need its pose expressed in scene source, the way every other reached
+  scene's is.
+
+Hiding is done at capture time and touches nothing else — not the scene, not
+the canvas, not anything the scene drew into it. For a page with no such
+elements it is a no-op, which is why re-capturing an already-shipped scene
+reproduces its committed golden byte for byte.
+
 ## Parity reports
 
 Reports name the backend they measured and include:

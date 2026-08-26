@@ -210,6 +210,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:box",
             "mesh:from-data",
             "mesh:ground",
+            "mesh:ground-heightmap",
             "mesh:morph-targets",
             "mesh:plane",
             "mesh:sphere",

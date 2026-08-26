@@ -474,10 +474,16 @@ interface VariantBinding {
         | "texture2d"
         | "texture2dLoad"
         | "textureCube"
+        // The shadow receiver's two: a PCF map is a depth texture read
+        // through a comparison sampler, an ESM map an ordinary float one
+        // read through an ordinary sampler, and the pin puts whichever the
+        // scene's generators produce in the same group.
+        | "textureDepth2d"
         | "sampler"
+        | "samplerComparison"
         | "storageBuffer"
         | "uniformBuffer";
-    /** Which stages declare it; group 1 is shared by both. */
+    /** Which stages declare it; a shared group is declared by both. */
     vertex: boolean;
     fragment: boolean;
 }
@@ -496,12 +502,52 @@ interface VariantBinding {
  * to bind an rgba32float texture as filterable, and the pin's bone palette is
  * exactly that.
  */
+/**
+ * Which light and which role one group-2 binding name serves.
+ *
+ * `createShadowFragment` builds every name as `<role>_<lightIndex>`, where
+ * the index is the light's own slot in `scene.lights` -- so the suffix is a
+ * declared join key, and reading it HERE means neither backend parses a name
+ * to answer "which generator is this". A name outside the pin's three shapes
+ * fails generation rather than being bound to a guess.
+ */
+export function shadowBindingSlot(
+    name: string,
+): { role: "map" | "map_sampler" | "info"; light: number } {
+    const match = name.match(
+        /^shadow(Tex|Samp|Comp|Info)_(\d+)$/,
+    );
+    if (!match) {
+        throw new Error(
+            `A composed shadow binding is named '${name}', which is none of ` +
+                "the pin's own shadowTex_/shadowSamp_/shadowComp_/" +
+                "shadowInfo_ shapes.",
+        );
+    }
+    return {
+        role: match[1] === "Tex"
+            ? "map"
+            : match[1] === "Info"
+              ? "info"
+              : "map_sampler",
+        light: Number(match[2]),
+    };
+}
+
 export function variantBindings(
     vertexWgsl: string,
     fragmentWgsl: string,
+    // Which group to read. Group 1 is the per-draw one every family shares;
+    // group 2 is the shadow receiver's, whose rows the same reflection
+    // answers for -- the composed text is the only authority on either.
+    group = 1,
 ): readonly VariantBinding[] {
-    const pattern =
-        /@group\(1\)\s*@binding\((\d+)\)\s*var(?:<([^>]*)>)?\s*([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
+    const pattern = new RegExp(
+        `@group\\(${group}\\)\\s*@binding\\((\\d+)\\)\\s*` +
+            "var(?:<([^>]*)>)?\\s*([A-Za-z0-9_]+)\\s*:\\s*" +
+            "([A-Za-z0-9_<>]+)",
+        "g",
+    );
     const byBinding = new Map<number, VariantBinding>();
     for (const [text, isVertex] of [
         [vertexWgsl, true],
@@ -518,15 +564,22 @@ export function variantBindings(
             // storage buffers in the vertex stage.
             const kind = addressSpace.startsWith("storage")
                 ? "storageBuffer"
-                // Group-1 uniform blocks past the hand-managed mesh (0) and
+                // A group-1 uniform block past the hand-managed mesh (0) and
                 // material (1): the geometry arms' gpUniforms is the reached
-                // one, and Dawn builds its layout entry from this row.
+                // one, and Dawn builds its layout entry from this row. Every
+                // uniform block of another group is the group's own.
                 : addressSpace.startsWith("uniform")
-                ? (Number(match[1]) > 1 ? "uniformBuffer" : undefined)
+                ? (group !== 1 || Number(match[1]) > 1
+                    ? "uniformBuffer"
+                    : undefined)
                 : type.startsWith("texture_cube")
                 ? "textureCube"
+                : type.startsWith("texture_depth")
+                ? "textureDepth2d"
                 : type.startsWith("texture_")
                 ? (sampled ? "texture2d" : "texture2dLoad")
+                : type === "sampler_comparison"
+                ? "samplerComparison"
                 : type === "sampler"
                 ? "sampler"
                 : undefined;
@@ -2442,11 +2495,24 @@ export function pinnedStandardVariantsHeader(
     const table: string[] = [];
     const bindingRows: string[] = [];
     const attributeRows: string[] = [];
+    const shadowRows: string[] = [];
     for (const variant of variants) {
         const attributes = variantAttributes(variant.vertexWgsl);
         const bindings = variantBindings(
             variant.vertexWgsl,
             variant.fragmentWgsl,
+        );
+        // The receiver's own group, read the same way and for the same
+        // reason: `createShadowFragment` numbers three bindings per
+        // shadow-casting light in `scene.lights` order and picks each one's
+        // TYPE from that light's filter, so a scene mixing an ESM
+        // directional with a PCF spot declares a float texture beside a
+        // depth one in the same group. A layout built from a light count
+        // could not tell them apart.
+        const shadowBindings = variantBindings(
+            variant.vertexWgsl,
+            variant.fragmentWgsl,
+            2,
         );
         const fragmentOutputStruct = variant.fragmentWgsl.match(
             /struct FragmentOutput \{[^}]*\}/,
@@ -2469,6 +2535,7 @@ export function pinnedStandardVariantsHeader(
                 `"${variant.fragment}", ${variant.features}, ` +
                 `${variant.meshFeatures}, ` +
                 `${bindingRows.length}, ${bindings.length}, ` +
+                `${shadowRows.length}, ${shadowBindings.length}, ` +
                 `${attributeRows.length}, ${attributes.length}, ` +
                 `${
                     hasColorReturn || fragmentOutputStruct
@@ -2495,6 +2562,17 @@ export function pinnedStandardVariantsHeader(
             bindingRows.push(
                 `    {${entry.binding}, "${entry.name}", ` +
                     `StandardBindingKind::${entry.kind}, ` +
+                    `${entry.vertex ? "true" : "false"}, ` +
+                    `${entry.fragment ? "true" : "false"}},`,
+            );
+        }
+        for (const entry of shadowBindings) {
+            const slot = shadowBindingSlot(entry.name);
+            shadowRows.push(
+                `    {${entry.binding}, "${entry.name}", ` +
+                    `StandardBindingKind::${entry.kind}, ` +
+                    `StandardShadowRole::${slot.role}, ` +
+                    `${slot.light}u, ` +
                     `${entry.vertex ? "true" : "false"}, ` +
                     `${entry.fragment ? "true" : "false"}},`,
             );
@@ -2582,7 +2660,13 @@ enum class StandardBindingKind {
     texture2d,
     texture2dLoad,
     textureCube,
+    // The shadow receiver's two: a PCF map is a depth texture read through a
+    // comparison sampler, an ESM one an ordinary float texture read through
+    // an ordinary sampler, and the pin puts whichever the scene's generators
+    // produce into the same group.
+    textureDepth2d,
     sampler,
+    samplerComparison,
     storageBuffer,
     // A group-1 uniform block past mesh (0) and material (1): the UV
     // transform block \`up\`, and the geometry arms' gpUniforms.
@@ -2600,6 +2684,38 @@ struct StandardVariantBinding {
 inline constexpr std::array<StandardVariantBinding, ${bindingRows.length}>
     standard_variant_bindings{{
 ${bindingRows.join("\n")}
+}};
+
+/** What one group-2 row serves for its light. */
+enum class StandardShadowRole {
+    /** The generator's own map. */
+    map,
+    /** The sampler that map is read through. */
+    map_sampler,
+    /** That generator's receiver block. */
+    info,
+};
+
+/**
+ * The receiver's group, read out of the composed text like the group above.
+ *
+ * \`light\` is the ordinal in the scene's shadow-generator walk, which is what
+ * turns the pin's own \`shadowTex_<lightIndex>\` naming into a join a backend
+ * can make without parsing a name.
+ */
+struct StandardShadowBinding {
+    std::uint32_t binding;
+    std::string_view name;
+    StandardBindingKind kind;
+    StandardShadowRole role;
+    std::uint32_t light;
+    bool vertex;
+    bool fragment;
+};
+
+inline constexpr std::array<StandardShadowBinding, ${shadowRows.length}>
+    standard_shadow_bindings{{
+${shadowRows.join("\n")}
 }};
 
 struct StandardVariantAttribute {
@@ -2624,6 +2740,9 @@ struct StandardVariantEntry {
     /** Half-open range into the binding table above. */
     std::size_t first_binding;
     std::size_t binding_count;
+    /** Half-open range into the shadow (group 2) binding table. */
+    std::size_t first_shadow_binding;
+    std::size_t shadow_binding_count;
     /** Half-open range into the attribute table above. */
     std::size_t first_attribute;
     std::size_t attribute_count;

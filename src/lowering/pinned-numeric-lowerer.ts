@@ -108,6 +108,23 @@ export interface PinnedNumericScope {
     booleanAnd?: boolean;
     /** Native option specialization may make a pinned fallback local dead. */
     maybeUnusedConst?: boolean;
+    /**
+     * How a `for (const x of xs)` spells its range, and what `x` binds to.
+     *
+     * The translator has no types, so it cannot know what a pinned
+     * collection is or what its element exposes; the caller that owns the
+     * native carrier answers both. Returning `undefined` refuses the loop
+     * by name rather than guessing a range.
+     */
+    forOf?: (
+        iterated: string,
+        element: string,
+    ) => {
+        /** The C++ range expression, e.g. `scene.caster_meshes`. */
+        range: string;
+        /** What the element name and its member paths resolve to. */
+        bindings: ReadonlyMap<string, PinnedBinding>;
+    } | undefined;
 }
 
 // The shared arithmetic set plus the comparisons these bodies guard with.
@@ -179,6 +196,44 @@ export class PinnedNumericLowerer {
                 ...this.branch(statement.statement, indent),
                 `${indent}}`,
             ];
+            return lines;
+        }
+        if (ts.isForOfStatement(statement)) {
+            const initializer = statement.initializer;
+            if (
+                !ts.isVariableDeclarationList(initializer) ||
+                initializer.declarations.length !== 1 ||
+                !ts.isIdentifier(initializer.declarations[0]!.name)
+            ) {
+                this.fail(statement, "for-of initializer");
+            }
+            const element = initializer.declarations[0]!.name.getText(
+                this.file,
+            );
+            const iterated = statement.expression.getText(this.file);
+            const resolved = this.scope.forOf?.(iterated, element);
+            if (!resolved) {
+                this.fail(
+                    statement,
+                    `for-of over '${iterated}'`,
+                );
+            }
+            // The element's bindings live only for the body, so a later
+            // loop over a different collection cannot see them.
+            const shadowed = new Map<string, PinnedBinding | undefined>();
+            for (const [name, binding] of resolved.bindings) {
+                shadowed.set(name, this.scope.bindings.get(name));
+                this.scope.bindings.set(name, binding);
+            }
+            const lines = [
+                `${indent}for (const auto& ${element} : ${resolved.range}) {`,
+                ...this.branch(statement.statement, indent),
+                `${indent}}`,
+            ];
+            for (const [name, previous] of shadowed) {
+                if (previous) this.scope.bindings.set(name, previous);
+                else this.scope.bindings.delete(name);
+            }
             return lines;
         }
         if (ts.isThrowStatement(statement)) {
@@ -298,9 +353,21 @@ export class PinnedNumericLowerer {
             // BUFFER aliases: a scalar initializer that names another local
             // (`let rz = fx`) copies the number the way JavaScript does --
             // aliasing it would leak a later mutation into the original.
-            const alias = this.scope.bindings.get(
-                declaration.initializer.getText(this.file),
-            );
+            // A `??` whose left side is the bound buffer and whose right
+            // side is a CONSTANT array aliases the buffer: taking the
+            // present arm is the same specialization the `??` expression
+            // itself makes (`const boundMin = mesh.boundMin ?? [...]`).
+            // A `??` over an allocation (`out ?? new F32(16)`) means the
+            // opposite -- allocate when absent -- so it is left alone.
+            const aliasSource = this.unwrap(declaration.initializer);
+            const aliasKey =
+                ts.isBinaryExpression(aliasSource) &&
+                aliasSource.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken &&
+                ts.isArrayLiteralExpression(this.unwrap(aliasSource.right))
+                    ? this.unwrap(aliasSource.left).getText(this.file)
+                    : declaration.initializer.getText(this.file);
+            const alias = this.scope.bindings.get(aliasKey);
             if (
                 alias &&
                 (alias.type === "f32" ||
@@ -678,11 +745,14 @@ export class PinnedNumericLowerer {
             return `(${optional.present} ? ${optional.member.cpp} : ` +
                 `${absent})`;
         }
+        // A bound buffer answers `length`/`byteLength` however the pin
+        // spells it: a bare local, or a member path the caller bound (a
+        // record's own array, say). Resolving the owner by its text rather
+        // than by its node kind is what makes those the same rule.
         const owner = this.unwrap(node.expression);
-        if (!ts.isIdentifier(owner)) {
-            this.fail(node, "property access");
-        }
-        const binding = this.scope.bindings.get(owner.text);
+        const binding = this.scope.bindings.get(
+            owner.getText(this.file),
+        );
         if (binding && node.name.text === "length") {
             if (binding.type === "f32" || binding.type === "u32") {
                 return `static_cast<double>(${binding.cpp}.size())`;
@@ -799,6 +869,18 @@ export class PinnedNumericLowerer {
                 return (
                     `bbl::js::or_number(${this.expression(node.left)}, ` +
                     `${this.expression(node.right)})`
+                );
+            case ts.SyntaxKind.AmpersandToken:
+                // A mask over an integral loop counter (`corner & 1` picks
+                // one AABB corner's axis). JavaScript coerces both sides to
+                // int32 before masking, so the emitted form says that
+                // rather than relying on either side already being one --
+                // every other numeric local here is a double.
+                return (
+                    `(static_cast<std::int32_t>(` +
+                    `${this.expression(node.left)}) & ` +
+                    `static_cast<std::int32_t>(` +
+                    `${this.expression(node.right)}))`
                 );
             case ts.SyntaxKind.AmpersandAmpersandToken:
                 if (this.scope.booleanAnd) {

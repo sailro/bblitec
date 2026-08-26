@@ -1,10 +1,11 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
 } from "../option-helpers.js";
+import { GROUND_OPTION_DEFAULTS } from "./mesh-options.js";
 
 export interface MeshIntrinsicContext
     extends IntrinsicCallContext,
@@ -15,6 +16,15 @@ export interface MeshIntrinsicContext
     compileGroundOptions(
         expression: ts.Expression,
     ): [string, string, string, string, string];
+    compileGroundFromHeightMapOptions(
+        expression: ts.Expression,
+    ): [string, string, string, string, string, string, string];
+    registerAsset(
+        source: string,
+        kind: CompileAsset["kind"],
+        faceSize?: number,
+    ): CompileAsset;
+    cppString(value: string): string;
     compilePlaneOptions(
         expression: ts.Expression,
     ): [string, string];
@@ -341,13 +351,7 @@ export function compileMeshIntrinsic(
             );
             const options = call.arguments[1]
                 ? context.compileGroundOptions(call.arguments[1])
-                : [
-                      "1.0f",
-                      "1.0f",
-                      "1u",
-                      "1.0f",
-                      "1.0f",
-                  ];
+                : GROUND_OPTION_DEFAULTS;
             context.reachFeature("mesh:ground", call);
             return {
                 kind: "mesh",
@@ -357,6 +361,47 @@ export function compileMeshIntrinsic(
                     `bbl::GroundOptions{${options[0]}, ` +
                     `${options[1]}, ${options[2]}, ` +
                     `bbl::Vec2{${options[3]}, ${options[4]}}})`,
+                engineCpp:
+                    engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
+            };
+        }
+
+        case "createGroundFromHeightMap": {
+            const sceneMeshIndex = context.recordSceneMesh("ground");
+            context.expectArgumentCount(call, 2, 3);
+            const engine =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            const asset = context.registerAsset(
+                context.compileStringLiteral(call.arguments[1]!),
+                "texture",
+            );
+            const options = call.arguments[2]
+                ? context.compileGroundFromHeightMapOptions(
+                      call.arguments[2],
+                  )
+                : [
+                      ...GROUND_OPTION_DEFAULTS,
+                      // createGroundFromHeightMap's own two.
+                      "0.0",
+                      "1.0",
+                  ];
+            context.reachFeature("mesh:ground-heightmap", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_ground_from_height_map(${engine.cpp}, ` +
+                    `bbl::GroundOptions{${options[0]}, ` +
+                    `${options[1]}, ${options[2]}, ` +
+                    `bbl::Vec2{${options[3]}, ${options[4]}}}, ` +
+                    `${options[5]}, ${options[6]}, ` +
+                    `${context.cppString(asset.output)})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
                 directMorphCompatible: true,

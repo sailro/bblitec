@@ -33,9 +33,15 @@ export interface ShadowIntrinsicContext
     ): string | undefined;
     fail(node: ts.Node, message: string): never;
     recordShadowGenerator(entry: {
-        kind: "pcf-spot";
+        kind: "pcf-spot" | "esm-directional";
         lightIndex: number;
+        esm?: {
+            mapSize?: number;
+            blurKernel?: number;
+            blurScale?: number;
+        };
     }): number;
+    esmGeneratorOrdinal(): number;
 }
 
 /**
@@ -54,6 +60,34 @@ const spotOptions = [
     "darkness",
     "near",
     "far",
+] as const;
+
+/**
+ * The options `createEsmDirectionalShadowGenerator` takes.
+ *
+ * Three of them decide generated artifacts rather than run-time values:
+ * `mapSize` and `blurScale` size four GPU textures, and `blurKernel` is
+ * folded into the blur fragment's own tap table by
+ * `createShadowBlurFragmentWGSL`. The rest stay run-time expressions,
+ * because scene 4 reads the two ortho bounds off the camera it just
+ * configured. `forceRefreshEveryFrame` is unreached and refuses by name.
+ */
+const esmDirectionalOptions = [
+    "mapSize",
+    "depthScale",
+    "bias",
+    "blurKernel",
+    "blurScale",
+    "darkness",
+    "frustumEdgeFalloff",
+    "orthoMinZ",
+    "orthoMaxZ",
+] as const;
+
+/** The ESM ordinal is generation's, not an option the scene passes. */
+const esmDirectionalEmitted = [
+    ...esmDirectionalOptions,
+    "esmIndex",
 ] as const;
 
 export function compileShadowIntrinsic(
@@ -131,6 +165,107 @@ export function compileShadowIntrinsic(
                     `})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
                 shadowGeneratorIndex: index,
+            };
+        }
+
+        case "createEsmDirectionalShadowGenerator": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const light = context.compileValue(call.arguments[1]!);
+            context.expectKind(light, "light", call.arguments[1]!);
+            if (light.lightKind !== "directional") {
+                context.fail(
+                    call.arguments[1]!,
+                    "An ESM directional shadow generator takes a " +
+                        "directional light, received a " +
+                        `${light.lightKind ?? "unknown"} light.`,
+                );
+            }
+            if (light.sceneLightIndex === undefined) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A shadow generator's light must be added to the scene " +
+                        "first: the composed receiver fragment names its " +
+                        "varyings and bindings by the light's scene index.",
+                );
+            }
+            // Each option's pinned default from
+            // `createEsmDirectionalShadowGenerator`, in the order the
+            // emitted options struct takes them.
+            const esmResolved: Record<string, string> = {
+                mapSize: "bbl::upstream::esm_default_map_size",
+                depthScale: "bbl::upstream::esm_default_depth_scale",
+                bias: "bbl::upstream::esm_default_bias",
+                blurKernel: "bbl::upstream::esm_default_blur_kernel",
+                blurScale: "bbl::upstream::esm_default_blur_scale",
+                darkness: "bbl::upstream::esm_default_darkness",
+                frustumEdgeFalloff:
+                    "bbl::upstream::esm_default_frustum_edge_falloff",
+                orthoMinZ: "bbl::upstream::esm_default_ortho_min_z",
+                orthoMaxZ: "bbl::upstream::esm_default_ortho_max_z",
+            };
+            // These three reach generation because they decide the blur
+            // shader's own text and the four textures' extents. An option
+            // the scene omits stays omitted, so the pinned factory applies
+            // its own `??` default when generation runs it -- restating one
+            // here would be a second copy of a pinned default.
+            const esmSizes: {
+                mapSize?: number;
+                blurKernel?: number;
+                blurScale?: number;
+            } = {};
+            if (call.arguments[2]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[2],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    esmDirectionalOptions,
+                    "ESM directional shadow generator options",
+                );
+                for (const name of esmDirectionalOptions) {
+                    const expression = context.objectProperty(options, name);
+                    if (!expression) continue;
+                    if (
+                        name === "mapSize" ||
+                        name === "blurScale" ||
+                        name === "blurKernel"
+                    ) {
+                        const literal = compilePositiveInteger(
+                            context,
+                            expression,
+                        );
+                        esmResolved[name] = literal;
+                        esmSizes[name] = Number.parseInt(literal, 10);
+                        continue;
+                    }
+                    esmResolved[name] = context.compileNumber(
+                        expression,
+                        "double",
+                    );
+                }
+            }
+            esmResolved["esmIndex"] = `${context.esmGeneratorOrdinal()}u`;
+            const esmIndex = context.recordShadowGenerator({
+                kind: "esm-directional",
+                lightIndex: light.sceneLightIndex,
+                esm: esmSizes,
+            });
+            context.reachFeature("shadow:esm", call);
+            return {
+                kind: "shadow-generator",
+                cpp:
+                    `bbl::create_esm_directional_shadow_generator(` +
+                    `${engine.cpp}, ${light.cpp}, ` +
+                    `bbl::EsmDirectionalShadowOptions{` +
+                    `${esmDirectionalEmitted
+                        .map((name) => esmResolved[name])
+                        .join(", ")}` +
+                    `})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+                shadowGeneratorIndex: esmIndex,
             };
         }
 

@@ -382,15 +382,41 @@ test("inputs the pin needs but this repo cannot supply throw by name", async () 
         ),
         /instance colours/,
     );
-    const flags = await importPinnedModule<{
-        ESM_SHADOW_OUTPUT: number;
-    }>("material/standard/standard-flags.js");
+    // The CSM receiver is the one shadow filter still refused: it resolves
+    // through the cascaded receiver registry rather than through
+    // `createShadowFragment`'s own two arms.
     await assert.rejects(
         composePinnedStandardVariant(
             {},
-            { passFeatures: flags.ESM_SHADOW_OUTPUT },
+            {
+                meshFeatures: meshBits.MSH_RECEIVE_SHADOWS,
+                shadowLights: [{ lightIndex: 0, shadowType: "csm" }],
+            },
         ),
-        /_esmShadowDepthCode/,
+        /cascaded receiver registry/,
+    );
+});
+
+test("the ESM caster arm composes the pin's own depth code", async () => {
+    const flags = await importPinnedModule<{
+        ESM_SHADOW_OUTPUT: number;
+    }>("material/standard/standard-flags.js");
+    const variant = await composePinnedStandardVariant(
+        {},
+        { passFeatures: flags.ESM_SHADOW_OUTPUT },
+    );
+    assert.equal(
+        variant.features & flags.ESM_SHADOW_OUTPUT,
+        flags.ESM_SHADOW_OUTPUT,
+    );
+    // Verbatim from `createStandardEsmShadowMaterialView`: the exponential
+    // depth the ESM map stores, which is what makes this a colour pass
+    // rather than the depth-only one a PCF caster takes.
+    assert.ok(
+        variant.fragmentWgsl.includes(
+            "let depthSM = clamp(exp(-min(87.0, " +
+                "shadowParams.biasAndScale.z * depthMetricSM)), 0.0, 1.0);",
+        ),
     );
 });
 
@@ -468,6 +494,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             fog: false,
             vertexColors: false,
             noColorViews: false,
+            esmShadowViews: false,
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
             diffusePixelsTexture: false,
@@ -531,6 +558,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             fog: false,
             vertexColors: false,
             noColorViews: false,
+            esmShadowViews: false,
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
             diffusePixelsTexture: false,
@@ -620,6 +648,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             fog: false,
             vertexColors: false,
             noColorViews: false,
+            esmShadowViews: false,
             emissiveRenderTexture: false,
             diffuseRenderTexture: false,
             diffusePixelsTexture: false,

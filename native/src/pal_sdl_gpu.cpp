@@ -697,6 +697,30 @@ struct GpuState {
     };
     std::vector<ShadowGenerator> shadow_generators;
     SDL_GPUSampler* shadow_comparison_sampler = nullptr;
+    SDL_GPUSampler* shadow_filtering_sampler = nullptr;
+#if BBLITE_SHADOWS_ESM
+    /**
+     * One ESM generator's blur, by its own ESM ordinal -- the row
+     * generation emitted its recorded resources under.
+     *
+     * The pin blurs the ESM colour map horizontally into the first half and
+     * vertically into the second, and that second one IS `sg._depthTexture`,
+     * what the receiver samples. The PIPELINE is per generator too: the blur
+     * fragment's tap table is folded from that generator's own `blurKernel`,
+     * so two kernels are two shaders.
+     */
+    struct EsmBlur {
+        SDL_GPUTexture* source = nullptr;
+        SDL_GPUTexture* blur_h = nullptr;
+        SDL_GPUTexture* blur_v = nullptr;
+        SDL_GPUGraphicsPipeline* pipeline = nullptr;
+        /** `sg._shadowParamsUBO`, as bytes the caster stage is pushed. */
+        std::array<float, 8> params{};
+    };
+    std::vector<EsmBlur> esm_blurs;
+    /** Refilled per frame by the caster fold, never reallocated. */
+    std::vector<upstream::ShadowCaster> esm_casters;
+#endif
 #endif
 #endif
 #if BBLITE_NODE_VARIANTS > 0
@@ -1673,6 +1697,147 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
  * because the composed fragment reads it through the demoted binding while
  * the vertex stage reads it as a uniform.
  */
+#if BBLITE_SHADOWS_ESM
+// Defined with the frame's own targets, below.
+SDL_GPUTexture* create_frame_texture(
+    SDL_GPUDevice* device,
+    SDL_GPUTextureFormat format,
+    SDL_GPUSampleCount samples,
+    std::uint32_t width,
+    std::uint32_t height,
+    SDL_GPUTextureUsageFlags usage);
+
+SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format) {
+    return format == upstream::EsmTextureFormat::depth32_float
+        ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
+        : SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+}
+
+/**
+ * One ESM generator's blur halves and the pipeline that fills them.
+ *
+ * Every descriptor is what the pinned factory asked its device for when
+ * generation ran it -- the two extents, their format, and the two texel
+ * steps -- so nothing about the blur is decided here. Built once, on the
+ * frame the generator's own colour map first exists.
+ */
+GpuState::EsmBlur& ensure_esm_blur(
+    GpuState& state,
+    const ShadowGeneratorRecord& generator,
+    SDL_GPUTexture* source) {
+    const std::uint32_t esm_index = generator.esm_index;
+    if (state.esm_blurs.size() <= esm_index) {
+        state.esm_blurs.resize(esm_index + 1);
+    }
+    GpuState::EsmBlur& blur = state.esm_blurs[esm_index];
+    blur.source = source;
+    if (blur.pipeline) return blur;
+    // Written once: neither `bias` nor `depthScale` has a setter, which is
+    // the same reason Dawn creates its own buffer once.
+    blur.params = upstream::shadow_params_block(generator);
+    const upstream::EsmShadowResources& resources =
+        upstream::esm_shadow_resources[esm_index];
+    const upstream::EsmTextureDescriptor& half = resources.textures[2];
+    const auto create_half = [&]() {
+        return create_frame_texture(
+            state.device,
+            esm_texture_format(half.format),
+            SDL_GPU_SAMPLECOUNT_1,
+            half.width,
+            half.height,
+            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                SDL_GPU_TEXTUREUSAGE_SAMPLER);
+    };
+    blur.blur_h = create_half();
+    blur.blur_v = create_half();
+    const std::string stem = "shadow-blur-" + std::to_string(esm_index);
+    // The `.slots` sidecars are the only authority on which register each
+    // block kept after HLSL compaction, exactly as for a composed variant.
+    const PinnedStageSlots vertex_slots =
+        read_pinned_stage_slots(stem + ".vert");
+    const PinnedStageSlots fragment_slots =
+        read_pinned_stage_slots(stem + ".frag");
+    SDL_GPUShader* vertex_shader = load_shader(
+        state.device,
+        (stem + ".vert").c_str(),
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<Uint32>(vertex_slots.textures.size()),
+        static_cast<Uint32>(vertex_slots.uniforms.size()),
+        "main",
+        static_cast<Uint32>(vertex_slots.storage.size()));
+    SDL_GPUShader* fragment_shader = load_shader(
+        state.device,
+        (stem + ".frag").c_str(),
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        static_cast<Uint32>(fragment_slots.textures.size()),
+        static_cast<Uint32>(fragment_slots.uniforms.size()),
+        "main",
+        static_cast<Uint32>(fragment_slots.storage.size()));
+    SDL_GPUColorTargetDescription color_target{};
+    // The one target `blurPipeline` declares, as the factory declared it.
+    color_target.format =
+        esm_texture_format(resources.blur_target_format);
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader = vertex_shader;
+    info.fragment_shader = fragment_shader;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.target_info.color_target_descriptions = &color_target;
+    info.target_info.num_color_targets = 1;
+    blur.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    SDL_ReleaseGPUShader(state.device, vertex_shader);
+    SDL_ReleaseGPUShader(state.device, fragment_shader);
+    if (!blur.pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline ESM blur");
+    }
+    return blur;
+}
+
+/** The pin's two blur passes, run straight after the caster pass. */
+void run_esm_blur(
+    GpuState& state,
+    SDL_GPUCommandBuffer* command,
+    std::uint32_t esm_index) {
+    const GpuState::EsmBlur& blur = state.esm_blurs[esm_index];
+    const upstream::EsmShadowResources& resources =
+        upstream::esm_shadow_resources[esm_index];
+    const auto blur_pass = [&](
+                               SDL_GPUTexture* into,
+                               SDL_GPUTexture* read,
+                               const std::array<float, 4>& direction) {
+        SDL_GPUColorTargetInfo target{};
+        target.texture = into;
+        target.load_op = SDL_GPU_LOADOP_CLEAR;
+        target.store_op = SDL_GPU_STOREOP_STORE;
+        target.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
+        SDL_GPURenderPass* pass =
+            SDL_BeginGPURenderPass(command, &target, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(pass, blur.pipeline);
+        SDL_GPUTextureSamplerBinding binding{};
+        binding.texture = read;
+        binding.sampler = state.shadow_filtering_sampler;
+        SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+        // `BlurParams` is declared in both stages, so both are pushed.
+        SDL_PushGPUVertexUniformData(
+            command,
+            0,
+            direction.data(),
+            static_cast<Uint32>(direction.size() * sizeof(float)));
+        SDL_PushGPUFragmentUniformData(
+            command,
+            0,
+            direction.data(),
+            static_cast<Uint32>(direction.size() * sizeof(float)));
+        SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+        SDL_EndGPURenderPass(pass);
+    };
+    blur_pass(blur.blur_h, blur.source, resources.blur_directions[0]);
+    blur_pass(blur.blur_v, blur.blur_h, resources.blur_directions[1]);
+}
+#endif
+
 void update_shadow_generators(
     GpuState& state,
     const Scene& scene,
@@ -1683,9 +1848,9 @@ void update_shadow_generators(
     }
     if (!state.shadow_comparison_sampler) {
         SDL_GPUSamplerCreateInfo info{};
-        // The pinned generator's own sampler: a comparison sampler under
+        // The pinned PCF generator's own sampler: a comparison sampler under
         // `less`, with linear filtering so the hardware averages the four
-        // comparisons each of the nine PCF taps takes.
+        // comparisons each of the nine taps takes.
         info.enable_compare = true;
         info.compare_op = SDL_GPU_COMPAREOP_LESS;
         info.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -1700,6 +1865,37 @@ void update_shadow_generators(
             gpu_error("SDL_CreateGPUSampler shadow comparison");
         }
     }
+    if (!state.shadow_filtering_sampler) {
+        // The pinned ESM generator reads its blurred map through
+        // `getBilinearSampler`. Its two filters are what the factory asked
+        // its device for; everything else it left at WebGPU's defaults,
+        // which clamp and sample the base level.
+        SDL_GPUSamplerCreateInfo info{};
+#if BBLITE_SHADOWS_ESM
+        const auto& blur_sampler =
+            upstream::esm_shadow_resources[0].blur_sampler;
+        info.min_filter =
+            blur_sampler.minify == upstream::EsmFilter::linear
+                ? SDL_GPU_FILTER_LINEAR
+                : SDL_GPU_FILTER_NEAREST;
+        info.mag_filter =
+            blur_sampler.magnify == upstream::EsmFilter::linear
+                ? SDL_GPU_FILTER_LINEAR
+                : SDL_GPU_FILTER_NEAREST;
+#else
+        info.min_filter = SDL_GPU_FILTER_LINEAR;
+        info.mag_filter = SDL_GPU_FILTER_LINEAR;
+#endif
+        info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        state.shadow_filtering_sampler =
+            SDL_CreateGPUSampler(state.device, &info);
+        if (!state.shadow_filtering_sampler) {
+            gpu_error("SDL_CreateGPUSampler shadow filtering");
+        }
+    }
     std::size_t slot = 0;
     for (const LightHandle light : scene.lights) {
         if (light.value >= engine.lights.size()) continue;
@@ -1708,6 +1904,17 @@ void update_shadow_generators(
         if (handle.value >= engine.shadow_generators.size()) continue;
         ShadowGeneratorRecord& generator =
             engine.shadow_generators[handle.value];
+#if BBLITE_SHADOWS_ESM
+        // The ESM fit is sized to the CASTERS, not to the light's own cone,
+        // so it re-reads their world bounds every frame.
+        if (generator.filter == ShadowFilter::esm_directional) {
+            pal::esm_shadow_casters(engine, generator, state.esm_casters);
+            upstream::update_esm_directional_shadow(
+                generator,
+                engine.lights[light.value],
+                state.esm_casters);
+        } else
+#endif
         upstream::update_pcf_spot_shadow(
             generator,
             engine.lights[light.value]);
@@ -1721,9 +1928,18 @@ void update_shadow_generators(
             generator.task.value < engine.frame_tasks.size() &&
             engine.frame_tasks[generator.task.value].render.target.value <
                 state.render_targets.size()) {
-            gpu.map = state.render_targets[
+            const GpuRenderTarget& target = state.render_targets[
                 engine.frame_tasks[generator.task.value]
-                    .render.target.value].depth;
+                    .render.target.value];
+#if BBLITE_SHADOWS_ESM
+            if (generator.filter == ShadowFilter::esm_directional) {
+                // `sg._depthTexture` is the SECOND blur half, never the
+                // depth buffer the caster pass wrote.
+                gpu.map =
+                    ensure_esm_blur(state, generator, target.color).blur_v;
+            } else
+#endif
+            gpu.map = target.depth;
         }
         if (!gpu.map) gpu_error("a shadow generator has no rendered map.");
         if (!gpu.info) {
@@ -1755,26 +1971,38 @@ void update_shadow_generators(
  */
 #if BBLITE_STANDARD_SHADOWS
 /**
- * The generator a pinned shadow binding names, or npos.
+ * The composed group-2 row one binding name belongs to, or null.
  *
- * `createShadowFragment` suffixes every name with the light's index in
- * `scene.lights` (`shadowTex_0`, `shadowComp_0`, `shadowInfo_0`), and the
- * generators are collected in that same order, so the suffix is the index
- * into this backend's own table.
+ * `createShadowFragment` names every binding after its light's slot in
+ * `scene.lights` AND picks its type from that light's filter, so both facts
+ * are reflected into `standard_shadow_bindings` at generation. Reading the
+ * row is what keeps this backend from parsing a name to answer either --
+ * the same discipline `standard_binding_resources` already holds for the
+ * group-1 slots.
  */
-std::size_t shadow_generator_for_binding(
-    const GpuState& state,
-    const std::string& name,
-    const char* prefix) {
-    const std::size_t length = std::strlen(prefix);
-    if (name.size() <= length || name.compare(0, length, prefix) != 0) {
-        return std::numeric_limits<std::size_t>::max();
+const upstream::StandardShadowBinding* shadow_row_for(
+    std::size_t variant,
+    const std::string& name) {
+    for (const upstream::StandardShadowBinding& row :
+         pal::shadow_rows(variant)) {
+        if (name == row.name) return &row;
     }
-    const std::size_t index =
-        static_cast<std::size_t>(std::stoul(name.substr(length)));
-    return index < state.shadow_generators.size()
-        ? index
-        : std::numeric_limits<std::size_t>::max();
+    return nullptr;
+}
+
+/** The sampler row declared beside one light's map. */
+const upstream::StandardShadowBinding* shadow_sampler_row_for(
+    std::size_t variant,
+    std::uint32_t light) {
+    for (const upstream::StandardShadowBinding& row :
+         pal::shadow_rows(variant)) {
+        if (
+            row.light == light &&
+            row.role == upstream::StandardShadowRole::map_sampler) {
+            return &row;
+        }
+    }
+    return nullptr;
 }
 #endif
 
@@ -1783,17 +2011,33 @@ PinnedResource standard_resource_for(
     const GpuMesh& mesh,
     const MaterialRecord* material,
     const StandardRenderTextures& render_textures,
-    const std::string& name) {
+    const std::string& name,
+    [[maybe_unused]] std::size_t variant) {
 #if BBLITE_STANDARD_SHADOWS
-    {
-        const std::size_t generator =
-            shadow_generator_for_binding(state, name, "shadowTex_");
-        if (generator != std::numeric_limits<std::size_t>::max()) {
-            return {
-                state.shadow_generators[generator].map,
-                state.shadow_comparison_sampler,
-            };
+    if (const upstream::StandardShadowBinding* row =
+            shadow_row_for(variant, name)) {
+        if (row->light >= state.shadow_generators.size()) {
+            gpu_error("a composed shadow binding names a missing light.");
         }
+        // SDL_GPU binds a texture and its sampler as one pair, resolved from
+        // the TEXTURE's name -- so which sampler this map takes is the
+        // paired row's to say, not this one's: a PCF map's companion is
+        // declared `sampler_comparison`, an ESM map's a plain `sampler`.
+        const upstream::StandardShadowBinding* companion =
+            shadow_sampler_row_for(variant, row->light);
+        if (!companion) {
+            gpu_error(
+                ("a composed shadow map '" + std::string(row->name) +
+                 "' declares no sampler beside it.")
+                    .c_str());
+        }
+        return {
+            state.shadow_generators[row->light].map,
+            companion->kind ==
+                    upstream::StandardBindingKind::samplerComparison
+                ? state.shadow_comparison_sampler
+                : state.shadow_filtering_sampler,
+        };
     }
 #endif
     for (
@@ -2093,13 +2337,31 @@ void draw_standard_variant(
             return {geometry_params, sizeof(*geometry_params)};
         }
 #if BBLITE_STANDARD_SHADOWS
-        const std::size_t shadow =
-            shadow_generator_for_binding(state, block, "shadowInfo_");
-        if (shadow != std::numeric_limits<std::size_t>::max()) {
+        if (const upstream::StandardShadowBinding* row =
+                shadow_row_for(variant, block)) {
             return {
-                &state.shadow_generators[shadow].block,
+                &state.shadow_generators[row->light].block,
                 sizeof(upstream::ShadowInfoUniforms),
             };
+        }
+#endif
+#if BBLITE_SHADOWS_ESM
+        // The ESM caster's own block, from the generator its material view
+        // was built for -- `getEsmShadowView` closes over that generator's
+        // `_shadowParamsUBO`.
+        if (
+            block == "shadowParams" &&
+            material &&
+            material->esm_shadow_generator.value <
+                engine.shadow_generators.size()) {
+            const std::uint32_t esm_index =
+                engine.shadow_generators[
+                    material->esm_shadow_generator.value].esm_index;
+            if (esm_index < state.esm_blurs.size()) {
+                const std::array<float, 8>& params =
+                    state.esm_blurs[esm_index].params;
+                return {params.data(), params.size() * sizeof(float)};
+            }
         }
 #endif
         return {};
@@ -2129,7 +2391,8 @@ void draw_standard_variant(
                 mesh,
                 material,
                 render_textures,
-                name);
+                name,
+                variant);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -2146,10 +2409,9 @@ void draw_standard_variant(
         [&](const std::string& name) -> SDL_GPUBuffer* {
             if (name == "gp") return geometry_params_buffer;
 #if BBLITE_STANDARD_SHADOWS
-            const std::size_t shadow =
-                shadow_generator_for_binding(state, name, "shadowInfo_");
-            if (shadow != std::numeric_limits<std::size_t>::max()) {
-                return state.shadow_generators[shadow].info;
+            if (const upstream::StandardShadowBinding* row =
+                    shadow_row_for(variant, name)) {
+                return state.shadow_generators[row->light].info;
             }
 #endif
             return nullptr;
@@ -2166,7 +2428,16 @@ void draw_standard_variant(
 #if BBLITE_GPU_MORPH_STORAGE
             if (name == "morphDeltas") return mesh.morph_deltas;
             if (name == "morph") return mesh.morph_weights;
-#else
+#endif
+#if BBLITE_STANDARD_SHADOWS
+            // A receiver whose vertex stage also overflows SDL_GPU's four
+            // uniform slots has its own receiver blocks demoted there too.
+            if (const upstream::StandardShadowBinding* row =
+                    shadow_row_for(variant, name)) {
+                return state.shadow_generators[row->light].info;
+            }
+#endif
+#if !BBLITE_GPU_MORPH_STORAGE && !BBLITE_STANDARD_SHADOWS
             (void)name;
 #endif
             return nullptr;
@@ -3513,6 +3784,12 @@ void release(GpuState& state) {
             state.device,
             state.shadow_comparison_sampler);
         state.shadow_comparison_sampler = nullptr;
+    }
+    if (state.shadow_filtering_sampler) {
+        SDL_ReleaseGPUSampler(
+            state.device,
+            state.shadow_filtering_sampler);
+        state.shadow_filtering_sampler = nullptr;
     }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
@@ -6369,7 +6646,6 @@ bool run_gpu_engine(Engine& engine) {
                         }
 #if BBLITE_STANDARD_SHADOWS
                         if (
-                            !target_record.has_color &&
                             task.render.shadow_generator.value <
                                 engine.shadow_generators.size()) {
                             if (!target_record.has_depth || !target.depth) {
@@ -6392,11 +6668,33 @@ bool run_gpu_engine(Engine& engine) {
                                 SDL_GPU_LOADOP_DONT_CARE;
                             shadow_depth.stencil_store_op =
                                 SDL_GPU_STOREOP_DONT_CARE;
+                            // An ESM caster pass STORES a colour: the
+                            // exponential depth its material view writes.
+                            // A PCF one has no colour attachment at all,
+                            // which is the difference between the two
+                            // pinned targets.
+                            SDL_GPUColorTargetInfo shadow_color{};
+                            if (target_record.has_color) {
+                                if (!target.color) {
+                                    throw std::runtime_error(
+                                        "ESM shadow task has no colour "
+                                        "attachment.");
+                                }
+                                shadow_color.texture = target.color;
+                                shadow_color.load_op = SDL_GPU_LOADOP_CLEAR;
+                                shadow_color.store_op =
+                                    SDL_GPU_STOREOP_STORE;
+                                // `createRenderTask({clrColor:{0,0,0,0}})`.
+                                shadow_color.clear_color =
+                                    SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
+                            }
                             SDL_GPURenderPass* shadow_pass =
                                 SDL_BeginGPURenderPass(
                                     command,
-                                    nullptr,
-                                    0,
+                                    target_record.has_color
+                                        ? &shadow_color
+                                        : nullptr,
+                                    target_record.has_color ? 1u : 0u,
                                     &shadow_depth);
                             SDL_PushGPUVertexUniformData(
                                 command,
@@ -6419,6 +6717,19 @@ bool run_gpu_engine(Engine& engine) {
                                 nullptr,
                                 &generator);
                             SDL_EndGPURenderPass(shadow_pass);
+#if BBLITE_SHADOWS_ESM
+                            // `renderEsmShadowMap` blurs the map it just
+                            // drew, in two passes, before anything samples
+                            // it.
+                            if (
+                                generator.filter ==
+                                ShadowFilter::esm_directional) {
+                                run_esm_blur(
+                                    state,
+                                    command,
+                                    generator.esm_index);
+                            }
+#endif
                             continue;
                         }
 #endif

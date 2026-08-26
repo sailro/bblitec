@@ -549,7 +549,8 @@ rather than in a worker, which is the state `mesh.firstSortReady` waits for
 
 ### Geometry and meshes
 
-Box, sphere, subdivided ground, plane, torus, and tube primitives;
+Box, sphere, subdivided ground, heightmap-displaced ground, plane, torus,
+and tube primitives;
 `createMeshFromData` typed-array meshes; indexed glTF/GLB and `.babylon`
 geometry; every glTF primitive mode WebGPU has a topology for — triangle list,
 triangle strip, points, lines and line strip; generated and
@@ -559,6 +560,18 @@ aliased, so flush and count updates re-read it per frame. An array the caller
 builds at the call site is bound to a name first, because the pool keeps
 referencing it for the whole frame loop; one built inside a block refuses,
 since the binding would not outlive it.
+
+`createGroundFromHeightMap` is the flat ground builder plus the pin's own
+displacement pass, both lowered from their own bodies: the grid's Y is
+displaced by the image's weighted luminance and the normals rebuilt from
+per-face cross products, then the arrays go to `create_mesh_from_data`
+exactly as the pinned wrapper hands them over. The image is packaged like
+any other asset and decoded through the PAL — which is where a greyscale PNG
+turned out to be arriving a level dark, because SDL_image synthesises the
+ramp for a palette-less PNG as `(i * 255) / ncolors` rather than dividing by
+the last index. The PAL rebuilds that ramp where the file carries no `PLTE`
+of its own, which is the only case where the correct one is derivable rather
+than guessed.
 
 `createTube` is lowered from its pinned chain — the circle swept along
 `computePath3D`'s Frenet frames by Rodrigues rotation, triangulated by the
@@ -947,8 +960,9 @@ origin, and every body control past creation.
 
 ### Shadows
 
-Percentage-closer-filtered shadows for a spot light: the caster pass, the
-generator's own map, and the receiver's nine-tap comparison filter.
+Two shadow filters, both reached: a percentage-closer-filtered spot and an
+exponential-shadow-map directional light, and a single receiver may sample
+one of each.
 
 `createPcfSpotlightShadowGenerator(engine, light, cfg)` owns the GPU state —
 a `depth32float` map at `mapSize`, a comparison sampler under the pin's own
@@ -971,8 +985,39 @@ no-colour view — the same arm a scene-code `createStandardNoColorMaterialView`
 reaches — with the receive bit dropped, exactly as `rebuildSingle` computes
 `receiveShadows` as `!shadowOutput && ...`.
 
+**The ESM directional generator.**
+`createEsmDirectionalShadowGenerator(engine, light, cfg)` differs from the
+spot generator in what it stores rather than in how it is scheduled. A
+directional light has no position to project from, so its light-space volume
+is fitted to the CASTERS: `computeDirectionalLightMatrix` folds each caster's
+eight world-space AABB corners into light space and sizes an orthographic
+projection to that box, refitted every frame because the casters move. Its
+caster pass then writes an *exponential* depth into an `rgba16float` colour
+attachment — through `createStandardEsmShadowMaterialView`, a different view
+from the depth-only one a PCF caster takes — and the map is blurred in two
+passes through a separable Gaussian whose tap table the pin FOLDS from
+`blurKernel`: `createShadowBlurFragmentWGSL(64)` emits 33 linear-sampled taps
+with their own offsets and weights, so the kernel decides shader text. What
+the receiver samples is the second blur half, which is what the pinned
+factory sets `sg._depthTexture` to.
+
+Everything that generator builds is read by running the pinned factory
+against a device that records what it was asked for — four textures with
+their formats and usages, both blur stages, the two texel steps, the
+sampler — so none of it is restated here. The blur stages deploy and compile
+like any other composed pair.
+
+**Group 2 is reflected, not counted.** `createShadowFragment` picks each
+binding's TYPE from its own light's filter, so a scene mixing the two
+filters declares a `texture_2d<f32>` beside a `texture_depth_2d`, and a
+plain `sampler` beside a `sampler_comparison`, in one group. A layout driven
+by a light count could not express that, so the group is read out of the
+composed text into `standard_shadow_bindings` exactly as group 1 is, and
+both backends build their layout and their resources from those rows.
+
 **Run time: two passes and one exception.** The caster pass is a depth-only
-render task over the generator's map, rendered from the light: standard-Z
+render task over the generator's map (an ESM one stores a colour beside that
+depth), rendered from the light: standard-Z
 (`less-equal`, cleared to the far value 1), which is the pin's own one
 exception to this port's reverse-Z convention, and the pin's clip-space bias
 baked into the *caster's* view-projection alone — the receiver samples with
@@ -981,12 +1026,14 @@ receiver then binds the map, the comparison sampler and the receiver block as
 the pin's group 2, and `shadowFactors[lightIndex]` scales that light's diffuse
 and specular contribution.
 
-What refuses at generation, by name: the ESM directional generator (its
-blurred colour map and 33-tap kernel), the PCF directional and cascaded
+What refuses at generation, by name: the PCF directional and cascaded
 generators, a PBR or node receiver (each reaches its own pinned fragment), a
 `receiveShadows` written to anything but `true` (the variant is selected at
 generation), an imported mesh as caster or receiver, and every generator
-option past `mapSize`, `bias`, `darkness`, `near` and `far`.
+option past the two factories' own reached sets (`mapSize`, `bias`,
+`darkness`, `near`, `far` for the spot; those plus `depthScale`,
+`blurKernel`, `blurScale`, `frustumEdgeFalloff` and the two ortho bounds for
+the directional) — `normalBias` and `forceRefreshEveryFrame` among them.
 
 ### Navigation
 
