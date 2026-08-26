@@ -248,6 +248,37 @@ export function staticJsonValue(
  * Returns undefined for anything that is not constant, so a caller can
  * refuse by name rather than substituting.
  */
+/**
+ * The member name a `SomeEnum.MEMBER` argument names, by resolved import
+ * symbol rather than by the identifier's spelling.
+ *
+ * Three families take a pinned enum member as an argument --
+ * `PhysicsShapeType`, `GeometryTextureType` and `AnimationGroupMaskMode` --
+ * and each was asking the same three-clause question before checking its own
+ * membership rule. Which members are reachable is the caller's; that the
+ * expression is a member of the pinned enum at all is this.
+ */
+export function pinnedEnumMemberName(
+    context: {
+        readonly symbols: { importedName(node: ts.Node): string | undefined };
+        fail(node: ts.Node, message: string): never;
+    },
+    expression: ts.Expression,
+    enumName: string,
+): string {
+    if (
+        !ts.isPropertyAccessExpression(expression) ||
+        !ts.isIdentifier(expression.expression) ||
+        context.symbols.importedName(expression.expression) !== enumName
+    ) {
+        context.fail(
+            expression,
+            `Expected a member of the pinned ${enumName} enum.`,
+        );
+    }
+    return expression.name.text;
+}
+
 export function staticNumberValue(
     context: PositiveIntegerContext,
     expression: ts.Expression,

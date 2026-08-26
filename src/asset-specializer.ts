@@ -29,8 +29,15 @@ interface GltfSpecialization {
         skins: boolean;
         /** Joints in the largest skin, which the palette transport bounds. */
         maxSkinJoints: number;
-        sparseAccessors: boolean;
         nonTrianglePrimitives: boolean;
+        /**
+         * A primitive that reaches the pipeline as a non-triangle topology --
+         * points, lines or a line strip. A triangle strip is excluded because
+         * the loader expands one into the triangle list it describes, so what
+         * ships is a triangle list; it still sets `nonTrianglePrimitives`,
+         * which is upstream's own predicate for loading the primitive feature.
+         */
+        pointOrLinePrimitives: boolean;
         animationPointerMaterials: boolean;
         transmissiveMaterial: boolean;
         specularReflectance: boolean;
@@ -241,7 +248,7 @@ function textureImageIndex(
  * Fails generation for asset content the pinned loader implements and this
  * port does not, instead of shipping a binary that renders a plausible wrong
  * image (unhandled extensions, eight-influence skinning) or throws while
- * loading (sparse accessors, the un-lowered ORM shapes). The load-time
+ * loading (an unresolved sparse accessor, the un-lowered ORM shapes). The load-time
  * checks stay in the generated loader as defense for `BBLITE_ASSET_DIR`
  * overrides; this names the asset before a native build exists.
  */
@@ -276,10 +283,19 @@ function refuseUnsupportedGltf(
     // detected as `eightInfluenceSkinning` below and recorded as a fidelity
     // adaptation rather than refused: the truncation is bounded (the second
     // pair carries the small weight tail) and Scene 7 gates it.
+
+    // Packaging runs the pin's own `gltf-feature-sparse` preParse over every
+    // asset (compressed-geometry.ts), which materializes each sparse accessor
+    // into a tightly-packed bufferView and deletes `.sparse`. One surviving
+    // here means the packaged document was not produced by that pass, and the
+    // generated loader -- which reads `bufferView` alone, exactly as the
+    // pinned `resolveAccessor` does -- would read the unpatched base values
+    // and render a plausible wrong mesh.
     if (accessors.some((accessor) => accessor.sparse !== undefined)) {
         throw new Error(
-            `${assetName}: sparse glTF accessors are not supported ` +
-                `(the pinned gltf-feature-sparse module reads them).`,
+            `${assetName}: a sparse glTF accessor survived packaging, so ` +
+                `the pinned gltf-feature-sparse preParse did not run over ` +
+                `this document.`,
         );
     }
     for (const material of asRecords(document.materials)) {
@@ -289,20 +305,37 @@ function refuseUnsupportedGltf(
             asObject(material.pbrMetallicRoughness)?.metallicRoughnessTexture,
         );
         const texCoord = asNumber(occlusion.texCoord) ?? 0;
-        if (texCoord === 1 && metallicRoughness !== undefined) {
-            throw new Error(
-                `${assetName}: a glTF occlusion texture on TEXCOORD_1 ` +
-                    `alongside a metallic-roughness texture is not lowered.`,
-            );
-        }
         if (texCoord > 1) {
             throw new Error(
                 `${assetName}: a glTF occlusion texture on TEXCOORD_${texCoord} ` +
                     `is not lowered.`,
             );
         }
+        // `buildDefaultPbrTexturesExt` builds an occlusion carrier beside a
+        // metallic-roughness texture only for `occlusionNeedsSplit` -- a
+        // distinct texture object, or occlusion carrying its own
+        // KHR_texture_transform -- while `assemblePbrPropsExt` sets uv2 mask
+        // bit 32 from the texCoord alone. Naming the same texture object on
+        // TEXCOORD_1 therefore has the composed fragment declare the
+        // dedicated occlusion pair with no texture behind it, which is a
+        // WebGPU validation failure: the browser draws nothing at all and its
+        // golden is a black canvas. Measured on a fixture before this refusal
+        // was written; upstream renders it no more than we would.
         if (
-            texCoord === 0 &&
+            texCoord === 1 &&
+            metallicRoughness !== undefined &&
+            asNumber(occlusion.index) === asNumber(metallicRoughness.index) &&
+            asObject(occlusion.extensions)?.["KHR_texture_transform"] ===
+                undefined
+        ) {
+            throw new Error(
+                `${assetName}: a glTF occlusion texture on TEXCOORD_1 that ` +
+                    `names the same texture object as the ` +
+                    `metallic-roughness slot composes an occlusion binding ` +
+                    `the pinned loader builds no texture for.`,
+            );
+        }
+        if (
             metallicRoughness !== undefined &&
             textureImageIndex(document, occlusion.index) !==
                 textureImageIndex(document, metallicRoughness.index)
@@ -482,7 +515,6 @@ export function specializeGltf(
             ),
         0,
     );
-    const sparseAccessors = accessors.some((accessor) => accessor.sparse !== undefined);
     // The pinned loader reads a second influence pair when a primitive
     // carries one (`gltf-feature-skeleton.ts`, MSH_HAS_SKELETON_8, eight
     // influences per vertex); the generated loader reads four. Recorded per
@@ -494,8 +526,25 @@ export function specializeGltf(
                 !name.endsWith("_0"),
         ),
     );
-    const nonTrianglePrimitives = primitives.some(
-        (primitive) => typeof primitive.mode === "number" && primitive.mode !== 4,
+    // `gltf-feature-registry.ts`'s own trigger for the lazy primitive
+    // feature, minus its negative-determinant half (which this port answers
+    // through `clockwise_front_face` instead): a mode other than TRIANGLES,
+    // on a primitive the Gaussian-splatting feature does not consume. Those
+    // are POINTS by definition and are drawn by a pipeline of their own, so
+    // upstream excludes them here and so must a port that keys a render path
+    // on the same question.
+    const exoticPrimitives = primitives.filter(
+        (primitive) =>
+            typeof primitive.mode === "number" &&
+            primitive.mode !== 4 &&
+            asObject(primitive.extensions)?.["KHR_gaussian_splatting"] ===
+                undefined,
+    );
+    const nonTrianglePrimitives = exoticPrimitives.length > 0;
+    // A triangle strip is excluded because the loader expands one into the
+    // triangle list it describes, so what ships draws as a triangle list.
+    const pointOrLinePrimitives = exoticPrimitives.some(
+        (primitive) => primitive.mode !== 5,
     );
     // Babylon Lite splits KHR_animation_pointer across modules: the base one
     // resolves node targets, and material targets pull their own. A scene
@@ -597,8 +646,11 @@ export function specializeGltf(
     if (animations) modules.add("./gltf-feature-animations.js");
     if (morphTargets) modules.add("./gltf-feature-morph.js");
     if (skins) modules.add("./gltf-feature-skeleton.js");
-    // gltf-feature-sparse.js is unreachable: sparse accessors refuse at
-    // generation above.
+    // gltf-feature-sparse.js is resolved away at packaging by running the
+    // pin's own preParse hook (compressed-geometry.ts), which materializes
+    // every sparse accessor into a tightly-packed bufferView and clears
+    // `.sparse` -- so the packaged document the loader ships against carries
+    // none, exactly as it carries no quantized accessor.
     if (nonTrianglePrimitives) modules.add("./gltf-feature-primitive.js");
     if (extras) modules.add("./gltf-feature-extras.js");
 
@@ -613,8 +665,8 @@ export function specializeGltf(
             maxMorphTargets,
             skins,
             maxSkinJoints,
-            sparseAccessors,
             nonTrianglePrimitives,
+            pointOrLinePrimitives,
             animationPointerMaterials,
             transmissiveMaterial,
             specularReflectance,
@@ -646,6 +698,7 @@ export interface AssetSpecializationFeatures {
      */
     maxSkinJoints: number;
     nonTrianglePrimitives: boolean;
+    pointOrLinePrimitives: boolean;
     nodeVisibility: boolean;
     animationPointer: boolean;
     animationPointerMaterials: boolean;
@@ -678,6 +731,7 @@ export function emitAssetSpecializations(
             morphStorage: false,
             maxSkinJoints: 0,
             nonTrianglePrimitives: false,
+            pointOrLinePrimitives: false,
             nodeVisibility: false,
             animationPointer: false,
             animationPointerMaterials: false,
@@ -764,6 +818,10 @@ export function emitAssetSpecializations(
         nonTrianglePrimitives: specializations.some(
             (specialization) =>
                 specialization.features.nonTrianglePrimitives,
+        ),
+        pointOrLinePrimitives: specializations.some(
+            (specialization) =>
+                specialization.features.pointOrLinePrimitives,
         ),
         nodeVisibility: usesExtension("KHR_node_visibility"),
         // (Dispersion keys on the evaluated pinned predicate below, not on

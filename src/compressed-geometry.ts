@@ -36,6 +36,10 @@ import { readUpstreamPin } from "./upstream-source.js";
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
 const QUANTIZATION_EXTENSION = "KHR_mesh_quantization";
+// The pinned feature's own id. Sparse accessors are core glTF rather than an
+// extension, so the registry triggers the module on a predicate over the
+// accessors instead of on an `extensionsUsed` name.
+const SPARSE_FEATURE_ID = "_sparse";
 
 const COMPONENT_FLOAT = 5126;
 const COMPONENT_UNSIGNED_INT = 5125;
@@ -533,18 +537,17 @@ export async function decompressGeometry(
 
 
 /**
- * The pin's own `KHR_mesh_quantization` feature, whose `preParse` hook is the
- * whole of the extension.
+ * A pinned `preParse` hook, run over one packaged asset.
  *
- * It rewrites every quantized accessor into a freshly-appended tightly-packed
- * FLOAT bufferView so the rest of the loader stays unaware of quantization —
- * a pure function of the asset's own bytes, which is what makes running it at
- * generation the same answer the browser computes rather than a second
- * implementation of it. Upstream imports the module only when `extensionsUsed`
- * lists the extension, so this is also where that boundary belongs: a
- * non-quantized asset is returned untouched.
+ * Two of the three geometry passes are exactly this shape: a document-level
+ * hook that rewrites accessors into freshly appended tightly-packed
+ * bufferViews and hands back the new binary chunk. Each is a pure function of
+ * the asset's own bytes with no browser API in it, which is what makes
+ * running the pin's own module here the same answer the browser computes
+ * rather than a second implementation of it — and each is imported upstream
+ * only behind its own trigger, which is the boundary `trigger` keeps.
  */
-interface QuantizationFeature {
+interface PinnedPreParseFeature {
     default: {
         id: string;
         preParse?: (
@@ -554,88 +557,148 @@ interface QuantizationFeature {
     };
 }
 
-let quantizationFeature: Promise<QuantizationFeature["default"]> | undefined;
+interface PinnedPreParsePass {
+    /** The pinned module, under `loader-gltf/`. */
+    module: string;
+    /** The `id` its default export must still declare. */
+    id: string;
+    /** Upstream's own trigger for importing it. */
+    trigger: (json: JsonRecord) => boolean;
+    /** What the console line says the pass did. */
+    verb: string;
+    /** What a run that rewrote nothing means, for the refusal message. */
+    shape: string;
+    /** Applied to the document after the hook, before it is written. */
+    after?: (json: JsonRecord) => void;
+}
 
-async function loadQuantizationFeature(): Promise<
-    QuantizationFeature["default"]
-> {
-    quantizationFeature ??= (async () => {
-        const module = await importPinnedModule<QuantizationFeature>(
-            "loader-gltf/gltf-ext-quantization.js",
-        );
-        const feature = module.default;
-        if (feature?.id !== QUANTIZATION_EXTENSION || !feature.preParse) {
-            throw new Error(
-                "Pinned loader-gltf/gltf-ext-quantization.js no longer " +
-                    `exports a default ${QUANTIZATION_EXTENSION} feature ` +
-                    "with a preParse hook.",
+const preParseFeatures = new Map<
+    string,
+    Promise<PinnedPreParseFeature["default"]>
+>();
+
+async function loadPreParseFeature(
+    pass: PinnedPreParsePass,
+): Promise<PinnedPreParseFeature["default"]> {
+    let loading = preParseFeatures.get(pass.module);
+    if (!loading) {
+        loading = (async () => {
+            const module = await importPinnedModule<PinnedPreParseFeature>(
+                pass.module,
             );
-        }
-        return feature;
-    })();
-    return quantizationFeature;
+            const feature = module.default;
+            if (feature?.id !== pass.id || !feature.preParse) {
+                throw new Error(
+                    `Pinned ${pass.module} no longer exports a default ` +
+                        `${pass.id} feature with a preParse hook.`,
+                );
+            }
+            return feature;
+        })();
+        preParseFeatures.set(pass.module, loading);
+    }
+    return loading;
 }
 
 /**
- * Rewrites every quantized vertex accessor into tightly-packed floats.
+ * Runs one pinned `preParse` hook over a parsed GLB, in place.
  *
- * Returns the asset unchanged when it does not use the extension. Runs after
- * `decompressGeometry`, which is where the pin runs it too — its `preParse`
- * is ordered after `EXT_meshopt_compression`'s, because a meshopt-filtered
- * animation output is itself quantized data the hook has to see.
+ * Returns whether it ran. The caller keeps the parsed chunks across passes,
+ * so an asset is read and written once however many hooks it triggers.
  */
-async function dequantizeGeometry(
-    bytes: Uint8Array,
+async function runPinnedPreParse(
+    pass: PinnedPreParsePass,
+    glb: GlbChunks,
     label: string,
-): Promise<Uint8Array> {
-    const glb = readGlb(bytes);
-    if (!glb) return bytes;
-    const used = declaredExtensions(glb.json);
-    if (!used.includes(QUANTIZATION_EXTENSION)) {
-        return bytes;
-    }
-
-    const json = glb.json;
-    const feature = await loadQuantizationFeature();
+): Promise<boolean> {
+    if (!pass.trigger(glb.json)) return false;
+    const feature = await loadPreParseFeature(pass);
     const binChunk = new DataView(
         glb.binary.buffer,
         glb.binary.byteOffset,
         glb.binary.byteLength,
     );
-    const rewritten = await feature.preParse?.(json, binChunk);
+    const rewritten = await feature.preParse?.(glb.json, binChunk);
     if (!rewritten) {
         throw new Error(
-            `${label} declares ${QUANTIZATION_EXTENSION} but the pinned ` +
-                "feature converted no accessor, which means the asset " +
-                "carries a quantized shape neither side would dequantize.",
+            `${label} ${pass.shape}, but the pinned ${pass.id} feature ` +
+                "rewrote nothing, which means the asset carries a shape " +
+                "neither side would resolve.",
         );
     }
-
-    const built = Buffer.from(
+    glb.binary = Buffer.from(
         rewritten.buffer,
         rewritten.byteOffset,
         rewritten.byteLength,
     );
-    json.buffers = [{ byteLength: built.length }];
-    dropExtension(json, QUANTIZATION_EXTENSION);
-    console.log(`Dequantized ${label} through the pinned feature.`);
-    return writeGlb(json, built);
+    glb.json.buffers = [{ byteLength: glb.binary.length }];
+    pass.after?.(glb.json);
+    console.log(`${pass.verb} ${label} through the pinned feature.`);
+    return true;
 }
+
+/** The registry's own trigger for the sparse feature. */
+function hasSparseAccessor(json: JsonRecord): boolean {
+    return asRecords(json.accessors).some(
+        (accessor) => accessor.sparse !== undefined,
+    );
+}
+
+/**
+ * The two document-level passes, in the pinned registry's own order.
+ *
+ * Sparse accessors are core glTF rather than an extension, so the registry
+ * triggers their module on a predicate over the accessors; quantization
+ * triggers on its `extensionsUsed` name and drops it once resolved. Both
+ * append tightly-packed bufferViews and clear what they resolved, so the
+ * loader that ships sees an ordinary document either way.
+ */
+const pinnedPreParsePasses: readonly PinnedPreParsePass[] = [
+    {
+        module: "loader-gltf/gltf-feature-sparse.js",
+        id: SPARSE_FEATURE_ID,
+        trigger: hasSparseAccessor,
+        verb: "Materialized",
+        shape: "carries a sparse accessor",
+    },
+    {
+        module: "loader-gltf/gltf-ext-quantization.js",
+        id: QUANTIZATION_EXTENSION,
+        trigger: (json) =>
+            declaredExtensions(json).includes(QUANTIZATION_EXTENSION),
+        verb: "Dequantized",
+        shape: `declares ${QUANTIZATION_EXTENSION}`,
+        after: (json) => dropExtension(json, QUANTIZATION_EXTENSION),
+    },
+];
 
 /**
  * Every geometry extension this port resolves at generation, in the pin's
  * own order.
  *
- * The order is a contract rather than a convenience: upstream runs
- * `KHR_mesh_quantization`'s `preParse` *after* `EXT_meshopt_compression`'s,
- * because a meshopt-filtered animation output is itself quantized data the
- * hook has to see. Expressing it here rather than at each call site is what
- * keeps a caller from getting it backwards -- which would produce a
+ * The order is a contract rather than a convenience, and it is the order
+ * `gltf-feature-registry.ts` lists the hooks in: meshopt decompresses
+ * bufferViews first, then sparse accessors are materialized so their base can
+ * read decompressed data, then `KHR_mesh_quantization` dequantizes what that
+ * leaves -- a meshopt-filtered animation output is itself quantized data the
+ * last hook has to see. Expressing it here rather than at each call site is
+ * what keeps a caller from getting it backwards -- which would produce a
  * plausible wrong mesh rather than an error.
+ *
+ * The two document-level hooks share one parse: an asset is read and written
+ * once however many of them it triggers, and one that triggers neither is
+ * returned byte-for-byte.
  */
 export async function resolveGeometryExtensions(
     bytes: Uint8Array,
     label: string,
 ): Promise<Uint8Array> {
-    return dequantizeGeometry(await decompressGeometry(bytes, label), label);
+    const decompressed = await decompressGeometry(bytes, label);
+    const glb = readGlb(decompressed);
+    if (!glb) return decompressed;
+    let rewrote = false;
+    for (const pass of pinnedPreParsePasses) {
+        rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;
+    }
+    return rewrote ? writeGlb(glb.json, glb.binary) : decompressed;
 }

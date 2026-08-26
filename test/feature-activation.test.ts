@@ -24,6 +24,7 @@ function specialization(
         morphStorage: false,
         maxSkinJoints: 0,
         nonTrianglePrimitives: false,
+        pointOrLinePrimitives: false,
         nodeVisibility: false,
         animationPointer: false,
         animationPointerMaterials: false,

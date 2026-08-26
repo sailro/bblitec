@@ -1384,26 +1384,12 @@ export function emitPropertyAssignment(
         // AnimationGroup.loopAnimation is a public field upstream, and a
         // glTF group's state lives in its asset's runtime, so the write
         // takes the same writer route the group operations take.
-        const group = context.compileValue(left.expression);
-        context.expectKind(
-            group,
-            "animation-group",
-            left.expression,
-        );
-        requireGroupSource(
+        const group = gltfGroupWriteTarget(
             context,
-            group,
             left,
+            expression,
             "loopAnimation",
-            "gltf",
         );
-        if (operator !== "=") {
-            context.fail(
-                left,
-                "loopAnimation takes a plain assignment.",
-            );
-        }
-        context.reachFeature("animation:gltf-groups", left);
         context.emit(
             `bbl::set_animation_loop(${context.requireEngine(
                 group,
@@ -1415,6 +1401,59 @@ export function emitPropertyAssignment(
         return;
     }
 
+    if (left.name.text === "speedRatio") {
+        // AnimationGroup.speedRatio is a public mutable field upstream, and
+        // syncControllerFromGroup pushes it onto the controller whose tick
+        // scales its delta by it. The write takes the same writer route
+        // `loopAnimation` does.
+        const group = gltfGroupWriteTarget(
+            context,
+            left,
+            expression,
+            "speedRatio",
+        );
+        context.reachFeature("animation:gltf-group-speed", left);
+        context.emit(
+            `bbl::set_animation_speed_ratio(${context.requireEngine(
+                group,
+                expression,
+            )}, ${group.cpp}, ${context.compileNumber(
+                expression.right,
+            )});`,
+        );
+        return;
+    }
+
+    if (left.name.text === "mask") {
+        // AnimationGroup.mask is the public field createAnimationGroupMask
+        // fills. The mask value is compile-time, so the write hands its
+        // names and mode to the loader's own resolver, which is where the
+        // pin resolves them too -- the controller's `_setMask`.
+        const group = gltfGroupWriteTarget(
+            context,
+            left,
+            expression,
+            "mask",
+        );
+        const mask = context.compileValue(expression.right);
+        context.expectKind(
+            mask,
+            "animation-group-mask",
+            expression.right,
+        );
+        const names = mask.animationGroupMask?.names ?? [];
+        context.reachFeature("animation:gltf-group-mask", left);
+        context.emit(
+            `bbl::set_animation_mask(${context.requireEngine(
+                group,
+                expression,
+            )}, ${group.cpp}, std::vector<std::string>{${
+                names.map(stringLiteral).join(", ")
+            }}, ${mask.animationGroupMask?.include ? "true" : "false"});`,
+        );
+        return;
+    }
+
     if (left.name.text === "currentTime") {
         // AnimationGroup.currentTime is a public mutable field upstream
         // (src/animation/animation-group.ts): the write is the whole
@@ -1422,28 +1461,14 @@ export function emitPropertyAssignment(
         // next tick. A glTF group's time lives in its asset's runtime, so
         // the write takes the same clip-writer route the group operations
         // and `loopAnimation` above take.
-        const group = context.compileValue(left.expression);
-        context.expectKind(
-            group,
-            "animation-group",
-            left.expression,
-        );
-        requireGroupSource(
+        const group = gltfGroupWriteTarget(
             context,
-            group,
             left,
+            expression,
             "currentTime",
-            "gltf",
         );
-        if (operator !== "=") {
-            context.fail(
-                left,
-                "currentTime takes a plain assignment.",
-            );
-        }
         const value = context.compileValue(expression.right);
         context.expectKind(value, "number", expression.right);
-        context.reachFeature("animation:gltf-groups", left);
         context.reachFeature("animation:gltf-group-time", left);
         context.emit(
             `bbl::set_animation_current_time(${context.requireEngine(
@@ -1582,6 +1607,28 @@ function assignmentOperator(
     }
 }
 
+/**
+ * The group a `group.<field> = …` write names, checked the four ways every
+ * such write has to be: it is a group, it came from a loader rather than
+ * `createPropertyAnimationGroup`, the assignment is plain, and the glTF
+ * group feature is reached. Four fields lower this way -- `loopAnimation`,
+ * `speedRatio`, `mask` and `currentTime` -- and the preamble is where they
+ * would otherwise disagree.
+ */
+function gltfGroupWriteTarget(
+    context: AssignmentContext,
+    left: ts.PropertyAccessExpression,
+    expression: ts.BinaryExpression,
+    field: string,
+): Value {
+    const group = context.compileValue(left.expression);
+    context.expectKind(group, "animation-group", left.expression);
+    requireGroupSource(context, group, left, field, "gltf");
+    requireSimpleAssignment(context, expression, field);
+    context.reachFeature("animation:gltf-groups", left);
+    return group;
+}
+
 function requireSimpleAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -1604,6 +1651,7 @@ import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer
 import { requireGroupSource } from "./intrinsics/animation.js";
 import { emitParticleBufferWrite } from "./particle-buffer.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { stringLiteral } from "../cpp-literals.js";
 import {
     emitDeterministicRandomInstall,
     type DeterministicRandomContext,

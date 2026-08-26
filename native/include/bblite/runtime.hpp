@@ -747,6 +747,24 @@ enum class VertexSpace : std::uint8_t {
     mirrored_local,
 };
 
+/**
+ * A primitive's own topology, as the pin's own index
+ * (`pbr-primitive-topology.ts`: 1 points, 2 lines, 3 line-strip).
+ *
+ * A triangle strip is not an enumerator because the loader expands one into
+ * the triangle list it describes -- the single non-triangle mode that has an
+ * exact triangle-list spelling. `gltf-feature-primitive.ts` keeps the index
+ * on the mesh as a ready-made `GPUPrimitiveState`; here it rides the
+ * geometry, because that is the record the loader fills and the render plan
+ * copies from.
+ */
+enum class MeshTopology : std::uint8_t {
+    triangles,
+    points,
+    lines,
+    line_strip,
+};
+
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
@@ -755,6 +773,7 @@ struct ModelGeometry {
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
     VertexSpace vertex_space = VertexSpace::local;
+    MeshTopology topology = MeshTopology::triangles;
     bool has_tangents = false;
     bool flat_normals = false;
     Vec3 bounds_min{};
@@ -1266,11 +1285,16 @@ struct MaterialRecord {
     float diffuse_v_scale = 1.0f;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
-    // Per-slot glTF texture transforms. Occlusion has no slot of its own: the
-    // pinned pointer registry maps occlusionTexture onto the ORM wrapper, which
-    // is the same texture our loader samples it from.
+    // Per-slot glTF texture transforms. Occlusion carries its own because the
+    // pin's own occlusion carrier does: `buildDefaultPbrTexturesExt` wraps the
+    // occlusion textureInfo separately from the metallic-roughness one, so a
+    // material whose occlusion slot declares a transform of its own samples at
+    // `occlUV` while the ORM slot keeps `ormUV`. Identical for every corpus
+    // material that reaches both, and the pinned pointer registry still maps an
+    // animated occlusion transform onto the ORM wrapper.
     TextureTransform base_color_transform{};
     TextureTransform orm_transform{};
+    TextureTransform occlusion_transform{};
     TextureTransform normal_transform{};
     TextureTransform emissive_transform{};
     TextureTransform clearcoat_transform{};
@@ -1633,10 +1657,24 @@ struct AssetRecord {
     std::function<void(std::size_t, bool)> set_clip_stopped;
     /** Sets one clip's currentTime in seconds. */
     std::function<void(std::size_t, float)> set_clip_time;
-    /** Applies one non-stopped clip at its stored time. */
-    std::function<void(std::size_t)> apply_clip_pose;
+    /**
+     * Applies one clip at its stored time. The boolean is the pin's own
+     * `engine` argument to `goToFrame`: without it a stopped glTF group's
+     * controller is not ticked, with it the pose lands anyway.
+     */
+    std::function<void(std::size_t, bool)> apply_clip_pose;
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
+    /** Sets one clip's speedRatio, which its own advance scales by. */
+    std::function<void(std::size_t, float)> set_clip_speed_ratio;
+    /**
+     * Resolves one clip's AnimationGroupMask against the asset's node names
+     * and stores the skip flags the channel walk reads (the pin's own
+     * resolveAnimationMask).
+     */
+    std::function<
+        void(std::size_t, const std::vector<std::string>&, bool)>
+        set_clip_mask;
     // Marks one clip additive at its reference time (the pin's
     // `group._additive = { referenceTime }`); filled by the generated
     // loader only when the additive mixer is compiled in.
@@ -2244,7 +2282,8 @@ void go_to_frame(
 void go_to_frame(
     Engine& engine,
     AnimationGroupHandle group,
-    float frame);
+    float frame,
+    bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
@@ -2252,6 +2291,15 @@ void set_animation_loop(
     Engine& engine,
     AnimationGroupHandle group,
     bool loop);
+void set_animation_speed_ratio(
+    Engine& engine,
+    AnimationGroupHandle group,
+    float speed_ratio);
+void set_animation_mask(
+    Engine& engine,
+    AnimationGroupHandle group,
+    const std::vector<std::string>& names,
+    bool include);
 void set_animation_current_time(
     Engine& engine,
     AnimationGroupHandle group,

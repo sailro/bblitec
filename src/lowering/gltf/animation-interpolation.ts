@@ -5,6 +5,7 @@ import {
     RenderedCpp,
     additiveTerms,
     collectLaneStores,
+    collectNodes,
     identifierParameters,
     laneMembers,
     pinnedDoubleLiteral,
@@ -1277,11 +1278,149 @@ function emitCubicHermite(
 }
 
 /**
+ * The STEP branch of `evaluateSampler`, asserted rather than restated.
+ *
+ * Unlike the Hermite basis beside it, STEP carries no arithmetic to lower:
+ * it selects one stored key and copies it. What can drift is *which* key --
+ * the pin takes the later one at or past its time
+ * (`srcOff = (t >= t1 ? idx + 1 : idx) * stride`) and the earlier one
+ * inside the span -- so that selection is what this gate pins, and the
+ * generated `sample_step_*` helpers mirror it against
+ * `track_key_at`'s own pair. A branch that stops selecting that way refuses
+ * generation instead of shipping an off-by-one-key pose.
+ */
+function assertPinnedStepSelection(
+    declaration: ts.FunctionDeclaration & { body: ts.Block },
+    file: ts.SourceFile,
+): void {
+    const symbol = "evaluateSampler";
+    const parameters = identifierParameters(symbol, file, declaration);
+    const timeName = parameters[1];
+    const strideName = parameters[2];
+    if (timeName === undefined || strideName === undefined) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer takes (sampler, t, stride, ...)",
+        );
+    }
+    const stepBranch = collectNodes(
+        declaration.body,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            ts.isBinaryExpression(node.expression) &&
+            node.expression.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken &&
+            ts.isIdentifier(node.expression.right) &&
+            node.expression.right.text === "INTERP_STEP",
+    )[0];
+    if (!stepBranch || !ts.isBlock(stepBranch.thenStatement)) {
+        refuseNode(
+            symbol,
+            file,
+            declaration,
+            "no longer carries a STEP branch",
+        );
+        return;
+    }
+    const first = stepBranch.thenStatement.statements[0];
+    const initializer =
+        first &&
+        ts.isVariableStatement(first) &&
+        first.declarationList.declarations.length === 1
+            ? first.declarationList.declarations[0]!.initializer
+            : undefined;
+    // `(t >= t1 ? idx + 1 : idx) * stride`
+    const product =
+        initializer &&
+        ts.isBinaryExpression(initializer) &&
+        initializer.operatorToken.kind === ts.SyntaxKind.AsteriskToken &&
+        ts.isIdentifier(initializer.right) &&
+        initializer.right.text === strideName
+            ? initializer.left
+            : undefined;
+    const conditional =
+        product && ts.isParenthesizedExpression(product)
+            ? product.expression
+            : product;
+    const refuse = (): never =>
+        refuseNode(
+            symbol,
+            file,
+            stepBranch!,
+            "no longer selects the later key at or past its own time",
+        );
+    if (
+        !conditional ||
+        !ts.isConditionalExpression(conditional) ||
+        !ts.isBinaryExpression(conditional.condition) ||
+        conditional.condition.operatorToken.kind !==
+            ts.SyntaxKind.GreaterThanEqualsToken ||
+        !ts.isIdentifier(conditional.condition.left) ||
+        conditional.condition.left.text !== timeName ||
+        !ts.isBinaryExpression(conditional.whenTrue) ||
+        conditional.whenTrue.operatorToken.kind !==
+            ts.SyntaxKind.PlusToken ||
+        !ts.isIdentifier(conditional.whenFalse) ||
+        !ts.isIdentifier(conditional.whenTrue.left)
+    ) {
+        refuse();
+    }
+    const selection = conditional as ts.ConditionalExpression;
+    const condition = selection.condition as ts.BinaryExpression;
+    const later = selection.whenTrue as ts.BinaryExpression;
+    const earlier = selection.whenFalse as ts.Identifier;
+    // The later key is the earlier one plus exactly one...
+    if (
+        !ts.isNumericLiteral(later.right) ||
+        later.right.text !== "1" ||
+        (later.left as ts.Identifier).text !== earlier.text
+    ) {
+        refuse();
+    }
+    // ...and the time it is compared against is the span's END, which is the
+    // whole of what "at or past its own time" means. `t0`/`t1` are the two
+    // keyframe times the branch's enclosing scope binds; naming the wrong one
+    // would shift every held key by a span.
+    const spanEnd = declaration.body.statements
+        .flatMap((statement) =>
+            ts.isVariableStatement(statement)
+                ? statement.declarationList.declarations
+                : [],
+        )
+        .find((binding) => {
+            if (!ts.isIdentifier(binding.name) || !binding.initializer) {
+                return false;
+            }
+            // `const t1 = input[idx + 1]!` -- the pin's own non-null
+            // assertion sits between the binding and the access.
+            const access = unwrapPin(binding.initializer);
+            return (
+                ts.isElementAccessExpression(access) &&
+                ts.isBinaryExpression(access.argumentExpression) &&
+                access.argumentExpression.operatorToken.kind ===
+                    ts.SyntaxKind.PlusToken
+            );
+        });
+    if (
+        !spanEnd ||
+        !ts.isIdentifier(spanEnd.name) ||
+        !ts.isIdentifier(condition.right) ||
+        condition.right.text !== spanEnd.name.text
+    ) {
+        refuse();
+    }
+}
+
+/**
  * The animation-interpolation segment of the generated glTF loader,
  * lowered from `src/animation/evaluate.ts`: `normalizeQuat4`,
  * `quatSlerp`, and the CUBICSPLINE branch of `evaluateSampler`, the
  * latter emitted once per stride the loader's tracks carry (quaternion
- * rotations and vec3 translations/scales).
+ * rotations and vec3 translations/scales). The STEP branch has no
+ * arithmetic to lower, so what it contributes here is a gate on the key it
+ * selects.
  */
 export function lowerAnimationInterpolationCpp(
     file: ts.SourceFile,
@@ -1289,6 +1428,7 @@ export function lowerAnimationInterpolationCpp(
     const normalize = topLevelFunction(file, "normalizeQuat4");
     const slerp = topLevelFunction(file, "quatSlerp");
     const evaluate = topLevelFunction(file, "evaluateSampler");
+    assertPinnedStepSelection(evaluate, file);
     const normalizePinName = normalize.name!.text;
     return [
         emitNormalizeQuaternion(normalize, file),

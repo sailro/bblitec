@@ -45,6 +45,32 @@ import {
     skinnedMeshIndices,
 } from "./pinned-mesh-features.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
+
+/**
+ * The uv2-mask bit `createPbrTemplateExt` decodes as `_hasOcclusionUv2`.
+ *
+ * The mask's bit assignment is a private contract between the pin's own
+ * `assemblePbrPropsExt` and that template -- the two spell it as bare
+ * literals rather than sharing a constant -- so the bit is read from the
+ * template's own line instead of restated. A renumbering upstream fails
+ * generation here rather than emitting a texture slot no variant declares.
+ */
+function pinnedOcclusionUv2Bit(): number {
+    const source = sharedUpstreamStore().getSource(
+        "src/material/pbr/pbr-template-ext.ts",
+    );
+    const match = /_hasOcclusionUv2\s*=\s*!!\(uv2Mask\s*&\s*(\d+)\)/.exec(
+        source,
+    );
+    if (!match) {
+        throw new Error(
+            "Pinned pbr-template-ext.ts no longer decodes _hasOcclusionUv2 " +
+                "from a uv2Mask bit literal.",
+        );
+    }
+    return Number(match[1]);
+}
 
 /**
  * The composer's material UBO spec as plain data.
@@ -377,6 +403,7 @@ export async function composeGltfMaterials(
             PBR_HAS_ENV: number;
             PBR_HAS_SHEEN_ALBEDO_SCALING: number;
         }>("material/pbr/pbr-flag-bits.js");
+    const occlusionUv2Bit = pinnedOcclusionUv2Bit();
     const composed: PinnedComposedMaterial[] = [];
     for (const {
         name,
@@ -412,7 +439,14 @@ export async function composeGltfMaterials(
                 sheenAlbedoScaling:
                     (variant.features & PBR_HAS_SHEEN_ALBEDO_SCALING) !== 0,
                 iridescence: key.includes("iridescence"),
-                occlusionUv2: uv2Mask !== 0,
+                // The occlusion bit alone: `createPbrTemplateExt`
+                // declares the dedicated occlusion pair for
+                // `_hasOcclusionUv2`, while the other five bits select a
+                // base UV set inside stages that are already bound. Reading
+                // the whole mask here asked the build for a texture slot no
+                // variant declares as soon as any other slot moved to
+                // TEXCOORD_1.
+                occlusionUv2: (uv2Mask & occlusionUv2Bit) !== 0,
                 transmission: key.includes("refraction"),
                 // Dispersion has no feature bit of its own. It rides on
                 // `_subsurface.refraction.dispersion`, which the refraction

@@ -463,6 +463,18 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
             return "pbr_transparent_none";
         case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
             return "pbr_transparent_none_clockwise";
+        case upstream::RenderPipelineKind::pbr_opaque_points:
+            return "pbr_opaque_points";
+        case upstream::RenderPipelineKind::pbr_opaque_lines:
+            return "pbr_opaque_lines";
+        case upstream::RenderPipelineKind::pbr_opaque_line_strip:
+            return "pbr_opaque_line_strip";
+        case upstream::RenderPipelineKind::pbr_transparent_points:
+            return "pbr_transparent_points";
+        case upstream::RenderPipelineKind::pbr_transparent_lines:
+            return "pbr_transparent_lines";
+        case upstream::RenderPipelineKind::pbr_transparent_line_strip:
+            return "pbr_transparent_line_strip";
         case upstream::RenderPipelineKind::standard_opaque_back:
             return "standard_opaque_back";
         case upstream::RenderPipelineKind::standard_opaque_none:
@@ -483,6 +495,20 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
             return "shader";
         case upstream::RenderPipelineKind::shader_a2c:
             return "shader_a2c";
+        case upstream::RenderPipelineKind::node_opaque_back:
+            return "node_opaque_back";
+        case upstream::RenderPipelineKind::node_opaque_none:
+            return "node_opaque_none";
+    }
+    return "unknown";
+}
+
+inline const char* topology_name(MeshTopology topology) {
+    switch (topology) {
+        case MeshTopology::points: return "points";
+        case MeshTopology::lines: return "lines";
+        case MeshTopology::line_strip: return "line-strip";
+        case MeshTopology::triangles: return "triangles";
     }
     return "unknown";
 }
@@ -689,6 +715,8 @@ inline void write_material(
         json, "baseColorTransform", material.base_color_transform);
     write_texture_transform(json, "ormTransform", material.orm_transform);
     write_texture_transform(
+        json, "occlusionTransform", material.occlusion_transform);
+    write_texture_transform(
         json, "normalTransform", material.normal_transform);
     write_texture_transform(
         json, "emissiveTransform", material.emissive_transform);
@@ -789,6 +817,7 @@ inline void write_mesh(
         json.field("indexCount", geometry.indices.size());
         json.field("hasTangents", geometry.has_tangents);
         json.field("flatNormals", geometry.flat_normals);
+        json.field("topology", topology_name(geometry.topology));
         json.field("morphTargets", geometry.morph_positions.size());
         json.field("boundsMin", geometry.bounds_min);
         json.field("boundsMax", geometry.bounds_max);

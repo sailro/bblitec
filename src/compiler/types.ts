@@ -646,6 +646,13 @@ export interface NodeParticleManifest {
 export type ValueKind =
     | "animation-clip"
     | "animation-group"
+    /**
+     * The include/exclude target-name filter `createAnimationGroupMask`
+     * builds. Its two fields are both compile-time -- a constant array of
+     * names and one of the pin's two enum members -- so the value declares
+     * nothing native and the assignment to `group.mask` is what emits.
+     */
+    | "animation-group-mask"
     | "animation-manager"
     | "asset-entity"
     | "asset-root"
@@ -765,6 +772,9 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         // carries only that it has one.
         kind === "sprite-custom-shader" ||
         kind === "billboard-custom-shader" ||
+        // The mask a group is about to be given: names and a mode, both
+        // known at generation.
+        kind === "animation-group-mask" ||
         // The solver module a physics scene loads. The pin hands it to
         // `createHavokWorld`; a native build reaches its solver through
         // the PAL, so the binding exists for that call to accept.
@@ -879,6 +889,16 @@ export interface Value {
      * of emitting C++ that would not compile. Absent means the handle form.
      */
     animationGroupSource?: "property";
+    /**
+     * What an `animation-group-mask` value carries: the target names the
+     * mask lists, and whether listing them excludes or includes. The pin's
+     * `animationGroupMaskRetainsTarget` reads exactly those two, and the
+     * generated writer resolves them against the asset's own node names.
+     */
+    animationGroupMask?: {
+        readonly names: readonly string[];
+        readonly include: boolean;
+    };
     /**
      * For a handle a search produced: the native boolean saying whether
      * the search matched. Upstream's `find` returns `undefined` when
@@ -1038,6 +1058,8 @@ export type Feature =
     | "animation:gltf-blending"
     | "animation:gltf-additive"
     | "animation:gltf-group-time"
+    | "animation:gltf-group-speed"
+    | "animation:gltf-group-mask"
     | "background:ground"
     | "background:skybox"
     | "core"

@@ -2180,6 +2180,77 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene251",
+        name: "Scene 251 - Animation Group Mask",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene251.ts",
+        title: "Babylon Lite Native - Animation Group Mask",
+        parity: {
+            // The scene poses itself: it stops every clip, masks the walk's
+            // lower body, and calls goToFrame with the engine so the stopped
+            // group's controller still ticks. Nothing free-runs, so the gate
+            // needs no seek of its own.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-gltf-sparse",
+        name: "Regression - glTF Sparse Accessors",
+        source: "examples/regression-gltf-sparse.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Sparse Accessors",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-gltf-uv-sets",
+        name: "Regression - glTF UV Sets",
+        source: "examples/regression-gltf-uv-sets.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF UV Sets",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-gltf-topology",
+        name: "Regression - glTF Primitive Topology",
+        source: "examples/regression-gltf-topology.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Primitive Topology",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [10, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-gltf-step-animation",
+        name: "Regression - glTF STEP Animation",
+        source: "examples/regression-gltf-step-animation.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF STEP Animation",
+        parity: {
+            // Inside the second STEP span, where a LINEAR reading would be
+            // halfway to the third key rather than holding the second.
+            referenceTimeSeconds: 0.75,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [10, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

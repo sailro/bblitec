@@ -205,6 +205,22 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "drives the group applies the pose on its next tick)",
         consumers: CMAKE,
     },
+    "animation:gltf-group-speed": {
+        provenance:
+            "src/animation/animation-group.ts (AnimationGroup." +
+            "speedRatio is a public mutable field that " +
+            "syncControllerFromGroup pushes onto the controller, whose " +
+            "tick advances time += (deltaMs / 1000) * speedRatio)",
+        consumers: CMAKE,
+    },
+    "animation:gltf-group-mask": {
+        provenance:
+            "src/animation/animation-group-mask.ts " +
+            "(createAnimationGroupMask + animationGroupMaskRetainsTarget) " +
+            "+ src/skeleton/skeleton-updater.ts (the controller skips a " +
+            "masked node's channels, so it keeps its rest-pose TRS)",
+        consumers: CMAKE,
+    },
     "core": {
         provenance:
             "src/engine/engine.ts + src/scene/scene-core.ts " +

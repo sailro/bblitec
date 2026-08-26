@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -7,22 +7,10 @@ import {
     emitAssetSpecializations,
     specializeGltf,
 } from "../src/asset-specializer.js";
+import { writeGlbFixture } from "./glb-fixture.js";
 
 function writeGlb(path: string, document: Record<string, unknown>): void {
-    const json = Buffer.from(JSON.stringify(document));
-    const paddedLength = Math.ceil(json.length / 4) * 4;
-    const binaryLength = 4;
-    const buffer = Buffer.alloc(12 + 8 + paddedLength + 8 + binaryLength, 0x20);
-    buffer.writeUInt32LE(0x46546c67, 0);
-    buffer.writeUInt32LE(2, 4);
-    buffer.writeUInt32LE(buffer.length, 8);
-    buffer.writeUInt32LE(paddedLength, 12);
-    buffer.writeUInt32LE(0x4e4f534a, 16);
-    json.copy(buffer, 20);
-    const binaryHeader = 20 + paddedLength;
-    buffer.writeUInt32LE(binaryLength, binaryHeader);
-    buffer.writeUInt32LE(0x004e4942, binaryHeader + 4);
-    writeFileSync(path, buffer);
+    writeGlbFixture(path, document, Buffer.alloc(4));
 }
 
 test("specializes glTF dynamic feature imports without any-typed JSON", () => {
@@ -350,11 +338,12 @@ test("refuses asset content the pinned loader implements and this port does not"
             false,
         );
 
-        // Sparse accessors used to throw while the native loader parsed the
-        // asset; generation now refuses first, naming the asset.
+        // Packaging materializes every sparse accessor through the pin's
+        // own preParse, so one reaching the specializer means that pass did
+        // not run over this document.
         throwsMatching(
             { accessors: [{ count: 3, sparse: {} }] },
-            /sparse/i,
+            /sparse glTF accessor survived packaging/,
         );
 
         // The two ORM shapes the generated loader refuses at load fail at
@@ -373,19 +362,44 @@ test("refuses asset content the pinned loader implements and this port does not"
             },
             /distinct glTF occlusion and metallic-roughness images/,
         );
+        // Occlusion on TEXCOORD_1 beside a metallic-roughness texture that
+        // names the SAME texture object composes an occlusion binding the
+        // pinned loader builds no texture for: assemblePbrPropsExt sets uv2
+        // mask bit 32 from the texCoord while buildDefaultPbrTexturesExt
+        // builds a carrier only for occlusionNeedsSplit. The browser fails
+        // WebGPU validation and renders a black canvas, so this refuses.
         throwsMatching(
             {
-                textures: [{ source: 0 }, { source: 1 }],
+                textures: [{ source: 0 }],
                 materials: [
                     {
                         occlusionTexture: { index: 0, texCoord: 1 },
                         pbrMetallicRoughness: {
-                            metallicRoughnessTexture: { index: 1 },
+                            metallicRoughnessTexture: { index: 0 },
                         },
                     },
                 ],
             },
-            /TEXCOORD_1 alongside a metallic-roughness texture/,
+            /names the same texture object as the metallic-roughness slot/,
+        );
+        // Through a SECOND texture object over the same image, the carrier
+        // exists and the pair binds -- the arm the glTF UV-sets gate
+        // measures byte-exact on both backends.
+        writeGlb(path, {
+            accessors: [{ count: 3 }],
+            textures: [{ source: 0 }, { source: 0 }],
+            materials: [
+                {
+                    occlusionTexture: { index: 1, texCoord: 1 },
+                    pbrMetallicRoughness: {
+                        metallicRoughnessTexture: { index: 0 },
+                    },
+                },
+            ],
+        });
+        assert.equal(
+            specializeGltf(path, "asset.glb").features.occlusionUv2,
+            true,
         );
 
         // One shared image through two texture objects stays the supported

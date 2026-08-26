@@ -827,6 +827,25 @@ async function main(): Promise<void> {
                 "deformation path to fall back to.",
         );
     }
+    // A points or lines primitive reaches the pipeline as itself, and only
+    // the pinned colour pipeline carries its topology: the depth-only
+    // pipelines a transmission grab pre-passes through, and the
+    // geometry-output tasks, are built at a triangle list for every draw
+    // they take. A scene that reached both would silently pre-pass a line as
+    // a triangle, so the combination refuses rather than rendering. No
+    // corpus asset pairs them.
+    if (
+        specializationFeatures.pointOrLinePrimitives &&
+        (result.manifest.features.includes("renderer:transmission") ||
+            specializationFeatures.assetTransmission ||
+            result.manifest.geometryOutputTasks.length > 0)
+    ) {
+        throw new Error(
+            "A glTF point or line primitive in a scene that also reaches " +
+                "transmission or a geometry-output task is not lowered: " +
+                "those passes build their pipelines at a triangle list.",
+        );
+    }
     const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
         // The compiler's first-reach record, threaded so late refusals in

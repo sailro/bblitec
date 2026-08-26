@@ -67,6 +67,24 @@ namespace {
 
 /** The shared cull enum in this API's; the pipeline-kind facts come from
  *  `pipeline_kind_traits` (pal_gpu_shared.hpp). */
+/**
+ * `buildPrimitiveState`'s own table, in SDL_GPU's names. A triangle strip
+ * never reaches here: the loader expands one into the list it describes.
+ */
+SDL_GPUPrimitiveType gpu_primitive_type(MeshTopology topology) {
+    switch (topology) {
+        case MeshTopology::points:
+            return SDL_GPU_PRIMITIVETYPE_POINTLIST;
+        case MeshTopology::lines:
+            return SDL_GPU_PRIMITIVETYPE_LINELIST;
+        case MeshTopology::line_strip:
+            return SDL_GPU_PRIMITIVETYPE_LINESTRIP;
+        case MeshTopology::triangles:
+            return SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    }
+    return SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+}
+
 SDL_GPUCullMode gpu_cull_mode(upstream::RenderCullMode cull) {
     return cull == upstream::RenderCullMode::none
         ? SDL_GPU_CULLMODE_NONE
@@ -974,7 +992,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         attributes.data(),
         static_cast<Uint32>(attributes.size()),
     };
-    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.primitive_type = gpu_primitive_type(traits.topology);
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = gpu_cull_mode(traits.cull);
     info.rasterizer_state.front_face =

@@ -56,18 +56,6 @@ act on it — not what was tried.
 
 ## P1 — Assets and materials
 
-### glTF
-
-- [ ] Texture-coordinate selection for base color, normal, emissive, and
-  metallic-roughness. Only the TEXCOORD_1 occlusion slice is supported.
-- [ ] `KHR_texture_transform.texCoord` (selects a UV set per slot; zero usages
-  across all 46 corpus model URLs) and upstream's orm-unpack split, where
-  occlusion samples the ORM image at a transform of its own.
-- [ ] Vertex colors beyond the reached alpha/mask slice.
-- [ ] Sparse accessors, and the point/line/line-strip primitive modes.
-- [ ] glTF animation: STEP channels, and a group's speed ratio, weight and
-  mask.
-
 ### Property animation
 
 - [ ] Generalize property bindings beyond mesh `position`, `position.x`,
@@ -146,7 +134,7 @@ act on it — not what was tried.
 - [ ] Add multiple registered scenes and scene switching.
 - [ ] Add headless renderer tests.
 - [ ] Add per-function differential tests for camera, environment, material
-  and transform math. The seven project-owned `examples/regression-*.ts`
+  and transform math. The eleven project-owned `examples/regression-*.ts`
   gates and `parity --differential` compare whole images, not functions.
 - [ ] Add backend-layout tests: nothing checks a compiled stage's `.slots`
   register layout against what the PAL binds.
@@ -248,10 +236,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (76 scenes):** 4, 16-18, 20, 22, 38, 43,
+**Integrate first (75 scenes):** 4, 16-18, 20, 22, 38, 43,
 51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
 140, 141, 144, 149, 156, 165, 171-174, 179, 200-207, 211, 214, 215, 217-219,
-223, 226, 229, 231, 241, 251, 261, 269-271, 275, 300.
+223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
 gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
@@ -302,9 +290,6 @@ below rather than blocking a scene here.
   or image skyboxes are rotation-invariant or unrelated; the remaining
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
-- [ ] Scene 251: lower a group's `mask` assignment (`walk.mask`), the
-  glTF-animation entry's slice; its earlier `??` blockers are gone now
-  that the operator lowers over the data model.
 - [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
   reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
   spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
@@ -640,20 +625,6 @@ below rather than blocking a scene here.
   extension, so the pinned
   `metallicReflectanceTexture` / `reflectanceTexture` pair — including the
   `pow(2.2)` the reflectance fragment applies to each — stays unreached.
-- [ ] Carry primitive topology to the pipeline for glTF points, lines, and
-  line strips. `load-gltf.ts` records a `_topology` index (1=points, 2=lines,
-  3=line-strip, 4=triangle-strip; LINE_LOOP and TRIANGLE_FAN unsupported) and
-  `gltf-feature-primitive.ts` builds the `GPUPrimitiveState`; the generated
-  loader still rejects those modes by number behind the
-  `nonTrianglePrimitives` specialization flag. The *material* half shipped
-  with scenes 278/279: a shader material carries the pin's own
-  `_topology ?? "triangle-list"` into its pipeline on both backends
-  (`ShaderVariantInfo::topology`), so what remains is the asset half — a
-  loaded primitive's mode reaching the composed families, which is a
-  topology suffix on the generated `RenderPipelineKind` (it already encodes
-  cull mode and winding) plus WebGPU's `stripIndexFormat`. No corpus scene
-  reaches it: the asset lane is unmeasured until one does.
-
 ### Deferred external and platform-feature scenes
 
 These stay out of the first integration wave even when the audit reports an

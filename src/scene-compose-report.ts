@@ -109,15 +109,32 @@ const normalize = (text: string): string =>
  * one emitted would make a byte-identical match here prove nothing about the
  * shaders in the generated tree.
  */
-function sceneCandidates(): Promise<readonly PinnedSceneArm[]> {
-    return pinnedSceneArms({
+/**
+ * Every arm a scene could have composed its materials under.
+ *
+ * Three of the four axes are the request's own lists; the environment is a
+ * boolean the *scene* settles, and this tool reads only the asset -- so it
+ * builds both sets and labels them apart, the way the tone-mapping half is
+ * already labelled. The label is what `matchedLabel` reports, so a row says
+ * which combination reproduced the capture rather than leaving two arms
+ * indistinguishable.
+ */
+async function sceneCandidates(): Promise<readonly PinnedSceneArm[]> {
+    const request = {
         lightKinds: pinnedSingleLightTypes,
         multiLight: true,
         noLight: true,
         toneMapping: [false, true],
-        environment: true,
         fog: false,
-    });
+    } as const;
+    const [without, with_] = await Promise.all([
+        pinnedSceneArms({ ...request, environment: false }),
+        pinnedSceneArms({ ...request, environment: true }),
+    ]);
+    return [
+        ...without,
+        ...with_.map((arm) => ({ ...arm, label: `${arm.label} +ibl` })),
+    ];
 }
 
 interface ComposeOptions {

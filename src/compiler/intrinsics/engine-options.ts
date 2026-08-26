@@ -17,6 +17,7 @@ import type {
 import {
     compilePositiveInteger,
     compileStaticNumber,
+    pinnedEnumMemberName,
     validateObjectProperties,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
@@ -365,18 +366,11 @@ function compileGeometryTextureType(
     expression: ts.Expression,
 ): GeometryTextureTypeName {
     const unwrapped = context.unwrap(expression);
-    if (
-        !ts.isPropertyAccessExpression(unwrapped) ||
-        !ts.isIdentifier(unwrapped.expression) ||
-        context.symbols.importedName(unwrapped.expression) !==
-            "GeometryTextureType"
-    ) {
-        context.fail(
-            unwrapped,
-            "Expected a GeometryTextureType enum member.",
-        );
-    }
-    const type = unwrapped.name.text as GeometryTextureTypeName;
+    const type = pinnedEnumMemberName(
+        context,
+        unwrapped,
+        "GeometryTextureType",
+    ) as GeometryTextureTypeName;
     const supported = new Set<GeometryTextureTypeName>([
         "IRRADIANCE",
         "WORLD_POSITION",
@@ -391,7 +385,7 @@ function compileGeometryTextureType(
         "LINEAR_VELOCITY",
     ]);
     if (!supported.has(type)) {
-        context.fail(unwrapped.name, `Unsupported geometry texture type '${type}'.`);
+        context.fail(unwrapped, `Unsupported geometry texture type '${type}'.`);
     }
     return type;
 }

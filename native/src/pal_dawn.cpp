@@ -2085,6 +2085,11 @@ struct PipelineKindTraits {
     bool transparent = false;
     WGPUCullMode cull = WGPUCullMode_Back;
     WGPUFrontFace front = WGPUFrontFace_CCW;
+    // The kind's primitive, and the strip index format WebGPU requires
+    // beside a strip topology on an indexed draw. Undef for every
+    // non-strip primitive, which is what the descriptor's own default is.
+    WGPUPrimitiveTopology topology = WGPUPrimitiveTopology_TriangleList;
+    WGPUIndexFormat strip_index_format = WGPUIndexFormat_Undefined;
     bool grid = false;
     // Generated shader-variant kinds: the concrete modules and
     // fixed-function state come from the emitted variant table.
@@ -2117,6 +2122,23 @@ PipelineKindTraits pipeline_traits(upstream::RenderPipelineKind kind) {
     result.shader =
         traits.family == upstream::RenderMaterialKind::shader;
     result.shader_a2c = pipeline_kind_wants_a2c(kind);
+    // buildPrimitiveState's own table, in WebGPU's names. Every index draws
+    // through the loader's uint32 buffer, so a strip's index format is that.
+    switch (traits.topology) {
+        case MeshTopology::triangles:
+            result.topology = WGPUPrimitiveTopology_TriangleList;
+            break;
+        case MeshTopology::points:
+            result.topology = WGPUPrimitiveTopology_PointList;
+            break;
+        case MeshTopology::lines:
+            result.topology = WGPUPrimitiveTopology_LineList;
+            break;
+        case MeshTopology::line_strip:
+            result.topology = WGPUPrimitiveTopology_LineStrip;
+            result.strip_index_format = WGPUIndexFormat_Uint32;
+            break;
+    }
     return result;
 }
 
@@ -3945,16 +3967,18 @@ WGPURenderPipeline pinned_variant_pipeline(
     // is composed for exactly one task, so the variant-keyed cache stays
     // valid with the task's targets baked into its pipeline.
     const FrameTaskRecord* geometry_task = nullptr) {
-    // The same traits the transcribed pipeline reads, from the same kind. The
-    // winding matters: a mesh whose node matrix mirrors draws through
-    // `pbr_*_none_clockwise`, and hardcoding counter-clockwise here inverted
-    // Scene 168's double-sided faces and Scene 266's negative-scale spheres.
-    const PipelineKindTraits traits = pipeline_traits(kind);
     const std::size_t key = variant * 64 +
         static_cast<std::size_t>(kind) * 2 + (has_depth ? 1 : 0);
     auto& map = state.pinned_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
+    // The same traits the transcribed pipeline reads, from the same kind. The
+    // winding matters: a mesh whose node matrix mirrors draws through
+    // `pbr_*_none_clockwise`, and hardcoding counter-clockwise here inverted
+    // Scene 168's double-sided faces and Scene 266's negative-scale spheres.
+    // Decoded after the cache lookup, as every sibling builder does: a hit is
+    // every draw past the first, and it needs none of this.
+    const PipelineKindTraits traits = pipeline_traits(kind);
     if (state.pinned_vertex_modules.size() < upstream::pbr_variants.size()) {
         state.pinned_vertex_modules.resize(
             upstream::pbr_variants.size(),
@@ -4016,7 +4040,8 @@ WGPURenderPipeline pinned_variant_pipeline(
     descriptor.vertex.entryPoint = string_view("main");
     descriptor.vertex.bufferCount = instance_attributes.empty() ? 1 : 2;
     descriptor.vertex.buffers = vertex_layouts.data();
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.topology = traits.topology;
+    descriptor.primitive.stripIndexFormat = traits.strip_index_format;
     descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
@@ -4099,13 +4124,15 @@ WGPURenderPipeline standard_variant_pipeline(
     bool has_depth,
     bool unfilterable_emissive,
     const FrameTaskRecord* geometry_task = nullptr) {
-    const PipelineKindTraits traits = pipeline_traits(kind);
     const std::size_t key = variant * 256 +
         static_cast<std::size_t>(kind) * 4 +
         (has_depth ? 2 : 0) + (unfilterable_emissive ? 1 : 0);
     auto& map = state.standard_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
+    // After the lookup, as every sibling builder does: a cache hit is every
+    // draw past the first and needs none of the decode.
+    const PipelineKindTraits traits = pipeline_traits(kind);
     if (
         state.standard_vertex_modules.size() <
         upstream::standard_variants.size()) {

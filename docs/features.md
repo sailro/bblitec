@@ -62,7 +62,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Program compilation](#program-compilation) | Compile | the TypeScript subset, the plain-data model, browser erasure, AOT promises |
 | [Feature and capability selection](#feature-and-capability-selection) | Compile | which generated modules, shader variants, codecs, and capability defines exist at all |
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
-| [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, to ordinary geometry |
+| [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, sparse accessors materialized, to ordinary geometry |
 | [Compressed textures](#compressed-textures) | Compile → Run | which container to fetch, and a Basis file transcoded, at generation; the container parsed and its blocks uploaded at load |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
 | [Drawn and computed assets](#drawn-and-computed-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
@@ -232,6 +232,17 @@ the upstream pin, the browser reference and this pass run *the same decoder
 build over the same bytes* — the vertices agree by construction rather than by
 argument.
 
+Sparse accessors resolve in the same pass, and they are core glTF rather than
+an extension: an accessor's value array is a base — its `bufferView`, or all
+zeros when it has none — plus a compact list of `(index, value)` overrides.
+The pin's own `preParse` hook materializes each one into a freshly appended
+tightly-packed bufferView of the same component type and deletes `.sparse`, so
+every downstream consumer — geometry, animation, morph, skeleton, instancing —
+sees an ordinary bufferView-backed accessor. Generation runs that module, and
+the specializer then refuses a packaged document that still carries one, which
+is how a document produced by anything but this pass is named rather than
+silently read at its unpatched base values.
+
 `KHR_mesh_quantization` resolves in the same pass and for the same reason, by
 an easier route: the extension *is* one pinned `preParse` hook, which rewrites
 every quantized accessor — signed, normalized, strided, or the unnormalized
@@ -241,6 +252,11 @@ chunk, with no browser API in it, so generation runs the pin's own module
 rather than reimplementing the conversion and the packaged asset drops the
 extension. Upstream imports that module only when `extensionsUsed` lists it,
 which is the boundary this pass keeps.
+
+All three run in the pinned registry's own order — meshopt, then sparse, then
+quantization — because each reads what the one before it wrote: a sparse base
+may live in a decompressed bufferView, and a meshopt-filtered animation output
+is itself quantized data the last hook has to see.
 
 ### Compressed textures
 
@@ -493,7 +509,10 @@ compiled away:
 - Load-time folds the pinned engine also performs: primitives without normals
   are deindexed with face normals baked in, triangle strips expand to the
   triangle list they describe, `KHR_node_visibility` cascades into each mesh
-  record, and texture-less PBR factors bake into 1x1 texels.
+  record, and texture-less PBR factors bake into 1x1 texels. Points, lines and
+  line strips are *not* folded: they describe primitives no triangle list can,
+  so each reaches the pipeline as its own topology, at the fixed-function
+  state `buildPrimitiveState` gives it.
 - `KHR_materials_variants`: the loader reads each primitive's mappings and the
   document's variant order, and draws the material the scene's one static
   `selectVariant` name resolves to. Only that name is compiled in, and every
@@ -531,7 +550,8 @@ rather than in a worker, which is the state `mesh.firstSortReady` waits for
 
 Box, sphere, subdivided ground, plane, torus, and tube primitives;
 `createMeshFromData` typed-array meshes; indexed glTF/GLB and `.babylon`
-geometry; glTF triangle-list and triangle-strip primitive modes; generated and
+geometry; every glTF primitive mode WebGPU has a topology for — triangle list,
+triangle strip, points, lines and line strip; generated and
 flat normals; negative transforms; and fixed-capacity thin-instance pools —
 the capacity is established when the pool is set and the matrix array stays
 aliased, so flush and count updates re-read it per frame. An array the caller
@@ -594,6 +614,15 @@ uniform offsets. Scene-code PBR also carries the static `enableSpecularAA`
 creation option into the pin's derivative roughness arm. A setter stamps the
 material the call names, so a scene carrying several scene-code materials
 reaches each of them independently.
+
+Each glTF texture slot samples the UV set its own `textureInfo` selects —
+base colour, metallic-roughness, normal, emissive, spec-gloss and occlusion,
+through the pin's own per-channel uv2 mask, and through
+`KHR_texture_transform.texCoord` where a transform overrides the slot's own.
+The mask is composed into the fragment rather than uploaded, so the loader
+carries only what a UV set cannot express: the dedicated occlusion pair a
+TEXCOORD_1 occlusion binds, and the second ORM sample the orm-unpack split
+takes at occlusion's own transform.
 
 A Standard material's `diffuseTexture` also takes a colour render target,
 which is how one pass displays another's output: the pin hands that
@@ -716,12 +745,23 @@ deciding which emitter serves each block class.
 Deterministic scene-level seeking over two separate runtimes: property
 animation clips and groups over position, `position.x`, scaling and
 quaternion paths with LINEAR/STEP tracks, ranges, looping and speed ratios;
-and glTF LINEAR/CUBICSPLINE transform channels with LINEAR morph weights.
+and glTF LINEAR/STEP/CUBICSPLINE transform channels with LINEAR or STEP morph
+weights.
 A glTF file's animations arrive as one group each, in the document's order,
 reachable as `scene.animationGroups` and by name: upstream starts only the
 first and loops each over its own length, so `playAnimation`,
-`pauseAnimation`, `stopAnimation`, `goToFrame` and `loopAnimation` select
-among clips of different durations.
+`pauseAnimation`, `stopAnimation`, `goToFrame`, `loopAnimation`,
+`currentTime` and `speedRatio` select among clips of different durations.
+`goToFrame`'s optional engine argument is the pin's own guard: with one, a
+group the scene has stopped is still posed.
+
+A group also takes an `AnimationGroupMask` — `createAnimationGroupMask(names,
+mode)` assigned to `group.mask` — which filters the targets it animates by
+glTF node name, in Include or Exclude mode. A masked target keeps its rest
+pose, which is what upstream's controller leaves behind when it skips a
+channel. The names and the mode are compile-time, because the pin's own lazy
+re-resolution exists to notice an array that moves; nothing else about the
+mask is folded away.
 
 A scene may also drive those clips itself. `createAnimationManager({ engine })`
 plus `addAnimationGroups` moves ownership from the scene to a manager the
