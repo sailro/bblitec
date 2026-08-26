@@ -577,9 +577,16 @@ struct DawnState : DawnDevice {
         WGPUBindGroup vertical = nullptr;
     };
     std::vector<EsmBlur> esm_blurs;
-    /** Refilled per frame by the caster fold, never reallocated. */
-    std::vector<upstream::ShadowCaster> esm_casters;
 #endif
+    /**
+     * Refilled per generator by the caster fold, never reallocated.
+     *
+     * It belongs to the shadow walk rather than to the ESM half: the walk
+     * runs whenever this build has receivers at all, and a carrier that
+     * existed only under the ESM define would make the shared walk's own
+     * signature depend on which filters the scene reached.
+     */
+    std::vector<upstream::ShadowCaster> esm_casters;
 #endif
     WGPUBindGroup pinned_frame_group = nullptr;
 #endif
@@ -3619,36 +3626,32 @@ void write_shadow_generators(
         state.shadow_params.resize(engine.shadow_generators.size(), nullptr);
 #endif
     }
-    for (const LightHandle light : scene.lights) {
-        if (light.value >= engine.lights.size()) continue;
-        const ShadowGeneratorHandle handle =
-            engine.lights[light.value].shadow_generator;
-        if (handle.value >= engine.shadow_generators.size()) continue;
-        ShadowGeneratorRecord& generator =
-            engine.shadow_generators[handle.value];
+    pal::refresh_shadow_generators(
+        scene,
+        engine,
+        state.esm_casters,
+        [&](
+            ShadowGeneratorRecord& generator,
+            ShadowGeneratorHandle handle,
+            std::size_t) {
+        // This backend keys its per-generator resources by the generator's
+        // own handle, so it takes that half of the visit and ignores the
+        // dense slot its sibling uses.
 #if BBLITE_SHADOWS_ESM
-        // The ESM fit is sized to the CASTERS, not to the light's own cone,
-        // so it re-reads their world bounds every frame.
-        if (generator.filter == ShadowFilter::esm_directional) {
-            if (!state.shadow_params[handle.value]) {
-                const std::array<float, 8> params =
-                    upstream::shadow_params_block(generator);
-                state.shadow_params[handle.value] = create_buffer(
-                    state,
-                    WGPUBufferUsage_Uniform,
-                    params.data(),
-                    params.size() * sizeof(float));
-            }
-            pal::esm_shadow_casters(engine, generator, state.esm_casters);
-            upstream::update_esm_directional_shadow(
-                generator,
-                engine.lights[light.value],
-                state.esm_casters);
-        } else
+        // `shadow_params_block` reads what the factory fixed -- bias, depth
+        // scale, texel size -- so it is built once and outlives every
+        // refresh.
+        if (generator.filter == ShadowFilter::esm_directional &&
+            !state.shadow_params[handle.value]) {
+            const std::array<float, 8> params =
+                upstream::shadow_params_block(generator);
+            state.shadow_params[handle.value] = create_buffer(
+                state,
+                WGPUBufferUsage_Uniform,
+                params.data(),
+                params.size() * sizeof(float));
+        }
 #endif
-        upstream::update_pcf_spot_shadow(
-            generator,
-            engine.lights[light.value]);
         const upstream::ShadowInfoUniforms block =
             upstream::shadow_info_block(generator);
         if (!state.shadow_uniforms[handle.value]) {
@@ -3672,7 +3675,7 @@ void write_shadow_generators(
                 sizeof(block));
         }
         state.shadow_blocks[handle.value] = block;
-    }
+    });
 }
 #endif
 

@@ -712,9 +712,16 @@ struct GpuState {
         std::array<float, 8> params{};
     };
     std::vector<EsmBlur> esm_blurs;
-    /** Refilled per frame by the caster fold, never reallocated. */
-    std::vector<upstream::ShadowCaster> esm_casters;
 #endif
+    /**
+     * Refilled per generator by the caster fold, never reallocated.
+     *
+     * It belongs to the shadow walk rather than to the ESM half: the walk
+     * runs whenever this build has receivers at all, and a carrier that
+     * existed only under the ESM define would make the shared walk's own
+     * signature depend on which filters the scene reached.
+     */
+    std::vector<upstream::ShadowCaster> esm_casters;
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -2044,29 +2051,18 @@ void update_shadow_generators(
             gpu_error("SDL_CreateGPUSampler shadow filtering");
         }
     }
-    std::size_t slot = 0;
-    for (const LightHandle light : scene.lights) {
-        if (light.value >= engine.lights.size()) continue;
-        const ShadowGeneratorHandle handle =
-            engine.lights[light.value].shadow_generator;
-        if (handle.value >= engine.shadow_generators.size()) continue;
-        ShadowGeneratorRecord& generator =
-            engine.shadow_generators[handle.value];
-#if BBLITE_SHADOWS_ESM
-        // The ESM fit is sized to the CASTERS, not to the light's own cone,
-        // so it re-reads their world bounds every frame.
-        if (generator.filter == ShadowFilter::esm_directional) {
-            pal::esm_shadow_casters(engine, generator, state.esm_casters);
-            upstream::update_esm_directional_shadow(
-                generator,
-                engine.lights[light.value],
-                state.esm_casters);
-        } else
-#endif
-        upstream::update_pcf_spot_shadow(
-            generator,
-            engine.lights[light.value]);
-        GpuState::ShadowGenerator& gpu = state.shadow_generators[slot++];
+    pal::refresh_shadow_generators(
+        scene,
+        engine,
+        state.esm_casters,
+        [&](
+            ShadowGeneratorRecord& generator,
+            ShadowGeneratorHandle,
+            std::size_t slot) {
+        // This backend keys its per-generator resources densely, by the
+        // generator's position in the scene's light order -- which is the
+        // order the shared walk visits them in.
+        GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
         const upstream::ShadowInfoUniforms block =
             upstream::shadow_info_block(generator);
         const bool moved = !gpu.info ||
@@ -2107,7 +2103,7 @@ void update_shadow_generators(
                 &gpu.block,
                 sizeof(gpu.block));
         }
-    }
+    });
 }
 #endif
 

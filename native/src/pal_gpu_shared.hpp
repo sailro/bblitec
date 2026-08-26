@@ -1138,6 +1138,56 @@ inline void esm_shadow_casters(
 }
 #endif
 
+#if BBLITE_SHADOW_RECEIVERS
+/**
+ * Refresh every generator the scene's lights name, then hand each to the
+ * backend.
+ *
+ * The walk is `scene.lights` in order, which is the order the pin's own
+ * `ShadowTask` schedules its per-generator render tasks -- so a backend
+ * that keys densely and one that keys by handle agree about which
+ * generator is which without either having to say so.
+ *
+ * What is shared is the refresh: the ESM fit re-reads its casters' world
+ * bounds every frame because it is sized to them and not to the light,
+ * and the PCF spot rebuilds from the light's live position and direction.
+ * That is engine-side math with one right answer, and it was typed into
+ * both PALs -- where it had already drifted once. What stays per backend
+ * is the resource each keeps for a generator, which is what the visitor
+ * receives: the record, its own handle, and its dense position in the
+ * scene's light order.
+ */
+template <typename Visit>
+inline void refresh_shadow_generators(
+    const Scene& scene,
+    Engine& engine,
+    [[maybe_unused]] std::vector<upstream::ShadowCaster>& esm_casters,
+    Visit&& visit) {
+    std::size_t slot = 0;
+    for (const LightHandle light : scene.lights) {
+        if (light.value >= engine.lights.size()) continue;
+        const ShadowGeneratorHandle handle =
+            engine.lights[light.value].shadow_generator;
+        if (handle.value >= engine.shadow_generators.size()) continue;
+        ShadowGeneratorRecord& generator =
+            engine.shadow_generators[handle.value];
+#if BBLITE_SHADOWS_ESM
+        if (generator.filter == ShadowFilter::esm_directional) {
+            esm_shadow_casters(engine, generator, esm_casters);
+            upstream::update_esm_directional_shadow(
+                generator,
+                engine.lights[light.value],
+                esm_casters);
+        } else
+#endif
+        upstream::update_pcf_spot_shadow(
+            generator,
+            engine.lights[light.value]);
+        visit(generator, handle, slot++);
+    }
+}
+#endif
+
 
 #if BBLITE_PINNED_MATERIALS
 /**
