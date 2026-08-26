@@ -6369,7 +6369,7 @@ bool run_gpu_engine(Engine& engine) {
                             shader_variant,
                             "task dispatch");
                     };
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIAL_VARIANTS
                     // The pass's scene and lights blocks, once per pass
                     // rather than per draw: their builders run camera and
                     // view math whose repetition was pure cost.

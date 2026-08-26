@@ -280,7 +280,7 @@ The current generated slice includes:
   PAL supplies, because the pin already takes that solver as a parameter.
   The one deliberately non-bit-faithful family here
   ([fidelity](fidelity.md#physics-contract))
-- percentage-closer-filtered spot shadows: the pinned generator's own
+- percentage-closer-filtered spot and exponential-shadow-map directional shadows: the pinned generator's own
   `depth32float` map and comparison sampler, a caster pass rendering the
   material's no-colour view from the light under the pin's standard-Z
   exception, and the receiver fragment the pin composes per shadow-casting

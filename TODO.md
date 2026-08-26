@@ -505,11 +505,27 @@ below rather than blocking a scene here.
   material families' receiver fragments composed per shadow-casting light
   over a reflected group 2 ([features](docs/features.md#shadows)). Each
   remaining item fails by name:
-  - `createPcfDirectionalShadowGenerator` and the cascaded family
-    (`csm-*`), neither reached by a corpus scene at this pin.
-  - a node receiver: `node-shadow.ts` is the third sibling of the one
-    pinned core the two material families already wrap, and it needs the
-    node family's own group-2 wiring.
+  - `createPcfDirectionalShadowGenerator`, reached by FIVE corpus scenes
+    (66, 72, 111, 140, 207) and the only missing import in four of them --
+    though each hides more behind it, so the strip probe rather than the
+    import list is what sizes them. The cascaded family (`csm-*`) is
+    reached by none at this pin.
+  - a node receiver, which finishes scenes 65 and 141 -- ONE contract each
+    by strip probe, the best scenes-per-contract left outside the physics
+    lane. It is NOT the group 2 the two material families share:
+    `node-shadow.ts` appends three bindings per light to the GRAPH's own
+    group 1, continuing its binding run, and mixes the factor by the
+    `meshU.receivesShadow` uniform rather than selecting a variant -- so
+    `mesh.receiveShadows` is a composition key for two families and a
+    per-mesh value for the third. Both scenes also CAST from their node
+    material, and `material/node/esm-shadow-view.ts` is the caster half:
+    small in itself, but `parseNodeMaterialFromSnippet` exposes neither the
+    ESM depth code nor the no-colour output, so composing that variant means
+    driving the pin's `node-renderable.ts` rebuild against a recording
+    device rather than the parse path this port drives today. Size that
+    first. 141 additionally wants the PBR ESM caster view, and its graph
+    module (`shared/scene65-nme.ts`, a one-line re-export of scene 63's) is
+    not in the corpus yet.
   - a PBR CASTER. `material/pbr/esm-shadow-view.ts` and
     `material/pbr/no-color-view.ts` are the pin's own PBR caster views;
     the generated shadow task takes the PBR no-colour one already, but no

@@ -41,10 +41,12 @@
 #endif
 // The pinned shadow family: the light-space matrices, the receiver block,
 // the generator's defaults and the standard-Z depth state its map takes.
-// None of it belongs to a material family, so it rides
-// `BBLITE_SHADOW_RECEIVERS` -- generation's own answer to "does this scene
-// reach a shadow generator AND compose a receiver in SOME family" -- while
-// each family's own define gates only its bind path.
+// None of that is a material family's, so the header and the depth state
+// below ride `BBLITE_SHADOW_RECEIVERS` -- generation's own answer to "does
+// this scene reach a shadow generator AND compose a receiver in SOME
+// family". `BBLITE_SHADOWS_ESM` is still a Standard conjunction, because
+// what it gates includes the caster's own material view and only the
+// Standard family has one (TODO).
 #if BBLITE_SHADOW_RECEIVERS
 #include <bblite/upstream/pinned_shadow.hpp>
 #endif
@@ -64,7 +66,7 @@ namespace bbl::pal {
  * — so a pass asks here rather than either backend typing standard-Z out.
  */
 inline DepthCompare pass_depth_compare(bool shadow_pass) {
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     if (shadow_pass) return upstream::shadow_map_depth_compare;
 #else
     (void)shadow_pass;
@@ -73,7 +75,7 @@ inline DepthCompare pass_depth_compare(bool shadow_pass) {
 }
 
 inline float pass_depth_clear(bool shadow_pass) {
-#if BBLITE_STANDARD_SHADOWS
+#if BBLITE_SHADOW_RECEIVERS
     if (shadow_pass) return upstream::shadow_map_depth_clear;
 #else
     (void)shadow_pass;
@@ -1289,7 +1291,7 @@ inline void pinned_mesh_light_selection(
     block.lc = count;
 }
 
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_PINNED_MATERIAL_VARIANTS
 inline upstream::MeshUniforms pinned_mesh_block(
     const Scene& scene,
     const Engine& engine,

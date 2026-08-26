@@ -581,8 +581,6 @@ struct DawnState : DawnDevice {
     std::vector<upstream::ShadowCaster> esm_casters;
 #endif
 #endif
-    /** How many of `scene.lights` carry a generator, in that order. */
-    std::size_t shadow_light_count = 0;
     WGPUBindGroup pinned_frame_group = nullptr;
 #endif
 #if BBLITE_PBR_VARIANTS > 0
@@ -3611,7 +3609,6 @@ void write_shadow_generators(
     DawnState& state,
     const Scene& scene,
     Engine& engine) {
-    state.shadow_light_count = 0;
     if (engine.shadow_generators.empty()) return;
     if (state.shadow_uniforms.size() < engine.shadow_generators.size()) {
         state.shadow_uniforms.resize(
@@ -3675,7 +3672,6 @@ void write_shadow_generators(
                 sizeof(block));
         }
         state.shadow_blocks[handle.value] = block;
-        state.shadow_light_count += 1;
     }
 }
 #endif

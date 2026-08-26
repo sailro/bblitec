@@ -163,8 +163,27 @@ different questions:
 | List | Source of truth | Decides |
 | --- | --- | --- |
 | `BBLITE_RUNTIME_FEATURES` in `features.cmake` | the scene's own TypeScript | which generated modules and PAL translation units compile |
-| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump and 2D reflection, image and solid-colour skyboxes, and the composed PBR/Standard variant counts |
+| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump and 2D reflection, image and solid-colour skyboxes, the shadow family's five defines, and the composed PBR/Standard variant counts |
 | `BBLITE_IMAGE_CODECS` in `features.cmake` | the materialized assets' image types | which image decoders link and ship |
+
+**The shadow family's defines are five, and they are not independent.** A
+`#if` in either backend has to ask the right one, so the split is stated here
+rather than left to be read off the guards:
+
+| Define | True when | Gates |
+| --- | --- | --- |
+| `BBLITE_SHADOWS` | the scene reaches either generator | that a shadow generator exists at all |
+| `BBLITE_STANDARD_SHADOWS` | above, and Standard variants are composed | the Standard family's receiver bind path only |
+| `BBLITE_PBR_SHADOWS` | above, and PBR variants are composed | the PBR family's receiver bind path only |
+| `BBLITE_SHADOW_RECEIVERS` | the union of the two family defines | the GENERATOR half, which belongs to no family: the maps, the samplers, the receiver blocks, the caster pass, its standard-Z depth state, the per-frame matrix update and the release path |
+| `BBLITE_SHADOWS_ESM` | `shadow:esm`, and Standard variants are composed | the ESM generator's own four textures and separable blur. Still a Standard conjunction because what it gates includes the caster's own material view, and only the Standard family has one |
+
+The union is emitted as a union — `#define BBLITE_SHADOW_RECEIVERS
+(BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)` — so the containment is a
+fact the person writing the guard can see, and a helper's guard can be
+checked against its callers' by reading. All five come from one
+`shadowCapabilities` record, which the activation inventory then checks its
+own reasoning against.
 
 The feature list is finalized during compilation, before remote assets are
 materialized, with two deliberate exceptions joined afterwards: an asset's

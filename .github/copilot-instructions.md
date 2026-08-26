@@ -40,19 +40,13 @@ work is not started, or not finished, until it has been passed.
    somewhere the page you skipped would have named.
 2. **Before porting a Babylon Lite feature: read that feature's own upstream
    page.** Not after the first refusal, not when something looks wrong —
-   before writing any code. Babylon Lite documents its own subsystems under
-   `docs/lite/architecture/`, one page each, and those pages state the
-   preconditions, the exact list of quantities the feature touches, which
-   arms exist, and often the corpus scene that exercises each one. Reading
-   the page routinely replaces a strip probe and hours of reading source,
-   and it is the cheapest step in this whole workflow — every session that
-   skipped it paid for the skip. What the page is worth and how to read it
-   are under [Pinned upstream](#pinned-upstream), including that a remark
-   about Babylon.js is not a statement about the target, and that where the
-   page and the source disagree the source decides. Getting the page is the
-   only part that is mechanical: the published site renders through a
-   client-side app, so fetch it at the pinned commit, which is also the
-   version that matches the code.
+   before writing any code. It is the cheapest step in this workflow and
+   every session that skipped it paid for the skip. What the page is worth
+   and how to read it are under [Pinned upstream](#pinned-upstream),
+   including that a remark about Babylon.js is not a statement about the
+   target. Getting the page is the only part that is mechanical: the
+   published site renders through a client-side app, so fetch it at the
+   pinned commit, which is also the version that matches the code.
 
    ```bash
    gh api "repos/BabylonJS/Babylon-Lite/contents/docs/lite/architecture/29-post-process.md?ref=$(node -p "require('./upstream/babylon-lite.json').sourceVersion")" --jq .content | base64 -d
@@ -66,6 +60,16 @@ work is not started, or not finished, until it has been passed.
    sweep guarantees a second sweep. The order is: the work builds and its
    own scene measures, then `/simplify`, then apply everything it found,
    then one sweep over the result.
+
+   **Every branch that becomes a pull request, whatever its size.** There
+   is no "too small to review" exemption and no "this is only a fix"
+   exemption: a three-file branch that moves preprocessor blocks and edits
+   a table row is exactly the shape whose defects hide, and a branch that
+   is *itself* a fix for something a review would have caught is the last
+   one to skip. Judging a change too small is the rationalisation that
+   costs the second sweep — the gate is cheap and the judgement is not
+   trustworthy. Skipped once already, on the PR immediately after this
+   paragraph was written.
 
    **Apply what it finds, including what reaches outside the diff.** A
    mechanism this repository already owns, a re-derivation to delete, a
