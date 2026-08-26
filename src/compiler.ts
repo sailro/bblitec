@@ -1666,7 +1666,12 @@ class Compiler
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
             }
-            return `(${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")})`;
+            // The statement emitter supplies the condition's outer
+            // parentheses. Comparisons bind more tightly than the logical
+            // expressions that compose them, so another pair here is both
+            // unnecessary and diagnosed by clang-cl's
+            // -Wparentheses-equality for `if ((a == b))`.
+            return `${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")}`;
         }
         if (
             ts.isIdentifier(unwrapped) ||

@@ -805,6 +805,19 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
         {vertex.uv2.x, vertex.uv2.y},
         {vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w},
         {vertex.normal.x, vertex.normal.y, vertex.normal.z},
+#if BBLITE_GPU_DEFORMATION
+        {},  // joints
+        {},  // weights
+        {},  // morph position 0
+        {},  // morph position 1
+        {},  // morph normal 0
+        {},  // morph normal 1
+        {},  // morph tangent 0
+        {},  // morph tangent 1
+#if BBLITE_PBR_VARIANTS > 0
+        {},  // integer joint indices
+#endif
+#endif
     };
 }
 

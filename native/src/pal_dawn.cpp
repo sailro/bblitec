@@ -2366,7 +2366,7 @@ WGPUBindGroupLayout pinned_frame_layout_for(DawnState& state) {
  * both compose the same shadow core into the same third group, and a
  * non-receiver simply declares two.
  */
-WGPUPipelineLayout composed_pipeline_layout(
+[[maybe_unused]] WGPUPipelineLayout composed_pipeline_layout(
     DawnState& state,
     WGPUBindGroupLayout draw_layout,
     WGPUBindGroupLayout shadow_layout,
@@ -2553,7 +2553,7 @@ WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
  * and the previous view-projection tracking. Both writers used to carry
  * this sequence verbatim.
  */
-void write_pinned_geometry_prologue(
+[[maybe_unused]] void write_pinned_geometry_prologue(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
@@ -2615,7 +2615,7 @@ struct PinnedResource {
  * holds for the whole scene, and every composed family wants the same answer
  * -- so the pairing is stated once here rather than per family.
  */
-PinnedResource state_resource_for(
+[[maybe_unused]] PinnedResource state_resource_for(
     const DawnState& state,
     upstream::MaterialTextureSource source) {
     switch (source) {

@@ -821,7 +821,12 @@ export class HandleCollections {
         this.context.emit(
             `${target.elementCppType} ${result}{};`,
         );
-        this.context.emit(`bool ${found} = false;`);
+        // A caller may use the selected handle without testing the optional
+        // result (for example, a scene whose asset contract guarantees the
+        // named camera). The search still needs the flag for callers that do
+        // test it and for optional composition, so keep it and make that
+        // deliberate unused case warning-clean.
+        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
         emitHandleCollectionLoop(
             this.context,
             target,

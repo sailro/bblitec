@@ -314,7 +314,12 @@ export class UserFunctionLowerer {
                 context.emit("} while (false);");
             }
             return ir.returnExpression
-                ? context.compileValue(ir.returnExpression)
+                ? {
+                      ...context.compileValue(
+                          ir.returnExpression,
+                      ),
+                      requiresExplicitDiscard: true,
+                  }
                 : { kind: "void", cpp: "" };
         } finally {
             context.popScope();
