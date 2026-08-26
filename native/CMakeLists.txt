@@ -622,9 +622,9 @@ else()
 endif()
 
 if(MSVC)
-    target_compile_options(bblite_native PRIVATE /W4 /permissive- /EHsc)
+    target_compile_options(bblite_native PRIVATE /W4 /WX /permissive- /EHsc)
 else()
-    target_compile_options(bblite_native PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(bblite_native PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 if(BBLITE_MINSIZE)

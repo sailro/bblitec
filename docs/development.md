@@ -23,9 +23,21 @@ sources with their native CMake generator and SDL_GPU backend.
 
 ```powershell
 npm ci
+npm run dev:setup
+npm run doctor
 npm test
 npm run scene -- list
+npm run sweep
 ```
+
+`dev:setup` is the idempotent Windows development bootstrap. It uses Visual
+Studio's installed CMake and vcpkg when they are not on `PATH`, installs the
+full development manifest once, and builds missing pinned Dawn, Tint, DXC, and
+LabSound artifacts. `doctor` is read-only and prints the resolved path or the
+missing prerequisite for Node.js, CMake, Ninja, the compiler, vcpkg, Dawn,
+PowerShell, DXC, Tint, LabSound, and Chromium. `sweep` is the full registered
+scene validation (`scene -- validate all`), including both GPU backends on
+Windows.
 
 Use the generic scene command rather than adding scripts for ordinary work:
 
@@ -81,7 +93,10 @@ and prints each rung's verdict in order (`--backend`, `--seek` and
 `clean --orphans` deletes build trees and `generated/` entries no registry
 scene owns; `--all` additionally removes owned build trees.
 `validate` chains compile, shaders, build, parity and the status check
-with one summary line per stage, preserving every artifact on failure.
+with one summary line per stage, preserving every artifact on failure. A retry
+resumes the compile and shader stages only when their input fingerprint and
+on-disk outputs still match the completed stage; changed or missing inputs run
+the stage again.
 See [debugging](debugging.md) for the ladder they sit in.
 `geometry` captures each existing geometry-output copy task full-screen in
 Babylon Lite and native without changing the curated scene source; its
@@ -100,7 +115,7 @@ the browser build), so a warm recompile launches no Chromium and produces
 byte-identical output; the directory is disposable, and `BBLITE_BAKE_CACHE=0`
 disables the replay.
 
-Aggregate registered-scene workflows are registry-driven through
+Aggregate registered-scene workflows are registry-driven through `sweep`,
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
 
 Registered Babylon Lite inputs live under `corpus\babylon-lite` and must match
@@ -439,14 +454,11 @@ compiled modules or lifted from the pin at run time, not read from `src/`.
 
 ## Shader compilation
 
-Install the shader tool manifest once:
+The development bootstrap installs DXC and builds pinned Tint:
 
 ```powershell
-cd tools\shader-compiler
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
-& "$env:VCPKG_ROOT\vcpkg.exe" install
-cd ..\..
-npm run shaders:build
+npm run dev:setup
+npm run doctor
 ```
 
 Set `DXC_PATH` when DXC is not discoverable. The Windows SDK DXC may lack
@@ -460,13 +472,10 @@ builds remain no-op.
 
 ## Native builds
 
-`scene -- build` configures the registry-derived build directory and invokes
-`cmake --build`. Set:
-
-```powershell
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
-$env:CMAKE_COMMAND = "C:\path\to\cmake.exe" # only when cmake is not on PATH
-```
+`scene -- build` validates the native prerequisites once, configures the
+registry-derived build directory, and invokes `cmake --build`. On Windows it
+discovers Visual Studio's bundled CMake and vcpkg when `CMAKE_COMMAND` and
+`VCPKG_ROOT` are unset. Explicit variables override discovery.
 
 Manual equivalent:
 
@@ -480,14 +489,18 @@ cmake --build native\build-scene1-release --config Release
 
 Ninja is the default on every platform. On Windows, the scene command locates
 Visual Studio, the latest MSVC toolset, the Windows SDK, Visual Studio's
-bundled Ninja, and the optional bundled clang-cl without requiring a Developer
-Command Prompt. `--compiler auto|clangcl|msvc` selects the development
-compiler; `auto` prefers clang-cl and falls back to MSVC. Set
+bundled CMake, vcpkg, Ninja, and the optional bundled clang-cl without
+requiring a Developer Command Prompt. `--compiler auto|clangcl|msvc` selects
+the development compiler; `auto` prefers clang-cl and falls back to MSVC. Set
 `BBLITE_DEV_COMPILER` for the same persistent choice and
-`BBLITE_CMAKE_GENERATOR` to override the generator. If the selected compiler
-differs from the one cached by CMake, the command replaces only that disposable
-scene build tree. Never reuse one build directory with a different generator;
-all build trees are ignored and safe to delete.
+`BBLITE_CMAKE_GENERATOR` to override the generator. If the generator, compiler,
+make program, toolchain, or vcpkg install root differs from the CMake cache, the
+command replaces only that incompatible disposable scene build tree. All build
+trees are ignored and safe to delete.
+
+Warnings in the first-party `bblite_native` target are errors under MSVC,
+clang-cl, Clang, and GCC. Imported dependency headers remain system headers and
+dependency build warnings do not inherit the first-party error policy.
 
 Scenes build several at a time, but their CMake *configure* steps are
 serialized, because that is where vcpkg runs and concurrent vcpkg use is
@@ -506,10 +519,10 @@ reached dependencies.
 How many scenes run at once is configurable per stage; see
 [Build switches](#build-switches).
 
-Set `VCPKG_ROOT` before configuring a new build directory. If a directory was
-first configured without the toolchain, delete that specific
-`native\build-<scene>-release` directory and configure it again; adding the
-toolchain to an existing cache is not reliable.
+An existing directory first configured without vcpkg is detected from its
+CMake cache and replaced automatically before configuration. `VCPKG_ROOT`
+remains the override for a vcpkg checkout other than the one discovered from
+Visual Studio or `PATH`.
 
 Override the generator only when needed:
 
@@ -540,14 +553,17 @@ stage cap on every compiled stage, refusing by block name (release SDL
 corrupts the D3D12 command buffer past it), with the `gp` demotion keyed on
 the block's own declaration rather than a filename.
 
-Build the pinned Tint CLI with:
+Build only the pinned Tint CLI with:
 
 ```powershell
 pwsh -File tools\build-tint.ps1
 ```
 
-Build the pinned Dawn library (same source pin, shared checkout) with
-`pwsh -File tools\build-dawn.ps1`. The CMake `BBLITE_BACKEND`
+Build only the pinned Dawn library (same source pin, shared checkout) with
+`pwsh -File tools\build-dawn.ps1`. Build only pinned LabSound with
+`pwsh -File tools\build-labsound.ps1`. The normal full development bootstrap is
+`npm run dev:setup`; `build-dawn-min.ps1` belongs only to the trimmed shipping
+flow. The CMake `BBLITE_BACKEND`
 selection (`SDL_GPU`, `DAWN`, or `BOTH`) picks the compiled backend
 set. Windows development scene builds default to `BOTH` and require
 `artifacts\tools\dawn`; Linux and macOS retain the SDL_GPU default. The
@@ -1130,6 +1146,8 @@ the README embeds the scene's current parity numbers when
 
 ## Windows troubleshooting
 
+- Run `npm run doctor` first. It reports all full-development prerequisites
+  before generation or per-scene CMake configuration begins.
 - Shader-step failures do not say `error C`: when filtering `process`
   output, also match `Tint HLSL generation failed` and `exited with
   status`, or a scene keeps its stale shaders and executable and parity
@@ -1149,11 +1167,12 @@ the README embeds the scene's current parity numbers when
   the global binary cache and every later configure restores it from there.
 - `ucrtd.lib` missing: ensure `LIB` contains the MSVC x64, Windows UCRT x64,
   and Windows UM x64 library directories.
-- generator mismatch: delete the affected `native\build-*` directory and
-  configure it again.
+- generator/compiler/toolchain mismatch: the scene command replaces the
+  affected disposable `native\build-*` directory automatically.
 - stale shader/runtime pair: regenerate shaders, then rebuild the same scene.
-- new build cannot find SDL/nlohmann-json: set `VCPKG_ROOT`, delete only that
-  build directory, and reconfigure.
+- new build cannot find SDL/nlohmann-json: run `npm run doctor`; set
+  `VCPKG_ROOT` only when the intended vcpkg is not the Visual Studio or `PATH`
+  installation discovered by the command.
 - D3D12 command-list failure during screenshot after runtime mesh append:
   capture must occur after the topology-update frame, which PAL defers
   automatically.

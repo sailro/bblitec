@@ -43,6 +43,7 @@ import {
     computeBuildStamp,
     deployedPayloads,
     generatorWouldReconfigure,
+    incompatibleCacheEntries,
     payloadOrphans,
     readCacheConfiguration,
 } from "./build-stamp.js";
@@ -75,6 +76,21 @@ import {
     developmentVcpkgFeatures,
     hostOfflineShaderTarget,
 } from "./build-options.js";
+import { resolveBrowserPath } from "./browser-path.js";
+import {
+    discoverDevelopmentTools,
+    discoverWindowsBuildTools,
+    type DevelopmentTools,
+    type WindowsBuildTools,
+} from "./development-tools.js";
+import {
+    readValidationCheckpoint,
+    validationCompileInput,
+    validationCompileOutput,
+    validationShaderInput,
+    validationShaderOutput,
+    writeValidationCheckpoint,
+} from "./validation-resume.js";
 
 function run(
     command: string,
@@ -176,133 +192,6 @@ async function runBuffered(
             );
         }
     }
-}
-
-function latestDirectory(root: string): string | undefined {
-    if (!existsSync(root)) return undefined;
-    const directories = readdirSync(root, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => join(root, entry.name))
-        .sort((left, right) =>
-            right.localeCompare(left, undefined, { numeric: true }));
-    return directories[0];
-}
-
-function windowsNinjaEnvironment(
-    requestedCompiler: "auto" | "msvc" | "clangcl",
-): {
-    environment: NodeJS.ProcessEnv;
-    ninja: string;
-    compiler: string;
-} {
-    const programFilesX86 =
-        process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
-    const vswhere = join(
-        programFilesX86,
-        "Microsoft Visual Studio",
-        "Installer",
-        "vswhere.exe",
-    );
-    const vsResult = existsSync(vswhere)
-        ? spawnSync(
-              vswhere,
-              [
-                  "-latest",
-                  "-products",
-                  "*",
-                  "-requires",
-                  "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                  "-property",
-                  "installationPath",
-              ],
-              { encoding: "utf8" },
-          )
-        : undefined;
-    const environmentVsRoot =
-        process.env.VSINSTALLDIR?.replace(/[\\/]+$/, "");
-    const discoveredVsRoot =
-        vsResult?.status === 0 ? vsResult.stdout.trim() : "";
-    const vsRoot = [environmentVsRoot, discoveredVsRoot].find(
-        (candidate) =>
-            !!candidate &&
-            existsSync(join(candidate, "VC", "Tools", "MSVC")),
-    ) ?? "";
-    if (!vsRoot || !existsSync(vsRoot)) {
-        throw new Error(
-            "Ninja requires MSVC. Set VSINSTALLDIR or override BBLITE_CMAKE_GENERATOR.",
-        );
-    }
-    const msvc = latestDirectory(join(vsRoot, "VC", "Tools", "MSVC"));
-    const sdkRoot = join(programFilesX86, "Windows Kits", "10");
-    const sdk = latestDirectory(join(sdkRoot, "Include"));
-    const ninja =
-        process.env.NINJA_PATH ??
-        join(
-            vsRoot,
-            "Common7",
-            "IDE",
-            "CommonExtensions",
-            "Microsoft",
-            "CMake",
-            "Ninja",
-            "ninja.exe",
-        );
-    if (!msvc || !sdk || !existsSync(ninja)) {
-        throw new Error(
-            "Unable to locate MSVC, Windows SDK, or Ninja. Override BBLITE_CMAKE_GENERATOR to use another generator.",
-        );
-    }
-    const msvcCompiler = join(msvc, "bin", "Hostx64", "x64", "cl.exe");
-    const clangCompiler = join(
-        vsRoot,
-        "VC",
-        "Tools",
-        "Llvm",
-        "x64",
-        "bin",
-        "clang-cl.exe",
-    );
-    const compiler =
-        requestedCompiler === "msvc"
-            ? msvcCompiler
-            : requestedCompiler === "clangcl"
-                ? clangCompiler
-                : existsSync(clangCompiler)
-                    ? clangCompiler
-                    : msvcCompiler;
-    if (!existsSync(compiler)) {
-        throw new Error(
-            `The requested development compiler is not installed: ${compiler}.`,
-        );
-    }
-    const sdkVersion = sdk.slice(dirname(sdk).length + 1);
-    return {
-        ninja,
-        compiler,
-        environment: {
-            ...process.env,
-            PATH: [
-                dirname(compiler),
-                join(msvc, "bin", "Hostx64", "x64"),
-                join(sdkRoot, "bin", sdkVersion, "x64"),
-                dirname(ninja),
-                process.env.PATH ?? "",
-            ].join(";"),
-            INCLUDE: [
-                join(msvc, "include"),
-                join(sdk, "ucrt"),
-                join(sdk, "um"),
-                join(sdk, "shared"),
-                join(sdk, "winrt"),
-                join(sdk, "cppwinrt"),
-            ].join(";"),
-            LIB: [
-                join(msvc, "lib", "x64"),
-                join(sdkRoot, "Lib", sdkVersion, "ucrt", "x64"),
-                join(sdkRoot, "Lib", sdkVersion, "um", "x64"),
-            ].join(";"),
-        },
-    };
 }
 
 async function compile(idOrSource: string): Promise<void> {
@@ -466,6 +355,20 @@ async function parity(
 
 async function build(idOrSource: string): Promise<void> {
     const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
+    const reachesAudio =
+        idOrSource === "all" ||
+        selected.some((scene) => {
+            const features = resolve(scene.output, "features.cmake");
+            return (
+                existsSync(features) &&
+                readFileSync(features, "utf8").includes("audio:engine")
+            );
+        });
+    requireDevelopmentPreflight({
+        browser: false,
+        labSound: reachesAudio,
+        shaders: false,
+    });
     await buildScenes(selected);
 }
 
@@ -771,11 +674,15 @@ async function withBuildOptions(
  * reached it.
  */
 interface SharedBuildSetup {
+    cmake: string;
+    environment: NodeJS.ProcessEnv;
     generator: string;
-    ninja: ReturnType<typeof windowsNinjaEnvironment> | undefined;
+    windows: WindowsBuildTools | undefined;
     backend: string;
+    tools: DevelopmentTools;
     vcpkg:
         | {
+              root: string;
               toolchain: string;
               installedDirectory: string;
               manifestFeatures: string;
@@ -784,26 +691,50 @@ interface SharedBuildSetup {
 }
 
 let sharedBuildSetup: SharedBuildSetup | undefined;
+let sharedDevelopmentTools: DevelopmentTools | undefined;
+let sharedWindowsBuildTools: WindowsBuildTools | undefined;
+
+function currentDevelopmentTools(): DevelopmentTools {
+    sharedDevelopmentTools ??= discoverDevelopmentTools();
+    return sharedDevelopmentTools;
+}
+
+function currentWindowsBuildTools(): WindowsBuildTools {
+    const tools = currentDevelopmentTools();
+    sharedWindowsBuildTools ??= discoverWindowsBuildTools(
+        canonicalDevelopmentCompiler(
+            process.env.BBLITE_DEV_COMPILER ?? "auto",
+        ),
+        tools.visualStudioRoot
+            ? {
+                  environment: {
+                      ...process.env,
+                      VSINSTALLDIR: tools.visualStudioRoot,
+                  },
+              }
+            : {},
+    );
+    return sharedWindowsBuildTools;
+}
 
 function buildSetup(): SharedBuildSetup {
     if (sharedBuildSetup) return sharedBuildSetup;
     const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
-    const ninja =
+    const windows =
         process.platform === "win32" && generator === "Ninja"
-            ? windowsNinjaEnvironment(
-                  canonicalDevelopmentCompiler(
-                      process.env.BBLITE_DEV_COMPILER ?? "auto",
-                  ),
-              )
+            ? currentWindowsBuildTools()
             : undefined;
+    const tools = currentDevelopmentTools();
+    if (!tools.cmake) {
+        throw new Error(
+            "CMake was not found. Install the Visual Studio CMake component or set CMAKE_COMMAND.",
+        );
+    }
     // Backend selection: BOTH (the dual-backend differential binary) for
     // development. A missing pinned Dawn install is an incomplete dev setup,
     // not a reason to silently reduce validation to SDL_GPU. Set
     // BBLITE_BACKEND=SDL_GPU|DAWN|BOTH to override;
     // BBLITE_GPU_BACKEND still selects at runtime in BOTH builds.
-    const dawnInstalled = existsSync(
-        resolve("artifacts", "tools", "dawn", "lib", "cmake", "Dawn"),
-    );
     const requestedBackend = process.env.BBLITE_BACKEND;
     if (
         requestedBackend !== undefined &&
@@ -815,22 +746,26 @@ function buildSetup(): SharedBuildSetup {
     }
     const backend =
         requestedBackend ?? defaultDevelopmentBackend(process.platform);
-    if ((backend === "DAWN" || backend === "BOTH") && !dawnInstalled) {
+    if ((backend === "DAWN" || backend === "BOTH") && !tools.dawnInstalled) {
         throw new Error(
-            `BBLITE_BACKEND=${backend} requires the pinned Dawn library; run pwsh -File tools/build-dawn.ps1 first.`,
+            `BBLITE_BACKEND=${backend} requires pinned Dawn at ${tools.dawnDirectory}. Run 'npm run dev:setup'.`,
         );
     }
-    const vcpkgRoot = process.env.VCPKG_ROOT;
+    const needsVcpkg = !process.env.BBLITE_SDL_DIR;
+    if (
+        needsVcpkg &&
+        (!tools.vcpkgRoot || !tools.vcpkg || !tools.vcpkgToolchain)
+    ) {
+        throw new Error(
+            "vcpkg was not found. Install the Visual Studio vcpkg component, set VCPKG_ROOT, or run with BBLITE_SDL_DIR for a shipping SDL tree.",
+        );
+    }
     const vcpkg =
-        vcpkgRoot === undefined
+        !needsVcpkg
             ? undefined
             : {
-                  toolchain: join(
-                      vcpkgRoot,
-                      "scripts",
-                      "buildsystems",
-                      "vcpkg.cmake",
-                  ),
+                  root: tools.vcpkgRoot!,
+                  toolchain: tools.vcpkgToolchain!,
                   installedDirectory: join(
                       resolve(
                           process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
@@ -842,13 +777,259 @@ function buildSetup(): SharedBuildSetup {
                       readFileSync(resolve("native", "vcpkg.json"), "utf8"),
                   ).join(";"),
               };
+    const environment: NodeJS.ProcessEnv = {
+        ...(windows?.environment ?? process.env),
+        CMAKE_COMMAND: tools.cmake,
+        ...(vcpkg ? { VCPKG_ROOT: vcpkg.root } : {}),
+        ...(tools.tint ? { TINT_PATH: tools.tint } : {}),
+        ...(tools.dxc ? { DXC_PATH: tools.dxc } : {}),
+    };
     sharedBuildSetup = {
+        cmake: tools.cmake,
+        environment,
         generator,
-        ninja,
+        windows,
         backend,
+        tools,
         vcpkg,
     };
     return sharedBuildSetup;
+}
+
+interface DevelopmentCheck {
+    label: string;
+    path?: string;
+    problem?: string;
+}
+
+interface PreflightScope {
+    browser: boolean;
+    labSound: boolean;
+    shaders: boolean;
+}
+
+function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
+    const tools = currentDevelopmentTools();
+    const checks: DevelopmentCheck[] = [
+        { label: "Node.js", path: process.execPath },
+        {
+            label: "CMake",
+            ...(tools.cmake
+                ? { path: tools.cmake }
+                : { problem: "not found (install the Visual Studio CMake component or set CMAKE_COMMAND)" }),
+        },
+    ];
+    const generator = process.env.BBLITE_CMAKE_GENERATOR ?? "Ninja";
+    if (process.platform === "win32" && generator === "Ninja") {
+        try {
+            const windows = currentWindowsBuildTools();
+            checks.push(
+                { label: "Ninja", path: windows.ninja },
+                { label: "C++ compiler", path: windows.compiler },
+            );
+        } catch (error) {
+            checks.push({
+                label: "Visual Studio C++/Ninja",
+                problem: (error as Error).message,
+            });
+        }
+    }
+    if (!process.env.BBLITE_SDL_DIR) {
+        checks.push({
+            label: "vcpkg",
+            ...(tools.vcpkg && tools.vcpkgToolchain
+                ? { path: tools.vcpkg }
+                : {
+                      problem:
+                          "not found (install the Visual Studio vcpkg component or set VCPKG_ROOT)",
+                  }),
+        });
+    }
+    const backend =
+        process.env.BBLITE_BACKEND ?? defaultDevelopmentBackend(process.platform);
+    if (!["SDL_GPU", "DAWN", "BOTH"].includes(backend)) {
+        checks.push({
+            label: "backend",
+            problem: `BBLITE_BACKEND must be SDL_GPU, DAWN, or BOTH (got '${backend}')`,
+        });
+    } else if (backend === "DAWN" || backend === "BOTH") {
+        checks.push({
+            label: "Dawn",
+            ...(tools.dawnInstalled
+                ? { path: tools.dawnDirectory }
+                : { problem: `not built at ${tools.dawnDirectory}` }),
+        });
+    }
+    if (scope.shaders) {
+        checks.push({
+            label: "PowerShell",
+            ...(tools.powershell
+                ? { path: tools.powershell }
+                : { problem: "pwsh was not found" }),
+        });
+        const target = hostOfflineShaderTarget(
+            process.platform,
+            process.env.BBLITE_SHADER_TARGET,
+        );
+        if (target !== "metal") {
+            checks.push({
+                label: "DXC",
+                ...(tools.dxc
+                    ? { path: tools.dxc }
+                    : { problem: `not installed for shader target ${target}` }),
+            });
+        }
+        checks.push({
+            label: "Tint",
+            ...(tools.tint
+                ? { path: tools.tint }
+                : { problem: "pinned Tint was not built" }),
+        });
+    }
+    if (scope.labSound) {
+        checks.push({
+            label: "LabSound",
+            ...(tools.labSoundInstalled
+                ? { path: tools.labSoundDirectory }
+                : { problem: `not built at ${tools.labSoundDirectory}` }),
+        });
+    }
+    if (scope.browser) {
+        try {
+            checks.push({
+                label: "Chromium",
+                path: resolveBrowserPath(),
+            });
+        } catch (error) {
+            checks.push({
+                label: "Chromium",
+                problem: (error as Error).message,
+            });
+        }
+    }
+    return checks;
+}
+
+function requireDevelopmentPreflight(scope: PreflightScope): void {
+    const failures = developmentChecks(scope).filter((check) => check.problem);
+    if (failures.length > 0) {
+        throw new Error(
+            `Development preflight failed before generation/build:\n${failures
+                .map((check) => `  - ${check.label}: ${check.problem}`)
+                .join("\n")}\nRun 'npm run dev:setup', then 'npm run doctor'.`,
+        );
+    }
+    buildSetup();
+}
+
+function runDoctor(): void {
+    const checks = developmentChecks({
+        browser: true,
+        labSound: true,
+        shaders: true,
+    });
+    for (const check of checks) {
+        console.log(
+            `${check.problem ? "MISSING" : "OK     "} ${check.label}: ${
+                check.problem ?? check.path
+            }`,
+        );
+    }
+    const failures = checks.filter((check) => check.problem);
+    if (failures.length > 0) {
+        throw new Error(
+            `doctor: ${failures.length} development prerequisite(s) missing. Run 'npm run dev:setup'.`,
+        );
+    }
+    console.log("doctor: full development environment ready.");
+}
+
+function setupEnvironment(tools: DevelopmentTools): NodeJS.ProcessEnv {
+    return {
+        ...process.env,
+        ...(tools.cmake ? { CMAKE_COMMAND: tools.cmake } : {}),
+        ...(tools.vcpkgRoot ? { VCPKG_ROOT: tools.vcpkgRoot } : {}),
+    };
+}
+
+function runDevelopmentSetup(): void {
+    if (process.platform !== "win32") {
+        throw new Error(
+            "dev:setup currently provisions the pinned Windows development toolchain; install the documented host tools manually on this platform and run 'npm run doctor'.",
+        );
+    }
+    const tools = discoverDevelopmentTools();
+    const bootstrapMissing = [
+        ["CMake", tools.cmake],
+        ["vcpkg", tools.vcpkg],
+        ["PowerShell", tools.powershell],
+        ["git", tools.git],
+    ].filter((entry) => !entry[1]);
+    if (bootstrapMissing.length > 0) {
+        throw new Error(
+            `dev:setup needs ${bootstrapMissing.map(([label]) => label).join(", ")}. Install the Visual Studio C++/CMake/vcpkg components and PowerShell first.`,
+        );
+    }
+    const environment = setupEnvironment(tools);
+    const manifestFeatures = developmentVcpkgFeatures(
+        readFileSync(resolve("native", "vcpkg.json"), "utf8"),
+    );
+    run(
+        tools.vcpkg!,
+        [
+            "install",
+            `--x-manifest-root=${resolve("native")}`,
+            `--x-install-root=${resolve(
+                process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
+                    join("artifacts", "vcpkg-installed"),
+                DEVELOPMENT_VCPKG_INSTALL,
+            )}`,
+            "--triplet=x64-windows",
+            ...manifestFeatures.map((feature) => `--x-feature=${feature}`),
+        ],
+        environment,
+    );
+    const pinnedDxc = resolve(
+        "tools",
+        "shader-compiler",
+        "vcpkg_installed",
+        "x64-windows",
+        "tools",
+        "directx-dxc",
+        "dxc.exe",
+    );
+    if (!existsSync(pinnedDxc)) {
+        run(
+            tools.vcpkg!,
+            [
+                "install",
+                `--x-manifest-root=${resolve("tools", "shader-compiler")}`,
+                `--x-install-root=${resolve(
+                    "tools",
+                    "shader-compiler",
+                    "vcpkg_installed",
+                )}`,
+                "--triplet=x64-windows",
+            ],
+            environment,
+        );
+    }
+    const buildPinned = (installed: boolean, script: string): void => {
+        if (!installed) {
+            run(
+                tools.powershell!,
+                ["-File", script, "-CMake", tools.cmake!],
+                environment,
+            );
+        }
+    };
+    buildPinned(tools.dawnInstalled, "tools/build-dawn.ps1");
+    buildPinned(!!tools.tint, "tools/build-tint.ps1");
+    buildPinned(tools.labSoundInstalled, "tools/build-labsound.ps1");
+    sharedBuildSetup = undefined;
+    sharedDevelopmentTools = undefined;
+    sharedWindowsBuildTools = undefined;
+    runDoctor();
 }
 
 /**
@@ -878,23 +1059,18 @@ function pruneDeployedOrphans(scene: (typeof scenes)[number]): void {
 }
 
 /**
- * CMake cannot change CMAKE_CXX_COMPILER in an existing cache. Native build
- * trees are disposable, so an explicit or automatic dev-compiler change
- * rebuilds just that scene rather than failing halfway through configure.
+ * CMake cannot safely change a build tree's generator, compiler, make
+ * program, toolchain, or vcpkg install root. Recreate only that disposable
+ * scene tree before configure instead of leaving a poisoned cache behind.
  */
-function resetCompilerMismatch(
+function resetIncompatibleBuildTree(
     buildDirectory: string,
-    compiler: string | undefined,
+    configureArguments: string[],
 ): void {
-    if (compiler === undefined) return;
     const cache = readCacheConfiguration(buildDirectory);
-    const cached = cache?.CMAKE_CXX_COMPILER;
-    if (
-        cached === undefined ||
-        resolve(cached).toLowerCase() === resolve(compiler).toLowerCase()
-    ) {
-        return;
-    }
+    if (!cache) return;
+    const incompatible = incompatibleCacheEntries(cache, configureArguments);
+    if (incompatible.length === 0) return;
     const nativeRoot = resolve("native");
     const target = resolve(buildDirectory);
     const withinNative = relative(nativeRoot, target);
@@ -908,8 +1084,8 @@ function resetCompilerMismatch(
         );
     }
     console.log(
-        `build: compiler changed from ${cached} to ${compiler}; ` +
-            `recreating disposable tree ${buildDirectory}.`,
+        `build: ${incompatible.map((entry) => entry.name).join(", ")} changed; ` +
+            `recreating incompatible disposable tree ${buildDirectory}.`,
     );
     rmSync(target, { recursive: true, force: true });
 }
@@ -919,7 +1095,8 @@ async function runSceneBuild(
     jobsPerScene: number | undefined,
     captureOutput: boolean,
 ): Promise<void> {
-    const { generator, ninja, backend, vcpkg } = buildSetup();
+    const { cmake, environment, generator, windows, backend, vcpkg } =
+        buildSetup();
     const configureArguments = [
         "-S",
         "native",
@@ -941,10 +1118,10 @@ async function runSceneBuild(
             `-DBBLITE_SDL_DIR=${resolve(sdlDirectory)}`,
         );
     }
-    if (ninja) {
+    if (windows) {
         configureArguments.push(
-            `-DCMAKE_MAKE_PROGRAM=${ninja.ninja}`,
-            `-DCMAKE_CXX_COMPILER=${ninja.compiler}`,
+            `-DCMAKE_MAKE_PROGRAM=${windows.ninja}`,
+            `-DCMAKE_CXX_COMPILER=${windows.compiler}`,
         );
     }
     if (vcpkg) {
@@ -954,7 +1131,6 @@ async function runSceneBuild(
             `-DVCPKG_MANIFEST_FEATURES=${vcpkg.manifestFeatures}`,
         );
     }
-    const environment = ninja?.environment ?? process.env;
     // Configure only when the cache does not already hold exactly what
     // this invocation would set — or when a configure input
     // (CMakeLists.txt, vcpkg.json, the scene's features.cmake) is newer
@@ -963,13 +1139,12 @@ async function runSceneBuild(
     // configure lock; treating it as a cache mismatch keeps every
     // configure — and therefore every vcpkg manifest install — inside
     // `serializeConfigure`.
-    const cmake = process.env.CMAKE_COMMAND ?? "cmake";
     await runBuffered(
         { buffer: captureOutput, label: `--- ${scene.id}\n` },
         async (run) => {
-            resetCompilerMismatch(
+            resetIncompatibleBuildTree(
                 scene.buildDirectory,
-                ninja?.compiler,
+                configureArguments,
             );
             if (
                 !cacheMatchesConfiguration(
@@ -1007,6 +1182,7 @@ async function runSceneBuild(
 }
 
 function compileShaders(sceneId?: string): void {
+    const setup = buildSetup();
     const target = hostOfflineShaderTarget(
         process.platform,
         process.env.BBLITE_SHADER_TARGET,
@@ -1018,10 +1194,20 @@ function compileShaders(sceneId?: string): void {
         target,
     ];
     if (sceneId) arguments_.push("-Scene", sceneId);
-    run(process.platform === "win32" ? "pwsh.exe" : "pwsh", arguments_);
+    run(
+        setup.tools.powershell ??
+            (process.platform === "win32" ? "pwsh.exe" : "pwsh"),
+        arguments_,
+        setup.environment,
+    );
 }
 
 async function processScene(idOrSource: string): Promise<void> {
+    requireDevelopmentPreflight({
+        browser: true,
+        labSound: idOrSource === "all",
+        shaders: true,
+    });
     if (idOrSource === "all") {
         await compile("all");
         compileShaders();
@@ -1662,14 +1848,75 @@ async function runValidate(idOrSource: string): Promise<void> {
     // spends time on an id that cannot mean anything.
     const scene =
         idOrSource === "all" ? undefined : resolveScene(idOrSource);
-    const differential = buildSetup().backend === "BOTH";
-    const stages: Array<{ name: string; body: () => Promise<void> }> = [
-        { name: "compile", body: () => compile(idOrSource) },
+    requireDevelopmentPreflight({
+        browser: true,
+        labSound: idOrSource === "all",
+        shaders: true,
+    });
+    const setup = buildSetup();
+    const differential = setup.backend === "BOTH";
+    const selectedScenes = scene ? [scene] : scenes;
+    const checkpointPath = resolve(
+        "artifacts",
+        "validate",
+        `${scene?.id ?? "all"}.json`,
+    );
+    const checkpoint = readValidationCheckpoint(checkpointPath);
+    const compileInput = validationCompileInput(
+        selectedScenes,
+        resolveBrowserPath(),
+    );
+    const target = hostOfflineShaderTarget(
+        process.platform,
+        process.env.BBLITE_SHADER_TARGET,
+    );
+    const compileIsReusable = (): boolean =>
+        checkpoint.compile?.input === compileInput &&
+        checkpoint.compile.output === validationCompileOutput(selectedScenes);
+    const shaderInput = (): string =>
+        validationShaderInput(
+            validationCompileOutput(selectedScenes),
+            target,
+            setup.tools,
+        );
+    const shadersAreReusable = (): boolean =>
+        checkpoint.shaders?.input === shaderInput() &&
+        checkpoint.shaders.output === validationShaderOutput(selectedScenes);
+    const stages: Array<{
+        name: string;
+        body: () => Promise<void>;
+        record?: () => void;
+        reusable?: () => boolean;
+    }> = [
+        {
+            name: "compile",
+            body: () => compile(idOrSource),
+            reusable: compileIsReusable,
+            record: () => {
+                checkpoint.compile = {
+                    input: compileInput,
+                    output: validationCompileOutput(selectedScenes),
+                };
+                delete checkpoint.shaders;
+                writeValidationCheckpoint(checkpointPath, checkpoint);
+            },
+        },
         {
             name: "shaders",
             body: async () => compileShaders(scene?.id),
+            reusable: shadersAreReusable,
+            record: () => {
+                checkpoint.shaders = {
+                    input: shaderInput(),
+                    output: validationShaderOutput(selectedScenes),
+                };
+                writeValidationCheckpoint(checkpointPath, checkpoint);
+            },
         },
-        { name: "build", body: () => build(idOrSource) },
+        {
+            name: "build",
+            body: () => buildScenes(scene ? [scene] : scenes),
+        },
         {
             name: `parity${differential ? " --differential" : ""}`,
             body: () =>
@@ -1714,7 +1961,14 @@ async function runValidate(idOrSource: string): Promise<void> {
         const seconds = (): string =>
             ((Date.now() - started) / 1000).toFixed(1);
         try {
+            if (stage.reusable?.()) {
+                console.log(
+                    `validate: ${stage.name} resumed (inputs and outputs unchanged).`,
+                );
+                continue;
+            }
             await stage.body();
+            stage.record?.();
             console.log(`validate: ${stage.name} ok (${seconds()}s).`);
         } catch (error) {
             failures.push(stage.name);
@@ -2024,6 +2278,28 @@ async function main(): Promise<void> {
     // while this one is working deletes the `dist/` it is executing from.
     // `tools/clean-dist.mjs` refuses to cross this lock.
     holdDistLock([command, id].filter(Boolean).join(" "));
+    if (command === "doctor") {
+        parseFlags(
+            [id, ...rest].filter(
+                (argument): argument is string => argument !== undefined,
+            ),
+            {},
+            "doctor",
+        );
+        runDoctor();
+        return;
+    }
+    if (command === "setup") {
+        parseFlags(
+            [id, ...rest].filter(
+                (argument): argument is string => argument !== undefined,
+            ),
+            {},
+            "setup",
+        );
+        runDevelopmentSetup();
+        return;
+    }
     if (command === "list") {
         parseFlags(
             [id, ...rest].filter(
@@ -2323,7 +2599,7 @@ async function main(): Promise<void> {
         return;
     }
     throw new Error(
-        "Usage: scene-command <list | show <id|source.ts> | " +
+        "Usage: scene-command <doctor | setup | list | show <id|source.ts> | " +
             "compile|build|process|parity|compose|validate <id|source.ts|all> [options] | " +
             "geometry|capture|uniforms|diff|stability|diagnose <id|source.ts> [options] | " +
             "probe-variants <id|source.ts> --shader <name> (--term <text> --with <replacement> | --replace-file <path>) | " +

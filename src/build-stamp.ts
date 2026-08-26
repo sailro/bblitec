@@ -298,6 +298,91 @@ export function readCacheConfiguration(
     return values;
 }
 
+export interface IncompatibleCacheEntry {
+    cached?: string;
+    name: string;
+    requested?: string;
+}
+
+function requestedCacheConfiguration(
+    configureArguments: readonly string[],
+): Record<string, string> {
+    const requested: Record<string, string> = {};
+    const generatorIndex = configureArguments.indexOf("-G");
+    if (generatorIndex >= 0 && configureArguments[generatorIndex + 1]) {
+        requested.CMAKE_GENERATOR = configureArguments[generatorIndex + 1]!;
+    }
+    for (const argument of configureArguments) {
+        if (!argument.startsWith("-D")) continue;
+        const separator = argument.indexOf("=");
+        if (separator > 2) {
+            requested[argument.slice(2, separator)] = argument.slice(
+                separator + 1,
+            );
+        }
+    }
+    return requested;
+}
+
+function sameCachePath(left: string, right: string): boolean {
+    return (
+        resolve(left).replaceAll("\\", "/").toLowerCase() ===
+        resolve(right).replaceAll("\\", "/").toLowerCase()
+    );
+}
+
+/**
+ * Cache values CMake cannot safely change in place.
+ *
+ * Ordinary project options can be reconfigured. A generator, compiler,
+ * make program, toolchain, or vcpkg install root belongs to the build tree
+ * itself; a mismatch means that disposable tree must be recreated before
+ * configure. The unset toolchain direction matters because CMake otherwise
+ * retains a toolchain accidentally omitted from a later invocation.
+ */
+export function incompatibleCacheEntries(
+    cache: Readonly<Record<string, string>>,
+    configureArguments: readonly string[],
+): IncompatibleCacheEntry[] {
+    const requested = requestedCacheConfiguration(configureArguments);
+    const sticky = [
+        "CMAKE_GENERATOR",
+        "CMAKE_CXX_COMPILER",
+        "CMAKE_MAKE_PROGRAM",
+        "CMAKE_TOOLCHAIN_FILE",
+        "VCPKG_INSTALLED_DIR",
+    ] as const;
+    const compareWhenUnset = new Set([
+        "CMAKE_TOOLCHAIN_FILE",
+        "VCPKG_INSTALLED_DIR",
+    ]);
+    const mismatches: IncompatibleCacheEntry[] = [];
+    for (const name of sticky) {
+        const cached = cache[name];
+        const wanted = requested[name];
+        if (cached === undefined) {
+            if (wanted !== undefined) {
+                mismatches.push({ name, requested: wanted });
+            }
+            continue;
+        }
+        if (wanted === undefined) {
+            if (compareWhenUnset.has(name) && cached) {
+                mismatches.push({ name, cached });
+            }
+            continue;
+        }
+        const matches =
+            name === "CMAKE_GENERATOR"
+                ? cached === wanted
+                : sameCachePath(cached, wanted);
+        if (!matches) {
+            mismatches.push({ name, cached, requested: wanted });
+        }
+    }
+    return mismatches;
+}
+
 /**
  * Whether CMake would regenerate a build tree before compiling it.
  *

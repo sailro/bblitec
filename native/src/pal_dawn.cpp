@@ -124,7 +124,7 @@ constexpr std::size_t material_extension_slot_base =
 // scene that compiles it shifts no existing slot or binding index.
 constexpr std::size_t standard_bump_slots =
     BBLITE_MATERIAL_STANDARD_BUMP ? 1 : 0;
-constexpr std::size_t standard_bump_slot =
+[[maybe_unused]] constexpr std::size_t standard_bump_slot =
     5 + transmission_texture_slots + material_extension_slots;
 // The Standard 2D reflection slot appends after bump the same way (the
 // generated slot table's own order); only the composed variant bind path
@@ -3591,10 +3591,12 @@ WGPUBindGroup pbr_shadow_group_for(
             variant));
 }
 #else
-inline WGPUBindGroupLayout pbr_shadow_layout_for(DawnState&, std::size_t) {
+[[maybe_unused]] inline WGPUBindGroupLayout pbr_shadow_layout_for(
+    DawnState&,
+    std::size_t) {
     return nullptr;
 }
-inline WGPUBindGroup pbr_shadow_group_for(
+[[maybe_unused]] inline WGPUBindGroup pbr_shadow_group_for(
     DawnState&,
     const Scene&,
     const Engine&,
@@ -3672,12 +3674,12 @@ void write_shadow_generators(
 #if !BBLITE_STANDARD_SHADOWS
 // A Standard scene that reaches no generator: every call site below still
 // compiles, and each answers "no shadows" rather than being conditioned out.
-inline WGPUBindGroupLayout standard_shadow_layout_for(
+[[maybe_unused]] inline WGPUBindGroupLayout standard_shadow_layout_for(
     DawnState&,
     std::size_t) {
     return nullptr;
 }
-inline WGPUBindGroup standard_shadow_group_for(
+[[maybe_unused]] inline WGPUBindGroup standard_shadow_group_for(
     DawnState&,
     const Scene&,
     const Engine&,
@@ -4638,7 +4640,7 @@ bool append_variant_attribute(
  * family its own material belongs to, so a builder that answered this for
  * itself would be right only for the casters that family happens to own.
  */
-void apply_pass_depth_state(
+[[maybe_unused]] void apply_pass_depth_state(
     WGPUDepthStencilState& depth_stencil,
     bool shadow_pass) {
     depth_stencil.format = shadow_pass

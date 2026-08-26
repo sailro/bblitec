@@ -57,11 +57,12 @@ rather than a slower picture.
 git clone https://github.com/sailro/bblitec.git
 cd bblitec
 npm ci
+npm run dev:setup
+npm run doctor
 npm test
-
-$env:VCPKG_ROOT = "C:\path\to\vcpkg"
 npm run scene -- process scene1
 npm run scene -- parity scene1
+npm run sweep
 ```
 
 Process an unregistered repository-local scene with derived defaults:
@@ -73,8 +74,11 @@ npm run scene -- parity examples\my-scene.ts --recapture-reference
 
 `process` performs generation, scene-local shader compilation, CMake
 configuration, and a parallel native build. Ninja is the default generator;
-set `BBLITE_CMAKE_GENERATOR` to override it. Build trees are disposable and
-generator-specific.
+set `BBLITE_CMAKE_GENERATOR` to override it. On Windows the scene command
+discovers Visual Studio's CMake, Ninja, clang-cl/MSVC, Windows SDK, and vcpkg;
+explicit environment variables remain overrides. `dev:setup` installs the full
+development vcpkg profile and builds pinned Dawn, Tint, DXC, and LabSound.
+Build trees are disposable and generator-specific.
 
 ## Documentation (start here in a fresh session)
 
