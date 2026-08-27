@@ -817,12 +817,25 @@ function capabilityRows(
     // directly -- `has("shadow:pcf") || has("shadow:esm")` rather than the
     // shared predicate -- so `checkedRow` compares two derivations and not
     // one expression against itself.
+    const nodeVariantList = emit.nodeVariants ?? [];
     const shadows = shadowCapabilities({
         features,
         standardVariants: standardVariantCount,
         pbrVariants: variantCount,
+        nodeShadowReceivers: nodeVariantList.filter(
+            (variant) => variant.composed.shadowBindings.length > 0,
+        ).length,
+        nodeEsmCasters: nodeVariantList.filter(
+            (variant) => variant.composed.esmCaster !== null,
+        ).length,
     });
-    const nodeVariantCount = (emit.nodeVariants ?? []).length;
+    const nodeVariantCount = nodeVariantList.length;
+    const nodeEsmCasterCount = nodeVariantList.filter(
+        (variant) => variant.composed.esmCaster !== null,
+    ).length;
+    const nodeShadowReceiverCount = nodeVariantList.filter(
+        (variant) => variant.composed.shadowBindings.length > 0,
+    ).length;
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
     const standardReflection = (emit.pinnedStandardVariants ?? [])
@@ -1189,18 +1202,24 @@ function capabilityRows(
             "capability",
             shadows.esm,
             [
-                // One reason, because the define is a CONJUNCTION: every
-                // site that reads it is Standard-family code, so a scene
-                // reaching the filter with no Standard variant compiles no
-                // ESM code at all.
+                // A conjunction with the families that HAVE a caster
+                // material view, which is what the define gates: the
+                // Standard one, and the node one a graph carries as a
+                // second composed module.
                 [
                     has("shadow:esm") && standardVariantCount > 0,
                     "scene source reached shadow:esm and the scene " +
                         "composes Standard variants",
                 ],
+                [
+                    has("shadow:esm") && nodeEsmCasterCount > 0,
+                    "scene source reached shadow:esm and a composed node " +
+                        "graph carries its ESM caster module",
+                ],
             ],
             has("shadow:esm")
-                ? "reached shadow:esm but composes no Standard variant"
+                ? "reached shadow:esm but composes neither a Standard " +
+                    "variant nor a node ESM caster"
                 : "not reached",
             "src/shadow/esm-directional-shadow-generator.ts",
             ["render_capabilities.hpp"],
@@ -1263,6 +1282,17 @@ function capabilityRows(
                         (standardVariantCount > 0 || variantCount > 0),
                     "scene source reached a shadow generator and the scene " +
                         "composes a receiver in some family",
+                ],
+                // The node family reaches the same generator half without
+                // composing a variant of its own: its receiver appends to
+                // the graph's group 1 and mixes by a per-mesh uniform, and
+                // its caster is a second module of that graph.
+                [
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        (nodeShadowReceiverCount > 0 ||
+                            nodeEsmCasterCount > 0),
+                    "scene source reached a shadow generator and a composed " +
+                        "node graph receives or casts",
                 ],
             ],
             shadows.reached

@@ -336,6 +336,11 @@ export function lightVectorSetter(
 
 export interface AssignmentContext extends DeterministicRandomContext {
     readonly checker: ts.TypeChecker;
+    /** Which material a scene-code mesh was assigned, by its mesh index. */
+    recordSceneMeshMaterial(
+        meshIndex: number,
+        material: { pbrMaterial: number | null; nodeMaterial: number | null },
+    ): void;
     /** The scene's node-particle program; a texture write lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** Pixels-texture locals already copied into a material slot. */
@@ -1100,6 +1105,20 @@ export function emitPropertyAssignment(
             if (material.scenePbrMaterialIndex !== undefined) {
                 target.scenePbrMaterialIndex =
                     material.scenePbrMaterialIndex;
+            }
+            // The same carry for a node graph, which a caster mesh needs:
+            // its ESM view is a second module composed from that graph.
+            if (material.nodeMaterialIndex !== undefined) {
+                target.nodeMaterialIndex = material.nodeMaterialIndex;
+            }
+            // And the pair the caster list resolves against. Upstream reads
+            // `mesh.material` when the shadow pass builds, so a scene may
+            // name its casters before assigning their materials.
+            if (target.sceneMeshIndex !== undefined) {
+                context.recordSceneMeshMaterial(target.sceneMeshIndex, {
+                    pbrMaterial: material.scenePbrMaterialIndex ?? null,
+                    nodeMaterial: material.nodeMaterialIndex ?? null,
+                });
             }
             return;
         }

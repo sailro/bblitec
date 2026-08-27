@@ -553,10 +553,17 @@ class GeneratedSourceWriter {
         // The shadow family's five defines, derived once: they are not
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
+        const nodeVariantList = options.nodeVariants ?? [];
         const shadowInputs = {
             features,
             standardVariants: (options.pinnedStandardVariants ?? []).length,
             pbrVariants: (options.pinnedVariants ?? []).length,
+            nodeShadowReceivers: nodeVariantList.filter(
+                (variant) => variant.composed.shadowBindings.length > 0,
+            ).length,
+            nodeEsmCasters: nodeVariantList.filter(
+                (variant) => variant.composed.esmCaster !== null,
+            ).length,
         };
         assertShadowCapabilities(shadowInputs);
         const shadows = shadowCapabilities(shadowInputs);

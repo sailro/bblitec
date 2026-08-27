@@ -122,6 +122,14 @@ export interface ShadowCasterManifest {
      * family -- which still takes a runtime handle.
      */
     pbrMaterial: number | null;
+    /**
+     * Its composed node graph, or `null` for a material of another family.
+     *
+     * A node caster's ESM view is a second MODULE compiled from the same
+     * graph rather than a variant of another material, so the caster names
+     * the graph and composition asks the pin for that module.
+     */
+    nodeMaterial: number | null;
 }
 
 export interface ShadowGeneratorManifest {
@@ -491,6 +499,20 @@ export interface CompiledShaderUniformDefault {
  * this compiler does not lower, so it is executed instead, exactly as a drawn
  * atlas and a computed pixel buffer are.
  */
+/**
+ * One shadow generator a node material receives from.
+ *
+ * `_shadowType` is the whole of what the pin reads off the generator, and
+ * `lightIndex` is its light's slot in `scene.lights` — the same slot the
+ * Standard and PBR receivers key their composition by.
+ */
+export interface NodeShadowLight {
+    lightIndex: number;
+    shadowType: "esm" | "pcf";
+    /** Its `shadowGenerators` row, for the resources the PAL binds. */
+    generatorIndex: number;
+}
+
 export type CompiledNodeMaterial =
     & {
         /**
@@ -502,6 +524,17 @@ export type CompiledNodeMaterial =
          * at the first render instead.
          */
         textureNames: readonly string[];
+        /**
+         * The shadow generators the call named, as the pin reads them.
+         *
+         * `parseNodeMaterialFromSnippet` takes `shadowGenerators` plus the
+         * `scene.lights` index of each one's light, and reads nothing off a
+         * generator but its `_shadowType` — so what travels is that filter
+         * and the index, which is also what the composed fragment names its
+         * bindings and varyings by. Empty for a material that receives no
+         * shadow, which composes exactly what it always did.
+         */
+        shadowLights: readonly NodeShadowLight[];
     }
     & (
         | { kind: "literal"; graph: Record<string, unknown> }
@@ -964,6 +997,15 @@ export interface Value {
      * the assignment stored.
      */
     scenePbrMaterialIndex?: number;
+    /**
+     * Which composed node graph a material value names.
+     *
+     * It rides a `parseNodeMaterialFromSnippet` result and a mesh the
+     * material was assigned to, the way `scenePbrMaterialIndex` does --
+     * `setShadowTaskCasterMeshes` needs it to know which variant the
+     * caster's ESM view is a second module of.
+     */
+    nodeMaterialIndex?: number;
     /**
      * Which `sceneMeshes` entry this mesh value names, so a scene-code
      * mesh can be resolved to the runtime handle the composed variant

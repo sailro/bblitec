@@ -53,6 +53,15 @@ export interface ShadowCapabilityInputs {
     standardVariants: number;
     /** How many PBR variants the scene composed. */
     pbrVariants: number;
+    /**
+     * How many composed node graphs receive a shadow -- a node receiver is
+     * not a variant of its own, because `node-shadow.ts` appends to the
+     * GRAPH's own group 1 and mixes by the `meshU.receivesShadow` lane
+     * rather than by a composition key.
+     */
+    nodeShadowReceivers: number;
+    /** How many composed node graphs also carry an ESM caster module. */
+    nodeEsmCasters: number;
 }
 
 export interface ShadowCapabilities {
@@ -60,8 +69,13 @@ export interface ShadowCapabilities {
     reached: boolean;
     /**
      * The ESM generator's own resources: four textures and a separable blur.
-     * A Standard conjunction because what it gates includes the caster's own
-     * material view, and only the Standard family has one so far.
+     *
+     * What it gates includes the caster's own material view, so it is a
+     * conjunction with the families that HAVE one -- Standard and node. A
+     * scene reaching the filter whose casters are all of some third family
+     * would compile this to zero and then refresh its directional generator
+     * through the PCF spot's matrix builder, which answers rather than
+     * failing, so `assertShadowCapabilities` refuses that pair by name.
      */
     esm: boolean;
     /** The Standard family's receiver bind path. */
@@ -83,14 +97,16 @@ export function shadowCapabilities(
     const reached = reachesShadowGenerator(inputs.features);
     const standard = reached && inputs.standardVariants > 0;
     const pbr = reached && inputs.pbrVariants > 0;
+    const node = reached &&
+        (inputs.nodeShadowReceivers > 0 || inputs.nodeEsmCasters > 0);
     return {
         reached,
         esm:
             inputs.features.includes("shadow:esm") &&
-            inputs.standardVariants > 0,
+            (inputs.standardVariants > 0 || inputs.nodeEsmCasters > 0),
         standard,
         pbr,
-        receivers: standard || pbr,
+        receivers: standard || pbr || node,
     };
 }
 
@@ -114,12 +130,14 @@ export function assertShadowCapabilities(
 ): void {
     if (
         inputs.features.includes("shadow:esm") &&
-        inputs.standardVariants === 0
+        inputs.standardVariants === 0 &&
+        inputs.nodeEsmCasters === 0
     ) {
         throw new Error(
             "A scene reaching the ESM shadow generator composes no " +
-                "Standard variant. The ESM caster view is the Standard " +
-                "family's; the PBR one composes nothing yet.",
+                "Standard variant and no node ESM caster. The caster's own " +
+                "material view is those two families'; the PBR one " +
+                "(material/pbr/esm-shadow-view.ts) composes nothing yet.",
         );
     }
 }

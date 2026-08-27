@@ -1059,6 +1059,11 @@
       "upstreamPath": "lab/lite/src/shared/scene282-standard-uv-transform.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene282-standard-uv-transform.ts",
       "sha256": "97940072b0133f03281a2b1c4e68d2bf03df954a5491d95f6622a3fff7cb2d8a"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene65-nme.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene65-nme.ts",
+      "sha256": "d9298ae88c2e6fcd875bf64b4b44077589615ab5853da3968c5b7734d828f0da"
     }
   ]
 }

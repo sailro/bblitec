@@ -509,7 +509,23 @@ export async function composeScenePipeline({
         const label = material.kind === "literal"
             ? `${index}`
             : `${material.module}#${material.exportName}`;
-        const composed = await composeNodeMaterial(graph, label);
+        // Which lights this graph receives from, and whether the scene
+        // casts a shadow from it: the receiver's bindings and the caster's
+        // second module are both the pin's own answers, and both need the
+        // scene's own generator list to ask for.
+        const castsEsmShadow = result.manifest.shadowGenerators.some(
+            (generator) =>
+                generator.kind === "esm-directional" &&
+                generator.casters.some(
+                    (caster) => caster.nodeMaterial === index,
+                ),
+        );
+        const composed = await composeNodeMaterial(
+            graph,
+            label,
+            material.shadowLights,
+            castsEsmShadow,
+        );
         // The graph decides which bindings exist and the scene decides which
         // it supplies; only here are both known. Upstream raises the mismatch
         // at the first render, so raising it at generation is the same

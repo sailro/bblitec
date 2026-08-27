@@ -1116,6 +1116,7 @@ export function compileMaterialIntrinsic(
                     `bbl::create_node_material(${engine}, ` +
                     `${graph.index}u, {${textures}})`,
                 engineCpp: engine,
+                nodeMaterialIndex: graph.index,
             };
         }
 

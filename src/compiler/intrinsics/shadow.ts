@@ -315,6 +315,7 @@ export function compileShadowIntrinsic(
                 casters.push({
                     meshIndex: mesh.sceneMeshIndex,
                     pbrMaterial: mesh.scenePbrMaterialIndex ?? null,
+                    nodeMaterial: mesh.nodeMaterialIndex ?? null,
                 });
             }
             if (emitted.length === 0) {
