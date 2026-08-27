@@ -15,11 +15,13 @@ import type {
     ValueKind,
 } from "../types.js";
 import {
+    compileOptionalStaticBoolean,
     compilePositiveInteger,
     compileStaticNumber,
     pinnedEnumMemberName,
     validateObjectProperties,
     type PositiveIntegerContext,
+    type StaticBooleanContext,
 } from "../option-helpers.js";
 
 export interface EngineOptionContext
@@ -569,4 +571,51 @@ export function compileSceneDefaultRenderTask(
  */
 function pinnedGeometryClearValue(type: GeometryTextureTypeName): number {
     return type === "NORMALIZED_VIEW_DEPTH" ? 1 : 0;
+}
+
+/** The engine's precision policy, as `createEngine` reads it. */
+export interface EnginePrecisionPolicy {
+    highPrecisionMatrix: boolean;
+    floatingOrigin: boolean;
+}
+
+/**
+ * `useHighPrecisionMatrix` and `useFloatingOrigin`, with the pin's own
+ * precondition between them.
+ *
+ * `createEngine` refuses the pair synchronously: subtracting an F64-accurate
+ * eye offset from an already-narrowed world translation recovers nothing,
+ * the low bits having gone upstream. The compiler refuses it at generation
+ * for the same reason, at the call that asked.
+ */
+export function compileEnginePrecisionPolicy(
+    context: StaticBooleanContext & {
+        objectProperty(
+            options: ts.ObjectLiteralExpression,
+            name: string,
+        ): ts.Expression | undefined;
+        fail(node: ts.Node, message: string): never;
+    },
+    options: ts.ObjectLiteralExpression,
+): EnginePrecisionPolicy {
+    const highPrecisionMatrix = compileOptionalStaticBoolean(
+        context,
+        context.objectProperty(options, "useHighPrecisionMatrix"),
+        false,
+        "useHighPrecisionMatrix",
+    );
+    const floatingOrigin = compileOptionalStaticBoolean(
+        context,
+        context.objectProperty(options, "useFloatingOrigin"),
+        false,
+        "useFloatingOrigin",
+    );
+    if (floatingOrigin && !highPrecisionMatrix) {
+        context.fail(
+            options,
+            "useFloatingOrigin requires useHighPrecisionMatrix on the " +
+                "engine.",
+        );
+    }
+    return { highPrecisionMatrix, floatingOrigin };
 }

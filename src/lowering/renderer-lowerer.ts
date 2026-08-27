@@ -537,6 +537,14 @@ export class RendererLowerer {
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
+        /**
+         * The engine's floating-origin mode.
+         *
+         * It reaches the view matrix and nothing else here: the pin's own
+         * `getViewMatrix` forks on it, so the emission takes whichever arm
+         * the engine asked for rather than one of the two.
+         */
+        floatingOrigin?: boolean;
     } = {}): LoweredSource {
         this.assertRenderPlanPins(options);
         this.assertPinnedTransparentSort();
@@ -561,18 +569,23 @@ export class RendererLowerer {
             .map(({ enumerator }) => "    " + enumerator + ",")
             .join("\n");
         const backgroundGeometry = this.pinnedBackgroundGeometry();
-        const viewMatrixBody = this.pinnedViewMatrixBody();
+        const viewMatrixBody = this.pinnedViewMatrixBody(
+            options.floatingOrigin === true,
+        );
         if (options.fog) {
             // PBR and Standard fog ride the PAL's pinned scene block; its
             // {mode, start, end, density} packing is the same WGSL_FOG
             // contract, asserted here so a pin retune fails generation.
             assertPinnedFogInfosOrder();
         }
-        // A scene reaching no thin instances composes no parent world, so
-        // the body is never interpolated and the derivation is skipped.
-        const instancingTrs: PinnedTrsComposition = options.gpuInstancing
-            ? pinnedTrsComposition(this.context)
-            : { composeLocalBody: "", composeWorldBody: "" };
+        // The mesh TRS composition, which two emissions interpolate: a
+        // thin-instanced pool's parent world and the eye-relative world a
+        // floating-origin draw carries. A scene reaching neither composes
+        // no mesh world here, so the derivation is skipped.
+        const meshTrs: PinnedTrsComposition =
+            options.gpuInstancing || options.floatingOrigin
+                ? pinnedTrsComposition(this.context)
+                : { composeLocalBody: "", composeWorldBody: "" };
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -641,7 +654,7 @@ export class RendererLowerer {
                 opaqueOrderStamp,
                 shaderVariantTable,
                 shaderVariantEntries,
-                instancingTrs,
+                meshTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
                 perspectiveWriter,
@@ -904,6 +917,7 @@ export class RendererLowerer {
             solidSkybox?: boolean;
             imageSkybox?: boolean;
             gpuInstancing?: boolean;
+            floatingOrigin?: boolean;
         },
         systemMatrixEnumerators: string,
     ): string {
@@ -1250,6 +1264,21 @@ std::array<float, 16> build_view_matrix(
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
+${options.floatingOrigin
+    ? `// A mesh's own world matrix, eye-relative.
+//
+// This port bakes a mesh's TRS into its vertices, which at large-world
+// coordinates quantizes them before anything can recover the remainder --
+// so a floating-origin scene keeps LOCAL vertices, exactly as the pin
+// always does, and reaches the vertex stage through this matrix instead.
+// The camera's world translation is subtracted from the composed
+// translation in double, before the single float store, which is the
+// whole precision-recovery trick (pack-mat4-with-offset.ts).
+std::array<float, 16> mesh_world_eye_relative(
+    const MeshRecord& mesh,
+    const std::array<float, 16>& base,
+    Vec3d eye);`
+    : ""}\
 ${options.gpuInstancing
     ? `std::array<float, 16> build_instance_parent_world(
     const MeshRecord& mesh);
@@ -1310,13 +1339,14 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             environmentRotation?: boolean;
             solidSkybox?: boolean;
             imageSkybox?: boolean;
+            floatingOrigin?: boolean;
         },
         inputs: {
             viewMatrixBody: string;
             opaqueOrderStamp: string;
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
-            instancingTrs: PinnedTrsComposition;
+            meshTrs: PinnedTrsComposition;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1336,7 +1366,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp,
             shaderVariantTable,
             shaderVariantEntries,
-            instancingTrs,
+            meshTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
             perspectiveWriter,
@@ -1844,6 +1874,53 @@ std::array<float, 16> build_skybox_view_projection(
     return multiply_into(build_projection(camera, aspect), view);
 }
 
+${options.floatingOrigin
+    ? `// The eye-relative world of one mesh, declared above.
+//
+// The composition is the pin's own composeTrsLocalMatrix, in double, and
+// the subtraction is packMat4IntoF32WithOffset's: the offset is the
+// active camera's world translation, taken off the same matrix the view
+// transpose reads, and large - large = small runs at full double width
+// before the single float store rounds the small remainder.
+std::array<float, 16> mesh_world_eye_relative(
+    const MeshRecord& mesh,
+    const std::array<float, 16>& base,
+    Vec3d eye) {
+${meshTrs.composeLocalBody}\
+    // The family's own base world, kept: the PBR convention's X mirror, a
+    // thin-instanced pool's parent, an animated mesh's palette entry. The
+    // eye-relative frame replaces where a mesh sits, never which convention
+    // its family draws it under -- inserting the subtraction BESIDE the arm
+    // chain instead of inside it is what dropped the mirror.
+    std::array<double, 16> world_local{};
+    for (std::size_t row = 0; row < 4; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            double sum = 0.0;
+            for (std::size_t term = 0; term < 4; ++term) {
+                sum += static_cast<double>(base[term * 4 + column]) *
+                    local[row * 4 + term];
+            }
+            world_local[row * 4 + column] = sum;
+        }
+    }
+    // A cloned imported root's offset, folded in at full width rather than
+    // added to the narrowed result -- adding it after the store would put
+    // the large coordinate straight back.
+    world_local[12] += static_cast<double>(mesh.outer_position.x);
+    world_local[13] += static_cast<double>(mesh.outer_position.y);
+    world_local[14] += static_cast<double>(mesh.outer_position.z);
+    world_local[12] -= eye.x;
+    world_local[13] -= eye.y;
+    world_local[14] -= eye.z;
+    std::array<float, 16> world{};
+    for (std::size_t cell = 0; cell < 16; ++cell) {
+        world[cell] = static_cast<float>(world_local[cell]);
+    }
+    return world;
+}
+
+`
+    : ""}\
 ${options.gpuInstancing
     ? `// src/scene/world-matrix-state.ts composeTrsLocalMatrix +
 // src/math/mat4-compose-into.ts mat4ComposeInto: a thin-instanced mesh
@@ -1862,7 +1939,7 @@ std::array<float, 16> build_instance_parent_world(
     if (!mesh.thin_instanced) {
         return mesh.instance_parent_matrix;
     }
-${instancingTrs.composeLocalBody}\
+${meshTrs.composeLocalBody}\
     // The pinned multiply, translated whole above: the parent is the f32
     // matrix the loader recorded and the composed TRS stays f64, which is
     // the pinned accumulation's own width for both.
@@ -3341,7 +3418,7 @@ ${lifted.fragmentBody}
      * indices and the store kinds are the pin's, so a moved store changes
      * the emission and any other shape fails generation.
      */
-    private pinnedViewMatrixBody(): string {
+    private pinnedViewMatrixBody(floatingOrigin: boolean): string {
         const { file, declaration } = this.context.functionDeclaration(
             "src/camera/camera.ts",
             "getViewMatrix",
@@ -3472,10 +3549,19 @@ ${lifted.fragmentBody}
                     `          static_cast<double>(world[${worldTerms[2]}]) * cz));\n`,
             );
         }
+        // The pin's own `useFO ? 0 : w[n]`: under floating origin the eye
+        // sits at the origin of the eye-relative frame, which is the same
+        // frame the mesh worlds were packed into, so the view translation
+        // is zero rather than a subtraction that would bias it twice.
+        const eye = (name: string, index: number): string =>
+            floatingOrigin
+                ? `    const double ${name} = 0.0;\n`
+                : `    const double ${name} = ` +
+                    `static_cast<double>(world[${index}]);\n`;
         let body =
-            `    const double cx = static_cast<double>(world[${eyeIndices[0]}]);\n` +
-            `    const double cy = static_cast<double>(world[${eyeIndices[1]}]);\n` +
-            `    const double cz = static_cast<double>(world[${eyeIndices[2]}]);\n` +
+            eye("cx", eyeIndices[0]!) +
+            eye("cy", eyeIndices[1]!) +
+            eye("cz", eyeIndices[2]!) +
             "    std::array<float, 16> view{};\n";
         for (let index = 0; index < 16; index++) {
             const line = lines.get(index);

@@ -675,6 +675,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/frame-graph/post-process-task.ts",
         consumers: ["features.cmake"],
     },
+    "renderer:floating-origin": {
+        provenance: "src/large-world/floating-origin.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
 };
 
 /** The runtime features the inventory maps, in emission order. */
@@ -1270,6 +1274,22 @@ function capabilityRows(
                 : "not reached",
             "src/material/pbr/fragments/pbr-shadow-fragment.ts",
             ["render_capabilities.hpp"],
+        ),
+        // The engine's own option, and the only one that changes what is
+        // emitted -- `createEngine` refuses it without
+        // `useHighPrecisionMatrix`, and this port composes every world in
+        // double already, so that half gates nothing of its own. A plain
+        // row rather than a checked one: there is one derivation here, and
+        // `checkedRow` over it would compare an expression against itself.
+        row(
+            "BBLITE_FLOATING_ORIGIN",
+            "capability",
+            has("renderer:floating-origin"),
+            has("renderer:floating-origin")
+                ? "scene source created its engine with useFloatingOrigin"
+                : "not reached",
+            "src/large-world/floating-origin.ts",
+            ["render_capabilities.hpp", "renderer plan"],
         ),
         checkedRow(
             "BBLITE_NODE_SHADOWS",

@@ -1370,6 +1370,7 @@ export type Feature =
     | "renderer:fog"
     | "renderer:geometry-output"
     | "renderer:post-process"
+    | "renderer:floating-origin"
     | "background:image-skybox"
     | "background:solid-skybox";
 

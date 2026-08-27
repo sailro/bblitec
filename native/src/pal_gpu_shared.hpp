@@ -59,6 +59,79 @@
 
 namespace bbl::pal {
 
+#if BBLITE_FLOATING_ORIGIN
+/**
+ * The scene's active camera, whose world translation IS the floating-origin
+ * offset.
+ *
+ * The pin derives the offset from `scene.camera.worldMatrix` at the moment
+ * of use rather than mirroring it into scene state, so this port reads it
+ * the same way -- one accessor, so the mesh world, the view transpose and
+ * the lights block cannot disagree about which camera the frame is
+ * relative to. A scene with no camera yields the record default, whose
+ * world is the identity, which is the pin's own zero offset.
+ */
+inline const CameraRecord& floating_origin_camera(
+    const Scene& scene,
+    const Engine& engine) {
+    static const CameraRecord none{};
+    return scene.camera.value < engine.cameras.size()
+        ? engine.cameras[scene.camera.value]
+        : none;
+}
+
+/**
+ * That camera's world translation, which every consumer subtracts.
+ *
+ * In the camera's own width, not the float world matrix's: under the pin's
+ * high-precision matrix the camera's storage is F64, so the offset is the
+ * unrounded eye and every `large - large = small` runs at full width.
+ */
+inline Vec3d floating_origin_offset(
+    const Scene& scene,
+    const Engine& engine) {
+    return upstream::arc_rotate_eye_position(
+        floating_origin_camera(scene, engine));
+}
+
+/**
+ * The positional light entries, rebuilt eye-relative.
+ *
+ * `applyLightFoOffset` rewrites each point (type 0) and spot (type 2) slot
+ * from the light's own world translation minus the camera's, discarding the
+ * absolute position the writer left there -- so the `large - large = small`
+ * cancellation happens once, at full width, rather than in the shader
+ * against an eye-relative `worldPos`. Direction-only entries (directional,
+ * hemispheric) are left alone.
+ */
+inline void apply_light_floating_origin(
+    std::vector<upstream::LightEntry>& entries,
+    std::uint32_t count,
+    const Scene& scene,
+    const Engine& engine) {
+    const Vec3d offset = floating_origin_offset(scene, engine);
+    std::uint32_t written = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (written >= count) break;
+        if (handle.value >= engine.lights.size()) continue;
+        const LightRecord& light = engine.lights[handle.value];
+        // The pin's own test: the type tag in `vLightData.w`, 0 for a point
+        // light and 2 for a spot. A direction-only entry is left alone.
+        const float type = entries[written].vLightData[3];
+        if (type == 0.0f || type == 2.0f) {
+            entries[written].vLightData[0] = static_cast<float>(
+                static_cast<double>(light.position.x) - offset.x);
+            entries[written].vLightData[1] = static_cast<float>(
+                static_cast<double>(light.position.y) - offset.y);
+            entries[written].vLightData[2] = static_cast<float>(
+                static_cast<double>(light.position.z) - offset.z);
+        }
+        ++written;
+    }
+}
+#endif
+
+
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**
  * A pipeline cache key over a variant, its pipeline kind and the per-pass
@@ -182,6 +255,34 @@ inline std::array<float, 16> outer_draw_world(
     world[13] += record.outer_position.y;
     world[14] += record.outer_position.z;
     return world;
+}
+
+/**
+ * The world one draw carries, from the base world its family chose.
+ *
+ * Ordinarily that base IS the drawn world -- this port bakes a mesh's TRS
+ * into its vertices, so the base carries only the conventions around it (the
+ * PBR X mirror, a thin-instanced pool's parent, a skinned draw's palette
+ * entry) -- and the clone offset is added after it.
+ *
+ * Under floating origin the vertices are LOCAL, so the mesh's own TRS comes
+ * back into the matrix and the whole product is rebuilt eye-relative in
+ * double. Every family asks here, so which frame a draw is in is one answer
+ * rather than one per family.
+ */
+inline std::array<float, 16> draw_world(
+    const std::array<float, 16>& base,
+    const MeshRecord& record,
+    [[maybe_unused]] const Scene& scene,
+    [[maybe_unused]] const Engine& engine) {
+#if BBLITE_FLOATING_ORIGIN
+    return upstream::mesh_world_eye_relative(
+        record,
+        base,
+        floating_origin_offset(scene, engine));
+#else
+    return outer_draw_world(base, record);
+#endif
 }
 
 /**
@@ -622,8 +723,18 @@ inline std::vector<GpuVertex> transformed_vertices(
     // transform keeps the exact byte path older instanced scenes
     // validated (including the normal renormalization).
     static const MeshRecord identity_transform{};
+    // A floating-origin scene keeps LOCAL vertices for the same reason a
+    // thin-instanced mesh does: its transform reaches the vertex stage
+    // through a matrix instead. Baking it here would quantize the
+    // far-from-origin translation into float32 before the eye-relative
+    // subtraction could recover the remainder -- which is the whole point
+    // of the mode.
     const MeshRecord& trs =
+#if BBLITE_FLOATING_ORIGIN
+        identity_transform;
+#else
         mesh.thin_instanced ? identity_transform : mesh;
+#endif
     const std::vector<ModelVertex>& source_vertices =
         mesh.gpu_deformation &&
                 geometry.bind_vertices.size() ==
@@ -1104,23 +1215,23 @@ inline std::array<float, 16> pinned_draw_world(
     bool skeleton_draw,
     bool world_from_palette,
     bool uses_local_position,
-    const MeshRecord& record) {
+    const MeshRecord& record,
+    const Scene& scene,
+    const Engine& engine) {
     if (skeleton_draw) {
-        return outer_draw_world(
-            pinned_identity_world(),
-            record);
+        return draw_world(pinned_identity_world(), record, scene, engine);
     }
     if (world_from_palette) {
-        return outer_draw_world(
-            record.bone_matrices[0],
-            record);
+        return draw_world(record.bone_matrices[0], record, scene, engine);
     }
     if (uses_local_position || pinned_record_instanced(record)) {
-        return outer_draw_world(
+        return draw_world(
             pinned_instanced_world(record),
-            record);
+            record,
+            scene,
+            engine);
     }
-    return outer_draw_world(pinned_mesh_world(), record);
+    return draw_world(pinned_mesh_world(), record, scene, engine);
 }
 #endif
 
@@ -1422,10 +1533,31 @@ inline upstream::SceneUniforms pinned_scene_block(
     // with, the same one `build_pbr_uniforms` reads.
     const std::array<float, 16> camera_world =
         upstream::camera_world_matrix(camera);
+#if BBLITE_FLOATING_ORIGIN
+    const Vec3d fo_offset = floating_origin_offset(scene, engine);
+    const Vec3d fo_camera_eye =
+        upstream::arc_rotate_eye_position(camera);
+#endif
     scene_block.vEyePosition = {
+#if BBLITE_FLOATING_ORIGIN
+        // `writePassSceneUBO` writes `cameraWorld - offset` under floating
+        // origin, and the offset IS this camera's world position -- so the
+        // eye sits at the origin of the same frame the mesh worlds and the
+        // view translation were put in. Written as the difference rather
+        // than as zero because a render task drawing through a second
+        // camera is relative to the scene camera, not to itself.
+        // Both sides are the camera's own F64 world translation, so the
+        // steady-state eye is exactly zero -- reading the left side off the
+        // narrowed float world instead would leave half an ULP of the
+        // large coordinate behind.
+        static_cast<float>(fo_camera_eye.x - fo_offset.x),
+        static_cast<float>(fo_camera_eye.y - fo_offset.y),
+        static_cast<float>(fo_camera_eye.z - fo_offset.z),
+#else
         camera_world[12],
         camera_world[13],
         camera_world[14],
+#endif
         1.0f,
     };
     scene_block.view = upstream::build_view_matrix(camera_world);
@@ -1505,6 +1637,9 @@ inline std::vector<std::uint8_t> pinned_lights_block(
         ++count;
     }
     header[0] = count;
+#if BBLITE_FLOATING_ORIGIN
+    apply_light_floating_origin(entries, count, scene, engine);
+#endif
     std::vector<std::uint8_t> bytes(
         sizeof(header) + entries.size() * sizeof(upstream::LightEntry));
     std::memcpy(bytes.data(), header.data(), sizeof(header));
@@ -1602,7 +1737,15 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     const Engine& engine,
     std::uint32_t mesh_index) {
     upstream::NodeMeshUniforms block{};
-    block.world = pinned_identity_world();
+    // The identity is the BAKE's answer, not a constant: this port bakes a
+    // node mesh's TRS into its vertices, so the world carries nothing --
+    // unless the floating-origin frame kept them local, which is exactly
+    // what `draw_world` decides for every family alike.
+    block.world = draw_world(
+        pinned_identity_world(),
+        engine.meshes[mesh_index],
+        scene,
+        engine);
     if (
         mesh_index < engine.meshes.size() &&
         engine.meshes[mesh_index].receives_shadows) {
@@ -2100,13 +2243,17 @@ inline std::size_t standard_variant_for_draw(
  * rather than rendered with a silently-wrong varying.
  */
 inline std::array<float, 16> standard_draw_world(
-    [[maybe_unused]] const MeshRecord& record,
-    bool uses_local_position) {
+    const MeshRecord& record,
+    bool uses_local_position,
+    const Scene& scene,
+    const Engine& engine) {
 #if BBLITE_GPU_INSTANCING
     if (pinned_record_instanced(record)) {
-        return outer_draw_world(
+        return draw_world(
             upstream::build_instance_parent_world(record),
-            record);
+            record,
+            scene,
+            engine);
     }
 #endif
     if (uses_local_position) {
@@ -2124,16 +2271,18 @@ inline std::array<float, 16> standard_draw_world(
                 "Standard mesh is not wired: the baked vertices and the "
                 "raw position attribute disagree.");
         }
-        return outer_draw_world(
+        return draw_world(
             record.instance_parent_matrix,
-            record);
+            record,
+            scene,
+            engine);
     }
-    return outer_draw_world(std::array<float, 16>{
+    return draw_world(std::array<float, 16>{
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
-    }, record);
+    }, record, scene, engine);
 }
 
 /**

@@ -3000,7 +3000,9 @@ void write_pinned_draw_blocks(
                 skeleton_draw,
                 world_from_palette,
                 entry.uses_local_position,
-                record),
+                record,
+                scene,
+                engine),
             draw.item.mesh.value);
     wgpuQueueWriteBuffer(
         state.queue,
@@ -4202,7 +4204,11 @@ void write_standard_draw_blocks(
         pinned_mesh_block(
             scene,
             engine,
-            standard_draw_world(record, entry.uses_local_position),
+            standard_draw_world(
+                record,
+                entry.uses_local_position,
+                scene,
+                engine),
             draw.item.mesh.value);
     wgpuQueueWriteBuffer(
         state.queue,
@@ -8529,6 +8535,7 @@ bool run_dawn_engine(Engine& engine) {
             for (DawnBillboardPass& billboard : state.billboard_passes) {
                 upload_dawn_billboard_pass(
                     state.queue,
+                    scene,
                     engine,
                     billboard,
                     matrix,

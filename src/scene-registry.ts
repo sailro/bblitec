@@ -2292,6 +2292,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene202",
+        name: "Scene 202 - Floating Origin Point Light",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene202.ts",
+        title: "Babylon Lite Native - Large World Rendering",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene65",
         name: "Scene 65 - Node Material Shadow Receiver",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene65.ts",

@@ -41,6 +41,7 @@ import {
     compileGeometryTaskOptions,
     compileCopyTaskOptions,
     compileSceneDefaultRenderTask,
+    compileEnginePrecisionPolicy,
     geometryEnumMember,
     type EngineOptionContext,
 } from "./compiler/intrinsics/engine-options.js";
@@ -1987,6 +1988,7 @@ class Compiler
     ): Value {
         this.expectArgumentCount(call, 1, 2);
         let msaaSamples: 1 | 4 = 4;
+        let floatingOrigin = false;
         if (call.arguments[1]) {
             const options = this.expectObjectLiteral(
                 call.arguments[1],
@@ -1994,9 +1996,23 @@ class Compiler
             validateObjectProperties(
                 this,
                 options,
-                ["msaaSamples", "requiredLimits"],
-                "Reached engine options support msaaSamples and requiredLimits.",
+                [
+                    "msaaSamples",
+                    "requiredLimits",
+                    "useHighPrecisionMatrix",
+                    "useFloatingOrigin",
+                ],
+                "Reached engine options support msaaSamples, requiredLimits, " +
+                    "useHighPrecisionMatrix and useFloatingOrigin.",
             );
+            // `useHighPrecisionMatrix` gates nothing of its own here --
+            // this port composes every world in double already -- so what
+            // the policy contributes is the precondition it enforces and
+            // the one flag that changes what is emitted.
+            ({ floatingOrigin } = compileEnginePrecisionPolicy(
+                this,
+                options,
+            ));
             const samples = this.objectProperty(
                 options,
                 "msaaSamples",
@@ -2033,6 +2049,16 @@ class Compiler
             `auto ${cppName} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
         );
         this.defaultEngineCpp = cppName;
+        // The policy travels as reached features, which is what every other
+        // emission decision reads: `useHighPrecisionMatrix` is what the
+        // pin's process-global allocator swaps on, and this port composes
+        // every world in double already -- so it reaches generation as the
+        // precondition floating origin needs rather than as a storage
+        // choice, and `useFloatingOrigin` is the one that changes what is
+        // emitted.
+        if (floatingOrigin) {
+            this.reachFeature("renderer:floating-origin", call);
+        }
         return {
             kind: "engine",
             cpp: cppName,

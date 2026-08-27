@@ -877,6 +877,30 @@ inline void billboard_sorted_instances(
     }
 }
 
+#if BBLITE_FLOATING_ORIGIN
+/**
+ * The anchor lanes of every staged instance, rebuilt eye-relative.
+ *
+ * The three position floats lead each instance (setSpriteProps writes them
+ * at base + 0..2), and the subtraction runs in double before the single
+ * float store -- the same large - large = small the mesh worlds take.
+ */
+inline void billboard_apply_floating_origin(
+    const BillboardSystemRecord& system,
+    std::vector<float>& out,
+    Vec3d offset) {
+    const std::size_t stride = system.instance_floats_per_sprite;
+    for (std::size_t base = 0; base + 2 < out.size(); base += stride) {
+        out[base + 0] = static_cast<float>(
+            static_cast<double>(out[base + 0]) - offset.x);
+        out[base + 1] = static_cast<float>(
+            static_cast<double>(out[base + 1]) - offset.y);
+        out[base + 2] = static_cast<float>(
+            static_cast<double>(out[base + 2]) - offset.z);
+    }
+}
+#endif
+
 /**
  * The instance data a system uploads this frame, in the order its depth mode
  * gives it.
@@ -890,7 +914,17 @@ inline void billboard_sorted_instances(
 inline void billboard_upload_instances(
     const BillboardSystemRecord& system,
     const std::array<float, 16>& view,
-    std::vector<float>& out) {
+    std::vector<float>& out
+#if BBLITE_FLOATING_ORIGIN
+    // The active camera's world translation. A billboard's anchor is a
+    // world position uploaded per instance, so it takes the same
+    // eye-relative bake the mesh worlds do -- after the sort, which is
+    // computed against the absolute view and would order the same either
+    // way but is left exactly as the pin runs it.
+    ,
+    Vec3d fo_offset
+#endif
+) {
     if (system.depth_mode == BillboardDepthMode::cutout) {
         const std::size_t floats =
             static_cast<std::size_t>(system.count) *
@@ -899,9 +933,14 @@ inline void billboard_upload_instances(
             system.instance_data.begin(),
             system.instance_data.begin() +
                 static_cast<std::ptrdiff_t>(floats));
-        return;
+    } else {
+        billboard_sorted_instances(system, view, out);
     }
-    billboard_sorted_instances(system, view, out);
+#if BBLITE_FLOATING_ORIGIN
+    // Both arms leave out in the same shape, so the anchor bake is one
+    // pass over whichever of the two filled it.
+    billboard_apply_floating_origin(system, out, fo_offset);
+#endif
 }
 
 } // namespace bbl::upstream

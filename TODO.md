@@ -1037,6 +1037,25 @@ CLI exposes no combined-sampler emission.
     does mean every scene's binary needs rebuilding before its parity number is
     trustworthy again, so `npm run scenes:parity` is owed before this pushes.
 
+- [ ] Hoist the floating-origin offset out of the per-draw path. Every
+  floating-origin draw calls `arc_rotate_eye_position` through
+  `mesh_world_eye_relative`, which for an arc-rotate camera is four
+  transcendental calls per draw per pass, where the pin reads three cached
+  floats off `cam.worldMatrix`. The offset is frame-constant, and both
+  backends already hoist the pass scene and lights blocks for exactly this
+  reason -- the fix is one `Vec3d` threaded from beside those blocks through
+  `draw_world`, replacing the `(scene, engine)` pair. Blocked on a
+  measurement: no reached scene draws enough geometry under floating origin
+  for the cost to show, so there is nothing to measure the change against.
+  A large-world scene with a real mesh count would settle it.
+
+- [ ] Re-key the vertex upload gate under floating origin. `transformed_vertices`
+  bakes an identity transform there, so its output no longer depends on the
+  mesh TRS -- but both backends still invalidate on `transform_version`, so a
+  moving mesh re-runs the whole per-vertex loop and re-uploads byte-identical
+  bytes every frame. Blocked on the same missing measurement: every reached
+  floating-origin scene is static, so the path never fires.
+
 - [ ] Separate CPU submission, GPU execution, decode, and startup timing.
 - [ ] Track executable, shader, and asset sizes consistently.
 - [ ] Deduplicate resources and batch uploads before investigating meshlets,

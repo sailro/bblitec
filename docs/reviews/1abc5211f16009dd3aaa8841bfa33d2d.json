@@ -1,0 +1,66 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The floating-origin arm was inserted beside each family's world-selection chain rather than inside it, so a PBR draw lost the X mirror its convention carries and the skinned, palette and thin-instance arms were discarded outright; one draw_world now takes whichever base world the chain chose and rebuilds only the frame",
+      "applied": true
+    },
+    {
+      "summary": "A mode that changes the frame of the whole render had no generation-time refusal for the subsystems still drawn in absolute space -- shadows, splats, shader materials, glTF geometry, parented cameras and thin instances would each have rendered consistently with themselves and wrongly against everything else; assertFloatingOriginCapabilities names them",
+      "applied": true
+    },
+    {
+      "summary": "The node family's mesh block wrote the identity world with a comment justifying it by the vertex bake, which floating origin makes false; it asks draw_world like every other family now",
+      "applied": true
+    },
+    {
+      "summary": "A cloned imported root's outer_position was added after the eye subtraction, putting the large coordinate straight back into the narrowed result; it folds into the double composition instead",
+      "applied": true
+    },
+    {
+      "summary": "engineFlagOption re-implemented compileOptionalStaticBoolean and did so more weakly, accepting only a bare literal where the shared reader also folds negation and identifiers; the engine's precision policy moved to engine-options.ts, which an architecture test already required",
+      "applied": true
+    },
+    {
+      "summary": "renderer:high-precision-matrix gated nothing -- no define, no capability row, no CMake branch, no emission reader -- because this port composes every world in double already; the feature is gone and the precondition it stood for is enforced where createEngine enforces it",
+      "applied": true
+    },
+    {
+      "summary": "The BBLITE_FLOATING_ORIGIN capability row passed its own emitted value as its reason, so checkedRow's cross-check could never fire; it is a plain row, which is what one derivation deserves",
+      "applied": true
+    },
+    {
+      "summary": "renderer:floating-origin listed src/pal_dawn.cpp in featureSources, the only Dawn translation unit in that table, which put a Dawn TU into every SDL_GPU build's source list; the feature adds no translation unit and now says so",
+      "applied": true
+    },
+    {
+      "summary": "instancingTrs is interpolated into two emissions and now derives for a scene with no thin instances at all, so its name and its comment were both false",
+      "applied": true
+    },
+    {
+      "summary": "billboard_upload_instances emitted the same guarded anchor bake in both arms, and its stride guard covered a condition the callers' own sizing makes unreachable",
+      "applied": true
+    },
+    {
+      "summary": "apply_light_floating_origin took a count its caller's own bound already fixes, matching neither the pin's MAX_LIGHTS loop nor the writer beside it",
+      "applied": true
+    },
+    {
+      "summary": "The floating-origin offset is recomputed per draw through arc_rotate_eye_position -- four transcendental calls where the pin reads three cached floats -- and should be hoisted beside the pass blocks both backends already hoist for this reason",
+      "applied": false,
+      "blockedBy": "No reached scene draws enough geometry under floating origin for the cost to be measurable, so there is nothing to measure the hoist against; the plumbing change would be unverified either way.",
+      "filedIn": "TODO.md"
+    },
+    {
+      "summary": "Under floating origin transformed_vertices bakes an identity transform, so its output no longer depends on the mesh TRS -- but both backends still invalidate the vertex upload on transform_version, re-running the per-vertex loop and re-uploading identical bytes for any moving mesh",
+      "applied": false,
+      "blockedBy": "Every reached floating-origin scene is static, so the path never fires and the re-keyed gate cannot be measured against anything.",
+      "filedIn": "TODO.md"
+    }
+  ]
+}

@@ -61,6 +61,7 @@ import type {
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
 import {
+    assertFloatingOriginCapabilities,
     assertShadowCapabilities,
     reachesShadowGenerator,
     nodeShadowInputs,
@@ -563,6 +564,7 @@ class GeneratedSourceWriter {
             ...nodeShadowInputs(nodeVariantList),
         };
         assertShadowCapabilities(shadowInputs);
+        assertFloatingOriginCapabilities(features);
         const shadows = shadowCapabilities(shadowInputs);
         const nodeEsmCasters = shadowInputs.nodeEsmCasters > 0;
         this.tree.write(
@@ -570,6 +572,16 @@ class GeneratedSourceWriter {
             `#pragma once
 
 #define BBLITE_RENDERER_TRANSMISSION ${transmission ? 1 : 0}
+
+// Large-world rendering. This port bakes a mesh's TRS into its vertices,
+// which at far-from-origin coordinates quantizes them before anything can
+// recover the remainder -- so a floating-origin scene keeps LOCAL vertices,
+// as the pin always does, and reaches the vertex stage through an
+// eye-relative world matrix instead. The offset is the active camera's
+// world translation, subtracted in double before the single float store.
+#define BBLITE_FLOATING_ORIGIN ${
+    features.includes("renderer:floating-origin") ? 1 : 0
+}
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
 #define BBLITE_GPU_MORPH_STORAGE ${options.morphStorage ? 1 : 0}
@@ -1352,6 +1364,9 @@ ${wgsl}`,
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
+                    floatingOrigin: features.includes(
+                        "renderer:floating-origin",
+                    ),
                     fog: features.includes("renderer:fog"),
                     imageSkybox: features.includes(
                         "background:image-skybox",

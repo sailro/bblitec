@@ -128,6 +128,7 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:fog": [],
     "renderer:geometry-output": [],
     "renderer:post-process": [],
+    "renderer:floating-origin": [],
 };
 
 export const featureOrder = Object.keys(featureSources) as Feature[];
