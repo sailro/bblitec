@@ -141,33 +141,9 @@ MeshHandle create_extrude_shape(
     return create_ribbon_mesh(
         engine,
         RibbonOptions{std::move(shape_paths), false, false},
-        "${this.pinnedExtrudeMeshName()}");
+        "${this.context.pinnedFactoryMeshName("createExtrudeShape")}");
 }
 `;
-    }
-
-    /** The name the pinned `createExtrudeShape` finishes under. */
-    private pinnedExtrudeMeshName(): string {
-        const { file, declaration } =
-            this.context.functionDeclaration(
-                "src/mesh/mesh-factories.ts",
-                "createExtrudeShape",
-            );
-        const call = this.context.callExpression(
-            declaration,
-            "createMeshFromData",
-        );
-        const name = call.arguments[1]
-            ? this.context.unwrapExpression(call.arguments[1])
-            : undefined;
-        if (!name || !ts.isStringLiteral(name)) {
-            return this.context.contractError(
-                declaration,
-                "Expected createExtrudeShape to pass a literal mesh name.",
-            );
-        }
-        void file;
-        return name.text;
     }
 
     public lowerTube(extrudeShapes = false): LoweredSource {

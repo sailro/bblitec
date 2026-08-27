@@ -651,8 +651,9 @@ present arm — the same specialization the shadow generators take, read from
 the pin rather than restated. `createExtrudeShape` reuses the tube's frames
 and Rodrigues rotation and finishes through the ribbon under its own mesh
 name, because that is exactly how the pin composes it. `cap` refuses by
-name, as does a single-path ribbon and a zero `diameter` that never named
-which end the cone belongs to.
+name, as does a zero `diameter` that never named which end the cone belongs
+to -- the pin asks `options.diameterTop === 0` of the NAMED option, so a
+zero arriving through the shorthand would take an arm the pin does not.
 
 A **line system** is one of those meshes rather than a renderer of its own:
 `createLineSystem` concatenates its polylines into a single indexed mesh —

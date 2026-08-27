@@ -15,6 +15,61 @@ import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.j
  * generation when the pin itself moves.
  */
 
+test("the grown-array builders flow their pinned defaults and rounding", () => {
+    // The half of the family that GROWS a `number[]` and converts at the
+    // end. Each assertion is a value the PIN states, so a pin that moves a
+    // default or a rounding boundary fails here rather than at a parity
+    // number: the disc's radius/tessellation, the cylinder's height and
+    // tessellation floor, and the ribbon's value-selecting `|| 1`, which
+    // must stay `or_number` and not become a C++ boolean.
+    const context = new LoweringContext();
+    const lowered = new FactoryLowerer(context).lowerMeshFactories([
+        "mesh:disc",
+        "mesh:cylinder",
+        "mesh:polyhedron",
+        "mesh:ribbon",
+    ]);
+    for (const builder of [
+        "pinned_create_disc_data",
+        "pinned_create_cylinder_data",
+        "pinned_create_polyhedron_data",
+        "pinned_create_ribbon_data",
+        "pinned_compute_normals",
+    ]) {
+        assert.ok(
+            lowered.source.includes(builder),
+            `${builder} is not emitted`,
+        );
+    }
+    // `computeNormals` is shared, not copied per builder.
+    assert.equal(
+        lowered.source.match(/static std::vector<double> pinned_compute_normals/g)
+            ?.length,
+        1,
+    );
+    // The disc's own `??` defaults, flowed rather than restated.
+    assert.match(lowered.source, /const double radius = options\.radius;/);
+    // The cylinder's tessellation floor is the pin's `Math.max(3, …)`.
+    assert.match(lowered.source, /std::max<double>\(3\.0,/);
+    // The ribbon's seam normal: a VALUE-selecting `||`, which a boolean
+    // operator would flatten to the constant 1.
+    assert.match(lowered.source, /bbl::js::or_number\(/);
+    // A grown list rounds once, through the pin's own conversion.
+    assert.match(lowered.source, /bbl::js::f32_array_from\(/);
+    assert.match(lowered.source, /bbl::js::u32_array_from\(/);
+    // A FIXED `new F64(n)` scratch is indexed directly; only a growable
+    // list reaches `at_grow`.
+    const start = lowered.source.indexOf(
+        "static std::vector<double> pinned_compute_normals",
+    );
+    const body = lowered.source.slice(
+        start,
+        lowered.source.indexOf("\n}", start),
+    );
+    assert.ok(start >= 0);
+    assert.doesNotMatch(body, /at_grow/);
+});
+
 test("mesh factory tables flow from the pinned builders", () => {
     const context = new LoweringContext();
     const lowered = new FactoryLowerer(context).lowerMeshFactories();

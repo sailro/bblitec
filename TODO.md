@@ -197,7 +197,6 @@ a numeric operator outside `+ - * / %` 3 (16, 47, 181), a four-argument call
 3 (`attachControl` with a gizmo-deferral options object: 49, 222, 224),
 a non-final value return 2 (218, 219, behind vertex-animation textures),
 `createTorusKnot` 2 (214, 215), `createUtilityLayer` 2 (221, 223),
-`createTransformNode` behind four (222, 224, 269, 270),
 `createTransformNode` 2 (269, 270), `createSurface` 2 (227, 228),
 `loadFont` 2 (180, 275), `createPhysicsShape` 2 (101, 102).
 Everything else in the lane is a singleton, which is what the shipped waves

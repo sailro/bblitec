@@ -167,24 +167,6 @@ export interface HandleCollectionsContext
 }
 
 /**
- * The value kinds a compile-time list may hold.
- *
- * A handle is an ordinal, a record is its own lanes and a nested list is
- * this rule again: none of the three needs native storage of its own, so a
- * list of them grows at generation and emits nothing. A list of NUMBERS
- * would need storage, which is why it is not here -- the data model
- * materializes that one.
- */
-const compileTimeListKinds: readonly ValueKind[] = [
-    "animation-group",
-    "camera",
-    "light",
-    "mesh",
-    "record",
-    "tuple",
-];
-
-/**
  * The value kinds that stand for an engine handle.
  *
  * A handle is a compile-time ordinal into one of the engine's own arrays, so
@@ -198,6 +180,22 @@ const handleKinds: readonly ValueKind[] = [
     "light",
     "mesh",
 ];
+
+/**
+ * The value kinds a compile-time list may hold.
+ *
+ * A handle is an ordinal, a record is its own lanes and a nested list is
+ * this rule again: none of the three needs native storage of its own, so a
+ * list of them grows at generation and emits nothing. A list of NUMBERS
+ * would need storage, which is why it is not here -- the data model
+ * materializes that one.
+ */
+const compileTimeListKinds: readonly ValueKind[] = [
+    ...handleKinds,
+    "record",
+    "tuple",
+];
+
 
 /** One member of an asset-derived collection, in document order. */
 interface HandleCollectionMember {
@@ -820,6 +818,12 @@ export class HandleCollections {
         // a list in a loop -- `const paths: Vec3[][] = []` grown per path --
         // and the loop unrolls, so the list is complete at generation.
         const kind = tuple.tupleElements[0]?.kind;
+        // A list that already holds something answers before compiling
+        // anything: a data-model list of numbers is not this rule, and
+        // compiling its argument here would compile it twice.
+        if (kind !== undefined && !compileTimeListKinds.includes(kind)) {
+            return undefined;
+        }
         this.context.expectArgumentCount(call, 1, 1);
         const pushed = this.context.compileValue(call.arguments[0]!);
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;

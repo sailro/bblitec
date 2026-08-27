@@ -2042,14 +2042,6 @@ struct SphereMeshData {
 };
 
 /**
- * A scene's own rows of `{x, y, z}` as the path array a ribbon takes.
- *
- * The data model materializes an annotated `Vec3[][]` a scene grew in a
- * loop as its own record type, and the pin's builder wants the record it
- * declares. Templated on the row rather than named per scene, because what
- * makes the two the same is that both spell the pin's three components.
- */
-/**
  * One element of a list, grown to reach it.
  *
  * JavaScript extends an array when you assign past its end, and the pinned
@@ -2066,6 +2058,14 @@ T& at_grow(std::vector<T>& values, std::size_t index) {
     return values[index];
 }
 
+/**
+ * A scene's own row of `{x, y, z}` as the path a builder takes.
+ *
+ * The data model materializes an annotated `Vec3[]` a scene grew in a loop
+ * as its own record type, and the pin's builder wants the record it
+ * declares. Templated on the row rather than named per scene, because what
+ * makes the two the same is that both spell the pin's three components.
+ */
 template <typename Points>
 std::vector<Vec3d> vec3_path(const Points& points) {
     std::vector<Vec3d> path;
@@ -2120,10 +2120,8 @@ struct PolyhedronOptions {
  * `CylinderOptions`, as the reached slice resolves it.
  *
  * `diameter_top` and `diameter_bottom` are the pin's own `??` chain already
- * resolved, so the `diameter` shorthand does not survive here. The values
- * stay UNCLAMPED: the builder clamps a zero to 0.00001 for its ring maths
- * but asks the unclamped option whether to reuse the previous ring's normals
- * at a cone tip, and those are two different questions about one field.
+ * resolved, so the `diameter` shorthand does not survive here -- and the
+ * shorthand is exactly why the zero question travels beside the value.
  */
 struct CylinderOptions {
     double height;
@@ -2131,6 +2129,17 @@ struct CylinderOptions {
     double diameter_bottom;
     double tessellation;
     double subdivisions;
+    /**
+     * Whether the scene named a zero TOP diameter.
+     *
+     * The builder clamps a zero to 0.00001 for its ring maths, and asks
+     * this separately to decide whether to reuse the previous ring's
+     * normals at a cone tip. The pin asks it of the option the scene
+     * wrote, so a zero arriving through the `diameter` shorthand answers
+     * NO -- which is why the record carries the question and not just the
+     * value.
+     */
+    bool diameter_top_is_zero;
 };
 
 /**

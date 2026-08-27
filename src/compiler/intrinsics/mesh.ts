@@ -7,7 +7,10 @@ import {
 } from "../option-helpers.js";
 import { GROUND_OPTION_DEFAULTS } from "./mesh-options.js";
 import { doubleLiteral } from "../../cpp-literals.js";
-import { pinnedMeshOptionDefault } from "../../pinned-mesh-defaults.js";
+import {
+    pinnedMeshOptionDefault,
+    pinnedMeshOptionFlag,
+} from "../../pinned-mesh-defaults.js";
 import {
     pinnedPolyhedron,
     pinnedPolyhedronCount,
@@ -108,6 +111,58 @@ function vec3RecordCpp(
 }
 
 /**
+ * One list of Vec3 PATHS, however the scene spelled it.
+ *
+ * The same two spellings `compileVec3Path` answers for, one level up: rows
+ * written inline as compile-time lists, or rows a loop grew under a
+ * `Vec3[][]` annotation, which the data model materializes under the
+ * scene's own record type.
+ */
+function compileVec3PathArray(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const rows = context.handleCollections.tupleElements(expression);
+    if (rows) {
+        return (
+            `std::vector<std::vector<bbl::Vec3d>>{${rows
+                .map((row) =>
+                    row.tupleElements
+                        ? vec3PointsCpp(
+                              context,
+                              row.tupleElements,
+                              expression,
+                          )
+                        : context.fail(
+                              expression,
+                              "Each ribbon path must be a list of Vec3 " +
+                                  "records.",
+                          ),
+                )
+                .join(", ")}}`
+        );
+    }
+    const value = context.compileValue(expression);
+    return value.kind === "data"
+        ? `bbl::vec3_paths(${value.cpp})`
+        : context.fail(
+              expression,
+              "A ribbon's pathArray must be a list of Vec3 paths.",
+          );
+}
+
+/** A braced list of Vec3 records, from compile-time element values. */
+function vec3PointsCpp(
+    context: MeshIntrinsicContext,
+    points: readonly Value[],
+    node: ts.Node,
+): string {
+    return `{${points
+        .map((point) => vec3RecordCpp(context, point, node))
+        .join(", ")}}`;
+}
+
+/**
  * One path of Vec3 points, however the scene spelled it.
  *
  * A compile-time list emits its points as a braced literal; a list the data
@@ -122,13 +177,11 @@ function compileVec3Path(
     const bound =
         context.handleCollections.tupleElements(expression);
     if (bound) {
-        return (
-            `std::vector<bbl::Vec3d>{${bound
-                .map((element) =>
-                    vec3RecordCpp(context, element, expression),
-                )
-                .join(", ")}}`
-        );
+        return `std::vector<bbl::Vec3d>${vec3PointsCpp(
+            context,
+            bound,
+            expression,
+        )}`;
     }
     const value = context.compileValue(expression);
     if (value.kind === "data") {
@@ -144,31 +197,6 @@ function compileVec3Path(
             )
             .join(", ")}}`
     );
-}
-
-/**
- * Refuses a zero the pin would read as "absent" at one of its two sites.
- *
- * `createCylinderData` clamps a zero diameter to 0.00001 for its rings but
- * asks `options.diameterTop === 0` -- the NAMED option -- whether to reuse
- * the previous ring's normals at a cone tip. A zero that arrived through the
- * `diameter` shorthand answers that question NO in the pin and YES in a
- * record that carries only the resolved end, so it fails by name here rather
- * than rendering a different mesh.
- */
-function requireNonZero(
-    context: MeshIntrinsicContext,
-    node: ts.Expression,
-    value: string,
-): void {
-    if (Number.parseFloat(value) === 0) {
-        context.fail(
-            node,
-            "A zero `diameter` selects the pin's cone-tip arm only when " +
-                "written as `diameterTop` or `diameterBottom`; name the end " +
-                "the cone belongs to.",
-        );
-    }
 }
 
 export function compileMeshIntrinsic(
@@ -908,39 +936,7 @@ export function compileMeshIntrinsic(
                     "A ribbon needs its pathArray.",
                 );
             }
-            // Two spellings, one meaning. An inline literal is a
-            // compile-time list of records; a list a loop grew under a
-            // `Vec3[][]` annotation is the data model's own materialized
-            // rows, which carry the same three components under the
-            // scene's own record type.
-            const tuples =
-                context.handleCollections.tupleElements(pathArray);
-            const paths = tuples
-                ? `std::vector<std::vector<bbl::Vec3d>>{${tuples
-                      .map((path) => {
-                          if (!path.tupleElements) {
-                              context.fail(
-                                  pathArray,
-                                  "Each ribbon path must be a list of " +
-                                      "Vec3 records.",
-                              );
-                          }
-                          return `{${path.tupleElements
-                              .map((point) =>
-                                  vec3RecordCpp(context, point, pathArray),
-                              )
-                              .join(", ")}}`;
-                      })
-                      .join(", ")}}`
-                : `bbl::vec3_paths(${
-                      context.compileValue(pathArray).kind === "data"
-                          ? context.compileValue(pathArray).cpp
-                          : context.fail(
-                                pathArray,
-                                "A ribbon's pathArray must be a list of " +
-                                    "Vec3 paths.",
-                            )
-                  })`;
+            const paths = compileVec3PathArray(context, pathArray);
             context.reachFeature("mesh:ribbon", call);
             return {
                 kind: "mesh",
@@ -978,7 +974,13 @@ export function compileMeshIntrinsic(
                 sizeZ: doubleLiteral(polyhedronDefault("sizeZ")),
             };
             let type = polyhedronDefault("type");
-            let flat = true;
+            let flat = pinnedMeshOptionFlag(
+                "src/mesh/create-polyhedron.ts",
+                "createPolyhedronData",
+                "flat",
+            )
+                ? "true"
+                : "false";
             if (call.arguments[1]) {
                 const options = context.expectObjectLiteral(
                     call.arguments[1],
@@ -1033,16 +1035,19 @@ export function compileMeshIntrinsic(
                     "flat",
                 );
                 if (flatExpression) {
+                    // The emitted body branches on this per build -- both
+                    // the flat and the smooth arm are lowered -- so it
+                    // travels as the record field it is rather than being
+                    // resolved here.
                     const value = context.compileValue(flatExpression);
-                    if (value.kind !== "boolean" || !value.cpp) {
+                    if (value.kind !== "boolean") {
                         context.fail(
                             flatExpression,
-                            "A polyhedron's flatness selects which vertices " +
-                                "the builder emits, so it must be a " +
-                                "compile-time boolean.",
+                            "A polyhedron's `flat` is a boolean, received " +
+                                `${value.kind}.`,
                         );
                     }
-                    flat = value.cpp === "true";
+                    flat = value.cpp;
                 }
             }
             const preset = pinnedPolyhedron(type);
@@ -1063,7 +1068,7 @@ export function compileMeshIntrinsic(
                     `bbl::create_polyhedron(${engine.cpp}, ` +
                     `bbl::PolyhedronOptions{` +
                     `${sizes["sizeX"]}, ${sizes["sizeY"]}, ` +
-                    `${sizes["sizeZ"]}, ${flat ? "true" : "false"}, ` +
+                    `${sizes["sizeZ"]}, ${flat}, ` +
                     `${rows(preset.vertex)}, ${rows(preset.face)}})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
@@ -1097,6 +1102,7 @@ export function compileMeshIntrinsic(
                 "subdivisions",
             ] as const;
             const accepted = [...emitted, "diameter"] as const;
+            let topIsZero = "false";
             const cylinderResolved: Record<string, string> = {
                 height: cylinderDefault("height"),
                 diameterTop: cylinderDefault("diameterTop"),
@@ -1123,17 +1129,6 @@ export function compileMeshIntrinsic(
                     const value = context.compileNumber(diameter, "double");
                     cylinderResolved["diameterTop"] = value;
                     cylinderResolved["diameterBottom"] = value;
-                    if (
-                        !context.objectProperty(options, "diameterTop") ||
-                        !context.objectProperty(options, "diameterBottom")
-                    ) {
-                        // A zero reached THROUGH `diameter` is not the same
-                        // as one written as `diameterTop`: the pin's cone-tip
-                        // arm tests the named option alone, so the two spell
-                        // different meshes. No corpus scene writes it, and
-                        // the record carries one field for both.
-                        requireNonZero(context, diameter, value);
-                    }
                 }
                 for (const name of emitted) {
                     const expression = context.objectProperty(options, name);
@@ -1142,6 +1137,15 @@ export function compileMeshIntrinsic(
                         expression,
                         "double",
                     );
+                }
+                // `options.diameterTop === 0` in the pin is a question
+                // about the NAMED option: absent answers no however the
+                // resolved value ends up, and a named one answers it at
+                // whatever width the scene wrote.
+                const top = context.objectProperty(options, "diameterTop");
+                if (top) {
+                    topIsZero =
+                        `(${context.compileNumber(top, "double")} == 0.0)`;
                 }
             }
             context.reachFeature("mesh:cylinder", call);
@@ -1153,7 +1157,7 @@ export function compileMeshIntrinsic(
                     `bbl::CylinderOptions{` +
                     `${emitted
                         .map((name) => cylinderResolved[name])
-                        .join(", ")}})`,
+                        .join(", ")}, ${topIsZero}})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }

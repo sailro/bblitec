@@ -30,33 +30,61 @@ import {
     PINNED_ASSIGNMENT_OPERATORS,
 } from "./pinned-operators.js";
 
-/** How one pinned identifier is spelled and typed in the emitted C++. */
-/** The C++ storage each list-shaped binding declares. */
-const LIST_STORAGE: ReadonlyMap<string, string> = new Map([
-    ["f64-list", "std::vector<double>"],
-    ["f64-list-2d", "std::vector<std::vector<double>>"],
-    ["vec3-list", "std::vector<Vec3d>"],
-    ["vec3-list-2d", "std::vector<std::vector<Vec3d>>"],
-]);
-
-/** The storage a list OF that list declares. */
-const ELEMENT_STORAGE: ReadonlyMap<string, string> = new Map([
-    ["f64-list", "std::vector<std::vector<double>>"],
-    ["vec3-list", "std::vector<std::vector<Vec3d>>"],
-]);
-
 /**
- * What indexing one binding yields.
+ * Each list-shaped binding's C++ storage, and what indexing it yields.
  *
- * Stated once so the declaration path and the expression path cannot
+ * One table, so the declaration path and the expression path cannot
  * disagree about what a row of a jagged list, or a point of a path, is.
  */
-const ELEMENT_TYPES: ReadonlyMap<string, PinnedBinding["type"]> = new Map([
-    ["f64-list-2d", "f64-list"],
-    ["vec3-list-2d", "vec3-list"],
-    ["vec3-list", "vec3"],
+const LIST_SHAPES: ReadonlyMap<
+    string,
+    { storage: string; element?: PinnedBinding["type"] }
+> = new Map([
+    ["f64-list", { storage: "std::vector<double>" }],
+    [
+        "f64-list-2d",
+        { storage: "std::vector<std::vector<double>>", element: "f64-list" },
+    ],
+    ["vec3-list", { storage: "std::vector<Vec3d>", element: "vec3" }],
+    [
+        "vec3-list-2d",
+        { storage: "std::vector<std::vector<Vec3d>>", element: "vec3-list" },
+    ],
 ]);
 
+/** Whether a binding is one of the list shapes above. */
+function isListShape(type: string): boolean {
+    return LIST_SHAPES.has(type);
+}
+
+/** The storage one list-shaped binding declares. */
+function listStorage(type: string): string | undefined {
+    return LIST_SHAPES.get(type)?.storage;
+}
+
+/** What indexing one binding yields, where it can be indexed. */
+function elementType(type: string): PinnedBinding["type"] | undefined {
+    return LIST_SHAPES.get(type)?.element;
+}
+
+/** The list shape whose ELEMENT is `type` -- for a literal list of lists. */
+function listOfType(type: string): string | undefined {
+    for (const [shape, spec] of LIST_SHAPES) {
+        if (spec.element === type) return shape;
+    }
+    return undefined;
+}
+
+/** Whether a pinned type annotation names the pin's `{x, y, z}` record. */
+function isVec3Type(node: ts.TypeNode): boolean {
+    return (
+        ts.isTypeReferenceNode(node) &&
+        ts.isIdentifier(node.typeName) &&
+        node.typeName.text === "Vec3"
+    );
+}
+
+/** How one pinned identifier is spelled and typed in the emitted C++. */
 export interface PinnedBinding {
     cpp: string;
     /** For a view, the C++ expression giving its byte length. */
@@ -66,7 +94,10 @@ export interface PinnedBinding {
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
      * `f64-list` is a GROWABLE `number[]` the pin pushes onto, which holds
      * its elements at the pin's own double width until a `new F32(list)`
-     * rounds them; `f64-list-2d` is a jagged `number[][]` whose rows are
+     * rounds them; `f64-buffer` is the pin's own `new F64(n)` scratch --
+     * the same storage, but sized once and indexed inside its own bounds,
+     * so a store goes straight through the way an `f32` or `u32` buffer's
+     * does, and an out-of-range one is the bug a typed array would drop; `f64-list-2d` is a jagged `number[][]` whose rows are
      * themselves `f64-list`s; `vec3`, `vec3-list` and `vec3-list-2d` are
      * the same three shapes over the pin's `{x, y, z}` record, which the
      * mesh builders pass around whole; `scalar` is an f64 local or
@@ -78,6 +109,7 @@ export interface PinnedBinding {
         | "f32-view"
         | "u8-view"
         | "f64-list"
+        | "f64-buffer"
         | "f64-list-2d"
         | "vec3"
         | "vec3-list"
@@ -447,10 +479,7 @@ export class PinnedNumericLowerer {
                 // record, and its annotation is the only place that says so.
                 const annotation = declaration.type;
                 const isRecord =
-                    annotation !== undefined &&
-                    ts.isTypeReferenceNode(annotation) &&
-                    ts.isIdentifier(annotation.typeName) &&
-                    annotation.typeName.text === "Vec3";
+                    annotation !== undefined && isVec3Type(annotation);
                 this.scope.bindings.set(name, {
                     cpp: name,
                     type: isRecord ? "vec3" : "scalar",
@@ -508,7 +537,7 @@ export class PinnedNumericLowerer {
                 const shape = this.declaredListType(declaration);
                 this.scope.bindings.set(name, { cpp: name, type: shape });
                 lines.push(
-                    `${indent}${LIST_STORAGE.get(shape)!} ${name};`,
+                    `${indent}${listStorage(shape)!} ${name};`,
                 );
                 continue;
             }
@@ -519,13 +548,13 @@ export class PinnedNumericLowerer {
             const listSource = this.scope.bindings.get(
                 this.unwrap(declaration.initializer).getText(this.file),
             );
-            if (listSource && LIST_STORAGE.has(listSource.type)) {
+            if (listSource && isListShape(listSource.type)) {
                 this.scope.bindings.set(name, {
                     cpp: name,
                     type: listSource.type,
                 });
                 lines.push(
-                    `${indent}${LIST_STORAGE.get(listSource.type)!} ` +
+                    `${indent}${listStorage(listSource.type)!} ` +
                         `${name} = ${listSource.cpp};`,
                 );
                 continue;
@@ -536,13 +565,9 @@ export class PinnedNumericLowerer {
             // reseats it.
             const rowSource = this.unwrap(declaration.initializer);
             if (ts.isElementAccessExpression(rowSource)) {
-                const owner = this.elementOwner(rowSource);
-                const element = ELEMENT_TYPES.get(owner?.type ?? "scalar");
+                const element = this.elementBinding(rowSource);
                 if (element) {
-                    this.scope.bindings.set(name, {
-                        cpp: this.elementAccess(rowSource),
-                        type: element,
-                    });
+                    this.scope.bindings.set(name, element);
                     continue;
                 }
             }
@@ -556,23 +581,21 @@ export class PinnedNumericLowerer {
                 ].map((branch) => {
                     const access = this.unwrap(branch);
                     return ts.isElementAccessExpression(access)
-                        ? ELEMENT_TYPES.get(
-                              this.elementOwner(access)?.type ?? "scalar",
-                          )
+                        ? elementType(this.elementOwner(access)?.type ?? "scalar")
                         : undefined;
                 });
                 const shape = chosen[0];
                 if (
                     shape &&
                     chosen[1] === shape &&
-                    LIST_STORAGE.has(shape)
+                    isListShape(shape)
                 ) {
                     this.scope.bindings.set(name, {
                         cpp: name,
                         type: shape,
                     });
                     lines.push(
-                        `${indent}const ${LIST_STORAGE.get(shape)!}& ` +
+                        `${indent}const ${listStorage(shape)!}& ` +
                             `${name} = ` +
                             `${this.expression(declaration.initializer)};`,
                     );
@@ -695,24 +718,15 @@ export class PinnedNumericLowerer {
         // becomes a float (or an index becomes a u32). Emitted as an
         // element-wise convert rather than a resize-and-copy so the cast is
         // visible at exactly the position the pin performs it.
-        if (source?.type === "f64-list") {
-            if (constructor === "F32") {
-                return {
-                    type: "f32",
-                    declare: (name) =>
-                        `std::vector<float> ${name}(${source.cpp}.begin(), ` +
-                        `${source.cpp}.end());`,
-                };
-            }
-            if (constructor === "U32") {
-                return {
-                    type: "u32",
-                    declare: (name) =>
-                        `std::vector<std::uint32_t> ${name}(` +
-                        `${source.cpp}.begin(), ${source.cpp}.end());`,
-                };
-            }
-            return undefined;
+        if (source && isListShape(source.type)) {
+            const conversion = this.listConversion(initializer);
+            return conversion === undefined
+                ? undefined
+                : {
+                      type: constructor === "U32" ? "u32" : "f32",
+                      declare: (name) =>
+                          `auto ${name} = ${conversion};`,
+                  };
         }
         // `new F32(otherTypedArray)` COPIES it; only `new F32(count)`
         // allocates. Reading the argument as a length would compile and
@@ -769,7 +783,7 @@ export class PinnedNumericLowerer {
         // element type for exactly that reason.
         if (constructor === "F64" || constructor === "Array") {
             return {
-                type: "f64-list",
+                type: "f64-buffer",
                 declare: (name) =>
                     `std::vector<double> ${name}(` +
                     `static_cast<std::size_t>(${count}), 0.0);`,
@@ -848,16 +862,19 @@ export class PinnedNumericLowerer {
         if (!ts.isIdentifier(argument)) return undefined;
         const source = this.scope.bindings.get(argument.text);
         if (source?.type !== "f64-list") return undefined;
-        const element =
+        // `bbl::js::f32_array_from` / `u32_array_from` are the pin's own
+        // conversions rather than a C++ cast: the u32 one applies
+        // ECMAScript ToUint32, which WRAPS a negative where a
+        // `static_cast` would be undefined behaviour.
+        const conversion =
             node.expression.text === "F32"
-                ? "float"
+                ? "f32_array_from"
                 : node.expression.text === "U32"
-                  ? "std::uint32_t"
+                  ? "u32_array_from"
                   : undefined;
-        return element === undefined
+        return conversion === undefined
             ? undefined
-            : `std::vector<${element}>(${source.cpp}.begin(), ` +
-                  `${source.cpp}.end())`;
+            : `bbl::js::${conversion}(${source.cpp})`;
     }
 
     /** `const f = (a, b) => { ... }` — a void helper the body calls. */
@@ -992,13 +1009,7 @@ export class PinnedNumericLowerer {
         const annotation = declaration.type;
         if (annotation && ts.isArrayTypeNode(annotation)) {
             const element = annotation.elementType;
-            if (
-                ts.isTypeReferenceNode(element) &&
-                ts.isIdentifier(element.typeName) &&
-                element.typeName.text === "Vec3"
-            ) {
-                return "vec3-list";
-            }
+            if (isVec3Type(element)) return "vec3-list";
             if (element.kind === ts.SyntaxKind.NumberKeyword) {
                 return "f64-list";
             }
@@ -1009,9 +1020,6 @@ export class PinnedNumericLowerer {
                 return "f64-list-2d";
             }
         }
-        // No annotation at all is the shape every builder already lowered
-        // writes for its four output arrays.
-        if (!annotation) return "f64-list";
         return this.fail(declaration, "empty list declaration");
     }
 
@@ -1024,9 +1032,23 @@ export class PinnedNumericLowerer {
     private rowBinding(
         access: ts.ElementAccessExpression,
     ): PinnedBinding | undefined {
+        const element = this.elementBinding(access);
+        return element && isListShape(element.type) ? element : undefined;
+    }
+
+    /**
+     * What one element access denotes, when its owner is indexable.
+     *
+     * A row of a jagged list, a point of a path, a number of a buffer --
+     * one rule, because the declaration path, the read path, the `length`
+     * path and the `push` receiver all ask it.
+     */
+    private elementBinding(
+        access: ts.ElementAccessExpression,
+    ): PinnedBinding | undefined {
         const owner = this.elementOwner(access);
-        const type = ELEMENT_TYPES.get(owner?.type ?? "scalar");
-        return owner && type && LIST_STORAGE.has(type)
+        const type = elementType(owner?.type ?? "scalar");
+        return owner && type
             ? { cpp: this.elementAccess(access), type }
             : undefined;
     }
@@ -1094,7 +1116,7 @@ export class PinnedNumericLowerer {
             // grows to reach the element, which is the array the pin ends
             // up with.
             const owner = this.elementOwner(unwrapped);
-            if (owner && LIST_STORAGE.has(owner.type)) {
+            if (owner && isListShape(owner.type)) {
                 const index = this.expression(
                     unwrapped.argumentExpression,
                 );
@@ -1171,10 +1193,10 @@ export class PinnedNumericLowerer {
             const row = rows[0];
             if (
                 row &&
-                LIST_STORAGE.has(row.type) &&
+                isListShape(row.type) &&
                 rows.every((entry) => entry?.type === row.type)
             ) {
-                const storage = ELEMENT_STORAGE.get(row.type);
+                const storage = listStorage(listOfType(row.type) ?? "");
                 if (storage) {
                     return `${storage}{${rows
                         .map((entry) => entry!.cpp)
@@ -1205,11 +1227,10 @@ export class PinnedNumericLowerer {
             // enforced on the store side, by `storedValue`/`elementType`.
             // A record or a row is read as itself: it is not a number, and
             // widening it would not compile.
-            const owner = this.elementOwner(node);
-            const element = ELEMENT_TYPES.get(owner?.type ?? "scalar");
+            const element = this.elementBinding(node);
             return element === undefined
                 ? `static_cast<double>(${this.elementAccess(node)})`
-                : this.elementAccess(node);
+                : element.cpp;
         }
         if (ts.isPostfixUnaryExpression(node)) {
             // `order[counts[key]!++] = j` -- the stable scatter increments a
@@ -1312,18 +1333,20 @@ export class PinnedNumericLowerer {
             if (
                 binding.type === "f32" ||
                 binding.type === "u32" ||
-                LIST_STORAGE.has(binding.type)
+                isListShape(binding.type)
             ) {
                 return `static_cast<double>(${binding.cpp}.size())`;
             }
         }
         // `pathArray[0].length` -- the length of a ROW read in place. The
         // same question as a bound list's, asked of an element.
-        if (node.name.text === "length" && ts.isElementAccessExpression(owner)) {
-            const rowOwner = this.elementOwner(owner);
-            const element = ELEMENT_TYPES.get(rowOwner?.type ?? "scalar");
-            if (element && LIST_STORAGE.has(element)) {
-                return `static_cast<double>(${this.elementAccess(owner)}.size())`;
+        if (
+            node.name.text === "length" &&
+            ts.isElementAccessExpression(owner)
+        ) {
+            const row = this.rowBinding(owner);
+            if (row) {
+                return `static_cast<double>(${row.cpp}.size())`;
             }
         }
         if (binding?.bytesCpp && node.name.text === "byteLength") {
@@ -1374,7 +1397,7 @@ export class PinnedNumericLowerer {
                 : this.scope.bindings.get(
                       callee.expression.getText(this.file),
                   );
-            if (list && LIST_STORAGE.has(list.type)) {
+            if (list && isListShape(list.type)) {
                 if (node.arguments.length === 0) {
                     this.fail(node, "push with no arguments");
                 }
@@ -1416,6 +1439,14 @@ export class PinnedNumericLowerer {
     }
 
     private binary(node: ts.BinaryExpression): string {
+        // A caller may bind a whole COMPARISON, where the question the pin
+        // asks is one the native record answers directly:
+        // `options.diameterTop === 0` is not a test on the resolved
+        // diameter, it is "did the scene name a zero top". Naming it here
+        // is the same specialization `propertyAccess` already takes for a
+        // resolved member.
+        const named = this.scope.bindings.get(node.getText(this.file));
+        if (named) return named.cpp;
         const operator = BINARY_OPERATORS.get(node.operatorToken.kind);
         if (operator) {
             return (
