@@ -1011,9 +1011,16 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 126 - Gaussian Splat Shader Plugin",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene126.ts",
         title: "Babylon Lite Native - Gaussian Splat Shader Plugin",
+        // Not bit-stable from run to run, and the widest of the four scenes
+        // that are not: `stability` measures the Dawn foreground alternating
+        // between 0.001 and 0.005 across consecutive runs at 4x and every
+        // run byte-identical at one sample, so the mover is multisampling
+        // (SDL_GPU wobbles too, at 0.000081). The thresholds clear the band
+        // rather than the median, because a gate that fails on the coin flip
+        // measures nothing; `scene-neutrality.ts` carries the measurement.
         parity: {
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.007,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },

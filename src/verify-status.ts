@@ -219,9 +219,10 @@ export function verifyStatus(statusPath = "docs/status.md"): string[] {
             );
             continue;
         }
-        // Scenes 9, 37 and 120 are not bit-stable between runs at 4x, by a
-        // few dozen pixels of one level each, which is enough to move the
-        // third decimal across a rounding boundary. `scene -- neutrality`
+        // Scenes 9, 37, 120 and 126 are not bit-stable between runs at
+        // 4x, by pixels of one level each, which is enough to move the
+        // third decimal across a rounding boundary -- scene 126's Dawn
+        // foreground alternates between 0.001 and 0.005. `scene -- neutrality`
         // already excludes those cells, per backend; repainting the table
         // per run would publish whichever side of the coin the last matrix
         // landed on, so the value is not compared there. The severity colour
