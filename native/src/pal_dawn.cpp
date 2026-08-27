@@ -516,6 +516,27 @@ struct DawnState : DawnDevice {
     std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
     WGPUPipelineLayout mesh_pipeline_layout = nullptr;
 
+#if BBLITE_SHADOWS_ESM
+/**
+ * The ESM caster's own params block, from the generator its material view
+ * was built for.
+ *
+ * `getEsmShadowView` closes over that generator's `_shadowParamsUBO`, and
+ * every family's caster reads the same one, so the lookup is stated once.
+ */
+WGPUBuffer esm_caster_params_buffer(
+    const DawnState& state,
+    const MaterialRecord* material) {
+    if (
+        !material ||
+        !material->esm_shadow ||
+        material->esm_shadow_generator.value >= state.shadow_params.size()) {
+        return nullptr;
+    }
+    return state.shadow_params[material->esm_shadow_generator.value];
+}
+#endif
+
 #if BBLITE_PINNED_MATERIALS
     // Babylon Lite's own grouping, which its composed fragments declare:
     // group 0 carries the per-pass scene block and the lights array, group 1
@@ -1263,6 +1284,27 @@ struct DawnState : DawnDevice {
         if (window) SDL_DestroyWindow(window);
     }
 };
+
+#if BBLITE_SHADOWS_ESM
+/**
+ * The ESM caster's own params block, from the generator its material view
+ * was built for.
+ *
+ * `getEsmShadowView` closes over that generator's `_shadowParamsUBO`, and
+ * every family's caster reads the same one, so the lookup is stated once.
+ */
+WGPUBuffer esm_caster_params_buffer(
+    const DawnState& state,
+    const MaterialRecord* material) {
+    if (
+        !material ||
+        !material->esm_shadow ||
+        material->esm_shadow_generator.value >= state.shadow_params.size()) {
+        return nullptr;
+    }
+    return state.shadow_params[material->esm_shadow_generator.value];
+}
+#endif
 
 /** Forwards to the shared loader; the call sites name the state. */
 WGPUShaderModule load_wgsl_module(
@@ -2776,16 +2818,15 @@ WGPUBindGroup build_pinned_draw_group(
             // The ESM caster's own block, from the generator its view was
             // built for -- the Standard family's arm, for the family that
             // shares the view's factory.
-            if (
-                binding.name == "shadowParams" &&
-                material &&
-                material->esm_shadow_generator.value <
-                    state.shadow_params.size() &&
-                state.shadow_params[material->esm_shadow_generator.value]) {
+            if (binding.name == "shadowParams") {
                 group_entry.buffer =
-                    state.shadow_params[
-                        material->esm_shadow_generator.value];
-                group_entry.size = 8 * sizeof(float);
+                    esm_caster_params_buffer(state, material);
+                if (!group_entry.buffer) {
+                    dawn_error(
+                        "an ESM caster draw reached the encode before its "
+                        "generator's shadow params.");
+                }
+                group_entry.size = upstream::shadow_params_block_bytes;
                 entries.push_back(group_entry);
                 continue;
             }
@@ -3410,11 +3451,111 @@ WGPUTextureView shadow_map_view(
     return map.depth_sampled_view;
 }
 
+/**
+ * The generators in `scene.lights` order, as a list a row's own light index
+ * can be looked up in.
+ *
+ * That walk IS the ordinal every shadow row names, and it is the shared one:
+ * the refresh that rebuilds these generators' matrices visits them in the
+ * same order, and a second spelling could disagree.
+ */
+std::vector<ShadowGeneratorHandle> shadow_generators_in_light_order(
+    const Scene& scene,
+    const Engine& engine) {
+    std::vector<ShadowGeneratorHandle> generators;
+    pal::for_each_shadow_generator(
+        scene,
+        engine,
+        [&](ShadowGeneratorHandle handle, LightHandle, std::size_t) {
+            generators.push_back(handle);
+        });
+    return generators;
+}
+
+/**
+ * One receiver row's layout entry.
+ *
+ * `createShadowFragment` and the node emitter alike pick each binding's TYPE
+ * from its own light's filter, so a scene mixing an ESM directional with a
+ * PCF spot declares a float texture and a plain sampler beside a depth
+ * texture and a comparison one. The generated rows are the reflection of
+ * that text, so neither the shape nor the stage visibility is decided here
+ * -- and every family reads them through this one builder.
+ */
+WGPUBindGroupLayoutEntry shadow_layout_entry(
+    const upstream::PinnedShadowBinding& row) {
+    WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    entry.binding = row.binding;
+    entry.visibility = 0;
+    if (row.vertex) entry.visibility |= WGPUShaderStage_Vertex;
+    if (row.fragment) entry.visibility |= WGPUShaderStage_Fragment;
+    switch (row.kind) {
+        case upstream::PinnedBindingKind::textureDepth2d:
+            entry.texture.sampleType = WGPUTextureSampleType_Depth;
+            entry.texture.viewDimension = WGPUTextureViewDimension_2D;
+            break;
+        case upstream::PinnedBindingKind::texture2d:
+            entry.texture.sampleType = WGPUTextureSampleType_Float;
+            entry.texture.viewDimension = WGPUTextureViewDimension_2D;
+            break;
+        case upstream::PinnedBindingKind::samplerComparison:
+            entry.sampler.type = WGPUSamplerBindingType_Comparison;
+            break;
+        case upstream::PinnedBindingKind::sampler:
+            entry.sampler.type = WGPUSamplerBindingType_Filtering;
+            break;
+        case upstream::PinnedBindingKind::uniformBuffer:
+            entry.buffer.type = WGPUBufferBindingType_Uniform;
+            break;
+        default:
+            dawn_error(
+                ("a composed shadow binding '" + std::string(row.name) +
+                 "' has a kind no receiver can bind.")
+                    .c_str());
+    }
+    return entry;
+}
+
+/** The resource one receiver row wants, from its role and its light. */
+WGPUBindGroupEntry shadow_group_entry(
+    DawnState& state,
+    const Engine& engine,
+    std::span<const ShadowGeneratorHandle> generators,
+    const upstream::PinnedShadowBinding& row) {
+    if (row.light >= generators.size()) {
+        dawn_error(
+            ("a composed shadow binding names light " +
+             std::to_string(row.light) +
+             ", which carries no generator.")
+                .c_str());
+    }
+    const ShadowGeneratorHandle handle = generators[row.light];
+    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+    entry.binding = row.binding;
+    switch (row.role) {
+        case upstream::PinnedShadowRole::map:
+            entry.textureView = shadow_map_view(state, engine, handle);
+            break;
+        case upstream::PinnedShadowRole::map_sampler:
+            // Which sampler is the ROW's to say: a PCF map is compared,
+            // an ESM one is filtered.
+            entry.sampler = row.kind ==
+                    upstream::PinnedBindingKind::samplerComparison
+                ? state.shadow_comparison_sampler
+                : state.shadow_filtering_sampler;
+            break;
+        case upstream::PinnedShadowRole::info:
+            entry.buffer = state.shadow_uniforms[handle.value];
+            entry.size = sizeof(upstream::ShadowInfoUniforms);
+            break;
+    }
+    return entry;
+}
+
 // From here to the end of this block: the two COMPOSED-VARIANT families'
-// group 2. A node receiver has none -- its three bindings per light
-// continue the graph's own group 1 and are reflected into the node variant
-// table -- so a node-only scene compiles the generator half above and none
-// of this.
+// own group 2. A node receiver has none -- its rows continue the graph's
+// own group 1 -- so a node-only scene compiles the two builders above and
+// none of this.
 #if BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS
 /**
  * Group 2 for a shadow-receiving Standard draw, from the composed rows.
@@ -3437,39 +3578,7 @@ WGPUBindGroupLayout shadow_layout_for(
     std::vector<WGPUBindGroupLayoutEntry> entries;
     entries.reserve(rows.size());
     for (const upstream::PinnedShadowBinding& row : rows) {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = row.binding;
-        entry.visibility = 0;
-        if (row.vertex) entry.visibility |= WGPUShaderStage_Vertex;
-        if (row.fragment) entry.visibility |= WGPUShaderStage_Fragment;
-        switch (row.kind) {
-            case upstream::PinnedBindingKind::textureDepth2d:
-                entry.texture.sampleType = WGPUTextureSampleType_Depth;
-                entry.texture.viewDimension =
-                    WGPUTextureViewDimension_2D;
-                break;
-            case upstream::PinnedBindingKind::texture2d:
-                entry.texture.sampleType = WGPUTextureSampleType_Float;
-                entry.texture.viewDimension =
-                    WGPUTextureViewDimension_2D;
-                break;
-            case upstream::PinnedBindingKind::samplerComparison:
-                entry.sampler.type = WGPUSamplerBindingType_Comparison;
-                break;
-            case upstream::PinnedBindingKind::sampler:
-                entry.sampler.type = WGPUSamplerBindingType_Filtering;
-                break;
-            case upstream::PinnedBindingKind::uniformBuffer:
-                entry.buffer.type = WGPUBufferBindingType_Uniform;
-                break;
-            default:
-                dawn_error(
-                    ("a composed shadow binding '" +
-                     std::string(row.name) +
-                     "' has a kind group 2 cannot bind.")
-                        .c_str());
-        }
-        entries.push_back(entry);
+        entries.push_back(shadow_layout_entry(row));
     }
     WGPUBindGroupLayoutDescriptor descriptor =
         WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
@@ -3497,47 +3606,13 @@ WGPUBindGroup shadow_group_for(
     WGPUBindGroup& slot) {
     if (slot) return slot;
     ensure_shadow_samplers(state);
-    // The walk IS the ordinal each row names, so it is the shared one --
-    // the refresh that rebuilds these generators' matrices visits them in
-    // the same order, and a second spelling here could disagree.
-    std::vector<ShadowGeneratorHandle> generators;
-    pal::for_each_shadow_generator(
-        scene,
-        engine,
-        [&](ShadowGeneratorHandle handle, LightHandle, std::size_t) {
-            generators.push_back(handle);
-        });
+    const std::vector<ShadowGeneratorHandle> generators =
+        shadow_generators_in_light_order(scene, engine);
     std::vector<WGPUBindGroupEntry> entries;
     entries.reserve(rows.size());
     for (const upstream::PinnedShadowBinding& row : rows) {
-        if (row.light >= generators.size()) {
-            dawn_error(
-                ("a composed shadow binding names light " +
-                 std::to_string(row.light) +
-                 ", which carries no generator.")
-                    .c_str());
-        }
-        const ShadowGeneratorHandle handle = generators[row.light];
-        WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
-        entry.binding = row.binding;
-        switch (row.role) {
-            case upstream::PinnedShadowRole::map:
-                entry.textureView = shadow_map_view(state, engine, handle);
-                break;
-            case upstream::PinnedShadowRole::map_sampler:
-                // Which sampler is the ROW's to say: a PCF map is compared,
-                // an ESM one is filtered.
-                entry.sampler = row.kind ==
-                        upstream::PinnedBindingKind::samplerComparison
-                    ? state.shadow_comparison_sampler
-                    : state.shadow_filtering_sampler;
-                break;
-            case upstream::PinnedShadowRole::info:
-                entry.buffer = state.shadow_uniforms[handle.value];
-                entry.size = sizeof(upstream::ShadowInfoUniforms);
-                break;
-        }
-        entries.push_back(entry);
+        entries.push_back(
+            shadow_group_entry(state, engine, generators, row));
     }
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     descriptor.layout = shadow_layout_for(state, rows, layout_slot);
@@ -3916,16 +3991,10 @@ WGPUBindGroup build_standard_draw_group(
 #if BBLITE_SHADOWS_ESM
             } else if (
                 binding.name == "shadowParams" &&
-                material &&
-                material->esm_shadow_generator.value <
-                    state.shadow_params.size() &&
-                state.shadow_params[
-                    material->esm_shadow_generator.value]) {
-                // The ESM caster's own block, from the generator its view
-                // was built for.
-                group_entry.buffer = state.shadow_params[
-                    material->esm_shadow_generator.value];
-                group_entry.size = 8 * sizeof(float);
+                esm_caster_params_buffer(state, material)) {
+                group_entry.buffer =
+                    esm_caster_params_buffer(state, material);
+                group_entry.size = upstream::shadow_params_block_bytes;
 #endif
             } else {
                 dawn_error(
@@ -4711,15 +4780,13 @@ WGPURenderPipeline pinned_variant_pipeline(
     // colour format is that generator's own recorded row, so two generators
     // whose factories returned different formats build different pipelines.
     std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key =
-        pal::variant_pipeline_key(variant, kind, {shadow_pass, has_depth}) +
-        (esm_shadow_index == invalid_handle
-            ? 0
-            : (esm_shadow_index + 1) *
-                pal::variant_pipeline_key(
-                    upstream::pbr_variants.size(),
-                    upstream::RenderPipelineKind{},
-                    {false, false}));
+    const std::size_t key = pal::variant_pipeline_key(
+        pal::esm_keyed_variant(
+            variant,
+            upstream::pbr_variants.size(),
+            esm_shadow_index),
+        kind,
+        {shadow_pass, has_depth});
     auto& map = state.pinned_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -4812,9 +4879,7 @@ WGPURenderPipeline pinned_variant_pipeline(
     // An ESM caster variant draws into ONE generator's map -- the task that
     // owns this pass names it -- so the format is that generator's own row
     // rather than an assumption that every ESM map agrees.
-    if (
-        esm_shadow_index != invalid_handle &&
-        pal::pbr_variant_writes_esm_shadow(variant)) {
+    if (esm_shadow_index != invalid_handle && entry.esm_shadow_output) {
         color_target.format = esm_texture_format(
             upstream::esm_shadow_resources[esm_shadow_index].textures[0]
                 .format);
@@ -4893,18 +4958,13 @@ WGPURenderPipeline standard_variant_pipeline(
     // colour format is that generator's own recorded row, so two generators
     // whose factories returned different formats build different pipelines.
     std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key =
-        pal::variant_pipeline_key(
+    const std::size_t key = pal::variant_pipeline_key(
+        pal::esm_keyed_variant(
             variant,
-            kind,
-            {shadow_pass, has_depth, unfilterable_emissive}) +
-        (esm_shadow_index == invalid_handle
-            ? 0
-            : (esm_shadow_index + 1) *
-                pal::variant_pipeline_key(
-                    upstream::standard_variants.size(),
-                    upstream::RenderPipelineKind{},
-                    {false, false, false}));
+            upstream::standard_variants.size(),
+            esm_shadow_index),
+        kind,
+        {shadow_pass, has_depth, unfilterable_emissive});
     auto& map = state.standard_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -5134,37 +5194,17 @@ WGPUBindGroupLayout node_draw_layout_for(
         params.binding = entry.caster.params_binding;
         params.visibility = WGPUShaderStage_Fragment;
         params.buffer.type = WGPUBufferBindingType_Uniform;
-        params.buffer.minBindingSize = 8 * sizeof(float);
+        params.buffer.minBindingSize = upstream::shadow_params_block_bytes;
         entries.push_back(params);
-    }
-    // The receiver's three rows per light, continuing the graph's own
-    // binding run. `shadowInfo_N` is read in BOTH stages -- the vertex half
-    // projects into light space with `lightMatrix`, the fragment half reads
-    // `shadowsInfo` -- while the map and its sampler are fragment-only.
-    for (
-        std::size_t index = 0;
-        !caster && index < entry.shadow_binding_count;
-        ++index) {
-        const upstream::NodeVariantShadowBinding& binding =
-            upstream::node_variant_shadow_bindings[
-                entry.first_shadow_binding + index];
-        WGPUBindGroupLayoutEntry map = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        map.binding = binding.texture;
-        map.visibility = WGPUShaderStage_Fragment;
-        map.texture.sampleType = WGPUTextureSampleType_Float;
-        map.texture.viewDimension = WGPUTextureViewDimension_2D;
-        entries.push_back(map);
-        WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        sampler.binding = binding.sampler;
-        sampler.visibility = WGPUShaderStage_Fragment;
-        sampler.sampler.type = WGPUSamplerBindingType_Filtering;
-        entries.push_back(sampler);
-        WGPUBindGroupLayoutEntry info = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        info.binding = binding.ubo;
-        info.visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        info.buffer.type = WGPUBufferBindingType_Uniform;
-        info.buffer.minBindingSize = sizeof(upstream::ShadowInfoUniforms);
-        entries.push_back(info);
+    } else {
+        // The receiver's rows, continuing the graph's own binding run
+        // rather than opening a group of their own -- but each is the same
+        // reflected row the composed families' are, so the same builder
+        // answers what type it carries and which stages read it.
+        for (const upstream::PinnedShadowBinding& row :
+             pal::node_shadow_rows(entry)) {
+            entries.push_back(shadow_layout_entry(row));
+        }
     }
 #endif
     WGPUBindGroupLayoutDescriptor descriptor =
@@ -5232,15 +5272,13 @@ WGPURenderPipeline node_variant_pipeline(
     bool caster = false,
     std::uint32_t esm_shadow_index = invalid_handle) {
     const std::size_t slot = pal::node_variant_slot(variant, caster);
-    const std::size_t key =
-        pal::variant_pipeline_key(slot, kind, {shadow_pass, has_depth}) +
-        (esm_shadow_index == invalid_handle
-            ? 0
-            : (esm_shadow_index + 1) *
-                pal::variant_pipeline_key(
-                    pal::node_variant_slots(),
-                    upstream::RenderPipelineKind{},
-                    {false, false}));
+    const std::size_t key = pal::variant_pipeline_key(
+        pal::esm_keyed_variant(
+            slot,
+            pal::node_variant_slots(),
+            esm_shadow_index),
+        kind,
+        {shadow_pass, has_depth});
     auto& map = state.node_variant_pipelines[samples];
     const auto existing = map.find(key);
     if (existing != map.end()) return existing->second;
@@ -5253,15 +5291,13 @@ WGPURenderPipeline node_variant_pipeline(
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
     if (!state.node_vertex_modules[slot]) {
-        const std::string_view vertex_stem =
-            caster ? entry.caster.vertex_stem : entry.vertex_stem;
-        const std::string_view fragment_stem =
-            caster ? entry.caster.fragment_stem : entry.fragment_stem;
+        const upstream::NodeVariantStems stems =
+            pal::node_variant_stems(slot);
         state.node_vertex_modules[slot] =
-            load_wgsl_module(state, std::string(vertex_stem).c_str());
+            load_wgsl_module(state, std::string(stems.vertex).c_str());
         state.node_fragment_modules[slot] = load_wgsl_module(
             state,
-            std::string(fragment_stem).c_str());
+            std::string(stems.fragment).c_str());
     }
     std::vector<WGPUVertexAttribute> attributes;
     // A node graph declaring the thin-instance columns would need a second
@@ -5384,9 +5420,10 @@ WGPUBindGroup build_node_draw_group(
     DawnMesh& mesh,
     const DawnDrawState& draw_state,
     std::size_t variant,
-    // The caster view, and the generator whose params block it reads.
-    [[maybe_unused]] bool caster = false,
-    [[maybe_unused]] ShadowGeneratorHandle esm_generator = {}) {
+    // Which of the graph's two compiled views, and the material that says
+    // so -- an ESM caster view carries both the bit and its generator.
+    bool caster = false,
+    [[maybe_unused]] const MaterialRecord* material = nullptr) {
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
     std::vector<WGPUBindGroupEntry> entries;
@@ -5463,68 +5500,27 @@ WGPUBindGroup build_node_draw_group(
     if (caster) {
         // The caster's own single row: the block `shadow_params_block`
         // built for the generator this view was made for.
-        if (
-            esm_generator.value >= state.shadow_params.size() ||
-            !state.shadow_params[esm_generator.value]) {
+        WGPUBindGroupEntry params = WGPU_BIND_GROUP_ENTRY_INIT;
+        params.binding = entry.caster.params_binding;
+        params.buffer = esm_caster_params_buffer(state, material);
+        if (!params.buffer) {
             dawn_error(
                 "a node caster draw reached the encode before its "
                 "generator's shadow params.");
         }
-        WGPUBindGroupEntry params = WGPU_BIND_GROUP_ENTRY_INIT;
-        params.binding = entry.caster.params_binding;
-        params.buffer = state.shadow_params[esm_generator.value];
-        params.size = 8 * sizeof(float);
+        params.size = upstream::shadow_params_block_bytes;
         entries.push_back(params);
-    }
-    // The receiver's three bindings per light, in the GRAPH's own group 1 --
-    // `node-shadow.ts` continues the graph's binding run rather than opening
-    // a group of its own, which is the whole difference from the two
-    // composed families. Whether a given mesh receives is the
-    // `meshU.receivesShadow` lane, not a selection, so every draw of this
-    // graph binds them.
-    if (!caster && entry.shadow_binding_count > 0) {
-        // The generators in `scene.lights` order, which is what a composed
-        // binding's own light index names -- the same walk the two composed
-        // families' group 2 resolves through.
-        std::vector<ShadowGeneratorHandle> generators;
-        pal::for_each_shadow_generator(
-            scene,
-            engine,
-            [&](ShadowGeneratorHandle handle, LightHandle, std::size_t) {
-                generators.push_back(handle);
-            });
-        for (
-            std::size_t index = 0;
-            index < entry.shadow_binding_count;
-            ++index) {
-            const upstream::NodeVariantShadowBinding& binding =
-                upstream::node_variant_shadow_bindings[
-                    entry.first_shadow_binding + index];
-            if (binding.light_index >= generators.size()) {
-                dawn_error(
-                    ("a node graph names shadow light " +
-                     std::to_string(binding.light_index) +
-                     ", which carries no generator.")
-                        .c_str());
-            }
-            const ShadowGeneratorHandle handle =
-                generators[binding.light_index];
-            WGPUBindGroupEntry map = WGPU_BIND_GROUP_ENTRY_INIT;
-            map.binding = static_cast<std::uint32_t>(binding.texture);
-            map.textureView = shadow_map_view(state, engine, handle);
-            entries.push_back(map);
-            // The ESM map is filtered; the node family reaches no PCF
-            // receiver yet, and `node-shadow.ts` declares a plain sampler
-            // for one either way.
-            WGPUBindGroupEntry sampler = WGPU_BIND_GROUP_ENTRY_INIT;
-            sampler.binding = static_cast<std::uint32_t>(binding.sampler);
-            sampler.sampler = state.shadow_filtering_sampler;
-            entries.push_back(sampler);
-            WGPUBindGroupEntry info = WGPU_BIND_GROUP_ENTRY_INIT;
-            info.binding = static_cast<std::uint32_t>(binding.ubo);
-            info.buffer = state.shadow_uniforms[handle.value];
-            info.size = sizeof(upstream::ShadowInfoUniforms);
-            entries.push_back(info);
+    } else if (entry.shadow_binding_count > 0) {
+        // The receiver's rows, in the GRAPH's own group 1 -- whether a
+        // given mesh receives is the `meshU.receivesShadow` lane, not a
+        // selection, so every draw of this graph binds them.
+        ensure_shadow_samplers(state);
+        const std::vector<ShadowGeneratorHandle> generators =
+            shadow_generators_in_light_order(scene, engine);
+        for (const upstream::PinnedShadowBinding& row :
+             pal::node_shadow_rows(entry)) {
+            entries.push_back(
+                shadow_group_entry(state, engine, generators, row));
         }
     }
 #endif
@@ -9360,9 +9356,7 @@ bool run_dawn_engine(Engine& engine) {
                             node_state,
                             draw.item.shader_variant,
                             node_caster,
-                            node_caster
-                                ? node_material->esm_shadow_generator
-                                : ShadowGeneratorHandle{});
+                            node_material);
                         node_state.group_key = node_slot;
                     }
                     encode_variant_draw(

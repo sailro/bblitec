@@ -15,6 +15,8 @@
 import { floatLiteral, stringLiteral } from "./cpp-literals.js";
 import {
     mirroredStructFromWgsl,
+    pinnedShadowBindingRow,
+    shadowBindingSlotOrNull,
     variantBindings,
 } from "./pinned-pbr-variant-cpp.js";
 import type { ComposedNodeMaterial } from "./pinned-node-material.js";
@@ -87,6 +89,51 @@ function collectEnvResources(
         }
         into.set(role.source, { textureName, samplerName, source: role.source });
     }
+}
+
+/**
+ * One graph's receiver rows, reflected out of its own composed text.
+ *
+ * The pin allocates the three binding NUMBERS per shadow light and declares
+ * them under `shadowTex_N` / `shadowSamp_N` or `shadowComp_N` / `shadowInfo_N`.
+ * Reading the rows back out of the module is what makes each one's TYPE and
+ * stage visibility the pin's answer rather than this port's -- a PCF light
+ * declares a depth texture and a comparison sampler where an ESM one declares
+ * a float texture and a plain sampler -- and the numbers the pin allocated are
+ * then checked against what it declared, so a graph whose emitter moved one
+ * fails here instead of binding a neighbour's resource.
+ */
+function nodeShadowRows(composed: ComposedNodeMaterial): string[] {
+    const reflected = new Map(
+        variantBindings(composed.wgsl, composed.wgsl).map(
+            (binding) => [binding.binding, binding] as const,
+        ),
+    );
+    const rows: string[] = [];
+    for (const light of composed.shadowBindings) {
+        for (const binding of [light.texture, light.sampler, light.ubo]) {
+            const entry = reflected.get(binding);
+            const slot = entry
+                ? shadowBindingSlotOrNull(entry.name)
+                : null;
+            if (!entry || !slot) {
+                throw new Error(
+                    "A node graph declares no shadow binding at " +
+                        `${binding}, which the pin allocated for light ` +
+                        `${light.lightIndex}.`,
+                );
+            }
+            if (slot.light !== light.lightIndex) {
+                throw new Error(
+                    `A node graph's shadow binding '${entry.name}' names ` +
+                        `light ${slot.light} at the binding the pin ` +
+                        `allocated for ${light.lightIndex}.`,
+                );
+            }
+            rows.push(pinnedShadowBindingRow(entry, slot));
+        }
+    }
+    return rows;
 }
 
 /** One composed graph, plus the stem its two stages deploy under. */
@@ -188,16 +235,8 @@ export function pinnedNodeVariantsHeader(
             );
         }
         const firstShadow = shadowRows.length;
-        for (const binding of variant.composed.shadowBindings) {
-            shadowRows.push(
-                `    {${binding.lightIndex}, ${binding.texture}, ` +
-                    `${binding.sampler}, ${binding.ubo}, ` +
-                    `${stringLiteral(binding.textureName)}, ` +
-                    `${stringLiteral(binding.samplerName)}, ` +
-                    `${stringLiteral(binding.uboName)}, ` +
-                    `${binding.shadowType === "pcf"}},`,
-            );
-        }
+        const variantShadowRows = nodeShadowRows(variant.composed);
+        shadowRows.push(...variantShadowRows);
         const firstFloat = uniformFloats.length;
         uniformFloats.push(...variant.composed.uboFloats);
         const env = variant.composed.envBindings;
@@ -219,7 +258,7 @@ export function pinnedNodeVariantsHeader(
                 `${variant.composed.uboBytes}, ${firstFloat}, ` +
                 `${envRow}, ` +
                 `${firstShadow}, ` +
-                `${variant.composed.shadowBindings.length}, ` +
+                `${variantShadowRows.length}, ` +
                 `${casterRow(variant)}},`,
         );
         collectEnvResources(variant.composed, envResources);
@@ -241,6 +280,9 @@ export function pinnedNodeVariantsHeader(
 #include <string_view>
 
 #include <bblite/upstream/material_texture_slots.hpp>
+// PinnedShadowBinding and its two enums: the receiver row shape every
+// family shares.
+#include <bblite/upstream/pinned_variant_bindings.hpp>
 
 namespace bbl::upstream {
 
@@ -320,26 +362,17 @@ ${envRows.join("\n") || "    // No reached graph declares one."}
 }};
 
 /**
- * One shadow light's three group-1 bindings, as emitShadow allocated
- * them: the node family continues the GRAPH's own binding run rather than
- * opening a group of its own.
+ * The receiver rows of every reached graph, in the shared shape.
+ *
+ * \`emitShadow\` continues the GRAPH's own group-1 binding run rather than
+ * opening a group of its own -- that is the whole difference from the two
+ * composed families -- but the rows themselves are the same three per light
+ * under the same names, so they are reflected out of the composed text and
+ * bound through the per-row builders both backends already have.
  */
-struct NodeVariantShadowBinding {
-    std::size_t light_index;
-    std::size_t texture;
-    std::size_t sampler;
-    std::size_t ubo;
-    /** The names the emitter declared the three under. */
-    std::string_view texture_name;
-    std::string_view sampler_name;
-    std::string_view ubo_name;
-    /** Whether the map is compared rather than sampled. */
-    bool comparison;
-};
-
 inline constexpr std::array<
-    NodeVariantShadowBinding,
-    ${shadowRows.length}> node_variant_shadow_bindings{{
+    PinnedShadowBinding,
+    ${shadowRows.length}> node_shadow_bindings{{
 ${shadowRows.join("\n") || "    // No reached graph receives a shadow."}
 }};
 
@@ -355,6 +388,12 @@ struct NodeVariantCaster {
     std::string_view vertex_stem;
     std::string_view fragment_stem;
     std::size_t params_binding;
+};
+
+/** The two stems one compiled view deploys under. */
+struct NodeVariantStems {
+    std::string_view vertex;
+    std::string_view fragment;
 };
 
 struct NodeVariantEntry {

@@ -1115,14 +1115,11 @@ export function emitPropertyAssignment(
                 target.scenePbrMaterialIndex =
                     material.scenePbrMaterialIndex;
             }
-            // The same carry for a node graph, which a caster mesh needs:
-            // its ESM view is a second module composed from that graph.
-            if (material.nodeMaterialIndex !== undefined) {
-                target.nodeMaterialIndex = material.nodeMaterialIndex;
-            }
-            // And the pair the caster list resolves against. Upstream reads
+            // The pair the caster list resolves against. Upstream reads
             // `mesh.material` when the shadow pass builds, so a scene may
-            // name its casters before assigning their materials.
+            // name its casters before assigning their materials -- which is
+            // why the mesh's own Value does not carry the graph: this map is
+            // the one producer of the pair.
             if (target.sceneMeshIndex !== undefined) {
                 context.recordSceneMeshMaterial(target.sceneMeshIndex, {
                     pbrMaterial: material.scenePbrMaterialIndex ?? null,

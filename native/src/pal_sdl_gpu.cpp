@@ -847,12 +847,31 @@ bool append_variant_attribute(
 #endif
 
 #if BBLITE_PINNED_MATERIALS
-// The two COMPOSED-VARIANT families' receiver rows. Not the union define:
-// a node receiver has no group 2 at all -- its bindings continue the
-// graph's own group 1 and are reflected into the node variant table -- so
-// these helpers belong to the families that reflect a group-2 row, and a
-// node-only scene compiles neither them nor the rows they read.
-#if BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS
+#if BBLITE_SHADOWS_ESM
+// Defined with the ESM blur below; declared here because all three families'
+// pipeline builders sit above it and each needs the caster's colour format.
+SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format);
+
+/**
+ * The colour target an ESM caster pipeline declares.
+ *
+ * SDL_GPU's D3D12 backend bakes the declared format straight into the PSO's
+ * RTV list, so a caster drawn into the generator's `rgba16float` map cannot
+ * declare the frame's format: which map it writes is the pass's to say, and
+ * the format is that generator's own recorded row -- the same answer the
+ * Dawn backend takes.
+ */
+SDL_GPUTextureFormat esm_caster_color_format(std::uint32_t esm_shadow_index) {
+    return esm_texture_format(
+        upstream::esm_shadow_resources[esm_shadow_index].textures[0].format);
+}
+#endif
+
+// Every family's receiver rows. A node receiver has no group 2 of its own
+// -- its bindings continue the graph's own group 1 -- but the ROWS are the
+// same reflected shape, so which resource each one wants is answered here
+// for all three.
+#if BBLITE_SHADOW_RECEIVERS
 /**
  * The composed group-2 row one binding name belongs to, or null.
  *
@@ -959,133 +978,32 @@ PinnedResource shadow_resource_for(
 
 #endif
 
-#if BBLITE_NODE_SHADOWS
+#if BBLITE_SHADOWS_ESM
 /**
- * The node family's own three-per-light rows, resolved by declared name.
+ * The ESM caster's own params block, from the generator its material view
+ * was built for.
  *
- * `emitShadow` continues the graph's group-1 binding run rather than
- * opening a group of its own, so these are the graph's own names -- carried
- * on the variant row beside the numbers, checked against the module when it
- * was composed. Which light a row names is that light's slot in
- * `scene.lights`, the same ordinal every other shadow contract uses.
+ * `getEsmShadowView` closes over that generator's `_shadowParamsUBO`; the
+ * blur that owns it is found by the generator's ESM ordinal rather than by
+ * its handle. Every family's caster reads the same block, so the lookup is
+ * stated once.
  */
-std::span<const upstream::NodeVariantShadowBinding> node_shadow_rows(
-    const upstream::NodeVariantEntry& entry) {
-    return {
-        upstream::node_variant_shadow_bindings.data() +
-            entry.first_shadow_binding,
-        entry.shadow_binding_count,
-    };
-}
-
-const upstream::NodeVariantShadowBinding* node_shadow_row_for(
-    const upstream::NodeVariantEntry& entry,
-    const std::string& name,
-    std::string_view upstream::NodeVariantShadowBinding::* field) {
-    for (const upstream::NodeVariantShadowBinding& row :
-         node_shadow_rows(entry)) {
-        if (name == row.*field) return &row;
-    }
-    return nullptr;
-}
-
-const GpuState::ShadowGenerator& node_shadow_generator_for(
+const GpuState::EsmBlur* esm_caster_params_for(
     const GpuState& state,
-    const upstream::NodeVariantShadowBinding& row) {
-    if (row.light_index >= state.shadow_generators.size()) {
-        gpu_error("a node shadow binding names a missing light.");
-    }
-    return state.shadow_generators[row.light_index];
-}
-
-/** The receiver block as uniform bytes, or the caster's params block. */
-PinnedStageBlock node_shadow_uniform_for(
-    const GpuState& state,
-    [[maybe_unused]] const Engine& engine,
-    const upstream::NodeVariantEntry& entry,
-    [[maybe_unused]] const MaterialRecord* material,
-    const std::string& block) {
-#if BBLITE_SHADOWS_ESM
-    // The caster's own block, from the generator its view was built for --
-    // the same `_shadowParamsUBO` the Standard family's caster reads, found
-    // by that generator's ESM ordinal rather than its handle.
+    const Engine& engine,
+    const MaterialRecord* material) {
     if (
-        block == "nmeShadowParams" &&
-        material &&
-        material->esm_shadow &&
-        material->esm_shadow_generator.value <
+        !material ||
+        !material->esm_shadow ||
+        material->esm_shadow_generator.value >=
             engine.shadow_generators.size()) {
-        const std::uint32_t esm_index =
-            engine.shadow_generators[material->esm_shadow_generator.value]
-                .esm_index;
-        if (esm_index < state.esm_blurs.size()) {
-            const std::array<float, 8>& params =
-                state.esm_blurs[esm_index].params;
-            return {params.data(), params.size() * sizeof(float)};
-        }
+        return nullptr;
     }
-#endif
-    const upstream::NodeVariantShadowBinding* row = node_shadow_row_for(
-        entry,
-        block,
-        &upstream::NodeVariantShadowBinding::ubo_name);
-    if (row == nullptr) return {};
-    return {
-        &node_shadow_generator_for(state, *row).block,
-        sizeof(upstream::ShadowInfoUniforms),
-    };
-}
-
-/** The same blocks for the stage whose compile demoted them to storage. */
-SDL_GPUBuffer* node_shadow_buffer_for(
-    const GpuState& state,
-    [[maybe_unused]] const Engine& engine,
-    const upstream::NodeVariantEntry& entry,
-    [[maybe_unused]] const MaterialRecord* material,
-    const std::string& name) {
-#if BBLITE_SHADOWS_ESM
-    if (
-        name == "nmeShadowParams" &&
-        material &&
-        material->esm_shadow &&
-        material->esm_shadow_generator.value <
-            engine.shadow_generators.size()) {
-        const std::uint32_t esm_index =
-            engine.shadow_generators[material->esm_shadow_generator.value]
-                .esm_index;
-        if (esm_index < state.esm_blurs.size()) {
-            return state.esm_blurs[esm_index].params_buffer;
-        }
-    }
-#endif
-    const upstream::NodeVariantShadowBinding* row = node_shadow_row_for(
-        entry,
-        name,
-        &upstream::NodeVariantShadowBinding::ubo_name);
-    if (row == nullptr) return nullptr;
-    return node_shadow_generator_for(state, *row).info;
-}
-
-/** The map one declared texture name resolves to, with its own sampler. */
-PinnedResource node_shadow_resource_for(
-    const GpuState& state,
-    const upstream::NodeVariantEntry& entry,
-    const std::string& name) {
-    const upstream::NodeVariantShadowBinding* row = node_shadow_row_for(
-        entry,
-        name,
-        &upstream::NodeVariantShadowBinding::texture_name);
-    if (row == nullptr) return {};
-    // SDL_GPU binds a texture and its sampler as one pair resolved from the
-    // TEXTURE's name, and which sampler this map takes is the emitter's own
-    // answer: a comparison sampler beside a PCF map, a plain one beside an
-    // ESM map.
-    return {
-        node_shadow_generator_for(state, *row).map,
-        row->comparison
-            ? state.shadow_comparison_sampler
-            : state.shadow_filtering_sampler,
-    };
+    const std::uint32_t esm_index =
+        engine.shadow_generators[material->esm_shadow_generator.value]
+            .esm_index;
+    if (esm_index >= state.esm_blurs.size()) return nullptr;
+    return &state.esm_blurs[esm_index];
 }
 #endif
 
@@ -1255,9 +1173,17 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     // same flag -- a caster is drawn through whichever family its own
     // material belongs to, so a depth state either family answered alone
     // would be right only for the casters that family happens to own.
-    bool shadow_pass = false) {
-    const std::size_t key =
-        pal::variant_pipeline_key(variant, kind, {shadow_pass});
+    bool shadow_pass = false,
+    // Which ESM generator's map this pass writes, when it writes one: a
+    // caster's colour target is that generator's own recorded row.
+    std::uint32_t esm_shadow_index = invalid_handle) {
+    const std::size_t key = pal::variant_pipeline_key(
+        pal::esm_keyed_variant(
+            variant,
+            upstream::pbr_variants.size(),
+            esm_shadow_index),
+        kind,
+        {shadow_pass});
     const auto existing = state.pinned_pipelines.find(key);
     if (existing != state.pinned_pipelines.end()) return existing->second;
     ensure_pinned_slots(state, variant);
@@ -1312,6 +1238,13 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     const bool transparent = traits.transparent;
     SDL_GPUColorTargetDescription color_target{};
     color_target.format = state.pinned_color_format;
+#if BBLITE_SHADOWS_ESM
+    // An ESM caster variant draws into ONE generator's map, whose recorded
+    // row is the format its PSO must declare.
+    if (esm_shadow_index != invalid_handle) {
+        color_target.format = esm_caster_color_format(esm_shadow_index);
+    }
+#endif
     if (transparent) {
         color_target.blend_state = blend_state_from(transparent_blend);
     }
@@ -1518,7 +1451,9 @@ void draw_pinned_variant(
     SDL_GPUBuffer* geometry_params_buffer = nullptr,
     // Set when this draw is a caster in a shadow pass, which takes the
     // pin's standard-Z depth state rather than this port's reverse-Z.
-    bool shadow_pass = false) {
+    bool shadow_pass = false,
+    // The generator whose map that pass writes, when it writes one.
+    std::uint32_t esm_shadow_index = invalid_handle) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         pinned_variant_pipeline(
@@ -1526,7 +1461,8 @@ void draw_pinned_variant(
             pinned_variant,
             draw.pipeline,
             geometry_task,
-            shadow_pass);
+            shadow_pass,
+            esm_shadow_index);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -1601,21 +1537,15 @@ void draw_pinned_variant(
         }
 #endif
 #if BBLITE_SHADOWS_ESM
-        // The ESM caster's own block, from the generator its material view
-        // was built for -- the Standard family's arm, for the family that
-        // shares the view's factory.
-        if (
-            block == "shadowParams" &&
-            material &&
-            material->esm_shadow_generator.value <
-                engine.shadow_generators.size()) {
-            const std::uint32_t esm_index =
-                engine.shadow_generators[
-                    material->esm_shadow_generator.value].esm_index;
-            if (esm_index < state.esm_blurs.size()) {
-                const std::array<float, 8>& params =
-                    state.esm_blurs[esm_index].params;
-                return {params.data(), params.size() * sizeof(float)};
+        // The ESM caster's own block, the same lookup the Standard family
+        // makes: the two share the view's factory shape.
+        if (block == "shadowParams") {
+            if (const GpuState::EsmBlur* blur =
+                    esm_caster_params_for(state, engine, material)) {
+                return {
+                    blur->params.data(),
+                    blur->params.size() * sizeof(float),
+                };
             }
         }
 #endif
@@ -1764,19 +1694,18 @@ void draw_pinned_variant(
 #endif
 
 #if BBLITE_NODE_VARIANTS > 0
-void ensure_node_slots(GpuState& state, std::size_t slot, bool caster) {
+void ensure_node_slots(GpuState& state, std::size_t slot) {
     if (state.node_vertex_slots.size() < pal::node_variant_slots()) {
         state.node_vertex_slots.resize(pal::node_variant_slots());
         state.node_fragment_slots.resize(pal::node_variant_slots());
     }
     if (!state.node_vertex_slots[slot].uniforms.empty()) return;
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[slot / 2];
-    state.node_vertex_slots[slot] = read_pinned_stage_slots(
-        std::string(caster ? entry.caster.vertex_stem : entry.vertex_stem));
-    state.node_fragment_slots[slot] = read_pinned_stage_slots(
-        std::string(
-            caster ? entry.caster.fragment_stem : entry.fragment_stem));
+    const upstream::NodeVariantStems stems =
+        pal::node_variant_stems(slot);
+    state.node_vertex_slots[slot] =
+        read_pinned_stage_slots(std::string(stems.vertex));
+    state.node_fragment_slots[slot] =
+        read_pinned_stage_slots(std::string(stems.fragment));
 }
 
 /**
@@ -1795,25 +1724,33 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     // material casts through its own ESM view exactly as the Standard
     // family does.
     bool shadow_pass = false,
-    // Which of the graph's two compiled views this draws.
-    bool caster = false) {
+    // Which of the graph's two compiled views this draws, and -- when it is
+    // the caster -- which ESM generator's map it writes, whose recorded row
+    // is the colour format.
+    bool caster = false,
+    std::uint32_t esm_shadow_index = invalid_handle) {
     const std::size_t slot = pal::node_variant_slot(variant, caster);
-    const std::size_t key =
-        pal::variant_pipeline_key(slot, kind, {shadow_pass});
+    const std::size_t key = pal::variant_pipeline_key(
+        pal::esm_keyed_variant(
+            slot,
+            pal::node_variant_slots(),
+            esm_shadow_index),
+        kind,
+        {shadow_pass});
     const auto existing = state.node_variant_pipelines.find(key);
     if (existing != state.node_variant_pipelines.end()) {
         return existing->second;
     }
-    ensure_node_slots(state, slot, caster);
+    ensure_node_slots(state, slot);
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
+    const upstream::NodeVariantStems stems = pal::node_variant_stems(slot);
     const PinnedStageSlots& vertex_slots = state.node_vertex_slots[slot];
     const PinnedStageSlots& fragment_slots =
         state.node_fragment_slots[slot];
     SDL_GPUShader* vertex_shader = load_shader(
         state.device,
-        std::string(
-            caster ? entry.caster.vertex_stem : entry.vertex_stem).c_str(),
+        std::string(stems.vertex).c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
         static_cast<Uint32>(vertex_slots.textures.size()),
         static_cast<Uint32>(vertex_slots.uniforms.size()),
@@ -1821,9 +1758,7 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         static_cast<Uint32>(vertex_slots.storage.size()));
     SDL_GPUShader* fragment_shader = load_shader(
         state.device,
-        std::string(
-            caster ? entry.caster.fragment_stem : entry.fragment_stem)
-            .c_str(),
+        std::string(stems.fragment).c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         static_cast<Uint32>(fragment_slots.textures.size()),
         static_cast<Uint32>(fragment_slots.uniforms.size()),
@@ -1854,10 +1789,12 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         }
     }
     SDL_GPUColorTargetDescription color_target{};
-    // The caster writes the generator's ESM map rather than the frame, and
-    // takes the frame's own format here exactly as the Standard family's
-    // ESM view does: SDL_GPU resolves the attachment from the pass.
     color_target.format = state.pinned_color_format;
+#if BBLITE_SHADOWS_ESM
+    if (caster && esm_shadow_index != invalid_handle) {
+        color_target.format = esm_caster_color_format(esm_shadow_index);
+    }
+#endif
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
     info.fragment_shader = fragment_shader;
@@ -1921,7 +1858,9 @@ void draw_node_variant(
     bool shadow_pass = false,
     // The material this draw resolved to, whose ESM bit selects the graph's
     // caster view over its receiver one.
-    [[maybe_unused]] const MaterialRecord* material = nullptr) {
+    [[maybe_unused]] const MaterialRecord* material = nullptr,
+    // The generator whose map this pass writes, when it writes one.
+    std::uint32_t esm_shadow_index = invalid_handle) {
 #if BBLITE_NODE_SHADOWS
     const bool caster = material && material->esm_shadow;
 #else
@@ -1933,7 +1872,8 @@ void draw_node_variant(
         variant,
         draw.pipeline,
         shadow_pass,
-        caster);
+        caster,
+        esm_shadow_index);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -1958,16 +1898,29 @@ void draw_node_variant(
                 entry.ubo_bytes,
             };
         }
+#if BBLITE_SHADOWS_ESM
+        // The caster's own params block, the same one the two composed
+        // families' casters read.
+        if (block == "nmeShadowParams") {
+            if (const GpuState::EsmBlur* blur =
+                    esm_caster_params_for(state, engine, material)) {
+                return {
+                    blur->params.data(),
+                    blur->params.size() * sizeof(float),
+                };
+            }
+        }
+#endif
 #if BBLITE_NODE_SHADOWS
-        if (
-            const PinnedStageBlock shadow = node_shadow_uniform_for(
+        // The receiver blocks, through the same by-name lookup both other
+        // families use -- the node rows are the same reflected shape, in
+        // the graph's own group rather than a group of their own.
+        if (const PinnedStageBlock info = shadow_info_uniform_for(
                 state,
-                engine,
-                entry,
-                material,
+                pal::node_shadow_rows(entry),
                 block);
-            shadow.data != nullptr) {
-            return shadow;
+            info.data != nullptr) {
+            return info;
         }
 #endif
         return {};
@@ -2019,9 +1972,9 @@ void draw_node_variant(
             }
         }
 #if BBLITE_NODE_SHADOWS
-        if (const PinnedResource shadow = node_shadow_resource_for(
+        if (const PinnedResource shadow = shadow_resource_for(
                 state,
-                entry,
+                pal::node_shadow_rows(entry),
                 name);
             shadow.texture != nullptr) {
             return SDL_GPUTextureSamplerBinding{
@@ -2062,7 +2015,18 @@ void draw_node_variant(
     // meshU and nodeU before its own `shadowInfo_N` arrives.
     const auto resolve_storage = [&](const std::string& name)
         -> SDL_GPUBuffer* {
-        return node_shadow_buffer_for(state, engine, entry, material, name);
+#if BBLITE_SHADOWS_ESM
+        if (name == "nmeShadowParams") {
+            if (const GpuState::EsmBlur* blur =
+                    esm_caster_params_for(state, engine, material)) {
+                return blur->params_buffer;
+            }
+        }
+#endif
+        return shadow_info_buffer_for(
+            state,
+            pal::node_shadow_rows(entry),
+            name);
     };
     bind_stage_storage(
         pass,
@@ -2467,9 +2431,16 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     // The pin's one exception to this port's depth convention: a shadow
     // caster pass renders standard-Z into the generator's own
     // `depth32float` map, at one sample.
-    bool shadow_pass = false) {
-    const std::size_t key =
-        pal::variant_pipeline_key(variant, kind, {shadow_pass});
+    bool shadow_pass = false,
+    // Which ESM generator's map this pass writes, when it writes one.
+    std::uint32_t esm_shadow_index = invalid_handle) {
+    const std::size_t key = pal::variant_pipeline_key(
+        pal::esm_keyed_variant(
+            variant,
+            upstream::standard_variants.size(),
+            esm_shadow_index),
+        kind,
+        {shadow_pass});
     const auto existing = state.standard_variant_pipelines.find(key);
     if (existing != state.standard_variant_pipelines.end()) {
         return existing->second;
@@ -2524,6 +2495,13 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     const bool transparent = traits.transparent;
     SDL_GPUColorTargetDescription color_target{};
     color_target.format = state.pinned_color_format;
+#if BBLITE_SHADOWS_ESM
+    // An ESM caster variant draws into ONE generator's map, whose recorded
+    // row is the format its PSO must declare.
+    if (esm_shadow_index != invalid_handle) {
+        color_target.format = esm_caster_color_format(esm_shadow_index);
+    }
+#endif
     if (transparent) {
         color_target.blend_state = blend_state_from(transparent_blend);
     }
@@ -2642,7 +2620,9 @@ void draw_standard_variant(
     SDL_GPUBuffer* geometry_params_buffer = nullptr,
     // Drawing the shadow map, so the pipeline renders standard-Z into the
     // generator's own single-sample depth32float target.
-    bool shadow_pass = false) {
+    bool shadow_pass = false,
+    // The generator whose map that pass writes, when it writes one.
+    std::uint32_t esm_shadow_index = invalid_handle) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         standard_variant_pipeline(
@@ -2650,7 +2630,8 @@ void draw_standard_variant(
             variant,
             draw.pipeline,
             geometry_task,
-            shadow_pass);
+            shadow_pass,
+            esm_shadow_index);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
@@ -2707,20 +2688,14 @@ void draw_standard_variant(
 #endif
 #if BBLITE_SHADOWS_ESM
         // The ESM caster's own block, from the generator its material view
-        // was built for -- `getEsmShadowView` closes over that generator's
-        // `_shadowParamsUBO`.
-        if (
-            block == "shadowParams" &&
-            material &&
-            material->esm_shadow_generator.value <
-                engine.shadow_generators.size()) {
-            const std::uint32_t esm_index =
-                engine.shadow_generators[
-                    material->esm_shadow_generator.value].esm_index;
-            if (esm_index < state.esm_blurs.size()) {
-                const std::array<float, 8>& params =
-                    state.esm_blurs[esm_index].params;
-                return {params.data(), params.size() * sizeof(float)};
+        // was built for.
+        if (block == "shadowParams") {
+            if (const GpuState::EsmBlur* blur =
+                    esm_caster_params_for(state, engine, material)) {
+                return {
+                    blur->params.data(),
+                    blur->params.size() * sizeof(float),
+                };
             }
         }
 #endif
@@ -6658,9 +6633,12 @@ bool run_gpu_engine(Engine& engine) {
                     // frame for nothing. A node caster is the exception:
                     // the pin re-compiles the graph's own bodies for it, so
                     // its fragment still runs the lighting the graph wrote
-                    // and still declares `nmeLights`.
+                    // and still declares `nmeLights`. The exception is the
+                    // NODE SHADOW define, not the node variant one -- a
+                    // graph that neither casts nor receives never reaches a
+                    // caster pass, and would otherwise pay for one.
                     const std::vector<std::uint8_t> pass_lights_block =
-#if BBLITE_SHADOW_RECEIVERS && BBLITE_NODE_VARIANTS == 0
+#if BBLITE_SHADOW_RECEIVERS && BBLITE_NODE_SHADOWS == 0
                         shadow_generator
                             ? std::vector<std::uint8_t>{}
                             :
@@ -6746,7 +6724,16 @@ bool run_gpu_engine(Engine& engine) {
                                     geometry_task,
                                     geometry_params,
                                     geometry_params_buffer,
-                                    shadow_generator != nullptr);
+                                    shadow_generator != nullptr
+#if BBLITE_SHADOWS_ESM
+                                    ,
+                                    shadow_generator &&
+                                            shadow_generator->filter ==
+                                                ShadowFilter::esm_directional
+                                        ? shadow_generator->esm_index
+                                        : invalid_handle
+#endif
+                                    );
                                 continue;
                             }
 #endif
@@ -6808,7 +6795,16 @@ bool run_gpu_engine(Engine& engine) {
                                         material,
                                         source_texture),
                                     geometry_params_buffer,
-                                    shadow_generator != nullptr);
+                                    shadow_generator != nullptr
+#if BBLITE_SHADOWS_ESM
+                                    ,
+                                    shadow_generator &&
+                                            shadow_generator->filter ==
+                                                ShadowFilter::esm_directional
+                                        ? shadow_generator->esm_index
+                                        : invalid_handle
+#endif
+                                    );
                                 continue;
                             }
 #else
@@ -6843,7 +6839,17 @@ bool run_gpu_engine(Engine& engine) {
                                     draw_item.shader_variant,
                                     bound_pipeline,
                                     shadow_generator != nullptr,
-                                    material);
+                                    material,
+#if BBLITE_SHADOWS_ESM
+                                    shadow_generator &&
+                                            shadow_generator->filter ==
+                                                ShadowFilter::esm_directional
+                                        ? shadow_generator->esm_index
+                                        : invalid_handle
+#else
+                                    invalid_handle
+#endif
+                                );
                                 continue;
                             }
 #else

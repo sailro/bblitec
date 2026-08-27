@@ -114,9 +114,13 @@ export type SplatFragmentManifest =
  * recomputes them when the light moves.
  */
 /** One mesh `setShadowTaskCasterMeshes` named, and what it carries. */
-export interface ShadowCasterManifest {
+/** Which mesh a generator casts from, before its material is resolved. */
+export interface ShadowCasterMeshManifest {
     /** Its `sceneMeshes` row. */
     meshIndex: number;
+}
+
+export interface ShadowCasterManifest extends ShadowCasterMeshManifest {
     /**
      * Its `scenePbrMaterials` row, or `null` for a material of another
      * family -- which still takes a runtime handle.
@@ -510,8 +514,14 @@ export interface CompiledShaderUniformDefault {
  */
 export interface NodeShadowLight {
     lightIndex: number;
-    shadowType: "esm" | "pcf";
-    /** Its `shadowGenerators` row, for the resources the PAL binds. */
+    /**
+     * Its `shadowGenerators` row.
+     *
+     * The FILTER is not carried: `pinnedShadowFilter` reads it off the
+     * pinned factory the row's kind names, and composition asks it there --
+     * so a generator family added without a receiver arm fails by name
+     * instead of being classified here as the one it is not.
+     */
     generatorIndex: number;
 }
 
@@ -1002,10 +1012,9 @@ export interface Value {
     /**
      * Which composed node graph a material value names.
      *
-     * It rides a `parseNodeMaterialFromSnippet` result and a mesh the
-     * material was assigned to, the way `scenePbrMaterialIndex` does --
-     * `setShadowTaskCasterMeshes` needs it to know which variant the
-     * caster's ESM view is a second module of.
+     * It rides a `parseNodeMaterialFromSnippet` result; the assignment that
+     * puts it on a mesh records the pair the caster list resolves against,
+     * so the mesh's own Value never carries it.
      */
     nodeMaterialIndex?: number;
     /**

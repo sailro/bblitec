@@ -79,6 +79,26 @@ inline std::size_t variant_pipeline_key(
     for (const bool flag : flags) key = key * 2 + (flag ? 1 : 0);
     return key;
 }
+
+/**
+ * The variant an ESM caster pipeline is keyed by.
+ *
+ * A caster's colour format is its own generator's recorded row, so two
+ * generators whose factories returned different formats must not share a
+ * pipeline. Folding the generator's ESM ordinal into the VARIANT rather
+ * than into the key is what keeps that fold independent of how many flags
+ * `variant_pipeline_key` happens to pack -- the arithmetic used to be
+ * restated per call site, each with its own list of `false`s to keep in
+ * step.
+ */
+inline std::size_t esm_keyed_variant(
+    std::size_t variant,
+    std::size_t variant_count,
+    std::uint32_t esm_shadow_index) {
+    return esm_shadow_index == invalid_handle
+        ? variant
+        : variant + (esm_shadow_index + 1) * variant_count;
+}
 #endif
 
 /**
@@ -1145,34 +1165,30 @@ inline std::span<const upstream::PinnedShadowBinding> pbr_shadow_rows(
     };
 }
 
-#if BBLITE_SHADOWS_ESM && BBLITE_PBR_VARIANTS > 0
-/**
- * Whether a composed PBR variant is an ESM caster view.
- *
- * `createPbrEsmShadowMaterialView` is what composed it, and the one thing
- * that view adds to the fragment is the `shadowParams` block its depth code
- * reads -- so the reflected bindings answer this, the same way every other
- * per-variant question here is answered off what the module declares.
- */
-inline bool pbr_variant_writes_esm_shadow(std::size_t variant) {
-    const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
-    for (std::size_t index = 0; index < entry.binding_count; ++index) {
-        if (
-            upstream::pbr_variant_bindings[entry.first_binding + index]
-                .name == "shadowParams") {
-            return true;
-        }
-    }
-    return false;
-}
-#endif
-
 /** Whether a composed PBR variant carries the pin's shadow fragment. */
 inline bool pbr_variant_receives_shadows(std::size_t variant) {
     return upstream::pbr_variants[variant].shadow_binding_count != 0;
 }
 #else
 inline bool pbr_variant_receives_shadows(std::size_t) { return false; }
+#endif
+
+#if BBLITE_NODE_SHADOWS
+/**
+ * One node graph's receiver rows, the third family in the shared shape.
+ *
+ * `emitShadow` appends them to the GRAPH's own group 1 rather than opening
+ * a group of its own, so they are bound beside the graph's textures rather
+ * than as their own group -- but each row is the same reflected shape the
+ * two composed families' are, and resolves through the same builders.
+ */
+inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
+    const upstream::NodeVariantEntry& entry) {
+    return {
+        upstream::node_shadow_bindings.data() + entry.first_shadow_binding,
+        entry.shadow_binding_count,
+    };
+}
 #endif
 
 #if BBLITE_NODE_VARIANTS > 0
@@ -1192,6 +1208,32 @@ inline constexpr std::size_t node_variant_slot(
 
 inline std::size_t node_variant_slots() {
     return upstream::node_variants.size() * 2;
+}
+
+/** The graph one slot names, and which of its two views. */
+inline constexpr std::size_t node_slot_variant(std::size_t slot) {
+    return slot / 2;
+}
+
+inline constexpr bool node_slot_is_caster(std::size_t slot) {
+    return slot % 2 == 1;
+}
+
+/**
+ * The two stems one slot's modules deploy under.
+ *
+ * Which of a graph's two compiled views a slot names decides both, so the
+ * pair travels together rather than as a ternary per load site.
+ */
+inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[node_slot_variant(slot)];
+    return node_slot_is_caster(slot)
+        ? upstream::NodeVariantStems{
+            entry.caster.vertex_stem,
+            entry.caster.fragment_stem,
+        }
+        : upstream::NodeVariantStems{entry.vertex_stem, entry.fragment_stem};
 }
 #endif
 

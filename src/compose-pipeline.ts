@@ -325,7 +325,7 @@ export async function composeScenePipeline({
             // Which view the caster takes is the generator's own filter,
             // exactly as it is for the Standard family: an ESM pass draws
             // the exponential-depth view, a PCF pass the depth-only one.
-            const view = generator.kind === "esm-directional"
+            const view = pinnedShadowFilter(generator.kind) === "esm"
                 ? pbrEsmShadowView(source, materialsBefore)
                 : pbrNoColorView(source, materialsBefore);
             casterViews.push({
@@ -521,10 +521,43 @@ export async function composeScenePipeline({
         // Which lights this graph receives from, and whether the scene
         // casts a shadow from it: the receiver's bindings and the caster's
         // second module are both the pin's own answers, and both need the
-        // scene's own generator list to ask for.
+        // scene's own generator list to ask for. Each generator's FILTER
+        // comes off the pinned factory its kind names -- the same read the
+        // composed families' slots make -- so a family added without a
+        // receiver arm refuses rather than being taken for a neighbour.
+        const graphShadowLights = material.shadowLights.map((light) => ({
+            lightIndex: light.lightIndex,
+            shadowType: pinnedShadowFilter(
+                result.manifest.shadowGenerators[light.generatorIndex]!.kind,
+            ),
+        }));
+        // A node graph composes only the ESM caster: `buildNodeRenderables`
+        // re-compiles its own bodies under the ESM bit, and there is no
+        // depth-only node module for a PCF task to draw it through.
+        for (const generator of result.manifest.shadowGenerators) {
+            if (
+                pinnedShadowFilter(generator.kind) === "esm" ||
+                !generator.casters.some(
+                    (caster) => caster.nodeMaterial === index,
+                )
+            ) {
+                continue;
+            }
+            throw new Error(
+                "A node material casts into a " +
+                    `${pinnedShadowFilter(generator.kind)} shadow map, ` +
+                    "which composes no caster module: the pin re-compiles " +
+                    "the graph's own bodies under the ESM bit and has no " +
+                    "depth-only node view." +
+                    refusalReachedFrom(
+                        result.manifest.featureSites,
+                        "material:node",
+                    ),
+            );
+        }
         const castsEsmShadow = result.manifest.shadowGenerators.some(
             (generator) =>
-                generator.kind === "esm-directional" &&
+                pinnedShadowFilter(generator.kind) === "esm" &&
                 generator.casters.some(
                     (caster) => caster.nodeMaterial === index,
                 ),
@@ -532,7 +565,7 @@ export async function composeScenePipeline({
         const composed = await composeNodeMaterial(
             graph,
             label,
-            material.shadowLights,
+            graphShadowLights,
             castsEsmShadow,
         );
         // The graph decides which bindings exist and the scene decides which

@@ -506,7 +506,9 @@ class Compiler
                     // The caster's material as the mesh finally carried it,
                     // which is what the pin's own lazy view lookup reads.
                     casters: generator.casters.map((caster) => ({
-                        ...caster,
+                        meshIndex: caster.meshIndex,
+                        pbrMaterial: null,
+                        nodeMaterial: null,
                         ...(this.sceneMeshMaterials.get(caster.meshIndex) ??
                             {}),
                     })),
@@ -3498,16 +3500,12 @@ class Compiler
     public shadowGeneratorLight(
         index: number,
         node: ts.Node,
-    ): { lightIndex: number; shadowType: "esm" | "pcf" } {
+    ): { lightIndex: number } {
         const generator = this.shadowGenerators[index];
         if (!generator) {
             this.fail(node, `Shadow generator ${index} was never recorded.`);
         }
-        return {
-            lightIndex: generator.lightIndex,
-            shadowType:
-                generator.kind === "esm-directional" ? "esm" : "pcf",
-        };
+        return { lightIndex: generator.lightIndex };
     }
 
     /** Which material a scene-code mesh was assigned, by its mesh index. */

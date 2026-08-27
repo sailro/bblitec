@@ -70,12 +70,12 @@ export interface ShadowCapabilities {
     /**
      * The ESM generator's own resources: four textures and a separable blur.
      *
-     * What it gates includes the caster's own material view, so it is a
-     * conjunction with the families that HAVE one -- Standard and node. A
-     * scene reaching the filter whose casters are all of some third family
-     * would compile this to zero and then refresh its directional generator
-     * through the PCF spot's matrix builder, which answers rather than
-     * failing, so `assertShadowCapabilities` refuses that pair by name.
+     * What it gates includes the caster's own material view, and all three
+     * families now have one, so it is the same union `receivers` is. A scene
+     * reaching the filter that composes no family at all would compile this
+     * to zero and then refresh its directional generator through the PCF
+     * spot's matrix builder, which answers rather than failing, so
+     * `assertShadowCapabilities` refuses that pair by name.
      */
     esm: boolean;
     /** The Standard family's receiver bind path. */
@@ -110,15 +110,39 @@ export function shadowCapabilities(
     const pbr = reached && inputs.pbrVariants > 0;
     const node = reached &&
         (inputs.nodeShadowReceivers > 0 || inputs.nodeEsmCasters > 0);
+    const receivers = standard || pbr || node;
     return {
         reached,
         node,
-        esm:
-            inputs.features.includes("shadow:esm") &&
-            (inputs.standardVariants > 0 || inputs.nodeEsmCasters > 0),
+        esm: inputs.features.includes("shadow:esm") && receivers,
         standard,
         pbr,
-        receivers: standard || pbr || node,
+        receivers,
+    };
+}
+
+/**
+ * The two node counts every caller derives, from the composed graphs.
+ *
+ * Stated once because two files ask for them -- the emitter that writes the
+ * defines and the activation inventory that checks what they say -- and a
+ * pair derived twice is a pair that can drift while both self-checks pass.
+ */
+export function nodeShadowInputs(
+    nodeVariants: readonly {
+        composed: {
+            shadowBindings: readonly unknown[];
+            esmCaster: unknown;
+        };
+    }[],
+): Pick<ShadowCapabilityInputs, "nodeShadowReceivers" | "nodeEsmCasters"> {
+    return {
+        nodeShadowReceivers: nodeVariants.filter(
+            (variant) => variant.composed.shadowBindings.length > 0,
+        ).length,
+        nodeEsmCasters: nodeVariants.filter(
+            (variant) => variant.composed.esmCaster !== null,
+        ).length,
     };
 }
 
@@ -126,12 +150,11 @@ export function shadowCapabilities(
  * Refuse a scene whose defines would compile to a runtime that answers
  * wrongly rather than failing.
  *
- * `BBLITE_SHADOWS_ESM` gates the ESM generator's own resources, and every
- * site that reads it is Standard-family code -- the caster's material view
- * most of all, since `material/pbr/esm-shadow-view.ts` composes here for
- * nothing yet. A scene reaching the filter with no Standard variant would
- * compile that define to zero and then refresh its directional generator
- * through the PCF spot's matrix builder, which answers rather than failing.
+ * `BBLITE_SHADOWS_ESM` gates the ESM generator's own resources, and what
+ * reads it is each family's caster view. A scene reaching the filter that
+ * composes no family at all would compile that define to zero and then
+ * refresh its directional generator through the PCF spot's matrix builder,
+ * which answers rather than failing.
  *
  * Separate from `shadowCapabilities` because that function is also asked
  * what a define WOULD be, over synthetic inputs, by the activation
@@ -142,14 +165,14 @@ export function assertShadowCapabilities(
 ): void {
     if (
         inputs.features.includes("shadow:esm") &&
-        inputs.standardVariants === 0 &&
-        inputs.nodeEsmCasters === 0
+        !shadowCapabilities(inputs).esm
     ) {
         throw new Error(
-            "A scene reaching the ESM shadow generator composes no " +
-                "Standard variant and no node ESM caster. The caster's own " +
-                "material view is those two families'; the PBR one " +
-                "(material/pbr/esm-shadow-view.ts) composes nothing yet.",
+            "A scene reaching the ESM shadow generator composes no material " +
+                "family to cast through. Each family carries its own caster " +
+                "view (material/<family>/esm-shadow-view.ts), and a scene " +
+                "reaching none of them would refresh its directional " +
+                "generator through the PCF spot's matrix builder.",
         );
     }
 }

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { ShadowCasterManifest, Value } from "../types.js";
+import type { ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
@@ -43,7 +43,7 @@ export interface ShadowIntrinsicContext
     }): number;
     recordShadowCasters(
         generatorIndex: number,
-        casters: readonly ShadowCasterManifest[],
+        casters: readonly ShadowCasterMeshManifest[],
     ): void;
     esmGeneratorOrdinal(): number;
 }
@@ -294,7 +294,7 @@ export function compileShadowIntrinsic(
                 call.arguments[1]!,
             );
             const emitted: string[] = [];
-            const casters: ShadowCasterManifest[] = [];
+            const casters: ShadowCasterMeshManifest[] = [];
             for (const element of array.elements) {
                 const mesh = context.compileValue(element);
                 context.expectKind(mesh, "mesh", element);
@@ -307,16 +307,12 @@ export function compileShadowIntrinsic(
                     );
                 }
                 emitted.push(mesh.cpp);
-                // What the mesh carries WHEN it is named a caster: a
-                // material assigned after this call would change which
-                // view the task builds, and every reached scene assigns
-                // it first. `null` is a material of another family, which
-                // still takes a runtime handle.
-                casters.push({
-                    meshIndex: mesh.sceneMeshIndex,
-                    pbrMaterial: mesh.scenePbrMaterialIndex ?? null,
-                    nodeMaterial: mesh.nodeMaterialIndex ?? null,
-                });
+                // Only WHICH mesh casts. Which material it carries is read
+                // at the manifest, from what the mesh finally holds --
+                // upstream resolves `mesh.material` lazily when the pass
+                // builds, and a scene naming its casters before assigning
+                // their materials (scene 65) would otherwise record none.
+                casters.push({ meshIndex: mesh.sceneMeshIndex });
             }
             if (emitted.length === 0) {
                 context.fail(

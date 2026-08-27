@@ -63,6 +63,7 @@ import type {
 import {
     assertShadowCapabilities,
     reachesShadowGenerator,
+    nodeShadowInputs,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import {
@@ -559,12 +560,7 @@ class GeneratedSourceWriter {
             features,
             standardVariants: (options.pinnedStandardVariants ?? []).length,
             pbrVariants: (options.pinnedVariants ?? []).length,
-            nodeShadowReceivers: nodeVariantList.filter(
-                (variant) => variant.composed.shadowBindings.length > 0,
-            ).length,
-            nodeEsmCasters: nodeVariantList.filter(
-                (variant) => variant.composed.esmCaster !== null,
-            ).length,
+            ...nodeShadowInputs(nodeVariantList),
         };
         assertShadowCapabilities(shadowInputs);
         const shadows = shadowCapabilities(shadowInputs);
@@ -1872,10 +1868,13 @@ ${shadow.blurFragmentWgsl}`,
         // SDL_GPU's dense convention.
         // The declarations both composed material families read: one
         // reflection, one row shape, one header with its own guard, so
-        // neither family's presence decides where the other finds them.
+        // no family's presence decides where another finds them -- the node
+        // graphs' receiver rows are the same shape in the graph's own group
+        // 1, and read through the same per-row builders.
         if (
             (options.pinnedVariants ?? []).length > 0 ||
-            (options.pinnedStandardVariants ?? []).length > 0
+            (options.pinnedStandardVariants ?? []).length > 0 ||
+            nodeVariantList.length > 0
         ) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_variant_bindings.hpp",

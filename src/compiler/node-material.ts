@@ -60,7 +60,7 @@ export interface NodeMaterialContext
     shadowGeneratorLight(
         index: number,
         node: ts.Node,
-    ): { lightIndex: number; shadowType: "esm" | "pcf" };
+    ): { lightIndex: number };
 }
 
 /** One entry of a call's `textures`, under the binding name it is keyed by. */
@@ -194,24 +194,14 @@ export function compileNodeMaterialOptions(
 }
 
 /**
- * The `textures` record, read as the pin reads it: a binding name to the
- * texture that binding samples.
- *
- * The pin looks each declared binding up in this record by name
- * (`options.textures?.[tb._name]`), so what the compiler has to carry is the
- * key beside the value; which pair a name lands on is the composition's
- * answer, not this call's. A binding the graph declares and the record omits
- * is the pin's own render-time error, raised at generation here instead --
- * `src/compose-pipeline.ts` holds that check, because only the composed
- * graph knows what it declared.
- */
-/**
  * The `shadowGenerators` a call named, paired with the `scene.lights` slot
  * of each one's light.
  *
  * The pin defaults the indices to `[0, 1, ...]` when the caller omits them,
- * so this resolves the same default rather than requiring the list. What it
- * reads off each generator is what the pin reads: the filter alone.
+ * so a call that supplies the list is checked against the slot the generator
+ * was built on and a call that omits it takes that slot. What the FILTER is
+ * stays composition's to answer, off the pinned factory the generator's kind
+ * names.
  */
 function compileShadowLights(
     context: NodeMaterialContext,
@@ -253,36 +243,50 @@ function compileShadowLights(
             value.shadowGeneratorIndex,
             element,
         );
-        // The pin's own default, resolved here rather than restated: an
-        // omitted list is `[0, 1, ...]`, the first N lights.
+        // A call that names the slot is checked against the one the
+        // generator was built on; a call that omits the list takes the
+        // pin's own `[0, 1, ...]` default, which for a reached scene IS
+        // that slot -- so only a stated disagreement can fail here.
         const named = indices?.[position];
-        const lightIndex = named
-            ? staticNumberValue(context, named)
-            : position;
-        if (lightIndex === undefined) {
-            context.fail(
-                named!,
-                "A node material's shadowLightIndices are compile-time " +
-                    "numbers: the composed fragment names its bindings by " +
-                    "the light's slot.",
-            );
-        }
-        if (lightIndex !== generator.lightIndex) {
-            context.fail(
-                named ?? element,
-                `A node material names light ${lightIndex} for a shadow ` +
-                    `generator built on light ${generator.lightIndex}; the ` +
-                    "composed fragment binds by that slot.",
-            );
+        if (named) {
+            const lightIndex = staticNumberValue(context, named);
+            if (lightIndex === undefined) {
+                context.fail(
+                    named,
+                    "A node material's shadowLightIndices are compile-time " +
+                        "numbers: the composed fragment names its bindings " +
+                        "by the light's slot.",
+                );
+            }
+            if (lightIndex !== generator.lightIndex) {
+                context.fail(
+                    named,
+                    `A node material names light ${lightIndex} for a ` +
+                        "shadow generator built on light " +
+                        `${generator.lightIndex}; the composed fragment ` +
+                        "binds by that slot.",
+                );
+            }
         }
         return {
             lightIndex: generator.lightIndex,
-            shadowType: generator.shadowType,
             generatorIndex: value.shadowGeneratorIndex,
         };
     });
 }
 
+/**
+ * The `textures` record, read as the pin reads it: a binding name to the
+ * texture that binding samples.
+ *
+ * The pin looks each declared binding up in this record by name
+ * (`options.textures?.[tb._name]`), so what the compiler has to carry is the
+ * key beside the value; which pair a name lands on is the composition's
+ * answer, not this call's. A binding the graph declares and the record omits
+ * is the pin's own render-time error, raised at generation here instead --
+ * `src/compose-pipeline.ts` holds that check, because only the composed
+ * graph knows what it declared.
+ */
 function compileTextures(
     context: NodeMaterialContext,
     expression: ts.Expression | undefined,

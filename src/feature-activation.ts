@@ -28,6 +28,7 @@
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { Feature } from "./compiler/types.js";
 import {
+    nodeShadowInputs,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
@@ -818,24 +819,18 @@ function capabilityRows(
     // shared predicate -- so `checkedRow` compares two derivations and not
     // one expression against itself.
     const nodeVariantList = emit.nodeVariants ?? [];
+    const {
+        nodeShadowReceivers: nodeShadowReceiverCount,
+        nodeEsmCasters: nodeEsmCasterCount,
+    } = nodeShadowInputs(nodeVariantList);
     const shadows = shadowCapabilities({
         features,
         standardVariants: standardVariantCount,
         pbrVariants: variantCount,
-        nodeShadowReceivers: nodeVariantList.filter(
-            (variant) => variant.composed.shadowBindings.length > 0,
-        ).length,
-        nodeEsmCasters: nodeVariantList.filter(
-            (variant) => variant.composed.esmCaster !== null,
-        ).length,
+        nodeShadowReceivers: nodeShadowReceiverCount,
+        nodeEsmCasters: nodeEsmCasterCount,
     });
     const nodeVariantCount = nodeVariantList.length;
-    const nodeEsmCasterCount = nodeVariantList.filter(
-        (variant) => variant.composed.esmCaster !== null,
-    ).length;
-    const nodeShadowReceiverCount = nodeVariantList.filter(
-        (variant) => variant.composed.shadowBindings.length > 0,
-    ).length;
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
     const standardReflection = (emit.pinnedStandardVariants ?? [])
@@ -1203,23 +1198,30 @@ function capabilityRows(
             shadows.esm,
             [
                 // A conjunction with the families that HAVE a caster
-                // material view, which is what the define gates: the
-                // Standard one, and the node one a graph carries as a
-                // second composed module.
+                // material view, which is what the define gates -- and all
+                // three do: the Standard and PBR ones through their own
+                // `esm-shadow-view.ts`, the node one as a second composed
+                // module of the graph itself.
                 [
                     has("shadow:esm") && standardVariantCount > 0,
                     "scene source reached shadow:esm and the scene " +
                         "composes Standard variants",
                 ],
                 [
-                    has("shadow:esm") && nodeEsmCasterCount > 0,
+                    has("shadow:esm") && variantCount > 0,
+                    "scene source reached shadow:esm and the scene " +
+                        "composes PBR variants",
+                ],
+                [
+                    has("shadow:esm") &&
+                        (nodeShadowReceiverCount > 0 ||
+                            nodeEsmCasterCount > 0),
                     "scene source reached shadow:esm and a composed node " +
-                        "graph carries its ESM caster module",
+                        "graph receives or casts",
                 ],
             ],
             has("shadow:esm")
-                ? "reached shadow:esm but composes neither a Standard " +
-                    "variant nor a node ESM caster"
+                ? "reached shadow:esm but composes no material family"
                 : "not reached",
             "src/shadow/esm-directional-shadow-generator.ts",
             ["render_capabilities.hpp"],
