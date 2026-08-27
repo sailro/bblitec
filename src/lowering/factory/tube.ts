@@ -597,59 +597,6 @@ TubeVec tube_rodrigues(
     };
 }
 
-// compute-normals.ts computeNormals: face accumulation in f64, one
-// normalization pass.
-std::vector<double> tube_compute_normals(
-    const std::vector<double>& positions,
-    const std::vector<std::uint32_t>& indices) {
-    std::vector<double> accumulated(positions.size(), 0.0);
-    const std::size_t face_count = indices.size() / 3;
-    for (std::size_t f = 0; f < face_count; ++f) {
-        const std::size_t v1 = indices[f * 3] * 3;
-        const std::size_t v2 = indices[f * 3 + 1] * 3;
-        const std::size_t v3 = indices[f * 3 + 2] * 3;
-        const double p1p2x = positions[v1] - positions[v2];
-        const double p1p2y = positions[v1 + 1] - positions[v2 + 1];
-        const double p1p2z = positions[v1 + 2] - positions[v2 + 2];
-        const double p3p2x = positions[v3] - positions[v2];
-        const double p3p2y = positions[v3 + 1] - positions[v2 + 1];
-        const double p3p2z = positions[v3 + 2] - positions[v2 + 2];
-        double nx = p1p2y * p3p2z - p1p2z * p3p2y;
-        double ny = p1p2z * p3p2x - p1p2x * p3p2z;
-        double nz = p1p2x * p3p2y - p1p2y * p3p2x;
-        double length = std::sqrt(nx * nx + ny * ny + nz * nz);
-        if (length == 0.0) {
-            length = 1.0;
-        }
-        nx /= length;
-        ny /= length;
-        nz /= length;
-        accumulated[v1] += nx;
-        accumulated[v1 + 1] += ny;
-        accumulated[v1 + 2] += nz;
-        accumulated[v2] += nx;
-        accumulated[v2 + 1] += ny;
-        accumulated[v2 + 2] += nz;
-        accumulated[v3] += nx;
-        accumulated[v3 + 1] += ny;
-        accumulated[v3 + 2] += nz;
-    }
-    std::vector<double> normals(positions.size());
-    const std::size_t vertex_count = positions.size() / 3;
-    for (std::size_t i = 0; i < vertex_count; ++i) {
-        const double x = accumulated[i * 3];
-        const double y = accumulated[i * 3 + 1];
-        const double z = accumulated[i * 3 + 2];
-        double length = std::sqrt(x * x + y * y + z * z);
-        if (length == 0.0) {
-            length = 1.0;
-        }
-        normals[i * 3] = x / length;
-        normals[i * 3 + 1] = y / length;
-        normals[i * 3 + 2] = z / length;
-    }
-    return normals;
-}
 
 } // namespace
 
@@ -681,16 +628,16 @@ MeshHandle create_tube(
     // createTubeData: one circle per path point (cap NONE, arc 1).
     const double pi2 = 3.141592653589793 * 2.0;
     const double step = pi2 / static_cast<double>(tessellation);
-    std::vector<std::vector<TubeVec>> circle_paths(curve.size());
+    std::vector<std::vector<Vec3d>> circle_paths(curve.size());
     for (std::size_t i = 0; i < curve.size(); ++i) {
-        std::vector<TubeVec>& circle = circle_paths[i];
+        std::vector<Vec3d>& circle = circle_paths[i];
         circle.reserve(tessellation);
         for (std::size_t t = 0; t < tessellation; ++t) {
             const TubeVec rotated = tube_rodrigues(
                 frames.normals[i],
                 frames.tangents[i],
                 step * static_cast<double>(t));
-            circle.push_back(TubeVec{
+            circle.push_back(Vec3d{
                 rotated.x * radius + curve[i].x,
                 rotated.y * radius + curve[i].y,
                 rotated.z * radius + curve[i].z,
@@ -698,156 +645,15 @@ MeshHandle create_tube(
         }
     }
 
-    // createRibbonData over the circles: closePath, open array.
-    std::vector<double> positions;
-    std::vector<std::uint32_t> indices;
-    std::vector<double> uvs;
-    std::vector<std::vector<double>> us(circle_paths.size());
-    std::vector<double> u_total(circle_paths.size(), 0.0);
-    std::vector<std::size_t> lg(circle_paths.size());
-    std::vector<std::size_t> idx(circle_paths.size());
-
-    std::size_t minlg = circle_paths[0].size();
-    std::size_t idc = 0;
-    for (std::size_t p = 0; p < circle_paths.size(); ++p) {
-        us[p] = {0.0};
-        const std::vector<TubeVec>& path = circle_paths[p];
-        const std::size_t l = path.size();
-        minlg = minlg < l ? minlg : l;
-        for (std::size_t j = 0; j < l; ++j) {
-            const TubeVec& pt = path[j];
-            positions.push_back(pt.x);
-            positions.push_back(pt.y);
-            positions.push_back(pt.z);
-            if (j > 0) {
-                const double vectlg =
-                    tube_length(tube_sub(path[j], path[j - 1]));
-                const double dist = vectlg + u_total[p];
-                us[p].push_back(dist);
-                u_total[p] = dist;
-            }
-        }
-        // closePath: the seam vertex repeats the circle start.
-        positions.push_back(path[0].x);
-        positions.push_back(path[0].y);
-        positions.push_back(path[0].z);
-        const double vectlg =
-            tube_length(tube_sub(path[l - 1], path[0]));
-        const double dist = vectlg + u_total[p];
-        us[p].push_back(dist);
-        u_total[p] = dist;
-        lg[p] = l + 1;
-        idx[p] = idc;
-        idc += l + 1;
-    }
-
-    std::vector<double> v_total(minlg + 1, 0.0);
-    std::vector<std::vector<double>> vs(minlg + 1);
-    for (std::size_t i = 0; i < minlg + 1; ++i) {
-        vs[i] = {0.0};
-        for (std::size_t p = 0; p + 1 < circle_paths.size(); ++p) {
-            const TubeVec& v1 = i == minlg
-                ? circle_paths[p][0]
-                : circle_paths[p][i];
-            const TubeVec& v2 = i == minlg
-                ? circle_paths[p + 1][0]
-                : circle_paths[p + 1][i];
-            const double vectlg = tube_length(tube_sub(v2, v1));
-            const double dist = vectlg + v_total[i];
-            vs[i].push_back(dist);
-            v_total[i] = dist;
-        }
-    }
-
-    for (std::size_t p = 0; p < circle_paths.size(); ++p) {
-        for (std::size_t i = 0; i < minlg + 1; ++i) {
-            const double u =
-                u_total[p] != 0.0 ? us[p][i] / u_total[p] : 0.0;
-            const double v =
-                v_total[i] != 0.0 ? vs[i][p] / v_total[i] : 0.0;
-            uvs.push_back(u);
-            uvs.push_back(v);
-        }
-    }
-
-    {
-        // Babylon's ribbon triangulation, the pin's index walk verbatim.
-        std::size_t p = 0;
-        std::size_t pi = 0;
-        std::size_t l1 = lg[p] - 1;
-        std::size_t l2 = lg[p + 1] - 1;
-        std::size_t min = l1 < l2 ? l1 : l2;
-        std::size_t shft = idx[1] - idx[0];
-        const std::size_t path1nb = lg.size() - 1;
-        while (pi <= min && p < path1nb) {
-            indices.push_back(static_cast<std::uint32_t>(pi));
-            indices.push_back(static_cast<std::uint32_t>(pi + shft));
-            indices.push_back(static_cast<std::uint32_t>(pi + 1));
-            indices.push_back(
-                static_cast<std::uint32_t>(pi + shft + 1));
-            indices.push_back(static_cast<std::uint32_t>(pi + 1));
-            indices.push_back(static_cast<std::uint32_t>(pi + shft));
-            pi += 1;
-            if (pi == min) {
-                ++p;
-                if (p >= path1nb) {
-                    break;
-                }
-                shft = idx[p + 1] - idx[p];
-                l1 = lg[p] - 1;
-                l2 = lg[p + 1] - 1;
-                pi = idx[p];
-                min = (l1 < l2 ? l1 : l2) + pi;
-            }
-        }
-    }
-
-    std::vector<double> normals =
-        tube_compute_normals(positions, indices);
-
-    // closePath seam averaging.
-    for (std::size_t p = 0; p < circle_paths.size(); ++p) {
-        const std::size_t index_first = idx[p] * 3;
-        const std::size_t index_last = p + 1 < circle_paths.size()
-            ? (idx[p + 1] - 1) * 3
-            : normals.size() - 3;
-        normals[index_first] =
-            (normals[index_first] + normals[index_last]) * 0.5;
-        normals[index_first + 1] =
-            (normals[index_first + 1] + normals[index_last + 1]) * 0.5;
-        normals[index_first + 2] =
-            (normals[index_first + 2] + normals[index_last + 2]) * 0.5;
-        double nl = std::sqrt(
-            normals[index_first] * normals[index_first] +
-            normals[index_first + 1] * normals[index_first + 1] +
-            normals[index_first + 2] * normals[index_first + 2]);
-        if (nl == 0.0) {
-            nl = 1.0;
-        }
-        normals[index_first] = normals[index_first] / nl;
-        normals[index_first + 1] = normals[index_first + 1] / nl;
-        normals[index_first + 2] = normals[index_first + 2] / nl;
-        normals[index_last] = normals[index_first];
-        normals[index_last + 1] = normals[index_first + 1];
-        normals[index_last + 2] = normals[index_first + 2];
-    }
-
-    // The pin finishes through createMeshFromData(engine, "tube",
-    // positions, normals, indices, uvs) — Float32Array conversion
-    // happens at these stores.
-    std::vector<float> positions_f32(positions.begin(), positions.end());
-    std::vector<float> normals_f32(normals.begin(), normals.end());
-    std::vector<float> uvs_f32(uvs.begin(), uvs.end());
-    return create_mesh_from_data(
+    // \`createTubeData\` ends by handing its circles to
+    // \`createRibbonData\` with the path CLOSED and the array open,
+    // and that ribbon is lowered from the pin beside the other
+    // builders that share it -- so the tube finishes through it
+    // rather than through a second reading of one pinned function.
+    return create_ribbon_mesh(
         engine,
-        "${tubeName}",
-        positions_f32,
-        normals_f32,
-        indices,
-        uvs_f32,
-        {},
-        {},
-        {});
+        RibbonOptions{std::move(circle_paths), false, true},
+        "${tubeName}");
 }
 ${!extrudeShapes ? "" : this.lowerExtrudeShape()}
 } // namespace bbl

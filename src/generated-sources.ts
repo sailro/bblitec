@@ -214,6 +214,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:polyhedron",
             "mesh:ribbon",
             "mesh:extrude",
+            "mesh:tube",
             "mesh:from-data",
             "mesh:ground",
             "mesh:ground-heightmap",

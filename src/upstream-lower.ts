@@ -1746,7 +1746,8 @@ ${composed.wgsl}`,
             features.includes("mesh:cylinder") ||
             features.includes("mesh:polyhedron") ||
             features.includes("mesh:ribbon") ||
-            features.includes("mesh:extrude")
+            features.includes("mesh:extrude") ||
+            features.includes("mesh:tube")
         ) {
             this.writeSource(
                 "upstream/src/mesh_factories.cpp",

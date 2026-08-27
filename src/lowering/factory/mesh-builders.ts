@@ -36,11 +36,13 @@ export class MeshBuilderLowerer {
         const disc = features.includes("mesh:disc");
         const cylinder = features.includes("mesh:cylinder");
         const polyhedron = features.includes("mesh:polyhedron");
-        // The extrude finishes through the ribbon under its own name, so
-        // reaching it reaches this unit's ribbon too.
+        // The tube and the extrude both finish through the ribbon under
+        // their own names -- which is how the pin composes them -- so
+        // reaching either reaches this unit's ribbon.
         const ribbon =
             features.includes("mesh:ribbon") ||
-            features.includes("mesh:extrude");
+            features.includes("mesh:extrude") ||
+            features.includes("mesh:tube");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
