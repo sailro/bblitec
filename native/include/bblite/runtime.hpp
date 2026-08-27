@@ -837,6 +837,12 @@ struct MeshRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
     Vec3 dimensions{1.0f, 1.0f, 1.0f};
+    // `mesh.receiveShadows`. A composition key for the Standard and PBR
+    // families, whose variants carry the sampling code -- and a per-draw
+    // VALUE for the node family, whose receiver mixes its factor by the
+    // `meshU.receivesShadow` lane instead. One record field serves both:
+    // the two composed families never read it.
+    bool receives_shadows = false;
     // Scene-code boundMin/boundMax replace the corresponding object-local
     // bound carried by the pinned Mesh. Keep each side optional because the
     // public object permits either property to be assigned independently.
@@ -2282,6 +2288,14 @@ MaterialHandle create_standard_no_color_material_view(
     Engine& engine,
     MaterialHandle source);
 MaterialHandle create_standard_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator);
+MaterialHandle create_pbr_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator);
+MaterialHandle create_node_esm_shadow_material_view(
     Engine& engine,
     MaterialHandle source,
     ShadowGeneratorHandle generator);

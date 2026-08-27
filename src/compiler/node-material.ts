@@ -20,13 +20,21 @@ import {
     type ExecutedModuleReferenceContext,
 } from "./assets.js";
 import {
+    staticNumberValue,
     validateObjectProperties,
     type ObjectValidationContext,
+    type PositiveIntegerContext,
 } from "./option-helpers.js";
-import type { CompiledNodeMaterial, Value } from "./types.js";
+import type {
+    CompiledNodeMaterial,
+    NodeShadowLight,
+    Value,
+} from "./types.js";
 
 export interface NodeMaterialContext
-    extends ObjectValidationContext, ExecutedModuleReferenceContext {
+    extends ObjectValidationContext,
+        PositiveIntegerContext,
+        ExecutedModuleReferenceContext {
     readonly reachedNodeMaterials: CompiledNodeMaterial[];
     expectObjectLiteral(
         expression: ts.Expression,
@@ -45,6 +53,14 @@ export interface NodeMaterialContext
         kind: Value["kind"],
         node: ts.Node,
     ): void;
+    expectStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression;
+    /** The filter and light slot one recorded generator was built with. */
+    shadowGeneratorLight(
+        index: number,
+        node: ts.Node,
+    ): { lightIndex: number };
 }
 
 /** One entry of a call's `textures`, under the binding name it is keyed by. */
@@ -98,10 +114,10 @@ export function compileNodeMaterialOptions(
     validateObjectProperties(
         context,
         object,
-        ["json", "textures"],
-        "Reached node materials take an inline 'json' graph and its " +
-            "'textures' only; shadow generators, skinning, instancing and a " +
-            "block loader are not lowered.",
+        ["json", "textures", "shadowGenerators", "shadowLightIndices"],
+        "Reached node materials take an inline 'json' graph, its " +
+            "'textures' and its 'shadowGenerators' only; skinning, " +
+            "instancing and a block loader are not lowered.",
     );
     const jsonExpression = context.objectProperty(object, "json");
     if (!jsonExpression) {
@@ -115,6 +131,11 @@ export function compileNodeMaterialOptions(
         context.objectProperty(object, "textures"),
     );
     const textureNames = textures.map((entry) => entry.name);
+    const shadowLights = compileShadowLights(
+        context,
+        context.objectProperty(object, "shadowGenerators"),
+        context.objectProperty(object, "shadowLightIndices"),
+    );
     const document = staticGraphDocument(
         context,
         jsonExpression,
@@ -125,12 +146,18 @@ export function compileNodeMaterialOptions(
     );
     const material: CompiledNodeMaterial =
         document.kind === "literal"
-            ? { kind: "literal", graph: document.graph, textureNames }
+            ? {
+                  kind: "literal",
+                  graph: document.graph,
+                  textureNames,
+                  shadowLights,
+              }
             : {
                   kind: "module",
                   module: document.module,
                   exportName: document.exportName,
                   textureNames,
+                  shadowLights,
               };
     // Two calls naming the same document compose one module and one variant,
     // so a repeat reach returns the first index. Linear over the reached
@@ -164,6 +191,88 @@ export function compileNodeMaterialOptions(
         index: context.reachedNodeMaterials.length - 1,
         textures,
     };
+}
+
+/**
+ * The `shadowGenerators` a call named, paired with the `scene.lights` slot
+ * of each one's light.
+ *
+ * The pin defaults the indices to `[0, 1, ...]` when the caller omits them,
+ * so a call that supplies the list is checked against the slot the generator
+ * was built on and a call that omits it takes that slot. What the FILTER is
+ * stays composition's to answer, off the pinned factory the generator's kind
+ * names.
+ */
+function compileShadowLights(
+    context: NodeMaterialContext,
+    generatorsExpression: ts.Expression | undefined,
+    indicesExpression: ts.Expression | undefined,
+): NodeShadowLight[] {
+    if (!generatorsExpression) {
+        if (indicesExpression) {
+            context.fail(
+                indicesExpression,
+                "A node material's shadowLightIndices names the lights of " +
+                    "its shadowGenerators, which this call does not pass.",
+            );
+        }
+        return [];
+    }
+    const generators = context.expectStaticArrayLiteral(generatorsExpression);
+    const indices = indicesExpression
+        ? context.expectStaticArrayLiteral(indicesExpression).elements
+        : undefined;
+    if (indices && indices.length !== generators.elements.length) {
+        context.fail(
+            indicesExpression!,
+            "A node material's shadowLightIndices must name one light per " +
+                "shadow generator.",
+        );
+    }
+    return generators.elements.map((element, position) => {
+        const value = context.compileValue(element);
+        context.expectKind(value, "shadow-generator", element);
+        if (value.shadowGeneratorIndex === undefined) {
+            context.fail(
+                element,
+                "A node material's shadowGenerators takes the generator a " +
+                    "filter factory returned.",
+            );
+        }
+        const generator = context.shadowGeneratorLight(
+            value.shadowGeneratorIndex,
+            element,
+        );
+        // A call that names the slot is checked against the one the
+        // generator was built on; a call that omits the list takes the
+        // pin's own `[0, 1, ...]` default, which for a reached scene IS
+        // that slot -- so only a stated disagreement can fail here.
+        const named = indices?.[position];
+        if (named) {
+            const lightIndex = staticNumberValue(context, named);
+            if (lightIndex === undefined) {
+                context.fail(
+                    named,
+                    "A node material's shadowLightIndices are compile-time " +
+                        "numbers: the composed fragment names its bindings " +
+                        "by the light's slot.",
+                );
+            }
+            if (lightIndex !== generator.lightIndex) {
+                context.fail(
+                    named,
+                    `A node material names light ${lightIndex} for a ` +
+                        "shadow generator built on light " +
+                        `${generator.lightIndex}; the composed fragment ` +
+                        "binds by that slot.",
+                );
+            }
+        }
+        return {
+            lightIndex: generator.lightIndex,
+            generatorIndex: value.shadowGeneratorIndex,
+        };
+    });
 }
 
 /**

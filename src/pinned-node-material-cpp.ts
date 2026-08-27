@@ -15,6 +15,8 @@
 import { floatLiteral, stringLiteral } from "./cpp-literals.js";
 import {
     mirroredStructFromWgsl,
+    pinnedShadowBindingRow,
+    shadowBindingSlotOrNull,
     variantBindings,
 } from "./pinned-pbr-variant-cpp.js";
 import type { ComposedNodeMaterial } from "./pinned-node-material.js";
@@ -89,6 +91,51 @@ function collectEnvResources(
     }
 }
 
+/**
+ * One graph's receiver rows, reflected out of its own composed text.
+ *
+ * The pin allocates the three binding NUMBERS per shadow light and declares
+ * them under `shadowTex_N` / `shadowSamp_N` or `shadowComp_N` / `shadowInfo_N`.
+ * Reading the rows back out of the module is what makes each one's TYPE and
+ * stage visibility the pin's answer rather than this port's -- a PCF light
+ * declares a depth texture and a comparison sampler where an ESM one declares
+ * a float texture and a plain sampler -- and the numbers the pin allocated are
+ * then checked against what it declared, so a graph whose emitter moved one
+ * fails here instead of binding a neighbour's resource.
+ */
+function nodeShadowRows(composed: ComposedNodeMaterial): string[] {
+    const reflected = new Map(
+        variantBindings(composed.wgsl, composed.wgsl).map(
+            (binding) => [binding.binding, binding] as const,
+        ),
+    );
+    const rows: string[] = [];
+    for (const light of composed.shadowBindings) {
+        for (const binding of [light.texture, light.sampler, light.ubo]) {
+            const entry = reflected.get(binding);
+            const slot = entry
+                ? shadowBindingSlotOrNull(entry.name)
+                : null;
+            if (!entry || !slot) {
+                throw new Error(
+                    "A node graph declares no shadow binding at " +
+                        `${binding}, which the pin allocated for light ` +
+                        `${light.lightIndex}.`,
+                );
+            }
+            if (slot.light !== light.lightIndex) {
+                throw new Error(
+                    `A node graph's shadow binding '${entry.name}' names ` +
+                        `light ${slot.light} at the binding the pin ` +
+                        `allocated for ${light.lightIndex}.`,
+                );
+            }
+            rows.push(pinnedShadowBindingRow(entry, slot));
+        }
+    }
+    return rows;
+}
+
 /** One composed graph, plus the stem its two stages deploy under. */
 export interface NodeVariantManifestEntry {
     /** The graph's index in the scene's reach order. */
@@ -99,11 +146,38 @@ export interface NodeVariantManifestEntry {
     composed: ComposedNodeMaterial;
 }
 
+/** The caster row for one variant, or the absent one. */
+function casterRow(variant: NodeVariantManifestEntry): string {
+    const caster = variant.composed.esmCaster;
+    if (!caster) return '{false, "", "", 0}';
+    const stems = nodeCasterStageStems(variant.index);
+    return (
+        `{true, ${stringLiteral(stems.vertexStem)}, ` +
+        `${stringLiteral(stems.fragmentStem)}, ${caster.paramsBinding}}`
+    );
+}
+
 /** The deployed stems for one graph, both from the same module. */
 export function nodeVariantStageStems(
     index: number,
 ): { vertexStem: string; fragmentStem: string } {
     return { vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag` };
+}
+
+/**
+ * The stems the ESM caster module deploys under.
+ *
+ * A second module for the same graph, so it takes the same `node-` prefix
+ * -- which is what puts it through the pin's own group scheme in the
+ * register remap and publishes the `.slots` sidecar the SDL PAL binds by.
+ */
+export function nodeCasterStageStems(
+    index: number,
+): { vertexStem: string; fragmentStem: string } {
+    return {
+        vertexStem: `node-${index}-esm.vert`,
+        fragmentStem: `node-${index}-esm.frag`,
+    };
 }
 
 /** The pin's own node mesh block, as its composed module declares it. */
@@ -142,6 +216,7 @@ export function pinnedNodeVariantsHeader(
     }
     const attributeRows: string[] = [];
     const textureRows: string[] = [];
+    const shadowRows: string[] = [];
     const uniformFloats: number[] = [];
     const entries: string[] = [];
     const envResources = new Map<string, EnvResource>();
@@ -159,6 +234,9 @@ export function pinnedNodeVariantsHeader(
                     `${texture.texture}, ${texture.sampler}},`,
             );
         }
+        const firstShadow = shadowRows.length;
+        const variantShadowRows = nodeShadowRows(variant.composed);
+        shadowRows.push(...variantShadowRows);
         const firstFloat = uniformFloats.length;
         uniformFloats.push(...variant.composed.uboFloats);
         const env = variant.composed.envBindings;
@@ -178,7 +256,10 @@ export function pinnedNodeVariantsHeader(
                         : variant.composed.uboBinding
                 }, ` +
                 `${variant.composed.uboBytes}, ${firstFloat}, ` +
-                `${envRow}},`,
+                `${envRow}, ` +
+                `${firstShadow}, ` +
+                `${variantShadowRows.length}, ` +
+                `${casterRow(variant)}},`,
         );
         collectEnvResources(variant.composed, envResources);
     }
@@ -199,6 +280,9 @@ export function pinnedNodeVariantsHeader(
 #include <string_view>
 
 #include <bblite/upstream/material_texture_slots.hpp>
+// PinnedShadowBinding and its two enums: the receiver row shape every
+// family shares.
+#include <bblite/upstream/pinned_variant_bindings.hpp>
 
 namespace bbl::upstream {
 
@@ -277,6 +361,41 @@ inline constexpr std::array<
 ${envRows.join("\n") || "    // No reached graph declares one."}
 }};
 
+/**
+ * The receiver rows of every reached graph, in the shared shape.
+ *
+ * \`emitShadow\` continues the GRAPH's own group-1 binding run rather than
+ * opening a group of its own -- that is the whole difference from the two
+ * composed families -- but the rows themselves are the same three per light
+ * under the same names, so they are reflected out of the composed text and
+ * bound through the per-row builders both backends already have.
+ */
+inline constexpr std::array<
+    PinnedShadowBinding,
+    ${shadowRows.length}> node_shadow_bindings{{
+${shadowRows.join("\n") || "    // No reached graph receives a shadow."}
+}};
+
+/**
+ * The ESM caster module a graph composes when the scene casts from it.
+ *
+ * A second module of the SAME graph -- the pin re-compiles its bodies with
+ * the depth code its own ESM view carries -- so it deploys under its own
+ * stems and adds exactly one binding, the shadow-params block.
+ */
+struct NodeVariantCaster {
+    bool present;
+    std::string_view vertex_stem;
+    std::string_view fragment_stem;
+    std::size_t params_binding;
+};
+
+/** The two stems one compiled view deploys under. */
+struct NodeVariantStems {
+    std::string_view vertex;
+    std::string_view fragment;
+};
+
 struct NodeVariantEntry {
     /** The deployed stem of each stage; both name one module. */
     std::string_view vertex_stem;
@@ -295,6 +414,11 @@ struct NodeVariantEntry {
     /** Where this graph's block starts in the float table below. */
     std::size_t first_uniform_float;
     NodeVariantEnvBindings env;
+    /** Half-open range into the shadow-binding table above. */
+    std::size_t first_shadow_binding;
+    std::size_t shadow_binding_count;
+    /** The ESM caster module this graph also composed, when it casts. */
+    NodeVariantCaster caster;
 };
 
 inline constexpr std::array<

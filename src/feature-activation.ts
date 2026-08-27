@@ -28,6 +28,7 @@
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { Feature } from "./compiler/types.js";
 import {
+    nodeShadowInputs,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
@@ -817,12 +818,19 @@ function capabilityRows(
     // directly -- `has("shadow:pcf") || has("shadow:esm")` rather than the
     // shared predicate -- so `checkedRow` compares two derivations and not
     // one expression against itself.
+    const nodeVariantList = emit.nodeVariants ?? [];
+    const {
+        nodeShadowReceivers: nodeShadowReceiverCount,
+        nodeEsmCasters: nodeEsmCasterCount,
+    } = nodeShadowInputs(nodeVariantList);
     const shadows = shadowCapabilities({
         features,
         standardVariants: standardVariantCount,
         pbrVariants: variantCount,
+        nodeShadowReceivers: nodeShadowReceiverCount,
+        nodeEsmCasters: nodeEsmCasterCount,
     });
-    const nodeVariantCount = (emit.nodeVariants ?? []).length;
+    const nodeVariantCount = nodeVariantList.length;
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
     const standardReflection = (emit.pinnedStandardVariants ?? [])
@@ -1189,18 +1197,31 @@ function capabilityRows(
             "capability",
             shadows.esm,
             [
-                // One reason, because the define is a CONJUNCTION: every
-                // site that reads it is Standard-family code, so a scene
-                // reaching the filter with no Standard variant compiles no
-                // ESM code at all.
+                // A conjunction with the families that HAVE a caster
+                // material view, which is what the define gates -- and all
+                // three do: the Standard and PBR ones through their own
+                // `esm-shadow-view.ts`, the node one as a second composed
+                // module of the graph itself.
                 [
                     has("shadow:esm") && standardVariantCount > 0,
                     "scene source reached shadow:esm and the scene " +
                         "composes Standard variants",
                 ],
+                [
+                    has("shadow:esm") && variantCount > 0,
+                    "scene source reached shadow:esm and the scene " +
+                        "composes PBR variants",
+                ],
+                [
+                    has("shadow:esm") &&
+                        (nodeShadowReceiverCount > 0 ||
+                            nodeEsmCasterCount > 0),
+                    "scene source reached shadow:esm and a composed node " +
+                        "graph receives or casts",
+                ],
             ],
             has("shadow:esm")
-                ? "reached shadow:esm but composes no Standard variant"
+                ? "reached shadow:esm but composes no material family"
                 : "not reached",
             "src/shadow/esm-directional-shadow-generator.ts",
             ["render_capabilities.hpp"],
@@ -1251,6 +1272,32 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
+            "BBLITE_NODE_SHADOWS",
+            "capability",
+            shadows.node,
+            [
+                // The node family's own half. Unlike the two composed
+                // families this is not "a generator plus a variant": a node
+                // graph's receiver is bindings appended to its OWN group 1
+                // and its caster is a second module of that same graph, so
+                // what reaches it is a composed graph that carries one or
+                // the other.
+                [
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        (nodeShadowReceiverCount > 0 ||
+                            nodeEsmCasterCount > 0),
+                    "scene source reached a shadow generator and a composed " +
+                        "node graph receives or casts",
+                ],
+            ],
+            shadows.reached
+                ? "reached a shadow generator but no node graph receives " +
+                    "or casts"
+                : "not reached",
+            "src/material/node/node-shadow.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
             "BBLITE_SHADOW_RECEIVERS",
             "capability",
             shadows.receivers,
@@ -1263,6 +1310,17 @@ function capabilityRows(
                         (standardVariantCount > 0 || variantCount > 0),
                     "scene source reached a shadow generator and the scene " +
                         "composes a receiver in some family",
+                ],
+                // The node family reaches the same generator half without
+                // composing a variant of its own: its receiver appends to
+                // the graph's group 1 and mixes by a per-mesh uniform, and
+                // its caster is a second module of that graph.
+                [
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        (nodeShadowReceiverCount > 0 ||
+                            nodeEsmCasterCount > 0),
+                    "scene source reached a shadow generator and a composed " +
+                        "node graph receives or casts",
                 ],
             ],
             shadows.reached

@@ -1408,7 +1408,10 @@ MaterialHandle create_standard_material(Engine& engine) {
         };
     }
 
-    public lowerNoColorMaterialViews(esmShadows = false): LoweredSource {
+    public lowerNoColorMaterialViews(
+        esmShadows = false,
+        nodeEsmCasters = false,
+    ): LoweredSource {
         const standardModule = "src/material/standard/no-color-view.ts";
         const esmModule = "src/material/standard/esm-shadow-view.ts";
         const pbrModule = "src/material/pbr/no-color-view.ts";
@@ -1513,7 +1516,11 @@ MaterialHandle create_standard_material(Engine& engine) {
             symbolName:
                 "createStandardNoColorMaterialView,createPbrNoColorMaterialView,markMaterialUboDirty" +
                 (esmShadows
-                    ? ",createStandardEsmShadowMaterialView"
+                    ? ",createStandardEsmShadowMaterialView," +
+                        "createPbrEsmShadowMaterialView"
+                    : "") +
+                (nodeEsmCasters
+                    ? ",createNodeEsmShadowMaterialView"
                     : ""),
             header: "",
             source: `// ${this.context.provenance(
@@ -1561,20 +1568,37 @@ MaterialHandle create_pbr_no_color_material_view(
     return create_no_color_material_view(engine, source, false);
 }
 ${!esmShadows ? "" : `
-// The ESM caster's view. Same inheritance, a different pass bit: the
-// selector clears the blend flag and ORs ESM_SHADOW_OUTPUT, which is what
-// \`createStandardEsmShadowMaterialView\` does to the feature word.
-MaterialHandle create_standard_esm_shadow_material_view(
+// The ESM caster's view, one body for all three families. Same inheritance
+// as the no-colour view above, a different pass bit: each family's own
+// \`create*EsmShadowMaterialView\` clears the blend flag and ORs its ESM
+// output bit, and what differs between them is only which family the source
+// must belong to.
+namespace {
+
+enum class EsmShadowFamily { standard, pbr, node };
+
+bool material_is(const MaterialRecord& record, EsmShadowFamily family) {
+    switch (family) {
+        case EsmShadowFamily::standard: return record.standard_material;
+        case EsmShadowFamily::node: return record.node_material;
+        case EsmShadowFamily::pbr:
+            return !record.standard_material && !record.node_material;
+    }
+    return false;
+}
+
+MaterialHandle create_esm_shadow_material_view(
     Engine& engine,
     MaterialHandle source,
-    ShadowGeneratorHandle generator) {
+    ShadowGeneratorHandle generator,
+    EsmShadowFamily family) {
     if (source.value >= engine.materials.size()) {
         throw std::runtime_error("Invalid source material handle.");
     }
     const MaterialRecord& source_record = engine.materials[source.value];
-    if (!source_record.standard_material) {
+    if (!material_is(source_record, family)) {
         throw std::runtime_error(
-            "An ESM shadow material view requires a Standard source.");
+            "ESM shadow material view family does not match its source.");
     }
     MaterialRecord view = source_record;
     view.esm_shadow = true;
@@ -1582,6 +1606,44 @@ MaterialHandle create_standard_esm_shadow_material_view(
     engine.materials.push_back(std::move(view));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+
+} // namespace
+
+MaterialHandle create_standard_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator) {
+    return create_esm_shadow_material_view(
+        engine,
+        source,
+        generator,
+        EsmShadowFamily::standard);
+}
+
+MaterialHandle create_pbr_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator) {
+    return create_esm_shadow_material_view(
+        engine,
+        source,
+        generator,
+        EsmShadowFamily::pbr);
+}
+`}${!nodeEsmCasters ? "" : `
+// The node family's own wrapper. Its view rides the same variant row the
+// receiver does -- the module the ESM bit selects was compiled beside it --
+// so nothing here names a second variant.
+MaterialHandle create_node_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator) {
+    return create_esm_shadow_material_view(
+        engine,
+        source,
+        generator,
+        EsmShadowFamily::node);
 }
 `}
 

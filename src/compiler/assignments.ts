@@ -336,6 +336,11 @@ export function lightVectorSetter(
 
 export interface AssignmentContext extends DeterministicRandomContext {
     readonly checker: ts.TypeChecker;
+    /** Which material a scene-code mesh was assigned, by its mesh index. */
+    recordSceneMeshMaterial(
+        meshIndex: number,
+        material: { pbrMaterial: number | null; nodeMaterial: number | null },
+    ): void;
     /** The scene's node-particle program; a texture write lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** Pixels-texture locals already copied into a material slot. */
@@ -1034,6 +1039,15 @@ export function emitPropertyAssignment(
                 );
             }
             context.recordShadowReceiver(target.sceneMeshIndex);
+            // The record lane too, which the node family reads per draw:
+            // its receiver mixes each light's factor by `receivesShadow`
+            // rather than selecting a variant, so one composed module
+            // serves a receiving mesh and a non-receiving one. The two
+            // composed families never read the lane.
+            context.emit(
+                `${context.requireEngine(target, expression)}.meshes[` +
+                    `${target.cpp}.value].receives_shadows = true;`,
+            );
             return;
         }
 
@@ -1100,6 +1114,17 @@ export function emitPropertyAssignment(
             if (material.scenePbrMaterialIndex !== undefined) {
                 target.scenePbrMaterialIndex =
                     material.scenePbrMaterialIndex;
+            }
+            // The pair the caster list resolves against. Upstream reads
+            // `mesh.material` when the shadow pass builds, so a scene may
+            // name its casters before assigning their materials -- which is
+            // why the mesh's own Value does not carry the graph: this map is
+            // the one producer of the pair.
+            if (target.sceneMeshIndex !== undefined) {
+                context.recordSceneMeshMaterial(target.sceneMeshIndex, {
+                    pbrMaterial: material.scenePbrMaterialIndex ?? null,
+                    nodeMaterial: material.nodeMaterialIndex ?? null,
+                });
             }
             return;
         }

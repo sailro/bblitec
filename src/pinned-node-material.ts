@@ -87,12 +87,75 @@ export interface ComposedNodeMaterial {
     backFaceCulling: boolean;
     /** The environment bindings, or null when the graph reaches none. */
     envBindings: ComposedNodeEnvBindings | null;
+    /**
+     * The three group-1 bindings the composed fragment declares per shadow
+     * light, in the pin's own allocation order.
+     *
+     * `node-shadow.ts` continues the GRAPH's own binding run rather than
+     * opening a group of its own, which is where the node family differs
+     * from the Standard and PBR receivers: `mesh.receiveShadows` is a
+     * composition key for those two and the `meshU.receivesShadow` uniform
+     * lane for this one, so one composed module serves a receiving mesh and
+     * a non-receiving one alike.
+     */
+    shadowBindings: readonly ComposedNodeShadowBinding[];
+    /**
+     * The ESM caster module, when the scene casts a shadow from this graph.
+     *
+     * The pin re-compiles the same bodies with the depth code its own
+     * `createNodeEsmShadowMaterialView` carries, so this is a second module
+     * rather than a second graph -- `buildNodeRenderables` does exactly this
+     * for a view whose feature word carries `NODE_ESM_SHADOW_OUTPUT`.
+     */
+    esmCaster: ComposedNodeCaster | null;
+}
+
+/**
+ * One shadow light's bindings, as `emitShadow` allocated them.
+ *
+ * The NUMBERS only: what each one is called, what type it carries and which
+ * stages read it are the composed module's own answers, reflected out of it
+ * where the rows are emitted.
+ */
+export interface ComposedNodeShadowBinding {
+    lightIndex: number;
+    texture: number;
+    sampler: number;
+    ubo: number;
+    shadowType: "esm" | "pcf";
+}
+
+/** The ESM caster module and the one binding it adds. */
+export interface ComposedNodeCaster {
+    wgsl: string;
+    /** The group-1 binding `nmeShadowParams` took. */
+    paramsBinding: number;
+}
+
+/**
+ * The bindings a compiled node stage pair declares beside its mesh block.
+ *
+ * Declared once because three sites read it: the receiver's own compile, the
+ * caster's, and the check that the two agree.
+ */
+interface PinnedNodeCompiledBindings {
+    _nodeUboBinding: number | null;
+    _textureBindings: readonly {
+        _name: string;
+        _texBinding: number;
+        _sampBinding: number;
+    }[];
+    _envBindings: {
+        _iblTexture: number;
+        _iblSampler: number;
+        _brdfLUT: number;
+        _brdfSampler: number;
+    } | null;
 }
 
 /** The pin's build state, by the field names `node-types.ts` gives them. */
 interface PinnedNodeBuildState {
     vertexAttributes: readonly { _name: string }[];
-    shadowLights: readonly unknown[];
     [flag: string]: unknown;
 }
 
@@ -112,8 +175,21 @@ interface PinnedNodeMaterial {
             _brdfLUT: number;
             _brdfSampler: number;
         } | null;
+        /** One per shadow light, allocated in the graph's own binding run. */
+        _shadowBindings: readonly {
+            _lightIndex: number;
+            _texBinding: number;
+            _sampBinding: number;
+            _uboBinding: number;
+            _shadowType: "esm" | "pcf";
+        }[];
     };
     _state: PinnedNodeBuildState;
+    /** The emitted bodies, which the caster's second compile re-uses. */
+    _vertexBody: string;
+    _fragmentBody: string;
+    /** The env emitter, present only for a graph that reaches one. */
+    _envHelpers?: { emitEnv: unknown };
     _graph: {
         backFaceCulling: boolean;
         needsAlphaBlending: boolean;
@@ -128,8 +204,33 @@ interface PinnedNodeMaterialModule {
     parseNodeMaterialFromSnippet: (
         engine: unknown,
         snippetId: string,
-        options: { json?: unknown },
+        options: {
+            json?: unknown;
+            shadowGenerators?: readonly { _shadowType: string }[];
+            shadowLightIndices?: readonly number[];
+        },
     ) => Promise<PinnedNodeMaterial>;
+}
+
+/** The pin's own pipeline builder, for the caster's second compile. */
+interface PinnedNodePipelineModule {
+    compileNodePipeline: (
+        state: unknown,
+        vertexBody: string,
+        fragmentBody: string,
+        options: Record<string, unknown>,
+    ) => PinnedNodeCompiledBindings & {
+        _wgsl: string;
+        _esmShadowParamsBinding: number | null;
+    };
+}
+
+/** The pin's own ESM view, which carries the caster's depth code. */
+interface PinnedNodeEsmViewModule {
+    createNodeEsmShadowMaterialView: (
+        source: unknown,
+        shadowParamsUBO: unknown,
+    ) => { _esmShadowDepthCode: string };
 }
 
 /**
@@ -226,9 +327,6 @@ function assertReachedSlice(
     material: PinnedNodeMaterial,
     label: string,
 ): void {
-    if (material._state.shadowLights.length > 0) {
-        refuse(label, "a shadow generator");
-    }
     if (material._graph.needsAlphaBlending) refuse(label, "alpha blending");
     for (const [flag, value] of Object.entries(material._state)) {
         if (typeof value !== "boolean" || !value) continue;
@@ -237,18 +335,43 @@ function assertReachedSlice(
     }
 }
 
-/** Compose one graph. `label` names it in every refusal. */
+/**
+ * Compose one graph. `label` names it in every refusal.
+ *
+ * `shadowLights` is what the scene's own `shadowGenerators` resolved to; the
+ * pin reads only each generator's `_shadowType`, so a stub carrying that is
+ * the whole shape. `castsEsmShadow` asks for the second module the caster
+ * pass draws, which the pin builds by re-compiling these same bodies.
+ */
 export async function composeNodeMaterial(
     json: JsonObject,
     label: string,
+    shadowLights: readonly {
+        lightIndex: number;
+        shadowType: "esm" | "pcf" | "csm";
+    }[] = [],
+    castsEsmShadow = false,
 ): Promise<ComposedNodeMaterial> {
     const module = await importPinnedModule<PinnedNodeMaterialModule>(
         "material/node/node-material.js",
     );
+    const engine = compositionEngine();
     const material = await module.parseNodeMaterialFromSnippet(
-        compositionEngine(),
+        engine,
         "",
-        { json },
+        {
+            json,
+            ...(shadowLights.length > 0
+                ? {
+                      shadowGenerators: shadowLights.map(({ shadowType }) => ({
+                          _shadowType: shadowType,
+                      })),
+                      shadowLightIndices: shadowLights.map(
+                          ({ lightIndex }) => lightIndex,
+                      ),
+                  }
+                : {}),
+        },
     );
     assertReachedSlice(material, label);
     const attributes = material._state.vertexAttributes.map(
@@ -276,6 +399,9 @@ export async function composeNodeMaterial(
         });
     }
     const env = material._compile._envBindings;
+    const esmCaster = castsEsmShadow
+        ? await composeNodeEsmCaster(material, engine)
+        : null;
     return {
         wgsl: material._compile._wgsl,
         uboBytes: material._compile._nodeUboSize,
@@ -296,5 +422,120 @@ export async function composeNodeMaterial(
                 brdfSampler: env._brdfSampler,
             }
             : null,
+        shadowBindings: material._compile._shadowBindings.map((binding) => ({
+            lightIndex: binding._lightIndex,
+            texture: binding._texBinding,
+            sampler: binding._sampBinding,
+            ubo: binding._uboBinding,
+            shadowType: binding._shadowType,
+        })),
+        esmCaster,
+    };
+}
+
+/**
+ * The ESM caster module for one composed graph.
+ *
+ * `buildNodeRenderables` re-compiles the material's own bodies whenever its
+ * view carries `NODE_ESM_SHADOW_OUTPUT`, with the target state the shadow
+ * map is allocated at and the depth code the view holds. Both halves come
+ * from the pin: the state is that call's own argument list, and the depth
+ * code is `createNodeEsmShadowMaterialView`'s own constant, read by running
+ * the factory rather than by copying the string.
+ */
+async function composeNodeEsmCaster(
+    material: PinnedNodeMaterial,
+    engine: unknown,
+): Promise<ComposedNodeCaster> {
+    const pipeline = await importPinnedModule<PinnedNodePipelineModule>(
+        "material/node/node-pipeline.js",
+    );
+    const view = await importPinnedModule<PinnedNodeEsmViewModule>(
+        "material/node/esm-shadow-view.js",
+    );
+    const { _esmShadowDepthCode } = view.createNodeEsmShadowMaterialView(
+        material,
+        // The buffer is bound at run time, never read while compiling.
+        { kind: "buffer" },
+    );
+    const compiled = pipeline.compileNodePipeline(
+        material._state,
+        material._vertexBody,
+        material._fragmentBody,
+        {
+            _engine: engine,
+            // The shadow map's own format and state, which is what the pin
+            // passes here rather than the frame's.
+            _format: "rgba16float",
+            _depthStencilFormat: "depth32float",
+            _depthCompare: "less-equal",
+            _msaaSamples: 1,
+            _backFaceCulling: material._graph.backFaceCulling,
+            _noColorOutput: false,
+            _esmShadowOutput: true,
+            _esmShadowDepthCode,
+            _alphaMode: 0,
+            // The shared fragment body still names the env samplers even in
+            // the depth variant, so its declarations have to come with it.
+            _envEmitter: material._envHelpers?.emitEnv,
+        },
+    );
+    if (compiled._esmShadowParamsBinding === null) {
+        throw new Error(
+            "The pinned node ESM caster compiled without its shadow-params " +
+                "binding.",
+        );
+    }
+    // One bind-group layout serves both views, differing only by the rows
+    // the two do not share -- the receiver's per-light three against the
+    // caster's single params block. That holds only while every OTHER
+    // binding the graph declares landed on the same number in both
+    // compiles, and while the params block landed on none of them: both are
+    // properties of the pin's emission order rather than guarantees, so
+    // both are checked.
+    const sharedBindings = (
+        compile: PinnedNodeCompiledBindings,
+    ): readonly (readonly [string, number])[] => [
+        ...(compile._nodeUboBinding === null
+            ? []
+            : [["nodeU", compile._nodeUboBinding] as const]),
+        ...compile._textureBindings.flatMap((binding) => [
+            [`${binding._name}.texture`, binding._texBinding] as const,
+            [`${binding._name}.sampler`, binding._sampBinding] as const,
+        ]),
+        ...(compile._envBindings
+            ? ([
+                ["env.ibl", compile._envBindings._iblTexture],
+                ["env.iblSampler", compile._envBindings._iblSampler],
+                ["env.brdf", compile._envBindings._brdfLUT],
+                ["env.brdfSampler", compile._envBindings._brdfSampler],
+            ] as const)
+            : []),
+    ];
+    const casterShared = sharedBindings(compiled);
+    if (
+        JSON.stringify(casterShared) !==
+            JSON.stringify(sharedBindings(material._compile))
+    ) {
+        throw new Error(
+            "The pinned node ESM caster numbered its shared bindings " +
+                "differently from the receiver it was compiled from.",
+        );
+    }
+    // Binding 0 is the mesh block, which neither list carries.
+    if (
+        compiled._esmShadowParamsBinding === 0 ||
+        casterShared.some(([, binding]) =>
+            binding === compiled._esmShadowParamsBinding
+        )
+    ) {
+        throw new Error(
+            "The pinned node ESM caster put its shadow-params block on a " +
+                "binding the graph already uses.",
+        );
+    }
+    return {
+        wgsl: compiled._wgsl,
+        paramsBinding: compiled._esmShadowParamsBinding,
     };
 }

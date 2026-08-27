@@ -63,6 +63,7 @@ import type {
 import {
     assertShadowCapabilities,
     reachesShadowGenerator,
+    nodeShadowInputs,
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import {
@@ -88,6 +89,7 @@ import {
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import {
     pinnedNodeVariantsHeader,
+    nodeCasterStageStems,
     type NodeVariantManifestEntry,
 } from "./pinned-node-material-cpp.js";
 import {
@@ -553,13 +555,16 @@ class GeneratedSourceWriter {
         // The shadow family's five defines, derived once: they are not
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
+        const nodeVariantList = options.nodeVariants ?? [];
         const shadowInputs = {
             features,
             standardVariants: (options.pinnedStandardVariants ?? []).length,
             pbrVariants: (options.pinnedVariants ?? []).length,
+            ...nodeShadowInputs(nodeVariantList),
         };
         assertShadowCapabilities(shadowInputs);
         const shadows = shadowCapabilities(shadowInputs);
+        const nodeEsmCasters = shadowInputs.nodeEsmCasters > 0;
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -599,6 +604,11 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // families wrap one pinned shadow core, so a scene reaching the filter
 // compiles the receiver code for whichever families composed a variant.
 #define BBLITE_PBR_SHADOWS ${shadows.pbr ? 1 : 0}
+// The node family's half. Not a receiver bind path like the two above: a
+// node receiver's three bindings per light continue the GRAPH's own group 1
+// and its factor is mixed by the meshU.receivesShadow lane, so what this
+// gates is the generator half below and the caster's second module.
+#define BBLITE_NODE_SHADOWS ${shadows.node ? 1 : 0}
 // The GENERATOR half, which is family-free: the maps, the samplers, the
 // receiver UBOs, the caster pass, the standard-Z depth state and their
 // release path exist whenever a scene reaches a generator AND some family
@@ -607,7 +617,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // containment every #if nesting decision depends on is syntactic rather
 // than three derivations happening to agree -- and a family added above
 // joins by appearing here.
-#define BBLITE_SHADOW_RECEIVERS (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)
+#define BBLITE_SHADOW_RECEIVERS \
+    (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS || BBLITE_NODE_SHADOWS)
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
 
@@ -1696,6 +1707,7 @@ ${composed.wgsl}`,
                 "upstream/src/material_views.cpp",
                 factories.lowerNoColorMaterialViews(
                     features.includes("shadow:esm"),
+                    nodeEsmCasters,
                 ),
                 generated,
             );
@@ -1768,6 +1780,7 @@ ${composed.wgsl}`,
                 shadowFactorySource(
                     context,
                     features.includes("shadow:esm"),
+                    nodeEsmCasters,
                 ),
                 generated,
             );
@@ -1855,10 +1868,13 @@ ${shadow.blurFragmentWgsl}`,
         // SDL_GPU's dense convention.
         // The declarations both composed material families read: one
         // reflection, one row shape, one header with its own guard, so
-        // neither family's presence decides where the other finds them.
+        // no family's presence decides where another finds them -- the node
+        // graphs' receiver rows are the same shape in the graph's own group
+        // 1, and read through the same per-row builders.
         if (
             (options.pinnedVariants ?? []).length > 0 ||
-            (options.pinnedStandardVariants ?? []).length > 0
+            (options.pinnedStandardVariants ?? []).length > 0 ||
+            nodeVariantList.length > 0
         ) {
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_variant_bindings.hpp",
@@ -2022,6 +2038,21 @@ ${shadow.blurFragmentWgsl}`,
                         data: variant.composed.wgsl,
                         family: "node",
                     });
+                }
+                // The ESM caster is a second module of the same graph, so
+                // it deploys the same way: twice, once per entry point.
+                const caster = variant.composed.esmCaster;
+                if (caster) {
+                    const stems = nodeCasterStageStems(variant.index);
+                    for (
+                        const stem of [stems.vertexStem, stems.fragmentStem]
+                    ) {
+                        composedShaders.push({
+                            output: `upstream/shaders/${stem}.native.wgsl`,
+                            data: caster.wgsl,
+                            family: "node",
+                        });
+                    }
                 }
             }
         }

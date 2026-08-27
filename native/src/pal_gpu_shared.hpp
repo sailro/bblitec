@@ -79,6 +79,26 @@ inline std::size_t variant_pipeline_key(
     for (const bool flag : flags) key = key * 2 + (flag ? 1 : 0);
     return key;
 }
+
+/**
+ * The variant an ESM caster pipeline is keyed by.
+ *
+ * A caster's colour format is its own generator's recorded row, so two
+ * generators whose factories returned different formats must not share a
+ * pipeline. Folding the generator's ESM ordinal into the VARIANT rather
+ * than into the key is what keeps that fold independent of how many flags
+ * `variant_pipeline_key` happens to pack -- the arithmetic used to be
+ * restated per call site, each with its own list of `false`s to keep in
+ * step.
+ */
+inline std::size_t esm_keyed_variant(
+    std::size_t variant,
+    std::size_t variant_count,
+    std::uint32_t esm_shadow_index) {
+    return esm_shadow_index == invalid_handle
+        ? variant
+        : variant + (esm_shadow_index + 1) * variant_count;
+}
 #endif
 
 /**
@@ -1153,6 +1173,90 @@ inline bool pbr_variant_receives_shadows(std::size_t variant) {
 inline bool pbr_variant_receives_shadows(std::size_t) { return false; }
 #endif
 
+#if BBLITE_NODE_SHADOWS
+/**
+ * One node graph's receiver rows, the third family in the shared shape.
+ *
+ * `emitShadow` appends them to the GRAPH's own group 1 rather than opening
+ * a group of its own, so they are bound beside the graph's textures rather
+ * than as their own group -- but each row is the same reflected shape the
+ * two composed families' are, and resolves through the same builders.
+ */
+inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
+    const upstream::NodeVariantEntry& entry) {
+    return {
+        upstream::node_shadow_bindings.data() + entry.first_shadow_binding,
+        entry.shadow_binding_count,
+    };
+}
+#endif
+
+#if BBLITE_NODE_VARIANTS > 0
+/**
+ * A node graph's two compiled views, as one index.
+ *
+ * `buildNodeRenderables` compiles the receiver and, for a graph that casts,
+ * an ESM caster from the same bodies. They differ by one binding row and by
+ * their modules, so each backend keeps a resource per view rather than per
+ * graph, and both agree on which slot is which here.
+ */
+#if BBLITE_NODE_SHADOWS
+inline constexpr std::size_t node_variant_slot(
+    std::size_t variant,
+    bool caster) {
+    return variant * 2 + (caster ? 1 : 0);
+}
+
+inline std::size_t node_variant_slots() {
+    return upstream::node_variants.size() * 2;
+}
+
+/** The graph one slot names, and which of its two views. */
+inline constexpr std::size_t node_slot_variant(std::size_t slot) {
+    return slot / 2;
+}
+
+inline constexpr bool node_slot_is_caster(std::size_t slot) {
+    return slot % 2 == 1;
+}
+#else
+// A build composing no node caster has one view per graph, so the slot IS
+// the variant and every backend's per-slot table keeps its old size.
+inline constexpr std::size_t node_variant_slot(
+    std::size_t variant,
+    [[maybe_unused]] bool caster) {
+    return variant;
+}
+
+inline std::size_t node_variant_slots() {
+    return upstream::node_variants.size();
+}
+
+inline constexpr std::size_t node_slot_variant(std::size_t slot) {
+    return slot;
+}
+
+inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
+#endif
+
+/**
+ * The two stems one slot's modules deploy under.
+ *
+ * Which of a graph's two compiled views a slot names decides both, so the
+ * pair travels together rather than as a ternary per load site.
+ */
+inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[node_slot_variant(slot)];
+#if BBLITE_NODE_SHADOWS
+    if (node_slot_is_caster(slot)) {
+        return {entry.caster.vertex_stem, entry.caster.fragment_stem};
+    }
+#endif
+    return {entry.vertex_stem, entry.fragment_stem};
+}
+#endif
+
 #if BBLITE_SHADOWS_ESM
 /**
  * The casters `computeDirectionalLightMatrix` folds, as it reads them.
@@ -1486,8 +1590,12 @@ inline upstream::MeshUniforms pinned_mesh_block(
  * The pin packs the mesh's world matrix, `receiveShadows ? 1 : 0` in the
  * shadow lane, and the same light selection every family uses. The world is
  * the identity because our vertices are baked with it, exactly as the
- * Standard family's are — `receiveShadows` has no lowered setter, so the
- * lane is the pin's own default.
+ * Standard family's are.
+ *
+ * The shadow lane is a VALUE here where it is a composition key for the
+ * other two families: `node-shadow.ts` mixes each light's factor by it
+ * (`mix(1.0, _sf[i], meshU.receivesShadow.x)`), so one composed module
+ * draws a receiving mesh and a non-receiving one alike.
  */
 inline upstream::NodeMeshUniforms node_mesh_block(
     const Scene& scene,
@@ -1495,6 +1603,11 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     std::uint32_t mesh_index) {
     upstream::NodeMeshUniforms block{};
     block.world = pinned_identity_world();
+    if (
+        mesh_index < engine.meshes.size() &&
+        engine.meshes[mesh_index].receives_shadows) {
+        block.receivesShadow[0] = 1.0f;
+    }
     pinned_mesh_light_selection(scene, engine, mesh_index, block);
     return block;
 }

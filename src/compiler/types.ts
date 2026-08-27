@@ -114,14 +114,26 @@ export type SplatFragmentManifest =
  * recomputes them when the light moves.
  */
 /** One mesh `setShadowTaskCasterMeshes` named, and what it carries. */
-export interface ShadowCasterManifest {
+/** Which mesh a generator casts from, before its material is resolved. */
+export interface ShadowCasterMeshManifest {
     /** Its `sceneMeshes` row. */
     meshIndex: number;
+}
+
+export interface ShadowCasterManifest extends ShadowCasterMeshManifest {
     /**
      * Its `scenePbrMaterials` row, or `null` for a material of another
      * family -- which still takes a runtime handle.
      */
     pbrMaterial: number | null;
+    /**
+     * Its composed node graph, or `null` for a material of another family.
+     *
+     * A node caster's ESM view is a second MODULE compiled from the same
+     * graph rather than a variant of another material, so the caster names
+     * the graph and composition asks the pin for that module.
+     */
+    nodeMaterial: number | null;
 }
 
 export interface ShadowGeneratorManifest {
@@ -341,6 +353,8 @@ export interface ScenePbrMaterialManifest {
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */
     noColorView?: boolean;
+    /** The ESM caster's view: the no-colour view's sibling bit. */
+    esmShadowView?: boolean;
     /**
      * The attribute sets this material's variants compose over, when they
      * are fewer than the scene's.
@@ -491,6 +505,26 @@ export interface CompiledShaderUniformDefault {
  * this compiler does not lower, so it is executed instead, exactly as a drawn
  * atlas and a computed pixel buffer are.
  */
+/**
+ * One shadow generator a node material receives from.
+ *
+ * `_shadowType` is the whole of what the pin reads off the generator, and
+ * `lightIndex` is its light's slot in `scene.lights` — the same slot the
+ * Standard and PBR receivers key their composition by.
+ */
+export interface NodeShadowLight {
+    lightIndex: number;
+    /**
+     * Its `shadowGenerators` row.
+     *
+     * The FILTER is not carried: `pinnedShadowFilter` reads it off the
+     * pinned factory the row's kind names, and composition asks it there --
+     * so a generator family added without a receiver arm fails by name
+     * instead of being classified here as the one it is not.
+     */
+    generatorIndex: number;
+}
+
 export type CompiledNodeMaterial =
     & {
         /**
@@ -502,6 +536,17 @@ export type CompiledNodeMaterial =
          * at the first render instead.
          */
         textureNames: readonly string[];
+        /**
+         * The shadow generators the call named, as the pin reads them.
+         *
+         * `parseNodeMaterialFromSnippet` takes `shadowGenerators` plus the
+         * `scene.lights` index of each one's light, and reads nothing off a
+         * generator but its `_shadowType` — so what travels is that filter
+         * and the index, which is also what the composed fragment names its
+         * bindings and varyings by. Empty for a material that receives no
+         * shadow, which composes exactly what it always did.
+         */
+        shadowLights: readonly NodeShadowLight[];
     }
     & (
         | { kind: "literal"; graph: Record<string, unknown> }
@@ -964,6 +1009,14 @@ export interface Value {
      * the assignment stored.
      */
     scenePbrMaterialIndex?: number;
+    /**
+     * Which composed node graph a material value names.
+     *
+     * It rides a `parseNodeMaterialFromSnippet` result; the assignment that
+     * puts it on a mesh records the pair the caster list resolves against,
+     * so the mesh's own Value never carries it.
+     */
+    nodeMaterialIndex?: number;
     /**
      * Which `sceneMeshes` entry this mesh value names, so a scene-code
      * mesh can be resolved to the runtime handle the composed variant

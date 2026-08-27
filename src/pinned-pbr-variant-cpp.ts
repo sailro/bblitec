@@ -558,16 +558,31 @@ interface VariantBinding {
 export function shadowBindingSlot(
     name: string,
 ): { role: "map" | "map_sampler" | "info"; light: number } {
-    const match = name.match(
-        /^shadow(Tex|Samp|Comp|Info)_(\d+)$/,
-    );
-    if (!match) {
+    const slot = shadowBindingSlotOrNull(name);
+    if (!slot) {
         throw new Error(
             `A composed shadow binding is named '${name}', which is none of ` +
                 "the pin's own shadowTex_/shadowSamp_/shadowComp_/" +
                 "shadowInfo_ shapes.",
         );
     }
+    return slot;
+}
+
+/**
+ * The same read, for a group whose rows are NOT all shadow bindings.
+ *
+ * The node family's receiver continues the graph's own group 1, so its
+ * reflection returns the graph's textures beside the shadow rows and the
+ * split is by this name shape -- the one the pin's emitter builds them from.
+ */
+export function shadowBindingSlotOrNull(
+    name: string,
+): { role: "map" | "map_sampler" | "info"; light: number } | null {
+    const match = name.match(
+        /^shadow(Tex|Samp|Comp|Info)_(\d+)$/,
+    );
+    if (!match) return null;
     return {
         role: match[1] === "Tex"
             ? "map"
@@ -576,6 +591,26 @@ export function shadowBindingSlot(
               : "map_sampler",
         light: Number(match[2]),
     };
+}
+
+/**
+ * One `PinnedShadowBinding` row, from a reflected binding.
+ *
+ * Every family's receiver rows are one shape and one reflection, so the
+ * literal is written once here rather than per emitter.
+ */
+export function pinnedShadowBindingRow(
+    entry: VariantBinding,
+    slot: { role: "map" | "map_sampler" | "info"; light: number },
+): string {
+    return (
+        `    {${entry.binding}, "${entry.name}", ` +
+        `PinnedBindingKind::${entry.kind}, ` +
+        `PinnedShadowRole::${slot.role}, ` +
+        `${slot.light}u, ` +
+        `${entry.vertex ? "true" : "false"}, ` +
+        `${entry.fragment ? "true" : "false"}},`
+    );
 }
 
 export function variantBindings(
@@ -1552,17 +1587,21 @@ export function pinnedPbrVariantsHeader(
                     variant.vertexWgsl.includes("vLocalPos")
                         ? "true"
                         : "false"
+                }, ` +
+                `${
+                    bindings.some((binding) =>
+                        binding.name === "shadowParams"
+                    )
+                        ? "true"
+                        : "false"
                 }},`,
         );
         for (const entry of shadowBindings) {
-            const slot = shadowBindingSlot(entry.name);
             pbrShadowRows.push(
-                `    {${entry.binding}, "${entry.name}", ` +
-                    `PinnedBindingKind::${entry.kind}, ` +
-                    `PinnedShadowRole::${slot.role}, ` +
-                    `${slot.light}u, ` +
-                    `${entry.vertex ? "true" : "false"}, ` +
-                    `${entry.fragment ? "true" : "false"}},`,
+                pinnedShadowBindingRow(
+                    entry,
+                    shadowBindingSlot(entry.name),
+                ),
             );
         }
         for (const attribute of attributes) {
@@ -1699,6 +1738,12 @@ struct PbrVariantEntry {
      *  reads the raw \`position\` attribute: the PAL binds the vertex's
      *  local lanes and the real node world for such variants. */
     bool uses_local_position;
+    /** An ESM caster view's fragment returns the exponential depth, so its
+     *  pipeline's colour target is the generator's map rather than the
+     *  frame. Reflected from the one thing that view adds -- the
+     *  \`shadowParams\` block its depth code reads -- beside
+     *  \`no_color_output\`, so both caster shapes are one question. */
+    bool esm_shadow_output;
 };
 
 inline constexpr std::array<PbrVariantEntry, ${variants.length}>
@@ -2704,14 +2749,11 @@ export function pinnedStandardVariantsHeader(
             );
         }
         for (const entry of shadowBindings) {
-            const slot = shadowBindingSlot(entry.name);
             shadowRows.push(
-                `    {${entry.binding}, "${entry.name}", ` +
-                    `PinnedBindingKind::${entry.kind}, ` +
-                    `PinnedShadowRole::${slot.role}, ` +
-                    `${slot.light}u, ` +
-                    `${entry.vertex ? "true" : "false"}, ` +
-                    `${entry.fragment ? "true" : "false"}},`,
+                pinnedShadowBindingRow(
+                    entry,
+                    shadowBindingSlot(entry.name),
+                ),
             );
         }
     }

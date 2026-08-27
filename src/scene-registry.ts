@@ -2292,6 +2292,30 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene65",
+        name: "Scene 65 - Node Material Shadow Receiver",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene65.ts",
+        title: "Babylon Lite Native - Node Material Shadows",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene141",
+        name: "Scene 141 - Node, Standard and PBR ESM Casters",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene141.ts",
+        title: "Babylon Lite Native - Mixed ESM Casters",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene22",
         name: "Scene 22 - PBR Shadow Receiver",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene22.ts",

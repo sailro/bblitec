@@ -350,6 +350,20 @@ class Compiler
      * distinguishable from no list at all.
      */
     private sceneSplatFragments: SplatFragmentManifest[] | undefined;
+    /**
+     * Which material each scene-code mesh ended up carrying.
+     *
+     * A caster's material is a LAZY task input upstream --
+     * `setShadowTaskCasterMeshes` stores the mesh list and
+     * `getEsmShadowView(mesh.material, ...)` reads the material when the
+     * pass builds -- so a scene may name its casters before assigning
+     * their materials, and scene 65 does exactly that. Recorded per mesh
+     * here and joined to the casters when the manifest is built.
+     */
+    private readonly sceneMeshMaterials = new Map<
+        number,
+        { pbrMaterial: number | null; nodeMaterial: number | null }
+    >();
     private reachedPlainSpriteLayer = false;
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
@@ -487,7 +501,18 @@ class Compiler
                 scenePbrMaterials: this.scenePbrMaterials,
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMeshes: this.sceneMeshes,
-                shadowGenerators: this.shadowGenerators,
+                shadowGenerators: this.shadowGenerators.map((generator) => ({
+                    ...generator,
+                    // The caster's material as the mesh finally carried it,
+                    // which is what the pin's own lazy view lookup reads.
+                    casters: generator.casters.map((caster) => ({
+                        meshIndex: caster.meshIndex,
+                        pbrMaterial: null,
+                        nodeMaterial: null,
+                        ...(this.sceneMeshMaterials.get(caster.meshIndex) ??
+                            {}),
+                    })),
+                })),
                 shadowReceiverMeshes: [
                     ...this.shadowReceiverMeshes,
                 ].sort((left, right) => left - right),
@@ -3463,6 +3488,32 @@ class Compiler
     ): number {
         this.shadowGenerators.push({ ...entry, casters: [] });
         return this.shadowGenerators.length - 1;
+    }
+
+    /**
+     * The filter and light slot one recorded generator was built with.
+     *
+     * A node material names its generators rather than its lights, and the
+     * pin reads only `_shadowType` off each one -- so this is the pair the
+     * composition needs, resolved through the record the factory made.
+     */
+    public shadowGeneratorLight(
+        index: number,
+        node: ts.Node,
+    ): { lightIndex: number } {
+        const generator = this.shadowGenerators[index];
+        if (!generator) {
+            this.fail(node, `Shadow generator ${index} was never recorded.`);
+        }
+        return { lightIndex: generator.lightIndex };
+    }
+
+    /** Which material a scene-code mesh was assigned, by its mesh index. */
+    public recordSceneMeshMaterial(
+        meshIndex: number,
+        material: { pbrMaterial: number | null; nodeMaterial: number | null },
+    ): void {
+        this.sceneMeshMaterials.set(meshIndex, material);
     }
 
     public recordShadowCasters(

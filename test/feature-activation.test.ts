@@ -379,6 +379,8 @@ function familyInputs(): FeatureActivationInputs {
             uboBinding: null,
             uboFloats: [],
             attributes: [],
+            shadowBindings: [],
+            esmCaster: null,
             textures: [],
             backFaceCulling: true,
             envBindings: null,
