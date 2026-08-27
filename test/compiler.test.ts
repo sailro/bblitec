@@ -132,6 +132,69 @@ test("enforces light subtype property contracts", () => {
     );
 });
 
+test("records exact static scene composition reachability", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createHemisphericLight,
+            createPbrMaterial,
+            createSceneContext,
+            createSolidTexture2D,
+            setThinInstances,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            addToScene(scene, createHemisphericLight([0, 1, 0], 1));
+
+            const base = createSolidTexture2D(engine, 1, 1, 1);
+            const orm = createSolidTexture2D(engine, 1, 0.5, 0);
+
+            const plain = createBox(engine);
+            plain.material = createPbrMaterial({ baseColorTexture: base, ormTexture: orm, baseColorFactor: [1, 0, 0, 1] });
+            addToScene(scene, plain);
+
+            const instanced = createBox(engine);
+            instanced.material = createPbrMaterial({ baseColorTexture: base, ormTexture: orm, baseColorFactor: [0, 1, 0, 1] });
+            setThinInstances(instanced, new Float32Array(16), 1);
+            addToScene(scene, instanced);
+        }
+    `);
+
+    assert.deepEqual(result.manifest.sceneLightKinds, ["hemispheric"]);
+    assert.equal(result.manifest.dynamicSceneLights, false);
+    assert.equal(result.manifest.mutableToneMappingEnabled, false);
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials.map(({ sceneMeshIndices }) =>
+            sceneMeshIndices
+        ),
+        [[0], [1]],
+    );
+    assert.deepEqual(
+        result.manifest.sceneMeshes.map(({ thinInstances }) => thinInstances),
+        [undefined, "always"],
+    );
+});
+
+test("audio node factories publish independent link features", () => {
+    const result = compileSource(`
+        import { createAudioEngineAsync } from "@babylonjs/lite";
+        async function main() {
+            const audio = await createAudioEngineAsync();
+            const oscillator = audio.audioContext.createOscillator();
+            oscillator.start(0);
+        }
+    `);
+
+    assert.ok(result.manifest.features.includes("audio:engine"));
+    assert.ok(result.manifest.features.includes("audio:oscillator"));
+    assert.ok(!result.manifest.features.includes("audio:biquad-filter"));
+    assert.ok(!result.manifest.features.includes("audio:stereo-panner"));
+});
+
 test("lowers a light vector set to its own kind's entry point", () => {
     const result = compileSource(`
         import {
@@ -1591,6 +1654,38 @@ test("carries a base-color image's own encoding, either way", () => {
     }
 });
 
+test("separates transmission-capable PBR from linear image processing", () => {
+    const compile = (activation: string) =>
+        compileSource(`
+            import {
+                createEngine,
+                createPbrMaterial,
+                createSceneContext,
+                createSolidTexture2D,
+                enableSceneTransmission,
+                setPbrSkybox,
+            } from "@babylonjs/lite";
+
+            async function main() {
+                const engine = await createEngine({});
+                const scene = createSceneContext(engine);
+                const material = createPbrMaterial({
+                    baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                    ormTexture: createSolidTexture2D(engine, 1, 0.5, 0),
+                });
+                ${activation}
+            }
+        `).manifest.features;
+
+    const skybox = compile("setPbrSkybox(material);");
+    assert.ok(skybox.includes("renderer:transmission"));
+    assert.ok(!skybox.includes("material:pbr-linear-image-processing"));
+
+    const retargeted = compile("enableSceneTransmission(scene, engine);");
+    assert.ok(retargeted.includes("renderer:transmission"));
+    assert.ok(retargeted.includes("material:pbr-linear-image-processing"));
+});
+
 test("carries scene-code PBR occlusion strength into composition and runtime", () => {
     const result = compileSource(`
         import {
@@ -2193,7 +2288,7 @@ test("lowers numeric for and while loops", () => {
 
     assert.equal(
         result.cpp.match(
-            /v_fn0_samples \+= v_fn0_block\d+_index/g,
+            /v_fn0_samples \+= [012]\.0/g,
         )?.length,
         3,
     );
@@ -2626,7 +2721,7 @@ test("preserves compound assignments for numeric properties", () => {
     assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
     assert.match(result.cpp, /\.camera\.value\]\.alpha \+= 0\.3;/);
     assert.match(result.cpp, /\.cameras\[v_camera\.value\]\.beta -= 0\.4;/);
-    assert.match(result.cpp, /\.base_color_factor\.a \+= 0\.1f/);
+    assert.match(result.cpp, /\.alpha \+= 0\.1f/);
     assert.match(result.cpp, /\.specular_power -= 1\.0f/);
     assert.match(result.cpp, /\.position\.x -= 0\.02/);
     assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
@@ -3252,7 +3347,7 @@ test("records direct browser primitive materialization", () => {
     );
 });
 
-test("records erased browser declarations without primitive values", () => {
+test("lowers platform time declarations to the native clock", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -3262,11 +3357,383 @@ test("records erased browser declarations without primitive values", () => {
         }
     `);
 
+    assert.match(
+        result.cpp,
+        /bbl::pal::monotonic_milliseconds\(\)/,
+    );
+    assert.ok(
+        !result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
+test("erases browser declarations rooted at globalThis", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engineKB = Math.max(
+                0,
+                (globalThis as { engineKB?: number }).engineKB ?? 0,
+            );
+            const originalFetch = globalThis.fetch.bind(globalThis);
+            globalThis.fetch = originalFetch;
+            await createEngine({});
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /globalThis|engineKB|originalFetch/);
     assert.ok(
         result.manifest.adaptations.some(
             ({ id }) => id === "browser-setup-erasure",
         ),
     );
+});
+
+test("preserves argument calls when erasing a browser-only call", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            let state = 0;
+            function advance(): number {
+                state++;
+                return state;
+            }
+            console.log("state", advance());
+            const box = createBox(engine);
+            box.position.x = state;
+        }
+    `);
+
+    assert.match(result.cpp, /v_state\+\+;/);
+    assert.match(result.cpp, /\.position\.x = v_state;/);
+    assert.doesNotMatch(result.cpp, /console/);
+});
+
+test("lowers boolean negation in value position", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            let muted = false;
+            function setMuted(value: boolean): void {
+                muted = value;
+            }
+            setMuted(!muted);
+            if (muted) {
+                createBox(engine);
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /bool v_fn\d+_value = !\(v_muted\);/);
+    assert.match(result.cpp, /v_muted = v_fn\d+_value;/);
+    assert.match(result.cpp, /if \(v_muted\)/);
+});
+
+test("folds static n-ary Math extrema before browser short circuiting", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const estimate = Math.max(0, Math.round(1_050_000));
+            if (estimate > 0 || document.getElementById("loading")) {
+                createBox(engine);
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::create_box/);
+    assert.match(result.cpp, /v_estimate = 1050000\.0/);
+    assert.doesNotMatch(result.cpp, /document|getElementById/);
+});
+
+test("erases imported browser helpers with only browser and static inputs", () => {
+    const result = compileSource(
+        `
+            import { createEngine } from "@babylonjs/lite";
+            import { installBrowserHelper } from "./fixtures/compiler-modules/browser-helper.js";
+
+            async function main() {
+                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                const progress = installBrowserHelper(canvas, { estimatedBytes: 42 });
+                progress.done();
+                await createEngine(canvas);
+            }
+        `,
+        { fileName: "test/compiler-multi-file-entry.ts" },
+    );
+
+    assert.doesNotMatch(result.cpp, /globalThis|fetch|dataset|progress/);
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
+test("erases browser-only try-catch setup", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            try {
+                Object.defineProperty(globalThis, "devicePixelRatio", {
+                    configurable: true,
+                    get: () => 2,
+                });
+            } catch {
+                console.warn("browser rejected the override");
+            }
+            await createEngine({});
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /defineProperty|devicePixelRatio|console/);
+    const nativeCatch = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            try {
+                createBox(engine);
+            } catch {}
+        }
+    `);
+    assert.match(
+        nativeCatch.cpp,
+        /try \{[\s\S]*bbl::create_box[\s\S]*\} catch \(\.\.\.\) \{/,
+    );
+});
+
+test("lowers platform listeners through generic engine callbacks", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            await createEngine({});
+            let state = 0;
+            window.addEventListener("keydown", (event) => {
+                if (event.repeat) return;
+                switch (event.code) {
+                    case "ArrowLeft":
+                        state -= 1;
+                        break;
+                    case "Space":
+                        event.preventDefault();
+                        state += 1;
+                        break;
+                }
+            });
+            window.addEventListener("keyup", (event) => {
+                if (event.code === "Escape") state = 0;
+            });
+            window.addEventListener("pointerdown", () => {
+                state = 1;
+            });
+            document.addEventListener("visibilitychange", () => {
+                if (document.hidden) state = 0;
+            });
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::on_key_down/);
+    assert.match(result.cpp, /bbl::on_key_up/);
+    assert.match(result.cpp, /bbl::on_pointer_down/);
+    assert.match(result.cpp, /bbl::on_visibility_change/);
+    assert.match(result.cpp, /const bbl::PlatformKeyboardEvent&/);
+    assert.match(result.cpp, /std::string_view/);
+    assert.match(result.cpp, /\.code/);
+    assert.match(result.cpp, /\.repeat/);
+    assert.doesNotMatch(result.cpp, /addEventListener|preventDefault|document\.hidden/);
+});
+
+test("lowers Uint16Array construction, mutation, and native references", () => {
+    const result = compileSource(`
+        function write(values: Uint16Array, fill: number): void {
+            values.fill(fill);
+            values[0] = 65537;
+        }
+
+        const values = new Uint16Array([1, 2]);
+        write(values, 7);
+        const selected = values[0];
+    `);
+
+    assert.match(result.cpp, /bbl::js::u16_array_from/);
+    assert.match(result.cpp, /bbl::js::U16Array&/);
+    assert.match(result.cpp, /bbl::js::to_uint16\(65537\.0\)/);
+    assert.match(result.cpp, /bbl::js::array_fill/);
+    assert.match(result.cpp, /static_cast<double>\(/);
+});
+
+test("carries explicit alpha blending and mesh render order", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const mesh = createBox(engine);
+            mesh.material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                ormTexture: createSolidTexture2D(engine, 1, 1, 1),
+                baseColorFactor: [0.25, 0.5, 0.75, 0.5],
+                alphaBlend: true,
+            });
+            mesh.renderOrder = 7;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.base_color_factor = bbl::Color4\{0\.25f, 0\.5f, 0\.75f, 0\.5f\}/,
+    );
+    assert.match(result.cpp, /\.alpha_blend = true/);
+    assert.match(result.cpp, /\.render_order = 7\.0/);
+    assert.match(result.cpp, /\.has_render_order = true/);
+});
+
+test("folds module-relative demo asset URLs to the pinned public root", () => {
+    const result = compileSource(
+        `
+            import { createEngine, loadTexture2D } from "@babylonjs/lite";
+            import { moduleAssetUrl } from "./fixtures/compiler-modules/asset-url-helper.js";
+
+            const textureUrl = moduleAssetUrl("./brdf-lut.png", import.meta.url);
+            async function main() {
+                const engine = await createEngine({});
+                await loadTexture2D(engine, textureUrl);
+            }
+        `,
+        { fileName: "test/compiler-multi-file-entry.ts" },
+    );
+
+    assert.deepEqual(result.manifest.assets.map(({ source }) => source), [
+        pinnedAssetUrl("packages/babylon-lite/assets/brdf-lut.png"),
+    ]);
+});
+
+test("folds module-relative asset URLs inside an imported consumer", () => {
+    const result = compileSource(
+        `
+            import { createEngine } from "@babylonjs/lite";
+            import { loadModuleTexture } from "./fixtures/compiler-modules/asset-url-consumer.js";
+
+            async function main() {
+                const engine = await createEngine({});
+                await loadModuleTexture(engine);
+            }
+        `,
+        { fileName: "test/compiler-multi-file-entry.ts" },
+    );
+
+    assert.deepEqual(result.manifest.assets.map(({ source }) => source), [
+        pinnedAssetUrl("packages/babylon-lite/assets/brdf-lut.png"),
+    ]);
+});
+
+test("materializes static fetched JSON through records, tuples, and typed arrays", () => {
+    const result = compileSource(
+        `
+            import {
+                createEngine,
+                createMeshFromData,
+            } from "@babylonjs/lite";
+
+            interface Part {
+                positions: number[];
+                normals: number[];
+                uvs: number[];
+                indices: number[];
+            }
+
+            async function loadPart(url: string): Promise<Part> {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(\`HTTP \${response.status}\`);
+                }
+                const document = (await response.json()) as Record<string, Part>;
+                return document.part!;
+            }
+
+            async function main() {
+                const engine = await createEngine({});
+                const part = await loadPart(
+                    "./fixtures/compiler-modules/static-geometry.json",
+                );
+                createMeshFromData(
+                    engine,
+                    "part",
+                    new Float32Array(part.positions),
+                    new Float32Array(part.normals),
+                    new Uint32Array(part.indices),
+                    new Float32Array(part.uvs),
+                );
+            }
+        `,
+        { fileName: "test/compiler-static-fetch-entry.ts" },
+    );
+
+    assert.match(result.cpp, /f32_array_from/);
+    assert.match(result.cpp, /u32_array_from/);
+    assert.doesNotMatch(result.cpp, /fetch|Response|JSON/);
+});
+
+test("lowers a direct thin-instance upload helper", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            setThinInstances,
+        } from "@babylonjs/lite";
+        import type { EngineContext, Mesh } from "@babylonjs/lite";
+
+        async function build(engine: EngineContext): Promise<void> {
+            const device = engine._device;
+            function uploadMatrices(
+                mesh: Mesh,
+                buf: Float32Array,
+                instances: number,
+            ): void {
+                const ti = mesh.thinInstances!;
+                if (ti._gpuBuffer) {
+                    device.queue.writeBuffer(
+                        ti._gpuBuffer,
+                        0,
+                        buf.buffer,
+                        buf.byteOffset,
+                        instances * 64,
+                    );
+                    return;
+                }
+                ti._version++;
+                ti._dirtyMin = 0;
+                ti._dirtyMax = instances;
+            }
+
+            const mesh = createBox(engine);
+            const matrices = new Float32Array(32);
+            setThinInstances(mesh, matrices, 2);
+            uploadMatrices(mesh, matrices, 2);
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            await build(engine);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::upload_thin_instance_matrices/);
+    assert.doesNotMatch(result.cpp, /writeBuffer|_gpuBuffer|_dirtyMin/);
 });
 
 test("folds static string concatenation in asset arguments", () => {
@@ -3676,7 +4143,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
     assert.match(result.cpp, /\.environment\.contrast = 1\.66f/);
     assert.match(
         result.cpp,
-        /\.environment_intensity = 0\.7f, \.alpha = 0\.5f, \.reflectance = 0\.2f/,
+        /\.environment_intensity = 0\.7f, \.alpha = 0\.5f, \.alpha_blend = false, \.reflectance = 0\.2f/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -4245,7 +4712,7 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     );
     assert.match(
         result.cpp,
-        /double v_fn0_block\d+_i = 3\.0;[\s\S]*scene146-impostor-worldPosition[\s\S]*NormalizedViewport\{\(v_fn0_block\d+_i \* v_fn0_tileW\), v_fn0_y, v_fn0_tileW, 0\.15\}/,
+        /scene146-impostor-worldPosition[\s\S]*NormalizedViewport\{\(3\.0 \* v_fn0_tileW\), v_fn0_y, v_fn0_tileW, 0\.15\}/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(

@@ -1,0 +1,106 @@
+{
+  "applications": [
+    {
+      "id": "tetris",
+      "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
+      "sourceVersion": "286525f8041dd9adc72b2c9962e8bff4d9aeb764",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",
+      "reference": {
+        "source": "reference/tetris/babylon-lite-golden.png",
+        "sha256": "01a9e411d69ac43dbcd1c34fb3f7b35b453a01bedae73bcb1d4e3c09bc4eba6f"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",
+          "sha256": "a0d9c465b6b086d6ac76948c69b79be311c535adffe2e02ec909b5a9e785652c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/chamfered-box.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/chamfered-box.ts",
+          "sha256": "8a184d4c52be5d185e9a3649ef1637ed9031e9d82610680b73e6f77b14b3e454"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/game.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/game.ts",
+          "sha256": "9137cfdb08e7a7fe44257a90145e49e153e7dcf1234bcb746262284bdd28187f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/hud.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/hud.ts",
+          "sha256": "d924fb88a7626bc4d099e032f5c8b60f412f4360f8b6847448d8d21b9183c0a4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/particles.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/particles.ts",
+          "sha256": "14b7ef731e2c3f0e981b7fe4476928edd9f9c9d7b61682aa9b67abd916877e3f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/pieces.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/pieces.ts",
+          "sha256": "0826d2c172b292b9f7bb58c2b9bf53ac4f0904020e60147c5820fa087caa3df0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/renderer.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/renderer.ts",
+          "sha256": "3b1fd82862c04f6b2f15def83ea60ad04fc5a759990c944d92f50c8536ebabc2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/rounded-box.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/rounded-box.ts",
+          "sha256": "ded79d209fe097933ec28021da503d113c3f1e613e14031ca39ed8eacdcecc91"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/tetris/sound.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/sound.ts",
+          "sha256": "04ea4092acc6da48f2679f994c6deb5f97c69b60b7c70beeac33336077b64fa5"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        },
+        {
+          "upstreamPath": "lab/public/textures/environment.env",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/environment.env",
+          "sha256": "65f5a57bdf9d9e27776df663cd6bb2cb3890c40994f0efe2b4b0cf6e0647f3cb"
+        },
+        {
+          "upstreamPath": "lab/public/tetris/CREDITS.txt",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/tetris/CREDITS.txt",
+          "sha256": "90208750b0bf3d60a437ae57df70350657b017d1d53e352914343b0dd11d3dc6"
+        },
+        {
+          "upstreamPath": "lab/public/tetris/tetris-frame-colormap.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/tetris/tetris-frame-colormap.png",
+          "sha256": "a94b4dc4f77a4b8aec96bde94f63912a1ce12aa98eec2c1e9a37c89e20a5f091"
+        },
+        {
+          "upstreamPath": "lab/public/tetris/tetris-frame.json",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/tetris/tetris-frame.json",
+          "sha256": "0fc97f13cd6994906fdff2f992bf0412f92ef551eddea33827fadce88047ffcc"
+        },
+        {
+          "upstreamPath": "lab/public/tetris/tetris-pets-colormap.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/tetris/tetris-pets-colormap.png",
+          "sha256": "2f6d0032e51c2d49b13b8e689d59eb39aa3ee6c32f2a1851213e11fc7593177d"
+        },
+        {
+          "upstreamPath": "lab/public/tetris/tetris-pets.json",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/tetris/tetris-pets.json",
+          "sha256": "37dfcc92690d13b83a88e3cdfb12c6980eb7b4af4246403721ade5f5c4397725"
+        }
+      ]
+    }
+  ]
+}

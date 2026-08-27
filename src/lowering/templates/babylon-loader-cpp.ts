@@ -254,8 +254,9 @@ MaterialHandle load_material(
         material.diffuse_color.r,
         material.diffuse_color.g,
         material.diffuse_color.b,
-        alpha,
+        1.0f,
     };
+    material.alpha = alpha;
     material.alpha_cutoff = source.value("alphaCutOff", 0.0f);
     material.double_sided = !source.value("backFaceCulling", true);
     material.base_color_texture =

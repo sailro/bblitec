@@ -253,9 +253,9 @@ export function gltfHasImageBasedLight(path: string): boolean {
  *
  * This is the asset-side half of the flag only. Generation passes its own
  * value into `materialSubjects` instead, because scene code reaches the same
- * retarget through the `renderer:transmission` feature with no transmissive
- * material in any asset; the compose gate has only the asset, and derives
- * the flag here.
+ * retarget through the `material:pbr-linear-image-processing` feature with no
+ * transmissive material in any asset; the compose gate has only the asset,
+ * and derives the flag here.
  */
 export function gltfLinearImageProcessing(document: JsonObject): boolean {
     const materials = (document as GltfDocument).materials ?? [];
@@ -850,6 +850,9 @@ export async function composeScenePbrVariants(
         if (material.unlit) input["_unlit"] = true;
         if (material.skyboxMode) input["_skyboxMode"] = true;
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
+        if (material.baseColorFactor) {
+            input.baseColorFactor = material.baseColorFactor;
+        }
         if (material.hasOrmTexture) input["ormTexture"] = {};
         if (material.enableSpecularAA) input.enableSpecularAA = true;
         input.occlusionStrength = material.occlusionStrength ?? 1;
@@ -864,6 +867,7 @@ export async function composeScenePbrVariants(
         // owns the `mat.alpha < 1` blend test, so restating the threshold
         // here would be a second copy of the pin's predicate.
         input.alpha = material.alpha;
+        if (material.alphaBlend) input.alphaBlend = true;
         // The layer options reach the composer through the pin's own
         // setters, exactly as the loader half runs them
         // (`pinned-material-input.ts` calls `pin.setPbrEmissive`): each

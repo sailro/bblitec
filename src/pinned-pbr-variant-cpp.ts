@@ -54,15 +54,10 @@ const baseWriter = {
         environmentIntensity: "material.environment_intensity",
         directIntensity: "material.direct_intensity",
         reflectance: "material.reflectance",
-        // The pin's `material.alpha`: `gltf-pbr-builder.ts` seeds it from the
-        // base colour factor's alpha for BLEND and MASK materials only -- an
-        // OPAQUE material keeps the default 1 -- and the whiteFallback case
-        // assembles with the white factor, so an animated base colour seeds
-        // 1 too while its live alpha rides the baseColorFactor lanes
-        // (Scene 253's PBRProperties-Transparent, browser buffer#230).
-        alpha: "(material.alpha_mode == MaterialAlphaMode::opaque ||" +
-            " material.animated_base_color" +
-            " ? 1.0f : material.base_color_factor.a)",
+        // The pin writes `material.alpha` into the core UBO independently of
+        // an optional baseColorFactor vec4; the generated fragment multiplies
+        // the two alpha inputs when both are present.
+        alpha: "material.alpha",
         baseColorFactor: "material.base_color_factor",
         metallicFactor: "material.metallic_factor",
         roughnessFactor: "material.roughness_factor",
@@ -1141,6 +1136,11 @@ export function pinnedSharedVariantDecls(
         "src/material/mesh-features.ts",
         "MSH_RECEIVE_SHADOWS",
     );
+    const thinInstancesBit = pinnedNumericConstant(
+        context,
+        "src/material/mesh-features.ts",
+        "MSH_HAS_THIN_INSTANCES",
+    );
     return `// ${provenance}
 #pragma once
 
@@ -1159,6 +1159,12 @@ namespace bbl::upstream {
 // fragment.
 inline constexpr std::uint32_t pinned_msh_receive_shadows =
     ${receiveShadowsBit}u;
+
+// MSH_HAS_THIN_INSTANCES from the same declaration. A pool can attach after
+// mesh creation, so the PAL ORs this value onto the static per-handle word and
+// generation composes both rows of that feature lattice.
+inline constexpr std::uint32_t pinned_msh_has_thin_instances =
+    ${thinInstancesBit}u;
 
 enum class PinnedBindingKind {
     texture2d,
@@ -1322,13 +1328,10 @@ export function pinnedPbrVariantsHeader(
                 );
             }
         }
-        // Named after the emitted file, not the fragment key: the key names the
-        // material's feature set, and the same set composes a distinct variant
-        // per light mode and tone-mapping state, so keying the struct on it
-        // would declare one type several times.
-        const name = variantCppName(
-            variant.vertex.replace(/\.vert\.wgsl$/, ""),
-        );
+        // Pipeline identity is deliberately separate from physical stage
+        // identity: several pipelines may share one vertex shader while their
+        // fragment/material layouts differ.
+        const name = variantCppName(`pbr-${variant.pipeline}`);
         const mirroredVariant = mirroredMembers(
             `${name}MaterialUniforms`,
             fields,

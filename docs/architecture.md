@@ -139,7 +139,8 @@ Primary source ownership:
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, and deformation uniforms shared byte-identically by both GPU backends |
 | `native/src/pal_render_capture.hpp` | the `BBLITE_RENDER_CAPTURE` writer both backends share, `pinnedMaterialBlocks`/`pinnedMeshBlocks` included |
-| `native/src/pal_camera_controls.hpp` | SDL pointer/wheel/key translation into the generated camera inertia math |
+| `native/src/pal_camera_controls.hpp` | SDL ArcRotate pointer/wheel and Free-camera key translation into the generated camera inertia math |
+| `native/src/pal_runtime_trace.hpp` | opt-in, source-independent input/camera/dynamic-topology diagnostics shared by the native frame loops |
 | `native/src/pal_sdl_gpu_sprite.hpp` | the SDL_GPU sprite pass mechanics its `.cpp` driver draws through |
 | `native/src/pal_dawn_sprite.hpp` | the Dawn sprite pass mechanics its `.cpp` driver draws through |
 

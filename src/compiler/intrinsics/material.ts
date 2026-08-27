@@ -233,12 +233,14 @@ export function compileMaterialIntrinsic(
                 context.requireDefaultEngine(call);
             const {
                 baseColor,
+                baseColorFactor,
                 orm,
                 metallicFactor,
                 roughnessFactor,
                 directIntensity,
                 environmentIntensity,
                 alpha,
+                alphaBlend,
                 reflectance,
                 unlit,
                 doubleSided,
@@ -261,15 +263,20 @@ export function compileMaterialIntrinsic(
             context.expectSameEngine(baseColor, orm, call);
             context.reachFeature("material:pbr", call);
             context.reachFeature("renderer:pbr", call);
-            if (
-                skyboxMode !== "false" ||
+            const linearImageProcessing =
                 transmission !== "0.0f" ||
                 thickness !== "0.0f" ||
                 attenuationColor !==
                     "bbl::Color3{1.0f, 1.0f, 1.0f}" ||
-                attenuationDistance !== "1.0f"
-            ) {
+                attenuationDistance !== "1.0f";
+            if (skyboxMode !== "false" || linearImageProcessing) {
                 context.reachFeature("renderer:transmission", call);
+            }
+            if (linearImageProcessing) {
+                context.reachFeature(
+                    "material:pbr-linear-image-processing",
+                    call,
+                );
             }
             if (orm.textureFile) {
                 context.fail(
@@ -295,12 +302,14 @@ export function compileMaterialIntrinsic(
                 `bbl::create_pbr_material(${engine}, ` +
                 `bbl::PbrMaterialOptions{` +
                 `.base_color = ${baseColorCpp}, ` +
+                `.base_color_factor = ${baseColorFactor}, ` +
                 `.orm = ${orm.cpp}, ` +
                 `.metallic_factor = ${metallicFactor}, ` +
                 `.roughness_factor = ${roughnessFactor}, ` +
                 `.direct_intensity = ${directIntensity}, ` +
                 `.environment_intensity = ${environmentIntensity}, ` +
                 `.alpha = ${alpha}, ` +
+                `.alpha_blend = ${alphaBlend}, ` +
                 `.reflectance = ${reflectance}, ` +
                 `.unlit = ${unlit}, ` +
                 `.double_sided = ${doubleSided}, ` +
@@ -362,6 +371,10 @@ export function compileMaterialIntrinsic(
             context.expectSameEngine(scene, engine, call);
             context.reachFeature("renderer:pbr", call);
             context.reachFeature("renderer:transmission", call);
+            context.reachFeature(
+                "material:pbr-linear-image-processing",
+                call,
+            );
             return {
                 kind: "void",
                 cpp: `bbl::enable_scene_transmission(${scene.cpp})`,

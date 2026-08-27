@@ -1,6 +1,7 @@
 param(
-    [string]$Workspace = ".cache\sdl",
-    [string]$OutputDirectory = "artifacts\tools\sdl-min",
+    [string]$Workspace = "",
+    [string]$OutputDirectory = "",
+    [switch]$EnableAudio,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -8,14 +9,27 @@ param(
 # packages. The version tracks the vcpkg-installed SDL3 so the trimmed
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
-# and renders through SDL_GPU (D3D12), so audio, joystick, haptic,
+# and renders through SDL_GPU (D3D12), so joystick, haptic,
 # HIDAPI, sensor, camera, power, dialog, misc, locale, the GL/Vulkan
 # plumbing, and the SDL_Renderer core are compiled out entirely.
 # SDL_RENDER is one of them: bblitec requires a GPU and has no software
-# renderer to link it for.
+# renderer to link it for. Audio stays off by default; EnableAudio creates a
+# separate feature-compatible install for generated scenes that reach it.
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+
+if (-not $Workspace) {
+    $Workspace = if ($EnableAudio) { ".cache\sdl-audio" } else { ".cache\sdl" }
+}
+if (-not $OutputDirectory) {
+    $OutputDirectory = if ($EnableAudio) {
+        "artifacts\tools\sdl-min-audio"
+    } else {
+        "artifacts\tools\sdl-min"
+    }
+}
+$audioSetting = if ($EnableAudio) { "ON" } else { "OFF" }
 
 # Keep in lockstep with the vcpkg baseline's sdl3 version
 # (native/vcpkg.json builtin-baseline).
@@ -112,12 +126,7 @@ foreach ($patchName in $patchNames) {
     -DSDL_STATIC=ON `
     -DSDL_TEST_LIBRARY=OFF `
     -DSDL_EXAMPLES=OFF `
-    # Off because nothing needed it until the Web Audio slice existed. A
-    # scene reaching `audio:engine` against this install is refused at
-    # configure by native/CMakeLists.txt rather than failing to open a
-    # device at run time; a minimal build WITH audio needs this ON in an
-    # install root of its own.
-    -DSDL_AUDIO=OFF `
+    -DSDL_AUDIO=$audioSetting `
     -DSDL_JOYSTICK=OFF `
     -DSDL_HAPTIC=OFF `
     -DSDL_HIDAPI=OFF `
@@ -150,12 +159,23 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -Force
 
+# Native configuration reads this before project() to reject a generated
+# scene whose reached feature set is incompatible with the selected trimmed
+# dependency. Keep the capability machine-readable rather than inferring it
+# from an install-directory name or from a prose provenance field.
+"set(BBLITE_SDL_AUDIO $audioSetting)`n" |
+    Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
+
 @{
     repository = $repository
     tag = $tag
     version = $sdlVersion
     patches = $patchNames
-    variant = "static, MinSizeRel, static CRT, video+events+gpu only"
+    variant = if ($EnableAudio) {
+        "static, MinSizeRel, static CRT, video+events+audio+gpu only"
+    } else {
+        "static, MinSizeRel, static CRT, video+events+gpu only"
+    }
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

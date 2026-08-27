@@ -27,14 +27,17 @@ import {
     composeRenderableVariants,
     composeScenePbrVariants,
     gltfMaterialCount,
+    gltfLightNodeCount,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
     type PinnedMaterialArms,
     type PinnedRenderableVariant,
 } from "./pinned-material-arms.js";
 import {
+    expandRuntimeMeshFeatureSets,
     pinnedMeshFeaturesFromPrimitive,
     pinnedReceiveShadowsBit,
+    pinnedThinInstancesBit,
 } from "./pinned-mesh-features.js";
 import {
     nodeVariantStageStems,
@@ -55,6 +58,7 @@ import {
 } from "./pinned-standard-variants.js";
 import { pinnedShadowFilter } from "./pinned-shadow-slots.js";
 import {
+    babylonLights,
     reachedDiffuseUv2,
     reachedStandardBump,
 } from "./babylon-asset-features.js";
@@ -118,11 +122,38 @@ export async function composeScenePipeline({
     const lightKinds = pinnedSingleLightTypes.filter((kind) =>
         result.manifest.features.includes(`light:${kind}`)
     );
+    const gltfAssets = result.manifest.assets.filter(
+        (asset) => asset.kind === "gltf",
+    );
+    const assetLightsReached =
+        gltfAssets.some(
+            (asset) =>
+                gltfLightNodeCount(
+                    resolve(outputPath, "assets", asset.output),
+                ) > 0,
+        ) || babylonLights(outputPath, result.manifest.assets).length > 0;
+    const staticLightKinds =
+        !result.manifest.dynamicSceneLights && !assetLightsReached
+            ? result.manifest.sceneLightKinds
+            : undefined;
+    const singleStaticLight =
+        staticLightKinds?.length === 1
+            ? [staticLightKinds[0]!] as PinnedSingleLightType[]
+            : [];
     const sceneArms = await pinnedSceneArms({
-        lightKinds,
-        multiLight: lightKinds.length > 0,
-        noLight: true,
-        toneMapping: hasEnvironment ? [false, true] : [false],
+        lightKinds: staticLightKinds ? singleStaticLight : lightKinds,
+        multiLight: staticLightKinds
+            ? staticLightKinds.length > 1
+            : lightKinds.length > 0,
+        noLight: staticLightKinds
+            ? staticLightKinds.length === 0
+            : true,
+        toneMapping:
+            hasEnvironment && !result.manifest.mutableToneMappingEnabled
+                ? [true]
+                : hasEnvironment
+                    ? [false, true]
+                    : [false],
         ...(result.manifest.toneMapping
             ? { toneMappingName: result.manifest.toneMapping }
             : {}),
@@ -132,9 +163,13 @@ export async function composeScenePipeline({
     // The pin's enableSceneTransmission marks every material in the scene
     // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
     // fragment wraps its processing tail in `if(scene.vImageInfos.w>=0.0)`
-    // and the retargeted linear pass runs with w = -1.
+    // and the retargeted linear pass runs with w = -1. Transmission-capable
+    // rendering alone does not imply that state: PBR skybox mode needs the
+    // same renderer but never calls markPbrMaterialsLinear.
     const linearImageProcessing =
-        result.manifest.features.includes("renderer:transmission") ||
+        result.manifest.features.includes(
+            "material:pbr-linear-image-processing",
+        ) ||
         // Asset-carried KHR_materials_transmission enables the runtime's
         // transmission exactly like the feature does (scene_core stamps
         // `transmission_enabled` from the same disjunction), and the pin
@@ -147,9 +182,6 @@ export async function composeScenePipeline({
     // assets' materials in load order followed by the scene's; a material
     // created before a later load would interleave, and stays a named error.
     const composedVariants: PinnedRenderableVariant[] = [];
-    const gltfAssets = result.manifest.assets.filter(
-        (asset) => asset.kind === "gltf",
-    );
     // The mesh half of the variant key, per runtime mesh handle: each glTF
     // load appends its renderables in the pinned loader's node-order walk,
     // and each scene-code builder appends one mesh of the fixed procedural
@@ -250,6 +282,19 @@ export async function composeScenePipeline({
         renderableMeshFeatures[row] =
             (renderableMeshFeatures[row] ?? 0) | receiveShadowsBit;
     }
+    // Thin instances are different from the static attribute bits above:
+    // scene code can attach a pool after a mesh was built. The pin composes
+    // that as another mesh-feature arm, so scene-code PBR materials need both
+    // the plain and decorated form of every base set they can be assigned to.
+    // The runtime performs the matching OR from MeshRecord::thin_instanced;
+    // this is the generation half of the same key.
+    const hasRuntimeThinInstances =
+        result.manifest.features.includes("mesh:thin-instances") ||
+        result.manifest.features.includes("mesh:thin-instances-dynamic");
+    const runtimePbrMeshBits = hasRuntimeThinInstances
+        ? [await pinnedThinInstancesBit()]
+        : [];
+    const thinInstancesBit = runtimePbrMeshBits[0] ?? 0;
     let materialIndexBase = 0;
     let assetMetallicReflectanceRegistered = false;
     for (const asset of gltfAssets) {
@@ -330,16 +375,47 @@ export async function composeScenePipeline({
                 : pbrNoColorView(source, materialsBefore);
             casterViews.push({
                 ...view,
-                meshFeatureSets: [
-                    renderableMeshFeatures[
-                        sceneMeshRowBase + caster.meshIndex
-                    ] ?? 0,
-                ],
+                meshFeatureSets: expandRuntimeMeshFeatureSets(
+                    [
+                        renderableMeshFeatures[
+                            sceneMeshRowBase + caster.meshIndex
+                        ] ?? 0,
+                    ],
+                    runtimePbrMeshBits,
+                ),
             });
         }
     }
+    const exactScenePbrMaterials = result.manifest.scenePbrMaterials.map(
+        (material) => {
+            if (material.unknownSceneMesh || !material.sceneMeshIndices) {
+                return material;
+            }
+            const featureSets = new Set<number>();
+            for (const meshIndex of material.sceneMeshIndices) {
+                const row = result.manifest.sceneMeshes[meshIndex];
+                const base = renderableMeshFeatures[
+                    sceneMeshRowBase + meshIndex
+                ] ?? 0;
+                if (row?.thinInstances === "always") {
+                    featureSets.add(base | thinInstancesBit);
+                } else {
+                    featureSets.add(base);
+                    if (row?.thinInstances === "possible") {
+                        featureSets.add(base | thinInstancesBit);
+                    }
+                }
+            }
+            return {
+                ...material,
+                meshFeatureSets: [...featureSets].sort(
+                    (left, right) => left - right,
+                ),
+            };
+        },
+    );
     const scenePbrMaterials = [
-        ...result.manifest.scenePbrMaterials,
+        ...exactScenePbrMaterials,
         ...casterViews,
     ];
     if (result.manifest.scenePbrMaterials.length > 0) {
@@ -357,12 +433,13 @@ export async function composeScenePipeline({
                 scenePbrMaterials,
                 sceneArms,
                 materialIndexBase,
-                [
-                    ...new Set([
+                expandRuntimeMeshFeatureSets(
+                    [
                         ...renderableMeshFeatures,
                         await proceduralRenderableFeatures(),
-                    ]),
-                ],
+                    ],
+                    runtimePbrMeshBits,
+                ),
                 {
                     linearImageProcessing,
                     metallicReflectanceRegistered:

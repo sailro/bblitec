@@ -1,6 +1,50 @@
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
+import {
+    mkdtempSync,
+    mkdirSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { validateRecord } from "../src/verify-simplify.js";
+import {
+    validateRecord,
+    workHash,
+} from "../src/verify-simplify.js";
+
+test("committing a review record does not invalidate its work hash", () => {
+    const root = mkdtempSync(join(tmpdir(), "bblite-simplify-"));
+    const git = (...args: string[]): void => {
+        execFileSync("git", args, { cwd: root });
+    };
+    try {
+        git("init", "--initial-branch=main");
+        git("config", "user.email", "test@example.invalid");
+        git("config", "user.name", "bblite test");
+        writeFileSync(join(root, "source.txt"), "base\n");
+        git("add", "source.txt");
+        git("commit", "-m", "base");
+        git("switch", "-c", "feature");
+        writeFileSync(join(root, "source.txt"), "changed\n");
+        git("add", "source.txt");
+        git("commit", "-m", "change");
+
+        const before = workHash(root).hash;
+        mkdirSync(join(root, "docs", "reviews"), { recursive: true });
+        writeFileSync(
+            join(root, "docs", "reviews", `${before}.json`),
+            "{}\n",
+        );
+        git("add", "docs/reviews");
+        git("commit", "-m", "record review");
+
+        assert.equal(workHash(root).hash, before);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
 
 test("a record with no angles is not evidence", () => {
     const problems = validateRecord({ angles: [], findings: [] });

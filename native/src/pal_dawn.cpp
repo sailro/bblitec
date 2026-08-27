@@ -189,6 +189,9 @@ inline void release_dawn_draw_states(
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
+    // Shader-material entries borrow exact local-space geometry from the
+    // state cache; every other family owns its baked buffers as before.
+    bool owns_geometry_buffers = true;
     std::uint32_t index_count = 0;
     WGPUBuffer material_uniforms = nullptr;
     std::uint64_t material_uniform_size = 0;
@@ -293,6 +296,14 @@ struct DawnMesh {
     std::uint64_t morph_weights_version = 0;
 #endif
     std::map<upstream::RenderPipelineKind, DawnMeshBindings> bindings;
+};
+
+/** One exact local-space shader geometry retained across topology rebuilds. */
+struct DawnSharedShaderGeometry {
+    std::vector<GpuVertex> vertices;
+    std::vector<std::uint32_t> indices;
+    WGPUBuffer vertex_buffer = nullptr;
+    WGPUBuffer index_buffer = nullptr;
 };
 
 struct DawnPipeline {
@@ -751,6 +762,7 @@ WGPUBuffer esm_caster_params_buffer(
     std::array<WGPURenderPipeline, 2> id_pipelines{};
     std::array<WGPURenderPipeline, 2> cluster_pipelines{};
     std::vector<DawnMesh> meshes;
+    std::vector<DawnSharedShaderGeometry> shared_shader_geometries;
 
     // Frame-task draw resources are tied to the current render plan
     // and rebuild together with the meshes.
@@ -988,8 +1000,10 @@ WGPUBuffer esm_caster_params_buffer(
                 }
             }
 #endif
-            if (mesh.vertices) wgpuBufferRelease(mesh.vertices);
-            if (mesh.indices) wgpuBufferRelease(mesh.indices);
+            if (mesh.owns_geometry_buffers) {
+                if (mesh.vertices) wgpuBufferRelease(mesh.vertices);
+                if (mesh.indices) wgpuBufferRelease(mesh.indices);
+            }
         }
         meshes.clear();
     }
@@ -1103,6 +1117,16 @@ WGPUBuffer esm_caster_params_buffer(
             if (layout) wgpuBindGroupLayoutRelease(layout);
         }
         release_meshes();
+        for (DawnSharedShaderGeometry& geometry :
+             shared_shader_geometries) {
+            if (geometry.vertex_buffer) {
+                wgpuBufferRelease(geometry.vertex_buffer);
+            }
+            if (geometry.index_buffer) {
+                wgpuBufferRelease(geometry.index_buffer);
+            }
+        }
+        shared_shader_geometries.clear();
 #if BBLITE_GPU_MORPH_STORAGE
         if (empty_morph_weights) {
             wgpuBufferRelease(empty_morph_weights);
@@ -7199,16 +7223,70 @@ bool run_dawn_engine(Engine& engine) {
     for (const upstream::RenderItem& item : render_plan.items) {
         const ModelGeometry& geometry = engine.geometries[item.geometry];
         const MeshRecord& mesh_record = engine.meshes[item.mesh.value];
+        const bool shader_material =
+            item.material_kind ==
+            upstream::RenderMaterialKind::shader;
         const std::vector<GpuVertex> vertices =
-            transformed_vertices(geometry, mesh_record);
+            shader_material
+                ? local_vertices(geometry)
+                : transformed_vertices(geometry, mesh_record);
         DawnMesh mesh;
-        mesh.vertices = create_buffer(
-            state,
-            WGPUBufferUsage_Vertex,
-            vertices.data(),
-            vertices.size() * sizeof(GpuVertex));
+        if (shader_material) {
+            const auto same_geometry = [&](
+                const DawnSharedShaderGeometry& candidate) {
+                return
+                    candidate.vertices.size() == vertices.size() &&
+                    candidate.indices == geometry.indices &&
+                    (vertices.empty() ||
+                     std::memcmp(
+                         candidate.vertices.data(),
+                         vertices.data(),
+                         vertices.size() * sizeof(GpuVertex)) == 0);
+            };
+            const auto shared = std::find_if(
+                state.shared_shader_geometries.begin(),
+                state.shared_shader_geometries.end(),
+                same_geometry);
+            if (shared != state.shared_shader_geometries.end()) {
+                mesh.vertices = shared->vertex_buffer;
+                mesh.indices = shared->index_buffer;
+            } else {
+                DawnSharedShaderGeometry created{
+                    .vertices = vertices,
+                    .indices = geometry.indices,
+                };
+                created.vertex_buffer = create_buffer(
+                    state,
+                    WGPUBufferUsage_Vertex,
+                    vertices.data(),
+                    vertices.size() * sizeof(GpuVertex));
+                created.index_buffer = create_buffer(
+                    state,
+                    WGPUBufferUsage_Index,
+                    geometry.indices.data(),
+                    geometry.indices.size() * sizeof(std::uint32_t));
+                mesh.vertices = created.vertex_buffer;
+                mesh.indices = created.index_buffer;
+                state.shared_shader_geometries.push_back(
+                    std::move(created));
+            }
+            mesh.owns_geometry_buffers = false;
+        } else {
+            mesh.vertices = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                vertices.data(),
+                vertices.size() * sizeof(GpuVertex));
+            mesh.indices = create_buffer(
+                state,
+                WGPUBufferUsage_Index,
+                geometry.indices.data(),
+                geometry.indices.size() * sizeof(std::uint32_t));
+        }
 #if BBLITE_PBR_VARIANTS > 0
-        {
+        if (
+            item.material_kind ==
+            upstream::RenderMaterialKind::pbr) {
             const std::vector<GpuVertex> pinned =
                 pinned_convention_vertices(vertices, mesh_record.mirrored_x);
             mesh.pinned_vertices = create_buffer(
@@ -7218,11 +7296,6 @@ bool run_dawn_engine(Engine& engine) {
                 pinned.size() * sizeof(GpuVertex));
         }
 #endif
-        mesh.indices = create_buffer(
-            state,
-            WGPUBufferUsage_Index,
-            geometry.indices.data(),
-            geometry.indices.size() * sizeof(std::uint32_t));
         mesh.index_count =
             static_cast<std::uint32_t>(geometry.indices.size());
 #if BBLITE_GPU_DEFORMATION
@@ -7308,12 +7381,10 @@ bool run_dawn_engine(Engine& engine) {
             }
 #endif
 #if BBLITE_PBR_VARIANTS > 0
-            if (mesh_record.instance_source != nullptr) {
-                // Scene-code thin instances already carry Babylon's own
-                // values, so the pinned draw shares the buffer -- and
-                // with it the version-gated dynamic re-upload.
-                mesh.pinned_instances = mesh.instances;
-            } else if (!mesh_record.instance_matrices.empty()) {
+            if (!mesh_record.instance_matrices.empty()) {
+                // PBR's pinned vertex stream needs the mirror-conjugated
+                // matrix stream for both glTF and scene-code pools. The
+                // ordinary/Standard stream above keeps the record bytes.
                 const std::vector<std::array<float, 16>>
                     pinned_matrices =
                         pinned_instance_matrices(mesh_record);
@@ -7378,6 +7449,9 @@ bool run_dawn_engine(Engine& engine) {
         // generation; this backend keeps only the upload mechanics.
         const bool standard_material =
             item.material_kind == upstream::RenderMaterialKind::standard;
+        const bool composed_material =
+            item.material_kind == upstream::RenderMaterialKind::pbr ||
+            standard_material;
         const MaterialRecord* material = nullptr;
         if (item.material.value < engine.materials.size()) {
             material = &engine.materials[item.material.value];
@@ -7390,42 +7464,50 @@ bool run_dawn_engine(Engine& engine) {
                         material->reflection_cube];
             }
         }
-        for (
-            const upstream::MaterialTextureSlot& slot_row :
-            upstream::material_texture_slots) {
-            if (slot_row.slot == upstream::material_texture_no_slot) {
-                continue;
+        // The explicit superset bind-group layout still needs inert values
+        // for families that do not read generated PBR/Standard slots.
+        mesh.views.fill(state.white_view);
+        mesh.samplers.fill(state.default_sampler);
+        if (composed_material) {
+            for (
+                const upstream::MaterialTextureSlot& slot_row :
+                upstream::material_texture_slots) {
+                if (slot_row.slot == upstream::material_texture_no_slot) {
+                    continue;
+                }
+                const TextureData* slot_data = material
+                    ? material_slot_texture(
+                          *material,
+                          slot_row.source,
+                          standard_material)
+                    : nullptr;
+                const TextureData empty{};
+                const TextureData& data = slot_data ? *slot_data : empty;
+                std::uint32_t mip_count = 1;
+                mesh.owned_textures[slot_row.slot] =
+                    upload_material_texture(
+                        state,
+                        data,
+                        material_slot_srgb(
+                            slot_row.srgb,
+                            material,
+                            standard_material),
+                        material_slot_fallback(
+                            slot_row.fallback,
+                            material,
+                            standard_material),
+                        mip_count);
+                mesh.owned_views[slot_row.slot] = wgpuTextureCreateView(
+                    mesh.owned_textures[slot_row.slot],
+                    nullptr);
+                mesh.views[slot_row.slot] =
+                    mesh.owned_views[slot_row.slot];
+                mesh.samplers[slot_row.slot] = create_texture_sampler(
+                    state.device,
+                    slot_data
+                        ? slot_data->sampler
+                        : TextureSamplerState{});
             }
-            const TextureData* slot_data = material
-                ? material_slot_texture(
-                      *material,
-                      slot_row.source,
-                      standard_material)
-                : nullptr;
-            const TextureData empty{};
-            const TextureData& data = slot_data ? *slot_data : empty;
-            std::uint32_t mip_count = 1;
-            mesh.owned_textures[slot_row.slot] = upload_material_texture(
-                state,
-                data,
-                material_slot_srgb(
-                    slot_row.srgb,
-                    material,
-                    standard_material),
-                material_slot_fallback(
-                    slot_row.fallback,
-                    material,
-                    standard_material),
-                mip_count);
-            mesh.owned_views[slot_row.slot] = wgpuTextureCreateView(
-                mesh.owned_textures[slot_row.slot],
-                nullptr);
-            mesh.views[slot_row.slot] = mesh.owned_views[slot_row.slot];
-            mesh.samplers[slot_row.slot] = create_texture_sampler(
-                state.device,
-                slot_data
-                    ? slot_data->sampler
-                    : TextureSamplerState{});
         }
         if (material) {
             for (const FileTexture& texture : material->shader_textures) {
@@ -8249,10 +8331,13 @@ bool run_dawn_engine(Engine& engine) {
     bool running = true;
     long frame = 0;
     CameraPointerState pointer_state;
+    CameraTraceState camera_trace_state;
+    KeyboardReplay keyboard_replay;
     while (captures.keep_running(running, frame)) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
+            handle_platform_event(event, engine);
             if (!hidden_test_pass) {
                 handle_camera_pointer_event(
                     event,
@@ -8260,6 +8345,7 @@ bool run_dawn_engine(Engine& engine) {
                     pointer_state);
             }
         }
+        keyboard_replay.dispatch(frame, engine);
         // The benchmark bracket mirrors the SDL backend: frame CPU time
         // across the whole loop body -- scene callbacks and uploads, surface
         // acquire, submit and present -- under the immediate present mode
@@ -8272,11 +8358,17 @@ bool run_dawn_engine(Engine& engine) {
         // Only an animated billboard pass reads it, so the frame's own
         // delta is unused in a build that reaches no billboards.
         [[maybe_unused]] const float delta_ms =
-            advance_frame(engine, scene, frame_clock);
+            advance_frame(
+                engine,
+                scene,
+                frame_clock,
+                frame_options.frame_delta_ms);
         bool topology_updated = false;
         if (
             scene.mesh_membership_version !=
             synced_mesh_membership_version) {
+            const std::size_t previous_item_count =
+                render_plan.items.size();
             // Runtime mesh append: wait for the submitted work, then
             // rebuild the mesh set from a fresh render plan. Capture
             // defers past this frame exactly like the SDL backend.
@@ -8304,6 +8396,21 @@ bool run_dawn_engine(Engine& engine) {
             synced_mesh_membership_version =
                 scene.mesh_membership_version;
             synced_material_family_mask = scene.material_family_mask;
+            const std::size_t shader_item_count =
+                static_cast<std::size_t>(std::count_if(
+                    render_plan.items.begin(),
+                    render_plan.items.end(),
+                    [](const upstream::RenderItem& item) {
+                        return item.material_kind ==
+                            upstream::RenderMaterialKind::shader;
+                    }));
+            trace_scene_topology(
+                scene,
+                engine,
+                previous_item_count,
+                render_plan.items.size(),
+                shader_item_count,
+                frame);
             topology_updated = true;
         }
         // One mesh-sync pass per frame over the plan's items, the same
@@ -8357,6 +8464,20 @@ bool run_dawn_engine(Engine& engine) {
                         active_count *
                             sizeof(mesh.instance_matrices
                                        .front()));
+#if BBLITE_PBR_VARIANTS > 0
+                    if (dawn_mesh.pinned_instances) {
+                        const std::vector<std::array<float, 16>>
+                            pinned_matrices =
+                                pinned_instance_matrices(mesh);
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            dawn_mesh.pinned_instances,
+                            0,
+                            pinned_matrices.data(),
+                            active_count *
+                                sizeof(pinned_matrices.front()));
+                    }
+#endif
                 }
                 dawn_mesh.instance_count =
                     static_cast<std::uint32_t>(active_count);
@@ -8423,6 +8544,12 @@ bool run_dawn_engine(Engine& engine) {
                 mesh.transform_version) {
                 continue;
             }
+            if (
+                item.material_kind ==
+                upstream::RenderMaterialKind::shader) {
+                dawn_mesh.transform_version = mesh.transform_version;
+                continue;
+            }
             const std::vector<GpuVertex> vertices =
                 transformed_vertices(
                     engine.geometries[item.geometry],
@@ -8451,6 +8578,7 @@ bool run_dawn_engine(Engine& engine) {
                 mesh.transform_version;
         }
         update_camera(camera);
+        trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(
             render_plan.draw_lists.transparent,
             engine,
@@ -8712,6 +8840,19 @@ bool run_dawn_engine(Engine& engine) {
                                 shader_info =
                                     upstream::shader_variant_info(
                                         draw.item.shader_variant);
+                            const std::array<float, 16> shader_world =
+                                shader_draw_world(
+                                    engine.meshes[
+                                        draw.item.mesh.value]);
+                            const std::array<float, 16> shader_wvp =
+                                shader_world_view_projection(
+                                    pass_matrices.view_projection,
+                                    shader_world);
+                            ShaderPassMatrices shader_pass_matrices =
+                                pass_matrices;
+                            shader_pass_matrices.world = &shader_world;
+                            shader_pass_matrices
+                                .world_view_projection = &shader_wvp;
                             // A block that is exactly the shared scene
                             // matrix binds the frame's own buffer and
                             // needs no write; everything else -- custom
@@ -8733,7 +8874,7 @@ bool run_dawn_engine(Engine& engine) {
                                     block_floats =
                                         shader_stage_block_floats(
                                             block,
-                                            pass_matrices,
+                                            shader_pass_matrices,
                                             material);
                                 wgpuQueueWriteBuffer(
                                     state.queue,

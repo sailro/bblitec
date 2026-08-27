@@ -59,6 +59,7 @@ import type { Server } from "node:http";
 import { chromium, type Page } from "playwright-core";
 import ts from "typescript";
 import { resolveBrowserPath } from "./browser-path.js";
+import { captureSettleMilliseconds } from "./capture-timing.js";
 
 /** The screenshot harnesses' flags: the sRGB pin keeps golden bytes
  *  independent of the host display profile, and WebGPU is what the
@@ -191,7 +192,7 @@ export async function waitForSceneReady(
             { timeout: 120_000 },
         );
     }
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(captureSettleMilliseconds);
 }
 
 /**

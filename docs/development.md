@@ -122,6 +122,16 @@ Registered Babylon Lite inputs live under `corpus\babylon-lite` and must match
 `upstream\babylon-lite-scenes.json` byte-for-byte. They are read-only evidence;
 compiler gaps are fixed in the compiler rather than by adapting a scene.
 
+External golden applications follow the same rule. Before bringing one up,
+record its upstream revision and hash its entry point, every repository-local
+module it imports, and every reached asset. Run the copied entry point directly
+as an unregistered source. Never edit, wrap, fork, or simplify golden sources
+to make the native compile succeed. A failed exact-source probe is the feature
+backlog: address it generically in the compiler, lowerers, generated runtime,
+or PAL, add a focused regression test, then retry the unchanged golden. Remove
+temporary probe files afterward unless the application is deliberately adopted
+as durable corpus evidence.
+
 ## Integrating a curated parity scene
 
 Numbered scenes are Babylon Lite-versus-Babylon Legacy differential tests, not
@@ -619,6 +629,7 @@ combination):
 | `BBLITE_DAWN_DIR` | `artifacts/tools/dawn` | installed Dawn package root; point at `artifacts/tools/dawn-min` for the minimal static FXC-only library |
 | `BBLITE_SDL_DIR` | empty | subsystem-trimmed static SDL3 root (`tools/build-sdl-min.ps1`); empty selects the toolchain (vcpkg) SDL3 |
 | `BBLITE_LABSOUND_DIR` | `artifacts/tools/labsound` | installed pinned LabSound root (`tools/build-labsound.ps1`); required only by a scene reaching `audio:engine` |
+| `BBLITE_AUDIO_CAPTURE` | development: `ON`; `BBLITE_MINSIZE`: `OFF` | offline WAV capture capability; the only audio route that links libnyquist/codecs and ships their notices |
 | `BBLITE_MINSIZE` | `OFF` | size-first compilation (MSVC `/O1 /Ob1 /GL`; clang-cl `/clang:-Oz /clang:-flto`; non-MSVC Clang `-Oz -flto`; `-Os` elsewhere), whole-program optimization and dead-stripping plus a `/MAP` linker map for `tools/map-size-report.mjs` on Windows |
 | `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
 | `CMAKE_MSVC_RUNTIME_LIBRARY` | toolchain | pass `MultiThreaded$<$<CONFIG:Debug>:Debug>` with the static triplet; vcpkg does not flip the project's own CRT |
@@ -630,6 +641,12 @@ before `project()`, so JPEG or WebP support is linked only when the selected
 scene carries that content; a generated directory that carries no list falls
 back to the png+jpeg pair. Development scene commands instead pass the full
 manifest feature set described above.
+
+The same reachability rule applies below the subsystem boundary. Web Audio
+node factories publish separate `audio:oscillator`, `audio:biquad-filter`, and
+`audio:stereo-panner` features, so the LabSound PAL compiles only node classes
+the generated graph constructs. Offline capture is a separate CMake
+capability, not part of `audio:engine`.
 
 ### Concurrency
 
@@ -682,6 +699,7 @@ Build the trimmed dependencies once:
 ```powershell
 pwsh -File tools\build-sdl-min.ps1
 pwsh -File tools\build-dawn-min.ps1
+pwsh -File tools\build-labsound.ps1 -StaticRuntime
 ```
 
 `build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
@@ -689,8 +707,17 @@ video, events, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
 sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer — nothing
 links the software renderer, since bblitec requires a GPU). **A scene
 reaching `audio:engine` is refused at configure against this install**,
-because `SDL_AUDIO=OFF` leaves no device to open; a minimal build with
-audio needs that option flipped in an install root of its own.
+because `SDL_AUDIO=OFF` leaves no device to open. Build the separate
+feature-compatible install with `build-sdl-min.ps1 -EnableAudio`; it is written
+to `artifacts\tools\sdl-min-audio`, and the scene's mini configure must pass
+that directory as `BBLITE_SDL_DIR`.
+Scenes reaching `audio:engine` also point `BBLITE_LABSOUND_DIR` at the separate
+`artifacts\tools\labsound-static` install. The ordinary development LabSound
+build uses the dynamic CRT and is deliberately rejected by a mini build.
+The static build is core-only: LabSound's global all-node registry, HRTF file
+loader, debug encoder, libnyquist archive, and libnyquist notices are absent.
+`BBLITE_AUDIO_CAPTURE` defaults to `OFF` under `BBLITE_MINSIZE`; explicitly
+enabling it is the opt-in that restores the recorder/codec link and notices.
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with
@@ -716,6 +743,14 @@ The Dawn shape substitutes `-DBBLITE_BACKEND=DAWN` and
 `tools/package-demo.ps1 -Scene scene1 -BuildDirectory <dir>`. The packager
 refuses a development, dynamic, dual-backend, or non-`BBLITE_MINSIZE` tree;
 shipping packages contain no runtime or CRT DLLs.
+
+Shipping is reachability-closed. Static scene light count/kinds, immutable
+tone-mapping state, each PBR material's assigned mesh layouts, and exact
+thin-instance state bound shader composition. Identical vertex and fragment
+stages are content-addressed independently and emitted once. The packager then
+copies only the selected backend's compiled files (`.dxil` plus `.slots` for
+SDL_GPU); WGSL, HLSL, reflection, unused permutations, and non-target formats
+remain build artifacts.
 Attribute the executable's bytes after any change:
 
 ```powershell
@@ -733,6 +768,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_GROUND=0` | disable a requested transparent environment ground (`scene -- parity <id> --without ground` drives it) |
 | `BBLITE_MAX_FRAMES=<n>` | automated frame limit |
 | `BBLITE_ANIMATION_SEEK_SECONDS=<t>` | seek the deterministic clock before the measured frame (registry entries pin per-scene poses; `--seek` on `parity`/`geometry`/`capture`/`diff`/`probe-variants` overrides) |
+| `BBLITE_FRAME_DELTA_MS=<ms>` | override the scene-callback delta in a measured run; ad-hoc source captures pair this with their screenshot frame to simulate the browser harness's settle interval without editing the source under test |
 | `BBLITE_TEST_PASS=1` | the measured-run contract the harnesses set: capture-driven frame gating |
 | `BBLITE_ID_BUFFER=<path>` / `BBLITE_CLUSTER_BUFFER=<path>` | write the draw-id / triangle-cluster attribution buffers (set by `parity` for registry-attributed scenes) |
 | `BBLITE_COPY_TASK=<name>` | select one frame-graph copy task full-screen (driven by `scene -- geometry`) |
@@ -743,13 +779,15 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_GPU_SHADER_DIR=<path>` | override shader directory |
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
 | `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
+| `BBLITE_RUNTIME_TRACE=1` | print portable input dispatch, camera changes, and dynamic scene-membership rebuilds to stderr; the trace observes generated applications without modifying their source |
+| `BBLITE_INPUT_REPLAY=<codes>` | dispatch one comma-separated DOM `KeyboardEvent.code` entry per frame through the application's ordinary callbacks (`-` is an idle frame), for deterministic source-independent interaction diagnostics |
 | `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
-| `BBLITE_AUDIO_CAPTURE=<path.wav>` | render the scene's audio graph offline instead of opening a device, and write it as 32-bit float WAV when the run ends, with a frames/peak/RMS line on stderr. Audio produces no pixels, so this is what a comparison reads; two runs of one scene produce byte-identical PCM |
+| `BBLITE_AUDIO_CAPTURE=<path.wav>` | in a build configured with `BBLITE_AUDIO_CAPTURE=ON`, render the scene's audio graph offline instead of opening a device and write 32-bit float WAV; a build without that capability refuses the variable rather than silently ignoring it |
 | `BBLITE_AUDIO_CAPTURE_SECONDS=<t>` | how long to render for `BBLITE_AUDIO_CAPTURE` (default 1.0) |
 | `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
-Controls: left-drag orbit, right/middle-drag pan, wheel zoom; arrows and
-`W`/`S` are the orbit camera's keyboard fallbacks, and free cameras take
+Controls: ArcRotate follows the pin's pointer-only surface—left-drag orbit,
+right/middle-drag pan, and wheel zoom. Free cameras additionally take
 `WASD`/arrows plus `Space`/`Shift`.
 
 ## Parity

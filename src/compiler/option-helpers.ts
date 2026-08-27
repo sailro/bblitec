@@ -334,6 +334,21 @@ export function staticNumberValue(
             node.argumentExpression,
         );
         if (
+            ts.isIdentifier(target) &&
+            index !== undefined &&
+            Number.isInteger(index)
+        ) {
+            const entry =
+                context.lookupOptional(target)
+                    ?.tupleElements?.[index];
+            if (
+                entry?.kind === "number" &&
+                entry.staticNumber !== undefined
+            ) {
+                return entry.staticNumber;
+            }
+        }
+        if (
             !ts.isArrayLiteralExpression(target) ||
             index === undefined ||
             !Number.isInteger(index)
@@ -359,13 +374,35 @@ export function staticNumberValue(
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
         ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Math" &&
-        node.arguments.length === 1
+        node.expression.expression.text === "Math"
     ) {
-        const fold = foldableMathUnary[node.expression.name.text];
-        if (!fold) return undefined;
-        const argument = staticNumberValue(context, node.arguments[0]!);
-        return argument === undefined ? undefined : fold(argument);
+        if (node.arguments.length === 1) {
+            const fold = foldableMathUnary[node.expression.name.text];
+            if (fold) {
+                const argument = staticNumberValue(context, node.arguments[0]!);
+                return argument === undefined ? undefined : fold(argument);
+            }
+        }
+        if (
+            (node.expression.name.text === "max" ||
+                node.expression.name.text === "min") &&
+            node.arguments.length >= 2
+        ) {
+            const values = node.arguments.map((argument) =>
+                staticNumberValue(context, argument),
+            );
+            if (
+                values.every(
+                    (value): value is number =>
+                        value !== undefined &&
+                        Number.isFinite(value) &&
+                        !Object.is(value, -0),
+                )
+            ) {
+                return Math[node.expression.name.text](...values);
+            }
+        }
+        return undefined;
     }
     if (ts.isIdentifier(node)) {
         // A miss, not a failure: one caller is an optional probe, and an

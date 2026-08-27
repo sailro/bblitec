@@ -359,10 +359,10 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
     assert.match(plan.header, /pbr_opaque_none_clockwise/);
 });
 
-test("adopts the pinned opaque order: append order, stamps proven shared", () => {
+test("adopts pinned defaults and transports explicit render order", () => {
     // Every reachable renderable module stamps the same non-transparent
-    // order, so the pinned buildBindings sort (by renderable.order
-    // alone) is the identity on the emitted opaque list.
+    // default. Explicit mesh order still participates in the pinned
+    // buildBindings stable sort.
     assert.equal(
         lowerOpaqueOrderStamp(
             orderStampModules.map((modulePath) =>
@@ -374,17 +374,17 @@ test("adopts the pinned opaque order: append order, stamps proven shared", () =>
     const plan = new RendererLowerer(
         new LoweringContext(),
     ).lowerRenderPlan({});
-    // The invented grouping is gone (the marker comment may still name
-    // it); the adopted rule and the proven stamp are stated at the seam.
+    // The invented pipeline grouping is gone. The generated plan carries
+    // the source's default, optional override, and stable ordering rule.
     assert.ok(!plan.source.includes("pipeline_order("));
     assert.match(plan.source, /pin-adopted\(opaque-order\)/);
     assert.match(
         plan.source,
-        /order 100 -- mesh\.renderOrder has no record transport/,
+        /bound\.order = mesh\.has_render_order\s*\? mesh\.render_order\s*:\s*default_render_order\(bound\)/,
     );
     assert.match(
         plan.source,
-        /void order_draw_lists\(RenderDrawLists&\) \{\}/,
+        /std::stable_sort\([\s\S]*left\.item\.order < right\.item\.order/,
     );
 });
 

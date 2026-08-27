@@ -1,0 +1,21 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "PBR variant grouping allocated a combined copy of every large vertex/fragment pair and then recomputed the same pipeline hash for the manifest; it now groups by the stable digest, verifies collisions, and reuses that digest without changing emitted identities",
+      "applied": true
+    },
+    {
+      "summary": "DataLoweringContext required isDefaultLibraryIdentifier even though the data lowerer never consumed it; the unused interface requirement is removed",
+      "applied": true
+    },
+    {
+      "summary": "The shader-pair delimiter was stored as an actual NUL byte, causing Git to render the TypeScript source as binary; it is now an equivalent escaped NUL literal",
+      "applied": true
+    },
+    {
+      "summary": "The simplify gate excluded only untracked review records from its content hash, so committing valid evidence invalidated itself; committed and working diffs now exclude the review directory as documented, with a repository-level regression test",
+      "applied": true
+    }
+  ]
+}

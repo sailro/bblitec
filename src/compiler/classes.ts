@@ -5,7 +5,7 @@ export interface ClassLoweringContext {
     readonly checker: ts.TypeChecker;
     compileValue(expression: ts.Expression): Value;
     emitStatement(statement: ts.Statement): void;
-    bindLocalValue(
+    bindParameterValue(
         identifier: ts.Identifier,
         value: Value,
     ): void;
@@ -59,8 +59,15 @@ export class ClassLowerer {
         }
         const symbol =
             this.context.checker.getSymbolAtLocation(callee);
+        const target =
+            symbol &&
+            (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? this.context.checker.getAliasedSymbol(
+                      symbol,
+                  )
+                : symbol;
         const declaration = (
-            symbol?.declarations ?? []
+            target?.declarations ?? []
         ).find(ts.isClassDeclaration);
         return declaration;
     }
@@ -210,23 +217,11 @@ export class ClassLowerer {
                     `Parameter '${parameter.name.text}' requires an argument or a default.`,
                 );
             }
-            this.declareLocal(parameter.name, argument);
+            this.context.bindParameterValue(
+                parameter.name,
+                this.context.compileValue(argument),
+            );
         });
-    }
-
-    /**
-     * Binds a parameter or field name to its initializer value. The
-     * real identifier is reused so the binding resolves through the
-     * checker and diagnostics keep pointing at source.
-     */
-    private declareLocal(
-        name: ts.Identifier,
-        initializer: ts.Expression,
-    ): void {
-        this.context.bindLocalValue(
-            name,
-            this.context.compileValue(initializer),
-        );
     }
 
     private rejectUnsupportedMembers(

@@ -13,7 +13,11 @@
 # return -- which `git apply` reads as neither context nor content and
 # rejects as a corrupt patch. The vendored SDL port applies these, so the
 # whole native build depends on them staying LF.
-*.patch text eol=lf
+# Blank context lines in unified diffs carry the required single-space prefix.
+*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 *.png binary
 *.ts text eol=lf
 *.yml text eol=lf
+
+# External golden inputs are byte-addressed; never rewrite their contents.
+corpus/** -text

@@ -1,0 +1,13 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Compile-time tuple mapping routed through a pass-through callback method; it now calls the shared compileCallbackWithValues path directly and the redundant wrapper is removed",
+      "applied": true
+    },
+    {
+      "summary": "A focused test label described the direct thin-instance upload contract as pinned; it now names the generic helper shape that the compiler recognizes",
+      "applied": true
+    }
+  ]
+}

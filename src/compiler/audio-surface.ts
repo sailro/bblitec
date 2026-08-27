@@ -29,7 +29,7 @@
 import ts from "typescript";
 
 import { readProperty, type PropertyContext } from "./properties.js";
-import type { Value } from "./types.js";
+import type { Feature, Value } from "./types.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -54,6 +54,7 @@ export interface AudioWriteContext extends AudioReceiverContext {
 /** What a method call needs. The expression compiler satisfies it. */
 export interface AudioCallContext extends AudioWriteContext {
     allocateTemporaryCppName(label: string): string;
+    reachFeature(feature: Feature, site?: ts.Node): void;
 }
 
 const AUDIO_KINDS = new Set<string>([
@@ -84,11 +85,22 @@ const FILTER_KINDS: Readonly<Record<string, string>> = {
 };
 
 /** `ctx.create*()`, mapped to the PAL factory each names. */
-const NODE_FACTORIES: Readonly<Record<string, string>> = {
-    createGain: "audio_create_gain",
-    createOscillator: "audio_create_oscillator",
-    createBiquadFilter: "audio_create_biquad_filter",
-    createStereoPanner: "audio_create_stereo_panner",
+const NODE_FACTORIES: Readonly<
+    Record<string, { factory: string; feature?: Feature }>
+> = {
+    createGain: { factory: "audio_create_gain" },
+    createOscillator: {
+        factory: "audio_create_oscillator",
+        feature: "audio:oscillator",
+    },
+    createBiquadFilter: {
+        factory: "audio_create_biquad_filter",
+        feature: "audio:biquad-filter",
+    },
+    createStereoPanner: {
+        factory: "audio_create_stereo_panner",
+        feature: "audio:stereo-panner",
+    },
 };
 
 /** `param.<method>(value, time)`. */
@@ -204,10 +216,13 @@ export function compileAudioMethodCall(
                 `${method} takes no arguments in the reached slice.`,
             );
         }
+        if (factory.feature) {
+            context.reachFeature(factory.feature, call);
+        }
         const node = context.allocateTemporaryCppName("audio_node");
         context.emit(
             `const bbl::pal::AudioNodeHandle ${node} = ` +
-                `bbl::pal::${factory}(${receiver.cpp});`,
+                `bbl::pal::${factory.factory}(${receiver.cpp});`,
         );
         return {
             kind: "audio-node",

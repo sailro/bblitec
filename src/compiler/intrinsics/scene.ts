@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type { LightKind, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface SceneIntrinsicContext
@@ -23,7 +23,7 @@ export interface SceneIntrinsicContext
     ): void;
     compileFrameCallback(expression: ts.Expression): string;
     /** The `scene.lights` slot the next added light fills. */
-    nextSceneLightIndex(): number;
+    nextSceneLightIndex(kind?: LightKind): number;
     requireEngine(value: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
@@ -70,7 +70,9 @@ export function compileSceneIntrinsic(
             // and bindings by, so a generator's light has to be added
             // before the generator is created.
             if (resource.kind === "light") {
-                resource.sceneLightIndex = context.nextSceneLightIndex();
+                resource.sceneLightIndex = context.nextSceneLightIndex(
+                    resource.lightKind,
+                );
             }
             // A container's entity takes the pin's entity walk alone: its
             // animation groups, per-frame tick, camera and clear colour

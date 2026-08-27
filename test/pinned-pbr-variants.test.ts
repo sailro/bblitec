@@ -59,6 +59,29 @@ test("derives a material's feature bits through the pin's own detect hooks", asy
     assert.equal(coated.features & PBR_HAS_OCCLUSION, PBR_HAS_OCCLUSION);
 });
 
+test("composes the pin's colourless thin-instance vertex arm", async () => {
+    const meshBits = await importPinnedModule<{
+        MSH_HAS_THIN_INSTANCES: number;
+    }>("material/mesh-features.js");
+    const variant = await composePinnedPbrVariant({}, {
+        meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES,
+    });
+
+    assert.match(variant.vertexWgsl, /@location\(3\) world0:vec4<f32>/);
+    assert.match(variant.vertexWgsl, /@location\(6\) world3:vec4<f32>/);
+    assert.ok(
+        variant.vertexWgsl.includes(
+            "let instanceWorld = mat4x4<f32>(world0, world1, world2, " +
+                "world3);",
+        ),
+    );
+    assert.ok(
+        variant.vertexWgsl.includes(
+            "finalWorld = mesh.world * instanceWorld;",
+        ),
+    );
+});
+
 test("composes Scene 19's fragment exactly as the browser compiled it", async () => {
     // The instrumented capture is the browser's own composed module for
     // Scene 19's sphere, checked byte-for-byte against the committed golden

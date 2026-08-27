@@ -2248,6 +2248,30 @@ void flush_thin_instances(Engine& engine, MeshHandle mesh) {
     record.instance_version += 1;
 }
 
+// Direct GPUQueue.writeBuffer helper: copy
+// exactly the requested matrix prefix into the established pool and make the
+// PAL upload it on the next draw. The source writes count * 64 bytes and does
+// not change the active instance count; this function preserves both facts.
+void upload_thin_instance_matrices(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrices,
+    double count) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "A direct thin-instance upload requires an established pool.");
+    }
+    const std::size_t requested = static_cast<std::size_t>(count);
+    if (requested > record.instance_matrices.size() ||
+        requested > matrices.size() / 16) {
+        throw std::runtime_error(
+            "A direct thin-instance upload exceeds its matrix buffer.");
+    }
+    copy_thin_instance_range(record, matrices, requested);
+    record.instance_version += 1;
+}
+
 } // namespace bbl
 `,
         };

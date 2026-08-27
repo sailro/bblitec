@@ -7,11 +7,14 @@
 
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -28,6 +31,23 @@ using Span = std::span<T>;
 
 template <std::size_t N>
 using Tuple = std::array<double, N>;
+
+// Primitive number interpolation for JavaScript template strings. The
+// finite path uses the shortest round-trippable spelling supplied by
+// `to_chars`; the exceptional spellings follow ECMAScript rather than the
+// implementation-defined C library names.
+[[nodiscard]] inline std::string number_to_string(double value) {
+    if (std::isnan(value)) return "NaN";
+    if (value == std::numeric_limits<double>::infinity()) return "Infinity";
+    if (value == -std::numeric_limits<double>::infinity()) return "-Infinity";
+    if (value == 0.0) return "0";
+    char buffer[64];
+    const auto converted = std::to_chars(
+        buffer, buffer + sizeof(buffer), value,
+        std::chars_format::general);
+    assert(converted.ec == std::errc{});
+    return std::string(buffer, converted.ptr);
+}
 
 // `Record<Union, T>` — one fixed slot per member of a string-literal
 // union. The compiler lays the slots out in the union's own member
@@ -173,6 +193,7 @@ inline void array_truncate(Array<T>& values, double count) {
 
 // JavaScript typed arrays reached by the compiled subset.
 using F32Array = std::vector<float>;
+using U16Array = std::vector<std::uint16_t>;
 using U32Array = std::vector<std::uint32_t>;
 
 // ECMAScript ToUint32: modulo 2^32 with truncation toward zero.
@@ -186,12 +207,29 @@ using U32Array = std::vector<std::uint32_t>;
         wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped);
 }
 
+[[nodiscard]] inline std::uint16_t to_uint16(double value) {
+    return static_cast<std::uint16_t>(to_uint32(value));
+}
+
 [[nodiscard]] inline F32Array f32_array_sized(double count) {
     return F32Array(static_cast<std::size_t>(count), 0.0f);
 }
 
+[[nodiscard]] inline U16Array u16_array_sized(double count) {
+    return U16Array(static_cast<std::size_t>(count), 0u);
+}
+
 [[nodiscard]] inline U32Array u32_array_sized(double count) {
     return U32Array(static_cast<std::size_t>(count), 0u);
+}
+
+[[nodiscard]] inline U16Array u16_array_from(const Array<double>& values) {
+    U16Array result;
+    result.reserve(values.size());
+    for (const double value : values) {
+        result.push_back(to_uint16(value));
+    }
+    return result;
 }
 
 [[nodiscard]] inline F32Array f32_array_from(const Array<double>& values) {

@@ -537,8 +537,15 @@ export class StaticEvaluator {
                 : compiled;
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
-            const value = this.resolveProperty(unwrapped);
-            if (value?.kind === "number") {
+            const resolved = this.resolveProperty(unwrapped);
+            const value = resolved
+                ? this.narrowOptional(resolved, unwrapped)
+                : undefined;
+            if (
+                value?.kind === "number" ||
+                (value?.kind === "data" &&
+                    value.dataType?.kind === "number")
+            ) {
                 if (
                     precision === "double" &&
                     value.staticNumber !== undefined
@@ -551,14 +558,31 @@ export class StaticEvaluator {
             }
         }
         if (ts.isElementAccessExpression(unwrapped)) {
-            const value = this.resolveElement(unwrapped);
-            if (value?.kind === "number") {
+            const resolved = this.resolveElement(unwrapped);
+            const value = resolved
+                ? this.narrowOptional(resolved, unwrapped)
+                : undefined;
+            if (
+                value?.kind === "number" ||
+                (value?.kind === "data" &&
+                    value.dataType?.kind === "number")
+            ) {
                 return this.castNumber(value, precision);
             }
         }
         if (ts.isCallExpression(unwrapped)) {
-            const value = this.resolveCall(unwrapped);
-            if (value.kind !== "number") {
+            const resolved = this.resolveCall(unwrapped);
+            const value = this.narrowOptional(
+                resolved,
+                unwrapped,
+            );
+            if (
+                value.kind !== "number" &&
+                !(
+                    value.kind === "data" &&
+                    value.dataType?.kind === "number"
+                )
+            ) {
                 this.fail(
                     unwrapped,
                     `Expected number, received ${value.kind}.`,
@@ -604,7 +628,13 @@ export class StaticEvaluator {
             ) {
                 return this.castNumber(narrowed, precision);
             }
-            if (value.kind !== "number") {
+            if (
+                value.kind !== "number" &&
+                !(
+                    value.kind === "data" &&
+                    value.dataType?.kind === "number"
+                )
+            ) {
                 this.fail(
                     unwrapped,
                     `Expected number, received ${value.kind}.`,
@@ -677,7 +707,9 @@ export class StaticEvaluator {
         }
         return (
             ts.isNumericLiteral(unwrapped) ||
-            ts.isPrefixUnaryExpression(unwrapped) ||
+            (ts.isPrefixUnaryExpression(unwrapped) &&
+                (unwrapped.operator === ts.SyntaxKind.PlusToken ||
+                    unwrapped.operator === ts.SyntaxKind.MinusToken)) ||
             ts.isBinaryExpression(unwrapped) ||
             (ts.isPropertyAccessExpression(unwrapped) &&
                 ts.isIdentifier(unwrapped.expression) &&
@@ -957,9 +989,9 @@ export class StaticEvaluator {
         return this.castNumber(value, precision);
     }
 
-    private staticText(
+    public staticTextValue(
         expression: ts.Expression,
-    ): string {
+    ): string | undefined {
         const unwrapped =
             this.resolveStaticExpression(expression);
         if (
@@ -991,8 +1023,16 @@ export class StaticEvaluator {
                 return String(value.staticNumber);
             }
         }
+        return undefined;
+    }
+
+    private staticText(
+        expression: ts.Expression,
+    ): string {
+        const value = this.staticTextValue(expression);
+        if (value !== undefined) return value;
         this.fail(
-            unwrapped,
+            expression,
             "Template substitutions must be static strings or numbers.",
         );
     }

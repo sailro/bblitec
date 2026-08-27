@@ -193,15 +193,15 @@ test("names the same camera fields for reads and both write paths", () => {
     );
 });
 
-test("refuses the raw GPU device with the sanctioned alternative", () => {
+test("keeps the raw GPU device closed outside the matrix upload helper", () => {
     assert.throws(
         () =>
             compileSource(
                 sceneWithCamera(
-                    "const device = engine._device;",
+                    "const device = engine._device; const queue = device.queue;",
                 ),
             ),
-        /flushThinInstances or setThinInstanceCount/,
+        /only inside the recognized thin-instance matrix upload helper/,
     );
 });
 

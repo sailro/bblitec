@@ -953,9 +953,8 @@ CLI exposes no combined-sampler emission.
   [fidelity](docs/fidelity.md#audio-contract); the adaptation is recorded as
   `substituted-audio-engine`. **The corpus reaches none of it**: no `sceneNNN`
   scene uses audio at all. The reach, swept over the whole pinned tree for all
-  38 exported audio symbols, is nine files: upstream's seven *game* demos
-  (tetris, quake, doom, minecraft, platformer, racer, sandblox), which use the
-  engine for lifecycle only; `lab/lite/src/demos/audio-demo.ts`, the module's
+  38 exported audio symbols, is nine files: upstream's seven *game* demos,
+  which use the engine for lifecycle only; `lab/lite/src/demos/audio-demo.ts`, the module's
   own Tier-4 showcase, which is the one place `createSoundAsync`/`playSound`,
   the microphone, the visualizer and the unmute UI are reached at all; and
   `packages/babylon-lite-compat/src/audio/`, a Babylon.js-classic-shaped

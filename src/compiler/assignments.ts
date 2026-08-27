@@ -74,7 +74,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         kind: "material",
         property: "alpha",
         collection: "materials",
-        field: "base_color_factor.a",
+        field: "alpha",
         value: "number",
     },
     {
@@ -195,6 +195,10 @@ function emitFrameGraphTransmission(
     );
     context.reachFeature("renderer:pbr", expression);
     context.reachFeature("renderer:transmission", expression);
+    context.reachFeature(
+        "material:pbr-linear-image-processing",
+        expression,
+    );
     context.emit(
         `bbl::enable_scene_transmission(${scene.cpp});`,
     );
@@ -327,6 +331,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
         meshIndex: number,
         material: { pbrMaterial: number | null; nodeMaterial: number | null },
     ): void;
+    recordUnknownSceneMeshMaterial(materialIndex: number): void;
+    recordToneMappingEnabledMutation(): void;
     /** The scene's node-particle program; a texture write lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** Pixels-texture locals already copied into a material slot. */
@@ -766,6 +772,7 @@ export function emitPropertyAssignment(
                 expression,
                 `image-processing property '${property}'`,
             );
+            context.recordToneMappingEnabledMutation();
             context.emit(
                 `${scene.cpp}.environment.tone_mapping_enabled = ${context.compileBoolean(expression.right)};`,
             );
@@ -969,6 +976,28 @@ export function emitPropertyAssignment(
 
         if (
             target.kind === "mesh" &&
+            property === "renderOrder"
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                "mesh renderOrder",
+            );
+            const engine = context.requireEngine(
+                target,
+                expression,
+            );
+            context.emit(
+                `${engine}.meshes[${target.cpp}.value].render_order = ${context.compileNumber(expression.right, "double")};`,
+            );
+            context.emit(
+                `${engine}.meshes[${target.cpp}.value].has_render_order = true;`,
+            );
+            return;
+        }
+
+        if (
+            target.kind === "mesh" &&
             property === "name"
         ) {
             requireSimpleAssignment(
@@ -1111,6 +1140,10 @@ export function emitPropertyAssignment(
                     pbrMaterial: material.scenePbrMaterialIndex ?? null,
                     nodeMaterial: material.nodeMaterialIndex ?? null,
                 });
+            } else if (material.scenePbrMaterialIndex !== undefined) {
+                context.recordUnknownSceneMeshMaterial(
+                    material.scenePbrMaterialIndex,
+                );
             }
             return;
         }

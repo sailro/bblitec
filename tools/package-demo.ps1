@@ -6,7 +6,7 @@ param(
     [string]$ExpectBackend = ""
 )
 
-# Packages the shipping build for one numbered scene. Shipping means the
+# Packages the shipping build for one generated scene target. Shipping means the
 # exact, statically linked BBLITE_MINSIZE shape; full development builds and
 # dual-backend differential binaries are deliberately rejected. The payload
 # follows the single backend the build directory was configured with
@@ -16,8 +16,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-if ($Scene -notmatch '^scene[1-9][0-9]*$') {
-    throw "Shipping requires a numbered scene id such as scene1; got '$Scene'."
+if ($Scene -notmatch '^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$') {
+    throw (
+        "Shipping requires a generated scene id made from lowercase letters, " +
+        "digits, and interior hyphens; got '$Scene'."
+    )
 }
 if (-not $BuildDirectory) {
     $BuildDirectory = "native\build-$Scene-min-sdl"
@@ -67,9 +70,12 @@ if ($runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
 # tree-shaking carry no list and keep the historical png+jpeg set.
 $jpegReached = $true
 $webpReached = $false
+$audioReached = $false
+$audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
 $featuresPath = Join-Path $root "generated\$Scene\features.cmake"
 if (Test-Path $featuresPath) {
     $featuresText = Get-Content $featuresPath -Raw
+    $audioReached = $featuresText -match '"audio:engine"'
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
         $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
@@ -180,6 +186,29 @@ foreach ($entry in $licensePackages.GetEnumerator()) {
     }
     Copy-Item $source (Join-Path $licenses $entry.Key)
 }
+if ($audioReached) {
+    $labSoundDir = $cache["BBLITE_LABSOUND_DIR"]
+    if (-not $labSoundDir) {
+        throw "The audio feature reached the package, but BBLITE_LABSOUND_DIR is absent from $cacheFile."
+    }
+    $audioNotices = @(
+        "LabSound-LICENSE.txt",
+        "LabSound-COPYING.txt"
+    )
+    if ($audioCapture) {
+        $audioNotices += @(
+            "libnyquist-LICENSE.txt",
+            "libnyquist-COPYING.txt"
+        )
+    }
+    foreach ($notice in $audioNotices) {
+        $source = Join-Path $labSoundDir $notice
+        if (-not (Test-Path $source)) {
+            throw "Audio dependency notice not found: $source"
+        }
+        Copy-Item $source (Join-Path $licenses $notice)
+    }
+}
 if ($backend -eq "DAWN") {
     $dawnDir = if ($cache.ContainsKey("BBLITE_DAWN_DIR")) {
         $cache["BBLITE_DAWN_DIR"]
@@ -249,11 +278,10 @@ Run:
   Double-click run-$Scene.cmd.
 
 Controls:
-  Left drag            Orbit
-  Right/middle drag    Pan
-  Mouse wheel          Zoom
-  Arrow keys           Orbit fallback
-  W / S                Zoom fallback
+  Scene-defined keyboard and pointer input remains available to the demo.
+  Where an ArcRotate camera is attached, left drag orbits,
+  right/middle drag pans, and the mouse wheel zooms. Camera controls do not
+  consume keyboard input.
 
 Troubleshooting:
   - Requires Windows 10/11 and a Direct3D 12 GPU. bblitec renders only

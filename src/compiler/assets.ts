@@ -288,6 +288,14 @@ export function resolveBundledAsset(source: string): string {
         const pin = readUpstreamPin();
         return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
     }
+    if (source === "/environment.env") {
+        const pin = readUpstreamPin();
+        return (
+            "https://raw.githubusercontent.com/" +
+            `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
+            "/lab/public/textures/environment.env"
+        );
+    }
     if (source.startsWith("/")) {
         // Root-relative asset paths always mean the pinned lab/public
         // root: corpus scenes and project-owned gates share the demo

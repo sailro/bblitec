@@ -81,6 +81,17 @@ export interface CompileManifest {
     /** Every scene-code material creation, any family, for the handle count. */
     sceneMaterialCount: number;
     sceneMeshes: SceneMeshManifest[];
+    /** Scene-code lights added outside a repeating/deferred callback, in
+     *  scene order. When `dynamicSceneLights` is false this is the complete
+     *  light topology and shader composition must not widen it. */
+    sceneLightKinds: LightKind[];
+    /** A callback can add lights at run time, so the static list above is
+     *  then only a lower bound and composition must retain compatible arms. */
+    dynamicSceneLights: boolean;
+    /** A reached assignment to `toneMappingEnabled` makes both states
+     *  potentially reachable. Without one, environment loading fixes the
+     *  state and composition emits only that arm. */
+    mutableToneMappingEnabled: boolean;
     /** Every shadow generator a scene built, in reach order. */
     shadowGenerators: ShadowGeneratorManifest[];
     /** The `sceneMeshes` entries `mesh.receiveShadows = true` marked. */
@@ -256,6 +267,9 @@ export interface SceneMeshManifest {
     hasUv2?: boolean;
     hasTangents?: boolean;
     hasColors?: boolean;
+    /** Whether this exact mesh reaches thin instancing before rendering, or
+     *  can acquire it later from a callback. */
+    thinInstances?: "always" | "possible";
 }
 
 /**
@@ -366,6 +380,12 @@ export interface ScenePbrMaterialManifest {
      * whole product deploys stage pairs no draw can select.
      */
     meshFeatureSets?: readonly number[];
+    /** Exact scene-mesh creation rows this material can be assigned to.
+     *  Composition converts them to the pin's attribute masks. */
+    sceneMeshIndices?: readonly number[];
+    /** At least one assignment targets a mesh whose identity is not static,
+     *  so the exact rows above cannot close the material's mesh space. */
+    unknownSceneMesh?: true;
     /** Stamped by the pin's own setter shape: `mat._sheen = sheen`. */
     sheen?: ScenePbrSheenManifest;
     /** Stamped by the pin's own setter shape: `mat._clearCoat = clearCoat`. */
@@ -393,12 +413,20 @@ export interface ScenePbrMaterialManifest {
      */
     gltfAssetsBefore: number;
     hasBaseColorTexture: boolean;
+    /**
+     * Present only when scene code authored the option. The pin composes the
+     * base-color-factor UBO field from property presence, including when the
+     * value happens to be neutral white.
+     */
+    baseColorFactor?: readonly [number, number, number, number];
     hasOrmTexture: boolean;
     metallicFactor: number;
     roughnessFactor: number;
     directIntensity: number;
     environmentIntensity: number;
     alpha: number;
+    /** Explicit `alphaBlend: true`; alpha below one is derived separately. */
+    alphaBlend?: true;
     reflectance: number;
     /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
     occlusionStrength?: number;
@@ -848,6 +876,12 @@ export type ValueKind =
     | "color4"
     | "data"
     | "engine"
+    // A captured browser GPUDevice exists only so a structurally recognized
+    // thin-instance upload helper can be replaced as a unit. No generic raw
+    // device operation is part of the compiled surface.
+    | "gpu-device"
+    | "static-fetch-response"
+    | "json-null"
     | "light"
     | "material"
     | "mesh"
@@ -866,6 +900,8 @@ export type ValueKind =
     | "physics-engine-module"
     | "physics-world"
     | "physics-aggregate"
+    /** Callback-local platform keyboard data; it has no storable JS shape. */
+    | "platform-keyboard-event"
     // The navigation plugin: the Detour surface behind the PAL, held the
     // way `physics-world` holds the solver. A crowd is a second handle
     // over the same seam, because the pin models it as one too --
@@ -941,6 +977,9 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
     return (
         kind === "tuple" ||
         kind === "record" ||
+        kind === "gpu-device" ||
+        kind === "static-fetch-response" ||
+        kind === "json-null" ||
         kind === "morph-targets" ||
         // A handle collection binds a name to the container the loader
         // already owns; nothing native is declared for the binding itself.
@@ -987,7 +1026,7 @@ export interface Value {
      */
     requiresExplicitDiscard?: boolean;
     dataType?: DataType;
-    dataStore?: "f32" | "u32";
+    dataStore?: "f32" | "u16" | "u32";
     /**
      * Set on a value read out of a container of const elements (a span,
      * including a materialized constant table). It cannot be bound by
@@ -1129,6 +1168,8 @@ export interface Value {
      * `"true"`, which is what folds the scene's own not-found guard away.
      */
     optionalFoundCpp?: string;
+    /** Storage behind a nullable resource value whose `cpp` is its dereference. */
+    optionalStorageCpp?: string;
     /**
      * For a `handle-collection` value: where the collection lives and, when
      * it is asset-derived, which materialized asset decides its members.
@@ -1211,7 +1252,11 @@ export interface Value {
      */
     animationTargetKind?: "mesh" | "camera";
     staticNumber?: number;
+    /** Materialized mutable parameter; static caller facts cannot fold branches. */
+    parameterBinding?: boolean;
     staticString?: string;
+    /** Parsed payload carried only by a generation-time fetch response. */
+    staticJson?: unknown;
     tupleElements?: Value[];
     recordProperties?: Record<string, Value>;
     /**
@@ -1335,6 +1380,9 @@ export type Feature =
     | "particle:node"
     | "navigation:recast"
     | "audio:engine"
+    | "audio:oscillator"
+    | "audio:biquad-filter"
+    | "audio:stereo-panner"
     | "physics:world"
     | "physics:aggregate"
     | "scene:remove"
@@ -1367,6 +1415,7 @@ export type Feature =
     | "effect:task"
     | "renderer:pbr"
     | "renderer:transmission"
+    | "material:pbr-linear-image-processing"
     | "renderer:fog"
     | "renderer:geometry-output"
     | "renderer:post-process"

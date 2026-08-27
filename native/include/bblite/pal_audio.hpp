@@ -17,10 +17,8 @@
  * configuration, the sound state machine -- is Babylon behaviour that
  * belongs in generated code.
  *
- * Corpus reach: **no `sceneNNN` scene uses audio at all.** The reach is
- * upstream's seven game demos (tetris, quake, doom,
- * minecraft, platformer, racer, sandblox), which use the Lite engine for
- * lifecycle ONLY -- `createAudioEngineAsync`, `engine.audioContext`,
+ * Corpus reach: interactive applications use the Lite engine for lifecycle
+ * only -- `createAudioEngineAsync`, `engine.audioContext`,
  * `createSoundSourceAsync`, `unlockAudioEngineAsync` -- and then build
  * their own raw Web Audio graph on the context it hands back. The eighth
  * consumer is `audio-demo.ts`, the audio module's own Tier-4 showcase,
@@ -45,7 +43,8 @@
  * device is SDL3 like every other platform service here
  * (`pal_audio_sdl_device.hpp`). Nothing generated names LabSound or SDL.
  *
- * **How an audio result is measured.** `BBLITE_AUDIO_CAPTURE=<path.wav>`
+ * **How an audio result is measured.** In a build configured with
+ * `BBLITE_AUDIO_CAPTURE=ON`, `BBLITE_AUDIO_CAPTURE=<path.wav>`
  * makes a context render offline instead of opening a device: the
  * scene's graph is identical and nothing runs in real time, and
  * `audio_render_pending_captures` -- called at the end of `run_engine`,
@@ -136,7 +135,8 @@ enum class BiquadFilterKind : std::uint8_t {
  * platform answer rather than a Babylon one. Opening fails by throwing,
  * exactly as this project's GPU backends throw rather than degrading.
  *
- * Under `BBLITE_AUDIO_CAPTURE` this builds a capture context instead:
+ * When the capture capability was compiled, `BBLITE_AUDIO_CAPTURE` builds a
+ * capture context instead:
  * the same graph with no device and no thread.
  */
 AudioContextHandle audio_create_context();

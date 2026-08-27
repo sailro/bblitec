@@ -101,6 +101,10 @@ namespace {
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
+    // Shader-material meshes keep immutable local-space geometry in the
+    // state cache. Their entries borrow those buffers and bind the ordinary
+    // mesh transform through the material's system-matrix block per draw.
+    bool owns_geometry_buffers = true;
 
 #if BBLITE_PBR_VARIANTS > 0
     // The same vertices in Babylon's own convention: X unmirrored and
@@ -216,6 +220,14 @@ struct GpuMesh {
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
     std::uint64_t transform_version = 0;
+};
+
+/** One exact local-space shader geometry shared by every matching draw. */
+struct SharedShaderGeometry {
+    std::vector<GpuVertex> vertices;
+    std::vector<std::uint32_t> indices;
+    SDL_GPUBuffer* vertex_buffer = nullptr;
+    SDL_GPUBuffer* index_buffer = nullptr;
 };
 
 /**
@@ -441,7 +453,16 @@ void bind_shader_material_textures(
 
 void bind_mesh_vertex_buffers(
     SDL_GPURenderPass* pass,
-    const GpuMesh& mesh) {
+    const GpuMesh& mesh,
+    bool bind_instance_streams = true) {
+    // A custom shader declares its own vertex inputs. Do not manufacture or
+    // bind globally compiled instance/morph lanes when its variant did not
+    // ask for them.
+    if (!bind_instance_streams) {
+        const SDL_GPUBufferBinding binding{mesh.vertices, 0};
+        SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
+        return;
+    }
 #if BBLITE_GPU_INSTANCE_COLORS
     // The matrix pool at slot 1 and the per-instance RGBA rows at slot 2,
     // which the line family's vertex stage reads as `instanceColor`.
@@ -766,6 +787,10 @@ struct GpuState {
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
     std::vector<GpuMesh> meshes;
+    // Dynamic shader meshes frequently repeat a small set of immutable
+    // shapes. Keep exact local-space copies here so topology changes create
+    // buffers once per distinct shape, not once per short-lived mesh.
+    std::vector<SharedShaderGeometry> shared_shader_geometries;
     std::vector<GpuRenderTarget> render_targets;
     std::vector<GpuGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -3924,7 +3949,9 @@ void save_geometry_id_buffer_png(
 // by runtime scene removal, which drops entries mid-run (SDL defers the
 // actual destruction until the GPU is done with them).
 void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
-    SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
+    if (mesh.owns_geometry_buffers) {
+        SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
+    }
 #if BBLITE_PBR_VARIANTS > 0
     if (mesh.pinned_vertices) {
         SDL_ReleaseGPUBuffer(state.device, mesh.pinned_vertices);
@@ -3941,7 +3968,9 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     }
     mesh.pinned_instances = nullptr;
 #endif
-    SDL_ReleaseGPUBuffer(state.device, mesh.indices);
+    if (mesh.owns_geometry_buffers) {
+        SDL_ReleaseGPUBuffer(state.device, mesh.indices);
+    }
     SDL_ReleaseGPUBuffer(state.device, mesh.instances);
 #if BBLITE_GPU_INSTANCE_COLORS
     SDL_ReleaseGPUBuffer(state.device, mesh.instance_colors);
@@ -3986,6 +4015,11 @@ void release(GpuState& state) {
     for (GpuMesh& mesh : state.meshes) {
         release_gpu_mesh(state, mesh);
     }
+    for (SharedShaderGeometry& geometry : state.shared_shader_geometries) {
+        SDL_ReleaseGPUBuffer(state.device, geometry.vertex_buffer);
+        SDL_ReleaseGPUBuffer(state.device, geometry.index_buffer);
+    }
+    state.shared_shader_geometries.clear();
 #if BBLITE_GPU_MORPH_STORAGE
     if (state.empty_morph_deltas) {
         SDL_ReleaseGPUBuffer(state.device, state.empty_morph_deltas);
@@ -5792,36 +5826,93 @@ bool run_gpu_engine(Engine& engine) {
         // rather than at (or past) the draw.
         validate_render_plan_items(render_plan);
         const auto upload_render_item =
-            [&](const upstream::RenderItem& item) -> GpuMesh {
+            [&](
+                const upstream::RenderItem& item,
+                GpuBufferUploadBatch* buffer_uploads = nullptr) -> GpuMesh {
             const ModelGeometry& geometry = engine.geometries[item.geometry];
             const MeshRecord& mesh_record =
                 engine.meshes[item.mesh.value];
+            const bool shader_material =
+                item.material_kind ==
+                upstream::RenderMaterialKind::shader;
             const std::vector<GpuVertex> vertices =
-                transformed_vertices(geometry, mesh_record);
+                shader_material
+                    ? local_vertices(geometry)
+                    : transformed_vertices(geometry, mesh_record);
+            const auto upload_mesh_buffer = [&, buffer_uploads](
+                                                SDL_GPUBufferUsageFlags usage,
+                                                const void* data,
+                                                std::size_t size) {
+                return buffer_uploads
+                    ? buffer_uploads->upload(usage, data, size)
+                    : upload_buffer(state.device, usage, data, size);
+            };
             GpuMesh gpu_mesh;
-            gpu_mesh.vertices = upload_buffer(
-                state.device,
-                SDL_GPU_BUFFERUSAGE_VERTEX,
-                vertices.data(),
-                vertices.size() * sizeof(GpuVertex));
+            if (shader_material) {
+                const auto same_geometry = [&](
+                                               const SharedShaderGeometry&
+                                                   candidate) {
+                    return
+                        candidate.vertices.size() == vertices.size() &&
+                        candidate.indices == geometry.indices &&
+                        (vertices.empty() ||
+                         std::memcmp(
+                             candidate.vertices.data(),
+                             vertices.data(),
+                             vertices.size() * sizeof(GpuVertex)) == 0);
+                };
+                const auto shared = std::find_if(
+                    state.shared_shader_geometries.begin(),
+                    state.shared_shader_geometries.end(),
+                    same_geometry);
+                if (shared != state.shared_shader_geometries.end()) {
+                    gpu_mesh.vertices = shared->vertex_buffer;
+                    gpu_mesh.indices = shared->index_buffer;
+                } else {
+                    SharedShaderGeometry created{
+                        .vertices = vertices,
+                        .indices = geometry.indices,
+                    };
+                    created.vertex_buffer = upload_mesh_buffer(
+                        SDL_GPU_BUFFERUSAGE_VERTEX,
+                        vertices.data(),
+                        vertices.size() * sizeof(GpuVertex));
+                    created.index_buffer = upload_mesh_buffer(
+                        SDL_GPU_BUFFERUSAGE_INDEX,
+                        geometry.indices.data(),
+                        geometry.indices.size() *
+                            sizeof(std::uint32_t));
+                    gpu_mesh.vertices = created.vertex_buffer;
+                    gpu_mesh.indices = created.index_buffer;
+                    state.shared_shader_geometries.push_back(
+                        std::move(created));
+                }
+                gpu_mesh.owns_geometry_buffers = false;
+            } else {
+                gpu_mesh.vertices = upload_mesh_buffer(
+                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                    vertices.data(),
+                    vertices.size() * sizeof(GpuVertex));
+                gpu_mesh.indices = upload_mesh_buffer(
+                    SDL_GPU_BUFFERUSAGE_INDEX,
+                    geometry.indices.data(),
+                    geometry.indices.size() *
+                        sizeof(std::uint32_t));
+            }
 #if BBLITE_PBR_VARIANTS > 0
-            {
+            if (
+                item.material_kind ==
+                upstream::RenderMaterialKind::pbr) {
                 const std::vector<GpuVertex> pinned =
                     pinned_convention_vertices(
                         vertices,
                         mesh_record.mirrored_x);
-                gpu_mesh.pinned_vertices = upload_buffer(
-                    state.device,
+                gpu_mesh.pinned_vertices = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_VERTEX,
                     pinned.data(),
                     pinned.size() * sizeof(GpuVertex));
             }
 #endif
-            gpu_mesh.indices = upload_buffer(
-                state.device,
-                SDL_GPU_BUFFERUSAGE_INDEX,
-                geometry.indices.data(),
-                geometry.indices.size() * sizeof(std::uint32_t));
 #if BBLITE_GPU_MORPH_STORAGE
             gpu_mesh.morph_deltas = state.empty_morph_deltas;
             gpu_mesh.morph_weights = state.empty_morph_weights;
@@ -5830,15 +5921,13 @@ bool run_gpu_engine(Engine& engine) {
                 !geometry.morph_positions.empty()) {
                 const std::vector<float> deltas =
                     pack_morph_deltas(geometry);
-                gpu_mesh.morph_deltas = upload_buffer(
-                    state.device,
+                gpu_mesh.morph_deltas = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                     deltas.data(),
                     deltas.size() * sizeof(float));
                 const std::vector<std::uint8_t> weights_blob =
                     pack_morph_weights(geometry, mesh_record);
-                gpu_mesh.morph_weights = upload_buffer(
-                    state.device,
+                gpu_mesh.morph_weights = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                     weights_blob.data(),
                     weights_blob.size());
@@ -5848,73 +5937,68 @@ bool run_gpu_engine(Engine& engine) {
             }
 #endif
 #if BBLITE_GPU_INSTANCING
-            std::vector<std::array<float, 16>>
-                instance_matrices =
-                    mesh_record.instance_matrices;
-            if (instance_matrices.empty()) {
-                std::array<float, 16> identity{};
-                identity[0] = 1.0f;
-                identity[5] = 1.0f;
-                identity[10] = 1.0f;
-                identity[15] = 1.0f;
-                instance_matrices.push_back(identity);
-            }
-            // The buffer holds the full capacity pool; dynamic pools
-            // draw record.instance_count of it and re-upload through the
-            // version-gated per-frame sync below.
-            gpu_mesh.instances = upload_buffer(
-                state.device,
-                SDL_GPU_BUFFERUSAGE_VERTEX,
-                instance_matrices.data(),
-                instance_matrices.size() *
-                    sizeof(instance_matrices.front()));
+            if (!shader_material) {
+                std::vector<std::array<float, 16>>
+                    instance_matrices =
+                        mesh_record.instance_matrices;
+                if (instance_matrices.empty()) {
+                    std::array<float, 16> identity{};
+                    identity[0] = 1.0f;
+                    identity[5] = 1.0f;
+                    identity[10] = 1.0f;
+                    identity[15] = 1.0f;
+                    instance_matrices.push_back(identity);
+                }
+                // The buffer holds the full capacity pool; dynamic pools
+                // draw record.instance_count of it and re-upload through the
+                // version-gated per-frame sync below.
+                gpu_mesh.instances = upload_mesh_buffer(
+                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                    instance_matrices.data(),
+                    instance_matrices.size() *
+                        sizeof(instance_matrices.front()));
 #if BBLITE_PBR_VARIANTS > 0
-            if (mesh_record.instance_source != nullptr) {
-                // Scene-code thin instances already carry Babylon's own
-                // values, so the pinned draw shares the buffer -- and with
-                // it the version-gated dynamic re-upload below.
-                gpu_mesh.pinned_instances = gpu_mesh.instances;
-            } else {
-                const std::vector<std::array<float, 16>>
-                    pinned_matrices =
-                        pinned_instance_matrices(mesh_record);
+                // PBR's pinned vertex stream needs the mirror-conjugated
+                // matrix stream even for scene-code pools; Standard draws
+                // keep consuming `instances` above verbatim.
+                const std::vector<std::array<float, 16>> pinned_matrices =
+                    pinned_instance_matrices(mesh_record);
                 if (!pinned_matrices.empty()) {
-                    gpu_mesh.pinned_instances = upload_buffer(
-                        state.device,
+                    gpu_mesh.pinned_instances = upload_mesh_buffer(
                         SDL_GPU_BUFFERUSAGE_VERTEX,
                         pinned_matrices.data(),
                         pinned_matrices.size() *
                             sizeof(pinned_matrices.front()));
                 }
-            }
 #endif
-            gpu_mesh.instance_count =
-                mesh_record.thin_instanced
-                    ? mesh_record.instance_count
-                    : static_cast<std::uint32_t>(
-                          instance_matrices.size());
-            gpu_mesh.instance_version =
-                mesh_record.instance_version;
+                gpu_mesh.instance_count =
+                    mesh_record.thin_instanced
+                        ? mesh_record.instance_count
+                        : static_cast<std::uint32_t>(
+                              instance_matrices.size());
+                gpu_mesh.instance_version =
+                    mesh_record.instance_version;
 #if BBLITE_GPU_INSTANCE_COLORS
-            {
-                // One tightly-packed RGBA row per instance. A mesh with
-                // none still binds the slot, so it takes one white row.
-                std::vector<float> instance_colors =
-                    mesh_record.instance_colors;
-                if (instance_colors.empty()) {
-                    instance_colors.assign(4, 1.0f);
+                {
+                    // One tightly-packed RGBA row per instance. A mesh with
+                    // none still binds the slot, so it takes one white row.
+                    std::vector<float> instance_colors =
+                        mesh_record.instance_colors;
+                    if (instance_colors.empty()) {
+                        instance_colors.assign(4, 1.0f);
+                    }
+                    gpu_mesh.instance_colors = upload_mesh_buffer(
+                        SDL_GPU_BUFFERUSAGE_VERTEX,
+                        instance_colors.data(),
+                        instance_colors.size() * sizeof(float));
                 }
-                gpu_mesh.instance_colors = upload_buffer(
-                    state.device,
-                    SDL_GPU_BUFFERUSAGE_VERTEX,
-                    instance_colors.data(),
-                    instance_colors.size() * sizeof(float));
+#endif
             }
 #endif
-#endif
-            gpu_mesh.index_count =             static_cast<std::uint32_t>(geometry.indices.size());
+            gpu_mesh.index_count = static_cast<std::uint32_t>(
+                geometry.indices.size());
             gpu_mesh.transform_version =
-            mesh_record.transform_version;
+                mesh_record.transform_version;
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
             const MaterialRecord* material = nullptr;
@@ -5938,41 +6022,47 @@ bool run_gpu_engine(Engine& engine) {
             // are the table's, resolved through the shared helpers; this
             // backend keeps the upload mechanics and the enum→member
             // residue in `mesh_slot_members`.
-            for (
-                const upstream::MaterialTextureSlot& slot_row :
-                upstream::material_texture_slots) {
-                if (
-                    slot_row.slot ==
-                    upstream::material_texture_no_slot) {
-                    continue;
+            const bool composed_material =
+                item.material_kind == upstream::RenderMaterialKind::pbr ||
+                item.material_kind ==
+                    upstream::RenderMaterialKind::standard;
+            if (composed_material) {
+                for (
+                    const upstream::MaterialTextureSlot& slot_row :
+                    upstream::material_texture_slots) {
+                    if (
+                        slot_row.slot ==
+                        upstream::material_texture_no_slot) {
+                        continue;
+                    }
+                    const GpuMeshSlotMembers members =
+                        mesh_slot_members(slot_row.source);
+                    if (members.texture == nullptr) {
+                        gpu_error(
+                            "generated texture slot has no SDL_GPU member.");
+                    }
+                    const TextureData* data = material
+                        ? material_slot_texture(
+                              *material,
+                              slot_row.source,
+                              standard_material)
+                        : nullptr;
+                    const TextureData empty{};
+                    gpu_mesh.*members.texture = upload_texture(
+                        state.device,
+                        data ? *data : empty,
+                        material_slot_srgb(
+                            slot_row.srgb,
+                            material,
+                            standard_material),
+                        material_slot_fallback(
+                            slot_row.fallback,
+                            material,
+                            standard_material));
+                    gpu_mesh.*members.sampler = create_texture_sampler(
+                        state.device,
+                        data ? data->sampler : TextureSamplerState{});
                 }
-                const GpuMeshSlotMembers members =
-                    mesh_slot_members(slot_row.source);
-                if (members.texture == nullptr) {
-                    gpu_error(
-                        "generated texture slot has no SDL_GPU member.");
-                }
-                const TextureData* data = material
-                    ? material_slot_texture(
-                          *material,
-                          slot_row.source,
-                          standard_material)
-                    : nullptr;
-                const TextureData empty{};
-                gpu_mesh.*members.texture = upload_texture(
-                    state.device,
-                    data ? *data : empty,
-                    material_slot_srgb(
-                        slot_row.srgb,
-                        material,
-                        standard_material),
-                    material_slot_fallback(
-                        slot_row.fallback,
-                        material,
-                        standard_material));
-                gpu_mesh.*members.sampler = create_texture_sampler(
-                    state.device,
-                    data ? data->sampler : TextureSamplerState{});
             }
             // A shader material's own samplers sit outside the generated
             // slot table: the caller named them, so they bind as fragment
@@ -6080,6 +6170,8 @@ bool run_gpu_engine(Engine& engine) {
                 ? engine.cameras[scene.camera.value]
                 : fallback_camera;
         CameraPointerState pointer_state;
+        CameraTraceState camera_trace_state;
+        KeyboardReplay keyboard_replay;
         const std::string screenshot_path = frame_options.screenshot_path;
         const long screenshot_frame = frame_options.screenshot_frame;
         const bool benchmark = frame_options.benchmarking();
@@ -6094,6 +6186,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                handle_platform_event(event, engine);
                 if (!hidden_test_pass) {
                     handle_camera_pointer_event(
                         event,
@@ -6101,6 +6194,7 @@ bool run_gpu_engine(Engine& engine) {
                         pointer_state);
                 }
             }
+            keyboard_replay.dispatch(frame, engine);
             // The swapchain is acquired before the scene advances, because
             // SDL only reports an unavailable texture *from*
             // `SDL_WaitAndAcquireGPUSwapchainTexture` -- it cannot be tested
@@ -6135,7 +6229,12 @@ bool run_gpu_engine(Engine& engine) {
             // Only an animated billboard pass reads it, so the frame's own
             // delta is unused in a build that reaches no billboards.
             [[maybe_unused]] const float delta_ms =
-                advance_frame(engine, scene, frame_clock);
+                advance_frame(
+                    engine,
+                    scene,
+                    frame_clock,
+                    frame_options.frame_delta_ms);
+            GpuBufferUploadBatch frame_buffer_uploads(state.device);
             for (
                 std::size_t index = 0;
                 index < render_plan.items.size() &&
@@ -6159,13 +6258,24 @@ bool run_gpu_engine(Engine& engine) {
                             mesh.instance_count),
                         mesh.instance_matrices.size());
                     if (active_count > 0) {
-                        update_buffer(
-                            state.device,
+                        frame_buffer_uploads.update(
                             gpu_mesh.instances,
                             mesh.instance_matrices.data(),
                             active_count *
                                 sizeof(mesh.instance_matrices
                                            .front()));
+#if BBLITE_PBR_VARIANTS > 0
+                        if (gpu_mesh.pinned_instances) {
+                            const std::vector<std::array<float, 16>>
+                                pinned_matrices =
+                                    pinned_instance_matrices(mesh);
+                            frame_buffer_uploads.update(
+                                gpu_mesh.pinned_instances,
+                                pinned_matrices.data(),
+                                active_count *
+                                    sizeof(pinned_matrices.front()));
+                        }
+#endif
                     }
                     gpu_mesh.instance_count =
                         static_cast<std::uint32_t>(
@@ -6188,8 +6298,7 @@ bool run_gpu_engine(Engine& engine) {
                             pack_morph_weights(
                                 engine.geometries[item.geometry],
                                 mesh);
-                        update_buffer(
-                            state.device,
+                        frame_buffer_uploads.update(
                             gpu_mesh.morph_weights,
                             weights_blob.data(),
                             weights_blob.size());
@@ -6204,12 +6313,20 @@ bool run_gpu_engine(Engine& engine) {
                 if (gpu_mesh.transform_version == mesh.transform_version) {
                     continue;
                 }
+                if (
+                    item.material_kind ==
+                    upstream::RenderMaterialKind::shader) {
+                    // Shader geometry stays local. Its transform version is
+                    // consumed by the per-draw world/WVP uniform below, so a
+                    // transform-only animation requires no buffer upload.
+                    gpu_mesh.transform_version = mesh.transform_version;
+                    continue;
+                }
                 const std::vector<GpuVertex> vertices =
                     transformed_vertices(
                         engine.geometries[item.geometry],
                         mesh);
-                update_buffer(
-                    state.device,
+                frame_buffer_uploads.update(
                     gpu_mesh.vertices,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
@@ -6219,8 +6336,7 @@ bool run_gpu_engine(Engine& engine) {
                         pinned_convention_vertices(
                             vertices,
                             mesh.mirrored_x);
-                    update_buffer(
-                        state.device,
+                    frame_buffer_uploads.update(
                         gpu_mesh.pinned_vertices,
                         pinned.data(),
                         pinned.size() * sizeof(GpuVertex));
@@ -6233,6 +6349,8 @@ bool run_gpu_engine(Engine& engine) {
             if (
                 scene.mesh_membership_version !=
                 synced_mesh_membership_version) {
+                const std::size_t previous_item_count =
+                    render_plan.items.size();
                 if (!SDL_WaitForGPUIdle(state.device)) {
                     gpu_error(
                         "SDL_WaitForGPUIdle topology update");
@@ -6301,7 +6419,9 @@ bool run_gpu_engine(Engine& engine) {
                         continue;
                     }
                     updated_meshes.push_back(
-                        upload_render_item(item));
+                        upload_render_item(
+                            item,
+                            &frame_buffer_uploads));
                 }
                 for (
                     std::size_t dropped = previous_index;
@@ -6316,9 +6436,26 @@ bool run_gpu_engine(Engine& engine) {
                     scene.mesh_membership_version;
                 synced_material_family_mask =
                     scene.material_family_mask;
+                const std::size_t shader_item_count =
+                    static_cast<std::size_t>(std::count_if(
+                        render_plan.items.begin(),
+                        render_plan.items.end(),
+                        [](const upstream::RenderItem& item) {
+                            return item.material_kind ==
+                                upstream::RenderMaterialKind::shader;
+                        }));
+                trace_scene_topology(
+                    scene,
+                    engine,
+                    previous_item_count,
+                    render_plan.items.size(),
+                    shader_item_count,
+                    frame);
                 topology_updated = true;
             }
+            frame_buffer_uploads.submit();
             update_camera(camera);
+            trace_camera_state(camera, camera_trace_state, frame);
             upstream::sort_transparent_draws(
                 render_plan.draw_lists.transparent,
                 engine,
@@ -6891,6 +7028,19 @@ bool run_gpu_engine(Engine& engine) {
                                     throw std::runtime_error(
                                         "Shader draw has an invalid material.");
                                 }
+                                const std::array<float, 16> shader_world =
+                                    shader_draw_world(
+                                        engine.meshes[
+                                            draw_item.mesh.value]);
+                                const std::array<float, 16> shader_wvp =
+                                    shader_world_view_projection(
+                                        draw_pass_matrices.view_projection,
+                                        shader_world);
+                                ShaderPassMatrices shader_pass_matrices =
+                                    draw_pass_matrices;
+                                shader_pass_matrices.world = &shader_world;
+                                shader_pass_matrices
+                                    .world_view_projection = &shader_wvp;
                                 // Per-stage blocks from the generated
                                 // variant table: [the declared system
                                 // matrices][custom floats gathered from
@@ -6910,7 +7060,7 @@ bool run_gpu_engine(Engine& engine) {
                                         block_floats =
                                             shader_stage_block_floats(
                                                 block,
-                                                draw_pass_matrices,
+                                                shader_pass_matrices,
                                                 *material);
                                     if (fragment_stage) {
                                         SDL_PushGPUFragmentUniformData(
@@ -7003,7 +7153,8 @@ bool run_gpu_engine(Engine& engine) {
                             };
                             bind_mesh_vertex_buffers(
                                 task_pass,
-                                mesh);
+                                mesh,
+                                !shader_bucket);
                             SDL_BindGPUIndexBuffer(
                                 task_pass,
                                 &index_binding,
@@ -8345,6 +8496,18 @@ bool run_gpu_engine(Engine& engine) {
                             throw std::runtime_error(
                                 "Shader draw has an invalid material.");
                         }
+                        const std::array<float, 16> shader_world =
+                            shader_draw_world(
+                                engine.meshes[item.mesh.value]);
+                        const std::array<float, 16> shader_wvp =
+                            shader_world_view_projection(
+                                frame_pass_matrices.view_projection,
+                                shader_world);
+                        ShaderPassMatrices shader_pass_matrices =
+                            frame_pass_matrices;
+                        shader_pass_matrices.world = &shader_world;
+                        shader_pass_matrices.world_view_projection =
+                            &shader_wvp;
                         // Per-stage blocks from the generated variant
                         // table: [optional scene worldViewProjection]
                         // [custom floats gathered from the material's
@@ -8360,7 +8523,9 @@ bool run_gpu_engine(Engine& engine) {
                             if (!block.present) return;
                             const std::vector<float> block_floats =
                                 shader_stage_block_floats(
-                                    block, frame_pass_matrices, *material);
+                                    block,
+                                    shader_pass_matrices,
+                                    *material);
                             if (fragment_stage) {
                                 SDL_PushGPUFragmentUniformData(
                                     command,
@@ -8451,7 +8616,9 @@ bool run_gpu_engine(Engine& engine) {
                     };
                     bind_mesh_vertex_buffers(
                         pass,
-                        mesh);
+                        mesh,
+                        item.material_kind !=
+                            upstream::RenderMaterialKind::shader);
                     SDL_BindGPUIndexBuffer(
                         pass,
                         &index_binding,

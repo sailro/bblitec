@@ -12,7 +12,7 @@
  * Nothing here knows anything about Babylon: handles in, handles out.
  * Buses, the sound sub-graph, ramp shapes, the sound state machine and
  * spatial attachment are Babylon behaviour and belong in generated code
- * lowered from the pinned `src/audio/*.ts`.
+ * lowered from the pinned TypeScript modules under `src/audio/`.
  */
 
 #include <bblite/pal_audio.hpp>
@@ -24,11 +24,19 @@
 #include "LabSound/core/AudioContext.h"
 #include "LabSound/core/AudioDevice.h"
 #include "LabSound/core/AudioParam.h"
-#include "LabSound/core/BiquadFilterNode.h"
 #include "LabSound/core/GainNode.h"
+#if BBLITE_HAS_AUDIO_BIQUAD_FILTER
+#include "LabSound/core/BiquadFilterNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_OSCILLATOR
 #include "LabSound/core/OscillatorNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_STEREO_PANNER
 #include "LabSound/core/StereoPannerNode.h"
+#endif
+#if BBLITE_HAS_AUDIO_CAPTURE
 #include "LabSound/extended/RecorderNode.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -54,8 +62,9 @@ struct ContextRecord {
      * `offlineRender` reuses one quantum-sized bus rather than
      * accumulating.
      */
+#if BBLITE_HAS_AUDIO_CAPTURE
     std::shared_ptr<lab::RecorderNode> recorder;
-    bool capture = false;
+#endif
     int channels = 2;
     /**
      * Not derivable from `context->sampleRate()`: that reads the
@@ -87,6 +96,7 @@ std::unordered_map<std::uint32_t, ContextRecord>& contexts()
  * string. With the variable set, every context the scene creates renders
  * offline, so the graph is identical and nothing runs in real time.
  */
+#if BBLITE_HAS_AUDIO_CAPTURE
 struct CaptureRequest {
     std::string path;
     double seconds = 1.0;
@@ -115,6 +125,7 @@ std::vector<std::uint32_t>& capture_contexts()
     static std::vector<std::uint32_t> ids;
     return ids;
 }
+#endif
 
 std::uint32_t next_context_id()
 {
@@ -178,6 +189,7 @@ std::shared_ptr<lab::AudioParam> require_param(AudioParamHandle handle)
     return param;
 }
 
+#if BBLITE_HAS_AUDIO_OSCILLATOR
 lab::OscillatorType to_lab(OscillatorWave wave)
 {
     switch (wave) {
@@ -188,7 +200,9 @@ lab::OscillatorType to_lab(OscillatorWave wave)
     }
     throw std::runtime_error("Unhandled oscillator wave.");
 }
+#endif
 
+#if BBLITE_HAS_AUDIO_BIQUAD_FILTER
 lab::FilterType to_lab(BiquadFilterKind kind)
 {
     switch (kind) {
@@ -203,6 +217,7 @@ lab::FilterType to_lab(BiquadFilterKind kind)
     }
     throw std::runtime_error("Unhandled biquad filter kind.");
 }
+#endif
 
 template <typename Node>
 AudioNodeHandle create_node(AudioContextHandle context)
@@ -214,6 +229,7 @@ AudioNodeHandle create_node(AudioContextHandle context)
 }
 
 /** Peak and RMS in one walk over the captured bus. */
+#if BBLITE_HAS_AUDIO_CAPTURE
 struct CaptureStats {
     int frames = 0;
     float peak = 0.0f;
@@ -288,16 +304,25 @@ CaptureStats measure(const lab::AudioBus& bus)
     if (count > 0.0) stats.rms = std::sqrt(sum / count);
     return stats;
 }
+#endif
 
 } // namespace
 
 AudioContextHandle audio_create_context()
 {
+#if BBLITE_HAS_AUDIO_CAPTURE
     const bool capture = capture_request().wanted();
+#else
+    constexpr bool capture = false;
+    if (!environment_variable("BBLITE_AUDIO_CAPTURE").empty()) {
+        throw std::runtime_error(
+            "Audio capture was not compiled. Configure with "
+            "BBLITE_AUDIO_CAPTURE=ON.");
+    }
+#endif
     const std::uint32_t id = next_context_id();
 
     ContextRecord record;
-    record.capture = capture;
 
     lab::AudioStreamConfig out_config;
     out_config.device_index = 0;
@@ -307,6 +332,7 @@ AudioContextHandle audio_create_context()
 
     record.context = std::make_shared<lab::AudioContext>(capture, !capture);
 
+#if BBLITE_HAS_AUDIO_CAPTURE
     if (capture) {
         record.destination = std::make_shared<lab::AudioDestinationNode>(
             *record.context,
@@ -317,7 +343,9 @@ AudioContextHandle audio_create_context()
         record.context->connect(record.destination, record.recorder, 0, 0);
         record.recorder->startRecording();
         capture_contexts().push_back(id);
-    } else {
+    } else
+#endif
+    {
         auto device = std::make_shared<detail::AudioDeviceSdl3>(in_config, out_config);
         if (!device->opened()) {
             throw std::runtime_error(
@@ -342,9 +370,14 @@ AudioContextHandle audio_create_context()
     // rather than accumulating, so the capture has to sit in the graph,
     // and a recorder with nothing connected is pulled with a null input
     // bus.
+#if BBLITE_HAS_AUDIO_CAPTURE
     record.nodes.push_back(
         capture ? std::static_pointer_cast<lab::AudioNode>(record.recorder)
                 : std::static_pointer_cast<lab::AudioNode>(record.destination));
+#else
+    record.nodes.push_back(
+        std::static_pointer_cast<lab::AudioNode>(record.destination));
+#endif
     contexts().emplace(id, std::move(record));
     return AudioContextHandle{id};
 }
@@ -355,7 +388,9 @@ void audio_close_context(AudioContextHandle context)
     if (found == contexts().end()) return;
     ContextRecord& record = found->second;
     if (record.device) record.device->stop();
+#if BBLITE_HAS_AUDIO_CAPTURE
     if (record.recorder) record.recorder->stopRecording();
+#endif
     if (record.context && record.destination) {
         record.context->disconnect(record.destination);
     }
@@ -391,16 +426,27 @@ AudioNodeHandle audio_create_gain(AudioContextHandle context)
 
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context)
 {
+#if BBLITE_HAS_AUDIO_OSCILLATOR
     return create_node<lab::OscillatorNode>(context);
+#else
+    (void)context;
+    throw std::runtime_error("Oscillator support was not compiled.");
+#endif
 }
 
 AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context)
 {
+#if BBLITE_HAS_AUDIO_BIQUAD_FILTER
     return create_node<lab::BiquadFilterNode>(context);
+#else
+    (void)context;
+    throw std::runtime_error("Biquad filter support was not compiled.");
+#endif
 }
 
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context)
 {
+#if BBLITE_HAS_AUDIO_STEREO_PANNER
     const AudioNodeHandle node = create_node<lab::StereoPannerNode>(context);
     // LabSound declares `pan` with default 0.5 over 0..1 while Web Audio
     // specifies 0.0 over -1..1; only the DESCRIPTOR differs -- the DSP
@@ -410,6 +456,10 @@ AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context)
     // this layer's job, exactly as the enum mappings above are.
     require_param(AudioParamHandle{node, AudioParamName::Pan})->setValue(0.0f);
     return node;
+#else
+    (void)context;
+    throw std::runtime_error("Stereo panner support was not compiled.");
+#endif
 }
 
 void audio_connect(AudioNodeHandle source, AudioNodeHandle destination)
@@ -433,22 +483,34 @@ void audio_disconnect(AudioNodeHandle node)
 
 void audio_node_start(AudioNodeHandle node, double when)
 {
+#if BBLITE_HAS_AUDIO_OSCILLATOR
     auto scheduled =
         std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
     if (!scheduled) {
         throw std::runtime_error("Audio node is not a scheduled source.");
     }
     scheduled->start(static_cast<float>(when));
+#else
+    (void)node;
+    (void)when;
+    throw std::runtime_error("Scheduled audio sources were not compiled.");
+#endif
 }
 
 void audio_node_stop(AudioNodeHandle node, double when)
 {
+#if BBLITE_HAS_AUDIO_OSCILLATOR
     auto scheduled =
         std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
     if (!scheduled) {
         throw std::runtime_error("Audio node is not a scheduled source.");
     }
     scheduled->stop(static_cast<float>(when));
+#else
+    (void)node;
+    (void)when;
+    throw std::runtime_error("Scheduled audio sources were not compiled.");
+#endif
 }
 
 AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name)
@@ -461,16 +523,28 @@ AudioParamHandle audio_node_param(AudioNodeHandle node, AudioParamName name)
 
 void audio_set_oscillator_wave(AudioNodeHandle node, OscillatorWave wave)
 {
+#if BBLITE_HAS_AUDIO_OSCILLATOR
     auto osc = std::dynamic_pointer_cast<lab::OscillatorNode>(require_node(node));
     if (!osc) throw std::runtime_error("Audio node is not an oscillator.");
     osc->setType(to_lab(wave));
+#else
+    (void)node;
+    (void)wave;
+    throw std::runtime_error("Oscillator support was not compiled.");
+#endif
 }
 
 void audio_set_filter_kind(AudioNodeHandle node, BiquadFilterKind kind)
 {
+#if BBLITE_HAS_AUDIO_BIQUAD_FILTER
     auto filter = std::dynamic_pointer_cast<lab::BiquadFilterNode>(require_node(node));
     if (!filter) throw std::runtime_error("Audio node is not a biquad filter.");
     filter->setType(to_lab(kind));
+#else
+    (void)node;
+    (void)kind;
+    throw std::runtime_error("Biquad filter support was not compiled.");
+#endif
 }
 
 float audio_param_value(AudioParamHandle param)
@@ -505,6 +579,7 @@ void audio_param_cancel_scheduled_values(AudioParamHandle param, double time)
 
 void audio_render_pending_captures()
 {
+#if BBLITE_HAS_AUDIO_CAPTURE
     const CaptureRequest& request = capture_request();
     if (!request.wanted()) return;
 
@@ -551,6 +626,7 @@ void audio_render_pending_captures()
         }
     }
     capture_contexts().clear();
+#endif
 }
 
 } // namespace bbl::pal

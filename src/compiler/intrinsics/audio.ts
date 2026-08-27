@@ -7,12 +7,10 @@
 // `GainNode` / `AudioParam`, the same shape `createHavokWorld(scene, hknp)`
 // draws around `HP_*`, and that is what `bblite/pal_audio.hpp` mirrors.
 //
-// **What the corpus reaches.** No `sceneNNN` scene uses audio at all. The
-// reach is upstream's seven GAME demos -- tetris, quake, doom, minecraft,
-// platformer, racer, sandblox -- which use the Lite engine for lifecycle
-// only (`createAudioEngineAsync`, `engine.audioContext`,
+// **What the corpus reaches.** Interactive applications use the Lite engine
+// for lifecycle only (`createAudioEngineAsync`, `engine.audioContext`,
 // `createSoundSourceAsync`, `unlockAudioEngineAsync`) and then synthesise
-// their own graph directly on the context. The eighth consumer is
+// their own graph directly on the context. The audio module also has
 // `audio-demo.ts`, the audio module's own Tier-4 showcase, and it is the
 // one place `createSoundAsync`/`playSound`, the microphone, the
 // visualizer and the unmute UI are reached at all -- upstream marks it
@@ -225,6 +223,7 @@ export function compileAudioIntrinsic(
                 kind: "audio-node",
                 cpp: source,
                 audioContextCpp: engine.cpp,
+                requiresExplicitDiscard: true,
             };
         }
 

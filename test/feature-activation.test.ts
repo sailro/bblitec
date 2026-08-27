@@ -91,6 +91,7 @@ function emitOptions(
 function variants(count: number): PinnedVariantManifestEntry[] {
     return Array.from({ length: count }, (_, index) => ({
         fragmentKey: `key-${index}`,
+        pipeline: `pipeline-${index}`,
         selectors: [],
         vertex: `variant-${index}.vert.wgsl`,
         fragment: `variant-${index}.frag.wgsl`,
@@ -148,6 +149,7 @@ function scene33Inputs(): FeatureActivationInputs {
             "loader:gltf",
             "renderer:pbr",
             "renderer:transmission",
+            "material:pbr-linear-image-processing",
             "light:point",
         ],
         assetJoinedFeatures: new Map([["light:point", lamp]]),
@@ -162,6 +164,7 @@ function scene33Inputs(): FeatureActivationInputs {
             "loader:gltf": "scene33.ts:9",
             "renderer:pbr": "scene33.ts:9",
             "renderer:transmission": "scene33.ts:24",
+            "material:pbr-linear-image-processing": "scene33.ts:24",
         },
         specialization: specialization({
             punctualLights: true,
