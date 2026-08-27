@@ -516,8 +516,8 @@ scene callbacks advance by.
 ArcRotate and Free cameras, default framing, target assignment and reads,
 per-frame clamping of the reached properties, and the `enableOrthographicCamera`
 opt-in with its aspect-derived view volume. SDL provides the platform
-boundary: left-drag orbit, right/middle-drag pan, wheel zoom, with arrows and
-`W`/`S` as keyboard fallbacks.
+boundary: left-drag orbit, right/middle-drag pan, and wheel zoom for ArcRotate;
+Free cameras additionally take `WASD`/arrows plus `Space`/`Shift`.
 
 ### Asset loading and upload
 
@@ -725,7 +725,12 @@ owns the sidecar contract). Its `defines` become the module-scope
 WGSL `const` declarations the pin's own prelude writes — WGSL has no
 preprocessor, so a define is a constant the shader compiler folds a branch
 against, and the set is part of the program's identity rather than per-draw
-state.
+state. Shader geometry remains in local space: `world` and
+`worldViewProjection` are bound per draw, so transform-only animation changes
+uniform data rather than rebuilding a vertex buffer. Exact repeated shader
+geometries share immutable vertex/index buffers across dynamic mesh entries;
+generated PBR/Standard texture lanes and globally compiled instance streams
+are not allocated for a custom-shader draw that does not consume them.
 
 A shader material also states the primitive its pipeline is built at. The
 pin resolves `material._topology ?? "triangle-list"` inside its own pipeline
@@ -1315,7 +1320,10 @@ refuses it rather than rendering something else.
 
 `removeFromScene` with render-plan rematching, material-family append after
 registration, thin-instance flush and count updates, and mesh appends that
-wait for submitted work before rebuilding the mesh set.
+wait for submitted work before rebuilding the mesh set. SDL_GPU batches a
+frame's small buffer creates and rewrites into one transfer/copy submission;
+short-lived custom-shader meshes reuse exact local geometry while their
+per-entry transforms and material values remain independent.
 
 ### Diagnostics and capture
 

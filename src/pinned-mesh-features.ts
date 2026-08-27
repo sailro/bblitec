@@ -77,6 +77,39 @@ export async function pinnedReceiveShadowsBit(): Promise<number> {
 }
 
 /**
+ * The pin's own runtime-attachable thin-instance bit.
+ *
+ * Unlike a primitive's static attribute bits, scene code can add this after
+ * mesh creation with `setThinInstances`. Generation therefore composes both
+ * halves of the reachable lattice and the PAL ORs this same value onto the
+ * draw's static mesh word when the record owns an instance pool.
+ */
+export async function pinnedThinInstancesBit(): Promise<number> {
+    return (await meshFeatureBits()).MSH_HAS_THIN_INSTANCES;
+}
+
+/**
+ * Expands static mesh-feature words by runtime-attachable feature bits.
+ *
+ * Each bit doubles the current set rather than replacing it: a scene can draw
+ * otherwise identical plain and decorated meshes, and multiple decorations
+ * can coexist on one mesh. Keeping this as the generic product operation
+ * avoids teaching material composition about the API that attached a bit.
+ */
+export function expandRuntimeMeshFeatureSets(
+    featureSets: readonly number[],
+    runtimeBits: readonly number[],
+): number[] {
+    const expanded = new Set(featureSets);
+    for (const bit of runtimeBits) {
+        for (const features of [...expanded]) {
+            expanded.add(features | bit);
+        }
+    }
+    return [...expanded];
+}
+
+/**
  * Whether any of these mesh feature words carries the pin's own skeleton
  * bit — which is what decides that a build's composed variants include a
  * skinned stage, and so which palette transport a skin takes.

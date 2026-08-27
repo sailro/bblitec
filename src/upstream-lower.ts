@@ -2075,14 +2075,27 @@ ${shadow.blurFragmentWgsl}`,
             }
         }
         if (composedShaders.length > 0) {
+            const distinctShaders = new Map<
+                string,
+                (typeof composedShaders)[number]
+            >();
             for (const shader of composedShaders) {
+                const previous = distinctShaders.get(shader.output);
+                if (previous && previous.data !== shader.data) {
+                    throw new Error(
+                        `Generated shader path '${shader.output}' has conflicting contents.`,
+                    );
+                }
+                distinctShaders.set(shader.output, shader);
+            }
+            for (const shader of distinctShaders.values()) {
                 this.tree.write(shader.output, shader.data);
             }
             this.tree.write(
                 "upstream/shaders/composition.json",
                 `${JSON.stringify(
                     {
-                        modules: composedShaders
+                        modules: [...distinctShaders.values()]
                             .filter(({ output }) =>
                                 output.endsWith(".wgsl"))
                             .map(({ output, data, family }) => ({

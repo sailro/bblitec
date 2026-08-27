@@ -165,6 +165,7 @@ export class UserFunctionLowerer {
             ir,
             (node, message) =>
                 context.fail(node, message),
+            true,
         );
         const argumentValues = call.arguments.map(
             (argument) =>
@@ -218,6 +219,7 @@ export class UserFunctionLowerer {
             ir,
             (node, message) =>
                 context.fail(node, message),
+            true,
         );
         // As in `compile`: the arguments were written at the call site
         // and resolve in the scope there, so only the body runs in the
@@ -228,6 +230,51 @@ export class UserFunctionLowerer {
         );
         return inBodyScope(() =>
             this.lower(context, ir, argumentValues, call),
+        );
+    }
+
+    /** Invokes a callback over values supplied by a lowering operation. */
+    public compileCallbackWithValues(
+        context: UserFunctionContext,
+        declaration:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value {
+        const ir = ts.isIdentifier(declaration)
+            ? this.resolve(
+                  declaration,
+                  (node, message) => context.fail(node, message),
+              )
+            : this.irFor(
+                  declaration,
+                  "callback",
+                  (node, message) => context.fail(node, message),
+              );
+        if (!ir) {
+            context.fail(
+                declaration,
+                "Compile-time callback does not resolve to a local function.",
+            );
+        }
+        if (
+            ir.parameters.length > arguments_.length &&
+            ir.parameters
+                .slice(arguments_.length)
+                .some(({ declaration: parameter }) => !parameter.initializer)
+        ) {
+            context.fail(
+                declaration,
+                `Callback '${ir.name}' declares more parameters than the operation supplies.`,
+            );
+        }
+        return this.lower(
+            context,
+            ir,
+            arguments_.slice(0, ir.parameters.length),
+            callNode,
         );
     }
 
@@ -487,6 +534,7 @@ export class UserFunctionLowerer {
         call: ts.CallExpression,
         ir: UserFunctionIr,
         fail: Fail,
+        allowExtraArguments = false,
     ): void {
         if (call.arguments.some(ts.isSpreadElement)) {
             fail(
@@ -501,7 +549,9 @@ export class UserFunctionLowerer {
         ).length;
         if (
             call.arguments.length < minimum ||
-            call.arguments.length > ir.parameters.length
+            (!allowExtraArguments &&
+                call.arguments.length >
+                    ir.parameters.length)
         ) {
             fail(
                 call,

@@ -68,6 +68,7 @@ export interface MeshIntrinsicContext
     emit(line: string): void;
     /** Whether a binding emitted now lives as long as the frame loop. */
     isEntryBodyScope(): boolean;
+    recordThinInstanceMesh(sceneMeshIndex: number | undefined): void;
     requireEngine(value: Value, node: ts.Node): string;
     unwrap(expression: ts.Expression): ts.Expression;
     resolveStaticExpression(
@@ -136,7 +137,18 @@ export function compileMeshIntrinsic(
             // The record carries the pinned Mesh name; scene code finds
             // meshes by it.
             const name = context.compileValue(call.arguments[1]!);
-            context.expectKind(name, "string", call.arguments[1]!);
+            if (
+                name.kind !== "string" &&
+                !(
+                    name.kind === "data" &&
+                    name.dataType?.kind === "string"
+                )
+            ) {
+                context.fail(
+                    call.arguments[1]!,
+                    `Mesh names must be strings, received ${name.kind}.`,
+                );
+            }
             const positions =
                 context.compileTypedArrayArgument(
                     call.arguments[2]!,
@@ -236,6 +248,7 @@ export function compileMeshIntrinsic(
                 call.arguments[2]!,
             );
             context.reachFeature("mesh:thin-instances", call);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
             return {
                 kind: "void",
                 cpp:
@@ -286,6 +299,7 @@ export function compileMeshIntrinsic(
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
             return {
                 kind: "void",
                 cpp:
@@ -305,6 +319,7 @@ export function compileMeshIntrinsic(
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
             return {
                 kind: "void",
                 cpp:

@@ -1614,8 +1614,7 @@ hknp)` takes its solver as a parameter, audio takes the *browser* — so
 sound sub-graph, ramp shapes and the sound state machine stay Babylon
 behaviour.
 
-**No corpus scene reaches it.** The reach is upstream's seven *game*
-demos — tetris, quake, doom, minecraft, platformer, racer, sandblox —
+**No corpus scene reaches it.** The reach is upstream's seven *game* demos,
 which use the Lite engine for lifecycle only (`createAudioEngineAsync`,
 `engine.audioContext`, `createSoundSourceAsync`,
 `unlockAudioEngineAsync`) and then build their own raw Web Audio graph on

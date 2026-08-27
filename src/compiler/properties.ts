@@ -312,13 +312,20 @@ const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::pal::audio_param_value",
     },
     {
-        // The lab demos reach the raw GPUDevice to writeBuffer
-        // thin-instance pools each frame; the compiled surface has a
-        // sanctioned equivalent instead of a device escape hatch.
+        // The handle itself is compile-time evidence for the structurally
+        // recognized direct thin-instance upload helper below the expression
+        // dispatcher. It has no native representation and exposes no general
+        // device surface.
         owner: "engine",
         property: "_device",
+        value: "gpu-device",
+        barrier: true,
+    },
+    {
+        owner: "gpu-device",
+        property: "queue",
         unsupported:
-            "engine._device is not part of the compiled surface; update thin-instance pools through flushThinInstances or setThinInstanceCount instead of writing GPU buffers directly.",
+            "Raw GPU device access is supported only inside the recognized thin-instance matrix upload helper.",
     },
     {
         owner: "engine",

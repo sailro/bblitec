@@ -596,6 +596,30 @@ void on_before_render(
         std::move(callback));
 }
 
+void on_key_down(
+    Engine& engine,
+    std::function<void(const PlatformKeyboardEvent&)> callback) {
+    engine.key_down_callbacks.push_back(std::move(callback));
+}
+
+void on_key_up(
+    Engine& engine,
+    std::function<void(const PlatformKeyboardEvent&)> callback) {
+    engine.key_up_callbacks.push_back(std::move(callback));
+}
+
+void on_pointer_down(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.pointer_down_callbacks.push_back(std::move(callback));
+}
+
+void on_visibility_change(
+    Engine& engine,
+    std::function<void(bool)> callback) {
+    engine.visibility_change_callbacks.push_back(std::move(callback));
+}
+
 void register_scene(Scene& scene) {
     require_scene_engine(scene);${managerSeek}
     for (const auto& builder : scene.deferred_builders) {

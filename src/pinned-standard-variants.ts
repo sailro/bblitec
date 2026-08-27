@@ -801,10 +801,8 @@ const standardFeatureRecordSources: Readonly<
     _reflectionCubeTexture: "material.reflection_cube != invalid_handle",
     backFaceCulling: "!material.double_sided",
     disableLighting: "material.disable_lighting",
-    // Standard alpha rides the record's base colour alpha: the compiled
-    // `material.alpha` setter writes base_color_factor.a and the loader
-    // seeds it from the .babylon `alpha`.
-    alpha: "material.base_color_factor.a",
+    // Material-wide alpha is distinct from PBR's base-colour-factor alpha.
+    alpha: "material.alpha",
 };
 
 /**
@@ -1925,8 +1923,8 @@ inline bool standard_uv_inverted(
 }
 
 // MaterialRecord -> StandardMaterialProps, the record gaps closed:
-//  - alpha: rides base_color_factor.a (the compiled setter and the loader
-//    both write it there).
+//  - alpha: rides the material-wide alpha field (the compiled setter and the
+//    loader both write it there).
 //  - reflection_coord_mode: the record mirrors the pin's own loader write
 //    (load-babylon.ts: coordinatesMode === 2 -> 2, else the
 //    createStandardMaterial default 1), feeding writeStdMaterialData's
@@ -1938,7 +1936,7 @@ inline StandardMaterialProps standard_material_props(
     const MaterialRecord& material) {
     StandardMaterialProps props{};
     props.diffuse_color = material.diffuse_color;
-    props.alpha = material.base_color_factor.a;
+    props.alpha = material.alpha;
     props.specular_color = material.specular_color;
     props.specular_power = material.specular_power;
     props.emissive_color = material.emissive_factor;

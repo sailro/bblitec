@@ -1,0 +1,99 @@
+diff --git a/src/core/AudioContext.cpp b/src/core/AudioContext.cpp
+index 5144897..4ee92c2 100644
+--- a/src/core/AudioContext.cpp
++++ b/src/core/AudioContext.cpp
+@@ -9,7 +9,9 @@
+ #include "LabSound/core/AudioNodeInput.h"
+ #include "LabSound/core/AudioNodeOutput.h"
+ #include "LabSound/core/OscillatorNode.h"
++#if !defined(LABSOUND_CORE_ONLY)
+ #include "internal/HRTFDatabase.h"
++#endif
+ 
+ #include "LabSound/extended/AudioContextLock.h"
+ 
+@@ -21,7 +23,10 @@
+ #include "internal/Assertions.h"
+ 
+ #include "concurrentqueue/concurrentqueue.h"
++#if !defined(LABSOUND_CORE_ONLY)
+ #include "libnyquist/Encoders.h"
++#endif
+ 
+ #include <assert.h>
++#include <map>
+ #include <queue>
+@@ -73,7 +77,9 @@ struct AudioContext::Internals
+     moodycamel::ConcurrentQueue<PendingNodeConnection> pendingNodeConnections;
+     moodycamel::ConcurrentQueue<PendingParamConnection> pendingParamConnections;
+ 
++#if !defined(LABSOUND_CORE_ONLY)
+     std::shared_ptr<HRTFDatabaseLoader> hrtfDatabaseLoader;
++#endif
+ 
+     
+     std::vector<float> debugBuffer;
+@@ -103,6 +109,7 @@ struct AudioContext::Internals
+         if (!debugBufferIndex || !wavFilePath)
+             return;
+ 
++#if !defined(LABSOUND_CORE_ONLY)
+         nqr::AudioData fileData;
+         fileData.samples.resize(debugBufferIndex + 32);
+         fileData.channelCount = 1;
+@@ -112,6 +119,7 @@ struct AudioContext::Internals
+         fileData.sourceFormat = nqr::PCM_FLT;
+         nqr::EncoderParams params = { 1, nqr::PCM_FLT, nqr::DITHER_NONE };
+         int err = nqr::encode_wav_to_disk(params, &fileData, wavFilePath);
++#endif
+         debugBufferIndex = 0;
+     }
+ };
+@@ -197,6 +205,7 @@ AudioContext::~AudioContext()
+ 
+ bool AudioContext::loadHrtfDatabase(const std::string & searchPath)
+ {
++#if !defined(LABSOUND_CORE_ONLY)
+     //auto db = new HRTFDatabaseLoader(sampleRate(), searchPath);
+     //m_internal->hrtfDatabaseLoader.reset(db);
+     //db->loadAsynchronously();
+@@ -216,10 +225,18 @@ bool AudioContext::loadHrtfDatabase(const std::string & searchPath)
+         loaded = loaded && db->database()->numberOfElevations() > 0 && db->database()->numberOfAzimuths() > 0;
+     }
+     return loaded;
++#else
++    (void) searchPath;
++    return false;
++#endif
+ }
+ 
+ std::shared_ptr<HRTFDatabaseLoader> AudioContext::hrtfDatabaseLoader() const {
++#if !defined(LABSOUND_CORE_ONLY)
+     return m_internal->hrtfDatabaseLoader;
++#else
++    return {};
++#endif
+ }
+ 
+ void AudioContext::lazyInitialize()
+diff --git a/src/extended/LabSound.cpp b/src/extended/LabSound.cpp
+index 7a6dffe..e7d520e 100644
+--- a/src/extended/LabSound.cpp
++++ b/src/extended/LabSound.cpp
+@@ -186,6 +186,7 @@ void LabSoundAssertLog(const char * file_, int line, const char * function_, con
+ std::once_flag register_all_flag;
+ void LabSoundRegistryInit(lab::NodeRegistry& reg)
+ {
++#if !defined(LABSOUND_CORE_ONLY)
+     using namespace lab;
+     
+     std::call_once(register_all_flag, [&reg]() {
+@@ -346,5 +347,8 @@ void LabSoundRegistryInit(lab::NodeRegistry& reg)
+             [](AudioContext& ac)->AudioNode* { return new TextureRecorderNode(ac); },
+             [](AudioNode* n) { delete n; });
+     });
++#else
++    (void) reg;
++#endif
+ }
+ 

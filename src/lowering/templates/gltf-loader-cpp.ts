@@ -2075,6 +2075,13 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
             : alpha_mode == "MASK"
                 ? MaterialAlphaMode::mask
                 : MaterialAlphaMode::opaque;
+    // The pin's glTF builder copies the base-factor alpha into the separate
+    // material alpha for BLEND/MASK. Animated factors use a white fallback and
+    // leave material alpha at its default while the live factor supplies it.
+    material.alpha =
+        material.alpha_mode == MaterialAlphaMode::opaque || animated_base_color
+            ? 1.0f
+            : material.base_color_factor.a;
     material.alpha_cutoff = float_or(material_json, "${materialDefaults.alphaCutoff.key}", ${materialDefaults.alphaCutoff.literal});
     engine.materials.push_back(std::move(material));
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};

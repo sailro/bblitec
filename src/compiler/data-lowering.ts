@@ -54,6 +54,19 @@ export interface DataLoweringContext {
     unwrap(expression: ts.Expression): ts.Expression;
     emit(line: string): void;
     allocateTemporaryCppName(label: string): string;
+    increaseIndent(): void;
+    decreaseIndent(): void;
+    pushScope(cppPrefix: string): void;
+    popScope(): void;
+    allocateBlockPrefix(): string;
+    compileCallbackWithValues(
+        declaration:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value;
     lookupIdentifierValue(
         identifier: ts.Identifier,
     ): Value | undefined;
@@ -257,6 +270,18 @@ export class DataLowerer {
                 : undefined;
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            const staticTypedArrayLength =
+                this.staticTypedArrayLength(unwrapped);
+            if (staticTypedArrayLength !== undefined) {
+                return {
+                    kind: "number",
+                    cpp: doubleLiteral(
+                        staticTypedArrayLength,
+                    ),
+                    staticNumber: staticTypedArrayLength,
+                    dataType: { kind: "number" },
+                };
+            }
             // A declared property of an engine handle that the table types
             // as plain data — a name, an id — is a data path too, read
             // through the one table every other read site uses.
@@ -322,6 +347,126 @@ export class DataLowerer {
             );
         }
         return undefined;
+    }
+
+    /**
+     * Index a static table expression supplied by another lowering rewrite.
+     * Keeping the original owner node matters: TypeScript's checker cannot
+     * resolve symbols on a freshly synthesized element-access parent.
+     */
+    public compileMaterializedElementAccess(
+        ownerExpression: ts.Expression,
+        indexExpression: ts.Expression,
+    ): Value | undefined {
+        if (this.isStaticIndex(indexExpression)) {
+            return undefined;
+        }
+        const owner =
+            this.materializeStaticTable(ownerExpression) ??
+            this.materializeConstantArray(ownerExpression) ??
+            this.materializeKnownTuple(ownerExpression);
+        if (!owner) {
+            return undefined;
+        }
+        return this.elementRead(
+            owner,
+            ts.factory.createElementAccessExpression(
+                ownerExpression,
+                indexExpression,
+            ),
+        );
+    }
+
+    private materializeKnownTuple(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const known = this.context.compileValue(expression);
+        if (known.kind !== "tuple") {
+            return undefined;
+        }
+        const container = this.dataTypeAt(expression);
+        const element =
+            container?.kind === "vector" ||
+            container?.kind === "span"
+                ? container.element
+                : undefined;
+        if (!element) {
+            return undefined;
+        }
+        const values = (known.tupleElements ?? []).map(
+            (entry) =>
+                this.compileKnownValueForSink(
+                    entry,
+                    element,
+                    expression,
+                ),
+        );
+        const unwrapped = this.context.unwrap(expression);
+        const symbol = ts.isIdentifier(unwrapped)
+            ? this.context.checker.getSymbolAtLocation(
+                  unwrapped,
+              )
+            : undefined;
+        const declaration =
+            symbol?.declarations?.[0] ?? unwrapped;
+        const name =
+            this.context.dataTypes.registerConstantArray(
+                declaration,
+                ts.isIdentifier(unwrapped)
+                    ? unwrapped.text
+                    : "static_values",
+                this.context.dataTypes.cppType(element),
+                values,
+            );
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bblscene::${name}`,
+            dataType: { kind: "span", element },
+        };
+    }
+
+    private staticTypedArrayLength(
+        access: ts.PropertyAccessExpression,
+    ): number | undefined {
+        if (access.name.text !== "length") {
+            return undefined;
+        }
+        const source = this.context.resolveStaticExpression(
+            access.expression,
+        );
+        if (
+            !ts.isNewExpression(source) ||
+            !ts.isIdentifier(source.expression) ||
+            ![
+                "Float32Array",
+                "Uint16Array",
+                "Uint32Array",
+            ].includes(
+                source.expression.text,
+            ) ||
+            this.context.lookupIdentifierValue(
+                source.expression,
+            ) ||
+            source.arguments?.length !== 1
+        ) {
+            return undefined;
+        }
+        const argument = this.context.resolveStaticExpression(
+            source.arguments[0]!,
+        );
+        if (ts.isArrayLiteralExpression(argument)) {
+            return argument.elements.length;
+        }
+        const count = staticNumberValue(
+            this.context,
+            argument,
+        );
+        return count !== undefined &&
+            Number.isInteger(count) &&
+            count >= 0
+            ? count
+            : undefined;
     }
 
     private isStaticIndex(
@@ -449,6 +594,17 @@ export class DataLowerer {
         expression: ts.BinaryExpression,
     ): Value | undefined {
         const left = this.context.compileValue(expression.left);
+        if (left.kind === "json-null") {
+            return this.context.compileValue(
+                expression.right,
+            );
+        }
+        if (
+            left.kind === "record" ||
+            left.kind === "tuple"
+        ) {
+            return left;
+        }
         if (left.optionalFoundCpp !== undefined) {
             // A handle a search produced: upstream's `find` yields
             // `undefined` on a miss, and `??` selects the fallback
@@ -565,6 +721,7 @@ export class DataLowerer {
             (dataType.kind === "vector" ||
                 dataType.kind === "span" ||
                 dataType.kind === "f32array" ||
+                dataType.kind === "u16array" ||
                 dataType.kind === "u32array") &&
             property === "length"
         ) {
@@ -636,6 +793,7 @@ export class DataLowerer {
         const indexed = `${owner.cpp}[bbl::js::array_index(${index})]`;
         if (
             dataType.kind === "f32array" ||
+            dataType.kind === "u16array" ||
             dataType.kind === "u32array"
         ) {
             // Reads widen to JavaScript numbers; writes keep the raw
@@ -649,7 +807,9 @@ export class DataLowerer {
                     dataStore:
                         dataType.kind === "f32array"
                             ? "f32"
-                            : "u32",
+                            : dataType.kind === "u16array"
+                              ? "u16"
+                              : "u32",
                 };
             }
             return {
@@ -1077,6 +1237,25 @@ export class DataLowerer {
                     `Math.${method} expects at least two arguments.`,
                 );
             }
+            const staticParts = call.arguments.map((argument) =>
+                staticNumberValue(this.context, argument),
+            );
+            if (
+                staticParts.every(
+                    (part): part is number =>
+                        part !== undefined &&
+                        Number.isFinite(part) &&
+                        !Object.is(part, -0),
+                )
+            ) {
+                const folded = Math[method](...staticParts);
+                return {
+                    kind: "number",
+                    cpp: doubleLiteral(folded),
+                    staticNumber: folded,
+                    dataType: { kind: "number" },
+                };
+            }
             // Deliberately not the pinned table's `<double>`-pinned 2-arg
             // spelling: JS max/min are n-ary, so the compiler folds them
             // as a chain, and every operand it compiles is already a
@@ -1267,10 +1446,108 @@ export class DataLowerer {
                 );
             }
         }
+        if (
+            (dataType?.kind === "f32array" ||
+                dataType?.kind === "u16array" ||
+                dataType?.kind === "u32array") &&
+            method === "fill"
+        ) {
+            if (call.arguments.length !== 1) {
+                this.context.fail(
+                    call,
+                    "TypedArray.fill expects one argument.",
+                );
+            }
+            this.context.reachJsData();
+            const number = this.context.compileNumber(
+                call.arguments[0]!,
+                "double",
+            );
+            const stored =
+                dataType.kind === "f32array"
+                    ? `static_cast<float>(${number})`
+                    : dataType.kind === "u16array"
+                      ? `bbl::js::to_uint16(${number})`
+                      : `bbl::js::to_uint32(${number})`;
+            return {
+                kind: "void",
+                cpp: `bbl::js::array_fill(${narrowed.cpp}, ${stored})`,
+            };
+        }
         if (dataType?.kind !== "vector") {
             return undefined;
         }
         this.context.reachJsData();
+        if (method === "forEach") {
+            if (call.arguments.length !== 1) {
+                this.context.fail(
+                    call,
+                    "Array.forEach requires exactly one callback and no thisArg.",
+                );
+            }
+            const callback = this.context.unwrap(
+                call.arguments[0]!,
+            );
+            if (
+                !ts.isIdentifier(callback) &&
+                !ts.isArrowFunction(callback) &&
+                !ts.isFunctionExpression(callback)
+            ) {
+                this.context.fail(
+                    callback,
+                    "Array.forEach requires a local function or function literal callback.",
+                );
+            }
+            const index =
+                this.context.allocateTemporaryCppName(
+                    "for_each_index",
+                );
+            const count =
+                this.context.allocateTemporaryCppName(
+                    "for_each_count",
+                );
+            this.context.emit(
+                `const std::size_t ${count} = ${narrowed.cpp}.size();`,
+            );
+            this.context.emit(
+                `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
+            );
+            this.context.increaseIndent();
+            this.context.pushScope(
+                this.context.allocateBlockPrefix(),
+            );
+            try {
+                const result =
+                    this.context.compileCallbackWithValues(
+                        callback,
+                        [
+                            this.leafValue(
+                                `${narrowed.cpp}[${index}]`,
+                                dataType.element,
+                            ),
+                            {
+                                kind: "number",
+                                cpp: `static_cast<double>(${index})`,
+                                dataType: { kind: "number" },
+                            },
+                            narrowed,
+                        ],
+                        call,
+                    );
+                if (result.cpp.length > 0) {
+                    this.context.emit(
+                        result.requiresExplicitDiscard
+                            ? `static_cast<void>(${result.cpp});`
+                            : `${result.cpp};`,
+                    );
+                }
+            } finally {
+                this.context.popScope();
+                this.context.decreaseIndent();
+            }
+            this.context.emit("}");
+            return { kind: "void", cpp: "" };
+        }
         if (method === "push") {
             if (call.arguments.length === 0) {
                 this.context.fail(
@@ -1441,7 +1718,7 @@ export class DataLowerer {
 
     /**
      * Compiles supported constructor expressions: `new Array`,
-     * `new Float32Array`, and `new Uint32Array` (sized, from a numeric
+     * `new Float32Array`, `new Uint16Array`, and `new Uint32Array` (sized, from a numeric
      * array literal, or from a number[] value).
      */
     public compileNewExpression(
@@ -1467,16 +1744,23 @@ export class DataLowerer {
         const name = expression.expression.text;
         if (
             name !== "Float32Array" &&
+            name !== "Uint16Array" &&
             name !== "Uint32Array"
         ) {
             return undefined;
         }
         const prefix =
-            name === "Float32Array" ? "f32" : "u32";
+            name === "Float32Array"
+                ? "f32"
+                : name === "Uint16Array"
+                  ? "u16"
+                  : "u32";
         const dataType: DataType =
             name === "Float32Array"
                 ? { kind: "f32array" }
-                : { kind: "u32array" };
+                : name === "Uint16Array"
+                  ? { kind: "u16array" }
+                  : { kind: "u32array" };
         this.context.reachJsData();
         const argument = expression.arguments?.[0];
         if (!argument) {
@@ -1512,14 +1796,36 @@ export class DataLowerer {
             (ts.isCallExpression(unwrapped)
                 ? this.context.compileValue(unwrapped)
                 : undefined);
+        const staticSource = source ??
+            (ts.isIdentifier(unwrapped) ||
+            ts.isPropertyAccessExpression(unwrapped)
+                ? this.context.compileValue(unwrapped)
+                : undefined);
         if (
-            source?.kind === "data" &&
-            source.dataType?.kind === "vector" &&
-            source.dataType.element.kind === "number"
+            staticSource?.kind === "tuple" &&
+            staticSource.tupleElements?.every(
+                (entry) =>
+                    entry.kind === "number" &&
+                    entry.staticNumber !== undefined,
+            )
+        ) {
+            const elements = staticSource.tupleElements.map((entry) =>
+                doubleLiteral(entry.staticNumber!),
+            );
+            return {
+                kind: "data",
+                cpp: `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`,
+                dataType,
+            };
+        }
+        if (
+            staticSource?.kind === "data" &&
+            staticSource.dataType?.kind === "vector" &&
+            staticSource.dataType.element.kind === "number"
         ) {
             return {
                 kind: "data",
-                cpp: `bbl::js::${prefix}_array_from(${source.cpp})`,
+                cpp: `bbl::js::${prefix}_array_from(${staticSource.cpp})`,
                 dataType,
             };
         }
@@ -1579,6 +1885,16 @@ export class DataLowerer {
                 ts.SyntaxKind.QuestionQuestionToken &&
             dataType.kind !== "number"
         ) {
+            const folded =
+                this.context.resolveStaticExpression(
+                    unwrapped,
+                );
+            if (folded !== unwrapped) {
+                return this.compileForSink(
+                    folded,
+                    dataType,
+                );
+            }
             const selected = this.compileNullishCoalesce(unwrapped);
             if (
                 selected?.dataType &&
@@ -1710,6 +2026,30 @@ export class DataLowerer {
                         dataType,
                     );
                 }
+                if (ts.isCallExpression(unwrapped)) {
+                    const known =
+                        this.context.compileValue(
+                            unwrapped,
+                        );
+                    if (known.kind === "record") {
+                        return this.compileKnownValueForSink(
+                            known,
+                            dataType,
+                            unwrapped,
+                        );
+                    }
+                    if (
+                        known.kind === "data" &&
+                        known.dataType &&
+                        dataTypesEqual(
+                            known.dataType,
+                            dataType,
+                        )
+                    ) {
+                        this.markEscaped(known);
+                        return known.cpp;
+                    }
+                }
                 const value = this.requireDataValue(
                     unwrapped,
                     dataType,
@@ -1775,6 +2115,36 @@ export class DataLowerer {
                     ) {
                         return chained.cpp;
                     }
+                    const mapped =
+                        this.context.compileValue(
+                            unwrapped,
+                        );
+                    if (mapped.kind === "tuple") {
+                        return this.compileKnownValueForSink(
+                            mapped,
+                            dataType,
+                            unwrapped,
+                        );
+                    }
+                }
+                if (
+                    ts.isIdentifier(unwrapped) ||
+                    ts.isPropertyAccessExpression(
+                        unwrapped,
+                    ) ||
+                    ts.isElementAccessExpression(unwrapped)
+                ) {
+                    const known =
+                        this.context.compileValue(
+                            unwrapped,
+                        );
+                    if (known.kind === "tuple") {
+                        return this.compileKnownValueForSink(
+                            known,
+                            dataType,
+                            unwrapped,
+                        );
+                    }
                 }
                 const value = this.requireDataValue(
                     unwrapped,
@@ -1798,6 +2168,7 @@ export class DataLowerer {
                 return value.cpp;
             }
             case "f32array":
+            case "u16array":
             case "u32array": {
                 if (ts.isNewExpression(unwrapped)) {
                     const value =
@@ -1830,6 +2201,166 @@ export class DataLowerer {
                 );
             }
         }
+    }
+
+    private compileKnownValueForSink(
+        value: Value,
+        dataType: DataType,
+        node: ts.Node,
+    ): string {
+        switch (dataType.kind) {
+            case "number":
+                if (value.kind !== "number") break;
+                return value.staticNumber !== undefined
+                    ? doubleLiteral(value.staticNumber)
+                    : value.cpp;
+            case "boolean":
+                if (value.kind === "boolean") return value.cpp;
+                break;
+            case "string":
+                if (value.staticString !== undefined) {
+                    return this.context.cppString(
+                        value.staticString,
+                    );
+                }
+                if (
+                    value.kind === "data" &&
+                    value.dataType?.kind === "string"
+                ) {
+                    return value.cpp;
+                }
+                break;
+            case "enum":
+                if (value.staticString !== undefined) {
+                    return this.context.dataTypes.enumMemberCpp(
+                        dataType,
+                        value.staticString,
+                        node,
+                    );
+                }
+                if (
+                    value.kind === "data" &&
+                    value.dataType &&
+                    dataTypesEqual(value.dataType, dataType)
+                ) {
+                    return value.cpp;
+                }
+                break;
+            case "optional":
+                if (value.kind === "json-null") {
+                    return "std::nullopt";
+                }
+                return this.compileKnownValueForSink(
+                    value,
+                    dataType.inner,
+                    node,
+                );
+            case "struct":
+                if (value.kind === "record") {
+                    const fields =
+                        this.context.dataTypes.structFields(
+                            dataType.name,
+                            node,
+                        );
+                    return `bblscene::${dataType.name}{${fields
+                        .map((field) => {
+                            const property =
+                                value.recordProperties?.[
+                                    field.name
+                                ];
+                            if (!property) {
+                                if (
+                                    field.type.kind ===
+                                    "optional"
+                                ) {
+                                    return "std::nullopt";
+                                }
+                                this.context.fail(
+                                    node,
+                                    `Compile-time record is missing required field '${field.name}'.`,
+                                );
+                            }
+                            return this.compileKnownValueForSink(
+                                property,
+                                field.type,
+                                node,
+                            );
+                        })
+                        .join(", ")}}`;
+                }
+                if (
+                    value.kind === "data" &&
+                    value.dataType &&
+                    dataTypesEqual(value.dataType, dataType)
+                ) {
+                    return value.cpp;
+                }
+                break;
+            case "vector":
+                if (value.kind === "tuple") {
+                    this.context.reachJsData();
+                    const elements =
+                        value.tupleElements ?? [];
+                    return `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>{${elements
+                        .map((entry) =>
+                            this.compileKnownValueForSink(
+                                entry,
+                                dataType.element,
+                                node,
+                            ),
+                        )
+                        .join(", ")}}`;
+                }
+                if (
+                    value.kind === "data" &&
+                    value.dataType &&
+                    dataTypesEqual(value.dataType, dataType)
+                ) {
+                    return value.cpp;
+                }
+                break;
+            case "f32array":
+            case "u16array":
+            case "u32array":
+            case "handle":
+            case "enummap":
+            case "span":
+            case "table":
+                if (
+                    value.dataType &&
+                    dataTypesEqual(value.dataType, dataType)
+                ) {
+                    return value.cpp;
+                }
+                break;
+            case "tuple":
+                if (
+                    value.kind === "tuple" &&
+                    (value.tupleElements?.length ?? 0) ===
+                        dataType.arity
+                ) {
+                    return `bbl::js::Tuple<${dataType.arity}>{${value
+                        .tupleElements!.map((entry) =>
+                            this.compileKnownValueForSink(
+                                entry,
+                                { kind: "number" },
+                                node,
+                            ),
+                        )
+                        .join(", ")}}`;
+                }
+                if (
+                    value.dataType &&
+                    dataTypesEqual(value.dataType, dataType)
+                ) {
+                    return value.cpp;
+                }
+                break;
+        }
+        this.context.fail(
+            node,
+            `Compile-time ${value.kind} value does not match the expected data ${dataType.kind}.`,
+        );
     }
 
     private spanLikeForSink(
@@ -2356,7 +2887,9 @@ export class DataLowerer {
                 this.context.emit(
                     target.dataStore === "u32"
                         ? `${target.cpp} = bbl::js::to_uint32(${right});`
-                        : `${target.cpp} = static_cast<float>(${right});`,
+                        : target.dataStore === "u16"
+                          ? `${target.cpp} = bbl::js::to_uint16(${right});`
+                          : `${target.cpp} = static_cast<float>(${right});`,
                 );
                 return true;
             }
@@ -2538,6 +3071,39 @@ export class DataLowerer {
         return true;
     }
 
+    /** Post-increment/decrement where the expression's old value is used. */
+    public compilePostfixValue(
+        expression: ts.PostfixUnaryExpression,
+    ): Value | undefined {
+        if (
+            expression.operator !==
+                ts.SyntaxKind.PlusPlusToken &&
+            expression.operator !==
+                ts.SyntaxKind.MinusMinusToken
+        ) {
+            return undefined;
+        }
+        const target = this.compileDataPath(
+            expression.operand,
+            "write",
+        );
+        if (target?.kind !== "number") {
+            return undefined;
+        }
+        const value: Value = {
+            ...target,
+            cpp: `(${target.cpp}${
+                expression.operator ===
+                ts.SyntaxKind.PlusPlusToken
+                    ? "++"
+                    : "--"
+            })`,
+            impure: true,
+        };
+        delete value.staticNumber;
+        return value;
+    }
+
     /**
      * Produces a boolean C++ expression for a data condition operand, or
      * undefined when the expression is not data-typed.
@@ -2545,10 +3111,9 @@ export class DataLowerer {
     public conditionOperand(
         expression: ts.Expression,
     ): string | undefined {
-        const value = this.compileDataPath(
-            expression,
-            "read",
-        );
+        const value =
+            this.compileDataPath(expression, "read") ??
+            this.context.compileValue(expression);
         if (!value) {
             return undefined;
         }
@@ -2587,17 +3152,24 @@ export class DataLowerer {
         const right = this.context.unwrap(
             expression.right,
         );
+        const isNullish = (candidate: ts.Expression): boolean =>
+            candidate.kind === ts.SyntaxKind.NullKeyword ||
+            (ts.isIdentifier(candidate) &&
+                candidate.text === "undefined" &&
+                this.context.lookupOptional(candidate) === undefined);
         const nullSide =
-            left.kind === ts.SyntaxKind.NullKeyword
+            isNullish(left)
                 ? right
-                : right.kind === ts.SyntaxKind.NullKeyword
+                : isNullish(right)
                   ? left
                   : undefined;
         if (nullSide) {
-            const value = this.compileDataPath(
-                nullSide,
-                "read",
-            );
+            const value =
+                this.compileDataPath(
+                    nullSide,
+                    "read",
+                ) ??
+                this.context.compileValue(nullSide);
             if (
                 value?.kind === "data" &&
                 value.dataType?.kind === "optional"
@@ -2605,6 +3177,22 @@ export class DataLowerer {
                 return negated
                     ? `${value.cpp}.has_value()`
                     : `!${value.cpp}.has_value()`;
+            }
+            if (value.optionalFoundCpp !== undefined) {
+                return negated
+                    ? value.optionalFoundCpp
+                    : `!(${value.optionalFoundCpp})`;
+            }
+            if (value.kind === "json-null") {
+                return negated ? "false" : "true";
+            }
+            // A value whose representation is already non-nullable has
+            // either been flow-narrowed by TypeScript or was statically
+            // non-nullish to begin with.
+            if (
+                value.kind !== "browser"
+            ) {
+                return negated ? "true" : "false";
             }
             return undefined;
         }
@@ -2638,10 +3226,9 @@ export class DataLowerer {
     ):
         | { cpp: string; dataType: DataType }
         | undefined {
-        const value = this.compileDataPath(
-            expression,
-            "read",
-        );
+        const value =
+            this.compileDataPath(expression, "read") ??
+            this.context.compileValue(expression);
         if (
             value?.kind === "data" &&
             (value.dataType?.kind === "enum" ||

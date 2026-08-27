@@ -599,6 +599,21 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "PAL, over LabSound with an SDL3 device)",
         consumers: CMAKE,
     },
+    "audio:oscillator": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createOscillator()",
+        consumers: CMAKE,
+    },
+    "audio:biquad-filter": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createBiquadFilter()",
+        consumers: CMAKE,
+    },
+    "audio:stereo-panner": {
+        provenance:
+            "the reached Web Audio graph calls AudioContext.createStereoPanner()",
+        consumers: CMAKE,
+    },
     "physics:world": {
         provenance:
             "src/physics/havok.ts createHavokWorld + _stepWorld " +
@@ -661,6 +676,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/frame-graph/transmission.ts (enableSceneTransmission)",
         consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+    },
+    "material:pbr-linear-image-processing": {
+        provenance:
+            "src/frame-graph/transmission.ts markPbrMaterialsLinear " +
+            "(_linearImageProcessing on every reached PBR material)",
+        consumers: ["variant table"],
     },
     "renderer:fog": {
         provenance:
@@ -1873,8 +1894,10 @@ function compositionRows(
             composition.linearImageProcessing,
             [
                 [
-                    features.includes("renderer:transmission"),
-                    "scene source reached renderer:transmission",
+                    features.includes(
+                        "material:pbr-linear-image-processing",
+                    ),
+                    "scene source reached linear PBR image processing",
                 ],
                 [
                     spec.assetTransmission,

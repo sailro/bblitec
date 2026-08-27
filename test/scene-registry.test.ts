@@ -147,6 +147,10 @@ test("derives defaults for an unregistered scene source", () => {
             "reference/adhoc-scene/babylon-lite-golden.png",
         );
         assert.equal(scene.parity?.maxFullMad, undefined);
+        assert.deepEqual(scene.parity?.nativeEnvironment, {
+            BBLITE_FRAME_DELTA_MS: String(1000 / 60),
+            BBLITE_SCREENSHOT_FRAME: "180",
+        });
     } finally {
         rmSync(source, { force: true });
     }

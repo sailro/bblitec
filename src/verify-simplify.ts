@@ -90,8 +90,23 @@ export function baseBranch(root: string): string {
 export function workHash(root: string): SimplifyWork {
     const base = baseBranch(root);
     const hash = createHash("sha256");
-    const committed = gitText(root, "diff", `${base}...HEAD`);
-    const working = gitText(root, "diff", "HEAD");
+    const reviewedPaths = [
+        "--",
+        ".",
+        `:(exclude)${reviewDirectory}/**`,
+    ];
+    const committed = gitText(
+        root,
+        "diff",
+        `${base}...HEAD`,
+        ...reviewedPaths,
+    );
+    const working = gitText(
+        root,
+        "diff",
+        "HEAD",
+        ...reviewedPaths,
+    );
     hash.update(committed).update(working);
     const untracked = gitText(
         root,

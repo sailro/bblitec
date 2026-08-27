@@ -34,6 +34,10 @@ export interface StatementLoweringContext {
     emitDataAssignment(
         expression: ts.BinaryExpression,
     ): boolean;
+    emitOptionalResourceAssignment(
+        expression: ts.BinaryExpression,
+        target: Value,
+    ): boolean;
     emitDataPostfix(
         expression: ts.PostfixUnaryExpression,
     ): boolean;
@@ -80,6 +84,10 @@ export interface StatementLoweringContext {
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileEnumSwitchLabel(
+        expression: ts.Expression,
+        dataType: DataType & { kind: "enum" },
+    ): string | undefined;
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
@@ -87,6 +95,10 @@ export interface StatementLoweringContext {
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
     bindLocalValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
+    bindCompileTimeValue(
         identifier: ts.Identifier,
         value: Value,
     ): void;
@@ -119,6 +131,7 @@ export interface StatementLoweringContext {
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
+    emitPlatformEventListener(call: ts.CallExpression): boolean;
     eraseBrowserInstrumentation(position: number): void;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
@@ -171,6 +184,15 @@ function bodyStatements(
 
 
 export class StatementLowerer {
+    private readonly loweredTerminators = new WeakSet<ts.Statement>();
+
+    public terminatesAfterLowering(statement: ts.Statement): boolean {
+        return (
+            terminatesFlow(statement) ||
+            this.loweredTerminators.has(statement)
+        );
+    }
+
     public emit(
         context: StatementLoweringContext,
         statement: ts.Statement,
@@ -359,10 +381,38 @@ export class StatementLowerer {
     ): void {
         const discriminant =
             context.allocateTemporaryCppName("switch");
+        const value = context.compileValue(
+            statement.expression,
+        );
+        const stringSwitch =
+            value.kind === "string" ||
+            (value.kind === "data" &&
+                value.dataType?.kind === "string");
+        const enumSwitch =
+            value.kind === "data" &&
+            value.dataType?.kind === "enum";
+        if (
+            !stringSwitch &&
+            !enumSwitch &&
+            value.kind !== "number" &&
+            !(
+                value.kind === "data" &&
+                value.dataType?.kind === "number"
+            )
+        ) {
+            context.fail(
+                statement.expression,
+                `Switch discriminants must be numbers or strings, received ${value.kind}.`,
+            );
+        }
         context.emit("{");
         context.increaseIndent();
         context.emit(
-            `const double ${discriminant} = ${context.compileNumber(statement.expression, "double")};`,
+            stringSwitch
+                ? `const std::string_view ${discriminant} = ${value.cpp};`
+                : enumSwitch
+                  ? `const auto ${discriminant} = ${value.cpp};`
+                : `const double ${discriminant} = ${value.cpp};`,
         );
         const clauses =
             statement.caseBlock.clauses;
@@ -398,12 +448,29 @@ export class StatementLowerer {
                 emittedBranch = true;
                 continue;
             }
-            pendingLabels.push(
-                context.compileNumber(
-                    clause.expression,
-                    "double",
-                ),
-            );
+            const label = stringSwitch
+                    ? this.compileStaticSwitchString(
+                          context,
+                          clause.expression,
+                      )
+                    : enumSwitch
+                      ? context.compileEnumSwitchLabel(
+                            clause.expression,
+                            value.dataType as DataType & {
+                                kind: "enum";
+                            },
+                        )
+                    : context.compileNumber(
+                          clause.expression,
+                          "double",
+                      );
+            // An inlined function may receive a narrower string-literal
+            // union than its declared parameter. Labels outside that union
+            // are unreachable for this invocation.
+            if (label === undefined) {
+                continue;
+            }
+            pendingLabels.push(label);
             if (clause.statements.length === 0) {
                 continue;
             }
@@ -433,19 +500,53 @@ export class StatementLowerer {
         context.emit("}");
     }
 
+    private compileStaticSwitchString(
+        context: StatementLoweringContext,
+        expression: ts.Expression,
+    ): string {
+        const value = context.compileValue(expression);
+        if (
+            value.kind !== "string" ||
+            value.staticString === undefined
+        ) {
+            context.fail(
+                expression,
+                "String switch case labels must be compile-time strings.",
+            );
+        }
+        return context.cppString(value.staticString);
+    }
+
     private emitSwitchBody(
         context: StatementLoweringContext,
         clause: ts.CaseClause | ts.DefaultClause,
     ): void {
         const statements = [...clause.statements];
-        const last = statements.at(-1);
+        let last = statements.at(-1);
+        let terminalBreakRemoved = false;
+        // A braced case body (`case x: { ... break; }`) gives its locals a
+        // lexical scope but the break still belongs to the switch. Each
+        // lowered branch already owns a scope, so flatten that final block
+        // before applying the same terminal-break rule.
+        if (last && ts.isBlock(last)) {
+            const blockLast = last.statements.at(-1);
+            if (blockLast && ts.isBreakStatement(blockLast)) {
+                statements.pop();
+                statements.push(
+                    ...last.statements.slice(0, -1),
+                );
+                last = statements.at(-1);
+                terminalBreakRemoved = true;
+            }
+        }
         if (last && ts.isBreakStatement(last)) {
             statements.pop();
         } else if (
-            !last ||
-            (!ts.isReturnStatement(last) &&
-                !ts.isContinueStatement(last) &&
-                !ts.isThrowStatement(last))
+            !terminalBreakRemoved &&
+            (!last ||
+                (!ts.isReturnStatement(last) &&
+                    !ts.isContinueStatement(last) &&
+                    !ts.isThrowStatement(last)))
         ) {
             context.fail(
                 clause,
@@ -525,6 +626,10 @@ export class StatementLowerer {
         // `if ((!(true) || !(true)))` would compile a body generation has
         // proved unreachable, dragging its own machinery in with it.
         if (condition === "true" || condition === "false") {
+            const selected =
+                condition === "true"
+                    ? statement.thenStatement
+                    : statement.elseStatement;
             if (condition === "true") {
                 this.emitScopedBody(
                     context,
@@ -535,6 +640,9 @@ export class StatementLowerer {
                     context,
                     statement.elseStatement,
                 );
+            }
+            if (selected && terminatesFlow(selected)) {
+                this.loweredTerminators.add(statement);
             }
             return;
         }
@@ -565,30 +673,75 @@ export class StatementLowerer {
     }
 
     /**
-     * `try { ... } finally { ... }`, where the finalizer erases to nothing.
+     * Native work may throw at runtime (for example, a platform service that
+     * cannot initialize), so a binding-free JavaScript catch maps directly
+     * to C++ `catch (...)`. Catch bindings remain outside the value model.
      *
-     * The corpus writes this for cleanup that has no native counterpart at
-     * all: revoking an object URL the browser made, and restoring the
-     * `Math.random` a scene replaced for its own deterministic bake. Both
-     * erase completely, and a finalizer that emits nothing cannot be
-     * observed -- so the block lowers to its body and no exception
-     * semantics are claimed.
-     *
-     * Anything else refuses. A `catch` has nothing to catch: scene code
-     * that fails fails at generation, and a native throw leaves through
-     * `main`. A finalizer that DOES emit would need the exception path this
-     * runtime does not carry, so it refuses naming the first line it wrote.
+     * A finally block is still accepted only when it erases. Emitting one
+     * faithfully on every normal, caught, and exceptional exit needs a scope
+     * guard; the existing erasing cleanup cases need no such machinery.
      */
     private emitTry(
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
         if (statement.catchClause) {
-            context.fail(
-                statement.catchClause,
-                "A catch clause is not lowered: scene code that fails " +
-                    "fails at generation.",
+            if (
+                statement.catchClause.variableDeclaration
+            ) {
+                context.fail(
+                    statement.catchClause.variableDeclaration,
+                    "Native catch bindings are not supported; use a binding-free catch block.",
+                );
+            }
+            context.emit("try {");
+            context.increaseIndent();
+            context.pushScope(
+                context.allocateBlockPrefix(),
             );
+            try {
+                for (const child of statement.tryBlock
+                    .statements) {
+                    this.emit(context, child);
+                }
+            } finally {
+                context.popScope();
+                context.decreaseIndent();
+            }
+            context.emit("} catch (...) {");
+            context.increaseIndent();
+            context.pushScope(
+                context.allocateBlockPrefix(),
+            );
+            try {
+                for (const child of statement.catchClause
+                    .block.statements) {
+                    this.emit(context, child);
+                }
+            } finally {
+                context.popScope();
+                context.decreaseIndent();
+            }
+            context.emit("}");
+            if (statement.finallyBlock) {
+                const finalizer = context.captureEmittedLines(() => {
+                    this.emitScopedBody(
+                        context,
+                        statement.finallyBlock!,
+                    );
+                });
+                const finalEmission = finalizer.find(
+                    (line) => line.trim().length > 0,
+                );
+                if (finalEmission !== undefined) {
+                    context.fail(
+                        statement.finallyBlock,
+                        "A finally block is lowered only when it erases to " +
+                            `nothing; this one emits '${finalEmission.trim()}'.`,
+                    );
+                }
+            }
+            return;
         }
         if (!statement.finallyBlock) {
             context.fail(
@@ -621,8 +774,9 @@ export class StatementLowerer {
      * systems, this loader must have returned a mesh — and the generated
      * main already catches and prints, so the native shape is the same
      * shape: a runtime error carrying the scene's own message. Only a
-     * static message travels, because one built from state would be
-     * reporting values this runtime does not hold.
+     * A runtime string travels too: plain-data functions already carry
+     * `std::string`, and template interpolation preserves the diagnostic
+     * values the source chose to report.
      */
     private emitThrow(
         context: StatementLoweringContext,
@@ -642,18 +796,25 @@ export class StatementLowerer {
             );
         }
         const value = context.compileValue(message);
-        if (value.staticString === undefined) {
+        if (
+            value.staticString === undefined &&
+            !(
+                value.kind === "data" &&
+                value.dataType?.kind === "string"
+            )
+        ) {
             context.fail(
                 message,
-                "A thrown message is a static string: this runtime holds " +
-                    "none of the state a computed one would report.",
+                "A thrown Error message must be a string.",
             );
         }
         context.reachThrow();
         context.emit(
-            `throw std::runtime_error(${context.cppString(
-                value.staticString,
-            )});`,
+            `throw std::runtime_error(${
+                value.staticString !== undefined
+                    ? context.cppString(value.staticString)
+                    : value.cpp
+            });`,
         );
     }
 
@@ -869,7 +1030,7 @@ export class StatementLowerer {
             // starts after it, which is what "produced no code" means here.
             let bodyStart = 0;
             try {
-                context.bindLocalValue(indexBinding, {
+                context.bindCompileTimeValue(indexBinding, {
                     kind: "number",
                     cpp: `${index}.0`,
                     staticNumber: index,
@@ -1364,6 +1525,15 @@ export class StatementLowerer {
                         "/=",
                     ],
                 ]).get(unwrapped.operatorToken.kind)!;
+                if (
+                    operator === "=" &&
+                    context.emitOptionalResourceAssignment(
+                        unwrapped,
+                        target,
+                    )
+                ) {
+                    return;
+                }
                 if (target.kind === "number") {
                     context.emit(
                         `${target.cpp} ${operator} ${context.compileNumber(unwrapped.right, "double")};`,
@@ -1426,6 +1596,12 @@ export class StatementLowerer {
         if (
             ts.isCallExpression(unwrapped) &&
             this.emitTaskMethodCall(context, unwrapped)
+        ) {
+            return;
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            context.emitPlatformEventListener(unwrapped)
         ) {
             return;
         }
@@ -1793,7 +1969,8 @@ function terminatesFlow(statement: ts.Statement): boolean {
     if (
         ts.isContinueStatement(statement) ||
         ts.isBreakStatement(statement) ||
-        ts.isReturnStatement(statement)
+        ts.isReturnStatement(statement) ||
+        ts.isThrowStatement(statement)
     ) {
         return true;
     }

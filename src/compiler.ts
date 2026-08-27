@@ -19,6 +19,11 @@ import {
     type AssetRegistryContext,
 } from "./compiler/assets.js";
 import {
+    compileStaticFetch,
+    compileStaticFetchMethod,
+    staticFetchProperty,
+} from "./compiler/static-fetch.js";
+import {
     BrowserErasure,
     type BrowserErasureContext,
 } from "./compiler/browser-erasure.js";
@@ -77,9 +82,7 @@ import {
     compileRegisteredIntrinsic,
     type IntrinsicContext,
 } from "./compiler/intrinsics/registry.js";
-import {
-    validateObjectProperties,
-} from "./compiler/option-helpers.js";
+import { validateObjectProperties } from "./compiler/option-helpers.js";
 import {
     compilePropertyAnimationClip,
     compilePropertyAnimationGroupOptions,
@@ -160,6 +163,7 @@ import type {
     Feature,
     GeometryOutputTaskManifest,
     GeometryTextureTypeName,
+    LightKind,
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
     ResolvedCompileOptions,
@@ -275,6 +279,10 @@ class Compiler
     public readonly classLowerer: ClassLowerer;
     public readonly nativeFunctions: NativeFunctionLowerer;
     private readonly browserErasure: BrowserErasure;
+    private readonly browserUtilitySources = new Map<
+        ts.SourceFile,
+        boolean
+    >();
     private readonly expressions: ExpressionLowerer;
     private readonly nativeFunctionPrototypes: string[] =
         [];
@@ -343,6 +351,9 @@ class Compiler
     private readonly shadowReceiverMeshes = new Set<number>();
     /** How many lights `addToScene` has added, which is their slot order. */
     private sceneLightCount = 0;
+    private readonly sceneLightKinds: LightKind[] = [];
+    private dynamicSceneLights = false;
+    private mutableToneMappingEnabled = false;
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
         [];
     /**
@@ -365,10 +376,17 @@ class Compiler
         number,
         { pbrMaterial: number | null; nodeMaterial: number | null }
     >();
+    /** Every reachable assignment, rather than only the final assignment the
+     *  lazy shadow view needs. This closes each PBR material over the meshes
+     *  it can actually draw on. */
+    private readonly scenePbrMaterialMeshes = new Map<number, Set<number>>();
+    private readonly scenePbrMaterialsWithUnknownMesh = new Set<number>();
     private reachedPlainSpriteLayer = false;
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
+    /** Bound only while lowering a platform visibility callback body. */
+    private platformDocumentHiddenCpp: string | undefined;
     private indentLevel = 2;
     private temporaryIndex = 0;
     public defaultRenderTaskAdapted = false;
@@ -499,9 +517,22 @@ class Compiler
                 postProcessTasks: this.postProcessTasks,
                 postProcessComposites: this.postProcessComposites,
                 adaptations: compileAdaptations(this, features),
-                scenePbrMaterials: this.scenePbrMaterials,
+                scenePbrMaterials: this.scenePbrMaterials.map(
+                    (material, index) => ({
+                        ...material,
+                        sceneMeshIndices: [
+                            ...(this.scenePbrMaterialMeshes.get(index) ?? []),
+                        ].sort((left, right) => left - right),
+                        ...(this.scenePbrMaterialsWithUnknownMesh.has(index)
+                            ? { unknownSceneMesh: true as const }
+                            : {}),
+                    }),
+                ),
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMeshes: this.sceneMeshes,
+                sceneLightKinds: this.sceneLightKinds,
+                dynamicSceneLights: this.dynamicSceneLights,
+                mutableToneMappingEnabled: this.mutableToneMappingEnabled,
                 shadowGenerators: this.shadowGenerators.map((generator) => ({
                     ...generator,
                     // The caster's material as the mesh finally carried it,
@@ -609,6 +640,63 @@ class Compiler
         this.statements.emit(this, statement);
     }
 
+    public statementTerminatesAfterLowering(
+        statement: ts.Statement,
+    ): boolean {
+        return this.statements.terminatesAfterLowering(
+            statement,
+        );
+    }
+
+    private nullableResourceKind(
+        node: ts.Node,
+    ):
+        | { kind: ValueKind; cppType: string }
+        | undefined {
+        const type = this.checker.getTypeAtLocation(node);
+        if ((type.flags & ts.TypeFlags.Union) === 0) {
+            return undefined;
+        }
+        const members = (type as ts.UnionType).types.filter(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Null |
+                        ts.TypeFlags.Undefined)) ===
+                0,
+        );
+        if (members.length !== 1) return undefined;
+        const name = members[0]!.symbol?.name;
+        if (name === "AudioEngine") {
+            return {
+                kind: "audio-engine",
+                cppType: "bbl::pal::AudioContextHandle",
+            };
+        }
+        if (
+            name === "AudioContext" ||
+            name === "BaseAudioContext" ||
+            name === "OfflineAudioContext"
+        ) {
+            return {
+                kind: "audio-context",
+                cppType: "bbl::pal::AudioContextHandle",
+            };
+        }
+        if (name === "AudioParam") {
+            return {
+                kind: "audio-param",
+                cppType: "bbl::pal::AudioParamHandle",
+            };
+        }
+        if (name?.endsWith("Node")) {
+            return {
+                kind: "audio-node",
+                cppType: "bbl::pal::AudioNodeHandle",
+            };
+        }
+        return undefined;
+    }
+
     public emitExpressionAsStatement(
         expression: ts.Expression,
     ): void {
@@ -668,6 +756,25 @@ class Compiler
             this.defineVariable(declaration.name, {
                 kind: "js-random",
                 cpp: "",
+            });
+            return;
+        }
+
+        const nullableResource =
+            this.nullableResourceKind(declaration.name);
+        if (
+            declaration.initializer.kind ===
+                ts.SyntaxKind.NullKeyword &&
+            nullableResource
+        ) {
+            this.emit(
+                `std::optional<${nullableResource.cppType}> ${cppName};`,
+            );
+            this.defineVariable(declaration.name, {
+                kind: nullableResource.kind,
+                cpp: `(*${cppName})`,
+                optionalFoundCpp: `${cppName}.has_value()`,
+                optionalStorageCpp: cppName,
             });
             return;
         }
@@ -1172,6 +1279,18 @@ class Compiler
             expression.expression,
         );
         if (
+            expression.name.text === "hidden" &&
+            ts.isIdentifier(ownerExpression) &&
+            ownerExpression.text === "document" &&
+            this.isDefaultLibraryIdentifier(ownerExpression) &&
+            this.platformDocumentHiddenCpp !== undefined
+        ) {
+            return {
+                kind: "boolean",
+                cpp: this.platformDocumentHiddenCpp,
+            };
+        }
+        if (
             ownerExpression.kind ===
             ts.SyntaxKind.ThisKeyword
         ) {
@@ -1209,6 +1328,31 @@ class Compiler
         // itself unsupported fails naming the sub-path that failed.
         const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
+        if (owner.kind === "platform-keyboard-event") {
+            if (property === "repeat") {
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.repeat`,
+                };
+            }
+            if (property === "code") {
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.code`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            }
+            this.fail(
+                expression.name,
+                `Platform keyboard events do not expose '${property}'.`,
+            );
+        }
+        const fetchedProperty = staticFetchProperty(
+            owner,
+            property,
+        );
+        if (fetchedProperty) return fetchedProperty;
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
             if (accessor) {
@@ -1220,6 +1364,14 @@ class Compiler
             const value =
                 owner.recordProperties?.[property];
             if (!value) {
+                const declared =
+                    this.dataLowerer.dataTypeAt(expression);
+                if (declared?.kind === "optional") {
+                    // Object literals omit optional fields entirely. A
+                    // compile-time record preserves that absence as the
+                    // nullish value consumed by `??` and equality guards.
+                    return { kind: "json-null", cpp: "" };
+                }
                 if (owner.recordMethods?.[property]) {
                     this.fail(
                         expression,
@@ -1248,6 +1400,26 @@ class Compiler
         return compileRegisteredConstant(importedName);
     }
 
+    public compileStaticFetch(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        return compileStaticFetch(this, call, callee);
+    }
+
+    public compileStaticFetchMethod(
+        call: ts.CallExpression,
+        owner: Value,
+        method: string,
+    ): Value | undefined {
+        return compileStaticFetchMethod(
+            this,
+            call,
+            owner,
+            method,
+        );
+    }
+
     public compileRegisteredIntrinsic(
         importedName: string,
         call: ts.CallExpression,
@@ -1256,6 +1428,123 @@ class Compiler
             this,
             importedName,
             call,
+        );
+    }
+
+    /**
+     * Some applications update an established thin-instance pool
+     * through `GPUQueue.writeBuffer`, falling back to the pin's dirty range
+     * when the GPU buffer does not exist yet. Native owns that upload boundary,
+     * so the exact helper shape lowers to one pool-copy/version operation while
+     * every other raw GPU use remains refused by the property surface.
+     */
+    public compileThinInstanceUploadHelper(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        const declaration = this.symbols
+            .valueSymbol(callee)
+            ?.declarations?.find(ts.isFunctionDeclaration);
+        if (
+            !declaration?.body ||
+            declaration.parameters.length !== 3 ||
+            !declaration.parameters.every(({ name }) =>
+                ts.isIdentifier(name),
+            )
+        ) {
+            return undefined;
+        }
+        const [meshParameter, bufferParameter, countParameter] =
+            declaration.parameters.map(({ name }) =>
+                (name as ts.Identifier).text,
+            );
+        if (
+            !this.isDirectThinInstanceUploadBody(
+                declaration.body,
+                meshParameter!,
+                bufferParameter!,
+                countParameter!,
+            )
+        ) {
+            return undefined;
+        }
+        this.expectArgumentCount(call, 3, 3);
+        const mesh = this.compileValue(call.arguments[0]!);
+        this.expectKind(mesh, "mesh", call.arguments[0]!);
+        const matrices = this.compileTypedArrayArgument(
+            call.arguments[1]!,
+            "f32array",
+        );
+        const count = this.compileNumber(call.arguments[2]!);
+        this.reachFeature("mesh:thin-instances", call);
+        this.reachFeature("mesh:thin-instances-dynamic", call);
+        this.recordThinInstanceMesh(mesh.sceneMeshIndex);
+        return {
+            kind: "void",
+            cpp:
+                `bbl::upload_thin_instance_matrices(${this.requireEngine(mesh, call)}, ` +
+                `${mesh.cpp}, ${matrices}, ${count})`,
+        };
+    }
+
+    private isDirectThinInstanceUploadBody(
+        body: ts.Block,
+        meshParameter: string,
+        bufferParameter: string,
+        countParameter: string,
+    ): boolean {
+        let thinInstancesRead = false;
+        let directUpload = false;
+        const dirtyFields = new Set<string>();
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                node.name.text === "thinInstances" &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === meshParameter
+            ) {
+                thinInstancesRead = true;
+            }
+            if (
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "writeBuffer" &&
+                node.arguments.length === 5
+            ) {
+                const source = node.arguments[2]!;
+                const offset = node.arguments[3]!;
+                const size = node.arguments[4]!;
+                directUpload =
+                    ts.isPropertyAccessExpression(source) &&
+                    source.name.text === "buffer" &&
+                    ts.isIdentifier(source.expression) &&
+                    source.expression.text === bufferParameter &&
+                    ts.isPropertyAccessExpression(offset) &&
+                    offset.name.text === "byteOffset" &&
+                    ts.isIdentifier(offset.expression) &&
+                    offset.expression.text === bufferParameter &&
+                    ts.isBinaryExpression(size) &&
+                    size.operatorToken.kind === ts.SyntaxKind.AsteriskToken &&
+                    ts.isIdentifier(size.left) &&
+                    size.left.text === countParameter &&
+                    ts.isNumericLiteral(size.right) &&
+                    Number(size.right.text) === 64;
+            }
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                ["_version", "_dirtyMin", "_dirtyMax"].includes(
+                    node.name.text,
+                )
+            ) {
+                dirtyFields.add(node.name.text);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(body);
+        return (
+            thinInstancesRead &&
+            directUpload &&
+            dirtyFields.size === 3
         );
     }
 
@@ -1563,6 +1852,85 @@ class Compiler
         ) ?? false;
     }
 
+    /**
+     * An imported helper with no route to Babylon and no native input can
+     * only observe or mutate browser state. Erasing the call as one unit is
+     * both safer and more faithful than trying to lower implementation
+     * details such as fetch wrappers, streams, timers, and DOM progress UI.
+     *
+     * The two guards are deliberately conservative: every explicit argument
+     * must be a browser value or literal configuration, and the declaration's
+     * entire module must reach no Babylon import. A helper receiving an engine,
+     * mesh, runtime data, or callback therefore stays on the ordinary inliner.
+     */
+    public isBrowserOnlyLocalCall(call: ts.CallExpression): boolean {
+        const callee = this.unwrap(call.expression);
+        if (!ts.isIdentifier(callee)) return false;
+        const declaration = this.symbols
+            .valueSymbol(callee)
+            ?.declarations?.find(ts.isFunctionDeclaration);
+        if (!declaration?.body) return false;
+        const hasBrowserInput = call.arguments.some((argument) =>
+            this.isBrowserOnlyExpression(argument),
+        );
+        if (
+            !hasBrowserInput ||
+            !call.arguments.every((argument) =>
+                this.isBrowserHelperArgument(argument),
+            )
+        ) {
+            return false;
+        }
+        const source = declaration.getSourceFile();
+        const cached = this.browserUtilitySources.get(source);
+        if (cached !== undefined) return cached;
+        let reachesBabylon = false;
+        const visit = (node: ts.Node): void => {
+            if (reachesBabylon) return;
+            if (
+                ts.isIdentifier(node) &&
+                this.symbols.importedName(node) !== undefined
+            ) {
+                reachesBabylon = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(source);
+        const browserOnly = !reachesBabylon;
+        this.browserUtilitySources.set(source, browserOnly);
+        return browserOnly;
+    }
+
+    private isBrowserHelperArgument(expression: ts.Expression): boolean {
+        const unwrapped = this.unwrap(expression);
+        if (this.isBrowserOnlyExpression(unwrapped)) return true;
+        if (
+            ts.isStringLiteral(unwrapped) ||
+            ts.isNumericLiteral(unwrapped) ||
+            unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
+            unwrapped.kind === ts.SyntaxKind.NullKeyword
+        ) {
+            return true;
+        }
+        if (ts.isObjectLiteralExpression(unwrapped)) {
+            return unwrapped.properties.every(
+                (property) =>
+                    ts.isPropertyAssignment(property) &&
+                    this.isBrowserHelperArgument(property.initializer),
+            );
+        }
+        if (ts.isArrayLiteralExpression(unwrapped)) {
+            return unwrapped.elements.every(
+                (element) =>
+                    ts.isExpression(element) &&
+                    this.isBrowserHelperArgument(element),
+            );
+        }
+        return false;
+    }
+
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean {
@@ -1708,6 +2076,52 @@ class Compiler
                     unwrapped.operatorToken,
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
+            }
+            const leftValue = this.compileValue(
+                unwrapped.left,
+            );
+            const rightValue = this.compileValue(
+                unwrapped.right,
+            );
+            const staticLeft =
+                leftValue.kind === "number" &&
+                !leftValue.parameterBinding
+                    ? leftValue.staticNumber
+                    : undefined;
+            const staticRight =
+                rightValue.kind === "number" &&
+                !rightValue.parameterBinding
+                    ? rightValue.staticNumber
+                    : undefined;
+            if (
+                staticLeft !== undefined &&
+                staticRight !== undefined &&
+                Number.isFinite(staticLeft) &&
+                Number.isFinite(staticRight)
+            ) {
+                const folded = new Map<ts.SyntaxKind, boolean>([
+                    [
+                        ts.SyntaxKind.EqualsEqualsEqualsToken,
+                        staticLeft === staticRight,
+                    ],
+                    [
+                        ts.SyntaxKind.ExclamationEqualsEqualsToken,
+                        staticLeft !== staticRight,
+                    ],
+                    [ts.SyntaxKind.LessThanToken, staticLeft < staticRight],
+                    [
+                        ts.SyntaxKind.LessThanEqualsToken,
+                        staticLeft <= staticRight,
+                    ],
+                    [ts.SyntaxKind.GreaterThanToken, staticLeft > staticRight],
+                    [
+                        ts.SyntaxKind.GreaterThanEqualsToken,
+                        staticLeft >= staticRight,
+                    ],
+                ]).get(unwrapped.operatorToken.kind);
+                if (folded !== undefined) {
+                    return folded ? "true" : "false";
+                }
             }
             // The statement emitter supplies the condition's outer
             // parentheses. Comparisons bind more tightly than the logical
@@ -1931,6 +2345,30 @@ class Compiler
         );
     }
 
+    public compileEnumSwitchLabel(
+        expression: ts.Expression,
+        dataType: DataType & { kind: "enum" },
+    ): string | undefined {
+        const literal = this.evaluator.staticTextValue(
+            expression,
+        );
+        if (literal === undefined) {
+            this.fail(
+                expression,
+                "Enum switch case labels must be compile-time strings.",
+            );
+        }
+        return this.dataTypes
+            .enumMembers(dataType.name)
+            .includes(literal)
+            ? this.dataTypes.enumMemberCpp(
+                  dataType,
+                  literal,
+                  expression,
+              )
+            : undefined;
+    }
+
     public isNumberExpression(expression: ts.Expression): boolean {
         return this.evaluator.isNumberExpression(expression);
     }
@@ -1963,7 +2401,106 @@ class Compiler
     }
 
     public compileStringLiteral(expression: ts.Expression): string {
+        const moduleAsset = this.moduleRelativeAssetUrl(expression);
+        if (moduleAsset !== undefined) return moduleAsset;
         return this.evaluator.compileStringLiteral(expression);
+    }
+
+    /**
+     * A browser module resolves runtime assets with a tiny `new URL(path,
+     * import.meta.url)` helper. Native packaging needs the logical public-root
+     * path, not the browser bundle URL, so recognize that pure helper by its
+     * structure and fold it before the ordinary string evaluator runs.
+     */
+    public moduleRelativeAssetUrl(
+        expression: ts.Expression,
+    ): string | undefined {
+        const resolved = this.resolveStaticExpression(expression);
+        if (
+            !ts.isCallExpression(resolved) ||
+            !ts.isIdentifier(resolved.expression) ||
+            resolved.arguments.length !== 2 ||
+            !this.isImportMetaUrl(resolved.arguments[1]!)
+        ) {
+            return undefined;
+        }
+        const declaration = this.symbols
+            .valueSymbol(resolved.expression)
+            ?.declarations?.find(ts.isFunctionDeclaration);
+        if (!declaration?.body || declaration.parameters.length !== 2) {
+            return undefined;
+        }
+        const pathParameter = declaration.parameters[0]!.name;
+        const moduleParameter = declaration.parameters[1]!.name;
+        if (
+            !ts.isIdentifier(pathParameter) ||
+            !ts.isIdentifier(moduleParameter) ||
+            !this.isModuleUrlHelperBody(
+                declaration.body,
+                pathParameter.text,
+                moduleParameter.text,
+            )
+        ) {
+            return undefined;
+        }
+        const path = this.evaluator.compileStringLiteral(
+            resolved.arguments[0]!,
+        );
+        const url = new URL(path, "https://bblite.invalid/");
+        return url.origin === "https://bblite.invalid"
+            ? `${url.pathname}${url.search}${url.hash}`
+            : url.href;
+    }
+
+    private isImportMetaUrl(expression: ts.Expression): boolean {
+        const unwrapped = this.unwrap(expression);
+        return (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "url" &&
+            ts.isMetaProperty(unwrapped.expression) &&
+            unwrapped.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+            unwrapped.expression.name.text === "meta"
+        );
+    }
+
+    private isModuleUrlHelperBody(
+        body: ts.Block,
+        pathParameter: string,
+        moduleParameter: string,
+    ): boolean {
+        let urlVariable: string | undefined;
+        let returnsHref = false;
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.initializer &&
+                ts.isNewExpression(node.initializer) &&
+                ts.isIdentifier(node.initializer.expression) &&
+                node.initializer.expression.text === "URL" &&
+                node.initializer.arguments?.length === 2 &&
+                ts.isIdentifier(node.initializer.arguments[0]!) &&
+                node.initializer.arguments[0]!.text === pathParameter &&
+                ts.isIdentifier(node.initializer.arguments[1]!) &&
+                node.initializer.arguments[1]!.text === moduleParameter
+            ) {
+                urlVariable = node.name.text;
+            }
+            if (
+                urlVariable &&
+                ts.isReturnStatement(node) &&
+                node.expression &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                ts.isIdentifier(node.expression.expression) &&
+                node.expression.expression.text === urlVariable &&
+                node.expression.name.text === "href"
+            ) {
+                returnsHref = true;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(body);
+        return urlVariable !== undefined && returnsHref;
     }
 
     private importedCall(
@@ -2537,6 +3074,36 @@ class Compiler
         );
     }
 
+    public emitOptionalResourceAssignment(
+        expression: ts.BinaryExpression,
+        target: Value,
+    ): boolean {
+        const storage = target.optionalStorageCpp;
+        if (!storage) return false;
+        const right = this.unwrap(expression.right);
+        if (right.kind === ts.SyntaxKind.NullKeyword) {
+            this.emit(`${storage}.reset();`);
+            return true;
+        }
+        const value = this.compileValue(right);
+        if (value.kind !== target.kind) {
+            this.fail(
+                right,
+                `Nullable ${target.kind} assignment received ${value.kind}.`,
+            );
+        }
+        this.emit(`${storage} = ${value.cpp};`);
+        if (value.audioContextCpp !== undefined) {
+            target.audioContextCpp =
+                value.audioContextCpp;
+        }
+        if (value.audioMainBusCpp !== undefined) {
+            target.audioMainBusCpp =
+                value.audioMainBusCpp;
+        }
+        return true;
+    }
+
     public dataIterationTarget(
         expression: ts.Expression,
     ):
@@ -2798,6 +3365,162 @@ class Compiler
         return this.browserErasure.isBrowserInstrumentationCall(
             call,
         );
+    }
+
+    public platformDocumentHidden(): string | undefined {
+        return this.platformDocumentHiddenCpp;
+    }
+
+    /** Platform-backed browser APIs that remain ordinary expression values. */
+    public compilePlatformCall(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const callee = this.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) {
+            return undefined;
+        }
+        const receiver = this.unwrap(callee.expression);
+        if (
+            callee.name.text === "now" &&
+            call.arguments.length === 0 &&
+            ts.isIdentifier(receiver) &&
+            receiver.text === "performance" &&
+            this.isDefaultLibraryIdentifier(receiver)
+        ) {
+            return {
+                kind: "number",
+                cpp: "bbl::pal::monotonic_milliseconds()",
+                impure: true,
+            };
+        }
+        if (
+            callee.name.text === "preventDefault" &&
+            call.arguments.length === 0 &&
+            ts.isIdentifier(receiver) &&
+            this.lookupOptional(receiver)?.kind ===
+                "platform-keyboard-event"
+        ) {
+            // The native window already owns key dispatch; there is no
+            // browser default action to cancel.
+            return { kind: "void", cpp: "" };
+        }
+        return undefined;
+    }
+
+    /**
+     * Lowers the browser listener shapes that have a native platform event.
+     * Unknown event targets stay on the browser-erasure path.
+     */
+    public emitPlatformEventListener(
+        call: ts.CallExpression,
+    ): boolean {
+        const callee = this.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "addEventListener" ||
+            !ts.isIdentifier(callee.expression) ||
+            !this.isDefaultLibraryIdentifier(callee.expression)
+        ) {
+            return false;
+        }
+        const target = callee.expression.text;
+        if (target !== "window" && target !== "document") {
+            return false;
+        }
+        if (call.arguments.length !== 2) {
+            this.fail(
+                call,
+                "Platform event listeners require an event name and callback.",
+            );
+        }
+        const event = this.evaluator.staticTextValue(
+            call.arguments[0]!,
+        );
+        const callback = call.arguments[1]!;
+        const engine = this.requireDefaultEngine(call);
+        if (
+            target === "window" &&
+            (event === "keydown" || event === "keyup")
+        ) {
+            const parameter =
+                this.allocateTemporaryCppName("key_event");
+            const lambda = this.compilePlatformCallback(
+                callback,
+                `const bbl::PlatformKeyboardEvent& ${parameter}`,
+                [
+                    {
+                        kind: "platform-keyboard-event",
+                        cpp: parameter,
+                        readOnly: true,
+                    },
+                ],
+            );
+            this.emit(
+                `bbl::on_key_${event === "keydown" ? "down" : "up"}(${engine}, ${lambda});`,
+            );
+            return true;
+        }
+        if (target === "window" && event === "pointerdown") {
+            this.emit(
+                `bbl::on_pointer_down(${engine}, ${this.compilePlatformCallback(callback, "", [])});`,
+            );
+            return true;
+        }
+        if (
+            target === "document" &&
+            event === "visibilitychange"
+        ) {
+            const parameter =
+                this.allocateTemporaryCppName("document_hidden");
+            this.emit(
+                `bbl::on_visibility_change(${engine}, ${this.compilePlatformCallback(callback, `bool ${parameter}`, [], parameter)});`,
+            );
+            return true;
+        }
+        return false;
+    }
+
+    private compilePlatformCallback(
+        callback: ts.Expression,
+        cppParameter: string,
+        values: readonly Value[],
+        documentHiddenCpp?: string,
+    ): string {
+        const previousHidden = this.platformDocumentHiddenCpp;
+        const previousFrameFloor = this.frameCallbackScopeFloor;
+        if (this.frameCallbackDepth === 0) {
+            this.frameCallbackScopeFloor =
+                this.variableScopes.length;
+        }
+        this.platformDocumentHiddenCpp = documentHiddenCpp;
+        this.frameCallbackDepth += 1;
+        let lines: string[];
+        try {
+            lines = this.captureEmittedLines(() => {
+                const result = this.compileCallbackWithValues(
+                    this.unwrap(callback) as
+                        | ts.Identifier
+                        | ts.ArrowFunction
+                        | ts.FunctionExpression,
+                    values,
+                    callback,
+                );
+                if (result.cpp.length > 0) {
+                    this.emit(
+                        result.requiresExplicitDiscard
+                            ? `static_cast<void>(${result.cpp});`
+                            : `${result.cpp};`,
+                    );
+                }
+            });
+        } finally {
+            this.frameCallbackDepth -= 1;
+            this.platformDocumentHiddenCpp = previousHidden;
+            this.frameCallbackScopeFloor = previousFrameFloor;
+        }
+        return `[&](${cppParameter}) {\n${lines
+            .map((line) => `            ${line}`)
+            .join("\n")}\n        }`;
     }
 
     public isFrameYield(expression: ts.Expression): boolean {
@@ -3187,6 +3910,13 @@ class Compiler
         );
     }
 
+    public bindCompileTimeValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void {
+        this.defineVariable(identifier, value);
+    }
+
     /**
      * Binds an inlined user-function parameter. Unlike local
      * declarations (the pinned value model copies path-bound locals),
@@ -3204,6 +3934,22 @@ class Compiler
             identifier,
             value,
             true,
+        );
+    }
+
+    public compileCallbackWithValues(
+        declaration:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value {
+        return this.userFunctions.compileCallbackWithValues(
+            this,
+            declaration,
+            arguments_,
+            callNode,
         );
     }
 
@@ -3253,13 +3999,17 @@ class Compiler
                     : `${value.staticNumber}`
                 : value.cpp;
         const maybeUnused =
-            value.kind === "boolean" ? "[[maybe_unused]] " : "";
+            value.kind === "boolean" ||
+            (parameter && value.staticNumber !== undefined)
+                ? "[[maybe_unused]] "
+                : "";
         this.emit(
             `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
         );
         const stored: Value = {
             ...value,
             cpp: cppName,
+            ...(parameter ? { parameterBinding: true } : {}),
         };
         if (value.kind === "animation-clip") {
             stored.animationFrameRate =
@@ -3543,6 +4293,19 @@ class Compiler
         material: { pbrMaterial: number | null; nodeMaterial: number | null },
     ): void {
         this.sceneMeshMaterials.set(meshIndex, material);
+        if (material.pbrMaterial !== null) {
+            const meshes = this.scenePbrMaterialMeshes.get(
+                material.pbrMaterial,
+            ) ?? new Set<number>();
+            meshes.add(meshIndex);
+            this.scenePbrMaterialMeshes.set(material.pbrMaterial, meshes);
+        }
+    }
+
+    /** A material assignment reached a mesh handle not tied to one static
+     *  scene-mesh row (for example an imported collection element). */
+    public recordUnknownSceneMeshMaterial(materialIndex: number): void {
+        this.scenePbrMaterialsWithUnknownMesh.add(materialIndex);
     }
 
     public recordShadowCasters(
@@ -3576,8 +4339,29 @@ class Compiler
     }
 
     /** The scene slot the next `addToScene(scene, light)` fills. */
-    public nextSceneLightIndex(): number {
-        return this.sceneLightCount++;
+    public nextSceneLightIndex(kind?: LightKind): number {
+        const index = this.sceneLightCount++;
+        if (kind) this.sceneLightKinds.push(kind);
+        if (this.frameCallbackDepth > 0) this.dynamicSceneLights = true;
+        return index;
+    }
+
+    /** A tone-mapping enable write can occur after environment loading, and
+     *  callback writes can alternate it at run time. */
+    public recordToneMappingEnabledMutation(): void {
+        this.mutableToneMappingEnabled = true;
+    }
+
+    /** Records the exact mesh on which a thin-instance pool exists. */
+    public recordThinInstanceMesh(sceneMeshIndex: number | undefined): void {
+        if (sceneMeshIndex === undefined) return;
+        const mesh = this.sceneMeshes[sceneMeshIndex];
+        if (!mesh) return;
+        if (this.frameCallbackDepth > 0 && mesh.thinInstances !== "always") {
+            mesh.thinInstances = "possible";
+        } else {
+            mesh.thinInstances = "always";
+        }
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */

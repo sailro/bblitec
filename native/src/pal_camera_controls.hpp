@@ -9,6 +9,11 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "pal_runtime_trace.hpp"
 
 namespace bbl::pal {
 
@@ -16,6 +21,162 @@ struct CameraPointerState {
     bool orbiting = false;
     bool panning = false;
 };
+
+/**
+ * Opt-in frame-indexed keyboard input for deterministic native diagnostics.
+ *
+ * BBLITE_INPUT_REPLAY is a comma-separated sequence of DOM KeyboardEvent.code
+ * values. One entry is dispatched as a down/up pair per frame; "-" is an idle
+ * frame. It reaches the application's ordinary callbacks and does not mutate
+ * generated source or camera state directly.
+ */
+class KeyboardReplay {
+public:
+    KeyboardReplay() {
+        const std::string source =
+            environment_variable("BBLITE_INPUT_REPLAY");
+        std::size_t begin = 0;
+        while (begin <= source.size()) {
+            const std::size_t end = source.find(',', begin);
+            const std::size_t length =
+                end == std::string::npos
+                    ? source.size() - begin
+                    : end - begin;
+            codes_.push_back(source.substr(begin, length));
+            if (end == std::string::npos) break;
+            begin = end + 1;
+        }
+        if (source.empty()) codes_.clear();
+    }
+
+    void dispatch(long frame, Engine& engine) const {
+        if (
+            frame < 0 ||
+            static_cast<std::size_t>(frame) >= codes_.size()) {
+            return;
+        }
+        const std::string& code =
+            codes_[static_cast<std::size_t>(frame)];
+        if (code.empty() || code == "-") return;
+        const PlatformKeyboardEvent event{
+            .code = code,
+            .repeat = false,
+        };
+        trace_keyboard_event(code, true, false);
+        for (const auto& callback : engine.key_down_callbacks) {
+            callback(event);
+        }
+        trace_keyboard_event(code, false, false);
+        for (const auto& callback : engine.key_up_callbacks) {
+            callback(event);
+        }
+    }
+
+private:
+    std::vector<std::string> codes_;
+};
+
+/** DOM-compatible `KeyboardEvent.code` for the portable SDL scancodes. */
+inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
+    switch (scancode) {
+        case SDL_SCANCODE_LEFT: return "ArrowLeft";
+        case SDL_SCANCODE_RIGHT: return "ArrowRight";
+        case SDL_SCANCODE_UP: return "ArrowUp";
+        case SDL_SCANCODE_DOWN: return "ArrowDown";
+        case SDL_SCANCODE_SPACE: return "Space";
+        case SDL_SCANCODE_ESCAPE: return "Escape";
+        case SDL_SCANCODE_RETURN: return "Enter";
+        case SDL_SCANCODE_TAB: return "Tab";
+        case SDL_SCANCODE_BACKSPACE: return "Backspace";
+        case SDL_SCANCODE_LSHIFT: return "ShiftLeft";
+        case SDL_SCANCODE_RSHIFT: return "ShiftRight";
+        case SDL_SCANCODE_LCTRL: return "ControlLeft";
+        case SDL_SCANCODE_RCTRL: return "ControlRight";
+        case SDL_SCANCODE_LALT: return "AltLeft";
+        case SDL_SCANCODE_RALT: return "AltRight";
+        case SDL_SCANCODE_A: return "KeyA";
+        case SDL_SCANCODE_B: return "KeyB";
+        case SDL_SCANCODE_C: return "KeyC";
+        case SDL_SCANCODE_D: return "KeyD";
+        case SDL_SCANCODE_E: return "KeyE";
+        case SDL_SCANCODE_F: return "KeyF";
+        case SDL_SCANCODE_G: return "KeyG";
+        case SDL_SCANCODE_H: return "KeyH";
+        case SDL_SCANCODE_I: return "KeyI";
+        case SDL_SCANCODE_J: return "KeyJ";
+        case SDL_SCANCODE_K: return "KeyK";
+        case SDL_SCANCODE_L: return "KeyL";
+        case SDL_SCANCODE_M: return "KeyM";
+        case SDL_SCANCODE_N: return "KeyN";
+        case SDL_SCANCODE_O: return "KeyO";
+        case SDL_SCANCODE_P: return "KeyP";
+        case SDL_SCANCODE_Q: return "KeyQ";
+        case SDL_SCANCODE_R: return "KeyR";
+        case SDL_SCANCODE_S: return "KeyS";
+        case SDL_SCANCODE_T: return "KeyT";
+        case SDL_SCANCODE_U: return "KeyU";
+        case SDL_SCANCODE_V: return "KeyV";
+        case SDL_SCANCODE_W: return "KeyW";
+        case SDL_SCANCODE_X: return "KeyX";
+        case SDL_SCANCODE_Y: return "KeyY";
+        case SDL_SCANCODE_Z: return "KeyZ";
+        case SDL_SCANCODE_0: return "Digit0";
+        case SDL_SCANCODE_1: return "Digit1";
+        case SDL_SCANCODE_2: return "Digit2";
+        case SDL_SCANCODE_3: return "Digit3";
+        case SDL_SCANCODE_4: return "Digit4";
+        case SDL_SCANCODE_5: return "Digit5";
+        case SDL_SCANCODE_6: return "Digit6";
+        case SDL_SCANCODE_7: return "Digit7";
+        case SDL_SCANCODE_8: return "Digit8";
+        case SDL_SCANCODE_9: return "Digit9";
+        default: return {};
+    }
+}
+
+inline void handle_platform_event(
+    const SDL_Event& event,
+    Engine& engine) {
+    if (
+        event.type == SDL_EVENT_KEY_DOWN ||
+        event.type == SDL_EVENT_KEY_UP) {
+        const std::string_view code =
+            keyboard_event_code(event.key.scancode);
+        if (code.empty()) return;
+        trace_keyboard_event(
+            code,
+            event.type == SDL_EVENT_KEY_DOWN,
+            event.key.repeat);
+        const PlatformKeyboardEvent keyboard_event{
+            .code = code,
+            .repeat = event.key.repeat,
+        };
+        const auto& callbacks = event.type == SDL_EVENT_KEY_DOWN
+            ? engine.key_down_callbacks
+            : engine.key_up_callbacks;
+        for (const auto& callback : callbacks) {
+            callback(keyboard_event);
+        }
+        return;
+    }
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        for (const auto& callback : engine.pointer_down_callbacks) {
+            callback();
+        }
+        return;
+    }
+    const bool hidden =
+        event.type == SDL_EVENT_WINDOW_HIDDEN ||
+        event.type == SDL_EVENT_WINDOW_MINIMIZED;
+    const bool visible =
+        event.type == SDL_EVENT_WINDOW_SHOWN ||
+        event.type == SDL_EVENT_WINDOW_RESTORED;
+    if (hidden || visible) {
+        for (const auto& callback : engine.visibility_change_callbacks) {
+            callback(hidden);
+        }
+    }
+}
 
 inline void handle_camera_pointer_event(
     const SDL_Event& event,
@@ -70,13 +231,21 @@ inline void update_camera(CameraRecord& camera) {
     if (!camera.controls_enabled) {
         return;
     }
+    if (camera.kind != CameraKind::free) {
+        // The pinned ArcRotate attachControl surface is pointer-only.  In
+        // particular, it does not claim arrows or W/S from an application
+        // that installs its own window keyboard handlers.
+        upstream::apply_arc_rotate_inertia(camera);
+        return;
+    }
+
     int key_count = 0;
     const bool* keys = SDL_GetKeyboardState(&key_count);
     const auto pressed = [keys, key_count](SDL_Scancode scancode) {
         const int index = static_cast<int>(scancode);
         return index >= 0 && index < key_count && keys[index];
     };
-    if (camera.kind == CameraKind::free) {
+    {
         // The pin's per-frame move scale, evaluated at the fixed 60 FPS
         // step this loop runs: free-camera-controls.ts computes
         // moveSpeed = speed * sqrt(dt * dt / 1e5) each frame, and
@@ -106,15 +275,7 @@ inline void update_camera(CameraRecord& camera) {
             camera.inertial_direction.y -= movement;
         }
         upstream::apply_free_camera_inertia(camera);
-        return;
     }
-    upstream::apply_arc_rotate_inertia(camera);
-    if (pressed(SDL_SCANCODE_LEFT)) camera.alpha -= 0.02;
-    if (pressed(SDL_SCANCODE_RIGHT)) camera.alpha += 0.02;
-    if (pressed(SDL_SCANCODE_UP)) camera.beta = std::max(0.1, camera.beta - 0.02);
-    if (pressed(SDL_SCANCODE_DOWN)) camera.beta = std::min(pi_double - 0.1, camera.beta + 0.02);
-    if (pressed(SDL_SCANCODE_W)) camera.radius = std::max(0.25, camera.radius - 0.08);
-    if (pressed(SDL_SCANCODE_S)) camera.radius += 0.08;
 }
 
 } // namespace bbl::pal

@@ -23,6 +23,9 @@ export interface BrowserErasureContext {
     isDefaultLibraryIdentifier(
         identifier: ts.Identifier,
     ): boolean;
+    isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
+    /** Runtime visibility callback parameter, while compiling its body. */
+    platformDocumentHidden(): string | undefined;
     /** The query string the reference pose is captured at. */
     referenceSearch(): string;
 }
@@ -31,6 +34,18 @@ export class BrowserErasure {
     public constructor(
         private readonly context: BrowserErasureContext,
     ) {}
+
+    /**
+     * TypeScript models `globalThis` as an intrinsic symbol with no source
+     * declaration, so `Program.isSourceFileDefaultLibrary` cannot identify it
+     * the way it identifies `window` or `document`. An existing compiler
+     * binding still wins, preserving ordinary lexical shadowing.
+     */
+    private isDefaultBrowserGlobal(identifier: ts.Identifier): boolean {
+        return identifier.text === "globalThis"
+            ? this.context.lookupOptional(identifier) === undefined
+            : this.context.isDefaultLibraryIdentifier(identifier);
+    }
 
     /**
      * `setTimeout(callback, 0)` -- bare or through `window`.
@@ -71,11 +86,35 @@ export class BrowserErasure {
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
+        // Two browser-shaped values have direct platform counterparts. Keep
+        // them out of the erasure flow so ordinary expression lowering owns
+        // their native representation.
+        if (this.isPlatformTimeCall(unwrapped)) {
+            return false;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "hidden" &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "document" &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            ) &&
+            this.context.platformDocumentHidden() !== undefined
+        ) {
+            return false;
+        }
         if (
             ts.isCallExpression(unwrapped) &&
             this.isDeferredCallbackCall(unwrapped)
         ) {
             return false;
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            this.context.isBrowserOnlyLocalCall(unwrapped)
+        ) {
+            return true;
         }
         if (this.context.canvasSizeProperty(unwrapped)) {
             return false;
@@ -85,12 +124,11 @@ export class BrowserErasure {
                 [
                     "console",
                     "document",
+                    "globalThis",
                     "performance",
                     "window",
                 ].includes(unwrapped.text) &&
-                this.context.isDefaultLibraryIdentifier(
-                    unwrapped,
-                )
+                this.isDefaultBrowserGlobal(unwrapped)
             ) {
                 return true;
             }
@@ -183,9 +221,38 @@ export class BrowserErasure {
             ) {
                 return browserArgument;
             }
+            // Standard-library transforms cannot make a browser-only value
+            // native. Keep the taint through Math calls so a diagnostic
+            // transform erases with its browser source.
+            if (
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                ts.isIdentifier(unwrapped.expression.expression) &&
+                unwrapped.expression.expression.text === "Math" &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression.expression,
+                )
+            ) {
+                return browserArgument;
+            }
             return false;
         }
         return false;
+    }
+
+    private isPlatformTimeCall(
+        expression: ts.Expression,
+    ): expression is ts.CallExpression {
+        return (
+            ts.isCallExpression(expression) &&
+            expression.arguments.length === 0 &&
+            ts.isPropertyAccessExpression(expression.expression) &&
+            expression.expression.name.text === "now" &&
+            ts.isIdentifier(expression.expression.expression) &&
+            expression.expression.expression.text === "performance" &&
+            this.context.isDefaultLibraryIdentifier(
+                expression.expression.expression,
+            )
+        );
     }
 
     public evaluateBrowserCondition(
@@ -656,11 +723,14 @@ export class BrowserErasure {
     }
 
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
-        const objectAssign =
+        const objectInstrumentation =
             ts.isPropertyAccessExpression(call.expression) &&
             ts.isIdentifier(call.expression.expression) &&
             call.expression.expression.text === "Object" &&
-            call.expression.name.text === "assign";
+            (call.expression.name.text === "assign" ||
+                (call.expression.name.text === "defineProperty" &&
+                    call.arguments[0] !== undefined &&
+                    this.isBrowserOnlyExpression(call.arguments[0])));
         const deviceEvent =
             ts.isPropertyAccessExpression(call.expression) &&
             call.expression.name.text ===
@@ -670,7 +740,7 @@ export class BrowserErasure {
             ) &&
             call.expression.expression.name.text ===
                 "_device";
-        return objectAssign || deviceEvent;
+        return objectInstrumentation || deviceEvent;
     }
 }
 

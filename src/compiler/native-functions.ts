@@ -1,9 +1,10 @@
 import ts from "typescript";
 import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
-import type {
-    DataType,
-    DataTypeRegistry,
+import {
+    dataTypesEqual,
+    type DataType,
+    type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import {
@@ -25,6 +26,7 @@ export interface NativeFunctionContext {
     ): string;
     compileCondition(expression: ts.Expression): string;
     emitStatement(statement: ts.Statement): void;
+    statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     defineVariable(
         identifier: ts.Identifier,
         value: Value,
@@ -55,6 +57,7 @@ interface NativeFunctionSignature {
         name: ts.Identifier;
         type: DataType | undefined;
         byReference: boolean;
+        readOnly: boolean;
     }[];
     returnType: DataType | undefined;
     declaration: SupportedFunction;
@@ -108,7 +111,6 @@ export class NativeFunctionLowerer {
         if (!signature) {
             return undefined;
         }
-        this.ensureEmitted(signature, callee);
         if (
             call.arguments.length >
                 signature.parameters.length ||
@@ -119,6 +121,33 @@ export class NativeFunctionLowerer {
                 `Function '${callee.text}' expects at most ${signature.parameters.length} plain arguments.`,
             );
         }
+        if (
+            signature.parameters.some(
+                (parameter, index) => {
+                    if (
+                        !parameter.byReference ||
+                        parameter.readOnly
+                    ) {
+                        return false;
+                    }
+                    const argument =
+                        call.arguments[index] ??
+                        (ts.isParameter(parameter.name.parent)
+                            ? parameter.name.parent.initializer
+                            : undefined);
+                    return argument
+                        ? !this.isAddressableArgument(argument)
+                        : false;
+                },
+            )
+        ) {
+            // A conditional, constructor, or call result cannot bind to
+            // the mutable native reference that preserves JavaScript
+            // object aliasing. Keep that call on the inline path, where
+            // the expression is evaluated into the callee's local binding.
+            return undefined;
+        }
+        this.ensureEmitted(signature, callee);
         const argumentsCpp = signature.parameters.map(
             (parameter, index) => {
                 const argument = call.arguments[index];
@@ -150,6 +179,17 @@ export class NativeFunctionLowerer {
         );
         const cpp = `bblscene::${signature.cppName}(${argumentsCpp.join(", ")})`;
         return this.callValue(cpp, signature.returnType);
+    }
+
+    private isAddressableArgument(
+        expression: ts.Expression,
+    ): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        return (
+            ts.isIdentifier(unwrapped) ||
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped)
+        );
     }
 
     private callValue(
@@ -188,6 +228,23 @@ export class NativeFunctionLowerer {
             );
         }
         if (parameter.byReference) {
+            if (parameter.readOnly) {
+                const path =
+                    this.context.dataLowerer.compileDataPath(
+                        expression,
+                        "read",
+                    );
+                if (
+                    path?.dataType &&
+                    dataTypesEqual(path.dataType, dataType)
+                ) {
+                    return path.cpp;
+                }
+                return this.context.dataLowerer.compileForSink(
+                    expression,
+                    dataType,
+                );
+            }
             // JavaScript passes object references; the compiled subset
             // passes native references. Read access suffices here because
             // callee writes intentionally alias the caller's object.
@@ -288,7 +345,12 @@ export class NativeFunctionLowerer {
                     parameterType.kind === "vector" ||
                     parameterType.kind === "optional" ||
                     parameterType.kind === "f32array" ||
+                    parameterType.kind === "u16array" ||
                     parameterType.kind === "u32array",
+                readOnly: this.parameterIsReadOnly(
+                    declaration,
+                    parameter.name,
+                ),
             });
         }
         if (!ts.isBlock(declaration.body ?? declaration)) {
@@ -303,6 +365,133 @@ export class NativeFunctionLowerer {
         };
         this.signatures.set(declaration, signature);
         return signature;
+    }
+
+    private parameterIsReadOnly(
+        declaration: SupportedFunction,
+        parameter: ts.Identifier,
+    ): boolean {
+        const symbol =
+            this.context.checker.getSymbolAtLocation(
+                parameter,
+            );
+        if (!symbol || !declaration.body) return false;
+        const namesParameter = (node: ts.Node): boolean =>
+            ts.isIdentifier(node) &&
+            this.context.checker.getSymbolAtLocation(node) ===
+                symbol;
+        const containsParameter = (node: ts.Node): boolean => {
+            let found = false;
+            const visit = (candidate: ts.Node): void => {
+                if (found) return;
+                if (namesParameter(candidate)) {
+                    found = true;
+                    return;
+                }
+                ts.forEachChild(candidate, visit);
+            };
+            visit(node);
+            return found;
+        };
+        const rootNamesParameter = (
+            expression: ts.Expression,
+        ): boolean => {
+            let current = this.context.unwrap(expression);
+            while (
+                ts.isPropertyAccessExpression(current) ||
+                ts.isElementAccessExpression(current)
+            ) {
+                current = this.context.unwrap(
+                    current.expression,
+                );
+            }
+            return namesParameter(current);
+        };
+        const readOnlyMethods = new Set([
+            "at",
+            "concat",
+            "entries",
+            "every",
+            "filter",
+            "find",
+            "findIndex",
+            "findLast",
+            "findLastIndex",
+            "forEach",
+            "includes",
+            "indexOf",
+            "join",
+            "keys",
+            "lastIndexOf",
+            "map",
+            "reduce",
+            "reduceRight",
+            "slice",
+            "some",
+            "values",
+        ]);
+        let readOnly = true;
+        const visit = (node: ts.Node): void => {
+            if (!readOnly) return;
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind >=
+                    ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <=
+                    ts.SyntaxKind.LastAssignment &&
+                rootNamesParameter(node.left)
+            ) {
+                readOnly = false;
+                return;
+            }
+            if (
+                (ts.isPrefixUnaryExpression(node) ||
+                    ts.isPostfixUnaryExpression(node)) &&
+                [
+                    ts.SyntaxKind.PlusPlusToken,
+                    ts.SyntaxKind.MinusMinusToken,
+                ].includes(node.operator) &&
+                rootNamesParameter(node.operand)
+            ) {
+                readOnly = false;
+                return;
+            }
+            if (ts.isCallExpression(node)) {
+                if (
+                    ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                    rootNamesParameter(
+                        node.expression.expression,
+                    ) &&
+                    !readOnlyMethods.has(
+                        node.expression.name.text,
+                    )
+                ) {
+                    readOnly = false;
+                    return;
+                }
+                if (
+                    node.arguments.some(containsParameter)
+                ) {
+                    readOnly = false;
+                    return;
+                }
+            }
+            if (
+                ts.isVariableDeclaration(node) &&
+                node.initializer &&
+                containsParameter(node.initializer)
+            ) {
+                // An alias can be mutated later. Keep the analysis
+                // conservative instead of attempting an alias graph here.
+                readOnly = false;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration.body);
+        return readOnly;
     }
 
     /**
@@ -509,7 +698,7 @@ export class NativeFunctionLowerer {
                     );
                 parameterDeclarations.push(
                     parameter.byReference
-                        ? `${cppType}& ${cppName}`
+                        ? `${parameter.readOnly ? "const " : ""}${cppType}& ${cppName}`
                         : `${cppType} ${cppName}`,
                 );
                 this.context.defineVariable(
@@ -539,6 +728,13 @@ export class NativeFunctionLowerer {
                             this.context.emitStatement(
                                 statement,
                             );
+                            if (
+                                this.context.statementTerminatesAfterLowering(
+                                    statement,
+                                )
+                            ) {
+                                break;
+                            }
                         }
                     },
                 );

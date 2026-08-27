@@ -69,6 +69,12 @@ struct EngineOptions {
     int height = 720;
 };
 
+/** Browser-neutral keyboard data delivered by the platform event loop. */
+struct PlatformKeyboardEvent {
+    std::string_view code{};
+    bool repeat = false;
+};
+
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
 
@@ -540,12 +546,14 @@ struct SolidTexture {
 
 struct PbrMaterialOptions {
     SolidTexture base_color{};
+    Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     SolidTexture orm{};
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
     float direct_intensity = 1.0f;
     float environment_intensity = 1.0f;
     float alpha = 1.0f;
+    bool alpha_blend = false;
     // Pinned default: the dielectric F0 the PBR material seeds (0.04).
     float reflectance = 0.04f;
     bool unlit = false;
@@ -884,6 +892,10 @@ struct MeshRecord {
     // carries the mirror in the mesh block's world matrix, so a PAL binding
     // those stages needs the sign to convert between the two.
     bool mirrored_x = false;
+    // Optional Mesh.renderOrder. The pinned renderer supplies its family
+    // default only when this field was never assigned.
+    bool has_render_order = false;
+    double render_order = 0.0;
     // glTF KHR_node_visibility, materialized per mesh the way the pinned
     // `setSubtreeVisible` materializes it per node: the extension cascades
     // through the subtree at set time so the render path and the camera
@@ -1330,6 +1342,9 @@ struct TextureTransform {
 struct MaterialRecord {
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+    // Babylon keeps the material-wide alpha separate from the PBR base-color
+    // factor. The fragment multiplies both when the factor field is composed.
+    float alpha = 1.0f;
     Color3 emissive_factor{0.0f, 0.0f, 0.0f};
     // `KHR_materials_emissive_strength` folds into the factor above at load,
     // so animating either one needs both kept apart: the fragment reads the
@@ -1589,7 +1604,7 @@ inline void derive_material_alpha_mode(MaterialRecord& material) {
         return;
     }
     material.alpha_mode =
-        material.base_color_factor.a < 1.0f ||
+        material.alpha < 1.0f ||
                 material.transmission_factor > 0.0f
             ? MaterialAlphaMode::blend
             : MaterialAlphaMode::opaque;
@@ -1854,6 +1869,13 @@ struct Engine {
      * than pretending this is a timer.
      */
     std::vector<std::function<void()>> deferred_callbacks;
+    /** Input callbacks registered before the platform frame loop starts. */
+    std::vector<std::function<void(const PlatformKeyboardEvent&)>>
+        key_down_callbacks;
+    std::vector<std::function<void(const PlatformKeyboardEvent&)>>
+        key_up_callbacks;
+    std::vector<std::function<void()>> pointer_down_callbacks;
+    std::vector<std::function<void(bool)>> visibility_change_callbacks;
     /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
@@ -2111,6 +2133,11 @@ void set_thin_instance_count(
     MeshHandle mesh,
     double count);
 void flush_thin_instances(Engine& engine, MeshHandle mesh);
+void upload_thin_instance_matrices(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrices,
+    double count);
 void set_thin_instance_colors(
     Engine& engine,
     MeshHandle mesh,
@@ -2464,6 +2491,18 @@ void remove_from_scene(Scene& scene, MeshHandle mesh);
 void on_before_render(
     Scene& scene,
     std::function<void(float)> callback);
+void on_key_down(
+    Engine& engine,
+    std::function<void(const PlatformKeyboardEvent&)> callback);
+void on_key_up(
+    Engine& engine,
+    std::function<void(const PlatformKeyboardEvent&)> callback);
+void on_pointer_down(
+    Engine& engine,
+    std::function<void()> callback);
+void on_visibility_change(
+    Engine& engine,
+    std::function<void(bool)> callback);
 PropertyAnimationManager create_animation_manager();
 PropertyAnimationClip create_property_animation_clip(
     std::string name,

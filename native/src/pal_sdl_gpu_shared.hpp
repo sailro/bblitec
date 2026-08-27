@@ -664,6 +664,124 @@ inline void update_buffer(
     SDL_ReleaseGPUTransferBuffer(device, transfer);
 }
 
+/**
+ * Collect small buffer creates and rewrites into one SDL_GPU copy pass.
+ *
+ * Dynamic scenes can add or animate hundreds of independent meshes in one
+ * callback. Submitting one command buffer per vertex/index buffer turns that
+ * portable operation into a multi-second frame on some drivers. The browser
+ * queues the same writes before one queue submission; this batch gives the
+ * SDL backend the same command-boundary shape without changing scene data.
+ */
+class GpuBufferUploadBatch {
+public:
+    explicit GpuBufferUploadBatch(SDL_GPUDevice* device)
+        : device_(device) {}
+
+    GpuBufferUploadBatch(const GpuBufferUploadBatch&) = delete;
+    GpuBufferUploadBatch& operator=(const GpuBufferUploadBatch&) = delete;
+
+    SDL_GPUBuffer* upload(
+        SDL_GPUBufferUsageFlags usage,
+        const void* data,
+        std::size_t size) {
+        SDL_GPUBufferCreateInfo buffer_info{};
+        buffer_info.usage = usage;
+        buffer_info.size = static_cast<Uint32>(size);
+        SDL_GPUBuffer* buffer =
+            SDL_CreateGPUBuffer(device_, &buffer_info);
+        if (!buffer) gpu_error("SDL_CreateGPUBuffer");
+        stage(buffer, data, size, false);
+        return buffer;
+    }
+
+    void update(
+        SDL_GPUBuffer* buffer,
+        const void* data,
+        std::size_t size) {
+        stage(buffer, data, size, true);
+    }
+
+    void submit() {
+        if (uploads_.empty()) return;
+        SDL_GPUTransferBufferCreateInfo transfer_info{};
+        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        transfer_info.size = static_cast<Uint32>(bytes_.size());
+        SDL_GPUTransferBuffer* transfer =
+            SDL_CreateGPUTransferBuffer(device_, &transfer_info);
+        if (!transfer) {
+            gpu_error("SDL_CreateGPUTransferBuffer buffer batch");
+        }
+        void* mapped =
+            SDL_MapGPUTransferBuffer(device_, transfer, false);
+        if (!mapped) gpu_error("SDL_MapGPUTransferBuffer buffer batch");
+        std::memcpy(mapped, bytes_.data(), bytes_.size());
+        SDL_UnmapGPUTransferBuffer(device_, transfer);
+
+        SDL_GPUCommandBuffer* command =
+            SDL_AcquireGPUCommandBuffer(device_);
+        if (!command) {
+            gpu_error("SDL_AcquireGPUCommandBuffer buffer batch");
+        }
+        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+        if (!copy) gpu_error("SDL_BeginGPUCopyPass buffer batch");
+        for (const StagedUpload& upload : uploads_) {
+            const SDL_GPUTransferBufferLocation source{
+                transfer,
+                static_cast<Uint32>(upload.offset),
+            };
+            const SDL_GPUBufferRegion destination{
+                upload.buffer,
+                0,
+                static_cast<Uint32>(upload.size),
+            };
+            SDL_UploadToGPUBuffer(
+                copy,
+                &source,
+                &destination,
+                upload.cycle);
+        }
+        SDL_EndGPUCopyPass(copy);
+        if (!SDL_SubmitGPUCommandBuffer(command)) {
+            SDL_ReleaseGPUTransferBuffer(device_, transfer);
+            gpu_error("SDL_SubmitGPUCommandBuffer buffer batch");
+        }
+        SDL_ReleaseGPUTransferBuffer(device_, transfer);
+        uploads_.clear();
+        bytes_.clear();
+    }
+
+private:
+    void stage(
+        SDL_GPUBuffer* buffer,
+        const void* data,
+        std::size_t size,
+        bool cycle) {
+        constexpr std::size_t alignment = 4;
+        const std::size_t offset =
+            (bytes_.size() + alignment - 1) & ~(alignment - 1);
+        bytes_.resize(offset + size);
+        std::memcpy(bytes_.data() + offset, data, size);
+        uploads_.push_back(StagedUpload{
+            .buffer = buffer,
+            .offset = offset,
+            .size = size,
+            .cycle = cycle,
+        });
+    }
+
+    struct StagedUpload {
+        SDL_GPUBuffer* buffer = nullptr;
+        std::size_t offset = 0;
+        std::size_t size = 0;
+        bool cycle = false;
+    };
+
+    SDL_GPUDevice* device_ = nullptr;
+    std::vector<StagedUpload> uploads_;
+    std::vector<std::uint8_t> bytes_;
+};
+
 inline SDL_GPUSampler* create_texture_sampler(
     SDL_GPUDevice* device,
     const TextureSamplerState& sampler) {

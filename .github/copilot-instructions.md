@@ -312,9 +312,12 @@ binaries are the same, which means no measurement can have moved. See
 - Use `npm run scene -- process <source.ts>` for an unregistered scene.
 - Add a registry entry only for curated thresholds, custom references,
   environment flags, or attribution capabilities.
-- Curated scene inputs, thresholds, and goldens are evidence. Do not alter
-  them to improve MAD. New references require an intentional pinned-scene
-  integration or explicit recapture.
+- Curated scene inputs, golden application sources, thresholds, and image
+  goldens are evidence. Do not alter them to make compilation succeed or to
+  improve MAD. Every pinned golden application's source graph must remain
+  byte-for-byte identical to upstream. Fix its integration in the compiler,
+  lowerers, generated runtime, or PAL. New references require an intentional
+  pinned-scene integration or explicit recapture.
 - Add tests when extending compiler or lowering behavior.
 - Keep lowerers focused; do not rebuild a monolithic compiler class.
 - Preserve provenance for generated behavior.

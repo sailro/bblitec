@@ -942,6 +942,66 @@ inline std::vector<GpuVertex> transformed_vertices(
     return result;
 }
 
+/** Local-space vertex lanes for material families whose own world matrix is
+ *  bound per draw. Keeping these immutable avoids rebaking and re-uploading
+ *  a whole vertex buffer for every transform-only animation step. */
+inline std::vector<GpuVertex> local_vertices(
+    const ModelGeometry& geometry) {
+    static const MeshRecord identity_transform{};
+    return transformed_vertices(geometry, identity_transform);
+}
+
+/**
+ * The ordinary mesh TRS as a column-major world matrix.
+ *
+ * Its basis vectors go through the same rotation helpers the historical CPU
+ * vertex bake uses, so moving the transform into a shader uniform changes the
+ * storage location rather than the scene meaning.
+ */
+inline std::array<float, 16> shader_draw_world(
+    const MeshRecord& mesh) {
+    const Vec3 x = rotate_mesh(
+        Vec3{mesh.scaling.x, 0.0f, 0.0f},
+        mesh);
+    const Vec3 y = rotate_mesh(
+        Vec3{0.0f, mesh.scaling.y, 0.0f},
+        mesh);
+    const Vec3 z = rotate_mesh(
+        Vec3{0.0f, 0.0f, mesh.scaling.z},
+        mesh);
+    return {
+        x.x, x.y, x.z, 0.0f,
+        y.x, y.y, y.z, 0.0f,
+        z.x, z.y, z.z, 0.0f,
+        mesh.position.x + mesh.outer_position.x,
+        mesh.position.y + mesh.outer_position.y,
+        mesh.position.z + mesh.outer_position.z,
+        1.0f,
+    };
+}
+
+/** The pin's projection-view product times one mesh world, preserving its
+ *  explicit four-term accumulation order and float32 store boundary. */
+inline std::array<float, 16> shader_world_view_projection(
+    const float* view_projection,
+    const std::array<float, 16>& world) {
+    std::array<float, 16> result{};
+    for (std::size_t column = 0; column < 4; ++column) {
+        const double b0 = world[column * 4];
+        const double b1 = world[column * 4 + 1];
+        const double b2 = world[column * 4 + 2];
+        const double b3 = world[column * 4 + 3];
+        for (std::size_t row = 0; row < 4; ++row) {
+            result[column * 4 + row] = static_cast<float>(
+                (((static_cast<double>(view_projection[row]) * b0 +
+                   static_cast<double>(view_projection[4 + row]) * b1) +
+                  static_cast<double>(view_projection[8 + row]) * b2) +
+                 static_cast<double>(view_projection[12 + row]) * b3));
+        }
+    }
+    return result;
+}
+
 /**
  * One background-plan vertex (the skybox and ground quads) in GpuVertex
  * layout: the local-normal lane mirrors the normal and every deformation
@@ -1027,20 +1087,19 @@ inline std::vector<GpuVertex> pinned_convention_vertices(
 }
 
 /**
- * The record's instance matrices in Babylon's own convention. The glTF
- * loader stores EXT_mesh_gpu_instancing matrices through `native_matrix`
- * -- the X-mirror conjugation M*A*M -- where the pin uploads the authored
- * values and carries the mirror in the mesh block's world; the conjugation
- * is involutive, so applying it again recovers them. Scene-code thin
- * instances adopt the caller's floats verbatim -- the same floats the
- * pin's own setThinInstances receives -- so they pass through untouched.
- * `thin_instanced` is stamped by both, so the discriminator is
- * `instance_source`, which only the scene-code setter fills.
+ * The instance matrices paired with the PBR family's pinned vertex stream.
+ *
+ * That stream reverses the native vertex X mirror and the mesh block carries
+ * it instead. Therefore its instance matrix is always the mirror conjugation
+ * of the record's matrix. For glTF, the record already stores M*A*M and this
+ * involutive operation recovers the authored A. For scene-code pools, the
+ * record stores authored A and this produces M*A*M, which is what cancels the
+ * pinned stream's extra vertex mirror. The ordinary/Standard instance stream
+ * continues to consume the record bytes directly.
  */
 inline std::vector<std::array<float, 16>> pinned_instance_matrices(
     const MeshRecord& record) {
     std::vector<std::array<float, 16>> result = record.instance_matrices;
-    if (record.instance_source != nullptr) return result;
     for (std::array<float, 16>& matrix : result) {
         for (std::size_t column = 0; column < 4; ++column) {
             for (std::size_t row = 0; row < 4; ++row) {
@@ -1907,6 +1966,16 @@ inline PinnedVariantKey pinned_variant_key(
             "the scene's runtime meshes carry no single attribute set";
         return key;
     }
+    // Scene-code pools attach after generation recorded the mesh's static
+    // attribute word. Match the pin's _computeMeshFeatures result at draw
+    // time; EXT_mesh_gpu_instancing already carries the bit in the table, so
+    // this idempotent OR covers both origins with one rule.
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        if (pinned_record_instanced(record)) {
+            key.mesh_features |= upstream::pinned_msh_has_thin_instances;
+        }
+    }
     // The light mode, walked the way `writeMeshLightSelection` walks it: how
     // many of the scene's lights affect this mesh decides which arm the pin
     // composed.
@@ -2619,6 +2688,7 @@ struct FrameOptions {
     long max_frames = 0;
     long benchmark_frames = 0;
     double animation_seek_seconds = 0.0;
+    float frame_delta_ms = 0.0f;
 
     /** Frames to run: a benchmark adds its warmup to the request. */
     [[nodiscard]] long frame_budget() const {
@@ -2704,6 +2774,12 @@ inline FrameOptions read_frame_options() {
         environment_variable("BBLITE_ANIMATION_SEEK_SECONDS");
     options.animation_seek_seconds =
         seek.empty() ? 0.0 : std::strtod(seek.c_str(), nullptr);
+    const std::string frame_delta =
+        environment_variable("BBLITE_FRAME_DELTA_MS");
+    options.frame_delta_ms = frame_delta.empty()
+        ? 0.0f
+        : static_cast<float>(
+              std::strtod(frame_delta.c_str(), nullptr));
     return options;
 }
 
@@ -3527,7 +3603,7 @@ inline std::array<float, 4> diagnostic_alpha_options(
                 ? 1.0f
                 : 0.0f;
     options[1] = material->alpha_cutoff;
-    options[2] = material->base_color_factor.a;
+    options[2] = material->alpha;
     return options;
 }
 
@@ -3573,35 +3649,13 @@ inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
 }
 
 /**
- * One custom-shader stage block, filled from the generated variant
- * table: [the system matrices the stage declared, in that order][the
- * reflected gathers from the material's flat value storage]. The same
- * floats reach an SDL_GPU push, a Dawn buffer write and the render
- * capture, so the packing lives here.
- *
- * `world` is the identity because `transformed_vertices` bakes a
- * shader-material mesh's TRS into its vertices, which makes the pin's
- * `viewProjection * world * position` the same product as the
- * single-matrix `worldViewProjection * position`.
- *
- * That baking is CONDITIONAL: the same function gives a thin-instanced
- * mesh the identity TRS and sends its transform through the instance
- * stream instead. A `world`-declaring shader material on a thin-instanced
- * mesh therefore needs the real per-draw world, the way
- * `pinned_draw_world` reads it -- not this constant. No reached scene
- * declares `world` at all yet, so the case is unbuilt rather than wrong;
- * the first one that does has to settle it here.
- */
-/**
  * Whether a stage's whole block is the shared scene matrix, so a backend
  * may bind the frame's own buffer instead of the material's.
  *
- * `viewProjection` and `worldViewProjection` are the same bytes here --
- * a shader-material draw's world is the identity (see
- * `shader_stage_block_floats`) -- so either alone satisfies it, and the
- * pin's other three system matrices satisfy none of it. Asked in one place
- * because four sites used to ask it in three spellings, and generalizing
- * some of them is how the others went wrong.
+ * Only `viewProjection` is constant across the pass. Shader-material
+ * geometry stays in local space, so `world` and `worldViewProjection`
+ * depend on the draw; the two individual factors are pass values but do not
+ * have the same layout as the shared product buffer.
  */
 inline bool block_is_shared_scene_matrix(
     const upstream::ShaderVariantStageBlock& block) {
@@ -3610,9 +3664,9 @@ inline bool block_is_shared_scene_matrix(
     }
     switch (block.system_matrices.front()) {
         case upstream::ShaderSystemMatrix::view_projection:
-        case upstream::ShaderSystemMatrix::world_view_projection:
             return true;
         case upstream::ShaderSystemMatrix::world:
+        case upstream::ShaderSystemMatrix::world_view_projection:
         case upstream::ShaderSystemMatrix::view:
         case upstream::ShaderSystemMatrix::projection:
             return false;
@@ -3641,8 +3695,15 @@ struct ShaderPassMatrices {
     const float* view_projection = nullptr;
     const std::array<float, 16>* view = nullptr;
     const std::array<float, 16>* projection = nullptr;
+    const std::array<float, 16>* world = nullptr;
+    const std::array<float, 16>* world_view_projection = nullptr;
 };
 
+/**
+ * One custom-shader stage block: declared system matrices followed by the
+ * reflected gathers from the material's flat value storage. These exact
+ * floats feed SDL pushes, Dawn buffer writes and render capture.
+ */
 inline std::vector<float> shader_stage_block_floats(
     const upstream::ShaderVariantStageBlock& block,
     const ShaderPassMatrices& pass,
@@ -3673,7 +3734,9 @@ inline std::vector<float> shader_stage_block_floats(
         // rather than silently inheriting one.
         switch (matrix) {
             case upstream::ShaderSystemMatrix::world:
-                copy_from(identity.data(), "world");
+                copy_from(
+                    pass.world ? pass.world->data() : identity.data(),
+                    "world");
                 break;
             case upstream::ShaderSystemMatrix::view:
                 copy_from(
@@ -3689,7 +3752,10 @@ inline std::vector<float> shader_stage_block_floats(
                 break;
             case upstream::ShaderSystemMatrix::world_view_projection:
                 copy_from(
-                    pass.view_projection, "worldViewProjection");
+                    pass.world_view_projection
+                        ? pass.world_view_projection->data()
+                        : pass.view_projection,
+                    "worldViewProjection");
                 break;
         }
         head += 16;
@@ -3740,12 +3806,15 @@ inline std::vector<float> shader_stage_block_floats(
 [[nodiscard]] inline float advance_frame(
     Engine& engine,
     Scene& scene,
-    FrameClock& frame_clock) {
+    FrameClock& frame_clock,
+    float frame_delta_ms) {
     if (engine.stopped) {
         return 0.0f;
     }
-    const float delta_ms =
-        frame_clock.advance(scene.fixed_delta_ms);
+    const float delta_ms = frame_clock.advance(
+        frame_delta_ms > 0.0f
+            ? frame_delta_ms
+            : scene.fixed_delta_ms);
     for (const auto& callback : scene.before_render) {
         callback(delta_ms);
     }

@@ -755,7 +755,7 @@ test("the native-support block flows from the pin's own declarations", async () 
         ),
     );
     assert.ok(
-        block.includes("if (material.base_color_factor.a < 1.0f) {"),
+        block.includes("if (material.alpha < 1.0f) {"),
     );
     assert.ok(
         block.includes(
@@ -771,7 +771,7 @@ test("the native-support block flows from the pin's own declarations", async () 
         block.includes("props.bump_level = material.bump_scale;"),
     );
     assert.ok(
-        block.includes("props.alpha = material.base_color_factor.a;"),
+        block.includes("props.alpha = material.alpha;"),
     );
     assert.ok(!block.includes("props.lightmap_level"));
     // The rCm lane flows from the record's own field (the .babylon

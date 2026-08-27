@@ -6,11 +6,15 @@
 #
 # Two deliberate departures from LabSound's own default build:
 #
-#   * **No audio backend is built.** LabSound ships RtAudio, miniaudio
+#   * **No audio backend is linked.** LabSound ships RtAudio, miniaudio
 #     and a mock backend, and every one of them is a second platform
 #     dependency. `lab::AudioDevice` is public, so this project's device
 #     is SDL3 (native/src/pal_audio_sdl_device.hpp) and the bundled
-#     backends never compile. Only the `LabSound` core target is built.
+#     backends never enter the installed library. Only `LabSound` is built.
+#     `-CoreOnly` (implied by `-StaticRuntime`) also disables LabSound's global
+#     all-node registry, HRTF file loader, and debug encoder; direct reached
+#     node constructors remain available without pulling codecs or unrelated
+#     DSP into the application.
 #   * **libnyquist is pinned by path.** LabSound fetches it at
 #     `GIT_TAG master`, which is not reproducible; the pin file records
 #     the commit the validated build resolved to and this script checks
@@ -18,13 +22,29 @@
 #     `-DLIBNYQUIST_SOURCE_DIR`.
 
 param(
-    [string]$Workspace = ".cache\labsound",
-    [string]$OutputDirectory = "artifacts\tools\labsound",
+    [string]$Workspace = "",
+    [string]$OutputDirectory = "",
+    [switch]$StaticRuntime,
+    [switch]$CoreOnly,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+if (-not $Workspace) {
+    $Workspace = if ($StaticRuntime) {
+        ".cache\labsound-static"
+    } else {
+        ".cache\labsound"
+    }
+}
+if (-not $OutputDirectory) {
+    $OutputDirectory = if ($StaticRuntime) {
+        "artifacts\tools\labsound-static"
+    } else {
+        "artifacts\tools\labsound"
+    }
+}
 $pin = Get-Content (Join-Path $root "upstream\labsound.json") -Raw |
     ConvertFrom-Json
 $workspacePath = Join-Path $root $Workspace
@@ -67,10 +87,37 @@ Sync-PinnedCheckout `
     $pin.dependencies.libnyquist.commit `
     "libnyquist"
 
-& $CMake -S $source -B $build `
-    -DCMAKE_BUILD_TYPE=Release `
-    -DLIBNYQUIST_SOURCE_DIR="$nyquist" `
-    -DLIBNYQUIST_BUILD_EXAMPLE=OFF
+$coreOnlyBuild = $CoreOnly -or $StaticRuntime
+if ($coreOnlyBuild) {
+    $corePatch = Join-Path $root "tools\patches\labsound-core-only.patch"
+    git -C $source apply --check $corePatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "The maintained LabSound core-only patch no longer applies to the pin."
+    }
+    git -C $source apply $corePatch
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to apply the maintained LabSound core-only patch."
+    }
+}
+
+$configureArguments = @(
+    "-S", $source,
+    "-B", $build,
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DLIBNYQUIST_SOURCE_DIR=$nyquist",
+    "-DLIBNYQUIST_BUILD_EXAMPLE=OFF"
+)
+if ($StaticRuntime) {
+    $configureArguments += @(
+        '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
+        '-DCMAKE_CXX_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG /Gw /GL /DLABSOUND_CORE_ONLY',
+        '-DCMAKE_C_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG /Gw /GL'
+    )
+}
+if ($coreOnlyBuild -and -not $StaticRuntime) {
+    $configureArguments += '-DCMAKE_CXX_FLAGS_RELEASE=/O2 /DNDEBUG /DLABSOUND_CORE_ONLY'
+}
+& $CMake @configureArguments
 if ($LASTEXITCODE -ne 0) {
     throw "LabSound CMake configuration failed."
 }
@@ -97,11 +144,14 @@ $labSoundLib = Resolve-BuiltLibrary @(
     (Join-Path $build "bin\LabSound.lib"),
     (Join-Path $build "bin\Release\LabSound.lib")
 ) "LabSound"
-$nyquistLib = Resolve-BuiltLibrary @(
-    (Join-Path $build "_deps\libnyquist-build\lib\libnyquist.lib"),
-    (Join-Path $build "_deps\libnyquist-build\lib\Release\libnyquist.lib")
-) "libnyquist"
-$libraries = @($labSoundLib, $nyquistLib)
+$libraries = @($labSoundLib)
+if (-not $coreOnlyBuild) {
+    $nyquistLib = Resolve-BuiltLibrary @(
+        (Join-Path $build "_deps\libnyquist-build\lib\libnyquist.lib"),
+        (Join-Path $build "_deps\libnyquist-build\lib\Release\libnyquist.lib")
+    ) "libnyquist"
+    $libraries += $nyquistLib
+}
 
 $includeOut = Join-Path $output "include"
 $libOut = Join-Path $output "lib"
@@ -112,5 +162,22 @@ foreach ($library in $libraries) {
 }
 Copy-Item -Force (Join-Path $source "LICENSE") (Join-Path $output "LabSound-LICENSE.txt")
 Copy-Item -Force (Join-Path $source "COPYING") (Join-Path $output "LabSound-COPYING.txt")
+if ($coreOnlyBuild) {
+    foreach ($obsolete in @(
+        (Join-Path $libOut "libnyquist.lib"),
+        (Join-Path $output "libnyquist-LICENSE.txt"),
+        (Join-Path $output "libnyquist-COPYING.txt")
+    )) {
+        Remove-Item -LiteralPath $obsolete -Force -ErrorAction SilentlyContinue
+    }
+} else {
+    Copy-Item -Force (Join-Path $nyquist "LICENSE") (Join-Path $output "libnyquist-LICENSE.txt")
+    Copy-Item -Force (Join-Path $nyquist "COPYING") (Join-Path $output "libnyquist-COPYING.txt")
+}
+
+$staticRuntimeSetting = if ($StaticRuntime) { "ON" } else { "OFF" }
+$coreOnlySetting = if ($coreOnlyBuild) { "ON" } else { "OFF" }
+"set(BBLITE_LABSOUND_STATIC_RUNTIME $staticRuntimeSetting)`nset(BBLITE_LABSOUND_CORE_ONLY $coreOnlySetting)`n" |
+    Set-Content (Join-Path $output "bblite-labsound-features.cmake") -Encoding Ascii
 
 Write-Host "LabSound installed to $output (commit $($pin.commit))."

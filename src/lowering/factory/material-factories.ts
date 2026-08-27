@@ -950,12 +950,12 @@ MaterialHandle create_pbr_material(
     material.base_color_fallback = options.base_color.texel;
     material.base_color_srgb = false;
     material.orm_fallback = options.orm.texel;
-    material.base_color_factor = {1.0f, 1.0f, 1.0f, 1.0f};
+    material.base_color_factor = options.base_color_factor;
     material.roughness_factor = options.roughness_factor;
     material.metallic_factor = options.metallic_factor;
     material.direct_intensity = options.direct_intensity;
     material.environment_intensity = options.environment_intensity;
-    material.base_color_factor.a = options.alpha;
+    material.alpha = options.alpha;
     material.reflectance = options.reflectance;
     material.unlit = options.unlit;
     material.double_sided = options.double_sided;
@@ -974,6 +974,9 @@ MaterialHandle create_pbr_material(
     material.has_ior = false;
     material.has_volume = options.has_volume;
     derive_material_alpha_mode(material);
+    if (options.alpha_blend) {
+        material.alpha_mode = MaterialAlphaMode::blend;
+    }
     material.has_occlusion_texture = true;
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
@@ -1394,7 +1397,7 @@ MaterialHandle create_standard_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
     material.diffuse_color = ${tuple("diffuseColor")};
-    material.base_color_factor.a = ${scalar("alpha")};
+    material.alpha = ${scalar("alpha")};
     material.specular_color = ${tuple("specularColor")};
     material.specular_power = ${scalar("specularPower")};
     material.emissive_factor = ${tuple("emissiveColor")};

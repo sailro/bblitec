@@ -45,22 +45,25 @@ if(
     list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
 endif()
 
-# The trimmed SDL3 (tools/build-sdl-min.ps1) is built -DSDL_AUDIO=OFF,
-# because nothing needed the subsystem until the Web Audio slice existed.
-# A scene reaching audio against it would open no device and throw at the
-# first frame -- a late and uninformative way to learn that a build
-# option said no. Refused here, before project(), so it is the first
-# thing a bad pair reports.
+# A scene reaching audio against an audio-disabled trimmed SDL would open no
+# device and throw at the first frame -- a late and uninformative way to learn
+# that a build option said no. The trimmed dependency builder writes its
+# capabilities explicitly, so refuse only incompatible or unproven installs.
+# This runs before project() so it is the first thing a bad pair reports.
 if(BBLITE_SDL_DIR AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
-    message(
-        FATAL_ERROR
-        "This scene reaches audio:engine, but BBLITE_SDL_DIR selects the "
-        "subsystem-trimmed SDL3, which tools/build-sdl-min.ps1 builds with "
-        "SDL_AUDIO=OFF -- there is no audio device to open. Either leave "
-        "BBLITE_SDL_DIR empty to use the toolchain SDL3, or rebuild the "
-        "trimmed SDL with SDL_AUDIO=ON into an install root of its own and "
-        "point BBLITE_SDL_DIR at that."
-    )
+    set(BBLITE_SDL_FEATURES "${BBLITE_SDL_DIR}/bblite-sdl-features.cmake")
+    if(EXISTS "${BBLITE_SDL_FEATURES}")
+        include("${BBLITE_SDL_FEATURES}")
+    endif()
+    if(NOT BBLITE_SDL_AUDIO)
+        message(
+            FATAL_ERROR
+            "This scene reaches audio:engine, but BBLITE_SDL_DIR does not "
+            "declare BBLITE_SDL_AUDIO=ON. Use the toolchain SDL3, or build "
+            "the feature-compatible trimmed install with "
+            "tools/build-sdl-min.ps1 -EnableAudio."
+        )
+    endif()
 endif()
 
 project(babylon_lite_native LANGUAGES CXX)
@@ -94,6 +97,20 @@ option(
     BBLITE_MINSIZE
     "Optimize the executable for minimal size (LTCG, dead-stripping)"
     OFF
+)
+
+# Offline WAV capture is a development/parity facility. It is the only
+# reached audio path that needs RecorderNode/libnyquist, so shipping builds
+# leave it out unless a caller explicitly opts back in.
+if(BBLITE_MINSIZE)
+    set(BBLITE_AUDIO_CAPTURE_DEFAULT OFF)
+else()
+    set(BBLITE_AUDIO_CAPTURE_DEFAULT ON)
+endif()
+option(
+    BBLITE_AUDIO_CAPTURE
+    "Build offline audio capture and its codec dependency"
+    ${BBLITE_AUDIO_CAPTURE_DEFAULT}
 )
 
 # Installed pinned Dawn package root. The default is the differential-
@@ -569,6 +586,31 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             "existing install."
         )
     endif()
+    set(
+        BBLITE_LABSOUND_FEATURES
+        "${BBLITE_LABSOUND_DIR}/bblite-labsound-features.cmake"
+    )
+    if(EXISTS "${BBLITE_LABSOUND_FEATURES}")
+        include("${BBLITE_LABSOUND_FEATURES}")
+    endif()
+    if(BBLITE_MINSIZE)
+        if(NOT BBLITE_LABSOUND_STATIC_RUNTIME)
+            message(
+                FATAL_ERROR
+                "A minimal audio build requires the static-CRT LabSound "
+                "variant. Build it with tools/build-labsound.ps1 "
+                "-StaticRuntime and point BBLITE_LABSOUND_DIR at that install."
+            )
+        endif()
+    endif()
+    if(NOT BBLITE_AUDIO_CAPTURE AND NOT BBLITE_LABSOUND_CORE_ONLY)
+        message(
+            FATAL_ERROR
+            "An audio build without capture/codecs requires the core-only "
+            "LabSound variant. Build it with tools/build-labsound.ps1 "
+            "-CoreOnly (also implied by -StaticRuntime)."
+        )
+    endif()
     # SYSTEM: LabSound's headers are not warning-clean under /W4, and
     # this project's own sources must stay so.
     target_include_directories(
@@ -579,11 +621,54 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
         bblite_native
         PRIVATE
             "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
-            "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
     )
+    if(BBLITE_AUDIO_CAPTURE)
+        if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib")
+            message(
+                FATAL_ERROR
+                "BBLITE_AUDIO_CAPTURE requires libnyquist at "
+                "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib."
+            )
+        endif()
+        target_link_libraries(
+            bblite_native PRIVATE
+            "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
+        )
+        target_compile_definitions(
+            bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=1
+        )
+    else()
+        target_compile_definitions(
+            bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=0
+        )
+    endif()
+    foreach(BBLITE_AUDIO_NODE_FEATURE IN ITEMS
+        OSCILLATOR BIQUAD_FILTER STEREO_PANNER
+    )
+        string(TOLOWER "${BBLITE_AUDIO_NODE_FEATURE}" BBLITE_AUDIO_NODE_LOWER)
+        string(REPLACE "_" "-" BBLITE_AUDIO_NODE_FEATURE_NAME "${BBLITE_AUDIO_NODE_LOWER}")
+        if("audio:${BBLITE_AUDIO_NODE_FEATURE_NAME}" IN_LIST BBLITE_RUNTIME_FEATURES)
+            target_compile_definitions(
+                bblite_native PRIVATE
+                "BBLITE_HAS_AUDIO_${BBLITE_AUDIO_NODE_FEATURE}=1"
+            )
+        else()
+            target_compile_definitions(
+                bblite_native PRIVATE
+                "BBLITE_HAS_AUDIO_${BBLITE_AUDIO_NODE_FEATURE}=0"
+            )
+        endif()
+    endforeach()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=1)
 else()
-    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO=0)
+    target_compile_definitions(
+        bblite_native PRIVATE
+        BBLITE_HAS_AUDIO=0
+        BBLITE_HAS_AUDIO_CAPTURE=0
+        BBLITE_HAS_AUDIO_OSCILLATOR=0
+        BBLITE_HAS_AUDIO_BIQUAD_FILTER=0
+        BBLITE_HAS_AUDIO_STEREO_PANNER=0
+    )
 endif()
 
 if("renderer:geometry-output" IN_LIST BBLITE_RUNTIME_FEATURES)
@@ -639,7 +724,16 @@ if(BBLITE_MINSIZE)
             )
             target_link_options(
                 bblite_native
-                PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
+                PRIVATE
+                    /LTCG
+                    /OPT:REF
+                    /OPT:ICF
+                    /INCREMENTAL:NO
+                    /MAP
+                    # Lowered static data can create a large initializer frame.
+                    # Reserve virtual address space explicitly instead of relying
+                    # on Windows' 1 MiB default; pages remain demand-committed.
+                    /STACK:8388608
             )
         else()
             target_compile_options(
@@ -661,7 +755,16 @@ if(BBLITE_MINSIZE)
         # tools/map-size-report.mjs attribution.
         target_link_options(
             bblite_native
-            PRIVATE /LTCG /OPT:REF /OPT:ICF /INCREMENTAL:NO /MAP
+            PRIVATE
+                /LTCG
+                /OPT:REF
+                /OPT:ICF
+                /INCREMENTAL:NO
+                /MAP
+                # Lowered static data can create a large initializer frame.
+                # Reserve virtual address space explicitly instead of relying
+                # on Windows' 1 MiB default; pages remain demand-committed.
+                /STACK:8388608
         )
     else()
         target_compile_options(

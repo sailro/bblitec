@@ -45,6 +45,7 @@ import {
 import type {
     CompileAsset,
     CompiledNodeParticles,
+    LightKind,
     Value,
     ValueKind,
 } from "./types.js";
@@ -162,6 +163,7 @@ export interface HandleCollectionsContext
         minimum: number,
         maximum: number,
     ): void;
+    nextSceneLightIndex(kind?: LightKind): number;
 }
 
 /** One member of an asset-derived collection, in document order. */
@@ -690,6 +692,9 @@ export class HandleCollections {
         const light = this.context.compileValue(call.arguments[0]!);
         this.context.expectKind(light, "light", call.arguments[0]!);
         this.context.expectSameEngine(scene, light, call);
+        light.sceneLightIndex = this.context.nextSceneLightIndex(
+            light.lightKind,
+        );
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,

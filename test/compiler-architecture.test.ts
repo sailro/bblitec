@@ -546,6 +546,52 @@ test("preserves multisampling across the transmission scene-color copy", () => {
     );
 });
 
+test("keeps dynamic shader geometry local and transforms it per draw", () => {
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(shared, /inline std::vector<GpuVertex> local_vertices\(/);
+    assert.match(shared, /inline std::array<float, 16> shader_draw_world\(/);
+    assert.match(
+        shared,
+        /inline std::array<float, 16> shader_world_view_projection\(/,
+    );
+    assert.match(
+        shared,
+        /case upstream::ShaderSystemMatrix::world_view_projection:[\s\S]{0,180}return false;/,
+    );
+
+    for (const backend of [sdl, dawn]) {
+        assert.match(
+            backend,
+            /shader_material\s*\?\s*local_vertices\(geometry\)/,
+        );
+        assert.match(backend, /shared_shader_geometries/);
+        assert.match(backend, /shader_draw_world\(/);
+        assert.match(backend, /shader_world_view_projection\(/);
+        assert.match(
+            backend,
+            /item\.material_kind ==\s*upstream::RenderMaterialKind::shader[\s\S]{0,300}transform_version = mesh\.transform_version;[\s\S]{0,80}continue;/,
+        );
+    }
+
+    // Generated PBR/Standard texture lanes are not per-mesh resources for a
+    // custom shader family. Both backends retain inert shared bindings where
+    // their API layout requires them and upload the lanes only for composed
+    // material draws.
+    for (const backend of [sdl, dawn]) {
+        assert.match(
+            backend,
+            /const bool composed_material =/,
+        );
+        assert.match(
+            backend,
+            /if \(composed_material\) \{[\s\S]{0,160}material_texture_slots/,
+        );
+    }
+});
+
 test("captures splat renderables beside the render-plan draw lists", () => {
     const capture = source("native/src/pal_render_capture.hpp");
     assert.match(capture, /write_splat_draw_list/);

@@ -61,6 +61,7 @@ export type DataType =
     | { kind: "enummap"; enumName: string; element: DataType }
     | { kind: "table"; dimensions: number[] }
     | { kind: "f32array" }
+    | { kind: "u16array" }
     | { kind: "u32array" };
 
 export interface DataStructField {
@@ -150,6 +151,7 @@ export function dataTypesEqual(
         case "boolean":
         case "string":
         case "f32array":
+        case "u16array":
         case "u32array":
             return true;
         case "handle":
@@ -356,6 +358,9 @@ export class DataTypeRegistry {
         }
         if (type.symbol?.name === "Float32Array") {
             return { kind: "f32array" };
+        }
+        if (type.symbol?.name === "Uint16Array") {
+            return { kind: "u16array" };
         }
         if (type.symbol?.name === "Uint32Array") {
             return { kind: "u32array" };
@@ -889,6 +894,8 @@ export class DataTypeRegistry {
                 return `const ${this.tableCppType(dataType.dimensions)}&`;
             case "f32array":
                 return "bbl::js::F32Array";
+            case "u16array":
+                return "bbl::js::U16Array";
             case "u32array":
                 return "bbl::js::U32Array";
         }
@@ -922,6 +929,8 @@ export class DataTypeRegistry {
                 return `g(${dataType.dimensions.join("x")})`;
             case "f32array":
                 return "f32";
+            case "u16array":
+                return "u16";
             case "u32array":
                 return "u32";
         }

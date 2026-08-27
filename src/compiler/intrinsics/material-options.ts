@@ -76,6 +76,7 @@ export interface MaterialOptionContext
     ): string;
     compileBoolean(expression: ts.Expression): string;
     compileColor3(expression: ts.Expression): string;
+    compileColor4(expression: ts.Expression): string;
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -100,12 +101,14 @@ export interface MaterialOptionContext
  */
 export interface CompiledPbrMaterialOptions {
     baseColor: Value;
+    baseColorFactor: string;
     orm: Value;
     metallicFactor: string;
     roughnessFactor: string;
     directIntensity: string;
     environmentIntensity: string;
     alpha: string;
+    alphaBlend: string;
     reflectance: string;
     unlit: string;
     doubleSided: string;
@@ -369,12 +372,14 @@ export function compilePbrMaterialOptions(
         object,
         [
             "baseColorTexture",
+            "baseColorFactor",
             "ormTexture",
             "metallicFactor",
             "roughnessFactor",
             "directIntensity",
             "environmentIntensity",
             "alpha",
+            "alphaBlend",
             "reflectance",
             "occlusionStrength",
             "_metallicF0Factor",
@@ -384,9 +389,13 @@ export function compilePbrMaterialOptions(
             "subsurface",
             "usePhysicalLightFalloff",
         ],
-        "Reached PBR lowering supports base/ORM textures, metallic/roughness factors, alpha, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, skybox mode, and transmission subsurface fields.",
+        "Reached PBR lowering supports base/ORM textures, the base color factor, metallic/roughness factors, alpha and alpha blending, reflectance, occlusion strength, specular AA, the internal metallic F0 factor, lighting intensities, the light falloff mode, skybox mode, and transmission subsurface fields.",
     );
     const baseColorExpression = context.objectProperty(object, "baseColorTexture");
+    const baseColorFactorExpression = context.objectProperty(
+        object,
+        "baseColorFactor",
+    );
     const ormExpression = context.objectProperty(object, "ormTexture");
     if (!baseColorExpression || !ormExpression) {
         context.fail(object, "PBR material requires baseColorTexture and ormTexture.");
@@ -395,6 +404,9 @@ export function compilePbrMaterialOptions(
     const orm = context.compileValue(ormExpression);
     context.expectKind(baseColor, "texture", baseColorExpression);
     context.expectKind(orm, "texture", ormExpression);
+    const baseColorFactor = baseColorFactorExpression
+        ? staticPbrBaseColorFactor(context, baseColorFactorExpression)
+        : undefined;
     const metallic = context.objectProperty(object, "metallicFactor");
     const roughness = context.objectProperty(object, "roughnessFactor");
     const direct = context.objectProperty(object, "directIntensity");
@@ -403,6 +415,10 @@ export function compilePbrMaterialOptions(
         "environmentIntensity",
     );
     const alpha = context.objectProperty(object, "alpha");
+    const alphaBlend = context.objectProperty(
+        object,
+        "alphaBlend",
+    );
     const reflectance = context.objectProperty(object, "reflectance");
     const occlusionStrength = context.objectProperty(
         object,
@@ -509,6 +525,15 @@ export function compilePbrMaterialOptions(
     const alphaCpp = alpha
         ? context.compileNumber(alpha)
         : pinnedDefaultFloatCpp("pbrAlpha");
+    const staticAlphaBlend = compileOptionalStaticBoolean(
+        context,
+        alphaBlend,
+        false,
+        "PBR alphaBlend",
+    );
+    const alphaBlendCpp = staticAlphaBlend
+        ? "true"
+        : "false";
     const reflectanceCpp = reflectance
         ? context.compileNumber(reflectance)
         : pinnedDefaultFloatCpp("pbrReflectance");
@@ -577,11 +602,13 @@ export function compilePbrMaterialOptions(
         ).length,
         hasBaseColorTexture: true,
         hasOrmTexture: true,
+        ...(baseColorFactor ? { baseColorFactor: baseColorFactor.value } : {}),
         metallicFactor: Number.parseFloat(metallicCpp),
         roughnessFactor: Number.parseFloat(roughnessCpp),
         directIntensity: Number.parseFloat(directCpp),
         environmentIntensity: Number.parseFloat(environmentCpp),
         alpha: Number.parseFloat(alphaCpp),
+        ...(staticAlphaBlend ? { alphaBlend: true } : {}),
         reflectance: Number.parseFloat(reflectanceCpp),
         ...(staticOcclusionStrength === pinnedDefaultNumber("occlusionStrength")
             ? {}
@@ -600,12 +627,16 @@ export function compilePbrMaterialOptions(
     }) - 1;
     return {
         baseColor,
+        baseColorFactor:
+            baseColorFactor?.cpp ??
+            "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",
         orm,
         metallicFactor: metallicCpp,
         roughnessFactor: roughnessCpp,
         directIntensity: directCpp,
         environmentIntensity: environmentCpp,
         alpha: alphaCpp,
+        alphaBlend: alphaBlendCpp,
         reflectance: reflectanceCpp,
         // `setPbrUnlit` and `setPbrSkybox` are the opt-ins that raise these;
         // the creation options carry neither.
@@ -624,6 +655,65 @@ export function compilePbrMaterialOptions(
         metallicF0Factor: metallicF0FactorCpp,
         usePhysicalLightFalloff: physicalLightFalloffCpp,
         scenePbrMaterialIndex: sceneMaterialIndex,
+    };
+}
+
+/**
+ * `baseColorFactor` contributes a UBO field by property presence, so the
+ * composer needs the exact tuple at generation rather than only the emitted
+ * C++ expression. Native keeps this tuple separate from the material-wide
+ * alpha, matching the pin's two UBO inputs and their fragment multiplication.
+ */
+function staticPbrBaseColorFactor(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+): {
+    cpp: string;
+    value: readonly [number, number, number, number];
+} {
+    const resolved = context.resolveStaticExpression(expression);
+    let channels: readonly ts.Expression[] | undefined;
+    if (
+        ts.isArrayLiteralExpression(resolved) &&
+        resolved.elements.length === 4
+    ) {
+        channels = resolved.elements;
+    } else if (ts.isObjectLiteralExpression(resolved)) {
+        channels = ["r", "g", "b", "a"].map((name) => {
+            const channel = context.objectProperty(resolved, name);
+            if (!channel) {
+                context.fail(
+                    resolved,
+                    `PBR baseColorFactor requires a '${name}' channel.`,
+                );
+            }
+            return channel;
+        });
+    }
+    if (!channels) {
+        context.fail(
+            expression,
+            "PBR baseColorFactor must be a static [r, g, b, a] tuple or { r, g, b, a } object: generation composes a UBO field from its presence.",
+        );
+    }
+    const value = channels.map((channel) =>
+        staticNumberValue(context, channel),
+    );
+    if (
+        value.some(
+            (channel): boolean =>
+                channel === undefined || !Number.isFinite(channel),
+        )
+    ) {
+        context.fail(
+            expression,
+            "PBR baseColorFactor channels must be finite static numbers: generation composes a UBO field from the factor.",
+        );
+    }
+    const tuple = value as [number, number, number, number];
+    return {
+        cpp: context.compileColor4(expression),
+        value: tuple,
     };
 }
 

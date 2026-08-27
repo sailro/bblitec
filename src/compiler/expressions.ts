@@ -24,6 +24,7 @@ import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompiledNodeParticles,
+    Feature,
     Value,
     ValueKind,
 } from "./types.js";
@@ -90,6 +91,9 @@ export interface ExpressionContext
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
+    moduleRelativeAssetUrl(
+        expression: ts.Expression,
+    ): string | undefined;
     isNumberExpression(
         expression: ts.Expression,
     ): boolean;
@@ -125,6 +129,22 @@ export interface ExpressionContext
         importedName: string,
         call: ts.CallExpression,
     ): Value | undefined;
+    compileThinInstanceUploadHelper(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
+    compileStaticFetch(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
+    compileStaticFetchMethod(
+        call: ts.CallExpression,
+        owner: Value,
+        method: string,
+    ): Value | undefined;
+    compilePlatformCall(call: ts.CallExpression): Value | undefined;
+    reachFeature(feature: Feature, site?: ts.Node): void;
+    reachJsData(): void;
 }
 
 export class ExpressionLowerer {
@@ -134,6 +154,10 @@ export class ExpressionLowerer {
 
     public compileValue(expression: ts.Expression): Value {
         const unwrapped = this.context.unwrap(expression);
+
+        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
+            return { kind: "json-null", cpp: "" };
+        }
 
         if (
             ts.isBinaryExpression(unwrapped) &&
@@ -256,6 +280,46 @@ export class ExpressionLowerer {
             );
         }
         if (ts.isElementAccessExpression(unwrapped)) {
+            const ownerExpression = this.context.unwrap(
+                unwrapped.expression,
+            );
+            if (ts.isConditionalExpression(ownerExpression)) {
+                const condition = this.context.compileCondition(
+                    ownerExpression.condition,
+                );
+                const selectedOwner =
+                    condition === "true"
+                        ? ownerExpression.whenTrue
+                        : condition === "false"
+                          ? ownerExpression.whenFalse
+                          : undefined;
+                const indexed = (owner: ts.Expression): Value =>
+                    this.context.dataLowerer
+                        .compileMaterializedElementAccess(
+                            owner,
+                            unwrapped.argumentExpression,
+                        ) ??
+                    this.compileValue(
+                        ts.factory.createElementAccessExpression(
+                            owner,
+                            unwrapped.argumentExpression,
+                        ),
+                    );
+                if (selectedOwner) {
+                    return indexed(selectedOwner);
+                }
+                // Indexing distributes over a value-selecting conditional.
+                // This lets each static table materialize under the shared
+                // runtime index while preserving the conditional at the
+                // selected element, rather than trying to index a
+                // generation-only tuple.
+                return this.selectValue(
+                    condition,
+                    indexed(ownerExpression.whenTrue),
+                    indexed(ownerExpression.whenFalse),
+                    unwrapped,
+                );
+            }
             const data = this.context.dataLowerer.compileDataPath(
                 unwrapped,
                 "read",
@@ -343,6 +407,33 @@ export class ExpressionLowerer {
                         ? { engineCpp: owner.engineCpp }
                         : {}),
                 };
+            }
+            if (owner.kind === "record") {
+                const key = this.compileValue(
+                    unwrapped.argumentExpression,
+                );
+                const property =
+                    key.kind === "string"
+                        ? key.staticString
+                        : key.kind === "number" &&
+                            key.staticNumber !== undefined
+                          ? String(key.staticNumber)
+                          : undefined;
+                if (property === undefined) {
+                    this.context.fail(
+                        unwrapped.argumentExpression,
+                        "Compile-time record access requires a static string or number key.",
+                    );
+                }
+                const value =
+                    owner.recordProperties?.[property];
+                if (!value) {
+                    this.context.fail(
+                        unwrapped.argumentExpression,
+                        `Compile-time record has no property '${property}'.`,
+                    );
+                }
+                return value;
             }
             if (owner.kind !== "tuple") {
                 this.context.fail(
@@ -552,10 +643,21 @@ export class ExpressionLowerer {
                     : {}),
             };
         }
+        if (ts.isPostfixUnaryExpression(unwrapped)) {
+            const value =
+                this.context.dataLowerer.compilePostfixValue(
+                    unwrapped,
+                );
+            if (value) {
+                return value;
+            }
+        }
+        if (ts.isTemplateExpression(unwrapped)) {
+            return this.compileTemplate(unwrapped);
+        }
         if (
             ts.isStringLiteral(unwrapped) ||
-            ts.isNoSubstitutionTemplateLiteral(unwrapped) ||
-            ts.isTemplateExpression(unwrapped)
+            ts.isNoSubstitutionTemplateLiteral(unwrapped)
         ) {
             const value =
                 this.context.compileStringLiteral(unwrapped);
@@ -599,6 +701,91 @@ export class ExpressionLowerer {
         }
 
         this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+    }
+
+    private compileTemplate(
+        expression: ts.TemplateExpression,
+    ): Value {
+        const staticValues = expression.templateSpans.map(
+            (span) =>
+                this.context.evaluator.staticTextValue(
+                    span.expression,
+                ),
+        );
+        if (
+            staticValues.every(
+                (value): value is string =>
+                    value !== undefined,
+            )
+        ) {
+            let text = expression.head.text;
+            expression.templateSpans.forEach(
+                (span, index) => {
+                    text += staticValues[index];
+                    text += span.literal.text;
+                },
+            );
+            return {
+                kind: "string",
+                cpp: this.context.cppString(text),
+                staticString: text,
+            };
+        }
+
+        const parts: string[] = [
+            `std::string(${this.context.cppString(
+                expression.head.text,
+            )})`,
+        ];
+        expression.templateSpans.forEach((span) => {
+            const value = this.compileValue(
+                span.expression,
+            );
+            if (value.staticString !== undefined) {
+                parts.push(
+                    this.context.cppString(
+                        value.staticString,
+                    ),
+                );
+            } else if (value.staticNumber !== undefined) {
+                parts.push(
+                    this.context.cppString(
+                        String(value.staticNumber),
+                    ),
+                );
+            } else if (value.kind === "number") {
+                parts.push(
+                    `bbl::js::number_to_string(${value.cpp})`,
+                );
+            } else if (value.kind === "boolean") {
+                parts.push(
+                    `std::string(${value.cpp} ? "true" : "false")`,
+                );
+            } else if (
+                value.kind === "data" &&
+                value.dataType?.kind === "string"
+            ) {
+                parts.push(value.cpp);
+            } else if (value.kind === "json-null") {
+                parts.push(this.context.cppString("null"));
+            } else {
+                this.context.fail(
+                    span.expression,
+                    "Runtime template substitutions support string, number, boolean, and null values.",
+                );
+            }
+            parts.push(
+                this.context.cppString(
+                    span.literal.text,
+                ),
+            );
+        });
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: parts.join(" + "),
+            dataType: { kind: "string" },
+        };
     }
 
     private compileBrowserValue(
@@ -708,6 +895,32 @@ export class ExpressionLowerer {
         whenFalse: Value,
         node: ts.Node,
     ): Value {
+        if (
+            whenTrue.kind === "tuple" &&
+            whenFalse.kind === "tuple"
+        ) {
+            const trueElements = whenTrue.tupleElements ?? [];
+            const falseElements = whenFalse.tupleElements ?? [];
+            if (trueElements.length !== falseElements.length) {
+                this.context.fail(
+                    node,
+                    "Conditional tuple branches must have the same length.",
+                );
+            }
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: trueElements.map(
+                    (element, index) =>
+                        this.selectValue(
+                            condition,
+                            element,
+                            falseElements[index]!,
+                            node,
+                        ),
+                ),
+            };
+        }
         // Two records select member by member, the way two tuples select
         // element by element: a record is a compile-time property map
         // with no native expression of its own. The shared property
@@ -775,6 +988,10 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const platform = this.context.compilePlatformCall(call);
+        if (platform) {
+            return platform;
+        }
         const promise = compileImmediatePromise(
             this.context,
             call,
@@ -790,8 +1007,39 @@ export class ExpressionLowerer {
         if (this.context.isDeferredCallbackCall(call)) {
             return this.compileDeferredCallback(call);
         }
+        // A pure module-URL helper is a compile-time string whether it feeds a
+        // registered asset intrinsic directly or first travels through an
+        // inlined user-function parameter. Recognize the call at the value
+        // boundary so both data flows observe the same public-root path.
+        const moduleAsset =
+            this.context.moduleRelativeAssetUrl(call);
+        if (moduleAsset !== undefined) {
+            return {
+                kind: "string",
+                cpp: this.context.cppString(moduleAsset),
+                staticString: moduleAsset,
+            };
+        }
         const callee = this.context.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
+            const staticOwner = this.compileStaticOwner(
+                callee.expression,
+            );
+            if (staticOwner) {
+                const fetched =
+                    this.context.compileStaticFetchMethod(
+                        call,
+                        staticOwner,
+                        callee.name.text,
+                    );
+                if (fetched) return fetched;
+                const mapped = this.compileStaticTupleMap(
+                    call,
+                    staticOwner,
+                    callee.name.text,
+                );
+                if (mapped) return mapped;
+            }
             // The handle-collection concept owns the collection calls; the
             // three dispatch positions stay exactly where the arms sat so
             // the resolution order a call site observes is unchanged.
@@ -909,9 +1157,25 @@ export class ExpressionLowerer {
                 }
             }
         }
+        if (
+            ts.isArrowFunction(callee) ||
+            ts.isFunctionExpression(callee)
+        ) {
+            return this.context.userFunctions.compileCallbackCall(
+                this.context,
+                call,
+                callee,
+            );
+        }
         if (!ts.isIdentifier(callee)) {
             this.context.fail(callee, `Unsupported call target '${callee.getText()}'.`);
         }
+
+        const fetched = this.context.compileStaticFetch(
+            call,
+            callee,
+        );
+        if (fetched) return fetched;
 
         const bound = this.context.lookupOptional(callee);
         if (bound?.kind === "callback") {
@@ -965,6 +1229,14 @@ export class ExpressionLowerer {
         if (nativeFunction) {
             return nativeFunction;
         }
+        const thinInstanceUpload =
+            this.context.compileThinInstanceUploadHelper(
+                call,
+                callee,
+            );
+        if (thinInstanceUpload) {
+            return thinInstanceUpload;
+        }
         const userFunction = this.context.userFunctions.compile(
             this.context,
             call,
@@ -977,5 +1249,109 @@ export class ExpressionLowerer {
             callee,
             `Call '${callee.text}' does not resolve to a supported Babylon intrinsic or local function declaration.`,
         );
+    }
+
+    private compileStaticOwner(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            return this.staticContainer(
+                this.context.lookupOptional(unwrapped),
+            );
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const owner = this.compileStaticOwner(
+                unwrapped.expression,
+            );
+            return owner?.kind === "record"
+                ? this.staticContainer(
+                      owner.recordProperties?.[
+                          unwrapped.name.text
+                      ],
+                  )
+                : undefined;
+        }
+        if (
+            ts.isElementAccessExpression(unwrapped) &&
+            unwrapped.argumentExpression
+        ) {
+            const owner = this.compileStaticOwner(
+                unwrapped.expression,
+            );
+            const indexNode =
+                this.context.resolveStaticExpression(
+                    unwrapped.argumentExpression,
+                );
+            const index = ts.isNumericLiteral(indexNode)
+                ? Number(indexNode.text)
+                : undefined;
+            return owner?.kind === "tuple" &&
+                index !== undefined &&
+                Number.isInteger(index)
+                ? this.staticContainer(
+                      owner.tupleElements?.[index],
+                  )
+                : undefined;
+        }
+        return undefined;
+    }
+
+    private staticContainer(
+        value: Value | undefined,
+    ): Value | undefined {
+        return value?.kind === "record" ||
+            value?.kind === "tuple" ||
+            value?.kind === "static-fetch-response"
+            ? value
+            : undefined;
+    }
+
+    private compileStaticTupleMap(
+        call: ts.CallExpression,
+        owner: Value,
+        method: string,
+    ): Value | undefined {
+        if (owner.kind !== "tuple" || method !== "map") {
+            return undefined;
+        }
+        if (call.arguments.length !== 1) {
+            this.context.fail(
+                call,
+                "Compile-time Array.map requires exactly one callback and no thisArg.",
+            );
+        }
+        const callback = this.context.unwrap(call.arguments[0]!);
+        if (
+            !ts.isArrowFunction(callback) &&
+            !ts.isFunctionExpression(callback) &&
+            !ts.isIdentifier(callback)
+        ) {
+            this.context.fail(
+                callback,
+                "Compile-time Array.map requires a local function or function literal callback.",
+            );
+        }
+        const elements = owner.tupleElements ?? [];
+        return {
+            kind: "tuple",
+            cpp: "",
+            tupleElements: elements.map((element, index) =>
+                this.context.userFunctions.compileCallbackWithValues(
+                    this.context,
+                    callback,
+                    [
+                        element,
+                        {
+                            kind: "number",
+                            cpp: `${index}.0f`,
+                            staticNumber: index,
+                        },
+                        owner,
+                    ],
+                    call,
+                ),
+            ),
+        };
     }
 }

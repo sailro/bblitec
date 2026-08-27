@@ -1022,7 +1022,7 @@ struct RenderItem {
     bool alpha_to_coverage = false;
     bool transmissive = false;
     bool skybox_mode = false;
-    std::uint32_t order = 0;
+    double order = 0.0;
 };
 
 struct RenderDrawCommand {
@@ -1555,15 +1555,31 @@ void append_draw(
     list.commands.push_back(command);
 }
 
-// pin-adopted(opaque-order): the pinned buildBindings sorts the opaque
-// and direct buckets by renderable.order alone (render-task.ts), and
-// every renderable this port reaches stamps the same non-transparent
-// order ${opaqueOrderStamp} -- mesh.renderOrder has no record transport
-// and no corpus scene sets it -- so the pinned stable sort is the
-// identity permutation here: the draws keep the append order the pin's
-// own _renderables walk produces. The pipeline_order grouping that used
-// to reorder this list was an invention of this port.
-void order_draw_lists(RenderDrawLists&) {}
+// pin-adopted(opaque-order): buildBindings orders the opaque/direct bucket
+// by renderable.order. Equal defaults preserve the source _renderables walk
+// through stable_sort; an explicit Mesh.renderOrder moves only the draws the
+// source asked it to move.
+void order_draw_lists(RenderDrawLists& lists) {
+    std::stable_sort(
+        lists.opaque.commands.begin(),
+        lists.opaque.commands.end(),
+        [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
+            return left.item.order < right.item.order;
+        });
+}
+
+double default_render_order(const RenderItem& item) {
+    if (
+        item.bucket != RenderBucket::alpha_blend &&
+        !item.transmissive) {
+        return ${opaqueOrderStamp}.0;
+    }
+    // standard-renderable.ts uses 200 for transparent draws; the PBR
+    // renderable (including transmission) uses 150.
+    return item.material_kind == RenderMaterialKind::standard
+        ? 200.0
+        : 150.0;
+}
 
 } // namespace
 
@@ -1800,9 +1816,12 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         item.clockwise_front_face =
             mesh.clockwise_front_face;
         item.topology = engine.geometries[mesh.geometry].topology;
-        item.order = static_cast<std::uint32_t>(result.items.size());
-        result.items.push_back(
-            bind_render_item(item, engine, mesh.material));
+        RenderItem bound =
+            bind_render_item(item, engine, mesh.material);
+        bound.order = mesh.has_render_order
+            ? mesh.render_order
+            : default_render_order(bound);
+        result.items.push_back(bound);
     }
     result.draw_lists =
         build_render_draw_lists(result.items, engine);

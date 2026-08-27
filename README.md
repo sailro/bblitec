@@ -97,6 +97,10 @@ Build trees are disposable and generator-specific.
 
 - Generate Babylon behavior from pinned upstream sources; PAL owns only OS and
   SDL mechanics.
+- Treat pinned golden applications as immutable evidence. Their source must
+  remain byte-for-byte identical to the pinned upstream commit; integration
+  work belongs in the compiler, lowerers, generated runtime, or PAL, never in
+  a golden program.
 - Render on a GPU or fail explicitly. A degraded path nothing measures is
   worse than an error that names what is missing.
 - Preserve tree shaking, provenance, typed records, and C++20 portability.

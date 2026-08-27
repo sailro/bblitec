@@ -2611,10 +2611,15 @@ export function resolveScene(idOrSource: string): SceneDefinition {
             outputDirectory: `artifacts/parity/${id}`,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
+            // Browser captures settle for a fixed wall-clock span. Simulate
+            // the same span deterministically without asking an external
+            // source to carry harness-only timing edits.
+            nativeEnvironment: adHocCaptureEnvironment(),
         },
     };
 }
 import { existsSync, statSync } from "node:fs";
+import { adHocCaptureEnvironment } from "./capture-timing.js";
 import {
     basename,
     extname,

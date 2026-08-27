@@ -80,6 +80,7 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /CMAKE_CXX_COMPILER_ID MATCHES "Clang"/);
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
     assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
+    assert.match(block, /\/STACK:8388608/);
     assert.match(block, /PRIVATE -Os -ffunction-sections/);
 });
 
@@ -98,7 +99,44 @@ test("shipping packages require the trimmed static build", () => {
     assert.match(script, /CMAKE_MSVC_RUNTIME_LIBRARY/);
     assert.match(script, /MultiThreaded/);
     assert.match(script, /single backend/);
+    assert.match(script, /generated scene id/);
+    assert.doesNotMatch(script, /numbered scene id/);
     assert.doesNotMatch(script, /run-\$Scene-dawn/);
+});
+
+test("the trimmed SDL build has a separate audio-capable variant", () => {
+    const script = readFileSync("tools/build-sdl-min.ps1", "utf8");
+    assert.match(script, /\[switch\]\$EnableAudio/);
+    assert.match(script, /sdl-min-audio/);
+    assert.match(script, /-DSDL_AUDIO=\$audioSetting/);
+    assert.match(script, /bblite-sdl-features\.cmake/);
+
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    assert.match(cmake, /include\("\$\{BBLITE_SDL_FEATURES\}"\)/);
+    assert.match(cmake, /NOT BBLITE_SDL_AUDIO/);
+});
+
+test("minimal audio dependencies use a static runtime and ship their notices", () => {
+    const builder = readFileSync("tools/build-labsound.ps1", "utf8");
+    assert.match(builder, /\[switch\]\$StaticRuntime/);
+    assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
+    assert.match(builder, /bblite-labsound-features\.cmake/);
+    assert.match(builder, /libnyquist-COPYING\.txt/);
+
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    assert.match(cmake, /NOT BBLITE_LABSOUND_STATIC_RUNTIME/);
+    assert.match(cmake, /if\(BBLITE_AUDIO_CAPTURE\)/);
+    assert.match(cmake, /NOT BBLITE_AUDIO_CAPTURE AND NOT BBLITE_LABSOUND_CORE_ONLY/);
+    assert.doesNotMatch(
+        cmake,
+        /LabSound\.lib"\s*"\$\{BBLITE_LABSOUND_DIR\}\/lib\/libnyquist\.lib/,
+    );
+
+    const packager = readFileSync("tools/package-demo.ps1", "utf8");
+    assert.match(packager, /\$audioReached/);
+    assert.match(packager, /LabSound-LICENSE\.txt/);
+    assert.match(packager, /libnyquist-COPYING\.txt/);
+    assert.match(packager, /if \(\$audioCapture\)/);
 });
 
 test("shader compilation gates non-target formats", () => {

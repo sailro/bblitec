@@ -180,7 +180,8 @@ Everything that decides *what* a measured run does is written once in
 `native/src/pal_gpu_shared.hpp` and consumed by both backends: `FrameOptions`
 parses the runtime flag matrix, `CaptureGate` decides when the run may stop
 (including the bounded grace period a deferred capture needs), `FrameClock`
-produces the delta scene callbacks advance by, and `report_benchmark` prints the
+produces the real, scene-fixed, or measured-run-overridden delta that scene
+callbacks advance by, and `report_benchmark` prints the
 comparison numbers. A backend that does not implement a flag refuses it rather
 than rendering something else, because a silent no-op reads as a backend delta
 and the differential would attribute it to the GPU stack.
@@ -418,7 +419,8 @@ Only the GPU API layer differs:
   either other pairing applies the mirror twice. A thin-instanced or
   LOCAL_POSITION draw instead takes the real node world
   (`pinned_draw_world` carries the whole chain), the instance stream
-  holds Babylon's own matrix bytes, and the LOCAL_POSITION arm binds
+  holds the matrix bytes paired with that pinned vertex convention (the
+  mirror conjugation of the runtime record), and the LOCAL_POSITION arm binds
   the vertex's raw local lanes. The Standard family carries no glTF
   mirror: its draws ride the identity world, the thin-instance arm the
   pin's own `mesh.world * instanceWorld` with the recorded parent TRS,
