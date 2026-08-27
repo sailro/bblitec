@@ -138,8 +138,10 @@ export interface FeatureActivationInputs {
     composition: {
         /** The single-light kinds the composed scene arms cover. */
         lightKinds: readonly string[];
-        /** Whether both tone-mapping states composed (environment on). */
-        toneMappingArms: boolean;
+        /** The upstream loader/runtime tone-mapping states composed. */
+        toneMappingStates: readonly boolean[];
+        /** Whether scene code can assign the tone-mapping state at runtime. */
+        mutableToneMappingEnabled: boolean;
         linearImageProcessing: boolean;
     };
 }
@@ -258,7 +260,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "environment:ibl": {
         provenance:
             "src/material/pbr/fragments/ibl-fragment.ts (the scene " +
-            "environment turns IBL and tone mapping on); asset-joined " +
+            "environment turns IBL on); asset-joined " +
             "via EXT_lights_image_based " +
             "(src/loader-gltf/gltf-ext-lights-image-based.ts)",
         consumers: ["features.cmake", "variant table"],
@@ -1875,15 +1877,24 @@ function compositionRows(
         checkedRow(
             "scene-arms:tone-mapping",
             "composition",
-            composition.toneMappingArms,
+            composition.toneMappingStates.includes(true),
             [
                 [
-                    features.includes("environment:ibl"),
-                    "an environment is loaded, which is what turns tone " +
-                        "mapping on upstream — both states composed",
+                    features.includes("environment:env"),
+                    "the upstream .env loader enables tone mapping",
+                ],
+                [
+                    inputs.assetJoinedFeatures.has("environment:ibl"),
+                    "an asset-carried EXT_lights_image_based environment " +
+                        "enables tone mapping",
+                ],
+                [
+                    composition.mutableToneMappingEnabled,
+                    "scene code can assign toneMappingEnabled at runtime, " +
+                        "so both states are composed",
                 ],
             ],
-            "no environment: only the tone-mapping-off arm exists",
+            "the reached loaders leave tone mapping off",
             "src/material/pbr/tone-mapping.ts (StandardToneMapping) via " +
                 "src/scene/scene-image-processing.ts",
             ["variant table"],

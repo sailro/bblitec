@@ -764,8 +764,8 @@ async function main(): Promise<void> {
         );
     }
     const {
-        hasEnvironment,
         lightKinds,
+        toneMappingStates,
         linearImageProcessing,
         gltfAssets,
         materialIndexBase,
@@ -1054,7 +1054,9 @@ ${imageCodecLines}
                 },
                 composition: {
                     lightKinds,
-                    toneMappingArms: hasEnvironment,
+                    toneMappingStates,
+                    mutableToneMappingEnabled:
+                        result.manifest.mutableToneMappingEnabled,
                     linearImageProcessing,
                 },
             }),

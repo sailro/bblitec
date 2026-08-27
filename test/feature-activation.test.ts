@@ -124,7 +124,8 @@ function metallicReflectanceMapInputs(
         gltfAssetNames: [],
         composition: {
             lightKinds: [],
-            toneMappingArms: false,
+            toneMappingStates: [false],
+            mutableToneMappingEnabled: false,
             linearImageProcessing: false,
         },
     };
@@ -189,7 +190,8 @@ function scene33Inputs(): FeatureActivationInputs {
         },
         composition: {
             lightKinds: ["point"],
-            toneMappingArms: true,
+            toneMappingStates: [true],
+            mutableToneMappingEnabled: false,
             linearImageProcessing: true,
         },
     };
@@ -226,7 +228,8 @@ function dispersiveInputs(): FeatureActivationInputs {
         gltfAssetNames: ["dispersive.glb"],
         composition: {
             lightKinds: [],
-            toneMappingArms: false,
+            toneMappingStates: [false],
+            mutableToneMappingEnabled: false,
             linearImageProcessing: true,
         },
     };
@@ -310,7 +313,8 @@ function everythingOnInputs(): FeatureActivationInputs {
         },
         composition: {
             lightKinds: ["hemispheric", "directional", "point", "spot"],
-            toneMappingArms: true,
+            toneMappingStates: [false, true],
+            mutableToneMappingEnabled: true,
             linearImageProcessing: true,
         },
     };
@@ -427,7 +431,8 @@ function familyInputs(): FeatureActivationInputs {
         gltfAssetNames: [],
         composition: {
             lightKinds: [],
-            toneMappingArms: false,
+            toneMappingStates: [false],
+            mutableToneMappingEnabled: false,
             linearImageProcessing: false,
         },
     };

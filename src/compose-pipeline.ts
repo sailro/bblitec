@@ -26,6 +26,7 @@ import {
     composeGltfMaterials,
     composeRenderableVariants,
     composeScenePbrVariants,
+    gltfHasImageBasedLight,
     gltfMaterialCount,
     gltfLightNodeCount,
     gltfRenderableFeatures,
@@ -76,8 +77,9 @@ export interface ComposePipelineContext {
 /** The values `main`'s remainder (emit options, activation inventory)
  *  consumes, under the names it consumed them by when they were inline. */
 export interface ComposedScenePipeline {
-    hasEnvironment: boolean;
     lightKinds: PinnedSingleLightType[];
+    /** The upstream loader/runtime tone-mapping states this scene can reach. */
+    toneMappingStates: boolean[];
     linearImageProcessing: boolean;
     gltfAssets: CompileAsset[];
     materialIndexBase: number;
@@ -98,6 +100,32 @@ export interface ComposedScenePipeline {
     standardComposition: StandardSceneComposition | undefined;
     standardRenderableMeshFeatures: number[] | undefined;
     nodeVariants: readonly NodeVariantManifestEntry[];
+}
+
+/**
+ * The light arms a statically known scene can select at draw time.
+ *
+ * A single light normally selects the single-light specialization. A mesh
+ * receiving a shadow is the exception in the pin: `rebuildSingle` routes it
+ * through the multi-light path so that path can bind the shadow rows. Keep
+ * that exception here, where the static scene-arm optimization is decided.
+ */
+export function staticSceneLightArms(
+    lightKinds: readonly PinnedSingleLightType[],
+    hasShadowReceiver: boolean,
+): {
+    lightKinds: PinnedSingleLightType[];
+    multiLight: boolean;
+    noLight: boolean;
+} {
+    return {
+        lightKinds:
+            lightKinds.length === 1 ? [lightKinds[0]!] : [],
+        multiLight:
+            lightKinds.length > 1 ||
+            (lightKinds.length === 1 && hasShadowReceiver),
+        noLight: lightKinds.length === 0,
+    };
 }
 
 // Every glTF material the scene loads, composed through Babylon Lite's own
@@ -125,6 +153,36 @@ export async function composeScenePipeline({
     const gltfAssets = result.manifest.assets.filter(
         (asset) => asset.kind === "gltf",
     );
+    // Tone mapping is loader state, not an alias for IBL. The upstream .env
+    // loader and EXT_lights_image_based enable it, whereas HDR explicitly
+    // disables it and DDS leaves the scene default (off) in place. Preserve
+    // every state reachable when loader kinds are mixed; an explicit scene
+    // assignment makes both states reachable regardless of asset presence.
+    const loaderEnablesToneMapping =
+        result.manifest.features.includes("environment:env") ||
+        gltfAssets.some((asset) =>
+            gltfHasImageBasedLight(
+                resolve(outputPath, "assets", asset.output),
+            )
+        );
+    const loaderLeavesToneMappingOff =
+        !hasEnvironment ||
+        result.manifest.features.includes("environment:hdr") ||
+        result.manifest.features.includes("environment:dds");
+    const toneMappingStates = [
+        ...(loaderLeavesToneMappingOff ||
+                result.manifest.mutableToneMappingEnabled
+            ? [false]
+            : []),
+        ...(loaderEnablesToneMapping ||
+                result.manifest.mutableToneMappingEnabled
+            ? [true]
+            : []),
+    ];
+    // `environment:ibl` is only reached by one of the loader cases above,
+    // but retaining the default makes this orchestration safe for a caller
+    // constructing a minimal manifest directly.
+    if (toneMappingStates.length === 0) toneMappingStates.push(false);
     const assetLightsReached =
         gltfAssets.some(
             (asset) =>
@@ -136,24 +194,18 @@ export async function composeScenePipeline({
         !result.manifest.dynamicSceneLights && !assetLightsReached
             ? result.manifest.sceneLightKinds
             : undefined;
-    const singleStaticLight =
-        staticLightKinds?.length === 1
-            ? [staticLightKinds[0]!] as PinnedSingleLightType[]
-            : [];
+    const staticArms = staticLightKinds
+        ? staticSceneLightArms(
+              staticLightKinds,
+              result.manifest.shadowGenerators.length > 0 &&
+                  result.manifest.shadowReceiverMeshes.length > 0,
+          )
+        : undefined;
     const sceneArms = await pinnedSceneArms({
-        lightKinds: staticLightKinds ? singleStaticLight : lightKinds,
-        multiLight: staticLightKinds
-            ? staticLightKinds.length > 1
-            : lightKinds.length > 0,
-        noLight: staticLightKinds
-            ? staticLightKinds.length === 0
-            : true,
-        toneMapping:
-            hasEnvironment && !result.manifest.mutableToneMappingEnabled
-                ? [true]
-                : hasEnvironment
-                    ? [false, true]
-                    : [false],
+        lightKinds: staticArms?.lightKinds ?? lightKinds,
+        multiLight: staticArms?.multiLight ?? lightKinds.length > 0,
+        noLight: staticArms?.noLight ?? true,
+        toneMapping: toneMappingStates,
         ...(result.manifest.toneMapping
             ? { toneMappingName: result.manifest.toneMapping }
             : {}),
@@ -680,8 +732,8 @@ export async function composeScenePipeline({
         });
     }
     return {
-        hasEnvironment,
         lightKinds,
+        toneMappingStates,
         linearImageProcessing,
         gltfAssets,
         materialIndexBase,

@@ -609,6 +609,38 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
     }
 });
 
+test("releases Dawn mesh dependents before their owned resources", () => {
+    const dawn = source("native/src/pal_dawn.cpp");
+    const releaseMeshes = dawn.slice(
+        dawn.indexOf("    void release_meshes()"),
+        dawn.indexOf("    ~DawnState()"),
+    );
+    const bindingRelease = releaseMeshes.indexOf(
+        "wgpuBindGroupRelease(binding.textures)",
+    );
+    const drawStateRelease = releaseMeshes.indexOf(
+        "release_dawn_draw_states(mesh.pinned_states)",
+    );
+    const textureRelease = releaseMeshes.indexOf(
+        "wgpuTextureViewRelease(mesh.owned_views[slot])",
+    );
+    assert.ok(bindingRelease >= 0);
+    assert.ok(drawStateRelease > bindingRelease);
+    assert.ok(textureRelease > drawStateRelease);
+    assert.match(
+        releaseMeshes,
+        /mesh\.owned_textures\[slot\] && mesh\.samplers\[slot\]/,
+    );
+
+    const destructor = dawn.slice(dawn.indexOf("    ~DawnState()"));
+    assert.ok(
+        destructor.indexOf("release_meshes();") <
+            destructor.indexOf(
+                "wgpuPipelineLayoutRelease(mesh_pipeline_layout)",
+            ),
+    );
+});
+
 test("captures splat renderables beside the render-plan draw lists", () => {
     const capture = source("native/src/pal_render_capture.hpp");
     assert.match(capture, /write_splat_draw_list/);
