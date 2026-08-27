@@ -339,16 +339,19 @@ inline std::array<float, 16> draw_world(
  * takes the same answer in either frame rather than paying a compose the
  * shader never looks at.
  *
- * A pooled mesh in a composed family asks twice a frame -- once for the
- * instance-parent uniform the transcribed, depth-only and diagnostic
- * pipelines read, once for `standard_draw_world`'s mesh block -- and both
- * get the same matrix. Deliberately not cached: the answer is a pure
- * function of the record and the eye, so a cache would be ordering-dependent
- * state on each backend's own mesh record, and the whole duplicate is a
- * 4x4 double multiply. Measured on scene 204, the corpus's only such mesh:
- * ~224 double operations against a 0.144 ms median frame, under 0.2% of it
- * and below the benchmark's own run-to-run spread. Cache it when a scene
- * makes it visible, not before.
+ * A pooled mesh asks once per DRAW of it -- once for the instance-parent
+ * uniform the transcribed, depth-only and diagnostic pipelines read, once
+ * for `standard_draw_world`'s mesh block -- and both get the same matrix. On
+ * scene 204 that is twice a frame, because one pool is drawn through one
+ * transcribed pipeline beside its Standard mesh block; a scene adding a
+ * depth-only or shadow-caster pass over the same pool multiplies it, and
+ * that is the condition to re-measure against. Deliberately not cached: the
+ * answer is a pure function of the record and the eye, so a cache would be
+ * ordering-dependent state on each backend's own mesh record, and the whole
+ * duplicate is a 4x4 double multiply. Measured on scene 204, the corpus's
+ * only such mesh: ~224 double operations against a 0.144 ms median frame,
+ * under 0.2% of it and below the benchmark's own run-to-run spread. Cache it
+ * when a scene makes it visible, not before.
  */
 inline std::array<float, 16> instance_parent_draw_world(
     const MeshRecord& record,
@@ -537,6 +540,18 @@ inline constexpr bool vertex_stream_is_instanced(
     VertexInputStream stream) {
     return stream != VertexInputStream::vertex;
 }
+
+#if BBLITE_GPU_INSTANCING
+// The join between this backend's slots and the pin's groups. Naming a group
+// here is how a slot is chosen; proving the name is the pin's is these three
+// lines. A pin that renames a group leaves its stride lookup at zero, and one
+// that adds a third leaves the list longer than the two streams this backend
+// declares -- either way the build stops rather than binding the wrong buffer
+// at the right slot.
+static_assert(upstream::pinned_instance_groups.size() == 2);
+static_assert(vertex_stream_stride(VertexInputStream::instance_matrix) != 0);
+static_assert(vertex_stream_stride(VertexInputStream::instance_color) != 0);
+#endif
 
 /** The streams, in slot order, for a backend filling a buffer list. */
 inline constexpr std::array<VertexInputStream, 3> vertex_streams{
@@ -1729,6 +1744,14 @@ inline void refresh_shadow_generators(
         refresh.blocks.resize(engine.shadow_generators.size());
         refresh.uploaded.resize(engine.shadow_generators.size(), false);
     }
+    // The pin's own floating-origin offset for a shadow map:
+    // `renderPcfShadowMap` and `renderEsmShadowMap` each read the active
+    // camera's world translation and build the light view and the caster fit
+    // against it, so the map lands in the same eye-relative frame the mesh
+    // worlds are packed into. Off the mode this is the zero vector, which is
+    // the pin's own `foCam ? ... : 0`. A frame constant, so it is read once
+    // here rather than per generator.
+    const Vec3d eye = frame_floating_origin_offset(scene, engine);
     for_each_shadow_generator(
         scene,
         engine,
@@ -1738,14 +1761,6 @@ inline void refresh_shadow_generators(
             std::size_t slot) {
             ShadowGeneratorRecord& generator =
                 engine.shadow_generators[handle.value];
-            // The pin's own floating-origin offset for a shadow map:
-            // `renderPcfShadowMap` and `renderEsmShadowMap` each read the
-            // active camera's world translation and build the light view
-            // and the caster fit against it, so the map lands in the same
-            // eye-relative frame the mesh worlds are packed into. Off the
-            // mode this is the zero vector, which is the pin's own
-            // `foCam ? ... : 0`.
-            const Vec3d eye = frame_floating_origin_offset(scene, engine);
 #if BBLITE_SHADOWS_ESM
             if (generator.filter == ShadowFilter::esm_directional) {
                 fitted_shadow_casters(engine, generator, refresh.casters);

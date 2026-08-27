@@ -167,14 +167,19 @@ export interface HandleCollectionsContext
 }
 
 /**
- * The value kinds a compile-time tuple may hold and still be a handle list.
+ * The value kinds that stand for an engine handle.
  *
- * Deliberately narrow: a tuple of these grows at generation and emits
- * nothing, so widening it means some consumer reads a list whose members
- * have no native representation to store. Each entry is here because a
- * reached scene builds a list of them.
+ * A handle is a compile-time ordinal into one of the engine's own arrays, so
+ * a list of them grows at generation and emits nothing. That is what makes a
+ * compile-time tuple of them a list a consumer can read -- and what a tuple
+ * of, say, numbers is not, because those would need native storage.
  */
-const handleTupleKinds: ReadonlySet<string> = new Set(["mesh"]);
+const handleKinds: readonly ValueKind[] = [
+    "animation-group",
+    "camera",
+    "light",
+    "mesh",
+];
 
 /** One member of an asset-derived collection, in document order. */
 interface HandleCollectionMember {
@@ -797,7 +802,7 @@ export class HandleCollections {
             return undefined;
         }
         const kind = tuple.tupleElements[0]!.kind;
-        if (!handleTupleKinds.has(kind)) return undefined;
+        if (!handleKinds.includes(kind)) return undefined;
         this.context.expectArgumentCount(call, 1, 1);
         const pushed = this.context.compileValue(call.arguments[0]!);
         if (pushed.kind !== kind) {
@@ -1206,6 +1211,30 @@ export class HandleCollections {
         return `(${left.cpp}.value ${equals ? "==" : "!="} ${right.cpp}.value)`;
     }
 
+    /**
+     * A compile-time list of handles, however the scene spelled it.
+     *
+     * Two shapes, one meaning: an array literal at the call site, or a local
+     * the scene grew with `push` inside a loop generation unrolls. Both
+     * arrive as the same list; what differs is only where each element was
+     * compiled, and therefore which node a refusal should blame. Undefined
+     * when the expression is neither, so the caller keeps its own message.
+     */
+    public staticHandleList(
+        expression: ts.Expression,
+    ): readonly { value: Value; node: ts.Node }[] | undefined {
+        const literal =
+            this.context.probeStaticArrayLiteral(expression);
+        if (literal) {
+            return literal.elements.map((element) => ({
+                value: this.context.compileValue(element),
+                node: element,
+            }));
+        }
+        const tuple = this.tupleElements(expression);
+        return tuple?.map((value) => ({ value, node: expression }));
+    }
+
     /** An identifier bound to an engine handle, without emission. */
     private lookupHandleOperand(
         expression: ts.Expression,
@@ -1217,12 +1246,6 @@ export class HandleCollections {
         const value =
             this.context.lookupOptional(unwrapped);
         if (!value) return undefined;
-        const handleKinds: readonly ValueKind[] = [
-            "animation-group",
-            "camera",
-            "light",
-            "mesh",
-        ];
         return handleKinds.includes(value.kind) &&
             value.animationGroupSource !== "property"
             ? value

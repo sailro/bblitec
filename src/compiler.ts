@@ -900,17 +900,6 @@ class Compiler
                     cppName,
                     constructs ? "owned" : "copy",
                 );
-                if (
-                    ts.isArrayLiteralExpression(initializer) &&
-                    ts.isIdentifier(declaration.name) &&
-                    !aliases &&
-                    isNeverResized(declaration.name)
-                ) {
-                    this.dataLowerer.registerFixedLength(
-                        cppName,
-                        initializer.elements.length,
-                    );
-                }
             }
             this.defineVariable(declaration.name, {
                 kind: "data",
@@ -1992,20 +1981,6 @@ class Compiler
         );
     }
 
-    /**
-     * A local bound to a compile-time tuple, as its element values.
-     *
-     * The elements were compiled at the declaration (and at each `push`
-     * that grew it), so what travels is the values rather than the
-     * expressions — which is what lets a caller accept a grown list beside
-     * an array literal at the call site.
-     */
-    public tupleElements(
-        expression: ts.Expression,
-    ): readonly Value[] | undefined {
-        return this.handleCollections.tupleElements(expression);
-    }
-
     /** One number Value at one sink's width — the rule, in one place. */
     public castNumber(
         value: Value,
@@ -2993,22 +2968,6 @@ class Compiler
      * keeps the warning that would catch a lowering bug.
      */
     /** How many lines the body stream holds, for a caller that may undo. */
-    public emittedLineCount(): number {
-        return this.body.length;
-    }
-
-    /**
-     * Drop every line emitted after `count`.
-     *
-     * An unrolled static loop whose body lowers to no statement at all --
-     * every statement in it a compile-time record, as a particle
-     * simulation's steps are -- would otherwise leave one braced block per
-     * iteration declaring a loop index nothing reads, which MSVC /W4 warns
-     * on.
-     */
-    public truncateEmittedLines(count: number): void {
-        this.body.length = count;
-    }
 
     public registerNativeFunction(
         prototype: string,

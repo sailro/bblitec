@@ -2543,6 +2543,27 @@ test("keeps the run-time length where the container is resized", () => {
     assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
 });
 
+test("withdraws the length fold from a container handed to a call", () => {
+    // The case a downstream invalidation hook cannot catch. Every reached
+    // function inlines, and a container parameter binds BY REFERENCE, so the
+    // callee's `list.push` grows the caller's array while being spelled
+    // against a name the scan never sees. Handing the name to any call is
+    // what gives up the fold.
+    const result = compileSource(`
+        function grow(list: number[]): void {
+            list.push(9);
+        }
+        const offsets: number[] = [1, 2, 3];
+        grow(offsets);
+        let total = 0;
+        for (let i = 0; i < offsets.length; i++) {
+            total += offsets[i]!;
+        }
+    `);
+
+    assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+});
+
 test("iterates runtime data arrays with range-for", () => {
     const result = compileSource(`
         function values(): number[] {

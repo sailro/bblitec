@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { sharedUpstreamStore } from "./upstream-source.js";
+import { unwrapPin } from "./lowering/gltf/shared.js";
 
 /**
  * Which lights a shadow-receiving mesh samples, and with which filter.
@@ -37,9 +38,14 @@ const shadowGeneratorModules: Readonly<Record<string, string>> = {
     "esm-directional": "src/shadow/esm-directional-shadow-generator.ts",
 };
 
+/** One answer per family; the pin cannot move under a generation. */
+const filtersByKind = new Map<string, ShadowLightSlot["shadowType"]>();
+
 export function pinnedShadowFilter(
     kind: string,
 ): ShadowLightSlot["shadowType"] {
+    const memoised = filtersByKind.get(kind);
+    if (memoised) return memoised;
     const modulePath = shadowGeneratorModules[kind];
     if (modulePath === undefined) {
         throw new Error(
@@ -48,23 +54,20 @@ export function pinnedShadowFilter(
     }
     const file = sharedUpstreamStore().getSourceFile(modulePath);
     let filter: string | undefined;
-    // The three factories do not spell it identically: two write a bare
-    // literal and the directional PCF writes `"pcf" as const`. The
-    // assertion is a type-level narrowing with no value in it, so it is
-    // unwrapped rather than being a second shape to accept.
-    const literal = (node: ts.Expression): ts.Expression =>
-        ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
-            ? literal(node.expression)
-            : ts.isParenthesizedExpression(node)
-                ? literal(node.expression)
-                : node;
     const visit = (node: ts.Node): void => {
+        if (filter !== undefined) return;
         if (
             ts.isPropertyAssignment(node) &&
-            node.name.getText(file) === "_shadowType"
+            ts.isIdentifier(node.name) &&
+            node.name.text === "_shadowType"
         ) {
-            const value = literal(node.initializer);
+            // The three factories do not spell it identically: two write a
+            // bare literal and the directional PCF writes `"pcf" as const`.
+            // The assertion is a type-level narrowing with no value in it,
+            // so it is unwrapped rather than being a second shape to accept.
+            const value = unwrapPin(node.initializer);
             if (ts.isStringLiteral(value)) filter = value.text;
+            return;
         }
         ts.forEachChild(node, visit);
     };
@@ -75,5 +78,6 @@ export function pinnedShadowFilter(
                 `read '${filter ?? "nothing"}'.`,
         );
     }
+    filtersByKind.set(kind, filter);
     return filter;
 }

@@ -1798,18 +1798,6 @@ struct AssetRecord {
 };
 
 /**
- * One `ShadowGenerator`, as the PCF spot factory builds it.
- *
- * The pin keeps the GPU objects on the generator (a `depth32float` map, a
- * comparison sampler, the params UBO and the receiver UBO); those are the
- * PAL's, so the record carries only the values that decide them plus the
- * two matrices `renderPcfShadowMap` refreshes — the unbiased one the
- * receiver samples with, and the biased one the caster pass renders
- * through.
- */
-/** Which pinned filter a generator is, which decides both its resources
- *  and how its receiver block packs. */
-/**
  * Which pinned generator built a shadow map.
  *
  * The two PCF arms share everything the receiver sees -- the same
@@ -1830,6 +1818,15 @@ enum class ShadowFilter {
     esm_directional,
 };
 
+/**
+ * One `ShadowGenerator`, as the three pinned factories build it.
+ *
+ * The pin keeps the GPU objects on the generator (a `depth32float` map, a
+ * comparison sampler, the params UBO and the receiver UBO); those are the
+ * PAL's, so the record carries only the values that decide them plus the
+ * two matrices the refresh rebuilds — the unbiased one the receiver samples
+ * with, and the biased one the caster pass renders through.
+ */
 struct ShadowGeneratorRecord {
     ShadowFilter filter = ShadowFilter::pcf_spot;
     std::uint32_t map_size = 512;
@@ -2485,11 +2482,15 @@ struct EsmDirectionalShadowOptions {
  * by name, exactly as they do on the other two factories.
  */
 struct PcfDirectionalShadowOptions {
-    std::uint32_t map_size = 1024;
-    double bias = 0.00005;
-    double darkness = 0.0;
-    double ortho_min_z = 1.0;
-    double ortho_max_z = 10000.0;
+    // No initialisers: generation writes every field from the factory's own
+    // `??` chain, so a default written here would be a second copy of a
+    // pinned constant that nothing can catch drifting. A field the emitter
+    // forgets is then a compile error rather than a silent 1024.
+    std::uint32_t map_size;
+    double bias;
+    double darkness;
+    double ortho_min_z;
+    double ortho_max_z;
 };
 
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(

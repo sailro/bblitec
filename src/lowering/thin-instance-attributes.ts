@@ -1,6 +1,6 @@
 /**
  * The pin's own declared vertex attributes for its instance-stepped buffer
- * groups, lowered from the declaration that states them.
+ * groups, taken from the factory that declares them.
  *
  * `shader/fragments/thin-instance-fragment.ts` declares each attribute with
  * a `_bufferGroup`, an `_arrayStride`, a `_stepMode` and an `_offset` --
@@ -10,17 +10,35 @@
  * table and both PALs typed it out instead; a stride the pin moved would
  * have updated neither.
  *
- * The declaration is a plain list of object literals, so this is a fold
- * rather than an execution: the shape is the contract, and a pin that adds
- * a group, changes a stride or stops stepping per instance fails generation
- * here. Which SLOT a group binds at stays each backend's own answer -- the
- * pin assigns none.
+ * The factory is EXECUTED rather than read: it is the same module and the
+ * same call the two compositions already make (`pinned-standard-variants.ts`
+ * resolves its thin-instance fragment from it, and the PBR composition
+ * passes it through `_createThinInstanceFragment`), and its return value
+ * carries the rows verbatim. So there is no shape to match here, and no
+ * second literal in the same factory to match by accident. Which SLOT a
+ * group binds at stays each backend's own answer -- the pin assigns none.
  */
-import ts from "typescript";
 import type { LoweringContext } from "./context.js";
+import { importPinnedModule } from "../pinned-shader-composer.js";
 
 const module = "src/shader/fragments/thin-instance-fragment.ts";
 const factory = "createThinInstanceFragment";
+
+/** One attribute as the pinned factory declares it. */
+interface PinnedFragmentAttribute {
+    _name: string;
+    _gpuFormat: string;
+    _arrayStride: number;
+    _stepMode: string;
+    _bufferGroup: string;
+    _offset: number;
+}
+
+const pinnedThinInstanceFragment = await importPinnedModule<{
+    createThinInstanceFragment: (hasInstanceColor: boolean) => {
+        _vertexAttributes: readonly PinnedFragmentAttribute[];
+    };
+}>("shader/fragments/thin-instance-fragment.js");
 
 /** One declared attribute, as the pin declares it. */
 export interface PinnedInstanceAttribute {
@@ -28,82 +46,52 @@ export interface PinnedInstanceAttribute {
     bufferGroup: string;
     arrayStride: number;
     offset: number;
-    instanceStepped: boolean;
 }
 
 /**
  * Every attribute the factory declares, in declaration order.
  *
- * Both arms are read: the four `ti-matrix` columns the base list holds and
- * the one `ti-color` lane the `hasInstanceColor` branch pushes. The port
- * composes both arms of the fragment, so it needs both rows.
+ * Called with the colour arm ON, because the port composes both arms of the
+ * fragment and needs both rows: the four `ti-matrix` columns the base list
+ * holds and the one `ti-color` lane the `hasInstanceColor` branch pushes.
  */
 export function pinnedInstanceAttributes(
     context: LoweringContext,
 ): readonly PinnedInstanceAttribute[] {
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        factory,
-    );
-    // Keyed on `_bufferGroup`: it is what makes a literal a VERTEX
-    // attribute here. `_name` alone also matches the `vInstanceColor`
-    // varying the same factory declares.
-    const literals = context.findNodes(
-        declaration,
-        (node): node is ts.ObjectLiteralExpression =>
-            ts.isObjectLiteralExpression(node) &&
-            node.properties.some(
-                (property) =>
-                    ts.isPropertyAssignment(property) &&
-                    context.propertyName(property.name) === "_bufferGroup",
-            ),
-    );
-    if (literals.length === 0) {
-        context.contractError(
-            declaration,
-            `Expected ${factory} to declare its vertex attributes as ` +
-                "object literals carrying `_bufferGroup`.",
-        );
+    const declared =
+        pinnedThinInstanceFragment.createThinInstanceFragment(
+            true,
+        )._vertexAttributes;
+    const site = context.functionDeclaration(module, factory).declaration;
+    for (const attribute of declared) {
+        // Every consumer of the generated table reads a float4 at a
+        // per-instance step rate. Those are the two facts the table carries
+        // no column for, so they are asserted rather than assumed: a pin
+        // that changed either would otherwise be read at the wrong lane
+        // width or the wrong step rate.
+        if (attribute._gpuFormat !== "float32x4") {
+            context.contractError(
+                site,
+                `Pinned instance attribute '${attribute._name}' declares ` +
+                    `format '${attribute._gpuFormat}'; every backend reads ` +
+                    "these as float32x4.",
+            );
+        }
+        if (attribute._stepMode !== "instance") {
+            context.contractError(
+                site,
+                `Pinned instance attribute '${attribute._name}' steps per ` +
+                    `'${attribute._stepMode}'; this table is the ` +
+                    "instance-stepped layout alone.",
+            );
+        }
     }
-    return literals.map((literal) => {
-        const text = (name: string): string =>
-            context.stringValue(
-                context.propertyInitializer(literal, name),
-                file,
-            );
-        const number = (name: string): number =>
-            context.numericValue(
-                context.propertyInitializer(literal, name),
-                file,
-            );
-        // Every declared attribute is one vec4 of floats, which is the lane
-        // `pinned_vertex_input` maps them onto. A pin declaring another
-        // width fails here rather than at a silently misread stream.
-        const wgslType = text("_type");
-        const gpuFormat = text("_gpuFormat");
-        if (wgslType !== "vec4<f32>" || gpuFormat !== "float32x4") {
-            context.contractError(
-                literal,
-                `Pinned instance attribute '${text("_name")}' is no longer ` +
-                    `a float32x4 vec4: ${wgslType} / ${gpuFormat}.`,
-            );
-        }
-        const stepMode = text("_stepMode");
-        if (stepMode !== "instance") {
-            context.contractError(
-                literal,
-                `Pinned instance attribute '${text("_name")}' steps ` +
-                    `'${stepMode}', not per instance.`,
-            );
-        }
-        return {
-            name: text("_name"),
-            bufferGroup: text("_bufferGroup"),
-            arrayStride: number("_arrayStride"),
-            offset: number("_offset"),
-            instanceStepped: true,
-        };
-    });
+    return declared.map((attribute) => ({
+        name: attribute._name,
+        bufferGroup: attribute._bufferGroup,
+        arrayStride: attribute._arrayStride,
+        offset: attribute._offset,
+    }));
 }
 
 /** The generated rows both backends read the layout from. */
@@ -111,6 +99,7 @@ export function pinnedInstanceAttributesCpp(
     context: LoweringContext,
 ): string {
     const rows = pinnedInstanceAttributes(context);
+    const groups = [...new Set(rows.map((row) => row.bufferGroup))];
     return `// ${context.provenance(module, factory)}
 //
 // The pin declares each instance-stepped attribute's buffer group, stride
@@ -122,7 +111,6 @@ struct PinnedInstanceAttribute {
     std::string_view buffer_group;
     std::uint32_t array_stride;
     std::uint32_t offset;
-    bool instance_stepped;
 };
 
 inline constexpr std::array<PinnedInstanceAttribute, ${rows.length}>
@@ -132,8 +120,7 @@ ${
             .map(
                 (row) =>
                     `        {"${row.name}", "${row.bufferGroup}", ` +
-                    `${row.arrayStride}u, ${row.offset}u, ` +
-                    `${row.instanceStepped ? "true" : "false"}},`,
+                    `${row.arrayStride}u, ${row.offset}u},`,
             )
             .join("\n")
     }
@@ -148,7 +135,24 @@ inline constexpr const PinnedInstanceAttribute* pinned_instance_attribute(
     return nullptr;
 }
 
-/** The stride the pin declares for one buffer group. */
+/**
+ * The distinct buffer groups the pin declares, in declaration order.
+ *
+ * Which SLOT each binds at is a backend's own answer, but the NAMES are the
+ * pin's -- so a backend states its mapping against this list rather than
+ * restating the strings, and a pin that renames a group or adds a third
+ * fails that backend's own assertions.
+ */
+inline constexpr std::array<std::string_view, ${groups.length}>
+    pinned_instance_groups{${groups.map((group) => `"${group}"`).join(", ")}};
+
+/**
+ * The stride the pin declares for one buffer group, or zero for a name it
+ * declares no attribute under.
+ *
+ * Zero is not a usable array stride, so a caller reads it as the refusal it
+ * is: both backends static_assert their own streams against it.
+ */
 inline constexpr std::uint32_t pinned_instance_group_stride(
     std::string_view group) {
     for (const PinnedInstanceAttribute& row : pinned_instance_attributes) {

@@ -27,7 +27,7 @@ import {
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
-import { floatLiteral } from "../cpp-literals.js";
+import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 
@@ -63,6 +63,23 @@ function optionDefault(
     }
     return context.numericValue(initializer.right, file);
 }
+
+/**
+ * The pin's own floating-origin offset, as the three scalars both matrix
+ * builders take.
+ *
+ * `renderPcfShadowMap` and `renderEsmShadowMap` both read the active
+ * camera's world translation and hand it in, so the light view and the
+ * caster fold land in the same eye-relative frame the mesh worlds are packed
+ * into. With the mode off the caller passes the zero vector, which is what
+ * the pin's own `foCam ? ... : 0` resolves to. Stated once because both
+ * builders take the same three, for the same reason.
+ */
+const eyeOffsetBindings: readonly (readonly [string, PinnedBinding])[] = [
+    ["offX", { cpp: "eye.x", type: "scalar" }],
+    ["offY", { cpp: "eye.y", type: "scalar" }],
+    ["offZ", { cpp: "eye.z", type: "scalar" }],
+];
 
 /**
  * `buildLightViewMatrix`, whole: the light-space basis, from six scalars.
@@ -324,15 +341,7 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
         // `near`/`far` are Windows macro names.
         ["near", { cpp: "near_plane", type: "scalar" }],
         ["far", { cpp: "far_plane", type: "scalar" }],
-        // The pin's own floating-origin offset: `renderPcfShadowMap` and
-        // `renderEsmShadowMap` both read the active camera's world
-        // translation and hand it in, so the light view and the caster fold
-        // land in the same eye-relative frame the mesh worlds are packed
-        // into. With the mode off the caller passes the zero vector, which
-        // is what the pin's own `foCam ? ... : 0` resolves to.
-        ["offX", { cpp: "eye.x", type: "scalar" }],
-        ["offY", { cpp: "eye.y", type: "scalar" }],
-        ["offZ", { cpp: "eye.z", type: "scalar" }],
+        ...eyeOffsetBindings,
     ]);
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
@@ -437,15 +446,7 @@ function lowerComputeDirectionalLightMatrix(
         ["light.position.z", { cpp: "light.position.z", type: "scalar" }],
         ["orthoMinZ", { cpp: "ortho_min_z", type: "scalar" }],
         ["orthoMaxZ", { cpp: "ortho_max_z", type: "scalar" }],
-        // The pin's own floating-origin offset: `renderPcfShadowMap` and
-        // `renderEsmShadowMap` both read the active camera's world
-        // translation and hand it in, so the light view and the caster fold
-        // land in the same eye-relative frame the mesh worlds are packed
-        // into. With the mode off the caller passes the zero vector, which
-        // is what the pin's own `foCam ? ... : 0` resolves to.
-        ["offX", { cpp: "eye.x", type: "scalar" }],
-        ["offY", { cpp: "eye.y", type: "scalar" }],
-        ["offZ", { cpp: "eye.z", type: "scalar" }],
+        ...eyeOffsetBindings,
     ]);
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
@@ -594,6 +595,28 @@ function assertShadowUboLayout(context: LoweringContext): void {
     context.callExpression(declaration, "packMat4IntoF32");
 }
 
+/**
+ * Every named local's `??` fallback in one pinned factory.
+ *
+ * The three generator factories resolve their options the same way -- one
+ * `const x = cfg.x ?? <default>` per option -- so the read is stated once
+ * and each family names only its own list.
+ */
+function pinnedOptionDefaults<Name extends string>(
+    context: LoweringContext,
+    module: string,
+    factory: string,
+    names: readonly Name[],
+): Record<Name, number> {
+    const { file, declaration } = context.functionDeclaration(module, factory);
+    return Object.fromEntries(
+        names.map((name) => [
+            name,
+            optionDefault(context, declaration, name, file),
+        ]),
+    ) as Record<Name, number>;
+}
+
 /** The pinned ESM-directional defaults, each read from its own `??`. */
 export interface PinnedEsmDefaults {
     mapSize: number;
@@ -608,32 +631,22 @@ export interface PinnedEsmDefaults {
 }
 
 function esmDefaults(context: LoweringContext): PinnedEsmDefaults {
-    const { file, declaration } = context.functionDeclaration(
+    return pinnedOptionDefaults(
+        context,
         esmModule,
         "createEsmDirectionalShadowGenerator",
+        [
+            "mapSize",
+            "depthScale",
+            "bias",
+            "blurKernel",
+            "blurScale",
+            "darkness",
+            "frustumEdgeFalloff",
+            "orthoMinZ",
+            "orthoMaxZ",
+        ],
     );
-    const read = (local: string): number =>
-        optionDefault(context, declaration, local, file);
-    return {
-        mapSize: read("mapSize"),
-        depthScale: read("depthScale"),
-        bias: read("bias"),
-        blurKernel: read("blurKernel"),
-        blurScale: read("blurScale"),
-        darkness: read("darkness"),
-        frustumEdgeFalloff: read("frustumEdgeFalloff"),
-        orthoMinZ: read("orthoMinZ"),
-        orthoMaxZ: read("orthoMaxZ"),
-    };
-}
-
-/** The pin's own defaults for a directional-light PCF generator. */
-export interface PinnedPcfDirectionalDefaults {
-    mapSize: number;
-    bias: number;
-    darkness: number;
-    orthoMinZ: number;
-    orthoMaxZ: number;
 }
 
 /**
@@ -644,22 +657,191 @@ export interface PinnedPcfDirectionalDefaults {
  * `bias` and `darkness` are its own, while `near`/`far` give way to the
  * ortho pair `computeDirectionalLightMatrix` takes.
  */
-function pcfDirectionalDefaults(
-    context: LoweringContext,
-): PinnedPcfDirectionalDefaults {
-    const { file, declaration } = context.functionDeclaration(
+function pcfDirectionalDefaults(context: LoweringContext) {
+    return pinnedOptionDefaults(
+        context,
         pcfDirectionalModule,
         "createPcfDirectionalShadowGenerator",
+        ["mapSize", "bias", "darkness", "orthoMinZ", "orthoMaxZ"],
     );
-    const read = (local: string): number =>
-        optionDefault(context, declaration, local, file);
-    return {
-        mapSize: read("mapSize"),
-        bias: read("bias"),
-        darkness: read("darkness"),
-        orthoMinZ: read("orthoMinZ"),
-        orthoMaxZ: read("orthoMaxZ"),
-    };
+}
+
+/**
+ * The record field each factory's lane locals stand for.
+ *
+ * A lane is packed from the values the factory closed over, and this port
+ * keeps those on the generator record instead -- so lowering a lane is
+ * lowering its expression with the locals renamed. Every name the three
+ * factories use is here; one they add fails by name rather than packing a
+ * zero.
+ */
+const shadowLaneLocals: Readonly<Record<string, string>> = {
+    darkness: "generator.darkness",
+    mapSize: "map_size",
+    far: "generator.far_plane",
+    depthScale: "generator.depth_scale",
+    frustumEdgeFalloff: "generator.frustum_edge_falloff",
+};
+
+/**
+ * One `new F32([...])` lane of a shadow generator, as C++ float expressions.
+ *
+ * `_depthValues` and `_shadowsInfo` are the two the receiver block carries,
+ * and the three factories pack them from three different combinations --
+ * `[0, far]` against `[0, 1]`, and `[darkness, mapSize, 1/mapSize, 0]`
+ * against `[darkness, 0, depthScale, falloff]`. Reading them here is what
+ * stops that table from being re-typed into a fork this port maintains by
+ * hand: a pin that moves a lane moves the emitted block with it.
+ */
+function shadowLane(
+    context: LoweringContext,
+    declaration: ts.FunctionDeclaration,
+    file: ts.SourceFile,
+    local: string,
+    width: number,
+): readonly string[] {
+    const initializer = context.unwrapExpression(
+        context.variableInitializer(declaration, local),
+    );
+    const elements =
+        ts.isNewExpression(initializer) &&
+        initializer.arguments?.length === 1 &&
+        ts.isArrayLiteralExpression(initializer.arguments[0]!)
+            ? initializer.arguments[0]!.elements
+            : undefined;
+    if (!elements || elements.length !== width) {
+        return context.contractError(
+            initializer,
+            `Expected pinned '${local}' to be a ${width}-element F32 literal.`,
+        );
+    }
+    return elements.map((element) =>
+        lowerShadowLaneElement(context, element, file, local),
+    );
+}
+
+/** One lane element, at the float width the pin's own `F32` store rounds to. */
+function lowerShadowLaneElement(
+    context: LoweringContext,
+    node: ts.Expression,
+    file: ts.SourceFile,
+    local: string,
+): string {
+    const expression = context.unwrapExpression(node);
+    if (ts.isNumericLiteral(expression)) {
+        return floatLiteral(context.numericValue(expression, file));
+    }
+    if (ts.isIdentifier(expression)) {
+        return `static_cast<float>(${shadowLaneField(context, expression)})`;
+    }
+    if (
+        ts.isBinaryExpression(expression) &&
+        expression.operatorToken.kind === ts.SyntaxKind.SlashToken
+    ) {
+        // `1.0 / mapSize`, the only arithmetic the three lanes carry. Divided
+        // at double width and rounded once, which is what the pin's own `F32`
+        // store does to it.
+        const operand = (side: ts.Expression): string => {
+            const inner = context.unwrapExpression(side);
+            return ts.isNumericLiteral(inner)
+                ? doubleLiteral(context.numericValue(inner, file))
+                : shadowLaneField(context, inner);
+        };
+        return (
+            "static_cast<float>(" +
+            `${operand(expression.left)} / ${operand(expression.right)})`
+        );
+    }
+    return context.contractError(
+        expression,
+        `Pinned lane '${local}' carries an expression this port ` +
+            "does not lower.",
+    );
+}
+
+/** The record field a lane local names, or a refusal naming the local. */
+function shadowLaneField(
+    context: LoweringContext,
+    expression: ts.Expression,
+): string {
+    if (!ts.isIdentifier(expression)) {
+        return context.contractError(
+            expression,
+            "Expected a pinned lane local.",
+        );
+    }
+    const field = shadowLaneLocals[expression.text];
+    return field === undefined
+        ? context.contractError(
+              expression,
+              `Pinned lane reads an unmapped local '${expression.text}'.`,
+          )
+        : field;
+}
+
+/**
+ * The receiver-block arms, one per pinned generator factory.
+ *
+ * Ordered so the two filters that name themselves come first and the spot
+ * generator is the fallthrough, which is the shape the record's own
+ * `ShadowFilter` default takes.
+ */
+const shadowBlockFamilies: readonly {
+    module: string;
+    factory: string;
+    filter?: string;
+}[] = [
+    {
+        module: esmModule,
+        factory: "createEsmDirectionalShadowGenerator",
+        filter: "esm_directional",
+    },
+    {
+        module: pcfDirectionalModule,
+        factory: "createPcfDirectionalShadowGenerator",
+        filter: "pcf_directional",
+    },
+    {
+        module: spotModule,
+        factory: "createPcfSpotlightShadowGenerator",
+    },
+];
+
+/** Every family's two lanes, as the emitted block's arms. */
+function shadowBlockArms(context: LoweringContext): string {
+    return shadowBlockFamilies
+        .map(({ module, factory, filter }) => {
+            const { file, declaration } = context.functionDeclaration(
+                module,
+                factory,
+            );
+            const depth = shadowLane(
+                context,
+                declaration,
+                file,
+                "_depthValues",
+                2,
+            );
+            const info = shadowLane(
+                context,
+                declaration,
+                file,
+                "_shadowsInfo",
+                4,
+            );
+            // The pin writes two depth values into a four-float lane, so the
+            // trailing pair is the padding `writeShadowUboFields` leaves zero.
+            const body = [
+                `        block.depthValues = {${depth.join(", ")}, 0.0f, 0.0f};`,
+                `        block.shadowsInfo = {${info.join(", ")}};`,
+                "        return block;",
+            ].join("\n");
+            return filter === undefined
+                ? `    {\n${body}\n    }`
+                : `    if (generator.filter == ShadowFilter::${filter}) {\n` +
+                      `${body}\n    }`;
+        })
+        .join("\n");
 }
 
 /**
@@ -1182,7 +1364,7 @@ struct ShadowLightMatrix {
  * PAL's, so the PAL fills this carrier and the fold stays the pin's.
  */
 struct ShadowCaster {
-    std::array<float, 16> world{};
+    std::array<double, 16> world{};
     std::array<float, 3> bounds_min{};
     std::array<float, 3> bounds_max{};
 };
@@ -1194,10 +1376,17 @@ struct ShadowCaster {
  * through it. A scene-code mesh has no parent, so its world matrix IS its
  * local TRS -- the same composition \`nav_mesh_world\` multiplies CPU
  * positions through, from the same single home.
+ *
+ * Kept at the composition's own DOUBLE width, unlike the narrowed world every
+ * GPU consumer takes: the fit's first act is to subtract the eye from cell
+ * 12, and \`MeshRecord::position\` is a \`Vec3d\` precisely so that
+ * large-minus-large happens at full width. Narrowing here and widening back
+ * inside the fold would round the large coordinate first, which at five
+ * million units is half a unit of shadow-volume placement.
  */
-inline std::array<float, 16> shadow_caster_world(const MeshRecord& mesh) {
-${trs.composeWorldBody}\
-    return world;
+inline std::array<double, 16> shadow_caster_world(const MeshRecord& mesh) {
+${trs.composeLocalBody}\
+    return local;
 }
 
 /** The pin's own \`mesh.boundMin ?? [...]\` fallback, for a caster with none. */
@@ -1223,41 +1412,22 @@ ${lowerShadowParamsBlock(context)}
  *
  * \`writeShadowUboFields\` packs the light matrix, then the two depth values
  * with two zero floats behind them, then the four \`shadowsInfo\` lanes;
- * generation asserts each of those writes against this layout.
+ * generation asserts each of those writes against this layout. What goes
+ * IN those lanes is each factory's own, and is read from it.
  */
 inline ShadowInfoUniforms shadow_info_block(
     const ShadowGeneratorRecord& generator) {
-    const double map_size = static_cast<double>(generator.map_size);
+    [[maybe_unused]] const double map_size =
+        static_cast<double>(generator.map_size);
     ShadowInfoUniforms block{};
     block.lightMatrix = generator.light_matrix;
     // \`_depthValues\` and \`_shadowsInfo\`, derived where they are read: each
-    // pinned factory packs them from the values its own record carries, so
-    // caching the packed form would be a second copy a later setter could
-    // leave stale. The two factories pack DIFFERENT lanes, which is why the
-    // filter decides here rather than at creation.
-    if (generator.filter == ShadowFilter::esm_directional) {
-        block.depthValues = {0.0f, 1.0f, 0.0f, 0.0f};
-        block.shadowsInfo = {
-            static_cast<float>(generator.darkness),
-            0.0f,
-            static_cast<float>(generator.depth_scale),
-            static_cast<float>(generator.frustum_edge_falloff),
-        };
-        return block;
-    }
-    block.depthValues = {
-        0.0f,
-        static_cast<float>(generator.far_plane),
-        0.0f,
-        0.0f,
-    };
-    block.shadowsInfo = {
-        static_cast<float>(generator.darkness),
-        static_cast<float>(map_size),
-        static_cast<float>(1.0 / map_size),
-        0.0f,
-    };
-    return block;
+    // pinned factory packs them from the values its own record carries,
+    // so caching the packed form would be a second copy a later setter
+    // could leave stale. The three factories pack three DIFFERENT
+    // combinations, which is why the filter decides here rather than at
+    // creation -- and why the arms are read off those factories.
+${shadowBlockArms(context)}
 }
 
 /**
@@ -1268,7 +1438,7 @@ inline ShadowInfoUniforms shadow_info_block(
  * \`sg._lightMatrix\` and \`updateShadowCameraBase\`, so one matrix serves
  * the receiver and the caster pass alike.
  */
-inline void update_esm_directional_shadow(
+inline void fit_directional_shadow(
     ShadowGeneratorRecord& generator,
     const LightRecord& light,
     const std::vector<ShadowCaster>& casters,
@@ -1282,8 +1452,18 @@ inline void update_esm_directional_shadow(
     generator.light_matrix = matrix.view_projection;
     generator.caster_view = matrix.view;
     generator.caster_view_projection = matrix.view_projection;
+    // A directional light has no position to project from, so the near and
+    // far planes come back OUT of the caster fit rather than going in.
     generator.near_plane = matrix.near_plane;
     generator.far_plane = matrix.far_plane;
+}
+
+inline void update_esm_directional_shadow(
+    ShadowGeneratorRecord& generator,
+    const LightRecord& light,
+    const std::vector<ShadowCaster>& casters,
+    Vec3d eye) {
+    fit_directional_shadow(generator, light, casters, eye);
 }
 
 /**
@@ -1324,18 +1504,13 @@ inline void update_pcf_directional_shadow(
     const LightRecord& light,
     const std::vector<ShadowCaster>& casters,
     Vec3d eye) {
-    const ShadowLightMatrix matrix = compute_directional_light_matrix(
-        light,
-        casters,
-        generator.ortho_min_z,
-        generator.ortho_max_z,
-        eye);
-    generator.light_matrix = matrix.view_projection;
-    generator.caster_view = matrix.view;
+    fit_directional_shadow(generator, light, casters, eye);
+    // The PCF split the spot generator also takes: the receiver keeps the
+    // unbiased view-projection and the caster pass renders through the
+    // biased one. It is the ONLY thing separating this from the ESM fit
+    // above, which is why the fit itself is shared.
     generator.caster_view_projection =
-        bias_view_projection(matrix.view_projection, generator.bias);
-    generator.near_plane = matrix.near_plane;
-    generator.far_plane = matrix.far_plane;
+        bias_view_projection(generator.light_matrix, generator.bias);
 }
 
 } // namespace bbl::upstream
@@ -1355,23 +1530,80 @@ inline void update_pcf_directional_shadow(
  * ahead of the scene's own tasks the way `ensureShadowTask` unshifts the
  * scheduler.
  */
+/**
+ * One generator factory, as the three pinned families spell it.
+ *
+ * They differ in the light kind they demand, the options struct they take,
+ * the fields they copy across and whether they fit a matrix eagerly. What
+ * they share -- the handle check, the kind check, the record, the
+ * `push_back` and the handle it returns -- is written once here, because a
+ * fourth family should cost a row rather than a fourth copy of the frame.
+ *
+ * A directional generator writes no matrix at creation: its light matrix is
+ * fitted to the CASTERS, which are registered after this returns, so the
+ * first fit happens at the task's first frame.
+ */
+function shadowGeneratorFactory(spec: {
+    name: string;
+    options: string;
+    article: string;
+    lightKind: "spot" | "directional";
+    filter?: string;
+    fields: readonly string[];
+    tail?: string;
+}): string {
+    const assignments = spec.fields
+        .map((field) => `    generator.${field} = options.${field};`)
+        .join("\n");
+    return `ShadowGeneratorHandle create_${spec.name}_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    ${spec.options} options) {
+    if (light.value >= engine.lights.size()) {
+        throw std::runtime_error("Invalid shadow generator light handle.");
+    }
+    if (engine.lights[light.value].kind != LightKind::${spec.lightKind}) {
+        throw std::runtime_error(
+            "${spec.article} requires a ${spec.lightKind} light.");
+    }
+    ShadowGeneratorRecord generator;
+${spec.filter === undefined
+        ? ""
+        : `    generator.filter = ShadowFilter::${spec.filter};\n`}\
+${assignments}
+${spec.tail === undefined ? "" : `${spec.tail}\n`}\
+    engine.shadow_generators.push_back(std::move(generator));
+    return ShadowGeneratorHandle{
+        static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
+}
+`;
+}
+
 export function shadowFactorySource(
     context: LoweringContext,
-    // Whether this scene reaches an ESM generator. A PCF-only scene
-    // emits neither the ESM factory nor the caster view it would ask
-    // for -- the view's own translation unit is not compiled either.
-    esmShadows = false,
+    // The scene's own feature list, asked directly rather than through one
+    // positional boolean per family: which generators it reached is already
+    // stated there, and a fourth family would otherwise be a fourth
+    // unlabelled argument at every call site.
+    features: readonly string[] = [],
     // Whether any composed node graph carries an ESM caster module. A node
     // caster takes neither family's no-colour view -- its own module was
     // compiled beside the receiver's -- so the arm below exists only for a
-    // scene that reached one.
+    // scene that reached one. Not a feature: it is a property of what the
+    // compose layer produced, not of what the scene asked for.
     nodeEsmCasters = false,
-    // Whether this scene reaches the DIRECTIONAL PCF generator. It shares
-    // every resource the spot one builds and differs only in the volume its
-    // light matrix is fitted with, so what the flag gates is the factory
-    // alone -- no caster view, no second map format, no receiver arm.
-    pcfDirectionalShadows = false,
 ): LoweredSource {
+    // A PCF-only scene emits neither the ESM factory nor the caster view it
+    // would ask for -- the view's own translation unit is not compiled
+    // either.
+    const esmShadows = features.includes("shadow:esm");
+    // The directional PCF generator shares every resource the spot one
+    // builds and differs only in the volume its light matrix is fitted with,
+    // so what this gates is the factory alone -- no caster view, no second
+    // map format, no receiver arm.
+    const pcfDirectionalShadows = features.includes(
+        "shadow:pcf-directional",
+    );
     // One family's caster view, under the filter its task carries. The node
     // family composes only the ESM half -- `buildNodeRenderables` re-compiles
     // the graph's own bodies under the ESM bit, and there is no depth-only
@@ -1449,89 +1681,51 @@ export function shadowFactorySource(
 
 namespace bbl {
 
-ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
-    Engine& engine,
-    LightHandle light,
-    PcfSpotShadowOptions options) {
-    if (light.value >= engine.lights.size()) {
-        throw std::runtime_error("Invalid shadow generator light handle.");
-    }
-    if (engine.lights[light.value].kind != LightKind::spot) {
-        throw std::runtime_error(
-            "A PCF spotlight shadow generator requires a spot light.");
-    }
-    ShadowGeneratorRecord generator;
-    generator.map_size = options.map_size;
-    generator.bias = options.bias;
-    generator.darkness = options.darkness;
-    generator.near_plane = options.near_plane;
-    generator.far_plane = options.far_plane;
-    // The factory's own first fit, before any frame: the pin builds it
-    // at creation from a camera that has not moved, which is the zero
-    // offset in either mode.
-    upstream::update_pcf_spot_shadow(
-        generator, engine.lights[light.value], Vec3d{});
-    engine.shadow_generators.push_back(std::move(generator));
-    return ShadowGeneratorHandle{
-        static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
-}
-
-${!pcfDirectionalShadows ? "" : `ShadowGeneratorHandle create_pcf_directional_shadow_generator(
-    Engine& engine,
-    LightHandle light,
-    PcfDirectionalShadowOptions options) {
-    if (light.value >= engine.lights.size()) {
-        throw std::runtime_error("Invalid shadow generator light handle.");
-    }
-    if (engine.lights[light.value].kind != LightKind::directional) {
-        throw std::runtime_error(
-            "A PCF directional shadow generator requires a directional "
-            "light.");
-    }
-    ShadowGeneratorRecord generator;
-    generator.filter = ShadowFilter::pcf_directional;
-    generator.map_size = options.map_size;
-    generator.bias = options.bias;
-    generator.darkness = options.darkness;
-    generator.ortho_min_z = options.ortho_min_z;
-    generator.ortho_max_z = options.ortho_max_z;
-    // Like the ESM generator's, this light matrix fits the CASTERS, which
-    // are registered after the factory returns -- so the first fit happens
-    // at the task's first frame rather than here.
-    engine.shadow_generators.push_back(std::move(generator));
-    return ShadowGeneratorHandle{
-        static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
-}
-`}
-
-${!esmShadows ? "" : `ShadowGeneratorHandle create_esm_directional_shadow_generator(
-    Engine& engine,
-    LightHandle light,
-    EsmDirectionalShadowOptions options) {
-    if (light.value >= engine.lights.size()) {
-        throw std::runtime_error("Invalid shadow generator light handle.");
-    }
-    if (engine.lights[light.value].kind != LightKind::directional) {
-        throw std::runtime_error(
-            "An ESM shadow generator requires a directional light.");
-    }
-    ShadowGeneratorRecord generator;
-    generator.filter = ShadowFilter::esm_directional;
-    generator.map_size = options.map_size;
-    generator.bias = options.bias;
-    generator.darkness = options.darkness;
-    generator.depth_scale = options.depth_scale;
-    generator.frustum_edge_falloff = options.frustum_edge_falloff;
-    generator.ortho_min_z = options.ortho_min_z;
-    generator.ortho_max_z = options.ortho_max_z;
-    generator.esm_index = options.esm_index;
-    // The light matrix fits the CASTERS, which are registered after this
-    // factory returns, so the first fit happens at the task's first frame.
-    engine.shadow_generators.push_back(std::move(generator));
-    return ShadowGeneratorHandle{
-        static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
-}
-`}
+${shadowGeneratorFactory({
+    name: "pcf_spotlight",
+    options: "PcfSpotShadowOptions",
+    article: "A PCF spotlight shadow generator",
+    lightKind: "spot",
+    fields: ["map_size", "bias", "darkness", "near_plane", "far_plane"],
+    // A first fit before any frame. The pin leaves `_lightMatrix` zero until
+    // `renderPcfShadowMap` runs, so this is this port's own eagerness rather
+    // than the factory's -- harmless because the refresh runs before the
+    // first draw, and taken at the zero offset because a camera that has not
+    // moved is the zero offset in either mode.
+    tail: `    upstream::update_pcf_spot_shadow(
+        generator, engine.lights[light.value], Vec3d{});`,
+})}
+${!pcfDirectionalShadows ? "" : shadowGeneratorFactory({
+    name: "pcf_directional",
+    options: "PcfDirectionalShadowOptions",
+    article: "A PCF directional shadow generator",
+    lightKind: "directional",
+    filter: "pcf_directional",
+    fields: [
+        "map_size",
+        "bias",
+        "darkness",
+        "ortho_min_z",
+        "ortho_max_z",
+    ],
+})}
+${!esmShadows ? "" : shadowGeneratorFactory({
+    name: "esm_directional",
+    options: "EsmDirectionalShadowOptions",
+    article: "An ESM shadow generator",
+    lightKind: "directional",
+    filter: "esm_directional",
+    fields: [
+        "map_size",
+        "bias",
+        "darkness",
+        "depth_scale",
+        "frustum_edge_falloff",
+        "ortho_min_z",
+        "ortho_max_z",
+        "esm_index",
+    ],
+})}
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

@@ -71,9 +71,7 @@ export interface StatementLoweringContext {
     captureEmittedLines(emitBody: () => void): string[];
     allocateTemporaryCppName(label: string): string;
     /** How many lines have been emitted, for a caller that may undo. */
-    emittedLineCount(): number;
     /** Drop every line emitted after `count`. */
-    truncateEmittedLines(count: number): void;
     emitVariableDeclaration(
         declaration: ts.VariableDeclaration,
     ): void;
@@ -919,6 +917,38 @@ export class StatementLowerer {
         context.emit("}");
     }
 
+    /**
+     * One unrolled iteration, emitted FLAT into the scope the loop stands in.
+     *
+     * That is what unrolling a loop means: the statements are written out. A
+     * C++ block would make each iteration's locals invisible to everything
+     * after the loop, and a scene that collects what its body creates -- a
+     * shadow-caster list built from `casters.push` -- names exactly those
+     * locals. The generator scope pushed here already prefixes each
+     * iteration's names uniquely, so flattening cannot collide two of them.
+     *
+     * Shared by the three unrollers, because the reason is the loop's shape
+     * rather than which collection it walked.
+     */
+    private emitUnrolledIteration(
+        context: StatementLoweringContext,
+        body: ts.Statement,
+        bind: () => void,
+    ): void {
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            bind();
+            const statements = ts.isBlock(body)
+                ? body.statements
+                : [body];
+            for (const nested of statements) {
+                this.emit(context, nested);
+            }
+        } finally {
+            context.popScope();
+        }
+    }
+
     private emitStaticIndexFor(
         context: StatementLoweringContext,
         statement: ts.ForStatement,
@@ -1020,35 +1050,17 @@ export class StatementLowerer {
             index < length.staticNumber;
             index += 1
         ) {
-            // The bodies are emitted flat, into the scope the loop
-            // itself stands in, because that is what unrolling a loop
-            // means: the statements are written out. A C++ block would
-            // make each iteration's locals invisible to everything
-            // after the loop, and a scene that collects what its body
-            // creates -- a shadow-caster list built from `casters.push`
-            // -- names exactly those locals. The generator scope pushed
-            // here already prefixes each iteration's names uniquely, so
-            // flattening cannot collide two iterations.
-            context.pushScope(
-                context.allocateBlockPrefix(),
+            this.emitUnrolledIteration(
+                context,
+                statement.statement,
+                () => {
+                    context.bindCompileTimeValue(indexBinding, {
+                        kind: "number",
+                        cpp: `${index}.0`,
+                        staticNumber: index,
+                    });
+                },
             );
-            try {
-                context.bindCompileTimeValue(indexBinding, {
-                    kind: "number",
-                    cpp: `${index}.0`,
-                    staticNumber: index,
-                });
-                const statements = ts.isBlock(
-                    statement.statement,
-                )
-                    ? statement.statement.statements
-                    : [statement.statement];
-                for (const nested of statements) {
-                    this.emit(context, nested);
-                }
-            } finally {
-                context.popScope();
-            }
         }
         return true;
     }
@@ -1170,29 +1182,16 @@ export class StatementLowerer {
             statement.expression,
         );
         for (const element of values.elements) {
-            context.emit("{");
-            context.increaseIndent();
-            context.pushScope(
-                context.allocateBlockPrefix(),
+            this.emitUnrolledIteration(
+                context,
+                statement.statement,
+                () => {
+                    context.bindLocalValue(
+                        declaration.name as ts.Identifier,
+                        context.compileValue(element),
+                    );
+                },
             );
-            try {
-                context.bindLocalValue(
-                    declaration.name,
-                    context.compileValue(element),
-                );
-                const statements = ts.isBlock(
-                    statement.statement,
-                )
-                    ? statement.statement.statements
-                    : [statement.statement];
-                for (const nested of statements) {
-                    this.emit(context, nested);
-                }
-            } finally {
-                context.popScope();
-                context.decreaseIndent();
-            }
-            context.emit("}");
         }
     }
 
@@ -1323,6 +1322,7 @@ export class StatementLowerer {
         if (!ts.isIdentifier(declaration.name)) {
             return false;
         }
+        const binding = declaration.name;
         const elements =
             context.handleCollections.tupleElements(
                 statement.expression,
@@ -1337,26 +1337,13 @@ export class StatementLowerer {
             );
         }
         for (const element of elements) {
-            context.emit("{");
-            context.increaseIndent();
-            context.pushScope(
-                context.allocateBlockPrefix(),
+            this.emitUnrolledIteration(
+                context,
+                statement.statement,
+                () => {
+                    context.bindLocalValue(binding, element);
+                },
             );
-            try {
-                context.bindLocalValue(
-                    declaration.name,
-                    element,
-                );
-                for (const nested of bodyStatements(
-                    statement,
-                )) {
-                    this.emit(context, nested);
-                }
-            } finally {
-                context.popScope();
-                context.decreaseIndent();
-            }
-            context.emit("}");
         }
         return true;
     }
