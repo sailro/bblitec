@@ -11,9 +11,9 @@
  * Two of its uniforms are the reason this needed anything new. The pin lets
  * a caller name nine system uniforms and this port served three; the
  * linear-depth stage reads `view` and `projection` as their own matrices
- * rather than the product, so both joined `shaderSystemMatrixTable` and the
- * PALs build each from the same camera the pass's view-projection came
- * from.
+ * rather than the product, so both joined `shaderSystemMatrixTable` and each
+ * pass hands the block writer the two factors of the product it renders
+ * with.
  */
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
@@ -46,18 +46,19 @@ export function linearDepthVariantName(
     return `linear-depth-${slug(options.near)}-${slug(options.far)}`;
 }
 
+/** The `uniforms` list the pinned call declares, in its own order. */
+interface PinnedUniformList {
+    /** Each entry in this port's signature spelling. */
+    readonly signatures: string[];
+    /** The one typed declaration, which carries the planes. */
+    readonly custom: { readonly name: string; readonly type: string };
+}
+
 export class LinearDepthLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    /** The `createShaderMaterial({ ... })` argument the factory passes. */
-    private materialCall(): ts.ObjectLiteralExpression {
-        return this.context.callObjectArgument(
-            this.context.functionDeclaration(
-                linearDepthModule,
-                "createLinearDepthMaterial",
-            ).declaration,
-            "createShaderMaterial",
-        );
+    private get file(): ts.SourceFile {
+        return this.context.sourceFile(linearDepthModule);
     }
 
     /**
@@ -101,36 +102,23 @@ export class LinearDepthLowerer {
     public materialProgram(
         options: LinearDepthMaterialOptions,
     ): CompiledShaderProgram {
-        const file = this.context.sourceFile(linearDepthModule);
-        const call = this.materialCall();
+        const call = this.context.pinnedShaderMaterialCall(
+            linearDepthModule,
+            "createLinearDepthMaterial",
+        );
         this.assertMaterialState(call);
-        const stageConstant = (property: string): string => {
-            const reference = this.context.propertyInitializer(
-                call,
-                property,
-            );
-            if (!ts.isIdentifier(reference)) {
-                this.context.contractError(
-                    reference,
-                    `Expected the linear-depth ${property} to name a module ` +
-                        "constant.",
-                );
-            }
-            return this.context.stringValue(
-                this.context.variableInitializer(file, reference.text),
-                file,
-            );
-        };
+        const { signatures, custom } = this.uniformList(call);
         return {
             name: linearDepthVariantName(options),
-            vertexSource: stageConstant("vertexSource"),
-            fragmentSource: stageConstant("fragmentSource"),
-            attributes: this.stringArray(
+            vertexSource: this.stageConstant(call, "vertexSource"),
+            fragmentSource: this.stageConstant(call, "fragmentSource"),
+            attributes: this.context.stringArrayValue(
                 this.context.propertyInitializer(call, "attributes"),
+                this.file,
             ),
-            uniforms: this.assertUniforms(call),
+            uniforms: signatures,
             uniformDefaults: [
-                { name: this.customUniformName(call), values: [options.near, options.far] },
+                { name: custom.name, values: [options.near, options.far] },
             ],
             samplers: [],
             defines: [],
@@ -141,36 +129,84 @@ export class LinearDepthLowerer {
         };
     }
 
+    /** One stage, from the module constant the call names for it. */
+    private stageConstant(
+        call: ts.ObjectLiteralExpression,
+        property: string,
+    ): string {
+        const reference = this.context.propertyInitializer(call, property);
+        if (!ts.isIdentifier(reference)) {
+            this.context.contractError(
+                reference,
+                `Expected the linear-depth ${property} to name a module ` +
+                    "constant.",
+            );
+        }
+        return this.context.stringValue(
+            this.context.variableInitializer(this.file, reference.text),
+            this.file,
+        );
+    }
+
     /**
-     * The pinned material state this port folds, each read from the
-     * property that states it: a depth material culls back faces, writes
-     * depth, and renders under the pin's own reverse-Z compare — which is
-     * this port's convention, so the fold is legitimate only while the two
-     * agree, and this is where that is checked.
+     * The pinned material state this port folds.
+     *
+     * The three properties it restates are read from the call; the rest is
+     * the closed set, because a property the pin adds later would otherwise
+     * be silently dropped — the same contract the effect wrapper's pass
+     * state takes.
      */
     private assertMaterialState(call: ts.ObjectLiteralExpression): void {
-        for (const [property, expected] of [
-            ["backFaceCulling", true],
-            ["depthWrite", true],
-        ] as const) {
+        const declared = new Set(
+            call.properties
+                .map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? this.context.propertyName(property.name)
+                        : undefined,
+                )
+                .filter((name): name is string => name !== undefined),
+        );
+        const expected = [
+            "name",
+            "vertexSource",
+            "fragmentSource",
+            "attributes",
+            "uniforms",
+            "backFaceCulling",
+            "depthWrite",
+            "depthCompare",
+        ];
+        if (
+            declared.size !== call.properties.length ||
+            expected.some((name) => !declared.has(name)) ||
+            declared.size !== expected.length
+        ) {
+            this.context.contractError(
+                call,
+                "Expected createLinearDepthMaterial to declare exactly " +
+                    `${expected.join(", ")}.`,
+            );
+        }
+        // A depth material culls back faces and writes depth.
+        for (const property of ["backFaceCulling", "depthWrite"] as const) {
             const value = this.context.propertyInitializer(call, property);
-            const literal = value.kind === ts.SyntaxKind.TrueKeyword;
-            if (literal !== expected) {
+            if (value.kind !== ts.SyntaxKind.TrueKeyword) {
                 this.context.contractError(
                     value,
                     `Expected a linear-depth material to set ${property} ` +
-                        `to ${expected}.`,
+                        "to true.",
                 );
             }
         }
+        // And renders under the pin's own reverse-Z compare, which is this
+        // port's convention -- the fold is legitimate only while the two
+        // agree, and a ShaderMaterial's own compare is not carried through
+        // lowering, so this is where that is checked.
         const compare = this.context.propertyInitializer(
             call,
             "depthCompare",
         );
-        const named = this.context.stringValue(
-            compare,
-            this.context.sourceFile(linearDepthModule),
-        );
+        const named = this.context.stringValue(compare, this.file);
         const convention = pinnedReverseDepthCompare(this.context);
         if (named !== convention) {
             this.context.contractError(
@@ -183,46 +219,22 @@ export class LinearDepthLowerer {
         }
     }
 
-    /** The one custom uniform's name, read from the declaration it rides. */
-    private customUniformName(call: ts.ObjectLiteralExpression): string {
-        return this.uniformDeclaration(call).name;
-    }
-
     /**
      * `uniforms`, in the pin's own order: the system matrices the stages
      * read as bare names, then the one typed declaration carrying the
      * planes.
      */
-    private assertUniforms(call: ts.ObjectLiteralExpression): string[] {
-        const uniforms = this.context.propertyInitializer(call, "uniforms");
-        if (!ts.isArrayLiteralExpression(uniforms)) {
-            this.context.contractError(
-                uniforms,
-                "Expected a linear-depth material's uniforms to be an array literal.",
-            );
-        }
-        const file = this.context.sourceFile(linearDepthModule);
-        const declaration = this.uniformDeclaration(call);
-        return uniforms.elements.map((element) => {
-            if (ts.isObjectLiteralExpression(element)) {
-                return `${declaration.name}:${declaration.type}`;
-            }
-            return this.context.stringValue(element, file);
-        });
-    }
-
-    /** The `{ name, type, defaultValue }` entry in that list. */
-    private uniformDeclaration(
+    private uniformList(
         call: ts.ObjectLiteralExpression,
-    ): { name: string; type: string } {
+    ): PinnedUniformList {
         const uniforms = this.context.propertyInitializer(call, "uniforms");
         if (!ts.isArrayLiteralExpression(uniforms)) {
             this.context.contractError(
                 uniforms,
-                "Expected a linear-depth material's uniforms to be an array literal.",
+                "Expected a linear-depth material's uniforms to be an " +
+                    "array literal.",
             );
         }
-        const file = this.context.sourceFile(linearDepthModule);
         const declarations = uniforms.elements.filter(
             (element): element is ts.ObjectLiteralExpression =>
                 ts.isObjectLiteralExpression(element),
@@ -243,28 +255,23 @@ export class LinearDepthLowerer {
             "[near, far]",
             "Pinned linear-depth uniform default",
         );
-        return {
+        const custom = {
             name: this.context.stringValue(
                 this.context.propertyInitializer(declaration, "name"),
-                file,
+                this.file,
             ),
             type: this.context.stringValue(
                 this.context.propertyInitializer(declaration, "type"),
-                file,
+                this.file,
             ),
         };
-    }
-
-    private stringArray(expression: ts.Expression): string[] {
-        if (!ts.isArrayLiteralExpression(expression)) {
-            this.context.contractError(
-                expression,
-                "Expected a string array literal.",
-            );
-        }
-        const file = this.context.sourceFile(linearDepthModule);
-        return expression.elements.map((element) =>
-            this.context.stringValue(element, file),
-        );
+        return {
+            signatures: uniforms.elements.map((element) =>
+                ts.isObjectLiteralExpression(element)
+                    ? `${custom.name}:${custom.type}`
+                    : this.context.stringValue(element, this.file),
+            ),
+            custom,
+        };
     }
 }

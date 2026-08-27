@@ -1428,7 +1428,8 @@ build error with a source location, not a silently different image.
   `world`, `view`, `projection`, `viewProjection` and `worldViewProjection`
   system uniforms, which head a stage's block in declaration order — `view`
   and `projection` are the two factors of the product the pass already
-  built, taken from its own camera. The pin's other four (`worldView`,
+  built, carried beside it so the three cannot come from two cameras. The
+  pin's other four (`worldView`,
   `cameraPosition`, `screenSize`, `alphaCutoff`), matrix-valued custom
   uniforms, and a stage reading both a
   system and a custom uniform all remain unsupported. A sampler is named by a

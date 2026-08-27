@@ -266,13 +266,8 @@ inline void record_splat_pass(
         static_cast<Uint32>(pass.uniform_slot),
         &uniforms,
         sizeof(uniforms));
-    if (pass.fragment_uniform_slot >= 0) {
-        SDL_PushGPUFragmentUniformData(
-            command,
-            static_cast<Uint32>(pass.fragment_uniform_slot),
-            &uniforms,
-            sizeof(uniforms));
-    }
+    push_stage_uniform(
+        command, pass.fragment_uniform_slot, &uniforms, sizeof(uniforms));
 
     SDL_GPUBufferBinding vertex_bindings[2]{};
     vertex_bindings[0].buffer = pass.quad;

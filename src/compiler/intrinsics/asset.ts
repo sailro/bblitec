@@ -6,10 +6,11 @@ import type {
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compressedTextureUrl } from "../compressed-texture.js";
+import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
 import {
-    isSplatFragmentExport,
-    splatFragmentExportNames,
-} from "../../pinned-splat-fragments.js";
+    validateObjectProperties,
+    type ObjectValidationContext,
+} from "../option-helpers.js";
 
 interface CompiledEnvironmentOptions {
     groundTextureUrl: string;
@@ -29,7 +30,8 @@ interface CompiledHdrEnvironmentOptions {
 }
 
 export interface AssetIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext,
+        ObjectValidationContext {
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -71,6 +73,9 @@ export interface AssetIntrinsicContext
     fail(node: ts.Node, message: string): never;
     /** Follows an identifier back to the `const` initializer that bound it. */
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
+    expectStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression;
     /** The shader plugins a `loadSplat` call passed, in the order it wrote. */
     recordSplatFragments(
         fragments: readonly SplatFragmentManifest[],
@@ -90,16 +95,7 @@ function compileSplatFragments(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
 ): SplatFragmentManifest[] {
-    const argument = call.arguments[2]!;
-    const list = context.unwrap(argument);
-    if (!ts.isArrayLiteralExpression(list)) {
-        context.fail(
-            argument,
-            "A reached loadSplat takes its shader fragments as an array " +
-                "literal: the pin's own splicer folds them into the splat " +
-                "module at generation.",
-        );
-    }
+    const list = context.expectStaticArrayLiteral(call.arguments[2]!);
     return list.elements.map((element) => {
         const unwrapped = context.unwrap(element);
         if (ts.isIdentifier(unwrapped)) {
@@ -120,23 +116,13 @@ function sceneSplatFragment(
     context: AssetIntrinsicContext,
     object: ts.ObjectLiteralExpression,
 ): SplatFragmentManifest {
-    for (const property of object.properties) {
-        const name = ts.isPropertyAssignment(property) ||
-            ts.isShorthandPropertyAssignment(property)
-            ? property.name.getText()
-            : undefined;
-        if (
-            name !== "id" &&
-            name !== "helperFunctions" &&
-            name !== "fragmentSlots"
-        ) {
-            context.fail(
-                property,
-                "A reached GsShaderFragment carries id, helperFunctions " +
-                    "and fragmentSlots only.",
-            );
-        }
-    }
+    validateObjectProperties(
+        context,
+        object,
+        ["id", "helperFunctions", "fragmentSlots"],
+        "A reached GsShaderFragment carries id, helperFunctions and " +
+            "fragmentSlots only.",
+    );
     const idExpression = context.objectProperty(object, "id");
     const slotsExpression = context.objectProperty(object, "fragmentSlots");
     if (!idExpression || !slotsExpression) {
@@ -148,24 +134,30 @@ function sceneSplatFragment(
     const helpers = context.objectProperty(object, "helperFunctions");
     const slots = context.expectObjectLiteral(slotsExpression);
     return {
-        record: {
-            id: context.compileStringLiteral(idExpression),
-            ...(helpers
-                ? { helperFunctions: context.compileStringLiteral(helpers) }
-                : {}),
-            fragmentSlots: slots.properties.map((property) => {
-                if (!ts.isPropertyAssignment(property)) {
-                    context.fail(
-                        property,
-                        "A GsShaderFragment's slots are plain properties.",
-                    );
-                }
-                return {
-                    slot: property.name.getText().replace(/^["']|["']$/g, ""),
-                    code: context.compileStringLiteral(property.initializer),
-                };
-            }),
-        },
+        kind: "scene",
+        id: context.compileStringLiteral(idExpression),
+        ...(helpers
+            ? { helperFunctions: context.compileStringLiteral(helpers) }
+            : {}),
+        fragmentSlots: slots.properties.map((property) => {
+            if (!ts.isPropertyAssignment(property)) {
+                context.fail(
+                    property,
+                    "A GsShaderFragment's slots are plain properties.",
+                );
+            }
+            const slot = context.propertyName(property.name);
+            if (!slot) {
+                context.fail(
+                    property,
+                    "A GsShaderFragment's slot names are plain identifiers.",
+                );
+            }
+            return {
+                slot,
+                code: context.compileStringLiteral(property.initializer),
+            };
+        }),
     };
 }
 
@@ -187,12 +179,9 @@ export function compileAssetConstant(
         kind: "splat-fragment",
         cpp: "",
         staticString: importedName,
-        splatFragment: { pinnedExport: importedName },
+        splatFragment: { kind: "pinned", exportName: importedName },
     };
 }
-
-/** The names a refusal lists, so the two sites agree. */
-export const reachedSplatFragmentExports = splatFragmentExportNames;
 
 /**
  * The container `loadKtxTexture2D(engine, baseUrl, suffixes)` fetches.

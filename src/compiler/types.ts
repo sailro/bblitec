@@ -96,16 +96,14 @@ export interface CompileManifest {
  * is the pin's to answer at composition — the same split the tone-mapping
  * records take.
  */
-export interface SplatFragmentManifest {
-    /** The pinned export the scene imported, when it imported one. */
-    pinnedExport?: string;
-    /** The record the scene declared inline, when it declared one. */
-    record?: {
-        id: string;
-        helperFunctions?: string;
-        fragmentSlots: { slot: string; code: string }[];
-    };
-}
+export type SplatFragmentManifest =
+    | { kind: "pinned"; exportName: string }
+    | {
+          kind: "scene";
+          id: string;
+          helperFunctions?: string;
+          fragmentSlots: { slot: string; code: string }[];
+      };
 
 /**
  * One `create*ShadowGenerator` call, in reach order.

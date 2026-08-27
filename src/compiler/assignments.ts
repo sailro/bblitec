@@ -1597,34 +1597,6 @@ export function emitPropertyAssignment(
             );
             return;
         }
-        if (mesh.kind === "splat-mesh") {
-            // A GaussianSplattingMesh is a SceneNode, so its TRS lanes are
-            // the same ones a mesh carries and `build_splat_world` composes
-            // them the same way. Nothing caches that matrix, so a component
-            // write needs no version bump: the sort's own depth-transform
-            // gate re-reads it every frame.
-            const vector = left.expression.name.text;
-            if (vector !== "position") {
-                context.fail(
-                    left.expression,
-                    `A splat cloud's '${vector}' is not lowered; the reached ` +
-                        "slice writes its position.",
-                );
-            }
-            requireSimpleAssignment(
-                context,
-                expression,
-                "splat position component",
-            );
-            const engine = context.requireEngine(mesh, expression);
-            const component = ["x", "y", "z"][axis]!;
-            context.emit(
-                `${engine}.splat_meshes[${mesh.cpp}.value].position` +
-                    `.${component} ${operator} ` +
-                    `${context.compileNumber(expression.right)};`,
-            );
-            return;
-        }
         if (mesh.kind === "light") {
             const vector = left.expression.name.text;
             const setter = lightVectorSetter(mesh, vector);
@@ -1658,26 +1630,51 @@ export function emitPropertyAssignment(
             );
             return;
         }
-        context.expectKind(
-            mesh,
-            "mesh",
-            left.expression.expression,
-        );
+        // A GaussianSplattingMesh is a SceneNode upstream, so its TRS lanes
+        // are the same ones a mesh carries and `build_splat_world` composes
+        // them the same way -- which is why the write is the same statement
+        // over a different collection. What differs is the dirty signal: a
+        // cloud's world matrix is re-derived per frame rather than cached,
+        // so nothing has to be marked.
+        const record = mesh.kind === "splat-mesh"
+            ? { collection: "splat_meshes", bumpsTransformVersion: false }
+            : { collection: "meshes", bumpsTransformVersion: true };
+        if (mesh.kind === "splat-mesh") {
+            // The reached slice writes a cloud's position; its rotation and
+            // scaling compose in `build_splat_world` already but nothing
+            // measures them, and `bakeCurrentTransformIntoVertices` is what
+            // the one corpus scene writing them also needs.
+            if (left.expression.name.text !== "position") {
+                context.fail(
+                    left.expression,
+                    `A splat cloud's '${left.expression.name.text}' is not ` +
+                        "lowered; the reached slice writes its position.",
+                );
+            }
+        } else {
+            context.expectKind(
+                mesh,
+                "mesh",
+                left.expression.expression,
+            );
+        }
         const component = ["x", "y", "z"][axis]!;
         const engine = context.requireEngine(
             mesh,
             expression,
         );
         context.emit(
-            `${engine}.meshes[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(expression.right)};`,
+            `${engine}.${record.collection}[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(expression.right)};`,
         );
         // The transform version is what the backends gate their baked
         // vertex re-upload on (the pinned property-animation evaluator
         // bumps it the same way), so a transform written outside the
         // animation path has to mark itself dirty too.
-        context.emit(
-            `++${engine}.meshes[${mesh.cpp}.value].transform_version;`,
-        );
+        if (record.bumpsTransformVersion) {
+            context.emit(
+                `++${engine}.meshes[${mesh.cpp}.value].transform_version;`,
+            );
+        }
         return;
     }
 

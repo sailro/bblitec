@@ -19,9 +19,8 @@ import {
     type LinearDepthMaterialOptions,
 } from "../lowering/linear-depth-lowerer.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
-import { lowerWgslShaderProgram } from "../shader-ir.js";
 import {
-    reachShaderProgram,
+    reachFoldedShaderProgram,
     type ShaderMaterialContext,
 } from "./shader-material.js";
 
@@ -58,23 +57,11 @@ export function reachLinearDepthMaterialProgram(
     node: ts.Node,
     options: LinearDepthMaterialOptions,
 ): { name: string; id: number } {
-    const name = linearDepthVariantName(options);
-    const reached = context.reachedShaderPrograms.findIndex(
-        (candidate) => candidate.name === name,
+    return reachFoldedShaderProgram(
+        context,
+        node,
+        linearDepthVariantName(options),
+        "linear-depth",
+        () => linearDepthLowerer().materialProgram(options),
     );
-    if (reached >= 0) {
-        return { name, id: reached };
-    }
-    const program = linearDepthLowerer().materialProgram(options);
-    try {
-        lowerWgslShaderProgram(program);
-    } catch (error: unknown) {
-        context.fail(
-            node,
-            `The pinned linear-depth material does not lower through the shader IR: ${
-                error instanceof Error ? error.message : String(error)
-            }`,
-        );
-    }
-    return reachShaderProgram(context, program);
 }

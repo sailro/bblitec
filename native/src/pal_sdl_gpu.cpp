@@ -6169,29 +6169,31 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::build_skybox_view_projection(
                     camera,
                     aspect);
-#if BBLITE_HAS_SPLATS
-            // The splat stage reads the view and the projection separately,
-            // because the pin's own UBO stores them separately.
-            const std::array<float, 16> splat_view =
+            // The frame's own two factors, built once. Three consumers read
+            // them and each used to build its own: a shader material may
+            // declare either beside the product, the pin's splat UBO stores
+            // them separately, and the billboard sort reads the view. The
+            // projection is the pin's `getProjectionMatrix` -- the arm that
+            // branches on the camera -- rather than the perspective writer
+            // the skybox deliberately takes.
+            const std::array<float, 16> frame_view =
                 upstream::build_view_matrix(
                     upstream::camera_world_matrix(camera));
-            const std::array<float, 16> splat_projection =
-                upstream::build_projection(camera, aspect);
-#endif
+            const std::array<float, 16> frame_projection =
+                upstream::build_scene_projection(camera, aspect);
+            const ShaderPassMatrices frame_pass_matrices{
+                matrix.data(), &frame_view, &frame_projection};
 #if BBLITE_HAS_BILLBOARDS
-            // The sorted order depends on the camera alone, so it is built
-            // once for the frame here -- before the frame's command buffer is
-            // acquired, because the upload submits one of its own -- and the
-            // draw below reads the same matrix.
-            const std::array<float, 16> billboard_view =
-                upstream::build_view_matrix(
-                    upstream::camera_world_matrix(camera));
+            // The sorted order depends on the camera alone, so the upload
+            // happens here -- before the frame's command buffer is acquired,
+            // because it submits one of its own -- and the draw below reads
+            // the same matrix.
             for (BillboardPass& billboard : state.billboard_passes) {
                 upload_billboard_pass(
                     state.device,
                     engine,
                     billboard,
-                    billboard_view,
+                    frame_view,
                     delta_ms);
             }
 #endif
@@ -6202,7 +6204,7 @@ bool run_gpu_engine(Engine& engine) {
             // below reads the same matrices, as the billboard pass does.
             for (SplatPass& splat : state.splat_passes) {
                 upload_splat_pass(
-                    state.device, engine, splat, splat_view);
+                    state.device, engine, splat, frame_view);
             }
 #endif
             // The render capture describes CPU state alone, so it is
@@ -6345,11 +6347,13 @@ bool run_gpu_engine(Engine& engine) {
                                           const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
                                           const std::array<float, 16>& draw_matrix,
                                           [[maybe_unused]] const CameraRecord& draw_camera,
-                                          // The ratio `draw_matrix`'s own
-                                          // projection was built at, for a
-                                          // shader material declaring that
-                                          // factor rather than the product.
-                                          [[maybe_unused]] double draw_aspect,
+                                          // The three matrices this pass
+                                          // renders with, for a shader
+                                          // material declaring the product
+                                          // or either of its factors.
+                                          [[maybe_unused]] const
+                                              ShaderPassMatrices&
+                                                  draw_pass_matrices,
                                           const upstream::RenderDrawLists& draw_lists,
                                           [[maybe_unused]] const FrameTaskRecord* geometry_task,
                                           [[maybe_unused]] const PinnedGeometryParams* geometry_params,
@@ -6630,8 +6634,7 @@ bool run_gpu_engine(Engine& engine) {
                                         block_floats =
                                             shader_stage_block_floats(
                                                 block,
-                                                draw_matrix.data(),
-                                                {&draw_camera, draw_aspect},
+                                                draw_pass_matrices,
                                                 *material);
                                     if (fragment_stage) {
                                         SDL_PushGPUFragmentUniformData(
@@ -6786,6 +6789,20 @@ bool run_gpu_engine(Engine& engine) {
                             : upstream::build_view_projection(
                                 task_camera,
                                 task_aspect);
+                        // The task's own two factors, beside its product,
+                        // for a shader material that declares one. A shadow
+                        // task renders from the light instead and supplies
+                        // what the generator carries.
+                        const std::array<float, 16> task_view =
+                            upstream::build_view_matrix(
+                                upstream::camera_world_matrix(task_camera));
+                        const std::array<float, 16> task_projection =
+                            upstream::build_scene_projection(
+                                task_camera, task_aspect);
+                        const ShaderPassMatrices task_pass_matrices{
+                            task_matrix.data(),
+                            &task_view,
+                            &task_projection};
                         if (!shadow_task) {
                             SDL_PushGPUVertexUniformData(
                                 command,
@@ -6860,7 +6877,10 @@ bool run_gpu_engine(Engine& engine) {
                                 {},
                                 generator.caster_view_projection,
                                 task_camera,
-                                task_aspect,
+                                ShaderPassMatrices{
+                                    generator.caster_view_projection.data(),
+                                    &generator.caster_view,
+                                    nullptr},
                                 task_draw_lists[handle.value],
                                 nullptr,
                                 nullptr,
@@ -7065,7 +7085,7 @@ bool run_gpu_engine(Engine& engine) {
                             state.shader_a2c_pipelines,
                             task_matrix,
                             task_camera,
-                            task_aspect,
+                            task_pass_matrices,
                             task_draw_lists[handle.value],
                             nullptr,
                             nullptr,
@@ -7212,7 +7232,7 @@ bool run_gpu_engine(Engine& engine) {
                             {},
                             matrix,
                             camera,
-                            aspect,
+                            frame_pass_matrices,
                             task_draw_lists[handle.value],
                             &task,
                             &geometry_params,
@@ -8062,10 +8082,7 @@ bool run_gpu_engine(Engine& engine) {
                             if (!block.present) return;
                             const std::vector<float> block_floats =
                                 shader_stage_block_floats(
-                                    block,
-                                    matrix.data(),
-                                    {&camera, aspect},
-                                    *material);
+                                    block, frame_pass_matrices, *material);
                             if (fragment_stage) {
                                 SDL_PushGPUFragmentUniformData(
                                     command,
@@ -8269,7 +8286,7 @@ bool run_gpu_engine(Engine& engine) {
                         engine,
                         billboard,
                         matrix,
-                        billboard_view);
+                        frame_view);
                 }
             };
 #endif
@@ -8315,8 +8332,8 @@ bool run_gpu_engine(Engine& engine) {
                                 pass,
                                 engine,
                                 splat,
-                                splat_view,
-                                splat_projection,
+                                frame_view,
+                                frame_projection,
                                 static_cast<double>(width),
                                 static_cast<double>(height));
                         }

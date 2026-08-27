@@ -908,9 +908,9 @@ inline void write_draw_uniforms(
     const CameraRecord& camera,
     const upstream::RenderDrawCommand& draw,
     const std::array<float, 16>& view_projection,
-    // The ratio `view_projection`'s own projection was built at, for a
-    // shader material declaring that factor rather than the product.
-    double aspect) {
+    // The pass's own factors beside its product, for a shader material
+    // that declares one.
+    const ShaderPassMatrices& pass_matrices) {
     json.key("uniforms");
     json.begin_array();
     write_float_block(
@@ -970,10 +970,7 @@ inline void write_draw_uniforms(
                         if (!block.present) return;
                         const std::vector<float> floats =
                             shader_stage_block_floats(
-                                block,
-                                view_projection.data(),
-                                {&camera, aspect},
-                                material);
+                                block, pass_matrices, material);
                         write_float_block(
                             json,
                             stage,
@@ -1019,7 +1016,7 @@ inline void write_draw_list(
     const Engine& engine,
     const CameraRecord& camera,
     const std::array<float, 16>& view_projection,
-    double aspect) {
+    const ShaderPassMatrices& pass_matrices) {
     for (const upstream::RenderDrawCommand& draw : list.commands) {
         json.begin_object();
         json.field("stage", stage);
@@ -1058,7 +1055,8 @@ inline void write_draw_list(
                           mesh.instance_matrices.size()));
         }
         write_draw_uniforms(
-            json, scene, engine, camera, draw, view_projection, aspect);
+            json, scene, engine, camera, draw, view_projection,
+            pass_matrices);
         json.end_object();
     }
 }
@@ -1073,16 +1071,12 @@ inline void write_splat_draw_list(
     JsonWriter& json,
     const Scene& scene,
     const Engine& engine,
-    const CameraRecord& camera,
+    // The frame's own factors, built once by the caller: the pin's splat
+    // UBO stores the view and the projection separately.
+    const std::array<float, 16>& view,
+    const std::array<float, 16>& projection,
     int width,
     int height) {
-    const double aspect =
-        static_cast<double>(width) / static_cast<double>(height);
-    const std::array<float, 16> view = upstream::build_view_matrix(
-        upstream::camera_world_matrix(camera));
-    const std::array<float, 16> projection =
-        upstream::build_projection(camera, aspect);
-
     for (const SplatMeshHandle handle : scene.splat_meshes) {
         if (handle.value >= engine.splat_meshes.size()) continue;
         const SplatMeshRecord& splat = engine.splat_meshes[handle.value];
@@ -1658,10 +1652,18 @@ inline void write_render_capture(
 
     json.key("draws");
     json.begin_array();
+    // The frame's own factors beside its product, exactly as the two
+    // frame loops build them before the uploads this describes.
     // getEffectiveAspectRatio divides two JavaScript numbers, exactly as
     // the frame loops do before building the matrix passed in here.
-    const double draw_aspect =
+    const double capture_aspect =
         static_cast<double>(width) / static_cast<double>(height);
+    const std::array<float, 16> frame_view = upstream::build_view_matrix(
+        upstream::camera_world_matrix(camera));
+    const std::array<float, 16> frame_projection =
+        upstream::build_scene_projection(camera, capture_aspect);
+    const ShaderPassMatrices frame_pass_matrices{
+        view_projection.data(), &frame_view, &frame_projection};
     write_draw_list(
         json,
         "opaque",
@@ -1670,7 +1672,7 @@ inline void write_render_capture(
         engine,
         camera,
         view_projection,
-        draw_aspect);
+        frame_pass_matrices);
     write_draw_list(
         json,
         "transparent",
@@ -1679,9 +1681,10 @@ inline void write_render_capture(
         engine,
         camera,
         view_projection,
-        draw_aspect);
+        frame_pass_matrices);
 #if BBLITE_HAS_SPLATS
-    write_splat_draw_list(json, scene, engine, camera, width, height);
+    write_splat_draw_list(
+        json, scene, engine, frame_view, frame_projection, width, height);
 #endif
 #if BBLITE_HAS_BILLBOARDS
     write_billboard_draw_list(json, scene, engine, camera, view_projection);

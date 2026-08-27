@@ -58,11 +58,6 @@ export function isSplatFragmentExport(importedName: string): boolean {
     return Object.hasOwn(gsFragmentModules, importedName);
 }
 
-/** The names a scene may import, for a refusal that lists them. */
-export function splatFragmentExportNames(): readonly string[] {
-    return Object.keys(gsFragmentModules);
-}
-
 /** The record one named export carries. */
 export async function pinnedSplatFragment(
     importedName: string,
@@ -72,7 +67,7 @@ export async function pinnedSplatFragment(
         throw new Error(
             `'${importedName}' is not a pinned Gaussian-splat shader ` +
                 `fragment; the package exports ` +
-                `${splatFragmentExportNames().join(", ")}.`,
+                `${Object.keys(gsFragmentModules).join(", ")}.`,
         );
     }
     const module = await importPinnedModule<
@@ -100,21 +95,16 @@ export async function splatFragmentRecords(
 ): Promise<SplatShaderFragment[]> {
     return await Promise.all(
         manifest.map(async (entry) => {
-            if (entry.pinnedExport) {
-                return await pinnedSplatFragment(entry.pinnedExport);
+            if (entry.kind === "pinned") {
+                return await pinnedSplatFragment(entry.exportName);
             }
-            if (!entry.record) {
-                throw new Error(
-                    "A splat shader fragment names neither a pinned export " +
-                        "nor a scene-declared record.",
-                );
-            }
-            const { id, helperFunctions, fragmentSlots } = entry.record;
             return {
-                id,
-                ...(helperFunctions ? { helperFunctions } : {}),
+                id: entry.id,
+                ...(entry.helperFunctions
+                    ? { helperFunctions: entry.helperFunctions }
+                    : {}),
                 fragmentSlots: Object.fromEntries(
-                    fragmentSlots.map(({ slot, code }) => [slot, code]),
+                    entry.fragmentSlots.map(({ slot, code }) => [slot, code]),
                 ),
             };
         }),

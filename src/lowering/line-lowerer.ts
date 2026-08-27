@@ -147,12 +147,9 @@ export class LineLowerer {
 
     /** The `createShaderMaterial({ ... })` argument `createLineMaterial` passes. */
     private createShaderMaterialCall(): ts.ObjectLiteralExpression {
-        return this.context.callObjectArgument(
-            this.context.functionDeclaration(
-                lineMaterialModule,
-                "createLineMaterial",
-            ).declaration,
-            "createShaderMaterial",
+        return this.context.pinnedShaderMaterialCall(
+            lineMaterialModule,
+            "createLineMaterial",
         );
     }
 
@@ -221,7 +218,10 @@ export class LineLowerer {
         const branch = useVertexColor
             ? attributes.whenTrue
             : attributes.whenFalse;
-        return this.stringArray(branch);
+        return this.context.stringArrayValue(
+            branch,
+            this.context.sourceFile(lineMaterialModule),
+        );
     }
 
     /**
@@ -344,25 +344,6 @@ export class LineLowerer {
             );
         }
         return "line-list";
-    }
-
-    private stringArray(expression: ts.Expression): string[] {
-        const array = this.context.unwrapExpression(expression);
-        if (!ts.isArrayLiteralExpression(array)) {
-            this.context.contractError(
-                expression,
-                "Expected a static string array.",
-            );
-        }
-        return array.elements.map((element) => {
-            if (!ts.isStringLiteral(element)) {
-                this.context.contractError(
-                    element,
-                    "Expected a string literal.",
-                );
-            }
-            return element.text;
-        });
     }
 
     // -----------------------------------------------------------------

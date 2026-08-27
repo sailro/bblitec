@@ -3306,24 +3306,31 @@ inline bool block_is_shared_scene_matrix(
 }
 
 /**
- * The camera a pass's system matrices are built from, when a variant
- * declares one this port cannot serve from the pass's view-projection.
+ * The matrices one pass renders with, carried together because a variant
+ * may declare the product and either of its factors.
  *
- * `view` and `projection` are the two factors of that product, so they are
- * built from the same camera and aspect that produced it rather than from
- * a second source. A pass with no camera to offer -- there is none today,
- * since every pass that draws a shader material has one -- leaves this
- * unset and the packer names the matrix it could not fill.
+ * They travel as one value so the three cannot come from two sources: a
+ * pass that builds `view_projection` from a camera builds `view` and
+ * `projection` from that same camera, which is what makes them the
+ * factors of the product rather than a second answer to it. A shadow
+ * caster pass is the one that cannot offer all three -- it renders
+ * through the light's biased view-projection and the generator carries a
+ * light-space view but no separate projection -- so it supplies what it
+ * has and the packer names the factor it could not fill.
+ *
+ * Building them once per pass is also what keeps them off the per-draw
+ * path: `view` costs the arc-rotate eye composition and `projection` a
+ * tangent, and every draw in a pass would produce the same bytes.
  */
-struct ShaderMatrixCamera {
-    const CameraRecord* camera = nullptr;
-    double aspect = 1.0;
+struct ShaderPassMatrices {
+    const float* view_projection = nullptr;
+    const std::array<float, 16>* view = nullptr;
+    const std::array<float, 16>* projection = nullptr;
 };
 
 inline std::vector<float> shader_stage_block_floats(
     const upstream::ShaderVariantStageBlock& block,
-    const float* scene_matrix,
-    const ShaderMatrixCamera& pass_camera,
+    const ShaderPassMatrices& pass,
     const MaterialRecord& material) {
     // Declared here rather than reusing `pinned_identity_world`, which
     // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
@@ -3336,43 +3343,38 @@ inline std::vector<float> shader_stage_block_floats(
     };
     std::vector<float> floats(block.float_size, 0.0f);
     std::size_t head = 0;
-    const auto require_camera =
-        [&](const char* name) -> const CameraRecord& {
-        if (!pass_camera.camera) {
+    const auto copy_from =
+        [&](const float* source, const char* name) {
+        if (!source) {
             throw std::runtime_error(
                 std::string("A shader material declares the '") + name +
-                "' system uniform in a pass with no camera.");
+                "' system uniform in a pass that renders with no such "
+                "matrix.");
         }
-        return *pass_camera.camera;
+        std::copy_n(source, 16, floats.begin() + head);
     };
     for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
         // No default arm: a new enumerator has to be given a source here
         // rather than silently inheriting one.
         switch (matrix) {
             case upstream::ShaderSystemMatrix::world:
-                std::copy_n(identity.data(), 16, floats.begin() + head);
+                copy_from(identity.data(), "world");
                 break;
-            case upstream::ShaderSystemMatrix::view: {
-                const std::array<float, 16> view =
-                    upstream::build_view_matrix(
-                        upstream::camera_world_matrix(
-                            require_camera("view")));
-                std::copy_n(view.data(), 16, floats.begin() + head);
+            case upstream::ShaderSystemMatrix::view:
+                copy_from(
+                    pass.view ? pass.view->data() : nullptr, "view");
                 break;
-            }
-            case upstream::ShaderSystemMatrix::projection: {
-                const std::array<float, 16> projection =
-                    upstream::build_scene_projection(
-                        require_camera("projection"),
-                        pass_camera.aspect);
-                std::copy_n(projection.data(), 16, floats.begin() + head);
+            case upstream::ShaderSystemMatrix::projection:
+                copy_from(
+                    pass.projection ? pass.projection->data() : nullptr,
+                    "projection");
                 break;
-            }
             case upstream::ShaderSystemMatrix::view_projection:
+                copy_from(pass.view_projection, "viewProjection");
+                break;
             case upstream::ShaderSystemMatrix::world_view_projection:
-                if (scene_matrix) {
-                    std::copy_n(scene_matrix, 16, floats.begin() + head);
-                }
+                copy_from(
+                    pass.view_projection, "worldViewProjection");
                 break;
         }
         head += 16;

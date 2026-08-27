@@ -572,7 +572,7 @@ export class RendererLowerer {
         // the body is never interpolated and the derivation is skipped.
         const instancingTrs: PinnedTrsComposition = options.gpuInstancing
             ? pinnedTrsComposition(this.context)
-            : { composeLocalBody: "" };
+            : { composeLocalBody: "", composeWorldBody: "" };
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.

@@ -163,13 +163,6 @@ function assertReverseZProjectionRows(context: LoweringContext): void {
 }
 
 /**
- * The pin's reverse-depth compare, read from its own declaration.
- *
- * Emitted for every scene: a sprite-only scene registers no SceneContext and
- * so has no render plan, but its billboard pass still draws under the same
- * convention.
- */
-/**
  * The pin's own reverse-depth compare, read from its declaration.
  *
  * The header below emits it for the PALs; a lowerer that folds a pinned
@@ -186,6 +179,11 @@ export function pinnedReverseDepthCompare(
     );
 }
 
+/**
+ * The depth state both PALs execute, emitted for every scene: a sprite-only
+ * scene registers no SceneContext and so has no render plan, but its
+ * billboard pass still draws under the same convention.
+ */
 export function pinnedDepthStateHeader(context: LoweringContext): string {
     const compare = pinnedReverseDepthCompare(context);
     const provenance = context.provenance(

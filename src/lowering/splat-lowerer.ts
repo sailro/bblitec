@@ -1068,11 +1068,7 @@ ${sortDirty}
 }
 
 std::array<float, 16> build_splat_world(const SplatMeshRecord& mesh) {
-${splatTrs.composeLocalBody}\
-    std::array<float, 16> world{};
-    for (std::size_t index = 0; index < world.size(); ++index) {
-        world[index] = static_cast<float>(local[index]);
-    }
+${splatTrs.composeWorldBody}\
     return world;
 }
 

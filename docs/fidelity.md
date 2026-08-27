@@ -918,10 +918,14 @@ lowering, so a factory naming another one has to refuse instead.
 
 Its stages read `view` and `projection` as their own matrices, which is why
 both joined the system-uniform table. They are the two factors of the
-product the pass already built, so a pass hands its own camera and aspect to
-the block writer and `build_scene_projection` — the branch `build_view_projection`
-takes — answers for the orthographic arm as well. A block declaring one in a
-pass with no camera fails by name rather than shading from a zero matrix.
+product the pass already built, so each pass builds all three from one
+camera and hands them over together — `build_scene_projection` is the branch
+`build_view_projection` itself takes, so the orthographic arm is answered
+too. Carrying them as one value is what stops the three coming from two
+sources: a shadow caster pass renders through the light's biased
+view-projection and the generator holds a light-space view but no separate
+projection, so it offers what it has and a stage declaring the missing
+factor fails by name rather than silently reading the frame camera's.
 
 **A quantized glTF is dequantized by the pin's own hook, at generation.**
 `KHR_mesh_quantization` is implemented upstream as a single `preParse` that

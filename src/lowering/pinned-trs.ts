@@ -3,12 +3,14 @@
  * writers: `src/math/quat-euler.ts`'s `eulerToQuat` and
  * `src/math/mat4-compose-into.ts`'s `mat4ComposeInto`, term for term.
  *
- * Two emissions consume it, and they are the two places a scene-code
- * mesh's transform has to leave the record as a matrix: the thin-instance
- * parent world the vertex stage reads, and the navmesh merge, which
- * multiplies each caster's CPU positions through `mesh.worldMatrix` the
- * way the pinned `_mergeMeshes` does. One home so the two cannot drift
- * apart while both claim to be the pin's composition.
+ * Four emissions consume it, and they are the places a record's transform
+ * has to leave that record as a matrix: the thin-instance parent world the
+ * vertex stage reads, the navmesh merge (which multiplies each caster's CPU
+ * positions through `mesh.worldMatrix` the way the pinned `_mergeMeshes`
+ * does), the shadow caster's AABB corners, and a Gaussian-splat cloud's own
+ * world. One home so they cannot drift apart while all claim to be the
+ * pin's composition -- which is also why the narrowing tail all four share
+ * is emitted here rather than four times.
  *
  * The glTF loader emits a third composition of the same pinned writer
  * (`gltf/matrix-leaves.ts`'s `trs_matrix`), and it is deliberately not
@@ -36,6 +38,13 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
  */
 export interface PinnedTrsComposition {
     composeLocalBody: string;
+    /**
+     * The same composition, narrowed to the `std::array<float, 16>` every
+     * consumer actually wants: `composeLocalBody` leaves `local` at the
+     * pin's own JS-double width, and each consumer used to write the same
+     * sixteen-cell store loop after it.
+     */
+    composeWorldBody: string;
 }
 
 /**
@@ -249,8 +258,7 @@ export function pinnedTrsComposition(
             storeRename,
         )};\n`;
     }
-    return {
-        composeLocalBody: `    double qx = 0.0;
+    const composeLocalBody = `    double qx = 0.0;
     double qy = 0.0;
     double qz = 0.0;
     double qw = 1.0;
@@ -271,6 +279,13 @@ ${quaternionProducts}\
     const double scale_z = mesh.scaling.z;
 ${basisLocals}\
     std::array<double, 16> local{};
-${basisStores}`,
+${basisStores}`;
+    return {
+        composeLocalBody,
+        composeWorldBody: `${composeLocalBody}    std::array<float, 16> world{};
+    for (std::size_t cell = 0; cell < 16; ++cell) {
+        world[cell] = static_cast<float>(local[cell]);
+    }
+`,
     };
 }

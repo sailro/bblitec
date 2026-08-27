@@ -1124,12 +1124,8 @@ struct ShadowCaster {
  * positions through, from the same single home.
  */
 inline std::array<float, 16> shadow_caster_world(const MeshRecord& mesh) {
-${trs.composeLocalBody}\
-    std::array<float, 16> result{};
-    for (std::size_t cell = 0; cell < 16; ++cell) {
-        result[cell] = static_cast<float>(local[cell]);
-    }
-    return result;
+${trs.composeWorldBody}\
+    return world;
 }
 
 /** The pin's own \`mesh.boundMin ?? [...]\` fallback, for a caster with none. */

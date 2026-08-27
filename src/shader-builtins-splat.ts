@@ -34,11 +34,7 @@
  *   what the SDL_GPU PAL binds against.
  */
 
-import {
-    extractPackagedStringLiteral,
-    readPinnedLibraryModule,
-} from "./pinned-shader-composer.js";
-import { splatPipelineModule } from "./pinned-splat-fragments.js";
+import { pinnedSplatModuleWgsl } from "./pinned-splat-fragments.js";
 
 /** The pin's own module, split at its two entry points. */
 export interface SplatShaderSource {
@@ -54,8 +50,6 @@ export interface SplatShaderSource {
     fragmentDefinitions: string;
     /** `@fragment fn fs(...) -> ... { ... }`, plugin slots resolved. */
     fragmentStage: string;
-    /** Whether plugins were applied, which is what the fragment file adds. */
-    hasFragments: boolean;
 }
 
 /** The brace-matched span of a declaration starting at `start`. */
@@ -75,7 +69,8 @@ function declarationSpan(wgsl: string, start: number): number {
     throw new Error("Pinned splat shader declaration is unbalanced.");
 }
 
-let cached: SplatShaderSource | undefined;
+/** One split per distinct module text: the stock one, and each scene's. */
+const cache = new Map<string, SplatShaderSource>();
 
 /**
  * Reads and splits the pinned Gaussian-splat WGSL, or the module the pin's
@@ -91,11 +86,10 @@ let cached: SplatShaderSource | undefined;
 export function pinnedSplatShader(
     composedModule?: string,
 ): SplatShaderSource {
-    if (!composedModule && cached) return cached;
-    const stock = extractPackagedStringLiteral(
-        readPinnedLibraryModule(splatPipelineModule),
-        "WGSL",
-    );
+    const key = composedModule ?? "";
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const stock = pinnedSplatModuleWgsl();
     const wgsl = composedModule ?? stock;
 
     for (const anchor of [
@@ -157,9 +151,8 @@ export function pinnedSplatShader(
             wgsl.slice(vertexEnd, fragmentStart),
         ).trim(),
         fragmentStage: withoutSlots(wgsl.slice(fragmentStart)),
-        hasFragments: composedModule !== undefined,
     };
-    if (!composedModule) cached = source;
+    cache.set(key, source);
     return source;
 }
 
@@ -182,7 +175,7 @@ export function splatFragmentWgsl(
     // No bindings without plugins: the density is computed from the
     // varyings alone. With them, the pin's own layout lets a plugin body
     // read the uniform block, so it is declared beside the varyings.
-    const head = shader.hasFragments
+    const head = composedModule !== undefined
         ? `${shader.uniformBlock}
 ${shader.varyingStruct}
 ${shader.fragmentDefinitions}

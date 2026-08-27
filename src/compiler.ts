@@ -344,8 +344,12 @@ class Compiler
     private sceneLightCount = 0;
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
         [];
-    /** The splat shader plugins one `loadSplat` call passed, in its order. */
-    private readonly sceneSplatFragments: SplatFragmentManifest[] = [];
+    /**
+     * The splat shader plugins one `loadSplat` call passed, in its order.
+     * Undefined until a call records one, so an empty list stays
+     * distinguishable from no list at all.
+     */
+    private sceneSplatFragments: SplatFragmentManifest[] | undefined;
     private reachedPlainSpriteLayer = false;
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
@@ -487,7 +491,7 @@ class Compiler
                 shadowReceiverMeshes: [
                     ...this.shadowReceiverMeshes,
                 ].sort((left, right) => left - right),
-                splatFragments: this.sceneSplatFragments,
+                splatFragments: this.sceneSplatFragments ?? [],
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
                 effects: this.reachedEffects_,
                 plainSpriteLayer: this.reachedPlainSpriteLayer,
@@ -3430,10 +3434,13 @@ class Compiler
         fragments: readonly SplatFragmentManifest[],
         node: ts.Node,
     ): void {
+        if (!this.sceneSplatFragments) {
+            this.sceneSplatFragments = [...fragments];
+            return;
+        }
         if (
-            this.sceneSplatFragments.length > 0 &&
             JSON.stringify(this.sceneSplatFragments) !==
-                JSON.stringify(fragments)
+            JSON.stringify(fragments)
         ) {
             this.fail(
                 node,
@@ -3442,8 +3449,6 @@ class Compiler
                     "composed module per scene.",
             );
         }
-        this.sceneSplatFragments.length = 0;
-        this.sceneSplatFragments.push(...fragments);
     }
 
     /**

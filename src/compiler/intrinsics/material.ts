@@ -538,11 +538,15 @@ export function compileMaterialIntrinsic(
                 ? context.expectObjectLiteral(call.arguments[0]!)
                 : undefined;
             if (options) {
+                // `name` refuses rather than being accepted and dropped:
+                // the pin names every one of these materials `linearDepth`
+                // and this port's variant identity is the plane pair, so a
+                // caller's name could not reach anything.
                 validateObjectProperties(
                     context,
                     options,
-                    ["name", "near", "far"],
-                    "Reached linear-depth materials support name, near and far.",
+                    ["near", "far"],
+                    "Reached linear-depth materials support near and far.",
                 );
             }
             const plane = (name: "near" | "far"): number => {
