@@ -754,32 +754,83 @@ function standardInstanceColorSlot(): string {
         declaration,
         "rebuildSingle",
     );
-    // The inner `{ BC: ... }` itself: `getSourceFile` sets parents, so the
-    // owning property is read off the node rather than matched twice.
-    const candidates = context.findNodes(
+    // The rewrite's own SHAPE, not only its text. The pin drops the shared
+    // fragment's slots and puts back exactly one, so this port's
+    // `{ ...fragment, _fragmentSlots: { BC } }` is licensed by the three
+    // assertions below rather than by having read the source once. A pin
+    // that keeps a second slot, renames it, or stops spreading the rest of
+    // the fragment fails generation here.
+    const dropped = context.findNodes(
+        rebuild,
+        (node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isObjectBindingPattern(node.name) &&
+            node.name.elements.some(
+                (element) =>
+                    element.propertyName !== undefined &&
+                    context.propertyName(element.propertyName) ===
+                        "_fragmentSlots",
+            ),
+    );
+    if (dropped.length !== 1 || !dropped[0]!.initializer) {
+        context.contractError(
+            rebuild,
+            "Expected exactly one destructuring that drops " +
+                "`_fragmentSlots` off the thin-instance fragment; found " +
+                `${dropped.length}.`,
+        );
+    }
+    const restName = dropped[0]!.name as ts.ObjectBindingPattern;
+    const rest = restName.elements.find(
+        (element) =>
+            element.dotDotDotToken !== undefined &&
+            ts.isIdentifier(element.name),
+    );
+    const restIdentifier = rest
+        ? (rest.name as ts.Identifier).text
+        : context.contractError(
+            dropped[0]!,
+            "Expected the thin-instance rewrite to keep the rest of the " +
+                "fragment through a named rest element.",
+        );
+    // The literal the pin pushes: a spread of that rest, then the one slot.
+    const rewrites = context.findNodes(
         rebuild,
         (node): node is ts.ObjectLiteralExpression =>
             ts.isObjectLiteralExpression(node) &&
-            ts.isPropertyAssignment(node.parent) &&
-            context.propertyName(node.parent.name) === "_fragmentSlots" &&
-            node.properties.some(
-                (slot) =>
-                    ts.isPropertyAssignment(slot) &&
-                    context.propertyName(slot.name) === "BC",
-            ),
+            node.properties.length === 2 &&
+            ts.isSpreadAssignment(node.properties[0]!) &&
+            ts.isIdentifier(node.properties[0]!.expression) &&
+            node.properties[0]!.expression.text === restIdentifier &&
+            ts.isPropertyAssignment(node.properties[1]!) &&
+            context.propertyName(node.properties[1]!.name) ===
+                "_fragmentSlots",
     );
-    if (candidates.length !== 1) {
+    if (rewrites.length !== 1) {
         context.contractError(
             rebuild,
-            "Expected exactly one inline `_fragmentSlots: { BC }` rewrite " +
-                "in rebuildSingle (the thin-instance instance-colour " +
-                `slot); found ${candidates.length}.`,
+            "Expected exactly one `{ ...rest, _fragmentSlots }` rewrite of " +
+                `the thin-instance fragment; found ${rewrites.length}.`,
         );
     }
-    instanceColorSlot = context.stringValue(
-        context.propertyInitializer(candidates[0]!, "BC"),
-        file,
+    const slots = context.propertyInitializer(
+        rewrites[0]!,
+        "_fragmentSlots",
     );
+    const only =
+        ts.isObjectLiteralExpression(slots) &&
+            slots.properties.length === 1 &&
+            ts.isPropertyAssignment(slots.properties[0]!) &&
+            context.propertyName(slots.properties[0]!.name) === "BC"
+            ? slots.properties[0]
+            : context.contractError(
+                slots,
+                "Expected the Standard rewrite to replace the fragment's " +
+                    "slots with exactly one `BC` slot — Standard applies " +
+                    "the instance colour to the final colour where PBR " +
+                    "applies it to the base.",
+            );
+    instanceColorSlot = context.stringValue(only.initializer, file);
     return instanceColorSlot;
 }
 

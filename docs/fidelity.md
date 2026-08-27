@@ -763,10 +763,24 @@ reaches a Standard variant. That rewrite lives inline in the renderable
 rather than in a named export, so the slot text is lifted from the pinned
 declaration: a pin that moves it, drops it or renames it fails generation
 instead of composing a fragment whose instance colour silently stops
-applying. The colour lane is its own instance-stepped buffer at stride 16
-(`ti-color`), which both backends already bound for the transcribed
-`useThinInstanceColors` path and now bind for the composed variants too.
-Scene 204 gates it.
+applying. The colour lane is its own instance-stepped buffer, which both backends
+already bound for the transcribed `useThinInstanceColors` path and now bind
+for the composed variants too.
+
+**Where that lane sits is the pin's, and it is lowered rather than
+restated.** `createThinInstanceFragment` declares each attribute's
+`_bufferGroup`, `_arrayStride`, `_stepMode` and `_offset` -- `ti-matrix` at
+stride 64 for the four world columns, `ti-color` at 16 for the RGBA lane --
+while the composed WGSL keeps only the location, the name and the type. So
+the layout half never reaches a variant's reflected attribute row, and both
+PALs would otherwise type it out. `pinnedInstanceAttributes` folds it from
+that declaration into `pinned_instance_attributes`, which
+`pinned_vertex_input` and `vertex_stream_stride` read: a pin that moves a
+stride, shifts an offset or adds a third instance-stepped group fails
+generation instead of rendering garbage. The one thing neither the pin nor
+the fold answers is which SLOT a group binds at -- the pin assigns none --
+so that stays each backend's, stated once in `vertex_stream_group`. Scene
+204 gates it.
 The project-owned `regression-track-clamp` gate is pixel-exact at 3 seconds
 and verifies that shorter translation, rotation, and morph-weight channels
 hold their final values while a separate channel determines the animation

@@ -62,6 +62,7 @@ import {
     splitWgslStatements,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
 import {
     lowerMat4MultiplyWriterCpp,
     lowerPinnedFunction,
@@ -1285,7 +1286,8 @@ std::array<float, 16> mesh_world_eye_relative(
 ${options.gpuInstancing
     ? `std::array<float, 16> build_instance_parent_world(
     const MeshRecord& mesh);
-`
+
+${pinnedInstanceAttributesCpp(this.context)}`
     : ""}\
 // src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
 // includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does

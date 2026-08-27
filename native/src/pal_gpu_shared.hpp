@@ -338,6 +338,17 @@ inline std::array<float, 16> draw_world(
  * of it reaches the thin-instance vertex arm that reads this block, so it
  * takes the same answer in either frame rather than paying a compose the
  * shader never looks at.
+ *
+ * A pooled mesh in a composed family asks twice a frame -- once for the
+ * instance-parent uniform the transcribed, depth-only and diagnostic
+ * pipelines read, once for `standard_draw_world`'s mesh block -- and both
+ * get the same matrix. Deliberately not cached: the answer is a pure
+ * function of the record and the eye, so a cache would be ordering-dependent
+ * state on each backend's own mesh record, and the whole duplicate is a
+ * 4x4 double multiply. Measured on scene 204, the corpus's only such mesh:
+ * ~224 double operations against a 0.144 ms median frame, under 0.2% of it
+ * and below the benchmark's own run-to-run spread. Cache it when a scene
+ * makes it visible, not before.
  */
 inline std::array<float, 16> instance_parent_draw_world(
     const MeshRecord& record,
@@ -481,25 +492,43 @@ inline constexpr std::uint32_t vertex_stream_slot(
 }
 
 /**
- * One stream's element stride.
+ * The pin's own name for the buffer group a stream carries.
  *
- * The vertex stream's is ours -- it is `GpuVertex` -- and the two
- * instance-stepped ones are the pin's: `createThinInstanceFragment` declares
- * `_arrayStride: 64` for its `ti-matrix` group and `16` for `ti-color`. Both
- * backends build their own buffer descriptions, but from this one answer, so
- * a stride the pin moves cannot update one backend and leave the other
- * reading at the old pitch.
+ * This mapping is the only part of the layout that is ours: the pin declares
+ * groups by name (`ti-matrix`, `ti-color`) and assigns no slot at all, so
+ * which slot each binds at is the backend's answer and everything else --
+ * stride, offset, step rate -- comes from the generated declaration.
  */
-inline constexpr std::uint64_t vertex_stream_stride(
+inline constexpr std::string_view vertex_stream_group(
     VertexInputStream stream) {
     switch (stream) {
         case VertexInputStream::instance_matrix:
-            return sizeof(std::array<float, 16>);
+            return "ti-matrix";
         case VertexInputStream::instance_color:
-            return sizeof(std::array<float, 4>);
+            return "ti-color";
         case VertexInputStream::vertex:
             break;
     }
+    return "";
+}
+
+/**
+ * One stream's element stride.
+ *
+ * The vertex stream's is ours -- it is `GpuVertex`. The instance-stepped
+ * ones are the pin's, read from `pinned_instance_attributes`, which is
+ * lowered from `createThinInstanceFragment`'s own `_arrayStride`
+ * declarations. A stride the pin moves therefore moves here, in both
+ * backends, without either one restating it.
+ */
+inline constexpr std::uint64_t vertex_stream_stride(
+    [[maybe_unused]] VertexInputStream stream) {
+#if BBLITE_GPU_INSTANCING
+    if (stream != VertexInputStream::vertex) {
+        return upstream::pinned_instance_group_stride(
+            vertex_stream_group(stream));
+    }
+#endif
     return sizeof(GpuVertex);
 }
 
@@ -1284,29 +1313,25 @@ inline PinnedVertexInput pinned_vertex_input(
     if (name == "color") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, color));
     }
-    // The pin's thin-instance arm reads the per-instance matrix as four vec4
-    // columns from its own stream, so the offset is into that buffer.
+#if BBLITE_GPU_INSTANCING
+    // The pin's own thin-instance attributes -- the four `ti-matrix` world
+    // columns and the `ti-color` RGBA lane -- resolved from the declaration
+    // that states their group and their offset within it, rather than from
+    // names and arithmetic written here. Every one of them is a float4.
     if (
-        name == "world0" || name == "world1" || name == "world2" ||
-        name == "world3") {
+        const upstream::PinnedInstanceAttribute* declared =
+            upstream::pinned_instance_attribute(name)) {
         return PinnedVertexInput{
             VertexInputLane::float4,
-            static_cast<std::uint64_t>(16 * (name.back() - '0')),
-            VertexInputStream::instance_matrix,
+            declared->offset,
+            declared->buffer_group == vertex_stream_group(
+                                          VertexInputStream::instance_color)
+                ? VertexInputStream::instance_color
+                : VertexInputStream::instance_matrix,
             true,
         };
     }
-    // The colour half of the same fragment: its own instance-stepped
-    // buffer at stride 16, which both backends already bind for the
-    // transcribed path's `useThinInstanceColors` materials.
-    if (name == "instanceColor") {
-        return PinnedVertexInput{
-            VertexInputLane::float4,
-            0,
-            VertexInputStream::instance_color,
-            true,
-        };
-    }
+#endif
 #if BBLITE_GPU_DEFORMATION
     if (name == "weights") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, weights));
