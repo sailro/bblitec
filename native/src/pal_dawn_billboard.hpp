@@ -468,7 +468,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
  */
 inline void upload_dawn_billboard_pass(
     WGPUQueue queue,
-    [[maybe_unused]] const Scene& scene,
+    const Scene& scene,
     Engine& engine,
     DawnBillboardPass& pass,
     const std::array<float, 16>& view_projection,
@@ -515,11 +515,7 @@ inline void upload_dawn_billboard_pass(
     // unchanged view over an unchanged count re-sorts and re-uploads
     // nothing.
     const Vec3d fo_offset =
-#if BBLITE_FLOATING_ORIGIN
-        floating_origin_offset(scene, engine);
-#else
-        Vec3d{};
-#endif
+        frame_floating_origin_offset(scene, engine);
     if (
         !billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;

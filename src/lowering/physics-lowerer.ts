@@ -759,9 +759,9 @@ void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
         pal::physics_body_get_transform(body.handle);
     MeshRecord& mesh = engine.meshes[body.node.value];
     mesh.position = Vec3d{
-        static_cast<float>(transform.position[0]),
-        static_cast<float>(transform.position[1]),
-        static_cast<float>(transform.position[2]),
+        transform.position[0],
+        transform.position[1],
+        transform.position[2],
     };
     mesh.rotation_quaternion = Vec4{
         static_cast<float>(transform.rotation[0]),

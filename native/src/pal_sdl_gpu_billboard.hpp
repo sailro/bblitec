@@ -300,7 +300,7 @@ inline BillboardPass create_billboard_pass(
  */
 inline void upload_billboard_pass(
     SDL_GPUDevice* device,
-    [[maybe_unused]] const Scene& scene,
+    const Scene& scene,
     Engine& engine,
     BillboardPass& pass,
     const std::array<float, 16>& view,
@@ -318,11 +318,7 @@ inline void upload_billboard_pass(
     // is the one real per-frame cost here -- every other upload in this
     // renderer is version-gated the same way.
     const Vec3d fo_offset =
-#if BBLITE_FLOATING_ORIGIN
-        floating_origin_offset(scene, engine);
-#else
-        Vec3d{};
-#endif
+        frame_floating_origin_offset(scene, engine);
     if (
         !billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;

@@ -1579,14 +1579,12 @@ export class StatementLowerer {
         // the float32 ULP is half a unit -- enough to move a silhouette
         // before anything downstream can recover it. Rotation and scaling
         // stay float, which is the width every consumer reads them at.
-        const vectorType = owner.name.text === "position"
-            ? "bbl::Vec3d"
-            : "bbl::Vec3";
-        const vector = `${vectorType}{${call.arguments
+        const wide = owner.name.text === "position";
+        const vector = `${wide ? "bbl::Vec3d" : "bbl::Vec3"}{${call.arguments
             .map((argument) =>
                 context.compileNumber(
                     argument,
-                    vectorType === "bbl::Vec3d" ? "double" : undefined,
+                    wide ? "double" : undefined,
                 ),
             )
             .join(", ")}}`;

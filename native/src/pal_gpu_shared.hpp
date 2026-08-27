@@ -123,15 +123,18 @@ inline void apply_light_floating_origin(
             // `applyLightFoOffset` rewrites the slot from -- and what the
             // writer beside it already reads. `light.position` agrees for
             // an unparented light and would drift the moment one is not.
-            const auto lane = [&](std::size_t cell) {
-                return static_cast<double>(light.local_matrix[cell]);
-            };
+            // From `light.position`, which is the field the entry writer
+            // composes its own local matrix from and the one every path
+            // fills -- the glTF punctual-light emission writes the
+            // flattened world there and leaves `local_matrix` alone, so
+            // reading that instead would put an imported light at the
+            // origin.
             entries[written].vLightData[0] =
-                static_cast<float>(lane(12) - offset.x);
+                static_cast<float>(light.position.x - offset.x);
             entries[written].vLightData[1] =
-                static_cast<float>(lane(13) - offset.y);
+                static_cast<float>(light.position.y - offset.y);
             entries[written].vLightData[2] =
-                static_cast<float>(lane(14) - offset.z);
+                static_cast<float>(light.position.z - offset.z);
         }
         ++written;
     }
@@ -262,6 +265,23 @@ inline std::array<float, 16> outer_draw_world(
     world[13] += record.outer_position.y;
     world[14] += record.outer_position.z;
     return world;
+}
+
+/**
+ * The floating-origin offset, or the zero vector when the mode is off.
+ *
+ * The `#if` lives here rather than at each call site for the same reason
+ * `draw_world` below holds its own: a consumer asks what the offset is and
+ * gets one answer, whichever build it is in.
+ */
+inline Vec3d frame_floating_origin_offset(
+    [[maybe_unused]] const Scene& scene,
+    [[maybe_unused]] const Engine& engine) {
+#if BBLITE_FLOATING_ORIGIN
+    return floating_origin_offset(scene, engine);
+#else
+    return Vec3d{};
+#endif
 }
 
 /**
@@ -766,9 +786,13 @@ inline std::vector<GpuVertex> transformed_vertices(
             vertex.position.z * trs.scaling.z,
         };
         position = rotate_mesh(position, trs);
-        position.x += trs.position.x;
-        position.y += trs.position.y;
-        position.z += trs.position.z;
+        // Rounded where the pin's own store is: without the high-precision
+        // matrix `allocateMat4()` is a Float32Array, so the pin's GPU
+        // multiply sees the narrowed translation and adding the record's
+        // double here would round in a place the pin does not.
+        position.x += static_cast<float>(trs.position.x);
+        position.y += static_cast<float>(trs.position.y);
+        position.z += static_cast<float>(trs.position.z);
         const Vec3 normal = normalize_vec3(
             rotate_mesh(
                 Vec3{

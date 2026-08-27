@@ -2444,9 +2444,9 @@ test("reads mutated flat-entry variables from live generated state", () => {
         );
         assert.match(
             result.cpp,
-            /\.position\.x = static_cast<float>\(v_counter\);/,
+            /\.position\.x = v_counter;/,
         );
-        assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0f;/);
+        assert.doesNotMatch(result.cpp, /\.position\.x = 0\.0;/);
     }
 });
 
@@ -2461,7 +2461,7 @@ test("compiles the flat-entry compiler state regression scene", () => {
     assert.match(result.cpp, /v_offset\+\+/);
     assert.match(
         result.cpp,
-        /\.position\.x = static_cast<float>\(v_offset\)/,
+        /\.position\.x = v_offset/,
     );
     assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
     // Transform writes mark the mesh dirty so the backends re-upload
@@ -2628,7 +2628,7 @@ test("preserves compound assignments for numeric properties", () => {
     assert.match(result.cpp, /\.cameras\[v_camera\.value\]\.beta -= 0\.4;/);
     assert.match(result.cpp, /\.base_color_factor\.a \+= 0\.1f/);
     assert.match(result.cpp, /\.specular_power -= 1\.0f/);
-    assert.match(result.cpp, /\.position\.x -= 0\.02f/);
+    assert.match(result.cpp, /\.position\.x -= 0\.02/);
     assert.match(result.cpp, /\.rotation\.y \+= 0\.01f/);
     assert.match(result.cpp, /\.scaling\.z \+= 0\.03f/);
 });
@@ -2730,7 +2730,7 @@ test("folds browser query conditions for the native default environment", () => 
 
     assert.match(
         result.cpp,
-        /\.position\.x = 3\.0f/,
+        /\.position\.x = 3\.0/,
     );
 });
 
@@ -2753,10 +2753,10 @@ test("folds browser query predicates inside a runtime condition", () => {
         }
     `;
 
-    assert.doesNotMatch(compileSource(source).cpp, /\.position\.x = 3\.0f/);
+    assert.doesNotMatch(compileSource(source).cpp, /\.position\.x = 3\.0/);
     const queried = compileSource(source, { search: "?seekTime=0.5" });
     assert.match(queried.cpp, /if \(v_frameCount == 10\.0\)/);
-    assert.match(queried.cpp, /\.position\.x = 3\.0f/);
+    assert.match(queried.cpp, /\.position\.x = 3\.0/);
 });
 
 test("does not lower an unreachable logical right operand", () => {
@@ -2855,9 +2855,9 @@ test("preserves falsy browser values selected by logical and", () => {
         { search: "?empty=&zero=0" },
     );
 
-    assert.match(result.cpp, /\.position\.x = 1\.0f;/);
-    assert.match(result.cpp, /\.position\.y = 3\.0f;/);
-    assert.match(result.cpp, /\.position\.z = 5\.0f;/);
+    assert.match(result.cpp, /\.position\.x = 1\.0;/);
+    assert.match(result.cpp, /\.position\.y = 3\.0;/);
+    assert.match(result.cpp, /\.position\.z = 5\.0;/);
 });
 
 test("folds browser numeric predicates in conditional values", () => {
@@ -2880,16 +2880,16 @@ test("folds browser numeric predicates in conditional values", () => {
     `;
     const result = compileSource(source);
 
-    assert.match(result.cpp, /\.position\.x = 3\.0f/);
-    assert.match(result.cpp, /\.position\.y = 4\.0f/);
+    assert.match(result.cpp, /\.position\.x = 3\.0/);
+    assert.match(result.cpp, /\.position\.y = 4\.0/);
     assert.doesNotMatch(result.cpp, /Number\.isFinite|isNaN|\? 0\.0/);
 
     const queried = compileSource(source, {
         search: "?seekTime=1.5",
     });
-    assert.match(queried.cpp, /\.position\.x = 1\.5f/);
-    assert.match(queried.cpp, /\.position\.y = 1\.5f/);
-    assert.match(queried.cpp, /\.position\.z = 90\.0f/);
+    assert.match(queried.cpp, /\.position\.x = 1\.5/);
+    assert.match(queried.cpp, /\.position\.y = 1\.5/);
+    assert.match(queried.cpp, /\.position\.z = 90\.0/);
 });
 
 test("does not fold shadowed browser predicate names", () => {
@@ -2910,7 +2910,7 @@ test("does not fold shadowed browser predicate names", () => {
         }
     `);
 
-    assert.match(result.cpp, /\.position\.x = 5\.0f/);
+    assert.match(result.cpp, /\.position\.x = 5\.0/);
 });
 
 test("does not browser-fold ordinary parseFloat calls", () => {
@@ -3244,7 +3244,7 @@ test("records direct browser primitive materialization", () => {
         }
     `);
 
-    assert.match(result.cpp, /\.position\.x = 3\.0f;/);
+    assert.match(result.cpp, /\.position\.x = 3\.0;/);
     assert.ok(
         result.manifest.adaptations.some(
             ({ id }) => id === "browser-setup-erasure",

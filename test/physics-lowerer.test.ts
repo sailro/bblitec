@@ -199,7 +199,13 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
     // The translation is the record's own width: the pin holds a node's
     // position as three JavaScript numbers, so an integrated pose writes
     // them without narrowing first.
-    assert.match(lowered.source, /mesh\.position = Vec3d\{/);
+    assert.match(
+        lowered.source,
+        // The solver's own doubles, unnarrowed: the record's translation is
+        // that width, so a cast here would throw the pose's precision away
+        // and widen the rounded value straight back.
+        /mesh\.position = Vec3d\{\s*transform\.position\[0\],/,
+    );
     assert.match(lowered.source, /mesh\.rotation_quaternion = Vec4\{/);
     assert.match(lowered.source, /\+\+mesh\.transform_version;/);
 });
