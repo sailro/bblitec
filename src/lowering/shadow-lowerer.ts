@@ -1256,6 +1256,11 @@ export function shadowFactorySource(
     // emits neither the ESM factory nor the caster view it would ask
     // for -- the view's own translation unit is not compiled either.
     esmShadows = false,
+    // Whether any composed node graph carries an ESM caster module. A node
+    // caster takes neither family's no-colour view -- its own module was
+    // compiled beside the receiver's -- so the arm below exists only for a
+    // scene that reached one.
+    nodeEsmCasters = false,
 ): LoweredSource {
     // The two contracts the emitted registration mirrors, read so a pin that
     // moves either fails here rather than leaving the emission stale.
@@ -1438,7 +1443,27 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
             throw std::runtime_error(
                 "A shadow caster mesh carries no material.");
         }
-        // Which view: \`getEsmShadowView\` for the ESM task, the depth-only
+${!nodeEsmCasters ? "" : `        if (engine.materials[material.value].node_material) {
+            // A node graph's caster: \`buildNodeRenderables\` re-compiles the
+            // material's own bodies under the view's ESM bit rather than
+            // borrowing another family's depth material, and the PCF task
+            // reaches no node caster in the composed slice.
+            if (!esm) {
+                throw std::runtime_error(
+                    "A node material casts into a PCF shadow map, which "
+                    "composes no caster module.");
+            }
+            add_render_task_mesh(
+                engine,
+                task_handle,
+                mesh,
+                create_node_esm_shadow_material_view(
+                    engine,
+                    material,
+                    handle));
+            continue;
+        }
+`}        // Which view: \`getEsmShadowView\` for the ESM task, the depth-only
         // one for the PCF task. Both are the pin's own per-family factory.
         const MaterialHandle view =
             engine.materials[material.value].standard_material
@@ -1452,7 +1477,13 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
                         material))` : `create_standard_no_color_material_view(
                     engine,
                     material)`}
-                : create_pbr_no_color_material_view(engine, material);
+                : ${esmShadows ? `(esm
+                    ? create_pbr_esm_shadow_material_view(
+                        engine,
+                        material,
+                        handle)
+                    : create_pbr_no_color_material_view(engine, material))`
+                    : "create_pbr_no_color_material_view(engine, material)"};
         add_render_task_mesh(engine, task_handle, mesh, view);
     }
     // ensureShadowTask unshifts the scheduler ahead of the scene's own

@@ -83,6 +83,17 @@ export interface ShadowCapabilities {
     /** The PBR family's receiver bind path. */
     pbr: boolean;
     /**
+     * The node family's own half: a composed graph that receives a shadow
+     * or carries an ESM caster module.
+     *
+     * Not a "receiver bind path" like the other two, because the node
+     * receiver has no group of its own -- its three bindings per light
+     * continue the graph's own group 1, and its factor is mixed by the
+     * `meshU.receivesShadow` lane rather than by a composed variant. What
+     * it gates is the same generator half the others need.
+     */
+    node: boolean;
+    /**
      * The generator half, which belongs to no material family: the maps, the
      * samplers, the receiver blocks, the caster pass and the standard-Z depth
      * state its target takes. The UNION of the family halves by construction,
@@ -101,6 +112,7 @@ export function shadowCapabilities(
         (inputs.nodeShadowReceivers > 0 || inputs.nodeEsmCasters > 0);
     return {
         reached,
+        node,
         esm:
             inputs.features.includes("shadow:esm") &&
             (inputs.standardVariants > 0 || inputs.nodeEsmCasters > 0),

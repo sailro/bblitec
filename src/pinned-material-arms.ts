@@ -1015,6 +1015,11 @@ export async function composeScenePbrVariants(
                       }>("material/pbr/pbr-flag-bits.js")
                   ).PBR2_NO_COLOR_OUTPUT,
               }
+            : material.esmShadowView
+            // The ESM caster's view sets its own bit and clears the blend
+            // one, so the composer runs the pinned factory rather than
+            // taking a bit to OR.
+            ? { esmShadowView: true as const }
             : {};
         // A material that names its own sets composes over those: a
         // caster's no-colour view is drawn on its caster and nowhere else.

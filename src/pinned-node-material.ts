@@ -117,6 +117,15 @@ export interface ComposedNodeShadowBinding {
     sampler: number;
     ubo: number;
     shadowType: "esm" | "pcf";
+    /**
+     * The three names the emitter declared them under, checked against the
+     * module it produced. SDL_GPU resolves every stage binding by the name
+     * its `.slots` sidecar carries, so the names are part of the contract
+     * and not a backend's own reconstruction.
+     */
+    textureName: string;
+    samplerName: string;
+    uboName: string;
 }
 
 /** The ESM caster module and the one binding it adds. */
@@ -193,7 +202,22 @@ interface PinnedNodePipelineModule {
         vertexBody: string,
         fragmentBody: string,
         options: Record<string, unknown>,
-    ) => { _wgsl: string; _esmShadowParamsBinding: number | null };
+    ) => {
+        _wgsl: string;
+        _esmShadowParamsBinding: number | null;
+        _nodeUboBinding: number | null;
+        _textureBindings: readonly {
+            _name: string;
+            _texBinding: number;
+            _sampBinding: number;
+        }[];
+        _envBindings: {
+            _iblTexture: number;
+            _iblSampler: number;
+            _brdfLUT: number;
+            _brdfSampler: number;
+        } | null;
+    };
 }
 
 /** The pin's own ESM view, which carries the caster's depth code. */
@@ -393,15 +417,57 @@ export async function composeNodeMaterial(
                 brdfSampler: env._brdfSampler,
             }
             : null,
-        shadowBindings: material._compile._shadowBindings.map((binding) => ({
-            lightIndex: binding._lightIndex,
-            texture: binding._texBinding,
-            sampler: binding._sampBinding,
-            ubo: binding._uboBinding,
-            shadowType: binding._shadowType,
-        })),
+        shadowBindings: material._compile._shadowBindings.map((binding) =>
+            shadowBindingNames({
+                lightIndex: binding._lightIndex,
+                texture: binding._texBinding,
+                sampler: binding._sampBinding,
+                ubo: binding._uboBinding,
+                shadowType: binding._shadowType,
+            }, material._compile._wgsl)),
         esmCaster,
     };
+}
+
+/**
+ * The three declared names of one shadow light's bindings.
+ *
+ * `emitShadow` suffixes each with the LIGHT's own index and forks the
+ * sampler's stem on the filter -- a comparison sampler for PCF, a plain one
+ * for ESM. Both halves are checked against the module rather than trusted,
+ * so a pin that renames one fails here instead of leaving a backend
+ * resolving a name nothing declares.
+ */
+function shadowBindingNames(
+    binding: Omit<
+        ComposedNodeShadowBinding,
+        "textureName" | "samplerName" | "uboName"
+    >,
+    wgsl: string,
+): ComposedNodeShadowBinding {
+    const suffix = `_${binding.lightIndex}`;
+    const named = {
+        ...binding,
+        textureName: `shadowTex${suffix}`,
+        samplerName: binding.shadowType === "pcf"
+            ? `shadowComp${suffix}`
+            : `shadowSamp${suffix}`,
+        uboName: `shadowInfo${suffix}`,
+    };
+    for (const [role, name] of [
+        ["texture", named.textureName],
+        ["sampler", named.samplerName],
+        ["ubo", named.uboName],
+    ] as const) {
+        if (!wgsl.includes(`var<uniform> ${name}:`) &&
+            !wgsl.includes(`var ${name}:`)) {
+            throw new Error(
+                `The pinned node shadow emitter declared no ${role} named ` +
+                    `'${name}'.`,
+            );
+        }
+    }
+    return named;
 }
 
 /**
@@ -455,6 +521,65 @@ async function composeNodeEsmCaster(
         throw new Error(
             "The pinned node ESM caster compiled without its shadow-params " +
                 "binding.",
+        );
+    }
+    // One bind-group layout serves both views, differing only by the rows
+    // above -- the receiver's per-light three against the caster's single
+    // params block. That holds only while every OTHER binding the graph
+    // declares landed on the same number in both compiles, which is a
+    // property of the emission order rather than a guarantee, so it is
+    // checked rather than assumed.
+    const sharedBindings = (compile: {
+        _nodeUboBinding: number | null;
+        _textureBindings: readonly {
+            _name: string;
+            _texBinding: number;
+            _sampBinding: number;
+        }[];
+        _envBindings: {
+            _iblTexture: number;
+            _iblSampler: number;
+            _brdfLUT: number;
+            _brdfSampler: number;
+        } | null;
+    }) =>
+        JSON.stringify([
+            compile._nodeUboBinding,
+            compile._textureBindings.map((binding) => [
+                binding._name,
+                binding._texBinding,
+                binding._sampBinding,
+            ]),
+            compile._envBindings,
+        ]);
+    if (sharedBindings(compiled) !== sharedBindings(material._compile)) {
+        throw new Error(
+            "The pinned node ESM caster numbered its shared bindings " +
+                "differently from the receiver it was compiled from.",
+        );
+    }
+    const taken = new Set<number>([
+        0,
+        ...(compiled._nodeUboBinding === null
+            ? []
+            : [compiled._nodeUboBinding]),
+        ...compiled._textureBindings.flatMap((binding) => [
+            binding._texBinding,
+            binding._sampBinding,
+        ]),
+        ...(compiled._envBindings
+            ? [
+                compiled._envBindings._iblTexture,
+                compiled._envBindings._iblSampler,
+                compiled._envBindings._brdfLUT,
+                compiled._envBindings._brdfSampler,
+            ]
+            : []),
+    ]);
+    if (taken.has(compiled._esmShadowParamsBinding)) {
+        throw new Error(
+            "The pinned node ESM caster put its shadow-params block on a " +
+                "binding the graph already uses.",
         );
     }
     return {

@@ -561,16 +561,20 @@ function Get-DemotableUniformBlocks {
     .DESCRIPTION
     A block is demotable when nothing but the stage reads it and its
     members are all 16-byte aligned, so the std140 and std430 layouts of
-    it agree: the frame graph's `gp` params, and the shadow receiver's
-    `shadowInfo_N` blocks (a mat4 and two vec4s). Both are read-only in
-    every composed stage that declares them. Returned in demotion order,
-    `gp` first, so a stage carrying both spends the cheaper one first.
+    it agree: the frame graph's `gp` params, the shadow receiver's
+    `shadowInfo_N` blocks (a mat4 and two vec4s), and the node ESM
+    caster's `nmeShadowParams` (two vec4s). All are read-only in every
+    composed stage that declares them. Returned in demotion order, `gp`
+    first, so a stage carrying more than one spends the cheapest first.
     #>
     param([string]$Wgsl)
 
     $names = @()
     if ($Wgsl -match "var\s*<\s*uniform\s*>\s*gp\s*:") {
         $names += "gp"
+    }
+    if ($Wgsl -match "var\s*<\s*uniform\s*>\s*nmeShadowParams\s*:") {
+        $names += "nmeShadowParams"
     }
     foreach (
         $match in [regex]::Matches(

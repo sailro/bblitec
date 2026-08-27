@@ -1,5 +1,8 @@
 import type { ScenePbrMaterialManifest } from "./compiler/types.js";
-import { pbrNoColorView } from "./compiler/scene-materials.js";
+import {
+    pbrEsmShadowView,
+    pbrNoColorView,
+} from "./compiler/scene-materials.js";
 // The pinned variant-composition orchestration.
 //
 // Everything between "the manifest and assets are settled" and "the
@@ -319,8 +322,14 @@ export async function composeScenePipeline({
             // by composing per renderable. The scene-wide product would
             // deploy a stage pair per arm and per attribute set, all but
             // one of them a `return;` fragment no draw can select.
+            // Which view the caster takes is the generator's own filter,
+            // exactly as it is for the Standard family: an ESM pass draws
+            // the exponential-depth view, a PCF pass the depth-only one.
+            const view = generator.kind === "esm-directional"
+                ? pbrEsmShadowView(source, materialsBefore)
+                : pbrNoColorView(source, materialsBefore);
             casterViews.push({
-                ...pbrNoColorView(source, materialsBefore),
+                ...view,
                 meshFeatureSets: [
                     renderableMeshFeatures[
                         sceneMeshRowBase + caster.meshIndex

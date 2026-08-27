@@ -213,6 +213,15 @@ export interface PinnedComposeOptions {
     /** Bits ORed into `features2` the same way; `PBR2_NO_COLOR_OUTPUT` for a
      *  depth-only material view is the reached one. */
     passFeatures2?: number;
+    /**
+     * The ESM caster's view of this material.
+     *
+     * Unlike the no-colour view this is not one added bit: the pinned
+     * factory CLEARS the blend bit before setting its own, and carries the
+     * depth code the fragment returns. Both come back from running it, so
+     * neither the bit arithmetic nor the depth string is re-typed here.
+     */
+    esmShadowView?: boolean;
     /** Mesh bits (`MSH_HAS_TANGENTS`, morph targets, vertex colour, …). */
     meshFeatures?: number;
     /** Scene bits; the environment is read from here, not from the material. */
@@ -284,7 +293,36 @@ export async function composePinnedPbrVariant(
     material: PinnedMaterialInput,
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
-    const { features, features2 } = await pinnedMaterialFeatures(material);
+    const base = await pinnedMaterialFeatures(material);
+    // The ESM caster view's own feature word and depth code, from the pinned
+    // factory rather than from a second statement of what it does.
+    const esmView = options.esmShadowView
+        ? (await importPinnedModule<{
+            createPbrEsmShadowMaterialView: (
+                source: unknown,
+                shadowParamsUBO: unknown,
+            ) => {
+                readonly _renderFeatures: {
+                    features: number;
+                    features2: number;
+                };
+                readonly _esmShadowDepthCode: string;
+            };
+        }>("material/pbr/esm-shadow-view.js")).createPbrEsmShadowMaterialView(
+            // The view reads `_renderFeatures` off its source, so the
+            // material is handed its own computed word rather than being
+            // asked for one it does not carry.
+            { ...(material as object), _renderFeatures: base },
+            // Stored for the renderable to bind; composing reads only the
+            // depth code beside it.
+            null,
+        )
+        : null;
+    const features = esmView ? esmView._renderFeatures.features : base.features;
+    const features2 = esmView
+        ? esmView._renderFeatures.features2
+        : base.features2;
+    const esmShadowDepthCode = esmView?._esmShadowDepthCode ?? "";
     // `rebuildSingle` gates the shadow fragment on the mesh bit and
     // `buildPbrRenderables` imports the module only when a scene has both a
     // generator and an affected light, so the two travel together here: the
@@ -443,7 +481,7 @@ export async function composePinnedPbrVariant(
         options.sceneFeatures ?? 0,
         options.lightMode ?? 0,
         options.singleLightType ?? "",
-        "",
+        esmShadowDepthCode,
         undefined,
         "",
         options.uv2Mask ?? 0,

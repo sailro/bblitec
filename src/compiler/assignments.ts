@@ -1039,6 +1039,15 @@ export function emitPropertyAssignment(
                 );
             }
             context.recordShadowReceiver(target.sceneMeshIndex);
+            // The record lane too, which the node family reads per draw:
+            // its receiver mixes each light's factor by `receivesShadow`
+            // rather than selecting a variant, so one composed module
+            // serves a receiving mesh and a non-receiving one. The two
+            // composed families never read the lane.
+            context.emit(
+                `${context.requireEngine(target, expression)}.meshes[` +
+                    `${target.cpp}.value].receives_shadows = true;`,
+            );
             return;
         }
 

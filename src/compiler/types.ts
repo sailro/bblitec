@@ -349,6 +349,8 @@ export interface ScenePbrMaterialManifest {
      *  the same record with the pin's `PBR2_NO_COLOR_OUTPUT` bit, drawn by
      *  the depth-only render tasks. */
     noColorView?: boolean;
+    /** The ESM caster's view: the no-colour view's sibling bit. */
+    esmShadowView?: boolean;
     /**
      * The attribute sets this material's variants compose over, when they
      * are fewer than the scene's.

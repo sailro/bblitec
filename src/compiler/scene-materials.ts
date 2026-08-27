@@ -28,6 +28,23 @@ export function pbrNoColorView(
 }
 
 /**
+ * The ESM caster's view of one scene PBR material.
+ *
+ * `createPbrEsmShadowMaterialView` is the no-colour view's sibling: the same
+ * record with one bit set -- `PBR2_ESM_SHADOW_OUTPUT` rather than
+ * `PBR2_NO_COLOR_OUTPUT` -- and the blend bit cleared, because the fragment
+ * it composes returns the exponential depth instead of a colour. Which of
+ * the two a caster takes is the generator's filter, exactly as it is for the
+ * Standard family.
+ */
+export function pbrEsmShadowView(
+    source: ScenePbrMaterialManifest,
+    materialsBefore: number,
+): ScenePbrMaterialManifest {
+    return { ...source, materialsBefore, esmShadowView: true };
+}
+
+/**
  * The scene-material manifest recorders: the creation-ordered slot
  * counter every material family bumps, and the PBR entries the setter
  * intrinsics stamp. The entry orchestrator holds one instance and

@@ -1270,6 +1270,32 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
+            "BBLITE_NODE_SHADOWS",
+            "capability",
+            shadows.node,
+            [
+                // The node family's own half. Unlike the two composed
+                // families this is not "a generator plus a variant": a node
+                // graph's receiver is bindings appended to its OWN group 1
+                // and its caster is a second module of that same graph, so
+                // what reaches it is a composed graph that carries one or
+                // the other.
+                [
+                    (has("shadow:pcf") || has("shadow:esm")) &&
+                        (nodeShadowReceiverCount > 0 ||
+                            nodeEsmCasterCount > 0),
+                    "scene source reached a shadow generator and a composed " +
+                        "node graph receives or casts",
+                ],
+            ],
+            shadows.reached
+                ? "reached a shadow generator but no node graph receives " +
+                    "or casts"
+                : "not reached",
+            "src/material/node/node-shadow.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
             "BBLITE_SHADOW_RECEIVERS",
             "capability",
             shadows.receivers,

@@ -1408,7 +1408,10 @@ MaterialHandle create_standard_material(Engine& engine) {
         };
     }
 
-    public lowerNoColorMaterialViews(esmShadows = false): LoweredSource {
+    public lowerNoColorMaterialViews(
+        esmShadows = false,
+        nodeEsmCasters = false,
+    ): LoweredSource {
         const standardModule = "src/material/standard/no-color-view.ts";
         const esmModule = "src/material/standard/esm-shadow-view.ts";
         const pbrModule = "src/material/pbr/no-color-view.ts";
@@ -1513,7 +1516,11 @@ MaterialHandle create_standard_material(Engine& engine) {
             symbolName:
                 "createStandardNoColorMaterialView,createPbrNoColorMaterialView,markMaterialUboDirty" +
                 (esmShadows
-                    ? ",createStandardEsmShadowMaterialView"
+                    ? ",createStandardEsmShadowMaterialView," +
+                        "createPbrEsmShadowMaterialView"
+                    : "") +
+                (nodeEsmCasters
+                    ? ",createNodeEsmShadowMaterialView"
                     : ""),
             header: "",
             source: `// ${this.context.provenance(
@@ -1575,6 +1582,54 @@ MaterialHandle create_standard_esm_shadow_material_view(
     if (!source_record.standard_material) {
         throw std::runtime_error(
             "An ESM shadow material view requires a Standard source.");
+    }
+    MaterialRecord view = source_record;
+    view.esm_shadow = true;
+    view.esm_shadow_generator = generator;
+    engine.materials.push_back(std::move(view));
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+
+// The PBR sibling. \`createPbrEsmShadowMaterialView\` is the same view over
+// the other family's flag word -- \`PBR2_ESM_SHADOW_OUTPUT\` in place of the
+// no-colour bit -- and the variant it resolves was composed under this
+// handle, so the record carries only the bit and its generator.
+MaterialHandle create_pbr_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator) {
+    if (source.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid source material handle.");
+    }
+    const MaterialRecord& source_record = engine.materials[source.value];
+    if (source_record.standard_material) {
+        throw std::runtime_error(
+            "A PBR ESM shadow material view requires a PBR source.");
+    }
+    MaterialRecord view = source_record;
+    view.esm_shadow = true;
+    view.esm_shadow_generator = generator;
+    engine.materials.push_back(std::move(view));
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+`}${!nodeEsmCasters ? "" : `
+// The node family's ESM caster view. \`createNodeEsmShadowMaterialView\`
+// keeps the source's own graph and flips one bit; the module that bit
+// selects was compiled beside the receiver's and rides the same variant
+// row, so nothing here names a second variant.
+MaterialHandle create_node_esm_shadow_material_view(
+    Engine& engine,
+    MaterialHandle source,
+    ShadowGeneratorHandle generator) {
+    if (source.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid source material handle.");
+    }
+    const MaterialRecord& source_record = engine.materials[source.value];
+    if (!source_record.node_material) {
+        throw std::runtime_error(
+            "A node ESM shadow material view requires a node source.");
     }
     MaterialRecord view = source_record;
     view.esm_shadow = true;

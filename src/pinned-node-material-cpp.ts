@@ -99,11 +99,38 @@ export interface NodeVariantManifestEntry {
     composed: ComposedNodeMaterial;
 }
 
+/** The caster row for one variant, or the absent one. */
+function casterRow(variant: NodeVariantManifestEntry): string {
+    const caster = variant.composed.esmCaster;
+    if (!caster) return '{false, "", "", 0}';
+    const stems = nodeCasterStageStems(variant.index);
+    return (
+        `{true, ${stringLiteral(stems.vertexStem)}, ` +
+        `${stringLiteral(stems.fragmentStem)}, ${caster.paramsBinding}}`
+    );
+}
+
 /** The deployed stems for one graph, both from the same module. */
 export function nodeVariantStageStems(
     index: number,
 ): { vertexStem: string; fragmentStem: string } {
     return { vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag` };
+}
+
+/**
+ * The stems the ESM caster module deploys under.
+ *
+ * A second module for the same graph, so it takes the same `node-` prefix
+ * -- which is what puts it through the pin's own group scheme in the
+ * register remap and publishes the `.slots` sidecar the SDL PAL binds by.
+ */
+export function nodeCasterStageStems(
+    index: number,
+): { vertexStem: string; fragmentStem: string } {
+    return {
+        vertexStem: `node-${index}-esm.vert`,
+        fragmentStem: `node-${index}-esm.frag`,
+    };
 }
 
 /** The pin's own node mesh block, as its composed module declares it. */
@@ -142,6 +169,7 @@ export function pinnedNodeVariantsHeader(
     }
     const attributeRows: string[] = [];
     const textureRows: string[] = [];
+    const shadowRows: string[] = [];
     const uniformFloats: number[] = [];
     const entries: string[] = [];
     const envResources = new Map<string, EnvResource>();
@@ -157,6 +185,17 @@ export function pinnedNodeVariantsHeader(
             textureRows.push(
                 `    {${stringLiteral(texture.name)}, ` +
                     `${texture.texture}, ${texture.sampler}},`,
+            );
+        }
+        const firstShadow = shadowRows.length;
+        for (const binding of variant.composed.shadowBindings) {
+            shadowRows.push(
+                `    {${binding.lightIndex}, ${binding.texture}, ` +
+                    `${binding.sampler}, ${binding.ubo}, ` +
+                    `${stringLiteral(binding.textureName)}, ` +
+                    `${stringLiteral(binding.samplerName)}, ` +
+                    `${stringLiteral(binding.uboName)}, ` +
+                    `${binding.shadowType === "pcf"}},`,
             );
         }
         const firstFloat = uniformFloats.length;
@@ -178,7 +217,10 @@ export function pinnedNodeVariantsHeader(
                         : variant.composed.uboBinding
                 }, ` +
                 `${variant.composed.uboBytes}, ${firstFloat}, ` +
-                `${envRow}},`,
+                `${envRow}, ` +
+                `${firstShadow}, ` +
+                `${variant.composed.shadowBindings.length}, ` +
+                `${casterRow(variant)}},`,
         );
         collectEnvResources(variant.composed, envResources);
     }
@@ -277,6 +319,44 @@ inline constexpr std::array<
 ${envRows.join("\n") || "    // No reached graph declares one."}
 }};
 
+/**
+ * One shadow light's three group-1 bindings, as emitShadow allocated
+ * them: the node family continues the GRAPH's own binding run rather than
+ * opening a group of its own.
+ */
+struct NodeVariantShadowBinding {
+    std::size_t light_index;
+    std::size_t texture;
+    std::size_t sampler;
+    std::size_t ubo;
+    /** The names the emitter declared the three under. */
+    std::string_view texture_name;
+    std::string_view sampler_name;
+    std::string_view ubo_name;
+    /** Whether the map is compared rather than sampled. */
+    bool comparison;
+};
+
+inline constexpr std::array<
+    NodeVariantShadowBinding,
+    ${shadowRows.length}> node_variant_shadow_bindings{{
+${shadowRows.join("\n") || "    // No reached graph receives a shadow."}
+}};
+
+/**
+ * The ESM caster module a graph composes when the scene casts from it.
+ *
+ * A second module of the SAME graph -- the pin re-compiles its bodies with
+ * the depth code its own ESM view carries -- so it deploys under its own
+ * stems and adds exactly one binding, the shadow-params block.
+ */
+struct NodeVariantCaster {
+    bool present;
+    std::string_view vertex_stem;
+    std::string_view fragment_stem;
+    std::size_t params_binding;
+};
+
 struct NodeVariantEntry {
     /** The deployed stem of each stage; both name one module. */
     std::string_view vertex_stem;
@@ -295,6 +375,11 @@ struct NodeVariantEntry {
     /** Where this graph's block starts in the float table below. */
     std::size_t first_uniform_float;
     NodeVariantEnvBindings env;
+    /** Half-open range into the shadow-binding table above. */
+    std::size_t first_shadow_binding;
+    std::size_t shadow_binding_count;
+    /** The ESM caster module this graph also composed, when it casts. */
+    NodeVariantCaster caster;
 };
 
 inline constexpr std::array<
