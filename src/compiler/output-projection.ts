@@ -128,6 +128,7 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:fog": [],
     "renderer:geometry-output": [],
     "renderer:post-process": [],
+    "renderer:high-precision-matrix": [],
     "renderer:floating-origin": [],
 };
 

@@ -1982,7 +1982,7 @@ void write_track_value(
     MeshRecord& mesh = engine.meshes[target.index];
     switch (path) {
         case PropertyAnimationPath::position:
-            mesh.position = Vec3{
+            mesh.position = Vec3d{
                 value[0], value[1], value[2]};
             break;
         case PropertyAnimationPath::position_x:

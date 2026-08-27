@@ -1037,6 +1037,29 @@ CLI exposes no combined-sampler emission.
     does mean every scene's binary needs rebuilding before its parity number is
     trustworthy again, so `npm run scenes:parity` is owed before this pushes.
 
+- [ ] Give a billboard system the F64 anchor mirror the pin keeps. A sprite's
+  anchor is stored in `BillboardSystemRecord::instance_data`, a
+  `std::vector<float>`, and the floating-origin bake subtracts the eye from
+  that already-quantized lane -- the pin keeps a separate `_anchor`
+  Float64Array for exactly this reason and says so. The sort depth should
+  move onto the eye-relative anchor with it, which is where the pin computes
+  it. Blocked on a measurement: scene 205's own source notes that every
+  anchor it uses is a multiple of 0.5, so it is lossless in float32 and its
+  0.000 proves the plumbing rather than the width. A large-world sprite scene
+  with an off-grid anchor would settle it.
+
+- [ ] Widen the remaining matrices the pin's high-precision allocator widens.
+  `_setHpmAllocator` is process-global: under it the pin stores every
+  `allocateMat4()` in F64, including each light's local matrix, the
+  thin-instance parent world, the navmesh merge world, the shadow-caster AABB
+  world and the splat world. This port widened the camera's world and a
+  node's translation; the rest still compose into `std::array<float, 16>`
+  unconditionally, and `MeshRecord::outer_position` is likewise still `Vec3`.
+  Blocked on a measurement: no reached scene combines high-precision matrix
+  with an imported light, a thin-instance pool, a navmesh, a shadow or a
+  splat -- `assertFloatingOriginCapabilities` refuses most of those pairs
+  outright -- so there is nothing to measure a widening against.
+
 - [ ] Hoist the floating-origin offset out of the per-draw path. Every
   floating-origin draw calls `arc_rotate_eye_position` through
   `mesh_world_eye_relative`, which for an arc-rotate camera is four

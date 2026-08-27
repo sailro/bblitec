@@ -890,6 +890,18 @@
       "upstreamPath": "lab/lite/src/lite/scene202.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene202.ts",
       "sha256": "2f0ff6f1780566b33d3477bf88245c94ae198a4e2a99d58d983b4952dc4d4961"
+    },
+    {
+      "id": "scene203",
+      "upstreamPath": "lab/lite/src/lite/scene203.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene203.ts",
+      "sha256": "91518350cbb7f498e406bc3e3f1738a239a789e5e40b3e67e66f886093936639"
+    },
+    {
+      "id": "scene205",
+      "upstreamPath": "lab/lite/src/lite/scene205.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene205.ts",
+      "sha256": "a6ac18c0000443c8c443c545fb780e1e21e95ccb02ba0ead95db28117a7df73e"
     }
   ],
   "modules": [

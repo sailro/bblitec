@@ -212,27 +212,40 @@ const commonLightProperties: Readonly<
     },
 };
 
+/** The colour pair every positional kind writes. */
+const positionalLightProperties: Readonly<
+    Record<string, DirectPropertyAssignment>
+> = {
+    ...commonLightProperties,
+    diffuse: {
+        collection: "lights",
+        nativeProperty: "diffuse_color",
+        valueKind: "color3",
+        supportsCompound: false,
+    },
+    specular: {
+        collection: "lights",
+        nativeProperty: "specular_color",
+        valueKind: "color3",
+        supportsCompound: false,
+    },
+};
+
+/** `_writeLightUbo` packs it into the same lane for point and spot alike. */
+const lightRangeProperty: DirectPropertyAssignment = {
+    collection: "lights",
+    nativeProperty: "range",
+    valueKind: "number",
+    supportsCompound: true,
+};
+
 const lightProperties: Readonly<
     Record<
         LightKind,
         Readonly<Record<string, DirectPropertyAssignment>>
     >
 > = {
-    directional: {
-        ...commonLightProperties,
-        diffuse: {
-            collection: "lights",
-            nativeProperty: "diffuse_color",
-            valueKind: "color3",
-            supportsCompound: false,
-        },
-        specular: {
-            collection: "lights",
-            nativeProperty: "specular_color",
-            valueKind: "color3",
-            supportsCompound: false,
-        },
-    },
+    directional: positionalLightProperties,
     hemispheric: {
         ...commonLightProperties,
         diffuseColor: {
@@ -248,45 +261,18 @@ const lightProperties: Readonly<
             supportsCompound: false,
         },
     },
+    // The three positional kinds carry the same colour pair; the two whose
+    // pinned writer packs an attenuation range carry that too. `angle` and
+    // `exponent` are settable upstream and are not written by any reached
+    // scene, so they stay unlowered and fail explicitly rather than being
+    // accepted and ignored.
     point: {
-        ...commonLightProperties,
-        diffuse: {
-            collection: "lights",
-            nativeProperty: "diffuse_color",
-            valueKind: "color3",
-            supportsCompound: false,
-        },
-        specular: {
-            collection: "lights",
-            nativeProperty: "specular_color",
-            valueKind: "color3",
-            supportsCompound: false,
-        },
-        range: {
-            collection: "lights",
-            nativeProperty: "range",
-            valueKind: "number",
-            supportsCompound: true,
-        },
+        ...positionalLightProperties,
+        range: lightRangeProperty,
     },
-    // A spot light carries the same colour pair as the other positional
-    // kinds. Its `angle`, `exponent` and `range` are settable upstream and
-    // are not written by any reached scene, so they stay unlowered and fail
-    // explicitly rather than being accepted and ignored.
     spot: {
-        ...commonLightProperties,
-        diffuse: {
-            collection: "lights",
-            nativeProperty: "diffuse_color",
-            valueKind: "color3",
-            supportsCompound: false,
-        },
-        specular: {
-            collection: "lights",
-            nativeProperty: "specular_color",
-            valueKind: "color3",
-            supportsCompound: false,
-        },
+        ...positionalLightProperties,
+        range: lightRangeProperty,
     },
 };
 
@@ -1688,8 +1674,20 @@ export function emitPropertyAssignment(
             mesh,
             expression,
         );
+        // A mesh's translation is kept at the pin's own width, so the
+        // component spelling writes it there too: narrowing here and
+        // widening back into the field would round a large-world
+        // coordinate to the float32 grid, which is the whole reason the
+        // field is a double.
+        const wide = record.collection === "meshes" &&
+            left.expression.name.text === "position";
         context.emit(
-            `${engine}.${record.collection}[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(expression.right)};`,
+            `${engine}.${record.collection}[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${
+                context.compileNumber(
+                    expression.right,
+                    wide ? "double" : undefined,
+                )
+            };`,
         );
         // The transform version is what the backends gate their baked
         // vertex re-upload on (the pinned property-animation evaluator

@@ -1988,6 +1988,7 @@ class Compiler
     ): Value {
         this.expectArgumentCount(call, 1, 2);
         let msaaSamples: 1 | 4 = 4;
+        let highPrecisionMatrix = false;
         let floatingOrigin = false;
         if (call.arguments[1]) {
             const options = this.expectObjectLiteral(
@@ -2005,14 +2006,13 @@ class Compiler
                 "Reached engine options support msaaSamples, requiredLimits, " +
                     "useHighPrecisionMatrix and useFloatingOrigin.",
             );
-            // `useHighPrecisionMatrix` gates nothing of its own here --
-            // this port composes every world in double already -- so what
-            // the policy contributes is the precondition it enforces and
-            // the one flag that changes what is emitted.
-            ({ floatingOrigin } = compileEnginePrecisionPolicy(
-                this,
-                options,
-            ));
+            // Both flags reach generation: the pin's `_setHpmAllocator`
+            // swaps a process-global allocator, so `useHighPrecisionMatrix`
+            // decides the width every matrix this port composes is stored
+            // at, and `useFloatingOrigin` decides the frame they are
+            // composed in.
+            ({ highPrecisionMatrix, floatingOrigin } =
+                compileEnginePrecisionPolicy(this, options));
             const samples = this.objectProperty(
                 options,
                 "msaaSamples",
@@ -2056,6 +2056,9 @@ class Compiler
         // precondition floating origin needs rather than as a storage
         // choice, and `useFloatingOrigin` is the one that changes what is
         // emitted.
+        if (highPrecisionMatrix) {
+            this.reachFeature("renderer:high-precision-matrix", call);
+        }
         if (floatingOrigin) {
             this.reachFeature("renderer:floating-origin", call);
         }

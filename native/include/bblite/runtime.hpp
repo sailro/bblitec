@@ -29,10 +29,9 @@ struct Vec3 {
     float z = 0.0f;
 };
 
-// A position the pinned engine keeps as three JavaScript numbers. Only the
-// camera reaches this today: `src/camera/camera.ts` composes the view,
-// projection and view-projection in that precision and rounds once into its
-// `Float32Array` caches, so a float record would round a second time, earlier.
+// A position the pinned engine keeps as three JavaScript numbers -- the
+// camera's, and a node's translation, which at large-world coordinates has
+// to survive a float32 grid whose spacing is half a unit.
 struct Vec3d {
     double x = 0.0;
     double y = 0.0;
@@ -832,7 +831,12 @@ struct MeshRecord {
      */
     std::string name;
     PrimitiveKind primitive = PrimitiveKind::box;
-    Vec3 position{};
+    // The pin holds a node's translation as three JavaScript numbers, and
+    // at large-world coordinates the float32 ULP is half a unit -- enough
+    // to move a silhouette before the eye-relative subtraction can recover
+    // anything. Rotation and scaling stay float: they are small by
+    // construction and every consumer reads them at that width.
+    Vec3d position{};
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
@@ -1638,8 +1642,10 @@ struct LightRecord {
 // Every scalar the pinned camera factories hold is a plain JavaScript
 // number, and `src/camera/camera.ts` reads them into the view and
 // projection writers in that precision. The record therefore keeps
-// doubles and `camera_world_matrix` performs the single float32 store the
-// pinned `allocateMat4()` cache performs.
+// doubles, and `camera_world_matrix` performs the single store the pinned
+// `allocateMat4()` cache performs -- into float32 by default, and into
+// float64 under the high-precision matrix a floating-origin engine asks
+// for, which is the width `getViewMatrix` then reads the basis back at.
 struct CameraRecord {
     CameraKind kind = CameraKind::arc_rotate;
     Vec3d position{};

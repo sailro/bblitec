@@ -1574,9 +1574,18 @@ export class StatementLowerer {
                 `${owner.name.text}.set expects exactly three numeric arguments.`,
             );
         }
-        const vector = `bbl::Vec3{${call.arguments
+        // A mesh's translation is kept at the pin's own width: upstream
+        // holds three JavaScript numbers, and at large-world coordinates
+        // the float32 ULP is half a unit -- enough to move a silhouette
+        // before anything downstream can recover it. Rotation and scaling
+        // stay float, which is the width every consumer reads them at.
+        const wide = owner.name.text === "position";
+        const vector = `${wide ? "bbl::Vec3d" : "bbl::Vec3"}{${call.arguments
             .map((argument) =>
-                context.compileNumber(argument),
+                context.compileNumber(
+                    argument,
+                    wide ? "double" : undefined,
+                ),
             )
             .join(", ")}}`;
         const engine = context.requireEngine(target, call);
