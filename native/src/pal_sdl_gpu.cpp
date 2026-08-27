@@ -453,16 +453,7 @@ void bind_shader_material_textures(
 
 void bind_mesh_vertex_buffers(
     SDL_GPURenderPass* pass,
-    const GpuMesh& mesh,
-    bool bind_instance_streams = true) {
-    // A custom shader declares its own vertex inputs. Do not manufacture or
-    // bind globally compiled instance/morph lanes when its variant did not
-    // ask for them.
-    if (!bind_instance_streams) {
-        const SDL_GPUBufferBinding binding{mesh.vertices, 0};
-        SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
-        return;
-    }
+    const GpuMesh& mesh) {
 #if BBLITE_GPU_INSTANCE_COLORS
     // The matrix pool at slot 1 and the per-instance RGBA rows at slot 2,
     // which the line family's vertex stage reads as `instanceColor`.
@@ -5937,7 +5928,7 @@ bool run_gpu_engine(Engine& engine) {
             }
 #endif
 #if BBLITE_GPU_INSTANCING
-            if (!shader_material) {
+            {
                 std::vector<std::array<float, 16>>
                     instance_matrices =
                         mesh_record.instance_matrices;
@@ -7153,8 +7144,7 @@ bool run_gpu_engine(Engine& engine) {
                             };
                             bind_mesh_vertex_buffers(
                                 task_pass,
-                                mesh,
-                                !shader_bucket);
+                                mesh);
                             SDL_BindGPUIndexBuffer(
                                 task_pass,
                                 &index_binding,
@@ -8616,9 +8606,7 @@ bool run_gpu_engine(Engine& engine) {
                     };
                     bind_mesh_vertex_buffers(
                         pass,
-                        mesh,
-                        item.material_kind !=
-                            upstream::RenderMaterialKind::shader);
+                        mesh);
                     SDL_BindGPUIndexBuffer(
                         pass,
                         &index_binding,

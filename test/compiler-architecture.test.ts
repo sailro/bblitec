@@ -576,6 +576,23 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
         );
     }
 
+    // Local/shared geometry does not make the per-draw instance streams
+    // global geometry. A custom shader can consume the matrix and colour
+    // lanes just like a composed material, so both backends must allocate
+    // and bind those buffers for shader draws too.
+    assert.doesNotMatch(
+        sdl,
+        /#if BBLITE_GPU_INSTANCING\s*if \(!shader_material\)/,
+    );
+    assert.doesNotMatch(
+        sdl,
+        /bind_mesh_vertex_buffers\([^;]{0,160}!shader_bucket/,
+    );
+    assert.doesNotMatch(
+        sdl,
+        /bind_mesh_vertex_buffers\([^;]{0,200}RenderMaterialKind::shader/,
+    );
+
     // Generated PBR/Standard texture lanes are not per-mesh resources for a
     // custom shader family. Both backends retain inert shared bindings where
     // their API layout requires them and upload the lanes only for composed
