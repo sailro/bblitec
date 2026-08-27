@@ -8389,8 +8389,17 @@ bool run_dawn_engine(Engine& engine) {
         write_shadow_generators(state, scene, engine);
 #endif
 #endif
+        // The pass's own matrices travel with the list: a render task
+        // renders through its own camera and target aspect, and a shadow
+        // caster pass through the generator's light-space matrix, so a
+        // shader material's system block reads what its pass renders with
+        // rather than the frame's.
         const auto write_material_uniforms =
-            [&](const upstream::RenderDrawList& list) {
+            [&](
+                const upstream::RenderDrawList& list,
+                const std::array<float, 16>& pass_matrix,
+                const CameraRecord& pass_camera,
+                double pass_aspect) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
@@ -8538,7 +8547,8 @@ bool run_dawn_engine(Engine& engine) {
                                     block_floats =
                                         shader_stage_block_floats(
                                             block,
-                                            matrix.data(),
+                                            pass_matrix.data(),
+                                            {&pass_camera, pass_aspect},
                                             material);
                                 wgpuQueueWriteBuffer(
                                     state.queue,
@@ -8630,8 +8640,10 @@ bool run_dawn_engine(Engine& engine) {
                     }
                 }
             };
-        write_material_uniforms(render_plan.draw_lists.opaque);
-        write_material_uniforms(render_plan.draw_lists.transparent);
+        write_material_uniforms(
+            render_plan.draw_lists.opaque, matrix, camera, aspect);
+        write_material_uniforms(
+            render_plan.draw_lists.transparent, matrix, camera, aspect);
         if (state.skybox_enabled) {
             const std::array<float, 16> skybox_view_projection =
                 upstream::build_skybox_view_projection(
@@ -8832,9 +8844,15 @@ bool run_dawn_engine(Engine& engine) {
                         generator.caster_view_projection.data(),
                         64);
                     write_material_uniforms(
-                        render_task.draw_lists.opaque);
+                        render_task.draw_lists.opaque,
+                        generator.caster_view_projection,
+                        task_camera,
+                        task_aspect);
                     write_material_uniforms(
-                        render_task.draw_lists.transparent);
+                        render_task.draw_lists.transparent,
+                        generator.caster_view_projection,
+                        task_camera,
+                        task_aspect);
                 }
 #endif
 #if BBLITE_PINNED_MATERIALS
@@ -8874,9 +8892,15 @@ bool run_dawn_engine(Engine& engine) {
                         engine,
                         task_camera);
                     write_material_uniforms(
-                        render_task.draw_lists.opaque);
+                        render_task.draw_lists.opaque,
+                        task_matrix,
+                        task_camera,
+                        task_aspect);
                     write_material_uniforms(
-                        render_task.draw_lists.transparent);
+                        render_task.draw_lists.transparent,
+                        task_matrix,
+                        task_camera,
+                        task_aspect);
                 }
             }
         }

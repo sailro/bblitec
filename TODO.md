@@ -158,7 +158,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-99 corpus scenes remain unregistered; measured scenes are in
+96 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). No unregistered scene compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -177,17 +177,17 @@ module is invisible in a compile probe, because
 the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
-**Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-26,
-before scene 18 shipped; the physics lane re-swept after the prototype
-below):
-`receiveShadows` 8 (18, 65, 66, 72, 140, 214, 215, 271),
+**Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-27,
+before the splat-plugin trio shipped):
 engine options beyond msaaSamples/requiredLimits 7 (large-world),
-a folded value compared against a mutable counter 7 (all physics),
-an unsupported constructor expression 5,
-`createGroundFromHeightMap` 3, a four-argument call 3.
-The shadow family finished three of them — 18, then 4 and 22 with the ESM
-directional generator, the heightmap ground and the PBR receiver — and the
-rest each hide a second subsystem, which is the entry below.
+an unsupported constructor expression 4 (104, 105, 117, 149 — `new Map` in
+three of them and `new Promise` in the fourth, so it is not one contract),
+a numeric operator outside `+ - * / %` 3, a four-argument call 3
+(`attachControl` with a gizmo-deferral options object).
+The shadow family finished the three scenes it finishes outright — 18, then
+4 and 22 with the ESM directional generator, the heightmap ground and the
+PBR receiver — and the `receiveShadows` scenes that remain each hide a
+second subsystem, which is the entry below.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
@@ -233,8 +233,9 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (73 scenes):** 16, 17, 20, 38, 43,
-51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-129,
+**Integrate first (70 scenes):** 16, 17, 20, 38, 43,
+51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
+129,
 140, 141, 144, 149, 156, 165, 171-174, 179, 200-207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
@@ -287,15 +288,29 @@ below rather than blocking a scene here.
   or image skyboxes are rotation-invariant or unrelated; the remaining
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
-- [ ] Extend the splat slice past scene 120's plain `.ply`. `loadSplat` also
-  reaches 121 (`splatsData` + `updateData`), 124 (compressed PLY with
-  spherical harmonics — the second parser plus `gaussian-splatting-pipeline-sh`
-  and its 1..5 rgba32uint SH textures), 125 (a write to a splat mesh's
-  `position`, with `bakeCurrentTransformIntoVertices` behind it)
-  and 126 (a `GsShaderFragment` plugin spliced into the pin's own stage, which
-  `applyGsFragments` mangles field names for). `loadSOG` (122) needs a ZIP and
-  a WebP decoder; `loadSPZ` (123) needs gzip. 127/128 add
-  `createLinearDepthMaterial`, 129 adds `.name`.
+- [ ] Extend the splat slice past what scenes 120, 126, 127 and 128 measure.
+  Shipped: the plain `.ply`/`.splat` row layout, the pin's own
+  `applyGsFragments` splicing a scene's `GsShaderFragment` plugins into the
+  splat module, the `GaussianSplattingMesh` world composed from its own TRS,
+  and `createLinearDepthMaterial` beside the two pinned depth plugins.
+  What remains, each refusing by name:
+  - 121: `splatsData` + `updateData` — the row buffer handed back as a
+    mutable `ArrayBuffer` and re-uploaded, which also needs `new
+    Float32Array(buf)` over it and an indexed element assignment.
+  - 124: a compressed PLY with spherical harmonics — the pin's second
+    parser plus `gaussian-splatting-pipeline-sh` and its 1..5 rgba32uint SH
+    textures.
+  - 125: a splat cloud's `rotation` and `scaling` writes, then
+    `bakeCurrentTransformIntoVertices`. `build_splat_world` already composes
+    all three TRS lanes, so the two writes are call-site arms; the bake is
+    the capability, and it is what makes them observable at all in that
+    scene.
+  - 129: `splat.name`, then the picking family.
+  - `loadSOG` (122) needs a ZIP and a WebP decoder; `loadSPZ` (123) needs
+    gzip.
+  A second `loadSplat` naming a different plugin list also refuses: the
+  generated splat stages are one composed module per scene, where upstream
+  keys its module cache by the plugin ids. No corpus scene loads two clouds.
 - [ ] `renderer:pbr` is the feature that names the SCENE RENDER LOOP, not the
   PBR material family: `featureSources` maps it to `src/pal_sdl_gpu.cpp`, and
   `addBillboardSystem` and `loadSplat` both reach it for scenes with no PBR
@@ -460,8 +475,12 @@ below rather than blocking a scene here.
   and `shader-pipeline.ts` reads `sig._depthCompare ?? material.depthCompare`,
   so a scene naming `"less"` is the pin's one per-material opt-out from the
   convention. `ShaderVariantInfo` carries `depth_write` but no compare, and
-  both PALs hardcode `pinned_depth_compare`; no corpus scene names one yet,
-  so this is a contract gap rather than a measured defect.
+  both PALs hardcode `pinned_depth_compare`. One pinned factory now names
+  one — `createLinearDepthMaterial` passes `"greater-equal"`, which IS the
+  convention, so its lowerer checks the two agree instead of carrying the
+  value; a factory or scene naming another compare refuses there. Still a
+  contract gap rather than a measured defect: no corpus scene names a
+  different one.
 
 - [ ] Build the node group-1 layout from the reflected binding table rather
   than by hand. `variantBindings` (src/pinned-pbr-variant-cpp.ts) already
@@ -664,6 +683,12 @@ below rather than blocking a scene here.
   unlowered. `setShaderMatrix`, `setShaderStorageBuffer`,
   `enableShaderMaterialUniformCaching` and `enableShaderUniformRangeUpdates`
   likewise. No corpus scene reaches any of them at this pin.
+  Four of the pin's nine system uniforms also remain: `worldView`,
+  `cameraPosition`, `screenSize` and `alphaCutoff`. `view` and `projection`
+  shipped with `createLinearDepthMaterial` — a pass hands the block writer
+  its own camera and aspect, and `build_scene_projection` answers for the
+  orthographic arm — so what the four still want is a source per matrix,
+  not a mechanism.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 200-209: large-world rendering (`useHighPrecisionMatrix` +

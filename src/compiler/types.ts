@@ -72,6 +72,12 @@ export interface CompileManifest {
     postProcessComposites: PostProcessCompositeManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
+    /**
+     * The `GsShaderFragment` plugins a `loadSplat` call passed, in the order
+     * it wrote them — which is the order the pin's own splicer concatenates
+     * two plugins sharing a slot in.
+     */
+    splatFragments: SplatFragmentManifest[];
     /** Every scene-code material creation, any family, for the handle count. */
     sceneMaterialCount: number;
     sceneMeshes: SceneMeshManifest[];
@@ -79,6 +85,26 @@ export interface CompileManifest {
     shadowGenerators: ShadowGeneratorManifest[];
     /** The `sceneMeshes` entries `mesh.receiveShadows = true` marked. */
     shadowReceiverMeshes: number[];
+}
+
+/**
+ * One Gaussian-splat shader plugin a `loadSplat` call named.
+ *
+ * A plugin is pure data upstream, and a scene reaches one of two ways: by
+ * importing one of the pin's own exported records, or by declaring its own.
+ * The first carries only the export name, because what that export contains
+ * is the pin's to answer at composition — the same split the tone-mapping
+ * records take.
+ */
+export interface SplatFragmentManifest {
+    /** The pinned export the scene imported, when it imported one. */
+    pinnedExport?: string;
+    /** The record the scene declared inline, when it declared one. */
+    record?: {
+        id: string;
+        helperFunctions?: string;
+        fragmentSlots: { slot: string; code: string }[];
+    };
 }
 
 /**
@@ -840,6 +866,12 @@ export type ValueKind =
     | "billboard-system"
     | "sprite-renderer"
     | "splat-mesh"
+    /**
+     * A `GsShaderFragment` a `loadSplat` call passes: WGSL slots the pin's
+     * own splicer folds into the splat module at generation, so the value
+     * declares nothing native.
+     */
+    | "splat-fragment"
     // The `ShadowGenerator` a filter factory returns. It holds GPU state
     // (a depth map, a comparison sampler, two uniform buffers), so it is a
     // native handle rather than a compile-time record -- but which lights
@@ -875,6 +907,8 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
         // carries only that it has one.
         kind === "sprite-custom-shader" ||
         kind === "billboard-custom-shader" ||
+        // A splat shader plugin is WGSL the pin splices at generation.
+        kind === "splat-fragment" ||
         // The mask a group is about to be given: names and a mode, both
         // known at generation.
         kind === "animation-group-mask" ||
@@ -1000,6 +1034,12 @@ export interface Value {
      * index travels here.
      */
     nodeParticleGraph?: NodeParticleGraphSource;
+    /**
+     * What a `splat-fragment` value carries: the pinned export a scene
+     * imported, or the record it declared. Read at composition, where the
+     * pin's own splicer turns the list into one WGSL module.
+     */
+    splatFragment?: SplatFragmentManifest;
     /** Which set, and which of its systems, in the manifest's own order. */
     nodeParticleSetIndex?: number;
     nodeParticleSystemIndex?: number;

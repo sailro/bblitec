@@ -6345,6 +6345,11 @@ bool run_gpu_engine(Engine& engine) {
                                           const std::vector<SDL_GPUGraphicsPipeline*>& shader_variant_a2c_pipelines,
                                           const std::array<float, 16>& draw_matrix,
                                           [[maybe_unused]] const CameraRecord& draw_camera,
+                                          // The ratio `draw_matrix`'s own
+                                          // projection was built at, for a
+                                          // shader material declaring that
+                                          // factor rather than the product.
+                                          [[maybe_unused]] double draw_aspect,
                                           const upstream::RenderDrawLists& draw_lists,
                                           [[maybe_unused]] const FrameTaskRecord* geometry_task,
                                           [[maybe_unused]] const PinnedGeometryParams* geometry_params,
@@ -6626,6 +6631,7 @@ bool run_gpu_engine(Engine& engine) {
                                             shader_stage_block_floats(
                                                 block,
                                                 draw_matrix.data(),
+                                                {&draw_camera, draw_aspect},
                                                 *material);
                                     if (fragment_stage) {
                                         SDL_PushGPUFragmentUniformData(
@@ -6854,6 +6860,7 @@ bool run_gpu_engine(Engine& engine) {
                                 {},
                                 generator.caster_view_projection,
                                 task_camera,
+                                task_aspect,
                                 task_draw_lists[handle.value],
                                 nullptr,
                                 nullptr,
@@ -7058,6 +7065,7 @@ bool run_gpu_engine(Engine& engine) {
                             state.shader_a2c_pipelines,
                             task_matrix,
                             task_camera,
+                            task_aspect,
                             task_draw_lists[handle.value],
                             nullptr,
                             nullptr,
@@ -7204,6 +7212,7 @@ bool run_gpu_engine(Engine& engine) {
                             {},
                             matrix,
                             camera,
+                            aspect,
                             task_draw_lists[handle.value],
                             &task,
                             &geometry_params,
@@ -8055,6 +8064,7 @@ bool run_gpu_engine(Engine& engine) {
                                 shader_stage_block_floats(
                                     block,
                                     matrix.data(),
+                                    {&camera, aspect},
                                     *material);
                             if (fragment_stage) {
                                 SDL_PushGPUFragmentUniformData(

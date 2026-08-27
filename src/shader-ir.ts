@@ -480,14 +480,16 @@ class WgslSubsetParser {
  * generated variant table names it by. Declaration order here IS the
  * emitted `enum class ShaderSystemMatrix` order, so the two cannot drift.
  *
- * `shader-material.ts#isSystemUniform` names nine; these are the three a
- * reached scene declares. The other six refuse at generation -- not
- * because they are underivable (`view`, `projection` and `worldView` are
- * all one call away) but because nothing measures them, and an unreached
- * arm is one this port would be guessing at.
+ * `shader-material.ts#isSystemUniform` names nine; these are the five a
+ * reached program declares, in the pin's own declaration order. The other
+ * four refuse at generation -- not because they are underivable
+ * (`worldView` is one multiply away) but because nothing measures them,
+ * and an unreached arm is one this port would be guessing at.
  */
 export const shaderSystemMatrixTable = [
     { name: "world", enumerator: "world" },
+    { name: "view", enumerator: "view" },
+    { name: "projection", enumerator: "projection" },
     { name: "viewProjection", enumerator: "view_projection" },
     { name: "worldViewProjection", enumerator: "world_view_projection" },
 ] as const;

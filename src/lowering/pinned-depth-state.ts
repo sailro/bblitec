@@ -169,12 +169,25 @@ function assertReverseZProjectionRows(context: LoweringContext): void {
  * so has no render plan, but its billboard pass still draws under the same
  * convention.
  */
-export function pinnedDepthStateHeader(context: LoweringContext): string {
+/**
+ * The pin's own reverse-depth compare, read from its declaration.
+ *
+ * The header below emits it for the PALs; a lowerer that folds a pinned
+ * factory naming a compare of its own checks it against this instead of
+ * against a spelling typed here.
+ */
+export function pinnedReverseDepthCompare(
+    context: LoweringContext,
+): string {
     const file = context.sourceFile(renderTargetModule);
-    const compare = context.stringValue(
+    return context.stringValue(
         context.variableInitializer(file, "REVERSE_DEPTH_COMPARE"),
         file,
     );
+}
+
+export function pinnedDepthStateHeader(context: LoweringContext): string {
+    const compare = pinnedReverseDepthCompare(context);
     const provenance = context.provenance(
         renderTargetModule,
         "REVERSE_DEPTH_COMPARE",

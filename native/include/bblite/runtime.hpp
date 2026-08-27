@@ -1046,12 +1046,17 @@ struct SplatMeshRecord {
     std::vector<float> cov_a_rgba;
     std::vector<float> cov_b_rgba;
     std::vector<float> colors_rgba;
-    /** Identity for every reached scene; see the note above. */
-    std::array<float, 16> world{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f};
+    // A GaussianSplattingMesh is a SceneNode upstream, so its world matrix
+    // is composed from the same TRS every other node's is; the port keeps
+    // the same field names because one emitted composition serves both.
+    // `build_splat_world` is that composition, and there is no cached
+    // matrix here for the same reason the sort has no dirty flag: both
+    // re-derive from the record each frame.
+    Vec3 position{};
+    Vec3 rotation{};
+    Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
+    bool has_rotation_quaternion = false;
+    Vec3 scaling{1.0f, 1.0f, 1.0f};
 };
 
 struct Sprite2DLayerRecord {

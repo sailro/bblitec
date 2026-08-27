@@ -1,10 +1,15 @@
 import ts from "typescript";
 import type {
     CompileAsset,
+    SplatFragmentManifest,
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compressedTextureUrl } from "../compressed-texture.js";
+import {
+    isSplatFragmentExport,
+    splatFragmentExportNames,
+} from "../../pinned-splat-fragments.js";
 
 interface CompiledEnvironmentOptions {
     groundTextureUrl: string;
@@ -64,7 +69,130 @@ export interface AssetIntrinsicContext
     compileBoolean(expression: ts.Expression): string;
     requireEngine(value: Value, node: ts.Node): string;
     fail(node: ts.Node, message: string): never;
+    /** Follows an identifier back to the `const` initializer that bound it. */
+    resolveStaticExpression(expression: ts.Expression): ts.Expression;
+    /** The shader plugins a `loadSplat` call passed, in the order it wrote. */
+    recordSplatFragments(
+        fragments: readonly SplatFragmentManifest[],
+        node: ts.Node,
+    ): void;
 }
+
+/**
+ * The `GsShaderFragment` records a `loadSplat` call's third argument names.
+ *
+ * A plugin is plain data upstream, and the two shapes a scene writes are
+ * the two the pin exposes: one of `gs-depth-fragments.ts`'s own exports, or
+ * a record the scene declares. The first travels as its export name, so the
+ * module that owns it is the one that answers what it contains.
+ */
+function compileSplatFragments(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+): SplatFragmentManifest[] {
+    const argument = call.arguments[2]!;
+    const list = context.unwrap(argument);
+    if (!ts.isArrayLiteralExpression(list)) {
+        context.fail(
+            argument,
+            "A reached loadSplat takes its shader fragments as an array " +
+                "literal: the pin's own splicer folds them into the splat " +
+                "module at generation.",
+        );
+    }
+    return list.elements.map((element) => {
+        const unwrapped = context.unwrap(element);
+        if (ts.isIdentifier(unwrapped)) {
+            const value = context.compileValue(unwrapped);
+            if (value.kind === "splat-fragment" && value.splatFragment) {
+                return value.splatFragment;
+            }
+        }
+        const object = context.expectObjectLiteral(
+            context.resolveStaticExpression(element),
+        );
+        return sceneSplatFragment(context, object);
+    });
+}
+
+/** One `{ id, helperFunctions?, fragmentSlots }` a scene declared. */
+function sceneSplatFragment(
+    context: AssetIntrinsicContext,
+    object: ts.ObjectLiteralExpression,
+): SplatFragmentManifest {
+    for (const property of object.properties) {
+        const name = ts.isPropertyAssignment(property) ||
+            ts.isShorthandPropertyAssignment(property)
+            ? property.name.getText()
+            : undefined;
+        if (
+            name !== "id" &&
+            name !== "helperFunctions" &&
+            name !== "fragmentSlots"
+        ) {
+            context.fail(
+                property,
+                "A reached GsShaderFragment carries id, helperFunctions " +
+                    "and fragmentSlots only.",
+            );
+        }
+    }
+    const idExpression = context.objectProperty(object, "id");
+    const slotsExpression = context.objectProperty(object, "fragmentSlots");
+    if (!idExpression || !slotsExpression) {
+        context.fail(
+            object,
+            "A GsShaderFragment requires id and fragmentSlots.",
+        );
+    }
+    const helpers = context.objectProperty(object, "helperFunctions");
+    const slots = context.expectObjectLiteral(slotsExpression);
+    return {
+        record: {
+            id: context.compileStringLiteral(idExpression),
+            ...(helpers
+                ? { helperFunctions: context.compileStringLiteral(helpers) }
+                : {}),
+            fragmentSlots: slots.properties.map((property) => {
+                if (!ts.isPropertyAssignment(property)) {
+                    context.fail(
+                        property,
+                        "A GsShaderFragment's slots are plain properties.",
+                    );
+                }
+                return {
+                    slot: property.name.getText().replace(/^["']|["']$/g, ""),
+                    code: context.compileStringLiteral(property.initializer),
+                };
+            }),
+        },
+    };
+}
+
+/**
+ * A pinned Gaussian-splat shader plugin a scene imports by name.
+ *
+ * Upstream models one as a value — `{ id, helperFunctions?, fragmentSlots }`
+ * — and `applyGsFragments` splices whichever records the `loadSplat` call
+ * carried, so what the identifier holds here is the export's own name.
+ * Generation reads that export out of the module that owns it; nothing about
+ * the plugin reaches run time, which is why the value has no native
+ * expression.
+ */
+export function compileAssetConstant(
+    importedName: string,
+): Value | undefined {
+    if (!isSplatFragmentExport(importedName)) return undefined;
+    return {
+        kind: "splat-fragment",
+        cpp: "",
+        staticString: importedName,
+        splatFragment: { pinnedExport: importedName },
+    };
+}
+
+/** The names a refusal lists, so the two sites agree. */
+export const reachedSplatFragmentExports = splatFragmentExportNames;
 
 /**
  * The container `loadKtxTexture2D(engine, baseUrl, suffixes)` fetches.
@@ -141,10 +269,12 @@ export function compileAssetIntrinsic(
         }
 
         case "loadSplat": {
-            // `loadSplat(scene, url)` -- the third parameter is the shader
-            // fragment list, which splices plugin WGSL into the pin's own
-            // stage and belongs with the scenes that reach it.
-            context.expectArgumentCount(call, 2, 2);
+            // `loadSplat(scene, url, fragments?)`. The third parameter is
+            // the pin's own opt-in for splat shader plugins: with none the
+            // stock module composes and the mangling table upstream inlines
+            // for them tree-shakes away, with some the pin's own splicer
+            // builds the module at generation.
+            context.expectArgumentCount(call, 2, 3);
             const scene = context.compileValue(call.arguments[0]!);
             context.expectKind(
                 scene,
@@ -155,6 +285,12 @@ export function compileAssetIntrinsic(
                 call.arguments[1]!,
             );
             const asset = context.registerAsset(source, "splat");
+            if (call.arguments.length === 3) {
+                context.recordSplatFragments(
+                    compileSplatFragments(context, call),
+                    call,
+                );
+            }
             context.reachFeature("loader:splat", call);
             // A splat cloud is a scene renderable -- upstream pushes it onto
             // the SceneContext's own `_renderables` -- so it reaches the

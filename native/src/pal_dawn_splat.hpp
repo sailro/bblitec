@@ -369,7 +369,9 @@ inline void upload_dawn_splat_pass(
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
 
     if (upstream::splat_sort_dirty(
-            record.world, view, pass.depth_transform)) {
+            upstream::build_splat_world(record),
+            view,
+            pass.depth_transform)) {
         upstream::sort_splats_back_to_front(
             record.positions,
             static_cast<double>(record.vertex_count),
@@ -394,7 +396,7 @@ inline void upload_dawn_splat_pass(
     upstream::SplatUniforms uniforms;
     upstream::write_splat_uniforms(
         uniforms,
-        record.world,
+        upstream::build_splat_world(record),
         view,
         projection,
         width,

@@ -1007,6 +1007,42 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene126",
+        name: "Scene 126 - Gaussian Splat Shader Plugin",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene126.ts",
+        title: "Babylon Lite Native - Gaussian Splat Shader Plugin",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene127",
+        name: "Scene 127 - Gaussian Splat Linear Depth",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene127.ts",
+        title: "Babylon Lite Native - Gaussian Splat Linear Depth",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [255, 255, 255],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene128",
+        name: "Scene 128 - Gaussian Splat Alpha-Blended Depth",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene128.ts",
+        title: "Babylon Lite Native - Gaussian Splat Alpha-Blended Depth",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [255, 255, 255],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",

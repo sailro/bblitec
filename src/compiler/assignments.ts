@@ -1597,6 +1597,34 @@ export function emitPropertyAssignment(
             );
             return;
         }
+        if (mesh.kind === "splat-mesh") {
+            // A GaussianSplattingMesh is a SceneNode, so its TRS lanes are
+            // the same ones a mesh carries and `build_splat_world` composes
+            // them the same way. Nothing caches that matrix, so a component
+            // write needs no version bump: the sort's own depth-transform
+            // gate re-reads it every frame.
+            const vector = left.expression.name.text;
+            if (vector !== "position") {
+                context.fail(
+                    left.expression,
+                    `A splat cloud's '${vector}' is not lowered; the reached ` +
+                        "slice writes its position.",
+                );
+            }
+            requireSimpleAssignment(
+                context,
+                expression,
+                "splat position component",
+            );
+            const engine = context.requireEngine(mesh, expression);
+            const component = ["x", "y", "z"][axis]!;
+            context.emit(
+                `${engine}.splat_meshes[${mesh.cpp}.value].position` +
+                    `.${component} ${operator} ` +
+                    `${context.compileNumber(expression.right)};`,
+            );
+            return;
+        }
         if (mesh.kind === "light") {
             const vector = left.expression.name.text;
             const setter = lightVectorSetter(mesh, vector);

@@ -4,6 +4,7 @@ import {
     type AnimationIntrinsicContext,
 } from "./animation.js";
 import {
+    compileAssetConstant,
     compileAssetIntrinsic,
     type AssetIntrinsicContext,
 } from "./asset.js";
@@ -119,7 +120,8 @@ export function compileRegisteredConstant(
     importedName: string,
 ): Value | undefined {
     return compileSpriteConstant(importedName) ??
-        compileMaterialConstant(importedName);
+        compileMaterialConstant(importedName) ??
+        compileAssetConstant(importedName);
 }
 
 export function compileRegisteredIntrinsic(

@@ -3283,21 +3283,47 @@ inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
  *
  * `viewProjection` and `worldViewProjection` are the same bytes here --
  * a shader-material draw's world is the identity (see
- * `shader_stage_block_floats`) -- so either alone satisfies it. Asked in
- * one place because four sites used to ask it in three spellings, and
- * generalizing some of them is how the others went wrong.
+ * `shader_stage_block_floats`) -- so either alone satisfies it, and the
+ * pin's other three system matrices satisfy none of it. Asked in one place
+ * because four sites used to ask it in three spellings, and generalizing
+ * some of them is how the others went wrong.
  */
 inline bool block_is_shared_scene_matrix(
     const upstream::ShaderVariantStageBlock& block) {
-    return block.system_matrices.size() == 1 &&
-        block.system_matrices.front() !=
-            upstream::ShaderSystemMatrix::world &&
-        block.gather.empty();
+    if (block.system_matrices.size() != 1 || !block.gather.empty()) {
+        return false;
+    }
+    switch (block.system_matrices.front()) {
+        case upstream::ShaderSystemMatrix::view_projection:
+        case upstream::ShaderSystemMatrix::world_view_projection:
+            return true;
+        case upstream::ShaderSystemMatrix::world:
+        case upstream::ShaderSystemMatrix::view:
+        case upstream::ShaderSystemMatrix::projection:
+            return false;
+    }
+    return false;
 }
+
+/**
+ * The camera a pass's system matrices are built from, when a variant
+ * declares one this port cannot serve from the pass's view-projection.
+ *
+ * `view` and `projection` are the two factors of that product, so they are
+ * built from the same camera and aspect that produced it rather than from
+ * a second source. A pass with no camera to offer -- there is none today,
+ * since every pass that draws a shader material has one -- leaves this
+ * unset and the packer names the matrix it could not fill.
+ */
+struct ShaderMatrixCamera {
+    const CameraRecord* camera = nullptr;
+    double aspect = 1.0;
+};
 
 inline std::vector<float> shader_stage_block_floats(
     const upstream::ShaderVariantStageBlock& block,
     const float* scene_matrix,
+    const ShaderMatrixCamera& pass_camera,
     const MaterialRecord& material) {
     // Declared here rather than reusing `pinned_identity_world`, which
     // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
@@ -3310,6 +3336,15 @@ inline std::vector<float> shader_stage_block_floats(
     };
     std::vector<float> floats(block.float_size, 0.0f);
     std::size_t head = 0;
+    const auto require_camera =
+        [&](const char* name) -> const CameraRecord& {
+        if (!pass_camera.camera) {
+            throw std::runtime_error(
+                std::string("A shader material declares the '") + name +
+                "' system uniform in a pass with no camera.");
+        }
+        return *pass_camera.camera;
+    };
     for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
         // No default arm: a new enumerator has to be given a source here
         // rather than silently inheriting one.
@@ -3317,6 +3352,22 @@ inline std::vector<float> shader_stage_block_floats(
             case upstream::ShaderSystemMatrix::world:
                 std::copy_n(identity.data(), 16, floats.begin() + head);
                 break;
+            case upstream::ShaderSystemMatrix::view: {
+                const std::array<float, 16> view =
+                    upstream::build_view_matrix(
+                        upstream::camera_world_matrix(
+                            require_camera("view")));
+                std::copy_n(view.data(), 16, floats.begin() + head);
+                break;
+            }
+            case upstream::ShaderSystemMatrix::projection: {
+                const std::array<float, 16> projection =
+                    upstream::build_scene_projection(
+                        require_camera("projection"),
+                        pass_camera.aspect);
+                std::copy_n(projection.data(), 16, floats.begin() + head);
+                break;
+            }
             case upstream::ShaderSystemMatrix::view_projection:
             case upstream::ShaderSystemMatrix::world_view_projection:
                 if (scene_matrix) {

@@ -95,6 +95,8 @@ import {
     type LineMaterialPermutation,
     type ReachedLineMaterial,
 } from "./compiler/line-material.js";
+import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
+import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
@@ -170,6 +172,7 @@ import type {
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
     ScenePbrSubsurfaceManifest,
+    SplatFragmentManifest,
     SpriteCustomShaderManifest,
     EffectManifest,
     Value,
@@ -341,6 +344,8 @@ class Compiler
     private sceneLightCount = 0;
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
         [];
+    /** The splat shader plugins one `loadSplat` call passed, in its order. */
+    private readonly sceneSplatFragments: SplatFragmentManifest[] = [];
     private reachedPlainSpriteLayer = false;
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
@@ -482,6 +487,7 @@ class Compiler
                 shadowReceiverMeshes: [
                     ...this.shadowReceiverMeshes,
                 ].sort((left, right) => left - right),
+                splatFragments: this.sceneSplatFragments,
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
                 effects: this.reachedEffects_,
                 plainSpriteLayer: this.reachedPlainSpriteLayer,
@@ -1367,6 +1373,13 @@ class Compiler
         options: ReachedLineMaterial,
     ): { name: string; id: number } {
         return reachLineMaterialProgram(this, node, options);
+    }
+
+    public reachLinearDepthMaterial(
+        node: ts.Node,
+        options: LinearDepthMaterialOptions,
+    ): { name: string; id: number } {
+        return reachLinearDepthMaterialProgram(this, node, options);
     }
 
     /** What a registered line variant settled, by variant name. */
@@ -3403,6 +3416,34 @@ class Compiler
         shader: SpriteCustomShaderManifest,
     ): void {
         this.sceneSpriteCustomShaders.push(shader);
+    }
+
+    /**
+     * The shader plugins one `loadSplat` call passed.
+     *
+     * Upstream keys its module cache by the plugin ids, so two clouds
+     * loaded with different lists compile different modules; this port
+     * deploys one splat stage pair, so a second differing list refuses
+     * rather than drawing both clouds through the first one's.
+     */
+    public recordSplatFragments(
+        fragments: readonly SplatFragmentManifest[],
+        node: ts.Node,
+    ): void {
+        if (
+            this.sceneSplatFragments.length > 0 &&
+            JSON.stringify(this.sceneSplatFragments) !==
+                JSON.stringify(fragments)
+        ) {
+            this.fail(
+                node,
+                "A second loadSplat with a different shader-fragment list " +
+                    "is not lowered: the generated splat stages are one " +
+                    "composed module per scene.",
+            );
+        }
+        this.sceneSplatFragments.length = 0;
+        this.sceneSplatFragments.push(...fragments);
     }
 
     /**

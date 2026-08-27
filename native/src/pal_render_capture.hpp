@@ -907,7 +907,10 @@ inline void write_draw_uniforms(
     const Engine& engine,
     const CameraRecord& camera,
     const upstream::RenderDrawCommand& draw,
-    const std::array<float, 16>& view_projection) {
+    const std::array<float, 16>& view_projection,
+    // The ratio `view_projection`'s own projection was built at, for a
+    // shader material declaring that factor rather than the product.
+    double aspect) {
     json.key("uniforms");
     json.begin_array();
     write_float_block(
@@ -969,6 +972,7 @@ inline void write_draw_uniforms(
                             shader_stage_block_floats(
                                 block,
                                 view_projection.data(),
+                                {&camera, aspect},
                                 material);
                         write_float_block(
                             json,
@@ -1014,7 +1018,8 @@ inline void write_draw_list(
     const Scene& scene,
     const Engine& engine,
     const CameraRecord& camera,
-    const std::array<float, 16>& view_projection) {
+    const std::array<float, 16>& view_projection,
+    double aspect) {
     for (const upstream::RenderDrawCommand& draw : list.commands) {
         json.begin_object();
         json.field("stage", stage);
@@ -1053,7 +1058,7 @@ inline void write_draw_list(
                           mesh.instance_matrices.size()));
         }
         write_draw_uniforms(
-            json, scene, engine, camera, draw, view_projection);
+            json, scene, engine, camera, draw, view_projection, aspect);
         json.end_object();
     }
 }
@@ -1086,7 +1091,7 @@ inline void write_splat_draw_list(
         upstream::SplatUniforms uniforms;
         upstream::write_splat_uniforms(
             uniforms,
-            splat.world,
+            upstream::build_splat_world(splat),
             view,
             projection,
             static_cast<double>(width),
@@ -1653,6 +1658,10 @@ inline void write_render_capture(
 
     json.key("draws");
     json.begin_array();
+    // getEffectiveAspectRatio divides two JavaScript numbers, exactly as
+    // the frame loops do before building the matrix passed in here.
+    const double draw_aspect =
+        static_cast<double>(width) / static_cast<double>(height);
     write_draw_list(
         json,
         "opaque",
@@ -1660,7 +1669,8 @@ inline void write_render_capture(
         scene,
         engine,
         camera,
-        view_projection);
+        view_projection,
+        draw_aspect);
     write_draw_list(
         json,
         "transparent",
@@ -1668,7 +1678,8 @@ inline void write_render_capture(
         scene,
         engine,
         camera,
-        view_projection);
+        view_projection,
+        draw_aspect);
 #if BBLITE_HAS_SPLATS
     write_splat_draw_list(json, scene, engine, camera, width, height);
 #endif

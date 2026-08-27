@@ -868,6 +868,61 @@ backends have no such switch. The vendored overlay port
 libsdl-org/SDL#15838; the isolating measurement and the triangle-edge A/B are
 in [backends](backends.md#measured-contracts).
 
+**A Gaussian-splat shader plugin is spliced by the pin's own splicer, and
+that splicer is executed rather than restated.** `loadSplat(scene, url,
+fragments)` passes a list of `GsShaderFragment` records — pure data, either
+one of `gs-depth-fragments.ts`'s own exports or a record the scene declares
+— and `applyGsFragments` in `gaussian-splatting-pipeline.ts` turns the list
+plus the packaged WGSL into the module the browser compiles. Two things in
+its own body decide that it is executed here: it concatenates several
+plugins into one slot, and it then runs a thirty-five-entry field-name
+mangler over the whole spliced string so a plugin written against
+`u.projection` agrees with a base the bundler already shortened to `u.p`. A
+second copy of that table would agree with upstream only until it moved.
+The composed module is byte-identical to the one an instrumented capture
+shows the browser compiling for scenes 126, 127 and 128.
+
+The split into two deployed stages then carries two more things across than
+the stock module's does: the helper functions upstream splices at
+`GS_FRAGMENT_DEFINITIONS`, which sit between the two entry points, and the
+uniform block, because a plugin body may read it — `getOrCreatePipeline`
+declares binding 0 `VERTEX | FRAGMENT` while the four data textures stay
+vertex-only, so the uniform is the one resource a fragment plugin is
+allowed to reach. It is declared whenever plugins are applied and left for
+the compiler to drop when nothing reads it: SDL_GPU pushes it to the
+fragment stage exactly when `splat.frag.slots` says the block survived, the
+same authority every other stage's bindings come from. Generation refuses a
+composed module whose vertex half the splice moved, which is what turns the
+mangler's idempotence on an already-shortened base from an assumption into
+a check.
+
+**A splat cloud's world matrix is the pin's own TRS composition.** A
+`GaussianSplattingMesh` is a `SceneNode`, so `composeTrsLocalMatrix` builds
+its world matrix like every other node's; the native record carries the same
+TRS field names and `build_splat_world` is the same emitted composition the
+thin-instance parent world already uses, over one home rather than two.
+Nothing caches it: the sort's own depth-transform gate and the UBO writer
+both re-derive it per frame, so a position write needs no version bump.
+Scene 127 measures it.
+
+**A linear-depth material is folded from the pinned factory that builds
+it.** `render/linear-depth-material.ts` is one `createShaderMaterial` call
+over two module-scope WGSL constants, so this port reaches it the way it
+reaches `createLineMaterial`: the stages come from the constants the call
+references, the attribute and uniform lists from the call, and the
+fixed-function state from the properties beside them. Its `depthCompare` is
+checked against the pin's own `REVERSE_DEPTH_COMPARE` rather than against a
+spelling typed here, because that agreement is what makes the fold
+legitimate — a `ShaderMaterial`'s own compare is not carried through
+lowering, so a factory naming another one has to refuse instead.
+
+Its stages read `view` and `projection` as their own matrices, which is why
+both joined the system-uniform table. They are the two factors of the
+product the pass already built, so a pass hands its own camera and aspect to
+the block writer and `build_scene_projection` — the branch `build_view_projection`
+takes — answers for the orthographic arm as well. A block declaring one in a
+pass with no camera fails by name rather than shading from a zero matrix.
+
 **A quantized glTF is dequantized by the pin's own hook, at generation.**
 `KHR_mesh_quantization` is implemented upstream as a single `preParse` that
 rewrites every quantized accessor into a freshly appended tightly-packed
