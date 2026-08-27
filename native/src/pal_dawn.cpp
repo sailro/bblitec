@@ -912,20 +912,11 @@ WGPUBuffer esm_caster_params_buffer(
     // idle before release (the frame loop waits on submitted work).
     void release_meshes() {
         for (DawnMesh& mesh : meshes) {
-            for (std::size_t slot = 0;
-                 slot < mesh_texture_slots;
-                 ++slot) {
-                if (mesh.owned_views[slot]) {
-                    wgpuTextureViewRelease(mesh.owned_views[slot]);
-                }
-                if (mesh.owned_textures[slot]) {
-                    wgpuTextureRelease(mesh.owned_textures[slot]);
-                }
-                if (mesh.samplers[slot]) {
-                    wgpuSamplerRelease(mesh.samplers[slot]);
-                }
-            }
-            release_dawn_extra_textures(mesh.shader_textures);
+            // Bind groups are the dependents: release every group before
+            // any buffer, texture view, sampler, or texture referenced by
+            // one. Dawn's D3D12 implementation reads that binding state
+            // while destroying a group, so the inverse order is not merely
+            // a leak/lifetime nicety -- it can dereference freed metadata.
             for (auto& [kind, binding] : mesh.bindings) {
                 if (binding.scene) wgpuBindGroupRelease(binding.scene);
                 if (binding.textures) {
@@ -939,6 +930,34 @@ WGPUBuffer esm_caster_params_buffer(
 #endif
             }
 #if BBLITE_PBR_VARIANTS > 0
+            release_dawn_draw_states(mesh.pinned_geometry_states);
+            release_dawn_draw_states(mesh.pinned_states);
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+            release_dawn_draw_states(mesh.standard_geometry_states);
+            release_dawn_draw_states(mesh.standard_states);
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+            release_dawn_draw_states(mesh.node_states);
+#endif
+            for (std::size_t slot = 0;
+                 slot < mesh_texture_slots;
+                 ++slot) {
+                if (mesh.owned_views[slot]) {
+                    wgpuTextureViewRelease(mesh.owned_views[slot]);
+                }
+                if (mesh.owned_textures[slot]) {
+                    wgpuTextureRelease(mesh.owned_textures[slot]);
+                }
+                // Unmaterialized slots borrow the state's default sampler;
+                // only a slot with its own uploaded texture created the
+                // sampler stored beside it.
+                if (mesh.owned_textures[slot] && mesh.samplers[slot]) {
+                    wgpuSamplerRelease(mesh.samplers[slot]);
+                }
+            }
+            release_dawn_extra_textures(mesh.shader_textures);
+#if BBLITE_PBR_VARIANTS > 0
             if (mesh.pinned_vertices) {
                 wgpuBufferRelease(mesh.pinned_vertices);
                 mesh.pinned_vertices = nullptr;
@@ -951,15 +970,6 @@ WGPUBuffer esm_caster_params_buffer(
             }
             mesh.pinned_bone_view = nullptr;
             mesh.pinned_bone_texture = nullptr;
-            release_dawn_draw_states(mesh.pinned_geometry_states);
-            release_dawn_draw_states(mesh.pinned_states);
-#endif
-#if BBLITE_STANDARD_VARIANTS > 0
-            release_dawn_draw_states(mesh.standard_geometry_states);
-            release_dawn_draw_states(mesh.standard_states);
-#endif
-#if BBLITE_NODE_VARIANTS > 0
-            release_dawn_draw_states(mesh.node_states);
 #endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
@@ -1110,12 +1120,6 @@ WGPUBuffer esm_caster_params_buffer(
             wgpuSamplerRelease(post_process_bilinear_sampler);
         }
 #endif
-        if (mesh_pipeline_layout) {
-            wgpuPipelineLayoutRelease(mesh_pipeline_layout);
-        }
-        for (WGPUBindGroupLayout layout : mesh_group_layouts) {
-            if (layout) wgpuBindGroupLayoutRelease(layout);
-        }
         release_meshes();
         for (DawnSharedShaderGeometry& geometry :
              shared_shader_geometries) {
@@ -1139,6 +1143,16 @@ WGPUBuffer esm_caster_params_buffer(
             if (pipeline.pipeline) {
                 wgpuRenderPipelineRelease(pipeline.pipeline);
             }
+        }
+        // Pipelines and bind groups depend on the shared pipeline/group
+        // layouts. Release every dependent first: Dawn's D3D12 backend
+        // tears down layout-owned binding metadata eagerly, so dropping a
+        // texture bind group after its layout can dereference freed state.
+        if (mesh_pipeline_layout) {
+            wgpuPipelineLayoutRelease(mesh_pipeline_layout);
+        }
+        for (WGPUBindGroupLayout layout : mesh_group_layouts) {
+            if (layout) wgpuBindGroupLayoutRelease(layout);
         }
 #if BBLITE_SOLID_SKYBOX
         if (solid_skybox_material_group) {
