@@ -2490,6 +2490,59 @@ test("unrolls for-of over static arrays", () => {
     );
 });
 
+test("unrolls a counted loop over a container it built and never resized", () => {
+    // The data model gives an annotated array literal a `vector`, whose
+    // length is a run-time read. A container nothing can resize has a length
+    // generation knows, and knowing it is what lets the loop unroll — which
+    // is the difference between three records and one made three times.
+    const result = compileSource(`
+        const rows: [number, number][] = [[1, 2], [3, 4], [5, 6]];
+        let total = 0;
+        for (let i = 0; i < rows.length; i++) {
+            const [left, right] = rows[i]!;
+            total += left + right + i;
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /for \(/);
+    assert.equal(
+        result.cpp.match(/v_total \+=/g)?.length,
+        3,
+    );
+});
+
+test("emits an unrolled body flat, so what it declares outlives the loop", () => {
+    // Unrolling a loop IS writing its statements out. A C++ block would make
+    // each iteration's locals invisible to everything after it, and a scene
+    // that collects what its body creates names exactly those locals.
+    const result = compileSource(`
+        const rows: [number, number][] = [[1, 2], [3, 4]];
+        let total = 0;
+        for (let i = 0; i < rows.length; i++) {
+            const scaled = rows[i]![0] * 2;
+            total += scaled;
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /^ *\{$/m);
+});
+
+test("keeps the run-time length where the container is resized", () => {
+    // The fold is allowed only while nothing can change the count. One
+    // `push` anywhere in the entry source withdraws it, whether it runs
+    // before the loop or after.
+    const result = compileSource(`
+        const rows: [number, number][] = [[1, 2], [3, 4], [5, 6]];
+        let total = 0;
+        for (let i = 0; i < rows.length; i++) {
+            total += rows[i]![0];
+        }
+        rows.push([7, 8]);
+    `);
+
+    assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+});
+
 test("iterates runtime data arrays with range-for", () => {
     const result = compileSource(`
         function values(): number[] {
