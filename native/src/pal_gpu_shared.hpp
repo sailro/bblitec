@@ -1200,6 +1200,7 @@ inline std::span<const upstream::PinnedShadowBinding> node_shadow_rows(
  * their modules, so each backend keeps a resource per view rather than per
  * graph, and both agree on which slot is which here.
  */
+#if BBLITE_NODE_SHADOWS
 inline constexpr std::size_t node_variant_slot(
     std::size_t variant,
     bool caster) {
@@ -1218,6 +1219,25 @@ inline constexpr std::size_t node_slot_variant(std::size_t slot) {
 inline constexpr bool node_slot_is_caster(std::size_t slot) {
     return slot % 2 == 1;
 }
+#else
+// A build composing no node caster has one view per graph, so the slot IS
+// the variant and every backend's per-slot table keeps its old size.
+inline constexpr std::size_t node_variant_slot(
+    std::size_t variant,
+    [[maybe_unused]] bool caster) {
+    return variant;
+}
+
+inline std::size_t node_variant_slots() {
+    return upstream::node_variants.size();
+}
+
+inline constexpr std::size_t node_slot_variant(std::size_t slot) {
+    return slot;
+}
+
+inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
+#endif
 
 /**
  * The two stems one slot's modules deploy under.
@@ -1228,12 +1248,12 @@ inline constexpr bool node_slot_is_caster(std::size_t slot) {
 inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[node_slot_variant(slot)];
-    return node_slot_is_caster(slot)
-        ? upstream::NodeVariantStems{
-            entry.caster.vertex_stem,
-            entry.caster.fragment_stem,
-        }
-        : upstream::NodeVariantStems{entry.vertex_stem, entry.fragment_stem};
+#if BBLITE_NODE_SHADOWS
+    if (node_slot_is_caster(slot)) {
+        return {entry.caster.vertex_stem, entry.caster.fragment_stem};
+    }
+#endif
+    return {entry.vertex_stem, entry.fragment_stem};
 }
 #endif
 
