@@ -1741,14 +1741,15 @@ ${composed.wgsl}`,
             features.includes("mesh:thin-instance-colors") ||
             features.includes("mesh:thin-instances") ||
             features.includes("mesh:thin-instances-dynamic") ||
-            features.includes("mesh:torus")
+            features.includes("mesh:torus") ||
+            features.includes("mesh:disc") ||
+            features.includes("mesh:cylinder") ||
+            features.includes("mesh:polyhedron") ||
+            features.includes("mesh:ribbon")
         ) {
             this.writeSource(
                 "upstream/src/mesh_factories.cpp",
-                factories.lowerMeshFactories(
-                    features.includes("mesh:thin-instance-colors"),
-                    features.includes("mesh:ground-heightmap"),
-                ),
+                factories.lowerMeshFactories(features),
                 generated,
             );
         }

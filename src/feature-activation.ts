@@ -484,6 +484,22 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/thin-instance.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:cylinder": {
+        provenance: "src/mesh/create-cylinder.ts",
+        consumers: CMAKE,
+    },
+    "mesh:polyhedron": {
+        provenance: "src/mesh/create-polyhedron.ts",
+        consumers: CMAKE,
+    },
+    "mesh:ribbon": {
+        provenance: "src/mesh/create-ribbon.ts",
+        consumers: CMAKE,
+    },
+    "mesh:disc": {
+        provenance: "src/mesh/create-disc.ts",
+        consumers: CMAKE,
+    },
     "mesh:torus": {
         provenance: "src/mesh/create-torus.ts",
         consumers: CMAKE,

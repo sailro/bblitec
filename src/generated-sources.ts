@@ -209,6 +209,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         source: "upstream/src/mesh_factories.cpp",
         features: [
             "mesh:box",
+            "mesh:cylinder",
+            "mesh:disc",
+            "mesh:polyhedron",
+            "mesh:ribbon",
             "mesh:from-data",
             "mesh:ground",
             "mesh:ground-heightmap",

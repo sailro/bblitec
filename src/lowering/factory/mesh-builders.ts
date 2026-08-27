@@ -52,14 +52,27 @@ export class MeshBuilderLowerer {
      * rest of this unit's surface follows what the scene touches.
      */
     public lowerMeshFactories(
-        instanceColors = false,
-        heightMapGround = false,
+        features: readonly string[] = [],
     ): LoweredSource {
+        // Asked of the feature list rather than taken as one positional
+        // boolean per builder: which builders a scene reached is already
+        // stated there, and the family only grows.
+        const instanceColors = features.includes(
+            "mesh:thin-instance-colors",
+        );
+        const heightMapGround = features.includes("mesh:ground-heightmap");
+        const disc = features.includes("mesh:disc");
+        const cylinder = features.includes("mesh:cylinder");
+        const polyhedron = features.includes("mesh:polyhedron");
+        const ribbon = features.includes("mesh:ribbon");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
         const sphereModule = "src/mesh/create-sphere.ts";
         const torusModule = "src/mesh/create-torus.ts";
+        const discModule = "src/mesh/create-disc.ts";
+        const cylinderModule = "src/mesh/create-cylinder.ts";
+        const polyhedronModule = "src/mesh/create-polyhedron.ts";
         const boxFile = this.context.sourceFile(boxModule);
         const { declaration: box } =
             this.context.functionDeclaration(
@@ -99,7 +112,17 @@ export class MeshBuilderLowerer {
                 torusModule,
                 "createTorusData",
             );
-        const meshMathCalls = pinnedNumericMathCalls();
+        // The pin's own maths, plus the one helper three builders share:
+        // `computeNormals` is emitted once beside them, so a call to it is
+        // a call rather than another copy of its body.
+        const meshMathCalls = new Map([
+            ...pinnedNumericMathCalls(),
+            [
+                "computeNormals",
+                (args: readonly string[]): string =>
+                    `pinned_compute_normals(${args.join(", ")})`,
+            ],
+        ]);
         /**
          * Lower one pinned generator body into the shared native array
          * record. The four arrays and their indexed stores come from the
@@ -110,6 +133,12 @@ export class MeshBuilderLowerer {
             file: ts.SourceFile,
             declaration: ts.FunctionDeclaration,
             optionBindings: ReadonlyMap<string, string>,
+            // A binding whose type is not the scalar every option is: a
+            // jagged table the pin indexes, or a flag it branches on.
+            optionTypes: ReadonlyMap<
+                string,
+                PinnedBinding["type"]
+            > = new Map(),
         ): string => {
             if (!declaration.body) {
                 this.context.contractError(
@@ -124,7 +153,10 @@ export class MeshBuilderLowerer {
                 ],
                 ...Array.from(optionBindings, ([name, cpp]) => [
                     name,
-                    { cpp, type: "scalar" } as PinnedBinding,
+                    {
+                        cpp,
+                        type: optionTypes.get(name) ?? "scalar",
+                    } as PinnedBinding,
                 ] as [string, PinnedBinding]),
             ]);
             let lowerer: PinnedNumericLowerer;
@@ -173,9 +205,17 @@ export class MeshBuilderLowerer {
                     "normals",
                     "uvs",
                     "indices",
-                ].map((name) =>
-                    `std::move(${lowerer.expression(required(name))})`,
-                );
+                ].map((name) => {
+                    const value = lowerer.expression(required(name));
+                    // A builder that grew a `number[]` returns the CONVERSION
+                    // of it, which is already a temporary; moving a prvalue
+                    // is the redundant move clang refuses. One that
+                    // preallocated returns the buffer by name, which must
+                    // move.
+                    return value.startsWith("std::vector<")
+                        ? value
+                        : `std::move(${value})`;
+                });
                 const vertexCount = members.has("vertexCount")
                     ? lowerer.expression(required("vertexCount"))
                     : bindings.get("vertexCount")?.cpp;
@@ -197,8 +237,15 @@ export class MeshBuilderLowerer {
             lowerer = new PinnedNumericLowerer(file, {
                 bindings,
                 calls: meshMathCalls,
+                listCalls: new Set(["computeNormals"]),
                 returnValue,
                 booleanOr: true,
+                // Every `&&` in the pinned builder family joins a CONDITION
+                // -- an `if` test, a `while` test, or a guard ternary's test
+                // -- and none of them selects a value. Audited across all
+                // ten builders; the five that were already lowered contain
+                // none at all, so this is inert for them.
+                booleanAnd: true,
                 maybeUnusedConst: true,
             });
             return declaration.body.statements
@@ -283,6 +330,200 @@ export class MeshBuilderLowerer {
                 ["options.diameterZ", "options.diameter_z"],
             ]),
         );
+        // The disc, the first builder the pin writes with a GROWN
+        // `number[]` rather than a preallocated typed array: it pushes its
+        // positions and its indices and converts at the end, which is where
+        // its float rounding happens. `vertexCount`/`indexCount` are bound
+        // rather than returned, because the pin's own return names neither.
+        const discBuilderBody = !disc
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(discModule),
+                  this.context.functionDeclaration(
+                      discModule,
+                      "createDiscData",
+                  ).declaration,
+                  new Map([
+                      ["options.radius", "options.radius"],
+                      ["options.tessellation", "options.tessellation"],
+                      ["options.arc", "options.arc"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+              );
+        const discFactory = !disc
+            ? ""
+            : `static PinnedMeshData pinned_create_disc_data(
+    DiscOptions options) {
+${discBuilderBody}
+}
+
+MeshHandle create_disc(Engine& engine, DiscOptions options) {
+    PinnedMeshData data = pinned_create_disc_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.pinnedFactoryMeshName("createDisc")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // The cylinder, cone and truncated cone are one pinned builder. Its
+        // diameters bind UNCLAMPED, because the body asks two different
+        // questions of the same field: the ring maths uses the value after
+        // a zero is clamped to 0.00001, and the cone-tip normal reuse asks
+        // whether the SCENE wrote a zero. Both reads work off the raw value
+        // because the clamp is a local the body writes itself.
+        const cylinderBuilderBody = !cylinder
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(cylinderModule),
+                  this.context.functionDeclaration(
+                      cylinderModule,
+                      "createCylinderData",
+                  ).declaration,
+                  new Map([
+                      ["options.height", "options.height"],
+                      ["options.diameterTop", "options.diameter_top"],
+                      ["options.diameterBottom", "options.diameter_bottom"],
+                      ["options.tessellation", "options.tessellation"],
+                      ["options.subdivisions", "options.subdivisions"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+              );
+        const cylinderFactory = !cylinder
+            ? ""
+            : `static PinnedMeshData pinned_create_cylinder_data(
+    CylinderOptions options) {
+${cylinderBuilderBody}
+}
+
+MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
+    PinnedMeshData data = pinned_create_cylinder_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.pinnedFactoryMeshName("createCylinder")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // `computeNormals`, the accumulation three of the pinned builders
+        // hand their grown positions and indices to. Emitted once, from the
+        // pin's own body, because the three call it rather than each
+        // carrying a copy.
+        const normalsModule = "src/mesh/compute-normals.ts";
+        const computeNormals = !polyhedron && !ribbon
+            ? ""
+            : (() => {
+                  const { file, declaration } =
+                      this.context.functionDeclaration(
+                          normalsModule,
+                          "computeNormals",
+                      );
+                  if (!declaration.body) {
+                      this.context.contractError(
+                          declaration,
+                          "Expected computeNormals to have a body.",
+                      );
+                  }
+                  const lowerer = new PinnedNumericLowerer(file, {
+                      bindings: new Map<string, PinnedBinding>([
+                          ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                          ["positions", { cpp: "positions", type: "f64-list" }],
+                          ["indices", { cpp: "indices", type: "f64-list" }],
+                      ]),
+                      calls: meshMathCalls,
+                      returnValue: (expression) =>
+                          expression
+                              ? lowerer.expression(expression)
+                              : this.context.contractError(
+                                    declaration,
+                                    "Expected computeNormals to return.",
+                                ),
+                      booleanOr: true,
+                      booleanAnd: true,
+                      maybeUnusedConst: true,
+                  });
+                  const body = declaration.body.statements
+                      .flatMap((statement) =>
+                          lowerer.statement(statement, "    "),
+                      )
+                      .join("\n");
+                  return `// ${this.context.provenance(
+                      normalsModule,
+                      "computeNormals",
+                  )}
+static std::vector<double> pinned_compute_normals(
+    const std::vector<double>& positions,
+    const std::vector<double>& indices) {
+${body}
+}
+
+`;
+              })();
+        // The polyhedron. Its type table is pinned DATA and the type a
+        // scene names is a compile-time value, so generation picks the row
+        // and the record carries that row's own vertex and face lists --
+        // which is why `type`, `size` and `data` are bound here rather than
+        // recomputed: each is a local the caller already resolved.
+        const polyhedronBuilderBody = !polyhedron
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(polyhedronModule),
+                  this.context.functionDeclaration(
+                      polyhedronModule,
+                      "createPolyhedronData",
+                  ).declaration,
+                  new Map([
+                      ["type", "0"],
+                      ["size", "0.0"],
+                      ["data", "options"],
+                      ["data.vertex", "options.vertex"],
+                      ["data.face", "options.face"],
+                      ["sizeX", "options.size_x"],
+                      ["sizeY", "options.size_y"],
+                      ["sizeZ", "options.size_z"],
+                      ["flat", "options.flat"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map([
+                      ["flat", "bool"],
+                      ["data.vertex", "f64-list-2d"],
+                      ["data.face", "f64-list-2d"],
+                  ]),
+              );
+        const polyhedronFactory = !polyhedron
+            ? ""
+            : `static PinnedMeshData pinned_create_polyhedron_data(
+    PolyhedronOptions options) {
+${polyhedronBuilderBody}
+}
+
+MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
+    PinnedMeshData data = pinned_create_polyhedron_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.pinnedFactoryMeshName("createPolyhedron")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
         const torusBuilderBody = lowerPinnedMeshBuilder(
             torusFile,
             torus,
@@ -2069,6 +2310,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
+${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,

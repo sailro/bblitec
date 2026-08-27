@@ -2041,6 +2041,52 @@ struct SphereMeshData {
     std::uint32_t index_count = 0;
 };
 
+/**
+ * `PolyhedronOptions`, as the reached slice resolves it.
+ *
+ * The pin's `POLYHEDRA` table is data and the `type` a scene names is a
+ * compile-time value, so generation picks the row and this carries that
+ * row's own vertex and face lists. One polyhedron therefore costs one
+ * table, not fifteen.
+ */
+struct PolyhedronOptions {
+    double size_x;
+    double size_y;
+    double size_z;
+    bool flat;
+    std::vector<std::vector<double>> vertex;
+    std::vector<std::vector<double>> face;
+};
+
+/**
+ * `CylinderOptions`, as the reached slice resolves it.
+ *
+ * `diameter_top` and `diameter_bottom` are the pin's own `??` chain already
+ * resolved, so the `diameter` shorthand does not survive here. The values
+ * stay UNCLAMPED: the builder clamps a zero to 0.00001 for its ring maths
+ * but asks the unclamped option whether to reuse the previous ring's normals
+ * at a cone tip, and those are two different questions about one field.
+ */
+struct CylinderOptions {
+    double height;
+    double diameter_top;
+    double diameter_bottom;
+    double tessellation;
+    double subdivisions;
+};
+
+/**
+ * `DiscOptions`, as the reached slice resolves it.
+ *
+ * Every field is written by generation from the pinned factory's own `??`
+ * chain, so none carries a default here.
+ */
+struct DiscOptions {
+    double radius;
+    double tessellation;
+    double arc;
+};
+
 struct TorusOptions {
     double diameter;
     double thickness;
@@ -2117,6 +2163,9 @@ void set_morph_target_weights(
     MeshHandle mesh,
     const std::vector<float>& weights);
 MeshHandle create_torus(Engine& engine, TorusOptions options);
+MeshHandle create_disc(Engine& engine, DiscOptions options);
+MeshHandle create_cylinder(Engine& engine, CylinderOptions options);
+MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options);
 MeshHandle create_tube(
     Engine& engine,
     const std::vector<Vec3d>& path_points,

@@ -38,13 +38,18 @@ export interface PinnedBinding {
     /**
      * `f32`/`u32` are owned buffers whose stores round to that width;
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
-     * `scalar` is an f64 local or parameter.
+     * `f64-list` is a GROWABLE `number[]` the pin pushes onto, which holds
+     * its elements at the pin's own double width until a `new F32(list)`
+     * rounds them; `f64-list-2d` is a jagged `number[][]` whose rows are
+     * themselves `f64-list`s; `scalar` is an f64 local or parameter.
      */
     type:
         | "f32"
         | "u32"
         | "f32-view"
         | "u8-view"
+        | "f64-list"
+        | "f64-list-2d"
         | "scalar"
         | "index"
         | "bool";
@@ -102,6 +107,15 @@ export interface PinnedNumericScope {
      * this — a name outside `calls` is a contract error either way.
      */
     matrixCalls?: ReadonlySet<string>;
+    /**
+     * Calls whose result is a `number[]` rather than a number.
+     *
+     * The translator has no types, so a call's SHAPE is the caller's to
+     * declare — the same split `matrixCalls` already draws. Without it a
+     * `const normals = computeNormals(...)` would bind a double and the
+     * `new F32(normals)` after it would have nothing to convert.
+     */
+    listCalls?: ReadonlySet<string>;
     /** This body uses `||` only to join boolean conditions. */
     booleanOr?: boolean;
     /** This body uses `&&` only to join boolean conditions. */
@@ -142,7 +156,9 @@ export class PinnedNumericLowerer {
     public constructor(
         private readonly file: ts.SourceFile,
         private readonly scope: PinnedNumericScope,
-    ) {}
+    ) {
+        this.callerBindings = new Set(scope.bindings.keys());
+    }
 
     private fail(node: ts.Node, what: string): never {
         throw new Error(
@@ -150,21 +166,52 @@ export class PinnedNumericLowerer {
         );
     }
 
+    /** The names the CALLER bound before this body started. */
+    private readonly callerBindings: ReadonlySet<string>;
+
+    /** Local helper closures a builder declares and calls; see below. */
+    private readonly helpers = new Map<string, ts.ArrowFunction>();
+
+    /** How many helper bodies are being written out right now. */
+    private inlining = 0;
+
     public statement(statement: ts.Statement, indent: string): string[] {
         if (ts.isVariableStatement(statement)) {
+            const helper = this.localHelper(statement.declarationList);
+            if (helper) {
+                // A builder's own `const createCap = (isTop) => {...}`.
+                // Recorded rather than emitted: it closes over the arrays
+                // the body is already growing, and every call names a
+                // literal argument, so inlining at each call site is what
+                // the pin's own two calls mean.
+                this.helpers.set(helper.name, helper.arrow);
+                return [];
+            }
             return this.declarations(
                 statement.declarationList,
                 indent,
             );
         }
+        if (
+            this.inlining > 0 &&
+            ts.isReturnStatement(statement) &&
+            !statement.expression
+        ) {
+            return [`${indent}break;`];
+        }
         if (ts.isExpressionStatement(statement)) {
+            const inlined = this.inlinedHelperCall(
+                statement.expression,
+                indent,
+            );
+            if (inlined) return inlined;
             return [
                 `${indent}${this.expressionStatement(statement.expression)};`,
             ];
         }
         if (ts.isIfStatement(statement)) {
             const lines = [
-                `${indent}if (${this.expression(statement.expression)}) {`,
+                `${indent}if (${this.condition(statement.expression)}) {`,
                 ...this.branch(statement.thenStatement, indent),
             ];
             if (!statement.elseStatement) {
@@ -191,7 +238,7 @@ export class PinnedNumericLowerer {
             const declared = this.loopVariable(initializer);
             const lines = [
                 `${indent}for (${declared}; ` +
-                    `${this.expression(statement.condition)}; ` +
+                    `${this.condition(statement.condition)}; ` +
                     `${this.expressionStatement(statement.incrementor)}) {`,
                 ...this.branch(statement.statement, indent),
                 `${indent}}`,
@@ -338,6 +385,21 @@ export class PinnedNumericLowerer {
                 this.fail(declaration, "declaration");
             }
             const name = declaration.name.text;
+            // A local the CALLER bound is one generation resolved: a
+            // compile-time option selection, or a table row picked before
+            // the body runs. Re-emitting the pin's own statement for it
+            // would either recompute what is already decided or need every
+            // shape that statement reaches; taking the binding is the same
+            // specialization a resolved `??` takes.
+            //
+            // Tested against the names the caller supplied rather than
+            // against what is bound NOW, because a body may declare the
+            // same name twice in two scopes -- `computeNormals` has two
+            // `let len` -- and the second is a declaration, not a
+            // resolution.
+            if (this.callerBindings.has(name)) {
+                continue;
+            }
             if (!declaration.initializer) {
                 // `let key: number;` assigned on both arms of an if. Zeroed
                 // rather than left indeterminate so the emitted C++ stays
@@ -378,6 +440,36 @@ export class PinnedNumericLowerer {
                 this.scope.bindings.set(name, alias);
                 continue;
             }
+            // `const positions: number[] = []` -- a list the builder grows
+            // with `push`. The pin holds these at double width and rounds
+            // only at the `new F32(list)` that ends the builder, so the
+            // storage is double and the rounding stays where the pin put it.
+            const emptyList = this.unwrap(declaration.initializer);
+            if (
+                ts.isArrayLiteralExpression(emptyList) &&
+                emptyList.elements.length === 0
+            ) {
+                this.scope.bindings.set(name, {
+                    cpp: name,
+                    type: "f64-list",
+                });
+                lines.push(`${indent}std::vector<double> ${name};`);
+                continue;
+            }
+            // `const face = data.face[f]` -- one ROW of a jagged list,
+            // which is a list. Bound to the row's own storage rather than
+            // copied, because the pin reads it and never reseats it.
+            const rowSource = this.unwrap(declaration.initializer);
+            if (ts.isElementAccessExpression(rowSource)) {
+                const owner = this.elementOwner(rowSource);
+                if (owner?.type === "f64-list-2d") {
+                    this.scope.bindings.set(name, {
+                        cpp: this.elementAccess(rowSource),
+                        type: "f64-list",
+                    });
+                    continue;
+                }
+            }
             const allocation = this.allocation(declaration.initializer);
             if (allocation) {
                 this.scope.bindings.set(name, {
@@ -404,6 +496,23 @@ export class PinnedNumericLowerer {
                 lines.push(
                     `${indent}${isConst ? "const " : ""}` +
                         `std::array<float, 16> ${name} = ` +
+                        `${this.expression(declaration.initializer)};`,
+                );
+                continue;
+            }
+            if (
+                this.scope.listCalls &&
+                ts.isCallExpression(initializer) &&
+                ts.isIdentifier(initializer.expression) &&
+                this.scope.listCalls.has(initializer.expression.text)
+            ) {
+                this.scope.bindings.set(name, {
+                    cpp: name,
+                    type: "f64-list",
+                });
+                lines.push(
+                    `${indent}${isConst ? "const " : ""}` +
+                        `std::vector<double> ${name} = ` +
                         `${this.expression(declaration.initializer)};`,
                 );
                 continue;
@@ -470,6 +579,30 @@ export class PinnedNumericLowerer {
                     `reinterpret_cast<const ${element}*>(${source.cpp});`,
             };
         }
+        // `new F32(list)` over a grown `number[]` is the pin's own rounding
+        // boundary: the list carried doubles, and this is where each one
+        // becomes a float (or an index becomes a u32). Emitted as an
+        // element-wise convert rather than a resize-and-copy so the cast is
+        // visible at exactly the position the pin performs it.
+        if (source?.type === "f64-list") {
+            if (constructor === "F32") {
+                return {
+                    type: "f32",
+                    declare: (name) =>
+                        `std::vector<float> ${name}(${source.cpp}.begin(), ` +
+                        `${source.cpp}.end());`,
+                };
+            }
+            if (constructor === "U32") {
+                return {
+                    type: "u32",
+                    declare: (name) =>
+                        `std::vector<std::uint32_t> ${name}(` +
+                        `${source.cpp}.begin(), ${source.cpp}.end());`,
+                };
+            }
+            return undefined;
+        }
         // `new F32(otherTypedArray)` COPIES it; only `new F32(count)`
         // allocates. Reading the argument as a length would compile and
         // produce a differently-sized buffer of zeros -- the pin's
@@ -517,6 +650,18 @@ export class PinnedNumericLowerer {
                         ? `std::array<std::uint32_t, ${fixed}> ${name}{};`
                         : `std::vector<std::uint32_t> ${name}(` +
                             `static_cast<std::size_t>(${count}), 0u);`,
+            };
+        }
+        // `new F64(n)` and `new Array<number>(n)` are the pin's own
+        // full-width scratch: a zeroed buffer it indexes rather than grows,
+        // and one whose stores round nowhere. It shares the growable list's
+        // element type for exactly that reason.
+        if (constructor === "F64" || constructor === "Array") {
+            return {
+                type: "f64-list",
+                declare: (name) =>
+                    `std::vector<double> ${name}(` +
+                    `static_cast<std::size_t>(${count}), 0.0);`,
             };
         }
         return undefined;
@@ -573,6 +718,153 @@ export class PinnedNumericLowerer {
             return `static_cast<std::uint32_t>(${text})`;
         }
         return text;
+    }
+
+    /**
+     * `new F32(list)` / `new U32(list)` over a grown `number[]`.
+     *
+     * The pin's own rounding boundary: the list carried doubles, and this
+     * is where each one becomes a float (or an index a u32).
+     */
+    private listConversion(node: ts.NewExpression): string | undefined {
+        if (
+            !ts.isIdentifier(node.expression) ||
+            node.arguments?.length !== 1
+        ) {
+            return undefined;
+        }
+        const argument = this.unwrap(node.arguments[0]!);
+        if (!ts.isIdentifier(argument)) return undefined;
+        const source = this.scope.bindings.get(argument.text);
+        if (source?.type !== "f64-list") return undefined;
+        const element =
+            node.expression.text === "F32"
+                ? "float"
+                : node.expression.text === "U32"
+                  ? "std::uint32_t"
+                  : undefined;
+        return element === undefined
+            ? undefined
+            : `std::vector<${element}>(${source.cpp}.begin(), ` +
+                  `${source.cpp}.end())`;
+    }
+
+    /** `const f = (a, b) => { ... }` — a void helper the body calls. */
+    private localHelper(
+        list: ts.VariableDeclarationList,
+    ): { name: string; arrow: ts.ArrowFunction } | undefined {
+        if (list.declarations.length !== 1) return undefined;
+        const declaration = list.declarations[0]!;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.initializer
+        ) {
+            return undefined;
+        }
+        const initializer = this.unwrap(declaration.initializer);
+        return ts.isArrowFunction(initializer) &&
+            ts.isBlock(initializer.body)
+            ? { name: declaration.name.text, arrow: initializer }
+            : undefined;
+    }
+
+    /**
+     * One call to a recorded helper, with its body written out here.
+     *
+     * The helper mutates what it closed over, so it has no return value to
+     * carry and nothing to bind but its parameters. Each parameter binds to
+     * the ARGUMENT's lowered expression, which for the pin's own calls is a
+     * literal -- so a `isTop ? 1 : -1` inside folds the way it would have
+     * folded had the pin written the two bodies out.
+     *
+     * An early `return` in the helper becomes a `break` out of a one-pass
+     * loop, which is the shape that keeps the rest of the body skipped
+     * without inventing control flow the pin does not have.
+     */
+    private inlinedHelperCall(
+        expression: ts.Expression,
+        indent: string,
+    ): string[] | undefined {
+        const node = this.unwrap(expression);
+        if (!ts.isCallExpression(node)) return undefined;
+        const callee = this.unwrap(node.expression);
+        if (!ts.isIdentifier(callee)) return undefined;
+        const arrow = this.helpers.get(callee.text);
+        if (!arrow || !ts.isBlock(arrow.body)) return undefined;
+        if (arrow.parameters.length !== node.arguments.length) {
+            this.fail(node, `helper '${callee.text}' arity`);
+        }
+        const saved = new Map(this.scope.bindings);
+        arrow.parameters.forEach((parameter, index) => {
+            if (!ts.isIdentifier(parameter.name)) {
+                this.fail(parameter, "helper parameter");
+            }
+            const argument = node.arguments[index]!;
+            const unwrapped = this.unwrap(argument);
+            const isBoolean =
+                unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
+                unwrapped.kind === ts.SyntaxKind.FalseKeyword;
+            this.scope.bindings.set(parameter.name.text, {
+                cpp: this.expression(argument),
+                type: isBoolean ? "bool" : "scalar",
+            });
+        });
+        // A `return` anywhere in the helper -- the pin's own
+        // `if (radius === 0) { return; }` guard sits inside an `if` -- ends
+        // that call and nothing else, so the whole inlined body goes in a
+        // one-pass loop and each return becomes a `break`.
+        let guarded = false;
+        const findReturn = (inner: ts.Node): void => {
+            if (ts.isReturnStatement(inner)) guarded = true;
+            if (!guarded) ts.forEachChild(inner, findReturn);
+        };
+        findReturn(arrow.body);
+        const inner = guarded ? `${indent}    ` : indent;
+        this.inlining += 1;
+        const lines = arrow.body.statements.flatMap((nested) =>
+            this.statement(nested, inner),
+        );
+        this.inlining -= 1;
+        this.scope.bindings.clear();
+        for (const [name, binding] of saved) {
+            this.scope.bindings.set(name, binding);
+        }
+        const header =
+            `${indent}// ${callee.text}(${node.arguments
+                .map((argument) => argument.getText(this.file))
+                .join(", ")})`;
+        return guarded
+            ? [
+                  header,
+                  `${indent}for (int pass = 0; pass < 1; ++pass) {`,
+                  ...lines,
+                  `${indent}}`,
+              ]
+            : [header, ...lines];
+    }
+
+    /**
+     * A lowered condition, without the parentheses the expression printer
+     * wraps every binary in.
+     *
+     * `if ((a == b))` is what a fully-parenthesized printer produces and
+     * what `-Wparentheses-equality` refuses, so the one enclosing pair is
+     * dropped where the statement supplies its own.
+     */
+    private condition(expression: ts.Expression): string {
+        const text = this.expression(expression);
+        if (!text.startsWith("(") || !text.endsWith(")")) return text;
+        let depth = 0;
+        for (let index = 0; index < text.length; index += 1) {
+            if (text[index] === "(") depth += 1;
+            else if (text[index] === ")") {
+                depth -= 1;
+                // The opening parenthesis closed before the end, so the
+                // outer pair is not one enclosing pair.
+                if (depth === 0 && index !== text.length - 1) return text;
+            }
+        }
+        return text.slice(1, -1);
     }
 
     private elementType(target: ts.Expression): string | undefined {
@@ -659,6 +951,14 @@ export class PinnedNumericLowerer {
                         : undefined;
             if (!operator) this.fail(node, "prefix operator");
             return `(${operator}${this.expression(node.operand)})`;
+        }
+        // `new F32(list)` in VALUE position -- the shape a builder's own
+        // `return { positions: new F32(positions) }` takes. The same
+        // conversion the declaration path performs, written inline because
+        // that is where the pin performs it.
+        if (ts.isNewExpression(node)) {
+            const conversion = this.listConversion(node);
+            if (conversion) return conversion;
         }
         if (ts.isElementAccessExpression(node)) {
             const exact = this.scope.bindings.get(node.getText(this.file));
@@ -754,7 +1054,12 @@ export class PinnedNumericLowerer {
             owner.getText(this.file),
         );
         if (binding && node.name.text === "length") {
-            if (binding.type === "f32" || binding.type === "u32") {
+            if (
+                binding.type === "f32" ||
+                binding.type === "u32" ||
+                binding.type === "f64-list" ||
+                binding.type === "f64-list-2d"
+            ) {
                 return `static_cast<double>(${binding.cpp}.size())`;
             }
         }
@@ -787,6 +1092,29 @@ export class PinnedNumericLowerer {
                     source.cpp,
                     this.expression(node.arguments[1]!),
                 );
+            }
+        }
+        // `positions.push(x, y, z)` onto a grown list. The pin appends in
+        // argument order and the comma expression keeps that order while
+        // staying one expression, which is what an expression statement and
+        // a `for` body both accept.
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "push"
+        ) {
+            const list = this.scope.bindings.get(
+                callee.expression.getText(this.file),
+            );
+            if (list?.type === "f64-list") {
+                if (args.length === 0) {
+                    this.fail(node, "push with no arguments");
+                }
+                const pushes = args.map(
+                    (argument) => `${list.cpp}.push_back(${argument})`,
+                );
+                return args.length === 1
+                    ? pushes[0]!
+                    : `(${pushes.join(", ")})`;
             }
         }
         if (ts.isPropertyAccessExpression(callee)) {
@@ -822,6 +1150,23 @@ export class PinnedNumericLowerer {
                 // The pin resolves an absent optional read with its own
                 // default, so the right side IS the default -- read from the
                 // AST rather than restated beside the member.
+                // `a ?? b ?? c` parses as `(a ?? b) ?? c`, so the first
+                // operand sits at the bottom of the left spine. A caller
+                // that resolved the option binds THAT one, and binding it
+                // is the same specialization as taking the present arm --
+                // which for a chain means the whole chain.
+                let spine = this.unwrap(node.left);
+                while (
+                    ts.isBinaryExpression(spine) &&
+                    spine.operatorToken.kind ===
+                        ts.SyntaxKind.QuestionQuestionToken
+                ) {
+                    const head = this.scope.bindings.get(
+                        this.unwrap(spine.left).getText(this.file),
+                    );
+                    if (head) return head.cpp;
+                    spine = this.unwrap(spine.left);
+                }
                 const left = this.unwrap(node.left);
                 // Some pinned option records expose an optional tuple member
                 // (`opts.uvScale?.[0] ?? 1`). A caller that already resolved

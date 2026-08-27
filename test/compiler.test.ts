@@ -4138,18 +4138,18 @@ test("reports unsupported Babylon Lite APIs with source locations", () => {
     assert.throws(
         () =>
             compileSource(
-                `import { createCylinder, createEngine } from "@babylonjs/lite";
+                `import { createTorusKnot, createEngine } from "@babylonjs/lite";
 async function main() {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    createCylinder(engine);
+    createTorusKnot(engine);
 }`,
                 { fileName: "unsupported.ts" },
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /createCylinder/);
+            assert.match(error.message, /createTorusKnot/);
             return true;
         },
     );
