@@ -312,6 +312,42 @@ inline std::array<float, 16> draw_world(
 #endif
 }
 
+#if BBLITE_GPU_INSTANCING
+/**
+ * The instance parent world one thin-instanced draw carries.
+ *
+ * The pin composes `finalWorld = mesh.world * instanceWorld` and uploads
+ * the instance stream UNOFFSET -- `thin-instance-gpu.ts` packs it through
+ * the precision-only `packMat4IntoF32`, never `packMat4IntoF32WithOffset`
+ * -- so under floating origin the whole eye-relative subtraction belongs
+ * to `mesh.world`, which is this matrix. Subtracting per instance as well
+ * would bias the translation twice; scene 204's own source says so, and the
+ * large-world page's "thin-instance per-instance world matrices" line is
+ * the scene it is covered by rather than a second bake.
+ *
+ * `build_instance_parent_world` composes the record's TRS onto the recorded
+ * parent because a thin-instanced mesh keeps LOCAL vertices with the mode
+ * off, and `mesh_world_eye_relative` composes that same TRS because every
+ * mesh keeps local vertices with it on. So the eye-relative arm starts from
+ * the recorded parent alone and the TRS is composed exactly once, in
+ * double, before the single float store.
+ */
+inline std::array<float, 16> instance_parent_draw_world(
+    const MeshRecord& record,
+    [[maybe_unused]] const Scene& scene,
+    [[maybe_unused]] const Engine& engine) {
+#if BBLITE_FLOATING_ORIGIN
+    return upstream::mesh_world_eye_relative(
+        record,
+        record.instance_parent_matrix,
+        floating_origin_offset(scene, engine));
+#else
+    return outer_draw_world(
+        upstream::build_instance_parent_world(record), record);
+#endif
+}
+#endif
+
 /**
  * Whether another task binds this geometry task's depth.
  *
@@ -1126,8 +1162,11 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
  * property of `GpuVertex` rather than of a family or a backend.
  *
  * `lane` is the shape, which each backend maps to its own format enum;
- * `instance_stream` marks the thin-instance matrix columns, which come from a
- * second, instance-stepped buffer rather than from the vertex.
+ * `stream` says which buffer it comes from. The pin's own thin-instance
+ * fragment names two instance-stepped groups -- `ti-matrix` at stride 64
+ * for the four world columns and `ti-color` at stride 16 for the RGBA lane
+ * -- so an input is in the vertex, in the matrix stream, or in the colour
+ * stream, and those are the slots both backends already bind.
  */
 enum class VertexInputLane {
     float2,
@@ -1136,10 +1175,16 @@ enum class VertexInputLane {
     uint4,
 };
 
+enum class VertexInputStream : std::uint32_t {
+    vertex = 0,
+    instance_matrix = 1,
+    instance_color = 2,
+};
+
 struct PinnedVertexInput {
     VertexInputLane lane = VertexInputLane::float3;
     std::uint64_t offset = 0;
-    bool instance_stream = false;
+    VertexInputStream stream = VertexInputStream::vertex;
     /** False when this vertex carries nothing under that name. */
     bool mapped = false;
 };
@@ -1157,7 +1202,7 @@ inline PinnedVertexInput pinned_vertex_input(
         return PinnedVertexInput{
             lane,
             static_cast<std::uint64_t>(offset),
-            false,
+            VertexInputStream::vertex,
             true,
         };
     };
@@ -1190,7 +1235,18 @@ inline PinnedVertexInput pinned_vertex_input(
         return PinnedVertexInput{
             VertexInputLane::float4,
             static_cast<std::uint64_t>(16 * (name.back() - '0')),
+            VertexInputStream::instance_matrix,
             true,
+        };
+    }
+    // The colour half of the same fragment: its own instance-stepped
+    // buffer at stride 16, which both backends already bind for the
+    // transcribed path's `useThinInstanceColors` materials.
+    if (name == "instanceColor") {
+        return PinnedVertexInput{
+            VertexInputLane::float4,
+            0,
+            VertexInputStream::instance_color,
             true,
         };
     }
@@ -2253,6 +2309,14 @@ inline StandardVariantKey standard_variant_key(
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::std_msh_has_thin_instances;
+            // `_computeMeshFeatures` reads `mesh.thinInstances.colors`, so
+            // the colour bit arrives with the pool rather than with the
+            // material: a coloured pool composes the Standard family's own
+            // final-colour slot, an uncoloured one the plain fragment.
+            if (!record.instance_colors.empty()) {
+                key.mesh_features |=
+                    upstream::std_msh_has_instance_color;
+            }
         }
     }
     // `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`,
@@ -2349,11 +2413,7 @@ inline std::array<float, 16> standard_draw_world(
     const Engine& engine) {
 #if BBLITE_GPU_INSTANCING
     if (pinned_record_instanced(record)) {
-        return draw_world(
-            upstream::build_instance_parent_world(record),
-            record,
-            scene,
-            engine);
+        return instance_parent_draw_world(record, scene, engine);
     }
 #endif
     if (uses_local_position) {

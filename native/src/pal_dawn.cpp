@@ -3179,11 +3179,24 @@ void write_pinned_frame_blocks(
 }
 
 /**
+ * The instance-stepped streams one composed-variant draw reads.
+ *
+ * The pin's own thin-instance fragment names both: `ti-matrix` for the four
+ * world columns and `ti-color` for the RGBA lane a coloured pool adds. A
+ * draw with no pool leaves them null and instances once.
+ */
+struct InstanceStreams {
+    WGPUBuffer matrices = nullptr;
+    WGPUBuffer colors = nullptr;
+    std::uint32_t count = 1;
+};
+
+/**
  * One composed-variant draw, encoded the same way at all four sites (PBR
  * and Standard, main pass and geometry task): bind the pipeline unless
  * already bound, the frame group at 0 and the draw group at 1, the
- * vertex stream (plus the optional thin-instance stream at slot 1), then
- * the indexed draw. Which pipeline, groups, buffers and counts go in
+ * vertex stream (plus whichever thin-instance streams the pool carries),
+ * then the indexed draw. Which pipeline, groups, buffers and counts go in
  * stays with each site; WebGPU forces the write/encode split, but the
  * duplication between the four encode arms did not.
  */
@@ -3194,8 +3207,7 @@ void encode_variant_draw(
     WGPUBindGroup frame_group,
     WGPUBindGroup draw_group,
     WGPUBuffer vertex_buffer,
-    WGPUBuffer instance_buffer,
-    std::uint32_t instance_count,
+    InstanceStreams instances,
     WGPUBuffer index_buffer,
     std::uint32_t index_count,
     // Group 2, bound only by a draw whose composed fragment declares it:
@@ -3222,11 +3234,19 @@ void encode_variant_draw(
         vertex_buffer,
         0,
         WGPU_WHOLE_SIZE);
-    if (instance_buffer) {
+    if (instances.matrices) {
         wgpuRenderPassEncoderSetVertexBuffer(
             pass,
             1,
-            instance_buffer,
+            instances.matrices,
+            0,
+            WGPU_WHOLE_SIZE);
+    }
+    if (instances.colors) {
+        wgpuRenderPassEncoderSetVertexBuffer(
+            pass,
+            2,
+            instances.colors,
             0,
             WGPU_WHOLE_SIZE);
     }
@@ -3239,7 +3259,7 @@ void encode_variant_draw(
     wgpuRenderPassEncoderDrawIndexed(
         pass,
         index_count,
-        instance_count,
+        instances.count,
         0,
         0,
         0);
@@ -4734,18 +4754,36 @@ DawnPipeline& pipeline_for(
 
 
 #if BBLITE_PINNED_MATERIALS
+/** The attributes one composed variant declares, split by their stream. */
+struct VariantVertexAttributes {
+    std::vector<WGPUVertexAttribute> vertex;
+    std::vector<WGPUVertexAttribute> instance_matrix;
+    std::vector<WGPUVertexAttribute> instance_color;
+
+    std::vector<WGPUVertexAttribute>& of(VertexInputStream stream) {
+        switch (stream) {
+            case VertexInputStream::instance_matrix:
+                return instance_matrix;
+            case VertexInputStream::instance_color:
+                return instance_color;
+            case VertexInputStream::vertex:
+                break;
+        }
+        return vertex;
+    }
+};
+
 /**
  * One declared vertex input, resolved onto our vertex and into Dawn's format
  * enum. The three composed families ask the same question of the same table
  * (`pinned_vertex_input`); what stays here is the enum residue and the split
- * between the vertex stream and the thin-instance one.
+ * across the vertex stream and the two instance-stepped ones.
  */
 bool append_variant_attribute(
     std::string_view name,
     std::uint32_t location,
     bool uses_local_position,
-    std::vector<WGPUVertexAttribute>& attributes,
-    std::vector<WGPUVertexAttribute>& instance_attributes) {
+    VariantVertexAttributes& inputs) {
     const PinnedVertexInput input =
         pinned_vertex_input(name, uses_local_position);
     if (!input.mapped) return false;
@@ -4766,9 +4804,37 @@ bool append_variant_attribute(
             attribute.format = WGPUVertexFormat_Uint32x4;
             break;
     }
-    (input.instance_stream ? instance_attributes : attributes)
-        .push_back(attribute);
+    inputs.of(input.stream).push_back(attribute);
     return true;
+}
+
+/**
+ * The vertex buffer layouts one composed variant declares, and how many of
+ * them it reaches.
+ *
+ * WebGPU takes a contiguous buffer list, so a variant that reads the colour
+ * stream must declare the matrix one before it -- which the pin's own
+ * fragment guarantees, since `ti-color` exists only beside `ti-matrix`.
+ * Every family's builder asks the same question, so the strides and the
+ * step modes are stated once here.
+ */
+std::uint32_t fill_variant_vertex_layouts(
+    const VariantVertexAttributes& inputs,
+    std::array<WGPUVertexBufferLayout, 3>& layouts) {
+    layouts[0].stepMode = WGPUVertexStepMode_Vertex;
+    layouts[0].arrayStride = sizeof(GpuVertex);
+    layouts[0].attributeCount = inputs.vertex.size();
+    layouts[0].attributes = inputs.vertex.data();
+    layouts[1].stepMode = WGPUVertexStepMode_Instance;
+    layouts[1].arrayStride = sizeof(std::array<float, 16>);
+    layouts[1].attributeCount = inputs.instance_matrix.size();
+    layouts[1].attributes = inputs.instance_matrix.data();
+    layouts[2].stepMode = WGPUVertexStepMode_Instance;
+    layouts[2].arrayStride = sizeof(std::array<float, 4>);
+    layouts[2].attributeCount = inputs.instance_color.size();
+    layouts[2].attributes = inputs.instance_color.data();
+    if (!inputs.instance_color.empty()) return 3u;
+    return inputs.instance_matrix.empty() ? 1u : 2u;
 }
 #endif
 
@@ -4864,11 +4930,10 @@ WGPURenderPipeline pinned_variant_pipeline(
     // The variant's own inputs, at the locations it declares them. The names
     // are the pin's; where each sits in our vertex is the PAL's, so a variant
     // asking for something we do not carry fails by name here.
-    std::vector<WGPUVertexAttribute> attributes;
+    VariantVertexAttributes inputs;
     // The pin's thin-instance arm reads the per-instance matrix as four vec4
     // columns from a second, instance-stepped stream.
-    std::vector<WGPUVertexAttribute> instance_attributes;
-    attributes.reserve(entry.attribute_count);
+    inputs.vertex.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::PbrVariantAttribute& input =
             upstream::pbr_variant_attributes[entry.first_attribute + index];
@@ -4877,30 +4942,23 @@ WGPURenderPipeline pinned_variant_pipeline(
                 input.name,
                 input.location,
                 entry.uses_local_position,
-                attributes,
-                instance_attributes)) {
+                inputs)) {
             dawn_error(
                 (std::string("pinned variant declares an unmapped vertex ") +
                  "input '" + std::string(input.name) + "'.")
                     .c_str());
         }
     }
-    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
-    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
-    vertex_layouts[0].attributeCount = attributes.size();
-    vertex_layouts[0].attributes = attributes.data();
-    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
-    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
-    vertex_layouts[1].attributeCount = instance_attributes.size();
-    vertex_layouts[1].attributes = instance_attributes.data();
+    std::array<WGPUVertexBufferLayout, 3> vertex_layouts{};
+    const std::uint32_t vertex_buffer_count =
+        fill_variant_vertex_layouts(inputs, vertex_layouts);
 
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = pinned_pipeline_layout_for(state, variant);
     descriptor.vertex.module = state.pinned_vertex_modules[variant];
     descriptor.vertex.entryPoint = string_view("main");
-    descriptor.vertex.bufferCount = instance_attributes.empty() ? 1 : 2;
+    descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = traits.topology;
     descriptor.primitive.stripIndexFormat = traits.strip_index_format;
@@ -5037,9 +5095,8 @@ WGPURenderPipeline standard_variant_pipeline(
         state.standard_fragment_modules[variant] =
             load_wgsl_module(state, stem(entry.fragment_shader).c_str());
     }
-    std::vector<WGPUVertexAttribute> attributes;
-    std::vector<WGPUVertexAttribute> instance_attributes;
-    attributes.reserve(entry.attribute_count);
+    VariantVertexAttributes inputs;
+    inputs.vertex.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::StandardVariantAttribute& input =
             upstream::standard_variant_attributes[entry.first_attribute + index];
@@ -5048,23 +5105,16 @@ WGPURenderPipeline standard_variant_pipeline(
                 input.name,
                 input.location,
                 entry.uses_local_position,
-                attributes,
-                instance_attributes)) {
+                inputs)) {
             dawn_error(
                 (std::string("standard variant declares an unmapped vertex ") +
                  "input '" + std::string(input.name) + "'.")
                     .c_str());
         }
     }
-    std::array<WGPUVertexBufferLayout, 2> vertex_layouts{};
-    vertex_layouts[0].stepMode = WGPUVertexStepMode_Vertex;
-    vertex_layouts[0].arrayStride = sizeof(GpuVertex);
-    vertex_layouts[0].attributeCount = attributes.size();
-    vertex_layouts[0].attributes = attributes.data();
-    vertex_layouts[1].stepMode = WGPUVertexStepMode_Instance;
-    vertex_layouts[1].arrayStride = sizeof(std::array<float, 16>);
-    vertex_layouts[1].attributeCount = instance_attributes.size();
-    vertex_layouts[1].attributes = instance_attributes.data();
+    std::array<WGPUVertexBufferLayout, 3> vertex_layouts{};
+    const std::uint32_t vertex_buffer_count =
+        fill_variant_vertex_layouts(inputs, vertex_layouts);
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = standard_pipeline_layout_for(
@@ -5073,7 +5123,7 @@ WGPURenderPipeline standard_variant_pipeline(
         unfilterable_emissive);
     descriptor.vertex.module = state.standard_vertex_modules[variant];
     descriptor.vertex.entryPoint = string_view("main");
-    descriptor.vertex.bufferCount = instance_attributes.empty() ? 1 : 2;
+    descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
@@ -5343,12 +5393,11 @@ WGPURenderPipeline node_variant_pipeline(
             state,
             std::string(stems.fragment).c_str());
     }
-    std::vector<WGPUVertexAttribute> attributes;
+    VariantVertexAttributes inputs;
     // A node graph declaring the thin-instance columns would need a second
     // stream this pipeline does not bind, so the shared table's own marking
     // is what refuses it.
-    std::vector<WGPUVertexAttribute> instance_attributes;
-    attributes.reserve(entry.attribute_count);
+    inputs.vertex.reserve(entry.attribute_count);
     for (std::size_t index = 0; index < entry.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
             upstream::node_variant_attributes[entry.first_attribute + index];
@@ -5357,14 +5406,15 @@ WGPURenderPipeline node_variant_pipeline(
                 input.name,
                 input.location,
                 false,
-                attributes,
-                instance_attributes)) {
+                inputs)) {
             dawn_error(
                 (std::string("node variant declares an unmapped vertex ") +
                  "input '" + std::string(input.name) + "'.")
                     .c_str());
         }
-        if (!instance_attributes.empty()) {
+        if (
+            !inputs.instance_matrix.empty() ||
+            !inputs.instance_color.empty()) {
             dawn_error(
                 (std::string("node variant declares the per-instance ") +
                  "vertex input '" + std::string(input.name) +
@@ -5375,8 +5425,8 @@ WGPURenderPipeline node_variant_pipeline(
     WGPUVertexBufferLayout vertex_layout{};
     vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
     vertex_layout.arrayStride = sizeof(GpuVertex);
-    vertex_layout.attributeCount = attributes.size();
-    vertex_layout.attributes = attributes.data();
+    vertex_layout.attributeCount = inputs.vertex.size();
+    vertex_layout.attributes = inputs.vertex.data();
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
     descriptor.layout = node_pipeline_layout_for(state, variant, caster);
@@ -8500,7 +8550,7 @@ bool run_dawn_engine(Engine& engine) {
             }
             if (mesh_uniform_item) {
                 const std::array<float, 16> parent_world =
-                    upstream::build_instance_parent_world(mesh);
+                    instance_parent_draw_world(mesh, scene, engine);
                 wgpuQueueWriteBuffer(
                     state.queue,
                     dawn_mesh.instance_uniform,
@@ -9337,6 +9387,7 @@ bool run_dawn_engine(Engine& engine) {
                     // count; a non-instanced variant binds neither and draws
                     // once.
                     WGPUBuffer pinned_instance_buffer = nullptr;
+                    WGPUBuffer pinned_instance_colors = nullptr;
                     std::uint32_t pinned_instances = 1;
 #if BBLITE_GPU_INSTANCING
                     if (pinned_record_instanced(
@@ -9344,6 +9395,15 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.pinned_instances) {
                         pinned_instance_buffer = mesh.pinned_instances;
                         pinned_instances = mesh.instance_count;
+#if BBLITE_GPU_INSTANCE_COLORS
+                        // The colour lane rides the pool: the variant
+                        // declares it only when the record carries one, so
+                        // the same record test answers both.
+                        if (!engine.meshes[draw.item.mesh.value]
+                                 .instance_colors.empty()) {
+                            pinned_instance_colors = mesh.instance_colors;
+                        }
+#endif
                     }
 #endif
                     encode_variant_draw(
@@ -9368,8 +9428,11 @@ bool run_dawn_engine(Engine& engine) {
                         pinned_state.mirrored_vertices
                             ? mesh.vertices
                             : mesh.pinned_vertices,
-                        pinned_instance_buffer,
-                        pinned_instances,
+                        InstanceStreams{
+                            pinned_instance_buffer,
+                            pinned_instance_colors,
+                            pinned_instances,
+                        },
                         mesh.indices,
                         mesh.index_count,
                         // The receiver's group 2, under the pin's own test:
@@ -9434,6 +9497,7 @@ bool run_dawn_engine(Engine& engine) {
                                 standard_material));
                     }
                     WGPUBuffer standard_instance_buffer = nullptr;
+                    WGPUBuffer standard_instance_colors = nullptr;
                     std::uint32_t standard_instances = 1;
 #if BBLITE_GPU_INSTANCING
                     if (pinned_record_instanced(
@@ -9441,6 +9505,12 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.instances) {
                         standard_instance_buffer = mesh.instances;
                         standard_instances = mesh.instance_count;
+#if BBLITE_GPU_INSTANCE_COLORS
+                        if (!engine.meshes[draw.item.mesh.value]
+                                 .instance_colors.empty()) {
+                            standard_instance_colors = mesh.instance_colors;
+                        }
+#endif
                     }
 #endif
                     // Only a draw whose composed fragment declares the
@@ -9466,8 +9536,11 @@ bool run_dawn_engine(Engine& engine) {
                         // The Standard families carry no glTF X-mirror: the
                         // baked buffer is the pin's own convention already.
                         mesh.vertices,
-                        standard_instance_buffer,
-                        standard_instances,
+                        InstanceStreams{
+                            standard_instance_buffer,
+                            standard_instance_colors,
+                            standard_instances,
+                        },
                         mesh.indices,
                         mesh.index_count,
                         receives
@@ -9539,8 +9612,7 @@ bool run_dawn_engine(Engine& engine) {
                         // A node graph reads the baked vertices under the
                         // identity world, like the Standard family.
                         mesh.vertices,
-                        nullptr,
-                        1,
+                        InstanceStreams{},
                         mesh.indices,
                         mesh.index_count);
                     continue;
@@ -10504,8 +10576,7 @@ bool run_dawn_engine(Engine& engine) {
                                     mesh.pinned_mirrored_vertices
                                         ? mesh.vertices
                                         : mesh.pinned_vertices,
-                                    nullptr,
-                                    1,
+                                    InstanceStreams{},
                                     mesh.indices,
                                     mesh.index_count);
                                 continue;
@@ -10554,6 +10625,8 @@ bool run_dawn_engine(Engine& engine) {
                                 }
                                 WGPUBuffer standard_instance_buffer =
                                     nullptr;
+                                WGPUBuffer standard_instance_colors =
+                                    nullptr;
                                 std::uint32_t standard_instances = 1;
 #if BBLITE_GPU_INSTANCING
                                 if (pinned_record_instanced(
@@ -10564,6 +10637,14 @@ bool run_dawn_engine(Engine& engine) {
                                         mesh.instances;
                                     standard_instances =
                                         mesh.instance_count;
+#if BBLITE_GPU_INSTANCE_COLORS
+                                    if (!engine.meshes[
+                                             draw.item.mesh.value]
+                                             .instance_colors.empty()) {
+                                        standard_instance_colors =
+                                            mesh.instance_colors;
+                                    }
+#endif
                                 }
 #endif
                                 encode_variant_draw(
@@ -10580,8 +10661,11 @@ bool run_dawn_engine(Engine& engine) {
                                     pinned_geometry_frame_group(state),
                                     draw_state_it->second.group,
                                     mesh.vertices,
-                                    standard_instance_buffer,
-                                    standard_instances,
+                                    InstanceStreams{
+                                        standard_instance_buffer,
+                                        standard_instance_colors,
+                                        standard_instances,
+                                    },
                                     mesh.indices,
                                     mesh.index_count);
                                 continue;

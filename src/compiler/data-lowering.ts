@@ -1310,6 +1310,59 @@ export class DataLowerer {
     }
 
     /**
+     * Compiles `typedArray.set(source, offset)`.
+     *
+     * The spec's own conversion is what bounds the reached slice: a source
+     * of a DIFFERENT typed-array kind converts each element through the
+     * target's own store, and an ordinary array converts through
+     * `ToNumber` — two more shapes, neither of which a reached scene
+     * writes. So the two arrays must be the same kind, and anything else
+     * refuses by name rather than copying bytes the spec would have
+     * converted. The offset argument is optional upstream and defaults to
+     * zero.
+     */
+    private compileTypedArraySet(
+        call: ts.CallExpression,
+        target: Value,
+        kind: "f32array" | "u16array" | "u32array",
+    ): Value {
+        if (call.arguments.length < 1 || call.arguments.length > 2) {
+            this.context.fail(
+                call,
+                "TypedArray.set expects a source and an optional offset.",
+            );
+        }
+        const source = this.compileDataPath(
+            call.arguments[0]!,
+            "read",
+        );
+        if (
+            !source ||
+            source.kind !== "data" ||
+            source.dataType?.kind !== kind
+        ) {
+            this.context.fail(
+                call.arguments[0]!,
+                `TypedArray.set is lowered for a source of the target's own kind (${kind}); ` +
+                    "another typed array or a plain array converts each element " +
+                    "through the target's store, which no reached scene needs.",
+            );
+        }
+        this.context.reachJsData();
+        const offset =
+            call.arguments.length === 2
+                ? this.context.compileNumber(
+                      call.arguments[1]!,
+                      "double",
+                  )
+                : "0.0";
+        return {
+            kind: "void",
+            cpp: `bbl::js::typed_array_set(${target.cpp}, ${source.cpp}, ${offset})`,
+        };
+    }
+
+    /**
      * Compiles `array.indexOf(value)`.
      *
      * Only element types JavaScript compares the way native code does
@@ -1473,6 +1526,18 @@ export class DataLowerer {
                 kind: "void",
                 cpp: `bbl::js::array_fill(${narrowed.cpp}, ${stored})`,
             };
+        }
+        if (
+            (dataType?.kind === "f32array" ||
+                dataType?.kind === "u16array" ||
+                dataType?.kind === "u32array") &&
+            method === "set"
+        ) {
+            return this.compileTypedArraySet(
+                call,
+                narrowed,
+                dataType.kind,
+            );
         }
         if (dataType?.kind !== "vector") {
             return undefined;

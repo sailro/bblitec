@@ -931,9 +931,11 @@ test("materializes static tables under runtime indices only", () => {
         result.cpp,
         /inline const std::array<std::array<double, 2>, 3> WEIGHTS = \{\{\{\{1\.0, 2\.0\}\}, \{\{3\.0, 4\.0\}\}, \{\{5\.0, 6\.0\}\}\}\};/,
     );
+    // The table's own lanes are doubles, and so is the local, so the read
+    // is written at that width rather than at the default float one.
     assert.match(
         result.cpp,
-        /double v_staticRead = 3\.0f;/,
+        /double v_staticRead = 3\.0;/,
     );
     assert.match(
         result.cpp,

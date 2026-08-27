@@ -552,8 +552,7 @@ export class ExpressionLowerer {
                 kind: "tuple",
                 cpp: "",
                 tupleElements: unwrapped.elements.map(
-                    (element) =>
-                        this.compileValue(element),
+                    (element) => this.laneValue(element),
                 ),
             };
         }
@@ -612,7 +611,7 @@ export class ExpressionLowerer {
                         methods[name] = initializer;
                         continue;
                     }
-                    properties[name] = this.compileValue(
+                    properties[name] = this.laneValue(
                         property.initializer,
                     );
                 } else if (
@@ -630,7 +629,7 @@ export class ExpressionLowerer {
                         continue;
                     }
                     properties[property.name.text] =
-                        this.compileValue(property.name);
+                        this.laneValue(property.name);
                 } else {
                     this.context.fail(
                         property,
@@ -914,6 +913,38 @@ export class ExpressionLowerer {
             kind: "void",
             cpp: `bbl::defer_callback(${engine}, ${callback})`,
         };
+    }
+
+    /**
+     * One lane of a tuple or static record.
+     *
+     * A lane outlives the expression that produced it: it is stored on the
+     * record and read back later, by a sink this position cannot see. Its
+     * `cpp` is compiled once, at the default float width, so a lane that
+     * carries only text hands a double sink a value already rounded — at
+     * large-world coordinates that is half a unit, enough to move a
+     * silhouette. Recording the static value generation can fold is what
+     * lets `castNumber` write the lane at each sink's own width instead.
+     *
+     * Only lanes take this. A number in an ordinary expression position is
+     * consumed where it is written, so its text is already at the width
+     * that position asked for.
+     */
+    private laneValue(expression: ts.Expression): Value {
+        const value = this.compileValue(expression);
+        if (
+            value.kind !== "number" ||
+            value.staticNumber !== undefined
+        ) {
+            return value;
+        }
+        const staticNumber = staticNumberValue(
+            this.context,
+            expression,
+        );
+        return staticNumber === undefined
+            ? value
+            : { ...value, staticNumber };
     }
 
     /**

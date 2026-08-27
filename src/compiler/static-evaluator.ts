@@ -139,11 +139,8 @@ export class StaticEvaluator {
     }
 
     /**
-     * A native vector from a record's x/y/z lanes. A static lane
-     * re-formats at the sink's width -- its stored cpp was formatted for
-     * a float sink, and a bare float literal would round a double sink's
-     * component a step early -- while a runtime lane is a JS double and
-     * narrows exactly at a float sink.
+     * A native vector from a record's x/y/z lanes, each written at the
+     * sink's own width by `castNumber`.
      */
     public vec3FromRecord(
         value: Value,
@@ -159,11 +156,7 @@ export class StaticEvaluator {
                     `Vec3 record is missing numeric '${name}'.`,
                 );
             }
-            return lane.staticNumber !== undefined
-                ? precision === "float"
-                    ? cppFloatLiteral(lane.staticNumber)
-                    : cppDoubleLiteral(lane.staticNumber)
-                : this.castNumber(lane, precision);
+            return this.castNumber(lane, precision);
         });
         return `${type}{${lanes.join(", ")}}`;
     }
@@ -659,16 +652,25 @@ export class StaticEvaluator {
         value: Value,
         precision: "float" | "double",
     ): string {
-        // A static lane arrives pre-formatted at its width; every
-        // runtime number is a JS double and narrows exactly at the
-        // float sink, the way the pinned Float32Array store rounds it.
-        if (
-            precision === "float" &&
-            value.staticNumber === undefined
-        ) {
-            return `static_cast<float>(${value.cpp})`;
+        // A static lane re-formats from its own value at the sink's
+        // width. Its stored cpp was formatted for whichever sink
+        // materialized it -- an array literal's lanes compile at the
+        // default float width -- so handing that text to a double sink
+        // rounds a step early, which at large-world coordinates is half
+        // a unit and moves a silhouette. The static number IS the pin's
+        // JavaScript double, so writing it out is the same value the pin
+        // holds, and a float sink then gets the one rounding the pinned
+        // `Float32Array` store performs.
+        if (value.staticNumber !== undefined) {
+            return precision === "float"
+                ? cppFloatLiteral(value.staticNumber)
+                : cppDoubleLiteral(value.staticNumber);
         }
-        return value.cpp;
+        // Every runtime number is a JS double and narrows exactly at the
+        // float sink, the way that same store rounds it.
+        return precision === "float"
+            ? `static_cast<float>(${value.cpp})`
+            : value.cpp;
     }
 
     /**

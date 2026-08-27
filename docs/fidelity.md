@@ -226,6 +226,23 @@ reads either, which is why the two lanes went unwritten here until a node
 graph's `ScreenSizeBlock` read them back through the pin's own
 `vec2(scene.vFogColor.w, scene._envPad0)`.
 
+**A lane's width belongs to its sink, not to the expression that filled
+it.** A tuple element or a static record property outlives the expression
+that produced it: it is stored and read back later, by a sink the producing
+position cannot see. Its text is compiled once, at the default float width,
+so a lane carrying only text hands a `double` sink a value already rounded.
+So a number lane carries whatever static value generation can fold, and
+`castNumber` writes that value at each sink's own width — the static number
+IS the pin's JavaScript double, and a float sink then performs the one
+rounding the pinned `Float32Array` store performs. The magnitude is not
+rounding-sized where the pin's own width is: scene 206 writes its box
+translations as `[OFFSET, 0.65, OFFSET + 2.45]` tuples, whose lanes reached
+the double `MeshRecord::position` as `5000002.5` — the float32 ULP at five
+million is half a unit — and the scene measured 0.828 full MAD against
+0.000 with the lanes written wide. Only lanes take this: a number in an
+ordinary expression position is consumed where it is written, already at the
+width that position asked for.
+
 **The camera's scalars are doubles, and each float32 store in the chain is
 one the pin performs.** `alpha`, `beta`, `radius`, `target`, `position`,
 `fov`, `nearPlane` and `farPlane` are plain JavaScript numbers upstream,
@@ -716,6 +733,40 @@ specialization, and why that normal cannot come from a vertex stage.
 Static `EXT_mesh_gpu_instancing` preserves Babylon Lite's split transform
 contract: extension matrices remain local T/R/S data and the node world matrix
 is applied separately in the vertex shader.
+
+**A thin-instance stream is uploaded unoffset, so the whole floating-origin
+subtraction stays on `mesh.world`.** `thin-instance-gpu.ts` packs the
+per-instance matrices through the precision-only `packMat4IntoF32`, never
+`packMat4IntoF32WithOffset` — the pin composes `finalWorld = mesh.world *
+instanceWorld` and the large coordinate lives entirely in the first factor,
+so subtracting per instance as well would bias the translation twice. The
+large-world page lists "thin-instance per-instance world matrices" among its
+wired bakes, which reads the other way; the source decides, and scene 204's
+own comment says the same thing the source does. `instance_parent_draw_world`
+is where this port states it: with the mode off the parent world is composed
+by `build_instance_parent_world` and the clone offset added after it, and
+with the mode on the recorded parent alone is handed to
+`mesh_world_eye_relative`, which composes the record's TRS once and subtracts
+the eye in double before the single float store. Composing the TRS in both
+would apply it twice. Scene 204 measures 0.000 on both backends.
+
+**A coloured thin-instance pool composes the Standard family's own colour
+slot.** `_computeMeshFeatures` sets `MSH_HAS_INSTANCE_COLOR` from
+`mesh.thinInstances.colors`, so the bit rides the pool bit and arrives with
+the same call; `createThinInstanceFragment(hasInstanceColor)` then declares
+the `instanceColor` attribute and the `vInstanceColor` varying. What
+`rebuildSingle` does next is the Standard family's alone: it spreads that
+fragment into a copy whose only slot is a `BC` one — "Standard applies
+instance color to final color (BC), not to baseColor (AT) like PBR", as its
+own comment says — so the base-colour slot the shared fragment carries never
+reaches a Standard variant. That rewrite lives inline in the renderable
+rather than in a named export, so the slot text is lifted from the pinned
+declaration: a pin that moves it, drops it or renames it fails generation
+instead of composing a fragment whose instance colour silently stops
+applying. The colour lane is its own instance-stepped buffer at stride 16
+(`ti-color`), which both backends already bound for the transcribed
+`useThinInstanceColors` path and now bind for the composed variants too.
+Scene 204 gates it.
 The project-owned `regression-track-clamp` gate is pixel-exact at 3 seconds
 and verifies that shorter translation, rotation, and morph-weight channels
 hold their final values while a separate channel determines the animation

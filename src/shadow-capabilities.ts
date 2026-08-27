@@ -229,10 +229,6 @@ const floatingOriginUnwired: readonly {
         why: "a parented camera's world is its fixup node's product, and " +
             "the offset is read off the camera's own local eye",
     },
-    {
-        feature: "mesh:thin-instances",
-        why: "a thin-instance stream carries absolute per-instance matrices",
-    },
 ];
 
 /**

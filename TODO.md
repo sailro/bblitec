@@ -24,15 +24,19 @@ act on it — not what was tried.
 - [ ] Route inline return expressions through double precision: inlined value
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
-  inlined function. Same family, found by scene 175's tube: a record's number
-  lanes are compiled at the default float width when the record is built, so
-  a double sink consuming a lane later gets a float-truncated expression (a
-  `static_cast<float>` baked into `Value.cpp`, or a static lane formatted
-  `0.1f`) where the pin computes in JS doubles — ~1e-8 on the tube path, sub-
-  gate but wrong-by-construction. The fix is a width model, not a call-site
-  patch: keep `Value.cpp` at JS-double width (or tag the formatted width) and
-  let each sink cast once, then re-measure the whole corpus — float wraps
-  currently bake into stored cpp all over, so this moves bytes everywhere.
+  inlined function.
+  **The lane half of this family is closed**: a tuple or record lane now
+  carries whatever static value generation can fold, and `castNumber` writes
+  it at the sink's own width, so a double sink no longer reads a lane already
+  rounded to float ([fidelity](docs/fidelity.md#shader-contract)). Scene 206
+  was the measurement — six mesh translations at 5e6 quantized to the float32
+  half-unit and moved a silhouette, 0.828 MAD against 0.000 with the lane
+  written wide. What remains is the RUNTIME half: a lane with no static value
+  keeps the `static_cast<float>` its first sink baked into `Value.cpp`, which
+  is right wherever that sink is the only one and wrong for the second. Closing
+  it needs the width model the paragraph above describes — tag the formatted
+  width on the Value rather than the text — and re-measuring the corpus, since
+  float wraps still bake into stored cpp on the runtime path.
 - [ ] Support off-center orthographic planes: `enableOrthographicCamera` accepts
   explicit `left`/`right`/`bottom`/`top` bounds replacing the half-extent
   derivation, and `disableOrthographicCamera` restores the perspective
@@ -158,10 +162,18 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-96 corpus scenes remain unregistered; measured scenes are in
-[status](docs/status.md). No unregistered scene compiles clean — the
+89 corpus scenes remain unregistered; measured scenes are in
+[status](docs/status.md). None of them compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
+
+**A scene that compiles clean is not integrated, and the sweep cannot say
+which.** Scene 206 was the first unregistered scene ever to compile clean,
+and it measured 0.828 against its golden: its six mesh translations at
+5,000,000 had quantized to the float32 half-unit on the way into a double
+record lane. The compile sweep answers what a scene REACHES; only a capture
+answers what it renders. Graduate through the measurement, never through the
+sweep's verdict.
 
 Refresh the audit by building `dist` once, then compiling each scene directly:
 `node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts`.
@@ -178,12 +190,19 @@ the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
 **Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-27,
-before the splat-plugin trio shipped):
-engine options beyond msaaSamples/requiredLimits 7 (large-world),
+after the node-shadow and large-world waves):
 an unsupported constructor expression 4 (104, 105, 117, 149 — `new Map` in
 three of them and `new Promise` in the fourth, so it is not one contract),
-a numeric operator outside `+ - * / %` 3, a four-argument call 3
-(`attachControl` with a gizmo-deferral options object).
+a numeric operator outside `+ - * / %` 3 (16, 47, 181), a four-argument call
+3 (`attachControl` with a gizmo-deferral options object: 49, 222, 224),
+a non-final value return 2 (218, 219, behind vertex-animation textures),
+`createTorusKnot` 2 (214, 215), `createUtilityLayer` 2 (221, 223),
+`createTransformNode` 2 (269, 270), `createSurface` 2 (227, 228),
+`loadFont` 2 (180, 275), `createPhysicsShape` 2 (101, 102).
+Everything else in the lane is a singleton, which is what the shipped waves
+did to the histogram: the large-world engine-option cluster is gone (202-206
+shipped; 200/201 report a promise chain and 207/209 their own APIs), and no
+cluster larger than four remains.
 The shadow family finished the three scenes it finishes outright — 18, then
 4 and 22 with the ESM directional generator, the heightmap ground and the
 PBR receiver — and the `receiveShadows` scenes that remain each hide a
@@ -233,10 +252,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (70 scenes):** 16, 17, 20, 38, 43,
-51-53, 58, 59, 64-66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
+**Integrate first (64 scenes):** 16, 17, 20, 38, 43,
+51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
 129,
-140, 141, 144, 149, 156, 165, 171-174, 179, 200-207, 211, 214, 215, 217-219,
+140, 144, 149, 156, 165, 171-174, 179, 200, 201, 207, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
@@ -706,39 +725,51 @@ below rather than blocking a scene here.
   not a mechanism.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
-- [ ] Scenes 200-209: large-world rendering (`useHighPrecisionMatrix` +
-  `useFloatingOrigin`). Read
-  `docs/lite/architecture/35-large-world-rendering.md` in the pinned clone
-  first — it is the specification for this entry and names the scene behind
-  every bake. Accepting the two engine options is the small half; the pin
-  itself throws from `createEngine` when floating origin is set without the
-  high-precision matrix, so the compiler should refuse the same pair.
-  Foundation: three subtractions of the active camera's world position, all in
-  F64 before the single F32 store — the view matrix subtracts it before
-  `R_inv * -cameraPos` (and its own upload must NOT subtract again, or the
-  translation is double-biased), the mesh-world UBO subtracts it at the pack
-  boundary, and `vEyePosition` becomes `cameraWorld - offset`. Each further
-  scene then adds one bake: 202/203 the positional light entries, 204
-  thin-instance world matrices, 205/206 the sprite and billboard anchors on
-  both upload paths, 207 the shadow light-space matrix, 208 the node-material
-  mesh world, 209 Havok's multi-region simulation. 200 and 201 are the same
-  far-from-origin scene with the mode off and on, and their captures MUST
-  diverge (the pin's own parity spec requires cross-golden MAD >= 5.0), so
-  they are the pair that proves the path is engaged rather than a scene that
-  merely renders.
-  **What makes this bigger than those sites here**: a static primitive bakes
-  its node transform into its vertices, and the generated `main.cpp` stores
-  the position as a `float` literal, so at these scenes' `OFFSET` of
-  5,000,000 the precision is gone before any matrix exists. The pin keeps
-  vertices local and applies a world matrix per draw, which is exactly the
-  model the offset subtraction assumes. Scene-code mesh emission has to stop
-  baking world translation into vertices before any of the above recovers
-  anything.
-  Note the doc drifts from the source in one place: it describes a
-  `scene._floatingOriginOffset` mirror with a per-frame
-  `updateFloatingOriginOffset`, which the pinned `floating-origin.ts` says it
-  deleted as net cost without value, deriving the offset live from
-  `scene.camera.worldMatrix` instead. Lower from the source.
+- [ ] Scenes 200, 201, 207, 208, 209: the large-world bakes that remain.
+  Read `docs/lite/architecture/35-large-world-rendering.md` in the pinned
+  clone first — it is the specification for this entry and names the scene
+  behind every bake. **Shipped: the foundation plus 202, 203, 204, 205 and
+  206** — the eye-relative mesh world, the zeroed view translation, the
+  eye-relative `vEyePosition`, the positional light entries, the sprite and
+  billboard anchors on both upload paths, and the thin-instance parent world.
+  Each remaining scene adds one bake: 207 the shadow light-space matrix, 208
+  the node-material mesh world, 209 Havok's multi-region simulation. 200 and
+  201 are the same far-from-origin scene with the mode off and on, and their
+  captures MUST diverge (the pin's own parity spec requires cross-golden
+  MAD >= 5.0), so they are the pair that proves the path is engaged rather
+  than a scene that merely renders; their own first blocker is the
+  high-precision-matrix helper promise chain, filed above.
+  **The doc drifts from the source in two places, and the source decides
+  both.** It describes a `scene._floatingOriginOffset` mirror with a
+  per-frame `updateFloatingOriginOffset`, which the pinned
+  `floating-origin.ts` says it deleted as net cost without value, deriving
+  the offset live from `scene.camera.worldMatrix` instead. And it lists
+  "thin-instance per-instance world matrices" among the wired bakes, which
+  reads as a per-instance subtraction and is not one: `thin-instance-gpu.ts`
+  uploads the stream through the precision-only `packMat4IntoF32`, never
+  `packMat4IntoF32WithOffset`, so the whole subtraction stays on
+  `mesh.world`. Scene 204's own source says so, and subtracting twice is what
+  it warns against.
+  What still blocks each of the three:
+  - **207** — three chunks. `casters.push` into a `const` array of mesh
+    handles the unrolled loop grows, which `setShadowTaskCasterMeshes` then
+    reads (it takes `expectStaticArrayLiteral` today, so the compile-time
+    tuple needs to be an accepted second shape);
+    `createPcfDirectionalShadowGenerator`, which is the two shipped
+    generators combined — the PCF generator's own `depth32float` map,
+    comparison sampler and shared UBO, over the `computeDirectionalLightMatrix`
+    the ESM directional generator already lowers; and the eye-relative light
+    matrix. That last one is the scene's actual subject and the pin already
+    carries it: `_renderShadowMap` passes `(casterMeshes, offX, offY, offZ)`
+    into `computeDirectionalLightMatrix`, which this port folds to zero at
+    every site (`- 0.0` in the emitted `compute_directional_light_matrix`),
+    so wiring it is unfolding those three arguments and dropping
+    `shadow:pcf`/`shadow:esm` from `floatingOriginUnwired`.
+  - **208** — the node family's mesh world, which is the same
+    `mesh_world_eye_relative` the other two families take; `loader:gltf` is
+    the one still-refused capability a node scene is likely to reach.
+  - **209** — `enableHavokFloatingOrigin`, a multi-region simulation rather
+    than a render bake, behind the physics lane below.
 - [ ] Scenes 218, 219: recursion (`findSkinned`) carries the reported non-final
   return, and vertex-animation textures (`VatHandle`/`VatClip`) sit behind it.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
@@ -1054,10 +1085,16 @@ CLI exposes no combined-sampler emission.
   world and the splat world. This port widened the camera's world and a
   node's translation; the rest still compose into `std::array<float, 16>`
   unconditionally, and `MeshRecord::outer_position` is likewise still `Vec3`.
-  Blocked on a measurement: no reached scene combines high-precision matrix
-  with an imported light, a thin-instance pool, a navmesh, a shadow or a
-  splat -- `assertFloatingOriginCapabilities` refuses most of those pairs
-  outright -- so there is nothing to measure a widening against.
+  Scene 204 is the first reached pair and it measures 0.000 on both backends,
+  which bounds the thin-instance row rather than closing it: the parent world
+  is composed and subtracted in double by `mesh_world_eye_relative` before the
+  single float store, so the F32 `instance_parent_matrix` is only the RECORDED
+  parent, and 204's is the identity. A floating-origin pool under a
+  transformed parent node is what would measure the widening.
+  Blocked on a measurement for the rest: no reached scene combines
+  high-precision matrix with an imported light, a navmesh, a shadow or a
+  splat -- `assertFloatingOriginCapabilities` refuses those pairs outright --
+  so there is nothing to measure a widening against.
 
 - [ ] Hoist the floating-origin offset out of the per-draw path. Every
   floating-origin draw calls `arc_rotate_eye_position` through
