@@ -890,7 +890,6 @@ inline void billboard_apply_floating_origin(
     std::vector<float>& out,
     Vec3d offset) {
     const std::size_t stride = system.instance_floats_per_sprite;
-    if (stride == 0) return;
     for (std::size_t base = 0; base + 2 < out.size(); base += stride) {
         out[base + 0] = static_cast<float>(
             static_cast<double>(out[base + 0]) - offset.x);
@@ -934,13 +933,12 @@ inline void billboard_upload_instances(
             system.instance_data.begin(),
             system.instance_data.begin() +
                 static_cast<std::ptrdiff_t>(floats));
-#if BBLITE_FLOATING_ORIGIN
-        billboard_apply_floating_origin(system, out, fo_offset);
-#endif
-        return;
+    } else {
+        billboard_sorted_instances(system, view, out);
     }
-    billboard_sorted_instances(system, view, out);
 #if BBLITE_FLOATING_ORIGIN
+    // Both arms leave out in the same shape, so the anchor bake is one
+    // pass over whichever of the two filled it.
     billboard_apply_floating_origin(system, out, fo_offset);
 #endif
 }

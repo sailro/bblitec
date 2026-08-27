@@ -176,3 +176,79 @@ export function assertShadowCapabilities(
         );
     }
 }
+
+/**
+ * The subsystems a floating-origin scene may not reach yet.
+ *
+ * `useFloatingOrigin` changes the frame the WHOLE render is in: the view
+ * translation goes to zero, a mesh keeps local vertices, and every world,
+ * light and anchor is rebuilt against the eye. Anything that still composes
+ * an absolute world would then be drawn five million units from where the
+ * rest of the scene is -- silently, because it lands consistently with
+ * itself.
+ *
+ * So each subsystem is either moved into the frame or named here. The list
+ * is the honest edge of the mode, not a wish: a scene reaching one fails at
+ * generation with the subsystem's name instead of rendering something
+ * plausible.
+ */
+const floatingOriginUnwired: readonly {
+    feature: string;
+    why: string;
+}[] = [
+    {
+        feature: "shadow:pcf",
+        why: "a shadow generator builds its light view and projection from " +
+            "absolute caster bounds, so the map would not line up with " +
+            "eye-relative geometry",
+    },
+    {
+        feature: "shadow:esm",
+        why: "a shadow generator builds its light view and projection from " +
+            "absolute caster bounds, so the map would not line up with " +
+            "eye-relative geometry",
+    },
+    {
+        feature: "loader:splat",
+        why: "a splat cloud composes its own absolute world and multiplies " +
+            "it by the frame's view",
+    },
+    {
+        feature: "material:shader",
+        why: "a ShaderMaterial serializes its own system-uniform block and " +
+            "still reads the identity world the bake used to justify",
+    },
+    {
+        feature: "loader:gltf",
+        why: "the glTF loader bakes each primitive's node world into its " +
+            "vertices in float32, which quantizes them before the " +
+            "eye-relative subtraction could recover the remainder",
+    },
+    {
+        feature: "loader:gltf-cameras",
+        why: "a parented camera's world is its fixup node's product, and " +
+            "the offset is read off the camera's own local eye",
+    },
+    {
+        feature: "mesh:thin-instances",
+        why: "a thin-instance stream carries absolute per-instance matrices",
+    },
+];
+
+/**
+ * Refuse a floating-origin scene that reaches a subsystem still drawn in
+ * absolute space.
+ */
+export function assertFloatingOriginCapabilities(
+    features: readonly string[],
+): void {
+    if (!features.includes("renderer:floating-origin")) return;
+    for (const { feature, why } of floatingOriginUnwired) {
+        if (!features.includes(feature)) continue;
+        throw new Error(
+            `A floating-origin scene reaches ${feature}, which is not in ` +
+                `the eye-relative frame yet: ${why}. Wire it, or drop ` +
+                "useFloatingOrigin from the engine.",
+        );
+    }
+}

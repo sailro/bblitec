@@ -578,9 +578,11 @@ export class RendererLowerer {
             // contract, asserted here so a pin retune fails generation.
             assertPinnedFogInfosOrder();
         }
-        // A scene reaching no thin instances composes no parent world, so
-        // the body is never interpolated and the derivation is skipped.
-        const instancingTrs: PinnedTrsComposition =
+        // The mesh TRS composition, which two emissions interpolate: a
+        // thin-instanced pool's parent world and the eye-relative world a
+        // floating-origin draw carries. A scene reaching neither composes
+        // no mesh world here, so the derivation is skipped.
+        const meshTrs: PinnedTrsComposition =
             options.gpuInstancing || options.floatingOrigin
                 ? pinnedTrsComposition(this.context)
                 : { composeLocalBody: "", composeWorldBody: "" };
@@ -652,7 +654,7 @@ export class RendererLowerer {
                 opaqueOrderStamp,
                 shaderVariantTable,
                 shaderVariantEntries,
-                instancingTrs,
+                meshTrs,
                 secondAnalyticLightFill,
                 backgroundGeometry,
                 perspectiveWriter,
@@ -1274,7 +1276,8 @@ ${options.floatingOrigin
 // whole precision-recovery trick (pack-mat4-with-offset.ts).
 std::array<float, 16> mesh_world_eye_relative(
     const MeshRecord& mesh,
-    const CameraRecord& camera);`
+    const std::array<float, 16>& base,
+    Vec3d eye);`
     : ""}\
 ${options.gpuInstancing
     ? `std::array<float, 16> build_instance_parent_world(
@@ -1343,7 +1346,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp: string;
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
-            instancingTrs: PinnedTrsComposition;
+            meshTrs: PinnedTrsComposition;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1363,7 +1366,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             opaqueOrderStamp,
             shaderVariantTable,
             shaderVariantEntries,
-            instancingTrs,
+            meshTrs,
             secondAnalyticLightFill,
             backgroundGeometry,
             perspectiveWriter,
@@ -1881,20 +1884,37 @@ ${options.floatingOrigin
 // before the single float store rounds the small remainder.
 std::array<float, 16> mesh_world_eye_relative(
     const MeshRecord& mesh,
-    const CameraRecord& camera) {
-${instancingTrs.composeLocalBody}\
-    // The offset in the camera's OWN width. Under the pin's high-precision
-    // matrix the camera's world storage is F64, so its worldMatrix[12] is
-    // the unrounded eye -- taking it from the float world here would
-    // quantize the offset by half an ULP at large-world scale and put the
-    // error straight back into the remainder this exists to recover.
-    const Vec3d eye = arc_rotate_eye_position(camera);
-    local[12] -= eye.x;
-    local[13] -= eye.y;
-    local[14] -= eye.z;
+    const std::array<float, 16>& base,
+    Vec3d eye) {
+${meshTrs.composeLocalBody}\
+    // The family's own base world, kept: the PBR convention's X mirror, a
+    // thin-instanced pool's parent, an animated mesh's palette entry. The
+    // eye-relative frame replaces where a mesh sits, never which convention
+    // its family draws it under -- inserting the subtraction BESIDE the arm
+    // chain instead of inside it is what dropped the mirror.
+    std::array<double, 16> world_local{};
+    for (std::size_t row = 0; row < 4; ++row) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            double sum = 0.0;
+            for (std::size_t term = 0; term < 4; ++term) {
+                sum += static_cast<double>(base[term * 4 + column]) *
+                    local[row * 4 + term];
+            }
+            world_local[row * 4 + column] = sum;
+        }
+    }
+    // A cloned imported root's offset, folded in at full width rather than
+    // added to the narrowed result -- adding it after the store would put
+    // the large coordinate straight back.
+    world_local[12] += static_cast<double>(mesh.outer_position.x);
+    world_local[13] += static_cast<double>(mesh.outer_position.y);
+    world_local[14] += static_cast<double>(mesh.outer_position.z);
+    world_local[12] -= eye.x;
+    world_local[13] -= eye.y;
+    world_local[14] -= eye.z;
     std::array<float, 16> world{};
     for (std::size_t cell = 0; cell < 16; ++cell) {
-        world[cell] = static_cast<float>(local[cell]);
+        world[cell] = static_cast<float>(world_local[cell]);
     }
     return world;
 }
@@ -1919,7 +1939,7 @@ std::array<float, 16> build_instance_parent_world(
     if (!mesh.thin_instanced) {
         return mesh.instance_parent_matrix;
     }
-${instancingTrs.composeLocalBody}\
+${meshTrs.composeLocalBody}\
     // The pinned multiply, translated whole above: the parent is the f32
     // matrix the loader recorded and the composed TRS stays f64, which is
     // the pinned accumulation's own width for both.

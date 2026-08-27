@@ -61,6 +61,7 @@ import type {
     SpriteCustomShaderManifest,
 } from "./compiler/types.js";
 import {
+    assertFloatingOriginCapabilities,
     assertShadowCapabilities,
     reachesShadowGenerator,
     nodeShadowInputs,
@@ -563,6 +564,7 @@ class GeneratedSourceWriter {
             ...nodeShadowInputs(nodeVariantList),
         };
         assertShadowCapabilities(shadowInputs);
+        assertFloatingOriginCapabilities(features);
         const shadows = shadowCapabilities(shadowInputs);
         const nodeEsmCasters = shadowInputs.nodeEsmCasters > 0;
         this.tree.write(

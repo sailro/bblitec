@@ -258,6 +258,34 @@ inline std::array<float, 16> outer_draw_world(
 }
 
 /**
+ * The world one draw carries, from the base world its family chose.
+ *
+ * Ordinarily that base IS the drawn world -- this port bakes a mesh's TRS
+ * into its vertices, so the base carries only the conventions around it (the
+ * PBR X mirror, a thin-instanced pool's parent, a skinned draw's palette
+ * entry) -- and the clone offset is added after it.
+ *
+ * Under floating origin the vertices are LOCAL, so the mesh's own TRS comes
+ * back into the matrix and the whole product is rebuilt eye-relative in
+ * double. Every family asks here, so which frame a draw is in is one answer
+ * rather than one per family.
+ */
+inline std::array<float, 16> draw_world(
+    const std::array<float, 16>& base,
+    const MeshRecord& record,
+    [[maybe_unused]] const Scene& scene,
+    [[maybe_unused]] const Engine& engine) {
+#if BBLITE_FLOATING_ORIGIN
+    return upstream::mesh_world_eye_relative(
+        record,
+        base,
+        floating_origin_offset(scene, engine));
+#else
+    return outer_draw_world(base, record);
+#endif
+}
+
+/**
  * Whether another task binds this geometry task's depth.
  *
  * The pin hands that depth over as an eager wrapper target, so the borrowing
@@ -1188,35 +1216,22 @@ inline std::array<float, 16> pinned_draw_world(
     bool world_from_palette,
     bool uses_local_position,
     const MeshRecord& record,
-    [[maybe_unused]] const Scene& scene,
-    [[maybe_unused]] const Engine& engine) {
-#if BBLITE_FLOATING_ORIGIN
-    // Under floating origin the vertices are local, so every draw carries
-    // its mesh's own world -- eye-relative, which is the frame the view
-    // matrix's zeroed translation puts the camera at.
-    return outer_draw_world(
-        upstream::mesh_world_eye_relative(
-            record,
-            floating_origin_camera(scene, engine)),
-        record);
-#else
+    const Scene& scene,
+    const Engine& engine) {
     if (skeleton_draw) {
-        return outer_draw_world(
-            pinned_identity_world(),
-            record);
+        return draw_world(pinned_identity_world(), record, scene, engine);
     }
     if (world_from_palette) {
-        return outer_draw_world(
-            record.bone_matrices[0],
-            record);
+        return draw_world(record.bone_matrices[0], record, scene, engine);
     }
     if (uses_local_position || pinned_record_instanced(record)) {
-        return outer_draw_world(
+        return draw_world(
             pinned_instanced_world(record),
-            record);
+            record,
+            scene,
+            engine);
     }
-    return outer_draw_world(pinned_mesh_world(), record);
-#endif
+    return draw_world(pinned_mesh_world(), record, scene, engine);
 }
 #endif
 
@@ -1722,7 +1737,15 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     const Engine& engine,
     std::uint32_t mesh_index) {
     upstream::NodeMeshUniforms block{};
-    block.world = pinned_identity_world();
+    // The identity is the BAKE's answer, not a constant: this port bakes a
+    // node mesh's TRS into its vertices, so the world carries nothing --
+    // unless the floating-origin frame kept them local, which is exactly
+    // what `draw_world` decides for every family alike.
+    block.world = draw_world(
+        pinned_identity_world(),
+        engine.meshes[mesh_index],
+        scene,
+        engine);
     if (
         mesh_index < engine.meshes.size() &&
         engine.meshes[mesh_index].receives_shadows) {
@@ -2220,23 +2243,17 @@ inline std::size_t standard_variant_for_draw(
  * rather than rendered with a silently-wrong varying.
  */
 inline std::array<float, 16> standard_draw_world(
-    [[maybe_unused]] const MeshRecord& record,
+    const MeshRecord& record,
     bool uses_local_position,
-    [[maybe_unused]] const Scene& scene,
-    [[maybe_unused]] const Engine& engine) {
-#if BBLITE_FLOATING_ORIGIN
-    (void)uses_local_position;
-    return outer_draw_world(
-        upstream::mesh_world_eye_relative(
-            record,
-            floating_origin_camera(scene, engine)),
-        record);
-#else
+    const Scene& scene,
+    const Engine& engine) {
 #if BBLITE_GPU_INSTANCING
     if (pinned_record_instanced(record)) {
-        return outer_draw_world(
+        return draw_world(
             upstream::build_instance_parent_world(record),
-            record);
+            record,
+            scene,
+            engine);
     }
 #endif
     if (uses_local_position) {
@@ -2254,17 +2271,18 @@ inline std::array<float, 16> standard_draw_world(
                 "Standard mesh is not wired: the baked vertices and the "
                 "raw position attribute disagree.");
         }
-        return outer_draw_world(
+        return draw_world(
             record.instance_parent_matrix,
-            record);
+            record,
+            scene,
+            engine);
     }
-    return outer_draw_world(std::array<float, 16>{
+    return draw_world(std::array<float, 16>{
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
-    }, record);
-#endif
+    }, record, scene, engine);
 }
 
 /**
