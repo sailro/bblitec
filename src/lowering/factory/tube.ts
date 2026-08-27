@@ -30,7 +30,147 @@ import { LoweredSource, LoweringContext } from "../context.js";
 export class TubeLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerTube(): LoweredSource {
+    /**
+     * `createExtrudeShape`, which is the tube's own machinery under a
+     * different cross-section.
+     *
+     * The pin sweeps a 2D shape along `computePath3D`'s frames and rotates
+     * each copy about the tangent with the same `rodrigues` the tube uses,
+     * then hands the rows to `createRibbonData`. So this emits only what is
+     * the EXTRUDE's -- the plane-and-place formulas and the cap indexing --
+     * and reuses the frames, the rotation and the ribbon that already exist.
+     *
+     * Every formula is shape-asserted against the pinned AST, which is this
+     * unit's own discipline: the numbers are the pin's, and a pin that moves
+     * one fails generation here rather than rendering differently.
+     */
+    private lowerExtrudeShape(): string {
+        const extrudeModule = "src/mesh/create-extrude.ts";
+        const { declaration: extrude } =
+            this.context.functionDeclaration(
+                extrudeModule,
+                "createExtrudeShapeData",
+            );
+        // The cross-section, planed onto the frame's own basis.
+        for (const axis of ["x", "y", "z"] as const) {
+            this.context.expectShapeCount(
+                extrude,
+                `t.${axis} * sp.z + n.${axis} * sp.x + b.${axis} * sp.y`,
+                `Extrude planed ${axis}`,
+            );
+            this.context.expectShapeCount(
+                extrude,
+                `rotated.${axis} * scale + curve[i]!.${axis}`,
+                `Extrude placed ${axis}`,
+            );
+        }
+        // Cap NONE starts the row index at 0, which is what keeps the two
+        // barycentre arms below unreachable for the reached option set.
+        this.context.expectShapeCount(
+            extrude,
+            "cap === CAP_NONE || cap === CAP_END ? 0 : 2",
+            "Extrude cap start index",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(extrude, "scale"),
+            "options.scale ?? 1",
+            "Extrude scale default",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(extrude, "rotation"),
+            "options.rotation ?? 0",
+            "Extrude rotation default",
+        );
+        // The ribbon the sweep hands off to: open array, open path.
+        const ribbonCall = this.context.callExpression(
+            extrude,
+            "createRibbonData",
+        );
+        this.context.assertExpressionShape(
+            ribbonCall.arguments[0]!,
+            "{ pathArray: shapePaths, closeArray: false, closePath: false }",
+            "Extrude ribbon options",
+        );
+        return `
+/**
+ * \`createExtrudeShapeData\`: the shape planed onto each frame, rotated
+ * about the tangent, scaled and placed on the path point. The rows then go
+ * to the ribbon, which is where the triangulation and the normals are.
+ */
+MeshHandle create_extrude_shape(
+    Engine& engine,
+    const std::vector<Vec3d>& shape,
+    const std::vector<Vec3d>& curve,
+    double scale,
+    double rotation) {
+    if (curve.size() < 2) {
+        throw std::runtime_error(
+            "createExtrudeShape requires at least two path points.");
+    }
+    std::vector<TubeVec> frame_curve;
+    frame_curve.reserve(curve.size());
+    for (const Vec3d& point : curve) {
+        frame_curve.push_back(TubeVec{point.x, point.y, point.z});
+    }
+    const TubePath3D frames = tube_compute_path(frame_curve);
+    std::vector<std::vector<Vec3d>> shape_paths;
+    shape_paths.reserve(curve.size());
+    double angle = 0.0;
+    for (std::size_t i = 0; i < curve.size(); ++i) {
+        const TubeVec& t = frames.tangents[i];
+        const TubeVec& n = frames.normals[i];
+        const TubeVec& b = frames.binormals[i];
+        std::vector<Vec3d> shape_path;
+        shape_path.reserve(shape.size());
+        for (const Vec3d& sp : shape) {
+            const TubeVec planed{
+                t.x * sp.z + n.x * sp.x + b.x * sp.y,
+                t.y * sp.z + n.y * sp.x + b.y * sp.y,
+                t.z * sp.z + n.z * sp.x + b.z * sp.y,
+            };
+            const TubeVec rotated = tube_rodrigues(planed, t, angle);
+            shape_path.push_back(Vec3d{
+                rotated.x * scale + curve[i].x,
+                rotated.y * scale + curve[i].y,
+                rotated.z * scale + curve[i].z,
+            });
+        }
+        shape_paths.push_back(std::move(shape_path));
+        angle += rotation;
+    }
+    return create_ribbon_mesh(
+        engine,
+        RibbonOptions{std::move(shape_paths), false, false},
+        "${this.pinnedExtrudeMeshName()}");
+}
+`;
+    }
+
+    /** The name the pinned `createExtrudeShape` finishes under. */
+    private pinnedExtrudeMeshName(): string {
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                "src/mesh/mesh-factories.ts",
+                "createExtrudeShape",
+            );
+        const call = this.context.callExpression(
+            declaration,
+            "createMeshFromData",
+        );
+        const name = call.arguments[1]
+            ? this.context.unwrapExpression(call.arguments[1])
+            : undefined;
+        if (!name || !ts.isStringLiteral(name)) {
+            return this.context.contractError(
+                declaration,
+                "Expected createExtrudeShape to pass a literal mesh name.",
+            );
+        }
+        void file;
+        return name.text;
+    }
+
+    public lowerTube(extrudeShapes = false): LoweredSource {
         const tubeModule = "src/mesh/create-tube.ts";
         const pathModule = "src/mesh/path3d.ts";
         const ribbonModule = "src/mesh/create-ribbon.ts";
@@ -733,7 +873,7 @@ MeshHandle create_tube(
         {},
         {});
 }
-
+${!extrudeShapes ? "" : this.lowerExtrudeShape()}
 } // namespace bbl
 `,
         };

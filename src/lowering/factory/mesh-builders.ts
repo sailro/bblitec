@@ -44,6 +44,39 @@ export class MeshBuilderLowerer {
         return name.text;
     }
 
+    /**
+     * The `x`, `y` and `z` initializers of a pinned `{x, y, z}` literal.
+     *
+     * Read by NAME rather than by position, and refusing anything else, so
+     * a pin that reorders or renames a component fails here instead of
+     * swapping two axes silently.
+     */
+    private recordComponents(
+        expression: ts.Expression,
+    ): readonly ts.Expression[] {
+        const literal = this.context.unwrapExpression(expression);
+        if (!ts.isObjectLiteralExpression(literal)) {
+            return this.context.contractError(
+                expression,
+                "Expected a pinned '{x, y, z}' literal.",
+            );
+        }
+        return (["x", "y", "z"] as const).map((component) => {
+            for (const property of literal.properties) {
+                if (
+                    ts.isPropertyAssignment(property) &&
+                    this.context.propertyName(property.name) === component
+                ) {
+                    return property.initializer;
+                }
+            }
+            return this.context.contractError(
+                expression,
+                `Pinned record declares no '${component}'.`,
+            );
+        });
+    }
+
     public constructor(protected readonly context: LoweringContext) {}
 
     /**
@@ -64,7 +97,11 @@ export class MeshBuilderLowerer {
         const disc = features.includes("mesh:disc");
         const cylinder = features.includes("mesh:cylinder");
         const polyhedron = features.includes("mesh:polyhedron");
-        const ribbon = features.includes("mesh:ribbon");
+        // The extrude finishes through the ribbon under its own name, so
+        // reaching it reaches this unit's ribbon too.
+        const ribbon =
+            features.includes("mesh:ribbon") ||
+            features.includes("mesh:extrude");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
@@ -73,6 +110,7 @@ export class MeshBuilderLowerer {
         const discModule = "src/mesh/create-disc.ts";
         const cylinderModule = "src/mesh/create-cylinder.ts";
         const polyhedronModule = "src/mesh/create-polyhedron.ts";
+        const ribbonModule = "src/mesh/create-ribbon.ts";
         const boxFile = this.context.sourceFile(boxModule);
         const { declaration: box } =
             this.context.functionDeclaration(
@@ -118,6 +156,16 @@ export class MeshBuilderLowerer {
         const meshMathCalls = new Map([
             ...pinnedNumericMathCalls(),
             [
+                "len",
+                (args: readonly string[]): string =>
+                    `pinned_ribbon_len(${args.join(", ")})`,
+            ],
+            [
+                "sub",
+                (args: readonly string[]): string =>
+                    `pinned_ribbon_sub(${args.join(", ")})`,
+            ],
+            [
                 "computeNormals",
                 (args: readonly string[]): string =>
                     `pinned_compute_normals(${args.join(", ")})`,
@@ -139,6 +187,12 @@ export class MeshBuilderLowerer {
                 string,
                 PinnedBinding["type"]
             > = new Map(),
+            // Whether THIS body's `||` only joins conditions. Most of the
+            // family's do; `createRibbonData` also writes the
+            // value-selecting `Math.sqrt(...) || 1`, which the C++ operator
+            // would flatten to the constant 1 and stop normalizing a seam
+            // normal -- the exact rewrite this translator exists to refuse.
+            booleanOr = true,
         ): string => {
             if (!declaration.body) {
                 this.context.contractError(
@@ -239,7 +293,7 @@ export class MeshBuilderLowerer {
                 calls: meshMathCalls,
                 listCalls: new Set(["computeNormals"]),
                 returnValue,
-                booleanOr: true,
+                booleanOr,
                 // Every `&&` in the pinned builder family joins a CONDITION
                 // -- an `if` test, a `while` test, or a guard ternary's test
                 // -- and none of them selects a value. Audited across all
@@ -522,6 +576,156 @@ MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
         {},
         {},
         {});
+}
+`;
+        // `len` and `sub`, the two vector helpers `createRibbonData`
+        // declares beside itself. Lowered from their own bodies rather than
+        // written here, because a square root and three subtractions are
+        // exactly the kind of formula this port must not re-type.
+        const ribbonVectorHelpers = !ribbon
+            ? ""
+            : (() => {
+                  const file = this.context.sourceFile(ribbonModule);
+                  const lowerHelper = (
+                      symbol: string,
+                      parameters: readonly string[],
+                      signature: string,
+                      returns: (
+                          expression: ts.Expression,
+                          lowerer: PinnedNumericLowerer,
+                      ) => string,
+                  ): string => {
+                      const { declaration } =
+                          this.context.functionDeclaration(
+                              ribbonModule,
+                              symbol,
+                          );
+                      if (!declaration.body) {
+                          this.context.contractError(
+                              declaration,
+                              `Expected ${symbol} to have a body.`,
+                          );
+                      }
+                      const lowerer: PinnedNumericLowerer =
+                          new PinnedNumericLowerer(file, {
+                              bindings: new Map<string, PinnedBinding>(
+                                  parameters.map((parameter) => [
+                                      parameter,
+                                      { cpp: parameter, type: "vec3" },
+                                  ]),
+                              ),
+                              calls: meshMathCalls,
+                              returnValue: (expression) =>
+                                  expression
+                                      ? returns(expression, lowerer)
+                                      : this.context.contractError(
+                                            declaration,
+                                            `${symbol} returns nothing.`,
+                                        ),
+                              booleanOr: true,
+                              booleanAnd: true,
+                          });
+                      const body = declaration.body.statements
+                          .flatMap((statement) =>
+                              lowerer.statement(statement, "    "),
+                          )
+                          .join("\n");
+                      return `${signature} {\n${body}\n}\n\n`;
+                  };
+                  return (
+                      lowerHelper(
+                          "len",
+                          ["v"],
+                          "static double pinned_ribbon_len(const Vec3d& v)",
+                          (expression, lowerer) =>
+                              lowerer.expression(expression),
+                      ) +
+                      lowerHelper(
+                          "sub",
+                          ["a", "b"],
+                          "static Vec3d pinned_ribbon_sub(\n" +
+                              "    const Vec3d& a,\n    const Vec3d& b)",
+                          // The pin returns a `{x, y, z}` literal, and
+                          // the record this port stores is that literal's
+                          // three components in the pin's own order.
+                          (expression, lowerer) =>
+                              `Vec3d{${this.recordComponents(expression)
+                                  .map((component) =>
+                                      lowerer.expression(component),
+                                  )
+                                  .join(", ")}}`,
+                      )
+                  );
+              })();
+        const ribbonBuilderBody = !ribbon
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(ribbonModule),
+                  this.context.functionDeclaration(
+                      ribbonModule,
+                      "createRibbonData",
+                  ).declaration,
+                  new Map([
+                      ["options.pathArray", "options.path_array"],
+                      // The two flags bind as the LOCALS the pin resolves
+                      // them into, so its `options.closeArray || false`
+                      // coercion is one generation already made -- which
+                      // leaves the body's only other `||` the
+                      // value-selecting one, lowered as such.
+                      ["closeArray", "options.close_array"],
+                      ["closePath", "options.close_path"],
+                      // No reached ribbon names an offset, and the pin's
+                      // own default for it is not a constant -- it is
+                      // `floor(pathArray[0].length / 2)`, which the body
+                      // computes one line above. Binding the read to that
+                      // local is taking the absent arm exactly.
+                      ["options.offset", "defaultOffset"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map([
+                      ["options.pathArray", "vec3-list-2d"],
+                      ["closeArray", "bool"],
+                      ["closePath", "bool"],
+                  ]),
+                  false,
+              );
+        const ribbonFactory = !ribbon
+            ? ""
+            : `${ribbonVectorHelpers}static PinnedMeshData pinned_create_ribbon_data(
+    RibbonOptions options) {
+${ribbonBuilderBody}
+}
+
+/**
+ * The ribbon, under whichever pinned factory's name asked for it.
+ *
+ * \`createExtrudeShape\` finishes through \`createRibbonData\` too, under its
+ * own mesh name -- so the triangulation lives here once and the name is the
+ * caller's, which is exactly how the pin composes the two.
+ */
+MeshHandle create_ribbon_mesh(
+    Engine& engine,
+    RibbonOptions options,
+    std::string_view name) {
+    PinnedMeshData data = pinned_create_ribbon_data(std::move(options));
+    return create_mesh_from_data(
+        engine,
+        std::string(name),
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+
+MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
+    return create_ribbon_mesh(
+        engine,
+        std::move(options),
+        "${this.pinnedFactoryMeshName("createRibbon")}");
 }
 `;
         const torusBuilderBody = lowerPinnedMeshBuilder(
@@ -1884,6 +2088,7 @@ void set_thin_instance_colors(
                 "createBox, createGround, createPlane, createSphere, createSphereData, createMorphTargets, setMorphTargetWeights, createTorus, createMeshFromData",
                 "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, src/morph/create-morph-targets.ts, src/mesh/create-torus.ts defaults, and src/math/compute-aabb.ts bounds folding",
             )}
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 ${heightMapGround ? `#include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
@@ -2310,7 +2515,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}
+${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}${ribbonFactory}
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,

@@ -628,6 +628,32 @@ multi-point path with explicit `radius` and `tessellation`; `cap`, `arc`,
 name, and the pinned defaults that make the dropped arms unreachable (cap
 `NONE`, arc `1`) are anchored rather than assumed.
 
+**The rest of the builder family** — `createCylinder` (cylinders, cones and
+truncated cones), `createDisc` (discs and pie slices), `createPolyhedron`,
+`createRibbon` and `createExtrudeShape` — is lowered from each pinned body
+by the same translator, and each measures byte-exact against the browser on
+scene 38. What separates this half from the five that shipped before it is
+storage: those preallocate a typed array and store into it, while these GROW
+a `number[]` and convert at the end, which is where their float rounding
+happens. So the translator gained a growable list (its `push`, its `length`,
+its indexing, and the `new F32(list)` that rounds it), a jagged list whose
+rows are lists, the pin's own `{x, y, z}` record as a value, and a local
+helper closure written out at each call site — which is how
+`createCap(false)` and `createCap(true)` fold their `isTop` the way the pin
+would have written the two bodies out.
+
+Two of them resolve at generation rather than at run time. The polyhedron's
+`POLYHEDRA` table is data and the `type` a scene names is a compile-time
+index, so generation picks the row and one polyhedron costs one table rather
+than fifteen. And a builder option is resolved from the factory's own `??`
+before the call, which is what lets the emitted body bind each option to the
+present arm — the same specialization the shadow generators take, read from
+the pin rather than restated. `createExtrudeShape` reuses the tube's frames
+and Rodrigues rotation and finishes through the ribbon under its own mesh
+name, because that is exactly how the pin composes it. `cap` refuses by
+name, as does a single-path ribbon and a zero `diameter` that never named
+which end the cone belongs to.
+
 A **line system** is one of those meshes rather than a renderer of its own:
 `createLineSystem` concatenates its polylines into a single indexed mesh —
 an index pair per segment, nothing joining one line to the next — and draws

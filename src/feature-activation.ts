@@ -488,6 +488,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/create-cylinder.ts",
         consumers: CMAKE,
     },
+    "mesh:extrude": {
+        provenance: "src/mesh/create-extrude.ts",
+        consumers: CMAKE,
+    },
     "mesh:polyhedron": {
         provenance: "src/mesh/create-polyhedron.ts",
         consumers: CMAKE,

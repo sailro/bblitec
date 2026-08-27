@@ -78,6 +78,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:thin-instances-dynamic": [],
     "mesh:cylinder": [],
     "mesh:disc": [],
+    "mesh:extrude": [],
     "mesh:polyhedron": [],
     "mesh:ribbon": [],
     "mesh:torus": [],

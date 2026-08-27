@@ -213,6 +213,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:disc",
             "mesh:polyhedron",
             "mesh:ribbon",
+            "mesh:extrude",
             "mesh:from-data",
             "mesh:ground",
             "mesh:ground-heightmap",
@@ -235,7 +236,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/mesh_tube.cpp",
-        features: ["mesh:tube"],
+        features: ["mesh:tube", "mesh:extrude"],
     },
     {
         source: "upstream/src/navigation.cpp",

@@ -1376,6 +1376,7 @@ export type Feature =
     | "mesh:thin-instance-colors"
     | "mesh:thin-instances-dynamic"
     | "mesh:cylinder"
+    | "mesh:extrude"
     | "mesh:polyhedron"
     | "mesh:ribbon"
     | "mesh:disc"

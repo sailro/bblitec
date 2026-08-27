@@ -1745,7 +1745,8 @@ ${composed.wgsl}`,
             features.includes("mesh:disc") ||
             features.includes("mesh:cylinder") ||
             features.includes("mesh:polyhedron") ||
-            features.includes("mesh:ribbon")
+            features.includes("mesh:ribbon") ||
+            features.includes("mesh:extrude")
         ) {
             this.writeSource(
                 "upstream/src/mesh_factories.cpp",
@@ -1771,10 +1772,15 @@ ${composed.wgsl}`,
                 "upstream/include/bblite/upstream/physics.hpp",
             );
         }
-        if (features.includes("mesh:tube")) {
+        if (
+            features.includes("mesh:tube") ||
+            features.includes("mesh:extrude")
+        ) {
             this.writeSource(
                 "upstream/src/mesh_tube.cpp",
-                new TubeLowerer(context).lowerTube(),
+                new TubeLowerer(context).lowerTube(
+                    features.includes("mesh:extrude"),
+                ),
                 generated,
             );
         }

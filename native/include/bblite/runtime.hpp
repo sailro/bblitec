@@ -2042,6 +2042,64 @@ struct SphereMeshData {
 };
 
 /**
+ * A scene's own rows of `{x, y, z}` as the path array a ribbon takes.
+ *
+ * The data model materializes an annotated `Vec3[][]` a scene grew in a
+ * loop as its own record type, and the pin's builder wants the record it
+ * declares. Templated on the row rather than named per scene, because what
+ * makes the two the same is that both spell the pin's three components.
+ */
+/**
+ * One element of a list, grown to reach it.
+ *
+ * JavaScript extends an array when you assign past its end, and the pinned
+ * ribbon relies on that: it fills `us[p]` for each path without sizing `us`
+ * first. A C++ `operator[]` there is out of bounds, so an assignment
+ * through this one grows instead -- which is the same array the pin ends
+ * up with.
+ */
+template <typename T>
+T& at_grow(std::vector<T>& values, std::size_t index) {
+    if (values.size() <= index) {
+        values.resize(index + 1);
+    }
+    return values[index];
+}
+
+template <typename Points>
+std::vector<Vec3d> vec3_path(const Points& points) {
+    std::vector<Vec3d> path;
+    path.reserve(points.size());
+    for (const auto& point : points) {
+        path.push_back(Vec3d{point.x, point.y, point.z});
+    }
+    return path;
+}
+
+/** The same, one level up: a scene's rows as a ribbon's path array. */
+template <typename Rows>
+std::vector<std::vector<Vec3d>> vec3_paths(const Rows& rows) {
+    std::vector<std::vector<Vec3d>> paths;
+    paths.reserve(rows.size());
+    for (const auto& row : rows) {
+        paths.push_back(vec3_path(row));
+    }
+    return paths;
+}
+
+/**
+ * `RibbonOptions`, as the reached slice resolves it.
+ *
+ * The path array is the pin's own `Vec3[][]`, carried whole: a ribbon is
+ * defined by its paths and there is nothing to resolve about them.
+ */
+struct RibbonOptions {
+    std::vector<std::vector<Vec3d>> path_array;
+    bool close_array;
+    bool close_path;
+};
+
+/**
  * `PolyhedronOptions`, as the reached slice resolves it.
  *
  * The pin's `POLYHEDRA` table is data and the `type` a scene names is a
@@ -2166,6 +2224,17 @@ MeshHandle create_torus(Engine& engine, TorusOptions options);
 MeshHandle create_disc(Engine& engine, DiscOptions options);
 MeshHandle create_cylinder(Engine& engine, CylinderOptions options);
 MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options);
+MeshHandle create_ribbon(Engine& engine, RibbonOptions options);
+MeshHandle create_ribbon_mesh(
+    Engine& engine,
+    RibbonOptions options,
+    std::string_view name);
+MeshHandle create_extrude_shape(
+    Engine& engine,
+    const std::vector<Vec3d>& shape,
+    const std::vector<Vec3d>& curve,
+    double scale,
+    double rotation);
 MeshHandle create_tube(
     Engine& engine,
     const std::vector<Vec3d>& path_points,

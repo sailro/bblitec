@@ -108,6 +108,45 @@ function vec3RecordCpp(
 }
 
 /**
+ * One path of Vec3 points, however the scene spelled it.
+ *
+ * A compile-time list emits its points as a braced literal; a list the data
+ * model materialized converts through `vec3_path`, which reads the same
+ * three components off whatever record type the scene's annotation
+ * produced.
+ */
+function compileVec3Path(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const bound =
+        context.handleCollections.tupleElements(expression);
+    if (bound) {
+        return (
+            `std::vector<bbl::Vec3d>{${bound
+                .map((element) =>
+                    vec3RecordCpp(context, element, expression),
+                )
+                .join(", ")}}`
+        );
+    }
+    const value = context.compileValue(expression);
+    if (value.kind === "data") {
+        return `bbl::vec3_path(${value.cpp})`;
+    }
+    return (
+        `std::vector<bbl::Vec3d>{${context
+            .expectStaticArrayLiteral(
+                context.resolveStaticExpression(expression),
+            )
+            .elements.map((element) =>
+                context.compileVec3(element, "double"),
+            )
+            .join(", ")}}`
+    );
+}
+
+/**
  * Refuses a zero the pin would read as "absent" at one of its two sites.
  *
  * `createCylinderData` clamps a zero diameter to 0.00001 for its rings but
@@ -760,24 +799,12 @@ export function compileMeshIntrinsic(
                     "Reached tubes name their path, radius and tessellation explicitly.",
                 );
             }
-            // The path arrives inline or bound to a local — a
-            // compile-time tuple of Vec3 records whose lanes may be
-            // runtime reads (a raycast hit point).
-            const boundElements =
-                context.handleCollections.tupleElements(pathExpression);
-            const points = boundElements
-                ? boundElements.map((element) =>
-                      vec3RecordCpp(context, element, pathExpression),
-                  )
-                : context
-                      .expectStaticArrayLiteral(
-                          context.resolveStaticExpression(
-                              pathExpression,
-                          ),
-                      )
-                      .elements.map((element) =>
-                          context.compileVec3(element, "double"),
-                      );
+            // The path arrives in one of three spellings: a compile-time
+            // tuple of Vec3 records whose lanes may be runtime reads (a
+            // raycast hit point), an array literal at the call site, or a
+            // list a loop grew under a `Vec3[]` annotation -- which the
+            // data model materializes as the scene's own record type.
+            const points = compileVec3Path(context, pathExpression);
             context.reachFeature("mesh:tube", call);
             context.reachFeature("mesh:from-data", call);
             return {
@@ -785,11 +812,144 @@ export function compileMeshIntrinsic(
                 sceneMeshIndex,
                 cpp:
                     `bbl::create_tube(${engine.cpp}, ` +
-                    `std::vector<bbl::Vec3d>{${points.join(", ")}}, ` +
+                    `${points}, ` +
                     `${context.compileNumber(radius, "double")}, ` +
                     `${context.compileNumber(tessellation, "double")})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createExtrudeShape": {
+            // A 2D shape swept along a 3D path. `cap` is unreached and
+            // refuses by name; `scale` and `rotation` take the factory's
+            // own `??` defaults.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 2, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const options = context.expectObjectLiteral(call.arguments[1]!);
+            validateObjectProperties(
+                context,
+                options,
+                ["shape", "path", "scale", "rotation"],
+                "Reached extrusions name their shape, path, scale and " +
+                    "rotation; cap is not lowered.",
+            );
+            const shape = context.objectProperty(options, "shape");
+            const curve = context.objectProperty(options, "path");
+            if (!shape || !curve) {
+                context.fail(
+                    call.arguments[1]!,
+                    "An extrusion needs its shape and its path.",
+                );
+            }
+            const extrudeDefault = (local: string): string =>
+                doubleLiteral(
+                    pinnedMeshOptionDefault(
+                        "src/mesh/create-extrude.ts",
+                        "createExtrudeShapeData",
+                        local,
+                    ),
+                );
+            const scale = context.objectProperty(options, "scale");
+            const rotation = context.objectProperty(options, "rotation");
+            context.reachFeature("mesh:extrude", call);
+            context.reachFeature("mesh:from-data", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_extrude_shape(${engine.cpp}, ` +
+                    `${compileVec3Path(context, shape)}, ` +
+                    `${compileVec3Path(context, curve)}, ` +
+                    `${
+                        scale
+                            ? context.compileNumber(scale, "double")
+                            : extrudeDefault("scale")
+                    }, ` +
+                    `${
+                        rotation
+                            ? context.compileNumber(rotation, "double")
+                            : extrudeDefault("rotation")
+                    })`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createRibbon": {
+            // The reached subset is the path array alone. `closeArray`,
+            // `closePath` and `offset` are the pin's own defaults, folded
+            // here so the record carries what the builder reads.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 2, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const options = context.expectObjectLiteral(call.arguments[1]!);
+            validateObjectProperties(
+                context,
+                options,
+                ["pathArray"],
+                "Reached ribbons name their pathArray; closeArray, " +
+                    "closePath and offset are the pin's own defaults.",
+            );
+            const pathArray = context.objectProperty(options, "pathArray");
+            if (!pathArray) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A ribbon needs its pathArray.",
+                );
+            }
+            // Two spellings, one meaning. An inline literal is a
+            // compile-time list of records; a list a loop grew under a
+            // `Vec3[][]` annotation is the data model's own materialized
+            // rows, which carry the same three components under the
+            // scene's own record type.
+            const tuples =
+                context.handleCollections.tupleElements(pathArray);
+            const paths = tuples
+                ? `std::vector<std::vector<bbl::Vec3d>>{${tuples
+                      .map((path) => {
+                          if (!path.tupleElements) {
+                              context.fail(
+                                  pathArray,
+                                  "Each ribbon path must be a list of " +
+                                      "Vec3 records.",
+                              );
+                          }
+                          return `{${path.tupleElements
+                              .map((point) =>
+                                  vec3RecordCpp(context, point, pathArray),
+                              )
+                              .join(", ")}}`;
+                      })
+                      .join(", ")}}`
+                : `bbl::vec3_paths(${
+                      context.compileValue(pathArray).kind === "data"
+                          ? context.compileValue(pathArray).cpp
+                          : context.fail(
+                                pathArray,
+                                "A ribbon's pathArray must be a list of " +
+                                    "Vec3 paths.",
+                            )
+                  })`;
+            context.reachFeature("mesh:ribbon", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_ribbon(${engine.cpp}, ` +
+                    `bbl::RibbonOptions{` +
+                    `${paths}, false, false})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 

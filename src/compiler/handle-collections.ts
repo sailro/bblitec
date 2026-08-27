@@ -167,6 +167,24 @@ export interface HandleCollectionsContext
 }
 
 /**
+ * The value kinds a compile-time list may hold.
+ *
+ * A handle is an ordinal, a record is its own lanes and a nested list is
+ * this rule again: none of the three needs native storage of its own, so a
+ * list of them grows at generation and emits nothing. A list of NUMBERS
+ * would need storage, which is why it is not here -- the data model
+ * materializes that one.
+ */
+const compileTimeListKinds: readonly ValueKind[] = [
+    "animation-group",
+    "camera",
+    "light",
+    "mesh",
+    "record",
+    "tuple",
+];
+
+/**
  * The value kinds that stand for an engine handle.
  *
  * A handle is a compile-time ordinal into one of the engine's own arrays, so
@@ -794,21 +812,21 @@ export class HandleCollections {
         const owner = this.context.unwrap(callee.expression);
         if (!ts.isIdentifier(owner)) return undefined;
         const tuple = this.context.lookupOptional(owner);
-        if (
-            tuple?.kind !== "tuple" ||
-            !tuple.tupleElements ||
-            tuple.tupleElements.length === 0
-        ) {
+        if (tuple?.kind !== "tuple" || !tuple.tupleElements) {
             return undefined;
         }
-        const kind = tuple.tupleElements[0]!.kind;
-        if (!handleKinds.includes(kind)) return undefined;
+        // An EMPTY list has no element to take its shape from, so the first
+        // push decides it. That is the shape a scene writes when it builds
+        // a list in a loop -- `const paths: Vec3[][] = []` grown per path --
+        // and the loop unrolls, so the list is complete at generation.
+        const kind = tuple.tupleElements[0]?.kind;
         this.context.expectArgumentCount(call, 1, 1);
         const pushed = this.context.compileValue(call.arguments[0]!);
-        if (pushed.kind !== kind) {
+        if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
+        if (kind !== undefined && pushed.kind !== kind) {
             this.context.fail(
                 call.arguments[0]!,
-                `'${owner.text}' holds ${kind} handles; pushing a ` +
+                `'${owner.text}' holds ${kind} values; pushing a ` +
                     `${pushed.kind} would leave two shapes in one list.`,
             );
         }
