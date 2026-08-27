@@ -1,5 +1,6 @@
 import ts from "typescript";
 import {
+    doubleLiteral,
     sanitizeCppIdentifier,
     stringLiteral,
 } from "./cpp-literals.js";
@@ -1967,6 +1968,14 @@ class Compiler
             node,
             precision,
         );
+    }
+
+    /** One number Value at one sink's width — the rule, in one place. */
+    public castNumber(
+        value: Value,
+        precision: "float" | "double",
+    ): string {
+        return this.evaluator.castNumber(value, precision);
     }
 
     public compileVec2(expression: ts.Expression): string {
@@ -3994,9 +4003,7 @@ class Compiler
         const initializerCpp =
             value.kind === "number" &&
             value.staticNumber !== undefined
-                ? Number.isInteger(value.staticNumber)
-                    ? `${value.staticNumber}.0`
-                    : `${value.staticNumber}`
+                ? doubleLiteral(value.staticNumber)
                 : value.cpp;
         const maybeUnused =
             value.kind === "boolean" ||

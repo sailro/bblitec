@@ -5,6 +5,7 @@
 // Math semantics, and the deterministic seeded Math.random replacement.
 // Header-only; reached only when the entry scene compiles plain-data code.
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <charconv>
@@ -248,6 +249,27 @@ using U32Array = std::vector<std::uint32_t>;
         result.push_back(to_uint32(value));
     }
     return result;
+}
+
+/**
+ * `%TypedArray%.prototype.set(source, offset)` for two arrays of one kind.
+ *
+ * The spec copies `source` whole into `target` starting at `offset` and
+ * raises a RangeError when the run would not fit, so no element is ever
+ * written past the end. The compiled subset asserts that instead, the way
+ * `array_pop` asserts non-emptiness: a compiled scene's lengths and offset
+ * are its own, and a run that does not fit is a scene bug rather than a
+ * condition a native frame could report.
+ */
+template <typename T>
+inline void typed_array_set(
+    std::vector<T>& target,
+    const std::vector<T>& source,
+    double offset) {
+    const auto start = static_cast<std::size_t>(offset);
+    assert(offset >= 0.0);
+    assert(start + source.size() <= target.size());
+    std::copy(source.begin(), source.end(), target.begin() + static_cast<std::ptrdiff_t>(start));
 }
 
 /**

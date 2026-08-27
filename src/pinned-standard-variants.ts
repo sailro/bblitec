@@ -68,7 +68,8 @@
  */
 import ts from "typescript";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
-import type { LoweringContext } from "./lowering/context.js";
+import { LoweringContext } from "./lowering/context.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
@@ -478,12 +479,15 @@ export async function composePinnedStandardVariant(
             );
         }
     }
-    if (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) {
+    if (
+        meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR &&
+        !(meshFeatures & meshBits.MSH_HAS_THIN_INSTANCES)
+    ) {
         throw new Error(
-            "Pinned Standard instance colours are not composable yet: " +
-                "rebuildSingle rewrites the thin-instance fragment's BC " +
-                "slot with an inline literal this module does not carry, " +
-                "and no reached scene supplies per-instance colours.",
+            "The pin's instance-colour bit rides its thin-instance one: " +
+                "`_computeMeshFeatures` sets MSH_HAS_INSTANCE_COLOR only " +
+                "from `mesh.thinInstances.colors`, and the colour slot is " +
+                "spliced into the thin-instance fragment.",
         );
     }
     let features = await pinnedStandardMaterialFeatures(material);
@@ -545,10 +549,29 @@ export async function composePinnedStandardVariant(
         }>("material/standard/fragments/std-shadow-fragment.js");
         fragments.push(shadow.createStdShadowFragment(shadowLights));
     }
-    // The colourless thin-instance form is pushed unrewritten, exactly as
-    // the renderable does when the pool carries no instance colours.
+    // `rebuildSingle` builds the shared thin-instance fragment at the
+    // pool's own colour state, then -- for a coloured pool -- replaces its
+    // fragment slots with a Standard-only `BC` one, because Standard
+    // applies the instance colour to the FINAL colour where PBR applies it
+    // to the base. That rewrite lives inline in the renderable rather than
+    // in the fragment module, so the slot text is lifted from the pin's own
+    // declaration instead of retyped here.
     if (meshFeatures & meshBits.MSH_HAS_THIN_INSTANCES) {
-        fragments.push(thinInstance.createThinInstanceFragment(false));
+        const hasInstanceColor =
+            (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0;
+        const fragment = thinInstance.createThinInstanceFragment(
+            hasInstanceColor,
+        );
+        fragments.push(
+            hasInstanceColor
+                ? {
+                    ...(fragment as Record<string, unknown>),
+                    _fragmentSlots: {
+                        BC: standardInstanceColorSlot(),
+                    },
+                }
+                : fragment,
+        );
     }
     const sceneShader = options.fog
         ? {
@@ -700,6 +723,64 @@ export interface PinnedStandardSelector {
     geometryTask?: number;
     /** Index into the emitted variant table. */
     variant: number;
+}
+
+let instanceColorSlot: string | undefined;
+
+/**
+ * The Standard family's own instance-colour slot, lifted from the pin.
+ *
+ * `standard-renderable.ts` builds the shared thin-instance fragment and,
+ * when the pool carries colours, spreads it into a copy whose only
+ * fragment slot is a `BC` one -- "Standard applies instance color to final
+ * color (BC), not to baseColor (AT) like PBR", as its own comment says. The
+ * text lives inline in that object literal rather than in a named export,
+ * so it is read out of the declaration: a pin that moves the rewrite, drops
+ * the slot or renames it fails generation here instead of composing a
+ * fragment whose instance colour silently stops applying.
+ */
+function standardInstanceColorSlot(): string {
+    if (instanceColorSlot !== undefined) return instanceColorSlot;
+    const context = new LoweringContext(sharedUpstreamStore());
+    const modulePath = "src/material/standard/standard-renderable.ts";
+    // Anchored at the function that owns the rewrite rather than at the
+    // file, so an unrelated `BC` slot elsewhere in the module is not a
+    // refusal — and so a rewrite that MOVES out of the renderable is.
+    const { file, declaration } = context.functionDeclaration(
+        modulePath,
+        "buildStandardMeshRenderables",
+    );
+    const rebuild = context.variableInitializer(
+        declaration,
+        "rebuildSingle",
+    );
+    // The inner `{ BC: ... }` itself: `getSourceFile` sets parents, so the
+    // owning property is read off the node rather than matched twice.
+    const candidates = context.findNodes(
+        rebuild,
+        (node): node is ts.ObjectLiteralExpression =>
+            ts.isObjectLiteralExpression(node) &&
+            ts.isPropertyAssignment(node.parent) &&
+            context.propertyName(node.parent.name) === "_fragmentSlots" &&
+            node.properties.some(
+                (slot) =>
+                    ts.isPropertyAssignment(slot) &&
+                    context.propertyName(slot.name) === "BC",
+            ),
+    );
+    if (candidates.length !== 1) {
+        context.contractError(
+            rebuild,
+            "Expected exactly one inline `_fragmentSlots: { BC }` rewrite " +
+                "in rebuildSingle (the thin-instance instance-colour " +
+                `slot); found ${candidates.length}.`,
+        );
+    }
+    instanceColorSlot = context.stringValue(
+        context.propertyInitializer(candidates[0]!, "BC"),
+        file,
+    );
+    return instanceColorSlot;
 }
 
 /** A numeric pinned constant, evaluated from its own declaration. */
@@ -1287,6 +1368,10 @@ export interface StandardSceneCompositionInput {
     uvTransform: boolean;
     /** `mesh:thin-instances*` reached: pools can attach to scene meshes. */
     thinInstances: boolean;
+    /** `mesh:thin-instance-colors` reached: a pool can carry per-instance
+     *  RGBA, which `_computeMeshFeatures` turns into a second mesh bit and
+     *  the renderable turns into its own final-colour slot. */
+    thinInstanceColors: boolean;
     /** Morph storage/deformation reached for scene meshes. */
     morphTargets: boolean;
     /** Whether the scene creates Standard materials from scene code. */
@@ -1499,6 +1584,7 @@ export async function composeSceneStandardVariants(
     const meshBits = await importPinnedModule<{
         MSH_HAS_MORPH_TARGETS: number;
         MSH_HAS_THIN_INSTANCES: number;
+        MSH_HAS_INSTANCE_COLOR: number;
         MSH_HAS_VERTEX_COLOR: number;
         MSH_RECEIVE_SHADOWS: number;
     }>("material/mesh-features.js");
@@ -1573,6 +1659,15 @@ export async function composeSceneStandardVariants(
     if (input.thinInstances) {
         for (const bits of [...meshValues]) {
             addMesh(bits | meshBits.MSH_HAS_THIN_INSTANCES);
+            // A pool that can carry colours reaches both arms: the runtime
+            // ORs the colour bit only for a pool whose colours were set,
+            // and one scene may draw a coloured and an uncoloured pool.
+            if (input.thinInstanceColors) {
+                addMesh(
+                    bits | meshBits.MSH_HAS_THIN_INSTANCES |
+                        meshBits.MSH_HAS_INSTANCE_COLOR,
+                );
+            }
         }
     }
     if (input.morphTargets) {
@@ -1852,6 +1947,10 @@ inline constexpr std::uint32_t std_msh_has_morph_targets =
     ${mesh("MSH_HAS_MORPH_TARGETS")}u;
 inline constexpr std::uint32_t std_msh_has_thin_instances =
     ${mesh("MSH_HAS_THIN_INSTANCES")}u;
+// _computeMeshFeatures sets this one from mesh.thinInstances.colors, so it
+// rides the pool bit above and arrives with the same call.
+inline constexpr std::uint32_t std_msh_has_instance_color =
+    ${mesh("MSH_HAS_INSTANCE_COLOR")}u;
 // src/material/standard/standard-flags.ts NEEDS_UV -- the mask
 // writeStdMaterialData's textureLevel parameter is derived from
 // ((features & NEEDS_UV) != 0 ? 1 : 0, standard-renderable.ts).

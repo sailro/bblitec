@@ -114,7 +114,12 @@ analyzable entry file against one engine.
   destructuring, object spread, and constant arrays materialized on demand.
   Resource handles are storable inside data. Const locals bind container
   elements as aliases; function-valued parameters inline. `Math` and the
-  pinned seeded `Math.random` are available.
+  pinned seeded `Math.random` are available. A typed array takes `fill` and
+  `set(source, offset)`, the latter for a source of the target's own kind —
+  the spec converts every other source through the target's own store, and
+  no reached scene writes one. A number lane inside a tuple or a static
+  record is written at each sink's own width rather than at the width its
+  first sink asked for ([fidelity](fidelity.md#shader-contract)).
 - **Browser erasure and AOT promises.** The browser `main` wrapper, DOM,
   timing, and dataset instrumentation are erased, and every `await` on a
   materialized asset resolves immediately. `window.location.search` reads as
@@ -899,6 +904,13 @@ pipeline wide enough to bind it. The per-instance `setThinInstanceColor`
 twin is unreached and unlowered, which is why the record takes a copy of the
 array where the matrix pool keeps the caller's own.
 
+A **Standard** material reads that stream through the pin's own composed
+fragment instead: the colours turn into a second mesh feature bit, and the
+renderable splices a final-colour slot of its own where the shared fragment
+carries a base-colour one ([fidelity](fidelity.md#shader-contract)). So a
+coloured pool and an uncoloured one compose two variants, keyed as every
+other mesh-phase bit is.
+
 ### Sprites
 
 Pure-2D `depth: "none"` layers drawn by their own sprite renderer with no
@@ -1457,12 +1469,12 @@ build error with a source location, not a silently different image.
   siblings, which is how the corpus composes one document out of another; a
   package import refuses, because that is the boundary keeping the route to
   plain data
-- shadows cover the pinned PCF spot generator over Standard receivers. The
-  ESM directional generator, the PCF directional and cascaded ones, a PBR or
-  node receiver, an imported mesh as caster or receiver, a computed
-  `receiveShadows`, and every generator option past `mapSize`, `bias`,
-  `darkness`, `near` and `far` each fail at generation naming what they
-  reached
+- shadows cover the pinned PCF spot and ESM directional generators over all
+  three material families' receivers ([above](#shadows) carries the split).
+  The PCF directional and cascaded generators, an imported mesh as caster or
+  receiver, a computed `receiveShadows`, a PBR caster through the ESM
+  generator, and every generator option past each factory's own reached set
+  each fail at generation naming what they reached
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
   (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,

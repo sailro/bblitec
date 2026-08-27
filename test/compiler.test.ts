@@ -910,6 +910,60 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
     );
 });
 
+test("writes a tuple lane at its sink's own width", () => {
+    // A lane is stored and read back by a sink it cannot see, so the width
+    // belongs to the sink: `position.set` is a double record field, and a
+    // lane frozen at the default float width would round it a step early —
+    // half a unit at the large-world coordinates scene 206 writes.
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createSceneContext,
+            registerScene,
+            startEngine,
+        } from "babylon-lite";
+
+        const OFFSET = 5_000_000;
+
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const place = (at: [number, number, number]): void => {
+                const box = createBox(engine, 1);
+                box.position.set(at[0], at[1], at[2]);
+            };
+            place([OFFSET, 0.65, OFFSET + 2.45]);
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /position = bbl::Vec3d\{5000000\.0, 0\.65, 5000002\.45\};/,
+    );
+});
+
+test("leaves an ordinary numeric expression unfolded", () => {
+    // The boundary `laneValue` draws. `staticNumber` is also what a
+    // condition reads to fold, and an unrolled loop's index carries one, so
+    // recording the fold on every number Value would additionally collapse
+    // conditions over that index — a different change with its own
+    // measurement. A lane's width is undecided; this one's is not.
+    const result = compileSource(`
+        const SIZE = 4;
+        let total = 0;
+        for (let i = 0; i < 3; i++) {
+            total += SIZE * 2 + i;
+        }
+    `);
+
+    assert.match(result.cpp, /\(4\.0 \* 2\.0\)/);
+});
+
 test("materializes static tables under runtime indices only", () => {
     const result = compileSource(`
         const WEIGHTS: readonly (readonly [number, number])[] = [
@@ -931,9 +985,11 @@ test("materializes static tables under runtime indices only", () => {
         result.cpp,
         /inline const std::array<std::array<double, 2>, 3> WEIGHTS = \{\{\{\{1\.0, 2\.0\}\}, \{\{3\.0, 4\.0\}\}, \{\{5\.0, 6\.0\}\}\}\};/,
     );
+    // The table's own lanes are doubles, and so is the local, so the read
+    // is written at that width rather than at the default float one.
     assert.match(
         result.cpp,
-        /double v_staticRead = 3\.0f;/,
+        /double v_staticRead = 3\.0;/,
     );
     assert.match(
         result.cpp,

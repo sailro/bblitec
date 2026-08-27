@@ -372,15 +372,15 @@ test("inputs the pin needs but this repo cannot supply throw by name", async () 
         ),
         /createStdShadowFragment/,
     );
+    // `_computeMeshFeatures` sets the instance-colour bit only from
+    // `mesh.thinInstances.colors`, so it cannot arrive without the pool
+    // bit: the slot is spliced into the thin-instance fragment.
     await assert.rejects(
         composePinnedStandardVariant(
             {},
-            {
-                meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES |
-                    meshBits.MSH_HAS_INSTANCE_COLOR,
-            },
+            { meshFeatures: meshBits.MSH_HAS_INSTANCE_COLOR },
         ),
-        /instance colours/,
+        /rides its thin-instance one/,
     );
     // The CSM receiver is the one shadow filter still refused: it resolves
     // through the cascaded receiver registry rather than through
@@ -447,6 +447,42 @@ test("the colourless thin-instance arm composes the pin's fragment", async () =>
     assert.notEqual(variant.vertexWgsl, plain.vertexWgsl);
 });
 
+test("a coloured pool composes the Standard family's own colour slot", async () => {
+    // `rebuildSingle` builds `tiFragment(true)` and then REPLACES its
+    // fragment slots with a `BC` one of its own -- Standard applies the
+    // instance colour to the final colour where PBR applies it to the
+    // base -- so the composed fragment must carry that text and not the
+    // shared fragment's `AT` slot.
+    const meshBits = await importPinnedModule<{
+        MSH_HAS_THIN_INSTANCES: number;
+        MSH_HAS_INSTANCE_COLOR: number;
+    }>("material/mesh-features.js");
+    const variant = await composePinnedStandardVariant(
+        {},
+        {
+            meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES |
+                meshBits.MSH_HAS_INSTANCE_COLOR,
+        },
+    );
+    assert.ok(variant.vertexWgsl.includes("out.vInstanceColor = instanceColor;"));
+    assert.ok(
+        variant.fragmentWgsl.includes(
+            "color = vec4<f32>(color.rgb * input.vInstanceColor.rgb, " +
+                "color.a * input.vInstanceColor.a);",
+        ),
+    );
+    // The shared fragment's own base-colour slot is the PBR family's and
+    // must not survive the replacement.
+    assert.ok(
+        !variant.fragmentWgsl.includes("baseColor *= input.vInstanceColor.rgb"),
+    );
+    const colourless = await composePinnedStandardVariant(
+        {},
+        { meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES },
+    );
+    assert.notEqual(variant.fragmentWgsl, colourless.fragmentWgsl);
+});
+
 test("the depth-only view composes the pin's NO_COLOR_OUTPUT arm", async () => {
     const flags = await importPinnedModule<{ NO_COLOR_OUTPUT: number }>(
         "material/standard/standard-flags.js",
@@ -502,6 +538,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             emissiveFileTexture: false,
             uvTransform: false,
             thinInstances: true,
+            thinInstanceColors: false,
             morphTargets: false,
             sceneMaterials: true,
             sceneMeshFeatureValues: [0],
@@ -566,6 +603,7 @@ test("the scene driver composes, dedups and keys a runtime-sweep shape", async (
             emissiveFileTexture: false,
             uvTransform: false,
             thinInstances: true,
+            thinInstanceColors: false,
             morphTargets: false,
             sceneMaterials: true,
             sceneMeshFeatureValues: [0],
@@ -656,6 +694,7 @@ test("the babylon walk mirrors the generated loader's records", async () => {
             emissiveFileTexture: false,
             uvTransform: false,
             thinInstances: false,
+            thinInstanceColors: false,
             morphTargets: false,
             sceneMaterials: false,
             sceneMeshFeatureValues: [],

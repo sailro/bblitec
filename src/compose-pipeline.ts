@@ -585,6 +585,9 @@ export async function composeScenePipeline({
                     result.manifest.features.includes(
                         "mesh:thin-instances-dynamic",
                     ),
+                thinInstanceColors: result.manifest.features.includes(
+                    "mesh:thin-instance-colors",
+                ),
                 morphTargets: result.manifest.features.includes(
                     "mesh:morph-targets",
                 ),

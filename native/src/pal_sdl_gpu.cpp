@@ -841,7 +841,7 @@ bool append_variant_attribute(
     if (!input.mapped) return false;
     SDL_GPUVertexAttribute attribute{};
     attribute.location = location;
-    attribute.buffer_slot = input.instance_stream ? 1u : 0u;
+    attribute.buffer_slot = static_cast<Uint32>(input.stream);
     attribute.offset = static_cast<Uint32>(input.offset);
     switch (input.lane) {
         case VertexInputLane::float2:
@@ -859,6 +859,36 @@ bool append_variant_attribute(
     }
     attributes.push_back(attribute);
     return true;
+}
+
+/**
+ * The vertex buffer descriptions one composed variant declares, and how
+ * many of them it reaches.
+ *
+ * Which streams exist, at which slot, stride and step rate, is the shared
+ * table's answer (`vertex_streams` and friends); what stays here is SDL's
+ * own descriptor shape. `pinned_vertex_input` has already placed each
+ * attribute in its stream, so the count is one past the highest slot any
+ * of them landed in.
+ */
+[[maybe_unused]] Uint32 fill_variant_vertex_buffers(
+    const std::vector<SDL_GPUVertexAttribute>& attributes,
+    std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()>&
+        buffers) {
+    for (std::size_t index = 0; index < vertex_streams.size(); ++index) {
+        const VertexInputStream stream = vertex_streams[index];
+        buffers[index].slot = vertex_stream_slot(stream);
+        buffers[index].pitch =
+            static_cast<Uint32>(vertex_stream_stride(stream));
+        buffers[index].input_rate = vertex_stream_is_instanced(stream)
+            ? SDL_GPU_VERTEXINPUTRATE_INSTANCE
+            : SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    }
+    Uint32 used = 1;
+    for (const SDL_GPUVertexAttribute& attribute : attributes) {
+        used = std::max(used, attribute.buffer_slot + 1u);
+    }
+    return used;
 }
 #endif
 
@@ -1267,23 +1297,13 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
     info.fragment_shader = fragment_shader;
-    const bool instanced = std::any_of(
-        attributes.begin(),
-        attributes.end(),
-        [](const SDL_GPUVertexAttribute& attribute) {
-            return attribute.buffer_slot == 1;
-        });
-    std::array<SDL_GPUVertexBufferDescription, 2> vertex_buffers{};
-    vertex_buffers[0].slot = 0;
-    vertex_buffers[0].pitch = sizeof(GpuVertex);
-    vertex_buffers[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    // The thin-instance arm's second stream: one 64-byte matrix per instance.
-    vertex_buffers[1].slot = 1;
-    vertex_buffers[1].pitch = sizeof(std::array<float, 16>);
-    vertex_buffers[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+    std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()>
+        vertex_buffers{};
+    const Uint32 vertex_buffer_count =
+        fill_variant_vertex_buffers(attributes, vertex_buffers);
     info.vertex_input_state = SDL_GPUVertexInputState{
         vertex_buffers.data(),
-        instanced ? 2u : 1u,
+        vertex_buffer_count,
         attributes.data(),
         static_cast<Uint32>(attributes.size()),
     };
@@ -2526,22 +2546,13 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
     info.fragment_shader = fragment_shader;
-    const bool instanced = std::any_of(
-        attributes.begin(),
-        attributes.end(),
-        [](const SDL_GPUVertexAttribute& attribute) {
-            return attribute.buffer_slot == 1;
-        });
-    std::array<SDL_GPUVertexBufferDescription, 2> vertex_buffers{};
-    vertex_buffers[0].slot = 0;
-    vertex_buffers[0].pitch = sizeof(GpuVertex);
-    vertex_buffers[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
-    vertex_buffers[1].slot = 1;
-    vertex_buffers[1].pitch = sizeof(std::array<float, 16>);
-    vertex_buffers[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+    std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()>
+        vertex_buffers{};
+    const Uint32 vertex_buffer_count =
+        fill_variant_vertex_buffers(attributes, vertex_buffers);
     info.vertex_input_state = SDL_GPUVertexInputState{
         vertex_buffers.data(),
-        instanced ? 2u : 1u,
+        vertex_buffer_count,
         attributes.data(),
         static_cast<Uint32>(attributes.size()),
     };
@@ -2804,13 +2815,32 @@ void draw_standard_variant(
     // The Standard families carry no glTF X-mirror: the pin's world is the
     // identity (or the record's parent TRS for a pool), so the baked vertex
     // buffer is the pin's own convention already.
-    const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
-    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+    // One contiguous binding from slot 0, the shape `bind_mesh_vertex_buffers`
+    // already uses: SDL takes the whole run in a single record, where a call
+    // per slot pays a validate round trip each.
+    std::array<SDL_GPUBufferBinding, vertex_streams.size()> vertex_bindings{};
+    vertex_bindings[0] = SDL_GPUBufferBinding{mesh.vertices, 0};
+    Uint32 bound_streams = 1;
     const bool instanced_draw = pinned_record_instanced(record);
     if (instanced_draw && mesh.instances) {
-        const SDL_GPUBufferBinding instance_binding{mesh.instances, 0};
-        SDL_BindGPUVertexBuffers(pass, 1, &instance_binding, 1);
+        vertex_bindings[1] = SDL_GPUBufferBinding{mesh.instances, 0};
+        bound_streams = 2;
+#if BBLITE_GPU_INSTANCE_COLORS
+        // The colour lane rides the pool: the composed variant declares it
+        // only for a record whose pool carries colours, so the same record
+        // test answers both streams.
+        if (pinned_record_instance_colored(record) && mesh.instance_colors) {
+            vertex_bindings[2] =
+                SDL_GPUBufferBinding{mesh.instance_colors, 0};
+            bound_streams = 3;
+        }
+#endif
     }
+    SDL_BindGPUVertexBuffers(
+        pass,
+        0,
+        vertex_bindings.data(),
+        bound_streams);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
     SDL_BindGPUIndexBuffer(
         pass,
@@ -7116,9 +7146,11 @@ bool run_gpu_engine(Engine& engine) {
 #if BBLITE_GPU_INSTANCING
                             if (!grid_bucket) {
                                 const std::array<float, 16> parent_world =
-                                    upstream::build_instance_parent_world(
+                                    instance_parent_draw_world(
                                         engine.meshes[
-                                            draw_item.mesh.value]);
+                                            draw_item.mesh.value],
+                                        scene,
+                                        engine);
                                 SDL_PushGPUVertexUniformData(
                                     command,
                                     instance_uniform_slot,
@@ -8576,9 +8608,11 @@ bool run_gpu_engine(Engine& engine) {
                             item.material_kind !=
                             upstream::RenderMaterialKind::grid) {
                             const std::array<float, 16> parent_world =
-                                upstream::build_instance_parent_world(
+                                instance_parent_draw_world(
                                     engine.meshes[
-                                        item.mesh.value]);
+                                        item.mesh.value],
+                                    scene,
+                                    engine);
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 instance_uniform_slot,

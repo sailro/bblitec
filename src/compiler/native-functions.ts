@@ -3,6 +3,7 @@ import { sanitizeCppIdentifier } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
+    isTypedArrayType,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
@@ -344,9 +345,7 @@ export class NativeFunctionLowerer {
                     parameterType.kind === "struct" ||
                     parameterType.kind === "vector" ||
                     parameterType.kind === "optional" ||
-                    parameterType.kind === "f32array" ||
-                    parameterType.kind === "u16array" ||
-                    parameterType.kind === "u32array",
+                    isTypedArrayType(parameterType),
                 readOnly: this.parameterIsReadOnly(
                     declaration,
                     parameter.name,

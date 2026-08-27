@@ -2316,6 +2316,30 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene204",
+        name: "Scene 204 - Floating Origin Thin Instances",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene204.ts",
+        title: "Babylon Lite Native - Large World Thin Instances",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene206",
+        name: "Scene 206 - Floating Origin Cutout Billboards",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene206.ts",
+        title: "Babylon Lite Native - Large World Cutout Billboards",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [23, 28, 36],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene202",
         name: "Scene 202 - Floating Origin Point Light",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene202.ts",
