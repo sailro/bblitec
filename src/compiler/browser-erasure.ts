@@ -223,7 +223,14 @@ export class BrowserErasure {
             }
             // Standard-library transforms cannot make a browser-only value
             // native. Keep the taint through Math calls so a diagnostic
-            // transform erases with its browser source.
+            // transform erases with its browser source -- but only while
+            // the browser value is UNRESOLVED. A physics scene reads the
+            // step its capture is pinned at as `Math.round(frame)` over a
+            // query the reference fixes, and tainting that would refuse a
+            // value the query already answered rather than erasing
+            // anything. The conversions above need no such test: each
+            // folds in `evaluateBrowserValue`, so a resolved one never
+            // reaches a consumer as a browser value in the first place.
             if (
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
                 ts.isIdentifier(unwrapped.expression.expression) &&
@@ -232,7 +239,15 @@ export class BrowserErasure {
                     unwrapped.expression.expression,
                 )
             ) {
-                return browserArgument;
+                return (
+                    browserArgument &&
+                    unwrapped.arguments.some(
+                        (argument) =>
+                            this.isBrowserOnlyExpression(argument) &&
+                            this.evaluateBrowserValue(argument) ===
+                                undefined,
+                    )
+                );
             }
             return false;
         }

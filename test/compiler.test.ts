@@ -2987,6 +2987,58 @@ test("folds browser numeric predicates in conditional values", () => {
     assert.match(queried.cpp, /\.position\.z = 90\.0/);
 });
 
+test("compiles a Math transform over a query the reference pins", () => {
+    // A physics scene reads the step its capture is pinned at as
+    // `Math.round(frame)` over `Number(params.get(...))`. The browser-only
+    // taint runs through Math so an UNRESOLVED diagnostic still erases with
+    // its source; a resolved one has to keep compiling, or the query the
+    // reference already answered is refused instead.
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const raw = params.get("captureFrame");
+            if (raw !== null) {
+                const frame = Number(raw);
+                box.position.x = Number.isFinite(frame)
+                    ? Math.round(frame)
+                    : 0;
+            }
+        }
+    `;
+    const queried = compileSource(source, {
+        search: "?captureFrame=120.4",
+    });
+    assert.match(queried.cpp, /\.position\.x = bbl::js::round_js\(120\.4\)/);
+});
+
+test("erases a Math transform over an unresolved browser value", () => {
+    // The other half of the same rule: nothing answers `devicePixelRatio` at
+    // generation, so the whole diagnostic erases with its browser source
+    // rather than compiling a call over a value this port does not carry.
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            console.log(Math.round(window.devicePixelRatio));
+            box.position.x = 2;
+        }
+    `);
+    assert.doesNotMatch(result.cpp, /round_js|devicePixelRatio/);
+    assert.match(result.cpp, /\.position\.x = 2\.0/);
+});
+
 test("does not fold shadowed browser predicate names", () => {
     const result = compileSource(`
         import {
