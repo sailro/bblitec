@@ -1035,9 +1035,9 @@ compares `report-differential.json` only — a single-backend sweep produces
 nothing it can compare.
 `status:verify` performs the published half of the same comparison.
 
-It already knows the movements that are not findings: scenes 9, 37 and 120 do
-not render bit-identically from one run to the next, so those cells move for
-any change and for no change alike. They are reported as expected wobble and
+It already knows the movements that are not findings: scenes 9, 37, 120 and
+126 do not render bit-identically from one run to the next, so those cells
+move for any change and for no change alike. They are reported as expected wobble and
 excluded from the exit status; every other moved cell is real. The whitelist
 is per scene AND per backend — scene 9's wobble is Dawn-only, scenes 37 and
 120 wobble on both — because the mover is multisampling

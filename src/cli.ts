@@ -74,6 +74,10 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
+import {
+    composeSplatModule,
+    splatFragmentRecords,
+} from "./pinned-splat-fragments.js";
 import { assetRecord } from "./compiler/assets.js";
 import type {
     NodeParticleRegistrationEmit,
@@ -799,6 +803,16 @@ async function main(): Promise<void> {
             .filter((generator) => generator.kind === "esm-directional")
             .map((generator) => composeEsmShadow(generator.esm ?? {})),
     );
+    // A splat scene that named shader plugins composes its module through
+    // the pin's own splicer: `applyGsFragments` concatenates each plugin's
+    // slots and then runs upstream's own field-name mangler over the whole
+    // string, which is why the module is composed rather than assembled.
+    const splatShaderModule =
+        result.manifest.splatFragments.length > 0
+            ? await composeSplatModule(
+                  await splatFragmentRecords(result.manifest.splatFragments),
+              )
+            : undefined;
     // A composite runs its own factory instead: which passes it records, over
     // which intermediates and at which sizes, is the factory's answer.
     const postProcessComposites = await Promise.all(
@@ -894,6 +908,7 @@ async function main(): Promise<void> {
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
+        ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
         standardLights: reachedStandardLights(reachedBabylonLights),

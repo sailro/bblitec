@@ -4,6 +4,13 @@ import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
+import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
+import {
+    staticNumberValue,
+    validateObjectProperties,
+    type ObjectValidationContext,
+    type PositiveIntegerContext,
+} from "../option-helpers.js";
 import type {
     ScenePbrClearCoatManifest,
     ScenePbrAnisotropyManifest,
@@ -22,7 +29,9 @@ import type {
 } from "./material-options.js";
 
 export interface MaterialIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext,
+        ObjectValidationContext,
+        PositiveIntegerContext {
     recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,
@@ -100,6 +109,17 @@ export interface MaterialIntrinsicContext
     compileShaderMaterialOptions(
         expression: ts.Expression,
     ): { name: string; id: number };
+    reachLinearDepthMaterial(
+        node: ts.Node,
+        options: { near: number; far: number },
+    ): { name: string; id: number };
+    expectObjectLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
     compileNodeMaterialOptions(
         snippetExpression: ts.Expression,
         optionsExpression: ts.Expression | undefined,
@@ -492,6 +512,63 @@ export function compileMaterialIntrinsic(
                 context.compileShaderMaterialOptions(
                     call.arguments[0]!,
                 );
+            context.reachFeature("material:shader", call);
+            context.reachFeature("renderer:pbr", call);
+            return {
+                kind: "material",
+                cpp:
+                    `bbl::create_shader_material(${engine}, ` +
+                    `${variant.id}u)`,
+                engineCpp: engine,
+                shaderVariant: variant.name,
+            };
+        }
+
+        case "createLinearDepthMaterial": {
+            // The pin's own `createShaderMaterial` call, folded: two module
+            // constants for the stages, the pin's plane defaults, and the
+            // fixed-function state read from the properties beside them.
+            // What a caller settles is the near/far pair the one custom
+            // uniform carries.
+            context.recordSceneMaterialSlot();
+            context.expectArgumentCount(call, 0, 1);
+            const engine = context.requireDefaultEngine(call);
+            const defaults = linearDepthDefaultPlanes();
+            const options = call.arguments[0]
+                ? context.expectObjectLiteral(call.arguments[0]!)
+                : undefined;
+            if (options) {
+                // `name` refuses rather than being accepted and dropped:
+                // the pin names every one of these materials `linearDepth`
+                // and this port's variant identity is the plane pair, so a
+                // caller's name could not reach anything.
+                validateObjectProperties(
+                    context,
+                    options,
+                    ["near", "far"],
+                    "Reached linear-depth materials support near and far.",
+                );
+            }
+            const plane = (name: "near" | "far"): number => {
+                const expression = options
+                    ? context.objectProperty(options, name)
+                    : undefined;
+                if (!expression) return defaults[name];
+                const value = staticNumberValue(context, expression);
+                if (value === undefined) {
+                    context.fail(
+                        expression,
+                        `A linear-depth material's ${name} plane is a ` +
+                            "compile-time number: it is the uniform default " +
+                            "the composed variant carries.",
+                    );
+                }
+                return value;
+            };
+            const variant = context.reachLinearDepthMaterial(call, {
+                near: plane("near"),
+                far: plane("far"),
+            });
             context.reachFeature("material:shader", call);
             context.reachFeature("renderer:pbr", call);
             return {

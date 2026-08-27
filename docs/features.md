@@ -563,7 +563,22 @@ pipeline the way each half is best at:
   a fixed layout, where the shape is the contract.
 - The **projection is the pin's own WGSL**, extracted from the bundle rather
   than transcribed, and split into a stage per file. The four data textures
-  are sampled in the vertex stage; the fragment stage reads only varyings.
+  are sampled in the vertex stage; the stock fragment stage reads only
+  varyings.
+- The **shader plugins are spliced by the pin's own splicer**, at generation.
+  `loadSplat`'s third argument is a list of `GsShaderFragment` records — pure
+  data, either one of `gs-depth-fragments.ts`'s own exports or a record the
+  scene declares — and `applyGsFragments` both concatenates their slots and
+  runs a field-name mangler over the whole result, so it is executed rather
+  than reimplemented ([fidelity](fidelity.md#shader-contract)). The call
+  passing the list is the opt-in, which is where upstream puts it too: it
+  inlines that mangling table so a plugin-free scene tree-shakes it away.
+  A plugin body may read the pin's own uniform block, which is the one
+  resource its bind-group layout offers the fragment stage.
+
+A cloud is a `SceneNode` upstream, so its world matrix composes from its own
+TRS through the same emitted composition a thin-instanced mesh's parent world
+takes; the reached slice writes its `position`.
 
 The reached slice is the plain `.ply` and `.splat` row layout. A compressed or
 spherical-harmonic PLY refuses at generation, because it needs the pin's second
@@ -718,6 +733,14 @@ builder and keys its cache on it, so the topology travels with the program
 rather than with a draw; the line family is the one reached material that
 names the second one, and both backends translate the same generated
 enumerator.
+
+Two shader materials come from the pin rather than from scene WGSL, and both
+are folded out of the factory that builds them: `createLineMaterial`, and
+`createLinearDepthMaterial`, whose stage writes `(viewZ - near) / (far -
+near)` from the `view` and `projection` system uniforms and carries the
+caller's plane pair as the one custom uniform's default. The planes are part
+of the variant's identity here, because this port keeps a uniform default on
+the variant where the pin keeps a slot on each material.
 
 A PBR material also states two things about how its albedo and its punctual
 lights are read. `setPbrGammaAlbedo` is the pin's opt-in sRGB decode: the
@@ -1402,10 +1425,13 @@ build error with a source location, not a silently different image.
   table. KTX2 — the container `KHR_texture_basisu` redirects a glTF texture
   to — needs the pin's second decoder and is unreached
 - custom shader variants are bounded by the supported WGSL subset and the
-  `world`, `viewProjection` and `worldViewProjection` system uniforms,
-  which head a stage's block in declaration order. The pin's other six
-  (`view`, `projection`, `worldView`, `cameraPosition`, `screenSize`,
-  `alphaCutoff`), matrix-valued custom uniforms, and a stage reading both a
+  `world`, `view`, `projection`, `viewProjection` and `worldViewProjection`
+  system uniforms, which head a stage's block in declaration order — `view`
+  and `projection` are the two factors of the product the pass already
+  built, carried beside it so the three cannot come from two cameras. The
+  pin's other four (`worldView`,
+  `cameraPosition`, `screenSize`, `alphaCutoff`), matrix-valued custom
+  uniforms, and a stage reading both a
   system and a custom uniform all remain unsupported. A sampler is named by a
   string and binds a 2D float texture, loaded by `loadTexture2D`, in the
   fragment stage: a typed `ShaderSamplerDecl`, a depth or comparison

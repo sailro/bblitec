@@ -31,6 +31,7 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { pinnedTrsComposition } from "./pinned-trs.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -890,6 +891,10 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
         const bits = this.declaration(SORT_MODULE, "splatSortBucketBits");
         const sortDirty = this.lowerSortDirty();
         const uniformWriter = this.lowerUniformWriter();
+        // The pin's own TRS composition, shared with the thin-instance
+        // parent world: a splat cloud is a SceneNode and composes its
+        // world matrix through the same writer.
+        const splatTrs = pinnedTrsComposition(this.context);
 
         const bucketLowerer: PinnedNumericLowerer = new PinnedNumericLowerer(
             bits.file,
@@ -945,6 +950,8 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
             symbolName,
             header: `#pragma once
 
+#include <bblite/runtime.hpp>
+
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -961,6 +968,18 @@ struct SplatSortScratch {
 double splat_sort_bucket_bits(double vertex_count);
 
 SplatSortScratch create_splat_sort_scratch(double vertex_count);
+
+/**
+ * A cloud's world matrix, composed from its own TRS.
+ *
+ * A GaussianSplattingMesh is a SceneNode upstream and takes its world
+ * matrix from composeTrsLocalMatrix like every other node, so this is the
+ * same emitted composition the thin-instance parent world uses -- one
+ * derivation, over a record carrying the same field names. The two
+ * consumers below both re-derive it per frame rather than reading a cache,
+ * which is why nothing here invalidates one.
+ */
+std::array<float, 16> build_splat_world(const SplatMeshRecord& mesh);
 
 /** The pin's own splat UBO: three matrices then viewport/focal/dataSize. */
 struct SplatUniforms {
@@ -1046,6 +1065,11 @@ bool splat_sort_dirty(
 ${sortDirty}
     if (dirty) depth_transform = next;
     return dirty;
+}
+
+std::array<float, 16> build_splat_world(const SplatMeshRecord& mesh) {
+${splatTrs.composeWorldBody}\
+    return world;
 }
 
 SplatSortScratch create_splat_sort_scratch(double vertex_count) {

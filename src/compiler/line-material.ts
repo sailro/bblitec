@@ -19,10 +19,9 @@ import {
     type LineMaterialOptions,
 } from "../lowering/line-lowerer.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
-import { lowerWgslShaderProgram } from "../shader-ir.js";
 import {
     reachedShaderProgram,
-    reachShaderProgram,
+    reachFoldedShaderProgram,
     type ShaderMaterialContext,
 } from "./shader-material.js";
 
@@ -61,31 +60,20 @@ export function reachLineMaterialProgram(
     // The variant's name is a pure function of the permutation, so a scene
     // reaching one twice re-registers it without walking the pin's own
     // factory a second time.
-    const name = variantName({
-        ...options,
-        color: options.color ?? [1, 1, 1, 1],
-    });
-    const reached = context.reachedShaderPrograms.findIndex(
-        (candidate) => candidate.name === name,
+    return reachFoldedShaderProgram(
+        context,
+        node,
+        variantName({
+            ...options,
+            color: options.color ?? [1, 1, 1, 1],
+        }),
+        "line",
+        () =>
+            lowerer.materialProgram({
+                ...options,
+                color: options.color ?? lowerer.defaultColor(),
+            }),
     );
-    if (reached >= 0) {
-        return { name, id: reached };
-    }
-    const program = lowerer.materialProgram({
-        ...options,
-        color: options.color ?? lowerer.defaultColor(),
-    });
-    try {
-        lowerWgslShaderProgram(program);
-    } catch (error: unknown) {
-        context.fail(
-            node,
-            `The pinned line material does not lower through the shader IR: ${
-                error instanceof Error ? error.message : String(error)
-            }`,
-        );
-    }
-    return reachShaderProgram(context, program);
 }
 
 /**

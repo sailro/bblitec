@@ -37,6 +37,8 @@ import { join } from "node:path";
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
  * | 120 | Dawn | differ | byte-identical |
  * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
+ * | 126 | Dawn | differ, worst MAD 0.001657, max 18 | byte-identical |
+ * | 126 | SDL_GPU | differ, worst MAD 0.000081, max 2 | byte-identical |
  *
  * Scene 9 is measured bit-stable on SDL_GPU across four runs and is
  * deliberately absent from that column: the wobble is per scene AND per
@@ -46,6 +48,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
+    ["scene126", new Set(["dawn", "sdl_gpu"])],
 ]);
 
 /**
@@ -174,7 +177,7 @@ export function runNeutralityReport(baselineDirectory: string): void {
     if (wobbled.length > 0) {
         console.log(
             "\nExpected multisampling wobble (not a regression — scenes" +
-                " 9, 37 and 120 are not bit-stable between runs at 4x;" +
+                " 9, 37, 120 and 126 are not bit-stable between runs at 4x;" +
                 " every one is byte-identical at a single sample):",
         );
         for (const line of wobbled) console.log(line);

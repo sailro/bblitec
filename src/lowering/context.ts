@@ -629,6 +629,47 @@ export class LoweringContext {
         );
     }
 
+    /**
+     * The `createShaderMaterial({ ... })` argument a pinned factory passes.
+     *
+     * Two families fold such a factory (`createLineMaterial`,
+     * `createLinearDepthMaterial`) and both start here, so the reach is
+     * stated once rather than per lowerer.
+     */
+    public pinnedShaderMaterialCall(
+        modulePath: string,
+        factory: string,
+    ): ts.ObjectLiteralExpression {
+        return this.callObjectArgument(
+            this.functionDeclaration(modulePath, factory).declaration,
+            "createShaderMaterial",
+        );
+    }
+
+    /**
+     * A pinned array literal of string constants, in its own order.
+     *
+     * The peer of `numericTuple` for the lists a pinned factory writes --
+     * a `ShaderMaterial`'s attributes, its system-uniform names -- read
+     * through `stringValue` so a template literal is accepted where the
+     * pin writes one.
+     */
+    public stringArrayValue(
+        expression: ts.Expression,
+        file: ts.SourceFile,
+    ): string[] {
+        const array = this.unwrapExpression(expression);
+        if (!ts.isArrayLiteralExpression(array)) {
+            this.contractError(
+                expression,
+                "Expected a static string array.",
+            );
+        }
+        return array.elements.map((element) =>
+            this.stringValue(element, file),
+        );
+    }
+
     public isNumberMaxValue(expression: ts.Expression): boolean {
         const unwrapped = this.unwrapExpression(expression);
         return (

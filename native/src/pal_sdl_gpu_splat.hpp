@@ -45,6 +45,13 @@ struct SplatPass {
 
     /** The register `splat.vert.slots` left the uniform block in. */
     int uniform_slot = -1;
+    /**
+     * The same, for the fragment stage: a `GsShaderFragment` plugin may
+     * read the pin's own UBO -- its layout declares binding 0 for both
+     * stages -- and the stock fragment reads nothing at all, so the
+     * sidecar is what says whether the block survived compilation.
+     */
+    int fragment_uniform_slot = -1;
 
     upstream::SplatSortScratch scratch;
     std::vector<std::uint32_t> cpu_order;
@@ -76,10 +83,27 @@ inline SplatPass create_splat_pass(
         static_cast<std::uint32_t>(slots.textures.size()),
         static_cast<std::uint32_t>(slots.uniforms.size()),
         "vs");
-    // The fragment stage samples nothing and declares no block: the density
-    // is `exp(-dot(vq, vq)) * vc.a` over the varyings alone.
+    // The fragment stage samples nothing: the four data textures are read
+    // in the vertex stage. Whether it declares the uniform block depends on
+    // the scene -- the stock density is `exp(-dot(vq, vq)) * vc.a` over the
+    // varyings alone, while a depth plugin reads the projection out of the
+    // block -- so the sidecar decides, exactly as it does for a custom
+    // sprite fragment.
+    const PinnedStageSlots fragment_slots =
+        read_pinned_stage_slots("splat.frag");
+    pass.fragment_uniform_slot = stage_uniform_slot(fragment_slots, "u");
+    if (!fragment_slots.textures.empty()) {
+        gpu_error(
+            "splat.frag kept a texture binding; the splat fragment stage "
+            "binds none");
+    }
     SDL_GPUShader* fragment_shader = load_shader(
-        device, "splat.frag", SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0, "fs");
+        device,
+        "splat.frag",
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        0,
+        static_cast<std::uint32_t>(fragment_slots.uniforms.size()),
+        "fs");
 
     SDL_GPUVertexAttribute attributes[2]{};
     attributes[0] = SDL_GPUVertexAttribute{
@@ -190,7 +214,9 @@ inline void upload_splat_pass(
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
 
     if (!upstream::splat_sort_dirty(
-            record.world, view, pass.depth_transform)) {
+            upstream::build_splat_world(record),
+            view,
+            pass.depth_transform)) {
         return;
     }
     upstream::sort_splats_back_to_front(
@@ -228,7 +254,7 @@ inline void record_splat_pass(
     upstream::SplatUniforms uniforms;
     upstream::write_splat_uniforms(
         uniforms,
-        record.world,
+        upstream::build_splat_world(record),
         view,
         projection,
         width,
@@ -240,6 +266,8 @@ inline void record_splat_pass(
         static_cast<Uint32>(pass.uniform_slot),
         &uniforms,
         sizeof(uniforms));
+    push_stage_uniform(
+        command, pass.fragment_uniform_slot, &uniforms, sizeof(uniforms));
 
     SDL_GPUBufferBinding vertex_bindings[2]{};
     vertex_bindings[0].buffer = pass.quad;

@@ -3283,21 +3283,54 @@ inline DiagnosticClusterUniforms diagnostic_cluster_uniforms(
  *
  * `viewProjection` and `worldViewProjection` are the same bytes here --
  * a shader-material draw's world is the identity (see
- * `shader_stage_block_floats`) -- so either alone satisfies it. Asked in
- * one place because four sites used to ask it in three spellings, and
- * generalizing some of them is how the others went wrong.
+ * `shader_stage_block_floats`) -- so either alone satisfies it, and the
+ * pin's other three system matrices satisfy none of it. Asked in one place
+ * because four sites used to ask it in three spellings, and generalizing
+ * some of them is how the others went wrong.
  */
 inline bool block_is_shared_scene_matrix(
     const upstream::ShaderVariantStageBlock& block) {
-    return block.system_matrices.size() == 1 &&
-        block.system_matrices.front() !=
-            upstream::ShaderSystemMatrix::world &&
-        block.gather.empty();
+    if (block.system_matrices.size() != 1 || !block.gather.empty()) {
+        return false;
+    }
+    switch (block.system_matrices.front()) {
+        case upstream::ShaderSystemMatrix::view_projection:
+        case upstream::ShaderSystemMatrix::world_view_projection:
+            return true;
+        case upstream::ShaderSystemMatrix::world:
+        case upstream::ShaderSystemMatrix::view:
+        case upstream::ShaderSystemMatrix::projection:
+            return false;
+    }
+    return false;
 }
+
+/**
+ * The matrices one pass renders with, carried together because a variant
+ * may declare the product and either of its factors.
+ *
+ * They travel as one value so the three cannot come from two sources: a
+ * pass that builds `view_projection` from a camera builds `view` and
+ * `projection` from that same camera, which is what makes them the
+ * factors of the product rather than a second answer to it. A shadow
+ * caster pass is the one that cannot offer all three -- it renders
+ * through the light's biased view-projection and the generator carries a
+ * light-space view but no separate projection -- so it supplies what it
+ * has and the packer names the factor it could not fill.
+ *
+ * Building them once per pass is also what keeps them off the per-draw
+ * path: `view` costs the arc-rotate eye composition and `projection` a
+ * tangent, and every draw in a pass would produce the same bytes.
+ */
+struct ShaderPassMatrices {
+    const float* view_projection = nullptr;
+    const std::array<float, 16>* view = nullptr;
+    const std::array<float, 16>* projection = nullptr;
+};
 
 inline std::vector<float> shader_stage_block_floats(
     const upstream::ShaderVariantStageBlock& block,
-    const float* scene_matrix,
+    const ShaderPassMatrices& pass,
     const MaterialRecord& material) {
     // Declared here rather than reusing `pinned_identity_world`, which
     // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
@@ -3310,18 +3343,38 @@ inline std::vector<float> shader_stage_block_floats(
     };
     std::vector<float> floats(block.float_size, 0.0f);
     std::size_t head = 0;
+    const auto copy_from =
+        [&](const float* source, const char* name) {
+        if (!source) {
+            throw std::runtime_error(
+                std::string("A shader material declares the '") + name +
+                "' system uniform in a pass that renders with no such "
+                "matrix.");
+        }
+        std::copy_n(source, 16, floats.begin() + head);
+    };
     for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
         // No default arm: a new enumerator has to be given a source here
         // rather than silently inheriting one.
         switch (matrix) {
             case upstream::ShaderSystemMatrix::world:
-                std::copy_n(identity.data(), 16, floats.begin() + head);
+                copy_from(identity.data(), "world");
+                break;
+            case upstream::ShaderSystemMatrix::view:
+                copy_from(
+                    pass.view ? pass.view->data() : nullptr, "view");
+                break;
+            case upstream::ShaderSystemMatrix::projection:
+                copy_from(
+                    pass.projection ? pass.projection->data() : nullptr,
+                    "projection");
                 break;
             case upstream::ShaderSystemMatrix::view_projection:
+                copy_from(pass.view_projection, "viewProjection");
+                break;
             case upstream::ShaderSystemMatrix::world_view_projection:
-                if (scene_matrix) {
-                    std::copy_n(scene_matrix, 16, floats.begin() + head);
-                }
+                copy_from(
+                    pass.view_projection, "worldViewProjection");
                 break;
         }
         head += 16;

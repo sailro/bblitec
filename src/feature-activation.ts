@@ -1884,6 +1884,21 @@ function compositionRows(
             ["deployed shaders"],
         ),
         row(
+            "splat:shader-fragments",
+            "composition",
+            emit.splatShaderModule !== undefined,
+            emit.splatShaderModule !== undefined
+                ? "the pin's own applyGsFragments spliced this scene's " +
+                    "GsShaderFragment plugins into the splat module and " +
+                    "ran its field-name mangler over the result"
+                : "no loadSplat call passed shader fragments",
+            "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts " +
+                "applyGsFragments: upstream inlines its mangling table so " +
+                "a plugin-free scene tree-shakes it away, and the call " +
+                "site passing the list is the opt-in",
+            ["deployed shaders"],
+        ),
+        row(
             "shader-material:programs",
             "composition",
             emit.shaderPrograms.length > 0,

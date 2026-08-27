@@ -566,6 +566,45 @@ export function reachShaderProgram(
     };
 }
 
+/**
+ * Registers a program folded out of a pinned factory, composing it at most
+ * once per variant name.
+ *
+ * `reachShaderProgram` already dedupes by name, but composing is the
+ * expensive half -- it walks the pinned factory's own AST -- so the two
+ * pinned-material families (`createLineMaterial`,
+ * `createLinearDepthMaterial`) both memoized it before calling. That memo,
+ * the shader-IR validation and its refusal wording live here instead of
+ * once per family.
+ */
+export function reachFoldedShaderProgram(
+    context: ShaderMaterialContext,
+    node: ts.Node,
+    name: string,
+    family: string,
+    compose: () => CompiledShaderProgram,
+): { name: string; id: number } {
+    const reached = context.reachedShaderPrograms.findIndex(
+        (candidate) => candidate.name === name,
+    );
+    if (reached >= 0) {
+        return { name, id: reached };
+    }
+    const program = compose();
+    try {
+        lowerWgslShaderProgram(program);
+    } catch (error: unknown) {
+        context.fail(
+            node,
+            `The pinned ${family} material does not lower through the ` +
+                `shader IR: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+        );
+    }
+    return reachShaderProgram(context, program);
+}
+
 export function reachedShaderProgram(
     context: ShaderMaterialContext,
     name: string,

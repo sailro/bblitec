@@ -1,0 +1,103 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "the block writer took a camera and an aspect and rebuilt the view and projection per draw, and a pass could hand it a matrix from one source beside a camera from another -- the shadow caster arm did; it now takes the three matrices its pass renders with, built once beside the product they factor, and a pass with no such factor leaves it null so a stage declaring it fails by name",
+      "applied": true
+    },
+    {
+      "summary": "the splat fragment's slot-guarded uniform push open-coded the guard and the cast that push_stage_uniform already performs, which every sprite, billboard and effect pass calls",
+      "applied": true
+    },
+    {
+      "summary": "the splat shader split re-inlined the packaged-literal extraction the same commit exports as pinnedSplatModuleWgsl, giving the pin's WGSL export two readers",
+      "applied": true
+    },
+    {
+      "summary": "the splat split's memo covered only the stock path, so a plugin scene re-read and re-split the packaged module twice per generation; the cache is keyed by module text instead of gated on the argument",
+      "applied": true
+    },
+    {
+      "summary": "SplatShaderSource.hasFragments recomputed a value its only reader already held as a parameter",
+      "applied": true
+    },
+    {
+      "summary": "the loadSplat intrinsic hand-rolled the allowed-property walk and the array-literal assert that validateObjectProperties and expectStaticArrayLiteral own, and unquoted a slot key with a regex where propertyName already returns it unquoted",
+      "applied": true
+    },
+    {
+      "summary": "SplatFragmentManifest was a two-optional-field union where four states were representable and two meaningful, paid for by an unreachable throw in its consumer; it is now a discriminated union like CompiledNodeMaterial",
+      "applied": true
+    },
+    {
+      "summary": "recordSplatFragments cleared and refilled an array that was either empty or already equal, and used length > 0 as \"a list was recorded\" -- so an empty list slipped the second-call guard; it is now undefined until recorded",
+      "applied": true
+    },
+    {
+      "summary": "an exported reachedSplatFragmentExports alias had no caller and asserted a coupling between two sites that did not exist",
+      "applied": true
+    },
+    {
+      "summary": "the linear-depth lowerer read and re-validated the pinned uniforms array three times through three methods, stating the same contract error in two spellings; one pass returns both halves",
+      "applied": true
+    },
+    {
+      "summary": "the linear-depth lowerer's two-column state table had a constant second column, and its restated material state asserted three properties while silently accepting any the pin might add; the declared set is now closed",
+      "applied": true
+    },
+    {
+      "summary": "createLinearDepthMaterial accepted a name option nothing could read, since the variant identity is the plane pair; it refuses instead",
+      "applied": true
+    },
+    {
+      "summary": "a private stringArray was copied from the line lowerer, and the createShaderMaterial-call accessor with it; both are LoweringContext helpers now",
+      "applied": true
+    },
+    {
+      "summary": "both folded-pinned-material families carried the same dedupe-compose-validate-register scaffolding around reachShaderProgram; one reachFoldedShaderProgram in shader-material.ts serves them",
+      "applied": true
+    },
+    {
+      "summary": "four emitters each wrote the same sixteen-cell narrowing tail after the pinned TRS composition; composeWorldBody emits it once, and the module's own \"two emissions\" comment was stale",
+      "applied": true
+    },
+    {
+      "summary": "the splat-mesh component assignment duplicated the mesh arm's emit rather than sharing it, interpolating an operator the preceding guard had already forced to \"=\"",
+      "applied": true
+    },
+    {
+      "summary": "the Dawn splat upload composed the cloud's world matrix twice in one function over an unchanged record",
+      "applied": true
+    },
+    {
+      "summary": "the frame's view was built twice under adjacent guards (splat and billboard) and its projection took the perspective writer where the pin's getProjectionMatrix branches; both backends now build the frame's two factors once and every consumer reads them",
+      "applied": true
+    },
+    {
+      "summary": "the capture writer derived the width/height aspect a second time in the same header",
+      "applied": true
+    },
+    {
+      "summary": "the pinnedReverseDepthCompare extraction left the header's own doc block stacked above the new getter, so the header function became undocumented",
+      "applied": true
+    },
+    {
+      "summary": "the named-pinned-export registry (module map, has, names, load) is written twice, in pinned-tone-mapping.ts and pinned-splat-fragments.ts, and could be one generic pinnedExportRegistry",
+      "applied": false,
+      "blockedBy": "The two reviewers disagree and the case for factoring is not yet made: at two instances with distinct refusal wording a generic registry costs about what it saves, and the reuse angle -- which read both files specifically to answer this -- concluded not to factor it yet. A third pinned-export family is what settles it.",
+      "filedIn": "TODO.md, under the splat slice entry"
+    },
+    {
+      "summary": "the SDL splat pass composes the cloud's world matrix once in upload_splat_pass and again in record_splat_pass, two functions a frame apart",
+      "applied": false,
+      "blockedBy": "Unlike the Dawn pair these are two functions called from two points in the frame, so removing the second call means caching the matrix on the pass record -- which is state whose invalidation nothing measures, for roughly 50ns a frame. The efficiency angle called it a tidiness finding rather than a performance one and the simplification angle said to leave it.",
+      "filedIn": "TODO.md, under the splat slice entry"
+    },
+    {
+      "summary": "shader_stage_block_floats allocates a std::vector<float> per stage block per draw",
+      "applied": false,
+      "blockedBy": "Pre-existing and untouched by this branch, which changes what each call computes rather than how often it runs; removing it needs a caller-owned scratch buffer threaded through both backends and the capture writer, which is its own change with its own neutrality proof.",
+      "filedIn": "TODO.md, under the per-frame costs entry"
+    }
+  ]
+}

@@ -572,7 +572,7 @@ export class RendererLowerer {
         // the body is never interpolated and the derivation is skipped.
         const instancingTrs: PinnedTrsComposition = options.gpuInstancing
             ? pinnedTrsComposition(this.context)
-            : { composeLocalBody: "" };
+            : { composeLocalBody: "", composeWorldBody: "" };
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -1228,8 +1228,15 @@ RenderItem bind_render_item(
 // The aspect ratio is a JavaScript number in
 // src/camera/camera.ts getEffectiveAspectRatio, and the pinned
 // projection writer divides by it before its single float32 store.
-/** The projection alone, which the splat stage reads beside the view. */
+/** The perspective projection alone, which the splat stage reads beside the
+ *  view and the skybox builds its own view-projection from. */
 std::array<float, 16> build_projection(
+    const CameraRecord& camera,
+    double aspect);
+/** The projection the scene's own view-projection is built from -- the same
+ *  arm, so a shader material declaring the projection system uniform reads
+ *  the factor of that product rather than a second answer to it. */
+std::array<float, 16> build_scene_projection(
     const CameraRecord& camera,
     double aspect);
 std::array<float, 16> build_view_projection(
@@ -1784,12 +1791,9 @@ std::array<float, 16> build_projection(
     return projection;
 }
 
-std::array<float, 16> build_view_projection(
+std::array<float, 16> build_scene_projection(
     const CameraRecord& camera,
     double aspect) {
-    const std::array<float, 16> view =
-        build_view_matrix(camera_world_matrix(camera));
-
 ${options.orthographicCamera
     ? `    if (camera.orthographic) {
         // src/camera/orthographic.ts writeOrthoProjection: every plane
@@ -1810,11 +1814,19 @@ ${options.orthographicCamera
             half_height,
             camera.near_plane,
             camera.far_plane);
-        return multiply_into(projection, view);
+        return projection;
     }
 `
     : ""}\
-    return multiply_into(build_projection(camera, aspect), view);
+    return build_projection(camera, aspect);
+}
+
+std::array<float, 16> build_view_projection(
+    const CameraRecord& camera,
+    double aspect) {
+    const std::array<float, 16> view =
+        build_view_matrix(camera_world_matrix(camera));
+    return multiply_into(build_scene_projection(camera, aspect), view);
 }
 
 std::array<float, 16> build_skybox_view_projection(

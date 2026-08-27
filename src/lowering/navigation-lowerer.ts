@@ -525,12 +525,8 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
 // quaternion source of truth (non-zero Euler angles inherit the
 // recorded std::sin/cos-versus-V8 ULP caveat).
 std::array<float, 16> nav_mesh_world(const MeshRecord& mesh) {
-${trs.composeLocalBody}\
-    std::array<float, 16> result{};
-    for (std::size_t cell = 0; cell < 16; ++cell) {
-        result[cell] = static_cast<float>(local[cell]);
-    }
-    return result;
+${trs.composeWorldBody}\
+    return world;
 }
 
 // _mergeMeshes: the pin multiplies each mesh's CPU positions through

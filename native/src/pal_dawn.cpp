@@ -8269,17 +8269,24 @@ bool run_dawn_engine(Engine& engine) {
             static_cast<double>(height);
         const std::array<float, 16> matrix =
             upstream::build_view_projection(camera, aspect);
+        // The frame's own two factors, built once. A shader material may
+        // declare either beside the product, the pin's splat UBO stores
+        // them separately, and the billboard sort reads the view. The
+        // projection is the pin's `getProjectionMatrix` -- the arm that
+        // branches on the camera -- rather than the perspective writer.
+        const std::array<float, 16> frame_view =
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera));
+        const std::array<float, 16> frame_projection =
+            upstream::build_scene_projection(camera, aspect);
+        const ShaderPassMatrices frame_pass_matrices{
+            matrix.data(), &frame_view, &frame_projection};
 #if BBLITE_HAS_SPLATS
         {
             // Lazily built for the same reason the billboard passes are:
             // the clouds are known only once the scene has run. The sort
             // then follows the camera, which `upload_dawn_splat_pass`
             // decides with the pin's own epsilon.
-            const std::array<float, 16> splat_view =
-                upstream::build_view_matrix(
-                    upstream::camera_world_matrix(camera));
-            const std::array<float, 16> splat_projection =
-                upstream::build_projection(camera, aspect);
             if (state.splat_passes.empty()) {
                 for (const SplatMeshHandle splat : scene.splat_meshes) {
                     state.splat_passes.push_back(create_dawn_splat_pass(
@@ -8297,8 +8304,8 @@ bool run_dawn_engine(Engine& engine) {
                     state.queue,
                     engine,
                     splat,
-                    splat_view,
-                    splat_projection,
+                    frame_view,
+                    frame_projection,
                     static_cast<float>(width),
                     static_cast<float>(height));
             }
@@ -8308,9 +8315,6 @@ bool run_dawn_engine(Engine& engine) {
         {
             // Lazily built, because the systems are known only once the
             // scene has run; the sort then follows the camera every frame.
-            const std::array<float, 16> billboard_view =
-                upstream::build_view_matrix(
-                    upstream::camera_world_matrix(camera));
             if (state.billboard_passes.empty()) {
                 for (const BillboardSystemHandle system :
                      scene.billboard_systems) {
@@ -8340,7 +8344,7 @@ bool run_dawn_engine(Engine& engine) {
                     engine,
                     billboard,
                     matrix,
-                    billboard_view,
+                    frame_view,
                     delta_ms);
             }
         }
@@ -8389,8 +8393,15 @@ bool run_dawn_engine(Engine& engine) {
         write_shadow_generators(state, scene, engine);
 #endif
 #endif
+        // The pass's own matrices travel with the list: a render task
+        // renders through its own camera and target aspect, and a shadow
+        // caster pass through the generator's light-space matrix, so a
+        // shader material's system block reads what its pass renders with
+        // rather than the frame's.
         const auto write_material_uniforms =
-            [&](const upstream::RenderDrawList& list) {
+            [&](
+                const upstream::RenderDrawList& list,
+                const ShaderPassMatrices& pass_matrices) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
@@ -8538,7 +8549,7 @@ bool run_dawn_engine(Engine& engine) {
                                     block_floats =
                                         shader_stage_block_floats(
                                             block,
-                                            matrix.data(),
+                                            pass_matrices,
                                             material);
                                 wgpuQueueWriteBuffer(
                                     state.queue,
@@ -8630,8 +8641,10 @@ bool run_dawn_engine(Engine& engine) {
                     }
                 }
             };
-        write_material_uniforms(render_plan.draw_lists.opaque);
-        write_material_uniforms(render_plan.draw_lists.transparent);
+        write_material_uniforms(
+            render_plan.draw_lists.opaque, frame_pass_matrices);
+        write_material_uniforms(
+            render_plan.draw_lists.transparent, frame_pass_matrices);
         if (state.skybox_enabled) {
             const std::array<float, 16> skybox_view_projection =
                 upstream::build_skybox_view_projection(
@@ -8790,6 +8803,16 @@ bool run_dawn_engine(Engine& engine) {
                     : upstream::build_view_projection(
                         task_camera,
                         task_aspect);
+                // The task's own two factors, beside its product, for a
+                // shader material that declares one.
+                const std::array<float, 16> task_view =
+                    upstream::build_view_matrix(
+                        upstream::camera_world_matrix(task_camera));
+                const std::array<float, 16> task_projection =
+                    upstream::build_scene_projection(
+                        task_camera, task_aspect);
+                const ShaderPassMatrices task_pass_matrices{
+                    task_matrix.data(), &task_view, &task_projection};
                 if (!shadow_task) {
                     wgpuQueueWriteBuffer(
                         state.queue,
@@ -8831,10 +8854,16 @@ bool run_dawn_engine(Engine& engine) {
                         0,
                         generator.caster_view_projection.data(),
                         64);
+                    const ShaderPassMatrices caster_pass_matrices{
+                        generator.caster_view_projection.data(),
+                        &generator.caster_view,
+                        nullptr};
                     write_material_uniforms(
-                        render_task.draw_lists.opaque);
+                        render_task.draw_lists.opaque,
+                        caster_pass_matrices);
                     write_material_uniforms(
-                        render_task.draw_lists.transparent);
+                        render_task.draw_lists.transparent,
+                        caster_pass_matrices);
                 }
 #endif
 #if BBLITE_PINNED_MATERIALS
@@ -8874,9 +8903,10 @@ bool run_dawn_engine(Engine& engine) {
                         engine,
                         task_camera);
                     write_material_uniforms(
-                        render_task.draw_lists.opaque);
+                        render_task.draw_lists.opaque, task_pass_matrices);
                     write_material_uniforms(
-                        render_task.draw_lists.transparent);
+                        render_task.draw_lists.transparent,
+                        task_pass_matrices);
                 }
             }
         }

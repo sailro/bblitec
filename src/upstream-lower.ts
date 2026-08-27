@@ -296,6 +296,13 @@ export interface UpstreamEmitOptions {
     /** Every `createEffectWrapper` descriptor, in reach order. */
     effects: readonly EffectManifest[];
     /**
+     * The Gaussian-splat module the pin's own `applyGsFragments` composed
+     * for this scene's shader plugins. Present only when a `loadSplat` call
+     * passed some; without it the stock packaged WGSL is split as it always
+     * was, which is what keeps a plugin-free splat scene byte-identical.
+     */
+    splatShaderModule?: string;
+    /**
      * What each ESM shadow generator's own factory built, in reach order.
      *
      * Present only when a scene reaches one; the resources and both blur
@@ -1028,12 +1035,18 @@ ${wgsl}`,
             composedShaders.push(
                 {
                     output: "upstream/shaders/splat.vert.native.wgsl",
-                    data: splatVertexWgsl(provenance),
+                    data: splatVertexWgsl(
+                        provenance,
+                        options.splatShaderModule,
+                    ),
                     family: "splat",
                 },
                 {
                     output: "upstream/shaders/splat.frag.native.wgsl",
-                    data: splatFragmentWgsl(provenance),
+                    data: splatFragmentWgsl(
+                        provenance,
+                        options.splatShaderModule,
+                    ),
                     family: "splat",
                 },
             );
