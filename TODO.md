@@ -311,6 +311,16 @@ below rather than blocking a scene here.
   A second `loadSplat` naming a different plugin list also refuses: the
   generated splat stages are one composed module per scene, where upstream
   keys its module cache by the plugin ids. No corpus scene loads two clouds.
+  Two review findings sit here rather than in the code, each waiting on
+  something a third case would settle: the named-pinned-export registry
+  (module map, `has`, `names`, `load`) is written twice, in
+  `src/pinned-tone-mapping.ts` and `src/pinned-splat-fragments.ts`, and a
+  third such family is what would justify one generic form over two with
+  distinct refusal wording; and the SDL splat pass composes a cloud's world
+  matrix once in `upload_splat_pass` and again in `record_splat_pass`, which
+  removing means caching it on the pass record — state whose invalidation
+  nothing measures, for roughly 50ns a frame. The Dawn pair, which sat in
+  one function, is hoisted.
 - [ ] `renderer:pbr` is the feature that names the SCENE RENDER LOOP, not the
   PBR material family: `featureSources` maps it to `src/pal_sdl_gpu.cpp`, and
   `addBillboardSystem` and `loadSplat` both reach it for scenes with no PBR
@@ -436,6 +446,11 @@ below rather than blocking a scene here.
   PinnedShadowBinding*>` parallel to each stage's slot list, filled once. The
   material-slot table is asked first already, so an ordinary base-colour or
   ORM binding no longer pays for it.
+- [ ] `shader_stage_block_floats` allocates a `std::vector<float>` per stage
+  block per draw (`native/src/pal_gpu_shared.hpp`). Removing it needs a
+  caller-owned scratch buffer threaded through both backends and the render
+  capture, so it is its own change with its own neutrality proof; at the
+  reached draw counts it is a few allocations a frame.
 - [ ] Three per-frame costs the scene-less drivers share with their siblings,
   filed together because fixing one family alone would make the tree less
   consistent rather than more. (a) `pal_sdl_gpu_sprite.cpp` and
