@@ -154,7 +154,7 @@ export interface ShadowGeneratorManifest {
      * receiver arm refuses at composition rather than composing a
      * neighbour's.
      */
-    kind: "pcf-spot" | "esm-directional";
+    kind: "pcf-spot" | "pcf-directional" | "esm-directional";
     /**
      * Which `scene.lights` slot the owning light occupies. The pinned
      * receiver fragment suffixes every varying and binding with it, so a
@@ -1392,6 +1392,7 @@ export type Feature =
     // `registerSceneWithShadowSupport` is the only way to reach.
     | "shadow:esm"
     | "shadow:pcf"
+    | "shadow:pcf-directional"
     | "shadow:task"
     | "sprite:2d"
     | "sprite:uv-scroll"

@@ -166,6 +166,21 @@ export interface HandleCollectionsContext
     nextSceneLightIndex(kind?: LightKind): number;
 }
 
+/**
+ * The value kinds that stand for an engine handle.
+ *
+ * A handle is a compile-time ordinal into one of the engine's own arrays, so
+ * a list of them grows at generation and emits nothing. That is what makes a
+ * compile-time tuple of them a list a consumer can read -- and what a tuple
+ * of, say, numbers is not, because those would need native storage.
+ */
+const handleKinds: readonly ValueKind[] = [
+    "animation-group",
+    "camera",
+    "light",
+    "mesh",
+];
+
 /** One member of an asset-derived collection, in document order. */
 interface HandleCollectionMember {
     name: string;
@@ -754,6 +769,54 @@ export class HandleCollections {
     }
 
     /**
+     * `<local>.push(<handle>)` onto a compile-time tuple of engine handles.
+     *
+     * A scene builds its shadow-caster list that way — `const casters =
+     * [sphere]`, then one push per box inside a loop generation unrolls —
+     * so the final contents ARE a compile-time value, and the consumer
+     * (`setShadowTaskCasterMeshes`) reads them as one. The push therefore
+     * MOVES the tuple rather than emitting anything: the scope holds the
+     * same Value object, so appending to its elements is what a later read
+     * of the name sees.
+     *
+     * Only a tuple of engine handles takes this, and only one that already
+     * holds at least one — a tuple's kind is what its elements are, and an
+     * empty one names nothing. A list of plain data is the data model's own
+     * array instead, which grows through `compileDataMethodCall` and emits
+     * a real `push_back`; a mixed push fails naming both kinds, because a
+     * consumer reading the tuple back would find two shapes in it.
+     */
+    public compileHandleTuplePush(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (callee.name.text !== "push") return undefined;
+        const owner = this.context.unwrap(callee.expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const tuple = this.context.lookupOptional(owner);
+        if (
+            tuple?.kind !== "tuple" ||
+            !tuple.tupleElements ||
+            tuple.tupleElements.length === 0
+        ) {
+            return undefined;
+        }
+        const kind = tuple.tupleElements[0]!.kind;
+        if (!handleKinds.includes(kind)) return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const pushed = this.context.compileValue(call.arguments[0]!);
+        if (pushed.kind !== kind) {
+            this.context.fail(
+                call.arguments[0]!,
+                `'${owner.text}' holds ${kind} handles; pushing a ` +
+                    `${pushed.kind} would leave two shapes in one list.`,
+            );
+        }
+        tuple.tupleElements.push(pushed);
+        return { kind: "void", cpp: "" };
+    }
+
+    /**
      * `<collection>.find(<arrow>)` over a collection of engine handles.
      *
      * Over an asset-derived collection value with a static name test, the
@@ -1148,6 +1211,30 @@ export class HandleCollections {
         return `(${left.cpp}.value ${equals ? "==" : "!="} ${right.cpp}.value)`;
     }
 
+    /**
+     * A compile-time list of handles, however the scene spelled it.
+     *
+     * Two shapes, one meaning: an array literal at the call site, or a local
+     * the scene grew with `push` inside a loop generation unrolls. Both
+     * arrive as the same list; what differs is only where each element was
+     * compiled, and therefore which node a refusal should blame. Undefined
+     * when the expression is neither, so the caller keeps its own message.
+     */
+    public staticHandleList(
+        expression: ts.Expression,
+    ): readonly { value: Value; node: ts.Node }[] | undefined {
+        const literal =
+            this.context.probeStaticArrayLiteral(expression);
+        if (literal) {
+            return literal.elements.map((element) => ({
+                value: this.context.compileValue(element),
+                node: element,
+            }));
+        }
+        const tuple = this.tupleElements(expression);
+        return tuple?.map((value) => ({ value, node: expression }));
+    }
+
     /** An identifier bound to an engine handle, without emission. */
     private lookupHandleOperand(
         expression: ts.Expression,
@@ -1159,12 +1246,6 @@ export class HandleCollections {
         const value =
             this.context.lookupOptional(unwrapped);
         if (!value) return undefined;
-        const handleKinds: readonly ValueKind[] = [
-            "animation-group",
-            "camera",
-            "light",
-            "mesh",
-        ];
         return handleKinds.includes(value.kind) &&
             value.animationGroupSource !== "property"
             ? value

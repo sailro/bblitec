@@ -2340,6 +2340,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene207",
+        name: "Scene 207 - Floating Origin Directional Shadows",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene207.ts",
+        title: "Babylon Lite Native - Large World Directional Shadows",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene202",
         name: "Scene 202 - Floating Origin Point Light",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene202.ts",

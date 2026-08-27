@@ -938,6 +938,29 @@ const upstream::PinnedShadowBinding* shadow_row_for(
     return nullptr;
 }
 
+/**
+ * The generator resources one composed row's LIGHT slot names.
+ *
+ * `state.shadow_generators` is keyed by that slot rather than by handle, so
+ * it is sized to the scene's lights and carries a hole for every light
+ * without a generator. A row naming a hole is a composition that disagrees
+ * with the scene, and it fails here by name -- the same refusal the Dawn
+ * backend makes from its own light-ordered table, rather than binding the
+ * null resources a default-constructed entry carries.
+ */
+inline const GpuState::ShadowGenerator& shadow_generator_for_row(
+    const GpuState& state,
+    const upstream::PinnedShadowBinding& row) {
+    if (row.light >= state.shadow_generators.size() ||
+        state.shadow_generators[row.light].info == nullptr) {
+        gpu_error(
+            ("a composed shadow binding names light " +
+             std::to_string(row.light) + ", which carries no generator.")
+                .c_str());
+    }
+    return state.shadow_generators[row.light];
+}
+
 /** The sampler row declared beside one light's map. */
 const upstream::PinnedShadowBinding* shadow_sampler_row_for(
     std::span<const upstream::PinnedShadowBinding> rows,
@@ -970,10 +993,7 @@ inline SDL_GPUBuffer* shadow_info_buffer_for(
     const std::string& name) {
     const upstream::PinnedShadowBinding* row = shadow_row_for(rows, name);
     if (row == nullptr) return nullptr;
-    if (row->light >= state.shadow_generators.size()) {
-        gpu_error("a composed shadow binding names a missing light.");
-    }
-    return state.shadow_generators[row->light].info;
+    return shadow_generator_for_row(state, *row).info;
 }
 
 /** The same block as uniform bytes, for the stage that kept it a uniform. */
@@ -983,11 +1003,8 @@ inline PinnedStageBlock shadow_info_uniform_for(
     const std::string& block) {
     const upstream::PinnedShadowBinding* row = shadow_row_for(rows, block);
     if (row == nullptr) return {};
-    if (row->light >= state.shadow_generators.size()) {
-        gpu_error("a composed shadow block names a missing light.");
-    }
     return {
-        &state.shadow_generators[row->light].block,
+        &shadow_generator_for_row(state, *row).block,
         sizeof(upstream::ShadowInfoUniforms),
     };
 }
@@ -998,9 +1015,8 @@ PinnedResource shadow_resource_for(
     const std::string& name) {
     const upstream::PinnedShadowBinding* row = shadow_row_for(rows, name);
     if (row == nullptr) return {};
-    if (row->light >= state.shadow_generators.size()) {
-        gpu_error("a composed shadow binding names a missing light.");
-    }
+    const GpuState::ShadowGenerator& generator =
+        shadow_generator_for_row(state, *row);
     // SDL_GPU binds a texture and its sampler as one pair, resolved from
     // the TEXTURE's name -- so which sampler this map takes is the
     // paired row's to say, not this one's: a PCF map's companion is
@@ -1014,7 +1030,7 @@ PinnedResource shadow_resource_for(
                 .c_str());
     }
     return {
-        state.shadow_generators[row->light].map,
+        generator.map,
         companion->kind ==
                 upstream::PinnedBindingKind::samplerComparison
             ? state.shadow_comparison_sampler
@@ -2255,8 +2271,11 @@ void update_shadow_generators(
     const Scene& scene,
     Engine& engine) {
     if (engine.shadow_generators.empty()) return;
-    if (state.shadow_generators.size() < engine.shadow_generators.size()) {
-        state.shadow_generators.resize(engine.shadow_generators.size());
+    // Indexed by a composed row's LIGHT slot, so it is sized to the scene's
+    // lights rather than to its generators: a scene whose shadow light sits
+    // behind an ambient one names a slot no generator count reaches.
+    if (state.shadow_generators.size() < scene.lights.size()) {
+        state.shadow_generators.resize(scene.lights.size());
     }
     if (!state.shadow_comparison_sampler) {
         SDL_GPUSamplerCreateInfo info{};
@@ -2319,9 +2338,9 @@ void update_shadow_generators(
             const upstream::ShadowInfoUniforms& block,
             bool moved) {
             GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
-            // Kept densely beside the map and the buffer because
-            // `shadow_info_uniform_for` binds it by a composed row's LIGHT
-            // ordinal, which is this slot and not the generator's handle.
+            // Kept beside the map and the buffer under the composed row's
+            // LIGHT slot, which is what `shadow_info_uniform_for` binds by
+            // -- not the generator's handle.
             gpu.block = block;
             if (
                 generator.task.value < engine.frame_tasks.size() &&

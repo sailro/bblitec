@@ -32,6 +32,100 @@ const mathUnaryCalls: ReadonlyMap<string, string> = new Map([
     ["trunc", "std::trunc"],
 ]);
 
+/**
+ * The array methods that change a container's length.
+ *
+ * The same set `compileDataMethodCall` routes through `invalidateAliases`:
+ * `push`, `pop` and `splice` lower, and `shift`/`unshift` refuse by name
+ * before they reach it. A method added to the lowerer that grows or shrinks
+ * a container belongs here too, because this is the only guard the length
+ * fold below has.
+ */
+const resizingArrayMethods: ReadonlySet<string> = new Set([
+    "push",
+    "pop",
+    "shift",
+    "unshift",
+    "splice",
+]);
+
+/** Names whose container can be resized, per entry source. */
+const resizedNamesByFile = new WeakMap<
+    ts.SourceFile,
+    ReadonlySet<string>
+>();
+
+/**
+ * Every binding name in one source whose container's LENGTH can change.
+ *
+ * Four spellings put a name here, and between them they are everything that
+ * can move a count:
+ *
+ * - a resizing method call on the name;
+ * - an assignment to the name, which reseats it on another container;
+ * - a write to its `.length`, which truncates;
+ * - the name appearing anywhere inside a CALL's arguments. That last one is
+ *   the load-bearing case: this compiler inlines every reached function, and
+ *   a container parameter is bound BY REFERENCE (`bbl::js::Array<double>&`),
+ *   so `grow(offsets)` really does grow `offsets` while the callee's own
+ *   `list.push` is spelled against the parameter. Nothing downstream can see
+ *   that join, so a name handed to any call gives up its fold here.
+ *
+ * An element WRITE is absent on purpose: it moves no count.
+ *
+ * Keyed by TEXT rather than by symbol, which is the conservative direction —
+ * two same-named locals in different functions decline each other's fold
+ * rather than granting one. Computed once per file because the walk is the
+ * whole tree and the answer cannot change during a generation.
+ */
+function resizedNames(file: ts.SourceFile): ReadonlySet<string> {
+    const cached = resizedNamesByFile.get(file);
+    if (cached) return cached;
+    const resized = new Set<string>();
+    const addIdentifiers = (node: ts.Node): void => {
+        if (ts.isIdentifier(node)) resized.add(node.text);
+        ts.forEachChild(node, addIdentifiers);
+    };
+    const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+            if (
+                ts.isPropertyAccessExpression(node.expression) &&
+                ts.isIdentifier(node.expression.expression) &&
+                resizingArrayMethods.has(node.expression.name.text)
+            ) {
+                resized.add(node.expression.expression.text);
+            }
+            for (const argument of node.arguments) {
+                addIdentifiers(argument);
+            }
+        }
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            const left = node.left;
+            if (ts.isIdentifier(left)) {
+                resized.add(left.text);
+            } else if (
+                ts.isPropertyAccessExpression(left) &&
+                ts.isIdentifier(left.expression) &&
+                left.name.text === "length"
+            ) {
+                resized.add(left.expression.text);
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    resizedNamesByFile.set(file, resized);
+    return resized;
+}
+
+/** Whether nothing in the entry source can change `name`'s length. */
+export function isNeverResized(name: ts.Identifier): boolean {
+    return !resizedNames(name.getSourceFile()).has(name.text);
+}
+
 export interface DataLoweringContext {
     readonly checker: ts.TypeChecker;
     lookup(identifier: ts.Identifier): Value;
@@ -119,6 +213,28 @@ export class DataLowerer {
 
     /** Container root each live alias refers into, for invalidation. */
     private readonly aliasRoots = new Map<string, string>();
+
+    /** Container locals whose length generation knows; see below. */
+    private readonly fixedLengths = new Map<string, number>();
+
+    /**
+     * Records that `cppName` holds exactly `length` elements for as long
+     * as it lives, so `.length` on it folds to a number.
+     *
+     * The caller establishes that from the declaration: a `const` bound
+     * to an array literal, with no resizing method call, no whole-name
+     * reassignment and no `.length` write against that name anywhere in
+     * the entry source. That scan is what makes the fold independent of
+     * the order statements compile in — a `while (i < a.length)` that
+     * pushes inside its own body never registers at all, rather than
+     * folding the bound before the push is reached.
+     */
+    public registerFixedLength(
+        cppName: string,
+        length: number,
+    ): void {
+        this.fixedLengths.set(cppName, length);
+    }
 
     public registerLocal(
         cppName: string,
@@ -729,9 +845,19 @@ export class DataLowerer {
             property === "length"
         ) {
             this.context.reachJsData();
+            // A container built from a literal and never resized has a
+            // length generation knows, and knowing it is what lets a
+            // counted `for` over it unroll — the difference between three
+            // mesh records and one `createBox` run three times.
+            const fixed = this.fixedLengths.get(
+                this.rootName(owner.cpp),
+            );
             return {
                 kind: "number",
                 cpp: `bbl::js::array_length(${owner.cpp})`,
+                ...(fixed === undefined
+                    ? {}
+                    : { staticNumber: fixed }),
                 dataType: { kind: "number" },
             };
         }

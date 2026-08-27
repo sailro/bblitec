@@ -200,13 +200,14 @@ a non-final value return 2 (218, 219, behind vertex-animation textures),
 `createTransformNode` 2 (269, 270), `createSurface` 2 (227, 228),
 `loadFont` 2 (180, 275), `createPhysicsShape` 2 (101, 102).
 Everything else in the lane is a singleton, which is what the shipped waves
-did to the histogram: the large-world engine-option cluster is gone (202-206
-shipped; 200/201 report a promise chain and 207/209 their own APIs), and no
+did to the histogram: the large-world engine-option cluster is gone (202-207
+shipped; 200/201 report a promise chain and 209 its own API), and no
 cluster larger than four remains.
-The shadow family finished the three scenes it finishes outright — 18, then
+The shadow family finished the four scenes it finishes outright — 18, then
 4 and 22 with the ESM directional generator, the heightmap ground and the
-PBR receiver — and the `receiveShadows` scenes that remain each hide a
-second subsystem, which is the entry below.
+PBR receiver, then 207 with the PCF directional one — and the
+`receiveShadows` scenes that remain each hide a second subsystem, which is
+the entry below.
 Node materials shipped twenty of the thirty-one scenes reaching
 `parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
 capability the reached slice refuses and three (111, 140, 141) behind blockers
@@ -252,10 +253,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (64 scenes):** 16, 17, 20, 38, 43,
+**Integrate first (63 scenes):** 16, 17, 20, 38, 43,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
 129,
-140, 144, 149, 156, 165, 171-174, 179, 200, 201, 207, 211, 214, 215, 217-219,
+140, 144, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 217-219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
@@ -465,43 +466,6 @@ below rather than blocking a scene here.
   PinnedShadowBinding*>` parallel to each stage's slot list, filled once. The
   material-slot table is asked first already, so an ordinary base-colour or
   ORM binding no longer pays for it.
-- [ ] Carry the pin's own vertex-buffer layout into the generated attribute
-  table instead of stating it in both PALs. `createThinInstanceFragment`
-  declares `_bufferGroup`, `_arrayStride`, `_stepMode` and `_offset` per
-  attribute, and generation already executes that fragment — but
-  `variantAttributes` (`src/pinned-pbr-variant-cpp.ts`) reflects only
-  `location`/`name`/`wgsl_type` out of the composed WGSL and drops the
-  layout half. `vertex_stream_stride` and its siblings
-  (`native/src/pal_gpu_shared.hpp`) now state that half once for both
-  backends, which is the containment; what it is not is derived. A pin that
-  moves a stride, or adds a third instance-stepped group, composes,
-  generates and links cleanly and then renders garbage — nothing refuses.
-  Closing it means widening the generated attribute row and building each
-  backend's buffer list from data. The same row would retire
-  `pinned_vertex_input`'s hand-written instance-stream entries; its
-  *vertex*-stream offsets are genuinely ours, because they are `GpuVertex`.
-- [ ] A thin-instanced Standard draw composes its parent world twice per
-  frame. `instance_parent_draw_world` is called once by the write phase
-  (the instance-parent uniform each PAL pushes) and once by
-  `standard_draw_world` for the same draw, with the same arguments and a
-  bit-identical result — before the eye-relative wiring the two produced
-  different values, so it was not a duplicate. Under floating origin each
-  call is a TRS compose plus a 4x4 double multiply. Removing it means
-  caching the matrix on the backend's own mesh record when the write phase
-  computes it, which is state whose invalidation nothing measures; at one
-  such mesh in the corpus (scene 204) it is not yet worth the key. Filed
-  beside the offset hoist above, which the same draw path shares.
-- [ ] Read the Standard family's instance-colour slot by observing the pin
-  rather than lifting its text. `standardInstanceColorSlot`
-  (`src/pinned-standard-variants.ts`) reads the `BC` string out of
-  `rebuildSingle`'s own declaration, which pins the *text*; the shape around
-  it — the `hasInstanceColor` fork, the spread-and-replace, the slot name —
-  is restated here, and that shape is what the repo's own rule says must not
-  drift. `importPinnedModuleObserving` exists for exactly this case: drive
-  the renderable and record the fragments it pushes. Blocked on the same
-  thing the node ESM caster view is blocked on — `rebuildSingle` needs a
-  scene, a mesh and a device to run at all, which is a recording harness
-  this port does not have for the Standard family yet.
 - [ ] `shader_stage_block_floats` allocates a `std::vector<float>` per stage
   block per draw (`native/src/pal_gpu_shared.hpp`). Removing it needs a
   caller-owned scratch buffer threaded through both backends and the render
@@ -575,17 +539,16 @@ below rather than blocking a scene here.
   `[first, last)` per clip beside the vectors and iterate that, keeping
   the `track.clip` test so correctness never depends on the grouping.
 - [ ] Extend the shadow family past the slice scenes 4, 18 and 22 measure.
-  Shipped: the pinned PCF spot and ESM directional generators, their maps
-  and samplers, the caster pass under the pin's standard-Z exception, the
-  ESM caster's own material view and its two-pass separable blur, and BOTH
-  material families' receiver fragments composed per shadow-casting light
-  over a reflected group 2 ([features](docs/features.md#shadows)). Each
-  remaining item fails by name:
-  - `createPcfDirectionalShadowGenerator`, reached by FIVE corpus scenes
-    (66, 72, 111, 140, 207) and the only missing import in four of them --
-    though each hides more behind it, so the strip probe rather than the
-    import list is what sizes them. The cascaded family (`csm-*`) is
-    reached by none at this pin.
+  Shipped: the pinned PCF spot, PCF directional and ESM directional
+  generators, their maps and samplers, the caster pass under the pin's
+  standard-Z exception, the ESM caster's own material view and its two-pass
+  separable blur, and BOTH material families' receiver fragments composed
+  per shadow-casting light over a reflected group 2
+  ([features](docs/features.md#shadows)). The directional PCF generator
+  landed with scene 207 and clears the only missing import in scenes 66, 72,
+  111 and 140 -- each hides more behind it, so the strip probe rather than
+  the import list is what sizes them. The cascaded family (`csm-*`) is
+  reached by none at this pin. Each remaining item fails by name:
   - a node receiver, which finishes scenes 65 and 141 -- ONE contract each
     by strip probe, the best scenes-per-contract left outside the physics
     lane. It is NOT the group 2 the two material families share:
@@ -665,16 +628,10 @@ below rather than blocking a scene here.
   patches, with an upstream issue, so it self-retires by failing to apply.
   It is not there yet only because this vcpkg fetches its registry on
   demand and carries no `ports` tree to base a portfile on.
-- [ ] Scenes 47, 111, 164, 207: what each still wants now that the ESM
-  generator, the heightmap ground and the PBR receiver ship —
-  47 `createCylinder`/`createCapsule` and the physics
-  family, 111 a PCF directional beside the two shipped filters plus a node
-  receiver, 164 the ESM generator's remaining options, and 207 the
-  large-world family (`useFloatingOrigin`, `useHighPrecisionMatrix`), which
-  is a subsystem rather than a shadow gap: its whole point is the
-  eye-relative light matrix. Ranking by missing IMPORT alone hid that —
-  scene 207 reads as one missing name and is really scenes 200-209's
-  engine-option family.
+- [ ] Scenes 47, 111, 164: what each still wants now that the three shadow
+  generators, the heightmap ground and the PBR receiver ship —
+  47 `createCylinder`/`createCapsule` and the physics family, 111 a node
+  receiver, and 164 the ESM generator's remaining options.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.
@@ -762,15 +719,16 @@ below rather than blocking a scene here.
   not a mechanism.
 - [ ] Scenes 17, 217: extend reached PBR material options.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
-- [ ] Scenes 200, 201, 207, 208, 209: the large-world bakes that remain.
+- [ ] Scenes 200, 201, 208, 209: the large-world bakes that remain.
   Read `docs/lite/architecture/35-large-world-rendering.md` in the pinned
   clone first — it is the specification for this entry and names the scene
-  behind every bake. **Shipped: the foundation plus 202, 203, 204, 205 and
-  206** — the eye-relative mesh world, the zeroed view translation, the
+  behind every bake. **Shipped: the foundation plus 202, 203, 204, 205, 206
+  and 207** — the eye-relative mesh world, the zeroed view translation, the
   eye-relative `vEyePosition`, the positional light entries, the sprite and
-  billboard anchors on both upload paths, and the thin-instance parent world.
-  Each remaining scene adds one bake: 207 the shadow light-space matrix, 208
-  the node-material mesh world, 209 Havok's multi-region simulation. 200 and
+  billboard anchors on both upload paths, the thin-instance parent world,
+  and the shadow light-space matrix with its caster fit. Each remaining
+  scene adds one bake: 208 the node-material mesh world, 209 Havok's
+  multi-region simulation. 200 and
   201 are the same far-from-origin scene with the mode off and on, and their
   captures MUST diverge (the pin's own parity spec requires cross-golden
   MAD >= 5.0), so they are the pair that proves the path is engaged rather
@@ -787,21 +745,7 @@ below rather than blocking a scene here.
   `packMat4IntoF32WithOffset`, so the whole subtraction stays on
   `mesh.world`. Scene 204's own source says so, and subtracting twice is what
   it warns against.
-  What still blocks each of the three:
-  - **207** — three chunks. `casters.push` into a `const` array of mesh
-    handles the unrolled loop grows, which `setShadowTaskCasterMeshes` then
-    reads (it takes `expectStaticArrayLiteral` today, so the compile-time
-    tuple needs to be an accepted second shape);
-    `createPcfDirectionalShadowGenerator`, which is the two shipped
-    generators combined — the PCF generator's own `depth32float` map,
-    comparison sampler and shared UBO, over the `computeDirectionalLightMatrix`
-    the ESM directional generator already lowers; and the eye-relative light
-    matrix. That last one is the scene's actual subject and the pin already
-    carries it: `_renderShadowMap` passes `(casterMeshes, offX, offY, offZ)`
-    into `computeDirectionalLightMatrix`, which this port folds to zero at
-    every site (`- 0.0` in the emitted `compute_directional_light_matrix`),
-    so wiring it is unfolding those three arguments and dropping
-    `shadow:pcf`/`shadow:esm` from `floatingOriginUnwired`.
+  What still blocks each of the two:
   - **208** — the node family's mesh world, which is the same
     `mesh_world_eye_relative` the other two families take; `loader:gltf` is
     the one still-refused capability a node scene is likely to reach.

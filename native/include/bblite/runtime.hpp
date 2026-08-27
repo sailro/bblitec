@@ -1798,22 +1798,35 @@ struct AssetRecord {
 };
 
 /**
- * One `ShadowGenerator`, as the PCF spot factory builds it.
+ * Which pinned generator built a shadow map.
+ *
+ * The two PCF arms share everything the receiver sees -- the same
+ * `depth32float` map, the same comparison sampler, the same
+ * `createShadowFragment` binding types -- and differ only in the projection
+ * their light-space matrix is fitted with, which is why every consumer that
+ * asks about a generator's RESOURCES tests for the ESM arm alone.
+ */
+enum class ShadowFilter {
+    pcf_spot,
+    /**
+     * `createPcfDirectionalShadowGenerator`: the spot generator's own GPU
+     * state over the ESM's caster-fitted orthographic volume, which is
+     * exactly how the pin assembles it -- `renderPcfShadowMap` with
+     * `computeDirectionalLightMatrix` as its matrix builder.
+     */
+    pcf_directional,
+    esm_directional,
+};
+
+/**
+ * One `ShadowGenerator`, as the three pinned factories build it.
  *
  * The pin keeps the GPU objects on the generator (a `depth32float` map, a
  * comparison sampler, the params UBO and the receiver UBO); those are the
  * PAL's, so the record carries only the values that decide them plus the
- * two matrices `renderPcfShadowMap` refreshes — the unbiased one the
- * receiver samples with, and the biased one the caster pass renders
- * through.
+ * two matrices the refresh rebuilds — the unbiased one the receiver samples
+ * with, and the biased one the caster pass renders through.
  */
-/** Which pinned filter a generator is, which decides both its resources
- *  and how its receiver block packs. */
-enum class ShadowFilter {
-    pcf_spot,
-    esm_directional,
-};
-
 struct ShadowGeneratorRecord {
     ShadowFilter filter = ShadowFilter::pcf_spot;
     std::uint32_t map_size = 512;
@@ -2459,6 +2472,27 @@ struct EsmDirectionalShadowOptions {
     std::uint32_t esm_index = 0;
 };
 
+/**
+ * `PcfDirectionalShadowGeneratorConfig`, as the reached slice resolves it.
+ *
+ * The spot generator's own three, plus the ortho volume the caster fit
+ * projects into — a directional light has no position to project from, so
+ * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
+ * takes. `normalBias` and `forceRefreshEveryFrame` are unreached and refuse
+ * by name, exactly as they do on the other two factories.
+ */
+struct PcfDirectionalShadowOptions {
+    // No initialisers: generation writes every field from the factory's own
+    // `??` chain, so a default written here would be a second copy of a
+    // pinned constant that nothing can catch drifting. A field the emitter
+    // forgets is then a compile error rather than a silent 1024.
+    std::uint32_t map_size;
+    double bias;
+    double darkness;
+    double ortho_min_z;
+    double ortho_max_z;
+};
+
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
     Engine& engine,
     LightHandle light,
@@ -2467,6 +2501,10 @@ ShadowGeneratorHandle create_esm_directional_shadow_generator(
     Engine& engine,
     LightHandle light,
     EsmDirectionalShadowOptions options);
+ShadowGeneratorHandle create_pcf_directional_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    PcfDirectionalShadowOptions options);
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

@@ -1797,7 +1797,7 @@ ${composed.wgsl}`,
                 "upstream/src/shadow.cpp",
                 shadowFactorySource(
                     context,
-                    features.includes("shadow:esm"),
+                    features,
                     nodeEsmCasters,
                 ),
                 generated,

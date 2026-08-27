@@ -1,0 +1,110 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "the container length fold was unsound for a helper escape: every reached function inlines and a container parameter binds by reference, so `grow(offsets)` really grew the array while the callee's push was spelled against the parameter and the invalidation hook rooted to the wrong name; the syntactic scan now withdraws the fold from any name handed to a call, and is the single guard",
+      "applied": true
+    },
+    {
+      "summary": "`shadow_info_block` forked two ways for three pinned factories, so the directional PCF generator shipped `depthValues = {0, far}` where the pin ships `{0, 1}`, disabling the receiver's frustum early-out; both lanes are now read off each factory's own `new F32([...])` and emitted as one arm per family",
+      "applied": true
+    },
+    {
+      "summary": "with the per-light shadow table now sparse, SDL_GPU's three lookups tested only the bound and would bind a hole's null texture where Dawn refuses by name; one shared accessor tests both and errors",
+      "applied": true
+    },
+    {
+      "summary": "`ShadowCaster::world` narrowed a double mesh position to float immediately before the fit's eye subtraction, which is load-bearing now that the shadow families left `floatingOriginUnwired`; the carrier is at the composition's own double width",
+      "applied": true
+    },
+    {
+      "summary": "the flat unrolled body landed in the counted-`for` unroller only, so the same scene written with `for...of` would still emit a name scoped out of its own use; one shared `emitUnrolledIteration` serves all three unrollers",
+      "applied": true
+    },
+    {
+      "summary": "the retired thin-instance TODO claimed a refusal that did not exist: the PAL re-typed the pin's group names, an unknown group returned a zero array stride, and a third group was silently classified as the matrix stream; the group names are emitted from the pin and three static_asserts make a rename, a drop or a third group a build failure",
+      "applied": true
+    },
+    {
+      "summary": "the second `registerFixedLength` site was proven unreachable (an array literal always compiles to a tuple, which returns before the data branch), and its `!aliases` clause was doubly dead",
+      "applied": true
+    },
+    {
+      "summary": "`emittedLineCount` and `truncateEmittedLines` lost their only caller when the unroll went flat; both implementations and both context members are gone",
+      "applied": true
+    },
+    {
+      "summary": "three near-verbatim generator factory cases, including a byte-identical scene-light refusal in all three, collapse onto one spec table and one compiler",
+      "applied": true
+    },
+    {
+      "summary": "the caster list's two-shape read duplicated `compileAnimationGroupList`'s; one `staticHandleList` serves both, and the shadow context loses two members and a zero-value `Compiler.tupleElements` forwarder",
+      "applied": true
+    },
+    {
+      "summary": "three emitted C++ generator factories shared a handle check, a kind check, the common field writes and the push_back/return tail; one emitter takes them as a row",
+      "applied": true
+    },
+    {
+      "summary": "`update_pcf_directional_shadow` was `update_esm_directional_shadow` with one line changed; one emitted `fit_directional_shadow` carries the shared fit and each updater keeps only the pin's own bias split",
+      "applied": true
+    },
+    {
+      "summary": "two `??`-defaults readers restated the same walk with their own exported interface; one `pinnedOptionDefaults` serves both and the unused `PinnedPcfDirectionalDefaults` export is gone",
+      "applied": true
+    },
+    {
+      "summary": "the floating-origin eye bindings and their six-line explanation were copied into both matrix builders; stated once as `eyeOffsetBindings`",
+      "applied": true
+    },
+    {
+      "summary": "`shadowFactorySource` took three positional booleans, two of them `features.includes(...)` at the call site; it takes the feature list",
+      "applied": true
+    },
+    {
+      "summary": "`isNeverResized` walked the whole file once per array-literal declaration; the resized-name set is computed once per source file",
+      "applied": true
+    },
+    {
+      "summary": "`pinnedShadowFilter` re-walked a pinned module per call with no early exit and a `getText` substring per property; memoised per family, returning at the match, reusing the shared `unwrapPin`",
+      "applied": true
+    },
+    {
+      "summary": "the per-frame floating-origin eye was recomputed inside the per-generator visitor though it is a frame constant; hoisted",
+      "applied": true
+    },
+    {
+      "summary": "`handleTupleKinds` was a one-element allowlist duplicating a check its only consumer already makes; the push gate reads the existing handle-kind list",
+      "applied": true
+    },
+    {
+      "summary": "`instance_stepped` was emitted into the generated attribute table though the fold refuses any other value and no C++ reads it, beside an existing `vertex_stream_is_instanced`; dropped",
+      "applied": true
+    },
+    {
+      "summary": "`PcfDirectionalShadowOptions` carried five member initialisers re-typing pinned defaults that the one construction site always overwrites; declared without them, so a forgotten field is a compile error",
+      "applied": true
+    },
+    {
+      "summary": "three stacked doc comments sat on the `ShadowFilter` enum, two of them describing something else; the record's doc moved onto the record",
+      "applied": true
+    },
+    {
+      "summary": "a comment claimed the pinned spot factory builds a light matrix at creation, which it does not; the eager fit is this port's and now says so",
+      "applied": true
+    },
+    {
+      "summary": "the instance-parent world comment said 'twice a frame' where the trigger is once per draw of the pooled mesh; corrected, with the condition to re-measure against",
+      "applied": true
+    },
+    {
+      "summary": "the thin-instance attribute layout was folded out of the pinned AST though the port already imports and calls `createThinInstanceFragment` in both compositions; it is executed now, which removes the heuristic that had to avoid matching a second literal in the same factory, and the emitted table is byte-identical",
+      "applied": true
+    }
+  ]
+}

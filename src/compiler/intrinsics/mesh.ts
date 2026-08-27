@@ -78,6 +78,9 @@ export interface MeshIntrinsicContext
         tupleElements(
             expression: ts.Expression,
         ): readonly Value[] | undefined;
+        staticHandleList(
+            expression: ts.Expression,
+        ): readonly { value: Value; node: ts.Node }[] | undefined;
     };
     fail(node: ts.Node, message: string): never;
 }

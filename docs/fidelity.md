@@ -763,10 +763,31 @@ reaches a Standard variant. That rewrite lives inline in the renderable
 rather than in a named export, so the slot text is lifted from the pinned
 declaration: a pin that moves it, drops it or renames it fails generation
 instead of composing a fragment whose instance colour silently stops
-applying. The colour lane is its own instance-stepped buffer at stride 16
-(`ti-color`), which both backends already bound for the transcribed
-`useThinInstanceColors` path and now bind for the composed variants too.
-Scene 204 gates it.
+applying. The colour lane is its own instance-stepped buffer, which both backends
+already bound for the transcribed `useThinInstanceColors` path and now bind
+for the composed variants too.
+
+**Where that lane sits is the pin's, and it is taken rather than
+restated.** `createThinInstanceFragment` declares each attribute's
+`_bufferGroup`, `_arrayStride`, `_stepMode` and `_offset` -- `ti-matrix` at
+stride 64 for the four world columns, `ti-color` at 16 for the RGBA lane --
+while the composed WGSL keeps only the location, the name and the type. So
+the layout half never reaches a variant's reflected attribute row, and both
+PALs would otherwise type it out. `pinnedInstanceAttributes` EXECUTES that
+factory -- the same call both compositions already make -- and emits its rows
+as `pinned_instance_attributes`, which `pinned_vertex_input` and
+`vertex_stream_stride` read. A moved stride or a shifted offset therefore
+moves both backends without either restating it, and a lane that stopped
+being a per-instance float4 fails generation by name.
+
+The group NAMES are the pin's too, and are emitted beside the rows as
+`pinned_instance_groups`. What stays each backend's is only which SLOT a
+group binds at -- the pin assigns none -- stated once in
+`vertex_stream_group` and proved against the pin by three `static_assert`s:
+a renamed group leaves its stride lookup at zero and a third group leaves
+the list longer than the two streams a backend declares, so either one stops
+the build rather than binding the wrong buffer at the right slot. Scene 204
+gates the rendering half.
 The project-owned `regression-track-clamp` gate is pixel-exact at 3 seconds
 and verifies that shorter translation, rotation, and morph-weight channels
 hold their final values while a separate channel determines the animation

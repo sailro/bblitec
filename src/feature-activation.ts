@@ -500,6 +500,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/shadow/pcf-spotlight-shadow-generator.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    // The directional PCF factory alone. It reaches `shadow:pcf` beside
+    // this one, because every resource and every receiver arm is that
+    // generator's; what differs is the volume its light matrix is fitted
+    // with, so this row gates the emitted factory and nothing else.
+    "shadow:pcf-directional": {
+        provenance: "src/shadow/pcf-directional-shadow-generator.ts",
+        consumers: ["features.cmake"],
+    },
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
         consumers: CMAKE,

@@ -113,6 +113,7 @@ import {
 import {
     DataLowerer,
     type DataLoweringContext,
+    isNeverResized,
 } from "./compiler/data-lowering.js";
 import {
     DataTypeRegistry,
@@ -1032,6 +1033,16 @@ class Compiler
         } else {
             this.emit(
                 `${this.dataTypes.cppType(annotated)} ${cppName} = ${this.dataLowerer.compileForSink(declaration.initializer, annotated)};`,
+            );
+        }
+        if (
+            ts.isArrayLiteralExpression(initializer) &&
+            ts.isIdentifier(declaration.name) &&
+            isNeverResized(declaration.name)
+        ) {
+            this.dataLowerer.registerFixedLength(
+                cppName,
+                initializer.elements.length,
             );
         }
         this.dataLowerer.registerLocal(
@@ -2957,22 +2968,6 @@ class Compiler
      * keeps the warning that would catch a lowering bug.
      */
     /** How many lines the body stream holds, for a caller that may undo. */
-    public emittedLineCount(): number {
-        return this.body.length;
-    }
-
-    /**
-     * Drop every line emitted after `count`.
-     *
-     * An unrolled static loop whose body lowers to no statement at all --
-     * every statement in it a compile-time record, as a particle
-     * simulation's steps are -- would otherwise leave one braced block per
-     * iteration declaring a loop index nothing reads, which MSVC /W4 warns
-     * on.
-     */
-    public truncateEmittedLines(count: number): void {
-        this.body.length = count;
-    }
 
     public registerNativeFunction(
         prototype: string,
