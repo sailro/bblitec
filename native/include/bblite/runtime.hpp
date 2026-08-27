@@ -2041,6 +2041,119 @@ struct SphereMeshData {
     std::uint32_t index_count = 0;
 };
 
+/**
+ * One element of a list, grown to reach it.
+ *
+ * JavaScript extends an array when you assign past its end, and the pinned
+ * ribbon relies on that: it fills `us[p]` for each path without sizing `us`
+ * first. A C++ `operator[]` there is out of bounds, so an assignment
+ * through this one grows instead -- which is the same array the pin ends
+ * up with.
+ */
+template <typename T>
+T& at_grow(std::vector<T>& values, std::size_t index) {
+    if (values.size() <= index) {
+        values.resize(index + 1);
+    }
+    return values[index];
+}
+
+/**
+ * A scene's own row of `{x, y, z}` as the path a builder takes.
+ *
+ * The data model materializes an annotated `Vec3[]` a scene grew in a loop
+ * as its own record type, and the pin's builder wants the record it
+ * declares. Templated on the row rather than named per scene, because what
+ * makes the two the same is that both spell the pin's three components.
+ */
+template <typename Points>
+std::vector<Vec3d> vec3_path(const Points& points) {
+    std::vector<Vec3d> path;
+    path.reserve(points.size());
+    for (const auto& point : points) {
+        path.push_back(Vec3d{point.x, point.y, point.z});
+    }
+    return path;
+}
+
+/** The same, one level up: a scene's rows as a ribbon's path array. */
+template <typename Rows>
+std::vector<std::vector<Vec3d>> vec3_paths(const Rows& rows) {
+    std::vector<std::vector<Vec3d>> paths;
+    paths.reserve(rows.size());
+    for (const auto& row : rows) {
+        paths.push_back(vec3_path(row));
+    }
+    return paths;
+}
+
+/**
+ * `RibbonOptions`, as the reached slice resolves it.
+ *
+ * The path array is the pin's own `Vec3[][]`, carried whole: a ribbon is
+ * defined by its paths and there is nothing to resolve about them.
+ */
+struct RibbonOptions {
+    std::vector<std::vector<Vec3d>> path_array;
+    bool close_array;
+    bool close_path;
+};
+
+/**
+ * `PolyhedronOptions`, as the reached slice resolves it.
+ *
+ * The pin's `POLYHEDRA` table is data and the `type` a scene names is a
+ * compile-time value, so generation picks the row and this carries that
+ * row's own vertex and face lists. One polyhedron therefore costs one
+ * table, not fifteen.
+ */
+struct PolyhedronOptions {
+    double size_x;
+    double size_y;
+    double size_z;
+    bool flat;
+    std::vector<std::vector<double>> vertex;
+    std::vector<std::vector<double>> face;
+};
+
+/**
+ * `CylinderOptions`, as the reached slice resolves it.
+ *
+ * `diameter_top` and `diameter_bottom` are the pin's own `??` chain already
+ * resolved, so the `diameter` shorthand does not survive here -- and the
+ * shorthand is exactly why the zero question travels beside the value.
+ */
+struct CylinderOptions {
+    double height;
+    double diameter_top;
+    double diameter_bottom;
+    double tessellation;
+    double subdivisions;
+    /**
+     * Whether the scene named a zero TOP diameter.
+     *
+     * The builder clamps a zero to 0.00001 for its ring maths, and asks
+     * this separately to decide whether to reuse the previous ring's
+     * normals at a cone tip. The pin asks it of the option the scene
+     * wrote, so a zero arriving through the `diameter` shorthand answers
+     * NO -- which is why the record carries the question and not just the
+     * value.
+     */
+    bool diameter_top_is_zero;
+};
+
+/**
+ * `DiscOptions`, as the reached slice resolves it.
+ *
+ * Every field is written by generation from the pinned factory's own `??`
+ * chain, so none carries a default here.
+ */
+struct DiscOptions {
+    double radius;
+    double tessellation;
+    double arc;
+};
+
 struct TorusOptions {
     double diameter;
     double thickness;
@@ -2117,6 +2230,20 @@ void set_morph_target_weights(
     MeshHandle mesh,
     const std::vector<float>& weights);
 MeshHandle create_torus(Engine& engine, TorusOptions options);
+MeshHandle create_disc(Engine& engine, DiscOptions options);
+MeshHandle create_cylinder(Engine& engine, CylinderOptions options);
+MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options);
+MeshHandle create_ribbon(Engine& engine, RibbonOptions options);
+MeshHandle create_ribbon_mesh(
+    Engine& engine,
+    RibbonOptions options,
+    std::string_view name);
+MeshHandle create_extrude_shape(
+    Engine& engine,
+    const std::vector<Vec3d>& shape,
+    const std::vector<Vec3d>& curve,
+    double scale,
+    double rotation);
 MeshHandle create_tube(
     Engine& engine,
     const std::vector<Vec3d>& path_points,

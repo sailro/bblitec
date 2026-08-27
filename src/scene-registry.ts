@@ -1437,6 +1437,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene38",
+        name: "Scene 38 - Mesh Builder Gallery",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene38.ts",
+        title: "Babylon Lite Native - Mesh Builders",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene39",
         name: "Scene 39 - Animated Waterfall",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene39.ts",

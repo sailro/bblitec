@@ -253,7 +253,7 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (63 scenes):** 16, 17, 20, 38, 43,
+**Integrate first (62 scenes):** 16, 17, 20, 43,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
 129,
 140, 144, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 217-219,
@@ -360,8 +360,6 @@ below rather than blocking a scene here.
   built in the entry file, 272 `cloneTransformNode` and
   `createSolidTexture2D`.
 - [ ] Scene 20: lower an arrow function bound to a name and used as a value.
-- [ ] Scenes 38, 43: support `createCylinder`. 43's `createTube` blocker
-  cleared with scene 175's tube slice; re-probe it for the next one.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
@@ -630,8 +628,8 @@ below rather than blocking a scene here.
   demand and carries no `ports` tree to base a portfile on.
 - [ ] Scenes 47, 111, 164: what each still wants now that the three shadow
   generators, the heightmap ground and the PBR receiver ship —
-  47 `createCylinder`/`createCapsule` and the physics family, 111 a node
-  receiver, and 164 the ESM generator's remaining options.
+  47 `createCapsule` and the physics family, 111 a node receiver, and 164
+  the ESM generator's remaining options.
 - [ ] Scene 73: support camera viewports.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.

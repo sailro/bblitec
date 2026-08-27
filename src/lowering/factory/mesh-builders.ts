@@ -5,6 +5,7 @@ import {
     type PinnedBinding,
 } from "../pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "../pinned-operators.js";
+import { lowerObjectComponents } from "../pinned-function-lowerer.js";
 
 /**
  * The mesh-builder half of the factory unit: the pinned CreateBox /
@@ -15,51 +16,42 @@ import { pinnedNumericMathCalls } from "../pinned-operators.js";
  * `factory-lowerer.ts`.
  */
 export class MeshBuilderLowerer {
-    /**
-     * The pinned name literal a mesh factory passes to
-     * createMeshFromData — `createSphere(engine, options)` returns
-     * `createMeshFromData(engine, "sphere", ...)` — flowed into the
-     * emitted record so scene code finds factory meshes by the pin's own
-     * names.
-     */
-    private pinnedFactoryMeshName(symbol: string): string {
-        const { declaration } =
-            this.context.functionDeclaration(
-                "src/mesh/mesh-factories.ts",
-                symbol,
-            );
-        const call = this.context.callExpression(
-            declaration,
-            "createMeshFromData",
-        );
-        const name = call.arguments[1]
-            ? this.context.unwrapExpression(call.arguments[1])
-            : undefined;
-        if (!name || !ts.isStringLiteral(name)) {
-            this.context.contractError(
-                declaration,
-                `Expected ${symbol} to pass its literal mesh name to createMeshFromData.`,
-            );
-        }
-        return name.text;
-    }
-
     public constructor(protected readonly context: LoweringContext) {}
 
     /**
-     * @param instanceColors - whether the scene binds a per-instance RGBA
-     * stream. The setter is emitted only where one is reached, the way the
-     * rest of this unit's surface follows what the scene touches.
+     * @param features - what the scene reached. Every builder below is
+     * emitted only where its own feature is in it, the way the rest of this
+     * unit's surface follows what the scene touches.
      */
     public lowerMeshFactories(
-        instanceColors = false,
-        heightMapGround = false,
+        features: readonly string[] = [],
     ): LoweredSource {
+        // Asked of the feature list rather than taken as one positional
+        // boolean per builder: which builders a scene reached is already
+        // stated there, and the family only grows.
+        const instanceColors = features.includes(
+            "mesh:thin-instance-colors",
+        );
+        const heightMapGround = features.includes("mesh:ground-heightmap");
+        const disc = features.includes("mesh:disc");
+        const cylinder = features.includes("mesh:cylinder");
+        const polyhedron = features.includes("mesh:polyhedron");
+        // The tube and the extrude both finish through the ribbon under
+        // their own names -- which is how the pin composes them -- so
+        // reaching either reaches this unit's ribbon.
+        const ribbon =
+            features.includes("mesh:ribbon") ||
+            features.includes("mesh:extrude") ||
+            features.includes("mesh:tube");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
         const sphereModule = "src/mesh/create-sphere.ts";
         const torusModule = "src/mesh/create-torus.ts";
+        const discModule = "src/mesh/create-disc.ts";
+        const cylinderModule = "src/mesh/create-cylinder.ts";
+        const polyhedronModule = "src/mesh/create-polyhedron.ts";
+        const ribbonModule = "src/mesh/create-ribbon.ts";
         const boxFile = this.context.sourceFile(boxModule);
         const { declaration: box } =
             this.context.functionDeclaration(
@@ -99,7 +91,27 @@ export class MeshBuilderLowerer {
                 torusModule,
                 "createTorusData",
             );
-        const meshMathCalls = pinnedNumericMathCalls();
+        // The pin's own maths, plus the one helper three builders share:
+        // `computeNormals` is emitted once beside them, so a call to it is
+        // a call rather than another copy of its body.
+        const meshMathCalls = new Map([
+            ...pinnedNumericMathCalls(),
+            [
+                "len",
+                (args: readonly string[]): string =>
+                    `pinned_ribbon_len(${args.join(", ")})`,
+            ],
+            [
+                "sub",
+                (args: readonly string[]): string =>
+                    `pinned_ribbon_sub(${args.join(", ")})`,
+            ],
+            [
+                "computeNormals",
+                (args: readonly string[]): string =>
+                    `pinned_compute_normals(${args.join(", ")})`,
+            ],
+        ]);
         /**
          * Lower one pinned generator body into the shared native array
          * record. The four arrays and their indexed stores come from the
@@ -110,6 +122,18 @@ export class MeshBuilderLowerer {
             file: ts.SourceFile,
             declaration: ts.FunctionDeclaration,
             optionBindings: ReadonlyMap<string, string>,
+            // A binding whose type is not the scalar every option is: a
+            // jagged table the pin indexes, or a flag it branches on.
+            optionTypes: ReadonlyMap<
+                string,
+                PinnedBinding["type"]
+            > = new Map(),
+            // Whether THIS body's `||` only joins conditions. Most of the
+            // family's do; `createRibbonData` also writes the
+            // value-selecting `Math.sqrt(...) || 1`, which the C++ operator
+            // would flatten to the constant 1 and stop normalizing a seam
+            // normal -- the exact rewrite this translator exists to refuse.
+            booleanOr = true,
         ): string => {
             if (!declaration.body) {
                 this.context.contractError(
@@ -124,7 +148,10 @@ export class MeshBuilderLowerer {
                 ],
                 ...Array.from(optionBindings, ([name, cpp]) => [
                     name,
-                    { cpp, type: "scalar" } as PinnedBinding,
+                    {
+                        cpp,
+                        type: optionTypes.get(name) ?? "scalar",
+                    } as PinnedBinding,
                 ] as [string, PinnedBinding]),
             ]);
             let lowerer: PinnedNumericLowerer;
@@ -173,9 +200,18 @@ export class MeshBuilderLowerer {
                     "normals",
                     "uvs",
                     "indices",
-                ].map((name) =>
-                    `std::move(${lowerer.expression(required(name))})`,
-                );
+                ].map((name) => {
+                    const value = lowerer.expression(required(name));
+                    // A builder that grew a `number[]` returns the
+                    // CONVERSION of it, which is already a temporary, and
+                    // moving a prvalue is the pessimizing move clang
+                    // refuses. One that preallocated returns the buffer by
+                    // NAME, which must move -- so a bare identifier is
+                    // exactly the case that does.
+                    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
+                        ? `std::move(${value})`
+                        : value;
+                });
                 const vertexCount = members.has("vertexCount")
                     ? lowerer.expression(required("vertexCount"))
                     : bindings.get("vertexCount")?.cpp;
@@ -197,8 +233,15 @@ export class MeshBuilderLowerer {
             lowerer = new PinnedNumericLowerer(file, {
                 bindings,
                 calls: meshMathCalls,
+                listCalls: new Set(["computeNormals"]),
                 returnValue,
-                booleanOr: true,
+                booleanOr,
+                // Every `&&` in the pinned builder family joins a CONDITION
+                // -- an `if` test, a `while` test, or a guard ternary's test
+                // -- and none of them selects a value. Audited across all
+                // ten builders; the five that were already lowered contain
+                // none at all, so this is inert for them.
+                booleanAnd: true,
                 maybeUnusedConst: true,
             });
             return declaration.body.statements
@@ -283,6 +326,366 @@ export class MeshBuilderLowerer {
                 ["options.diameterZ", "options.diameter_z"],
             ]),
         );
+        // The disc, the first builder the pin writes with a GROWN
+        // `number[]` rather than a preallocated typed array: it pushes its
+        // positions and its indices and converts at the end, which is where
+        // its float rounding happens. `vertexCount`/`indexCount` are bound
+        // rather than returned, because the pin's own return names neither.
+        const discBuilderBody = !disc
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(discModule),
+                  this.context.functionDeclaration(
+                      discModule,
+                      "createDiscData",
+                  ).declaration,
+                  new Map([
+                      ["options.radius", "options.radius"],
+                      ["options.tessellation", "options.tessellation"],
+                      ["options.arc", "options.arc"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+              );
+        const discFactory = !disc
+            ? ""
+            : `static PinnedMeshData pinned_create_disc_data(
+    DiscOptions options) {
+${discBuilderBody}
+}
+
+MeshHandle create_disc(Engine& engine, DiscOptions options) {
+    PinnedMeshData data = pinned_create_disc_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.context.pinnedFactoryMeshName("createDisc")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // The cylinder, cone and truncated cone are one pinned builder. Its
+        // diameters bind UNCLAMPED, because the body asks two different
+        // questions of the same field: the ring maths uses the value after
+        // a zero is clamped to 0.00001, and the cone-tip normal reuse asks
+        // whether the SCENE wrote a zero. Both reads work off the raw value
+        // because the clamp is a local the body writes itself.
+        const cylinderBuilderBody = !cylinder
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(cylinderModule),
+                  this.context.functionDeclaration(
+                      cylinderModule,
+                      "createCylinderData",
+                  ).declaration,
+                  new Map([
+                      ["options.height", "options.height"],
+                      ["options.diameterTop", "options.diameter_top"],
+                      // The cone-tip arm asks whether the SCENE named a
+                      // zero top -- a different question from the clamped
+                      // value the rings use, and one the record answers.
+                      [
+                          "options.diameterTop === 0",
+                          "options.diameter_top_is_zero",
+                      ],
+                      ["options.diameterBottom", "options.diameter_bottom"],
+                      ["options.tessellation", "options.tessellation"],
+                      ["options.subdivisions", "options.subdivisions"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map([["options.diameterTop === 0", "bool"]]),
+              );
+        const cylinderFactory = !cylinder
+            ? ""
+            : `static PinnedMeshData pinned_create_cylinder_data(
+    CylinderOptions options) {
+${cylinderBuilderBody}
+}
+
+MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
+    PinnedMeshData data = pinned_create_cylinder_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.context.pinnedFactoryMeshName("createCylinder")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // `computeNormals`, the accumulation three of the pinned builders
+        // hand their grown positions and indices to. Emitted once, from the
+        // pin's own body, because the three call it rather than each
+        // carrying a copy.
+        const normalsModule = "src/mesh/compute-normals.ts";
+        const computeNormals = !polyhedron && !ribbon
+            ? ""
+            : (() => {
+                  const { file, declaration } =
+                      this.context.functionDeclaration(
+                          normalsModule,
+                          "computeNormals",
+                      );
+                  if (!declaration.body) {
+                      this.context.contractError(
+                          declaration,
+                          "Expected computeNormals to have a body.",
+                      );
+                  }
+                  const lowerer = new PinnedNumericLowerer(file, {
+                      bindings: new Map<string, PinnedBinding>([
+                          ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                          ["positions", { cpp: "positions", type: "f64-list" }],
+                          ["indices", { cpp: "indices", type: "f64-list" }],
+                      ]),
+                      calls: meshMathCalls,
+                      returnValue: (expression) =>
+                          expression
+                              ? lowerer.expression(expression)
+                              : this.context.contractError(
+                                    declaration,
+                                    "Expected computeNormals to return.",
+                                ),
+                      booleanOr: true,
+                      booleanAnd: true,
+                      maybeUnusedConst: true,
+                  });
+                  const body = declaration.body.statements
+                      .flatMap((statement) =>
+                          lowerer.statement(statement, "    "),
+                      )
+                      .join("\n");
+                  return `// ${this.context.provenance(
+                      normalsModule,
+                      "computeNormals",
+                  )}
+static std::vector<double> pinned_compute_normals(
+    const std::vector<double>& positions,
+    const std::vector<double>& indices) {
+${body}
+}
+
+`;
+              })();
+        // The polyhedron. Its type table is pinned DATA and the type a
+        // scene names is a compile-time value, so generation picks the row
+        // and the record carries that row's own vertex and face lists --
+        // which is why `type`, `size` and `data` are bound here rather than
+        // recomputed: each is a local the caller already resolved.
+        const polyhedronBuilderBody = !polyhedron
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(polyhedronModule),
+                  this.context.functionDeclaration(
+                      polyhedronModule,
+                      "createPolyhedronData",
+                  ).declaration,
+                  new Map([
+                      ["type", "0"],
+                      ["size", "0.0"],
+                      ["data", "options"],
+                      ["data.vertex", "options.vertex"],
+                      ["data.face", "options.face"],
+                      ["sizeX", "options.size_x"],
+                      ["sizeY", "options.size_y"],
+                      ["sizeZ", "options.size_z"],
+                      ["flat", "options.flat"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map([
+                      ["flat", "bool"],
+                      ["data.vertex", "f64-list-2d"],
+                      ["data.face", "f64-list-2d"],
+                  ]),
+              );
+        const polyhedronFactory = !polyhedron
+            ? ""
+            : `static PinnedMeshData pinned_create_polyhedron_data(
+    PolyhedronOptions options) {
+${polyhedronBuilderBody}
+}
+
+MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options) {
+    PinnedMeshData data =
+        pinned_create_polyhedron_data(std::move(options));
+    return create_mesh_from_data(
+        engine,
+        "${this.context.pinnedFactoryMeshName("createPolyhedron")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // `len` and `sub`, the two vector helpers `createRibbonData`
+        // declares beside itself. Lowered from their own bodies rather than
+        // written here, because a square root and three subtractions are
+        // exactly the kind of formula this port must not re-type.
+        const ribbonVectorHelpers = !ribbon
+            ? ""
+            : (() => {
+                  const file = this.context.sourceFile(ribbonModule);
+                  const lowerHelper = (
+                      symbol: string,
+                      parameters: readonly string[],
+                      signature: string,
+                      returns: (
+                          expression: ts.Expression,
+                          lowerer: PinnedNumericLowerer,
+                      ) => string,
+                  ): string => {
+                      const { declaration } =
+                          this.context.functionDeclaration(
+                              ribbonModule,
+                              symbol,
+                          );
+                      if (!declaration.body) {
+                          this.context.contractError(
+                              declaration,
+                              `Expected ${symbol} to have a body.`,
+                          );
+                      }
+                      const lowerer: PinnedNumericLowerer =
+                          new PinnedNumericLowerer(file, {
+                              bindings: new Map<string, PinnedBinding>(
+                                  parameters.map((parameter) => [
+                                      parameter,
+                                      { cpp: parameter, type: "vec3" },
+                                  ]),
+                              ),
+                              calls: meshMathCalls,
+                              returnValue: (expression) =>
+                                  expression
+                                      ? returns(expression, lowerer)
+                                      : this.context.contractError(
+                                            declaration,
+                                            `${symbol} returns nothing.`,
+                                        ),
+                              booleanOr: true,
+                              booleanAnd: true,
+                          });
+                      const body = declaration.body.statements
+                          .flatMap((statement) =>
+                              lowerer.statement(statement, "    "),
+                          )
+                          .join("\n");
+                      return `${signature} {\n${body}\n}\n\n`;
+                  };
+                  return (
+                      lowerHelper(
+                          "len",
+                          ["v"],
+                          "static double pinned_ribbon_len(const Vec3d& v)",
+                          (expression, lowerer) =>
+                              lowerer.expression(expression),
+                      ) +
+                      lowerHelper(
+                          "sub",
+                          ["a", "b"],
+                          "static Vec3d pinned_ribbon_sub(\n" +
+                              "    const Vec3d& a,\n    const Vec3d& b)",
+                          // The pin returns a `{x, y, z}` literal, and
+                          // the record this port stores is that literal's
+                          // three components in the pin's own order.
+                          (expression, lowerer) =>
+                              `Vec3d{${lowerObjectComponents(
+                                  this.context,
+                                  lowerer,
+                                  expression,
+                                  ["x", "y", "z"],
+                              ).join(", ")}}`,
+                      )
+                  );
+              })();
+        const ribbonBuilderBody = !ribbon
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(ribbonModule),
+                  this.context.functionDeclaration(
+                      ribbonModule,
+                      "createRibbonData",
+                  ).declaration,
+                  new Map([
+                      // The record is taken by value and dead after this
+                      // read, and the pin reads `pathArray` exactly once,
+                      // so the rows MOVE rather than being deep-copied.
+                      [
+                          "options.pathArray",
+                          "std::move(options.path_array)",
+                      ],
+                      // The two flags bind as the LOCALS the pin resolves
+                      // them into, so its `options.closeArray || false`
+                      // coercion is one generation already made -- which
+                      // leaves the body's only other `||` the
+                      // value-selecting one, lowered as such.
+                      ["closeArray", "options.close_array"],
+                      ["closePath", "options.close_path"],
+                      // No reached ribbon names an offset, and the pin's
+                      // own default for it is not a constant -- it is
+                      // `floor(pathArray[0].length / 2)`, which the body
+                      // computes one line above. Binding the read to that
+                      // local is taking the absent arm exactly.
+                      ["options.offset", "defaultOffset"],
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map([
+                      ["options.pathArray", "vec3-list-2d"],
+                      ["closeArray", "bool"],
+                      ["closePath", "bool"],
+                  ]),
+                  false,
+              );
+        const ribbonFactory = !ribbon
+            ? ""
+            : `${ribbonVectorHelpers}static PinnedMeshData pinned_create_ribbon_data(
+    RibbonOptions options) {
+${ribbonBuilderBody}
+}
+
+/**
+ * The ribbon, under whichever pinned factory's name asked for it.
+ *
+ * \`createExtrudeShape\` finishes through \`createRibbonData\` too, under its
+ * own mesh name -- so the triangulation lives here once and the name is the
+ * caller's, which is exactly how the pin composes the two.
+ */
+MeshHandle create_ribbon_mesh(
+    Engine& engine,
+    RibbonOptions options,
+    std::string_view name) {
+    PinnedMeshData data = pinned_create_ribbon_data(std::move(options));
+    return create_mesh_from_data(
+        engine,
+        std::string(name),
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+
+MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
+    return create_ribbon_mesh(
+        engine,
+        std::move(options),
+        "${this.context.pinnedFactoryMeshName("createRibbon")}");
+}
+`;
         const torusBuilderBody = lowerPinnedMeshBuilder(
             torusFile,
             torus,
@@ -1636,15 +2039,49 @@ void set_thin_instance_colors(
             .join("\n");
         return {
             modulePath,
-            symbolName: "createBox,createGround,createPlane,createSphere,createSphereData,createMorphTargets,setMorphTargetWeights,createTorus,createMeshFromData",
+            symbolName: [
+                "createBox,createGround,createPlane,createSphere",
+                "createSphereData,createMorphTargets",
+                "setMorphTargetWeights,createTorus,createMeshFromData",
+                ...(disc ? ["createDisc"] : []),
+                ...(cylinder ? ["createCylinder"] : []),
+                ...(polyhedron ? ["createPolyhedron"] : []),
+                ...(ribbon ? ["createRibbon"] : []),
+            ].join(","),
             header: "",
             source: `// ${this.context.provenance(
                 modulePath,
-                "createBox, createGround, createPlane, createSphere, createSphereData, createMorphTargets, setMorphTargetWeights, createTorus, createMeshFromData",
-                "src/mesh/create-box.ts, src/mesh/create-ground.ts, src/mesh/create-plane.ts, src/mesh/create-sphere.ts, src/morph/create-morph-targets.ts, src/mesh/create-torus.ts defaults, and src/math/compute-aabb.ts bounds folding",
+                [
+                    "createBox, createGround, createPlane, createSphere",
+                    "createSphereData, createMorphTargets",
+                    "setMorphTargetWeights, createTorus, createMeshFromData",
+                    ...(disc ? ["createDisc"] : []),
+                    ...(cylinder ? ["createCylinder"] : []),
+                    ...(polyhedron ? ["createPolyhedron"] : []),
+                    ...(ribbon ? ["createRibbon"] : []),
+                ].join(", "),
+                [
+                    "src/mesh/create-box.ts, src/mesh/create-ground.ts",
+                    "src/mesh/create-plane.ts, src/mesh/create-sphere.ts",
+                    "src/morph/create-morph-targets.ts",
+                    "src/mesh/create-torus.ts",
+                    ...(disc ? ["src/mesh/create-disc.ts"] : []),
+                    ...(cylinder ? ["src/mesh/create-cylinder.ts"] : []),
+                    ...(polyhedron
+                        ? ["src/mesh/create-polyhedron.ts"]
+                        : []),
+                    ...(ribbon
+                        ? [
+                              "src/mesh/create-ribbon.ts",
+                              "src/mesh/compute-normals.ts",
+                          ]
+                        : []),
+                ].join(", ") +
+                    " defaults, and src/math/compute-aabb.ts bounds folding",
             )}
+${ribbon || heightMapGround ? "#include <bblite/js_data.hpp>\n" : ""}\
 #include <bblite/runtime.hpp>
-${heightMapGround ? `#include <bblite/js_data.hpp>
+${heightMapGround ? `\
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 ` : ""}
@@ -1692,7 +2129,7 @@ ${boxAddFaceCalls}
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::box;
-    mesh.name = "${this.pinnedFactoryMeshName("createBox")}";
+    mesh.name = "${this.context.pinnedFactoryMeshName("createBox")}";
     mesh.dimensions = Vec3{width, height, depth};
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
@@ -1753,7 +2190,7 @@ MeshHandle create_ground(Engine& engine, GroundOptions options) {
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::ground;
-    mesh.name = "${this.pinnedFactoryMeshName("createGround")}";
+    mesh.name = "${this.context.pinnedFactoryMeshName("createGround")}";
     mesh.dimensions = Vec3{
         static_cast<float>(options.width),
         0.0f,
@@ -1829,7 +2266,7 @@ ${planeVertices}
     }
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
-    mesh.name = "${this.pinnedFactoryMeshName("createPlane")}";
+    mesh.name = "${this.context.pinnedFactoryMeshName("createPlane")}";
     mesh.primitive = PrimitiveKind::gltf;
     mesh.geometry = static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -1904,7 +2341,7 @@ MeshHandle create_sphere(Engine& engine, SphereOptions options) {
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::sphere;
-    mesh.name = "${this.pinnedFactoryMeshName("createSphere")}";
+    mesh.name = "${this.context.pinnedFactoryMeshName("createSphere")}";
     mesh.dimensions = Vec3{
         static_cast<float>(options.diameter_x),
         static_cast<float>(options.diameter_y),
@@ -2061,7 +2498,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
     engine.geometries.push_back(std::move(geometry));
     MeshRecord mesh;
     mesh.primitive = PrimitiveKind::torus;
-    mesh.name = "${this.pinnedFactoryMeshName("createTorus")}";
+    mesh.name = "${this.context.pinnedFactoryMeshName("createTorus")}";
     mesh.geometry =
         static_cast<std::uint32_t>(engine.geometries.size() - 1);
     engine.meshes.push_back(mesh);
@@ -2069,6 +2506,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
+${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}${ribbonFactory}
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,

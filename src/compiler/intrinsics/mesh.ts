@@ -6,6 +6,15 @@ import {
     type ObjectValidationContext,
 } from "../option-helpers.js";
 import { GROUND_OPTION_DEFAULTS } from "./mesh-options.js";
+import { doubleLiteral } from "../../cpp-literals.js";
+import {
+    pinnedMeshOptionDefault,
+    pinnedMeshOptionFlag,
+} from "../../pinned-mesh-defaults.js";
+import {
+    pinnedPolyhedron,
+    pinnedPolyhedronCount,
+} from "../../pinned-polyhedra.js";
 
 export interface MeshIntrinsicContext
     extends IntrinsicCallContext,
@@ -99,6 +108,95 @@ function vec3RecordCpp(
         );
     }
     return context.vec3FromRecord(element, node, "double");
+}
+
+/**
+ * One list of Vec3 PATHS, however the scene spelled it.
+ *
+ * The same two spellings `compileVec3Path` answers for, one level up: rows
+ * written inline as compile-time lists, or rows a loop grew under a
+ * `Vec3[][]` annotation, which the data model materializes under the
+ * scene's own record type.
+ */
+function compileVec3PathArray(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const rows = context.handleCollections.tupleElements(expression);
+    if (rows) {
+        return (
+            `std::vector<std::vector<bbl::Vec3d>>{${rows
+                .map((row) =>
+                    row.tupleElements
+                        ? vec3PointsCpp(
+                              context,
+                              row.tupleElements,
+                              expression,
+                          )
+                        : context.fail(
+                              expression,
+                              "Each ribbon path must be a list of Vec3 " +
+                                  "records.",
+                          ),
+                )
+                .join(", ")}}`
+        );
+    }
+    const value = context.compileValue(expression);
+    return value.kind === "data"
+        ? `bbl::vec3_paths(${value.cpp})`
+        : context.fail(
+              expression,
+              "A ribbon's pathArray must be a list of Vec3 paths.",
+          );
+}
+
+/** A braced list of Vec3 records, from compile-time element values. */
+function vec3PointsCpp(
+    context: MeshIntrinsicContext,
+    points: readonly Value[],
+    node: ts.Node,
+): string {
+    return `{${points
+        .map((point) => vec3RecordCpp(context, point, node))
+        .join(", ")}}`;
+}
+
+/**
+ * One path of Vec3 points, however the scene spelled it.
+ *
+ * A compile-time list emits its points as a braced literal; a list the data
+ * model materialized converts through `vec3_path`, which reads the same
+ * three components off whatever record type the scene's annotation
+ * produced.
+ */
+function compileVec3Path(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    const bound =
+        context.handleCollections.tupleElements(expression);
+    if (bound) {
+        return `std::vector<bbl::Vec3d>${vec3PointsCpp(
+            context,
+            bound,
+            expression,
+        )}`;
+    }
+    const value = context.compileValue(expression);
+    if (value.kind === "data") {
+        return `bbl::vec3_path(${value.cpp})`;
+    }
+    return (
+        `std::vector<bbl::Vec3d>{${context
+            .expectStaticArrayLiteral(
+                context.resolveStaticExpression(expression),
+            )
+            .elements.map((element) =>
+                context.compileVec3(element, "double"),
+            )
+            .join(", ")}}`
+    );
 }
 
 export function compileMeshIntrinsic(
@@ -729,24 +827,12 @@ export function compileMeshIntrinsic(
                     "Reached tubes name their path, radius and tessellation explicitly.",
                 );
             }
-            // The path arrives inline or bound to a local — a
-            // compile-time tuple of Vec3 records whose lanes may be
-            // runtime reads (a raycast hit point).
-            const boundElements =
-                context.handleCollections.tupleElements(pathExpression);
-            const points = boundElements
-                ? boundElements.map((element) =>
-                      vec3RecordCpp(context, element, pathExpression),
-                  )
-                : context
-                      .expectStaticArrayLiteral(
-                          context.resolveStaticExpression(
-                              pathExpression,
-                          ),
-                      )
-                      .elements.map((element) =>
-                          context.compileVec3(element, "double"),
-                      );
+            // The path arrives in one of three spellings: a compile-time
+            // tuple of Vec3 records whose lanes may be runtime reads (a
+            // raycast hit point), an array literal at the call site, or a
+            // list a loop grew under a `Vec3[]` annotation -- which the
+            // data model materializes as the scene's own record type.
+            const points = compileVec3Path(context, pathExpression);
             context.reachFeature("mesh:tube", call);
             context.reachFeature("mesh:from-data", call);
             return {
@@ -754,11 +840,383 @@ export function compileMeshIntrinsic(
                 sceneMeshIndex,
                 cpp:
                     `bbl::create_tube(${engine.cpp}, ` +
-                    `std::vector<bbl::Vec3d>{${points.join(", ")}}, ` +
+                    `${points}, ` +
                     `${context.compileNumber(radius, "double")}, ` +
                     `${context.compileNumber(tessellation, "double")})`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createExtrudeShape": {
+            // A 2D shape swept along a 3D path. `cap` is unreached and
+            // refuses by name; `scale` and `rotation` take the factory's
+            // own `??` defaults.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 2, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const options = context.expectObjectLiteral(call.arguments[1]!);
+            validateObjectProperties(
+                context,
+                options,
+                ["shape", "path", "scale", "rotation"],
+                "Reached extrusions name their shape, path, scale and " +
+                    "rotation; cap is not lowered.",
+            );
+            const shape = context.objectProperty(options, "shape");
+            const curve = context.objectProperty(options, "path");
+            if (!shape || !curve) {
+                context.fail(
+                    call.arguments[1]!,
+                    "An extrusion needs its shape and its path.",
+                );
+            }
+            const extrudeDefault = (local: string): string =>
+                doubleLiteral(
+                    pinnedMeshOptionDefault(
+                        "src/mesh/create-extrude.ts",
+                        "createExtrudeShapeData",
+                        local,
+                    ),
+                );
+            const scale = context.objectProperty(options, "scale");
+            const rotation = context.objectProperty(options, "rotation");
+            context.reachFeature("mesh:extrude", call);
+            context.reachFeature("mesh:from-data", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_extrude_shape(${engine.cpp}, ` +
+                    `${compileVec3Path(context, shape)}, ` +
+                    `${compileVec3Path(context, curve)}, ` +
+                    `${
+                        scale
+                            ? context.compileNumber(scale, "double")
+                            : extrudeDefault("scale")
+                    }, ` +
+                    `${
+                        rotation
+                            ? context.compileNumber(rotation, "double")
+                            : extrudeDefault("rotation")
+                    })`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createRibbon": {
+            // The reached subset is the path array alone. `closeArray`,
+            // `closePath` and `offset` are the pin's own defaults, folded
+            // here so the record carries what the builder reads.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 2, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const options = context.expectObjectLiteral(call.arguments[1]!);
+            validateObjectProperties(
+                context,
+                options,
+                ["pathArray"],
+                "Reached ribbons name their pathArray; closeArray, " +
+                    "closePath and offset are the pin's own defaults.",
+            );
+            const pathArray = context.objectProperty(options, "pathArray");
+            if (!pathArray) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A ribbon needs its pathArray.",
+                );
+            }
+            const paths = compileVec3PathArray(context, pathArray);
+            context.reachFeature("mesh:ribbon", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_ribbon(${engine.cpp}, ` +
+                    `bbl::RibbonOptions{` +
+                    `${paths}, false, false})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createPolyhedron": {
+            // The pin clamps an out-of-range `type` to 0 and resolves the
+            // three sizes through `sizeX ?? size ?? 1`. Both happen here,
+            // because the type selects a TABLE ROW and the row is what the
+            // record carries.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 1, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const polyhedronDefault = (local: string): number =>
+                pinnedMeshOptionDefault(
+                    "src/mesh/create-polyhedron.ts",
+                    "createPolyhedronData",
+                    local,
+                );
+            const sizes: Record<string, string> = {
+                sizeX: doubleLiteral(polyhedronDefault("sizeX")),
+                sizeY: doubleLiteral(polyhedronDefault("sizeY")),
+                sizeZ: doubleLiteral(polyhedronDefault("sizeZ")),
+            };
+            let type = polyhedronDefault("type");
+            let flat = pinnedMeshOptionFlag(
+                "src/mesh/create-polyhedron.ts",
+                "createPolyhedronData",
+                "flat",
+            )
+                ? "true"
+                : "false";
+            if (call.arguments[1]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[1],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    ["type", "size", "sizeX", "sizeY", "sizeZ", "flat"],
+                    "Reached polyhedra name their type, size and flatness.",
+                );
+                const typeExpression = context.objectProperty(
+                    options,
+                    "type",
+                );
+                if (typeExpression) {
+                    const value = context.compileValue(typeExpression);
+                    if (
+                        value.kind !== "number" ||
+                        value.staticNumber === undefined
+                    ) {
+                        context.fail(
+                            typeExpression,
+                            "A polyhedron's type selects a pinned table row " +
+                                "at generation, so it must be a " +
+                                "compile-time number.",
+                        );
+                    }
+                    const named = value.staticNumber;
+                    // The pin's own guard: a type outside the table is 0.
+                    type =
+                        named < 0 || named >= pinnedPolyhedronCount()
+                            ? 0
+                            : named;
+                }
+                const size = context.objectProperty(options, "size");
+                if (size) {
+                    const value = context.compileNumber(size, "double");
+                    sizes["sizeX"] = value;
+                    sizes["sizeY"] = value;
+                    sizes["sizeZ"] = value;
+                }
+                for (const axis of ["sizeX", "sizeY", "sizeZ"] as const) {
+                    const expression = context.objectProperty(options, axis);
+                    if (!expression) continue;
+                    sizes[axis] = context.compileNumber(
+                        expression,
+                        "double",
+                    );
+                }
+                const flatExpression = context.objectProperty(
+                    options,
+                    "flat",
+                );
+                if (flatExpression) {
+                    // The emitted body branches on this per build -- both
+                    // the flat and the smooth arm are lowered -- so it
+                    // travels as the record field it is rather than being
+                    // resolved here.
+                    const value = context.compileValue(flatExpression);
+                    if (value.kind !== "boolean") {
+                        context.fail(
+                            flatExpression,
+                            "A polyhedron's `flat` is a boolean, received " +
+                                `${value.kind}.`,
+                        );
+                    }
+                    flat = value.cpp;
+                }
+            }
+            const preset = pinnedPolyhedron(type);
+            const rows = (
+                table: readonly (readonly number[])[],
+            ): string =>
+                `{${table
+                    .map(
+                        (row) =>
+                            `{${row.map((value) => doubleLiteral(value)).join(", ")}}`,
+                    )
+                    .join(", ")}}`;
+            context.reachFeature("mesh:polyhedron", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_polyhedron(${engine.cpp}, ` +
+                    `bbl::PolyhedronOptions{` +
+                    `${sizes["sizeX"]}, ${sizes["sizeY"]}, ` +
+                    `${sizes["sizeZ"]}, ${flat}, ` +
+                    `${rows(preset.vertex)}, ${rows(preset.face)}})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createCylinder": {
+            // The pinned option set, with `diameter` resolved here because
+            // the emitted record carries the two ends the builder actually
+            // reads. Each default is the factory's own `??` value.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 1, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const cylinderDefault = (local: string): string =>
+                doubleLiteral(
+                    pinnedMeshOptionDefault(
+                        "src/mesh/create-cylinder.ts",
+                        "createCylinderData",
+                        local,
+                    ),
+                );
+            const emitted = [
+                "height",
+                "diameterTop",
+                "diameterBottom",
+                "tessellation",
+                "subdivisions",
+            ] as const;
+            const accepted = [...emitted, "diameter"] as const;
+            let topIsZero = "false";
+            const cylinderResolved: Record<string, string> = {
+                height: cylinderDefault("height"),
+                diameterTop: cylinderDefault("diameterTop"),
+                diameterBottom: cylinderDefault("diameterBottom"),
+                tessellation: cylinderDefault("tessellation"),
+                subdivisions: cylinderDefault("subdivisions"),
+            };
+            if (call.arguments[1]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[1],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    accepted,
+                    "Reached cylinders name height, diameter (or its two " +
+                        "ends), tessellation and subdivisions.",
+                );
+                // `diameter` is the pin's shorthand for both ends, and each
+                // end overrides it -- the `??` chain, in the order the
+                // factory writes it.
+                const diameter = context.objectProperty(options, "diameter");
+                if (diameter) {
+                    const value = context.compileNumber(diameter, "double");
+                    cylinderResolved["diameterTop"] = value;
+                    cylinderResolved["diameterBottom"] = value;
+                }
+                for (const name of emitted) {
+                    const expression = context.objectProperty(options, name);
+                    if (!expression) continue;
+                    cylinderResolved[name] = context.compileNumber(
+                        expression,
+                        "double",
+                    );
+                }
+                // `options.diameterTop === 0` in the pin is a question
+                // about the NAMED option: absent answers no however the
+                // resolved value ends up, and a named one answers it at
+                // whatever width the scene wrote.
+                const top = context.objectProperty(options, "diameterTop");
+                if (top) {
+                    topIsZero =
+                        `(${context.compileNumber(top, "double")} == 0.0)`;
+                }
+            }
+            context.reachFeature("mesh:cylinder", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_cylinder(${engine.cpp}, ` +
+                    `bbl::CylinderOptions{` +
+                    `${emitted
+                        .map((name) => cylinderResolved[name])
+                        .join(", ")}, ${topIsZero}})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "createDisc": {
+            // The reached subset is the whole pinned option set: radius,
+            // tessellation and arc. Each default is the factory's own `??`
+            // value, folded into a named constant at generation, so an
+            // omitted option is the pin's answer rather than one restated
+            // here.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 1, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const fields = ["radius", "tessellation", "arc"] as const;
+            const resolved: Record<string, string> = Object.fromEntries(
+                fields.map((name) => [
+                    name,
+                    doubleLiteral(
+                        pinnedMeshOptionDefault(
+                            "src/mesh/create-disc.ts",
+                            "createDiscData",
+                            name,
+                        ),
+                    ),
+                ]),
+            );
+            if (call.arguments[1]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[1],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    fields,
+                    "Reached discs name their radius, tessellation and arc.",
+                );
+                for (const name of fields) {
+                    const expression = context.objectProperty(options, name);
+                    if (!expression) continue;
+                    resolved[name] = context.compileNumber(
+                        expression,
+                        "double",
+                    );
+                }
+            }
+            context.reachFeature("mesh:disc", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_disc(${engine.cpp}, ` +
+                    `bbl::DiscOptions{` +
+                    `${fields.map((name) => resolved[name]).join(", ")}})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
             };
         }
 

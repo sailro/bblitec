@@ -2564,6 +2564,58 @@ test("withdraws the length fold from a container handed to a call", () => {
     assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
 });
 
+test("a list a loop grows decides its shape at the first push", () => {
+    // The shape a scene writes to build a ribbon's paths: an empty
+    // annotated list, grown per iteration. The list has no element to take
+    // its kind from until the first push, and the loop unrolls, so the
+    // whole thing is complete at generation.
+    const result = compileSource(`
+        const rows: { x: number; y: number; z: number }[][] = [];
+        for (let p = 0; p < 2; p++) {
+            const row: { x: number; y: number; z: number }[] = [];
+            for (let i = 0; i < 2; i++) {
+                row.push({ x: i, y: p, z: 0 });
+            }
+            rows.push(row);
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /for \(/);
+    assert.equal(
+        result.cpp.match(/push_back\(bblscene::Record\d+\{/g)?.length,
+        4,
+    );
+});
+
+test("asks the pin's cone-tip question of the option the scene named", () => {
+    // `createCylinderData` clamps a zero diameter for its ring maths and
+    // asks `options.diameterTop === 0` separately, of the NAMED option. So
+    // a zero reaching it through the `diameter` shorthand answers NO, a
+    // named zero answers YES, and neither answer needs the value to be a
+    // compile-time constant.
+    const shorthand = compileSource(`
+        import { createCylinder, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createCylinder(engine, { height: 2, diameter: 1 - 1 });
+        }
+        void main();
+    `);
+    assert.match(shorthand.cpp, /, false\}\)/);
+
+    const named = compileSource(`
+        import { createCylinder, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createCylinder(engine, { height: 2, diameterTop: 0, diameterBottom: 1 });
+        }
+        void main();
+    `);
+    assert.match(named.cpp, /\(0\.0 == 0\.0\)\}\)/);
+});
+
 test("iterates runtime data arrays with range-for", () => {
     const result = compileSource(`
         function values(): number[] {
@@ -4138,18 +4190,18 @@ test("reports unsupported Babylon Lite APIs with source locations", () => {
     assert.throws(
         () =>
             compileSource(
-                `import { createCylinder, createEngine } from "@babylonjs/lite";
+                `import { createTorusKnot, createEngine } from "@babylonjs/lite";
 async function main() {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    createCylinder(engine);
+    createTorusKnot(engine);
 }`,
                 { fileName: "unsupported.ts" },
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /createCylinder/);
+            assert.match(error.message, /createTorusKnot/);
             return true;
         },
     );

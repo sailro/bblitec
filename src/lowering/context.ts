@@ -180,6 +180,35 @@ export class LoweringContext {
             declaration.moduleSpecifier.text,
         );
     }
+    /**
+     * The mesh name a pinned factory finishes under.
+     *
+     * `createSphere(engine, options)` returns
+     * `createMeshFromData(engine, "sphere", ...)`, and that literal is what
+     * scene code finds the mesh by — so every emitter reads it from the
+     * factory rather than restating it.
+     */
+    public pinnedFactoryMeshName(symbolName: string): string {
+        const { declaration } = this.functionDeclaration(
+            "src/mesh/mesh-factories.ts",
+            symbolName,
+        );
+        const call = this.callExpression(
+            declaration,
+            "createMeshFromData",
+        );
+        const name = call.arguments[1]
+            ? this.unwrapExpression(call.arguments[1])
+            : undefined;
+        return name && ts.isStringLiteral(name)
+            ? name.text
+            : this.contractError(
+                  declaration,
+                  `Expected ${symbolName} to pass its literal mesh name ` +
+                      "to createMeshFromData.",
+              );
+    }
+
     public functionDeclaration(modulePath: string, symbolName: string): {
         file: ts.SourceFile;
         declaration: ts.FunctionDeclaration;
