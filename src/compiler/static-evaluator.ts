@@ -539,14 +539,6 @@ export class StaticEvaluator {
                 (value?.kind === "data" &&
                     value.dataType?.kind === "number")
             ) {
-                if (
-                    precision === "double" &&
-                    value.staticNumber !== undefined
-                ) {
-                    return this.doubleLiteral(
-                        value.staticNumber,
-                    );
-                }
                 return this.castNumber(value, precision);
             }
         }
@@ -648,7 +640,7 @@ export class StaticEvaluator {
      * explicit cast. Legacy engine-record numbers keep their own float
      * expressions untouched.
      */
-    private castNumber(
+    public castNumber(
         value: Value,
         precision: "float" | "double",
     ): string {

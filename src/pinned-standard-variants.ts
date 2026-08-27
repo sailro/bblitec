@@ -743,44 +743,41 @@ function standardInstanceColorSlot(): string {
     if (instanceColorSlot !== undefined) return instanceColorSlot;
     const context = new LoweringContext(sharedUpstreamStore());
     const modulePath = "src/material/standard/standard-renderable.ts";
-    const file = context.sourceFile(modulePath);
+    // Anchored at the function that owns the rewrite rather than at the
+    // file, so an unrelated `BC` slot elsewhere in the module is not a
+    // refusal — and so a rewrite that MOVES out of the renderable is.
+    const { file, declaration } = context.functionDeclaration(
+        modulePath,
+        "buildStandardMeshRenderables",
+    );
+    const rebuild = context.variableInitializer(
+        declaration,
+        "rebuildSingle",
+    );
+    // The inner `{ BC: ... }` itself: `getSourceFile` sets parents, so the
+    // owning property is read off the node rather than matched twice.
     const candidates = context.findNodes(
-        file,
+        rebuild,
         (node): node is ts.ObjectLiteralExpression =>
             ts.isObjectLiteralExpression(node) &&
+            ts.isPropertyAssignment(node.parent) &&
+            context.propertyName(node.parent.name) === "_fragmentSlots" &&
             node.properties.some(
-                (property) =>
-                    ts.isPropertyAssignment(property) &&
-                    ts.isIdentifier(property.name) &&
-                    property.name.text === "_fragmentSlots" &&
-                    ts.isObjectLiteralExpression(property.initializer) &&
-                    property.initializer.properties.some(
-                        (slot) =>
-                            ts.isPropertyAssignment(slot) &&
-                            context.propertyName(slot.name) === "BC",
-                    ),
+                (slot) =>
+                    ts.isPropertyAssignment(slot) &&
+                    context.propertyName(slot.name) === "BC",
             ),
     );
     if (candidates.length !== 1) {
         context.contractError(
-            file,
+            rebuild,
             "Expected exactly one inline `_fragmentSlots: { BC }` rewrite " +
-                `in ${modulePath} (the thin-instance instance-colour ` +
+                "in rebuildSingle (the thin-instance instance-colour " +
                 `slot); found ${candidates.length}.`,
         );
     }
-    const slots = context.propertyInitializer(
-        candidates[0]!,
-        "_fragmentSlots",
-    );
-    const slotObject = ts.isObjectLiteralExpression(slots)
-        ? slots
-        : context.contractError(
-            slots,
-            "Expected an object of shader slots.",
-        );
     instanceColorSlot = context.stringValue(
-        context.propertyInitializer(slotObject, "BC"),
+        context.propertyInitializer(candidates[0]!, "BC"),
         file,
     );
     return instanceColorSlot;

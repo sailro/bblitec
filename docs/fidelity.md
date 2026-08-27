@@ -1019,10 +1019,12 @@ emitted writer's locals are doubles and the store is the single
 `static_cast<float>` — the same rule the camera scalars and the pinned
 matrices take. `material.uvOffset` reads its `?? 0` arm, because
 `enableStandardUvOffset()` installs the resolver and no reached scene calls
-it. Scene 282 measures the composed stages byte-identical to the browser's
-and every uploaded lane bit-identical; its one differing pixel of 921600 sits
-4.0e-6 from a texel boundary, where nearest filtering takes the neighbouring
-checker row.
+it. Scene 282 measures the composed stages byte-identical to the browser's,
+every uploaded lane bit-identical, and every pixel exact. Its one differing
+pixel of 921600 sat 4.0e-6 from a texel boundary, where nearest filtering
+took the neighbouring checker row — and that 4e-6 was the transform's own
+`uScale` reaching this double lane as a float literal, which the lane rule
+above now writes at the sink's width.
 
 **A compressed texture's blocks are uploaded as the container carries them,
 and which container is fetched is generation's one answer to a device

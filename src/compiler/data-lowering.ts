@@ -8,6 +8,7 @@ import {
     DataTypeRegistry,
     dataTypesEqual,
     doubleLiteral,
+    isTypedArrayType,
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
@@ -42,6 +43,10 @@ export interface DataLoweringContext {
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
+    ): string;
+    castNumber(
+        value: Value,
+        precision: "float" | "double",
     ): string;
     compileCondition(expression: ts.Expression): string;
     cppString(value: string): string;
@@ -720,9 +725,7 @@ export class DataLowerer {
         if (
             (dataType.kind === "vector" ||
                 dataType.kind === "span" ||
-                dataType.kind === "f32array" ||
-                dataType.kind === "u16array" ||
-                dataType.kind === "u32array") &&
+                isTypedArrayType(dataType)) &&
             property === "length"
         ) {
             this.context.reachJsData();
@@ -792,9 +795,7 @@ export class DataLowerer {
         this.context.reachJsData();
         const indexed = `${owner.cpp}[bbl::js::array_index(${index})]`;
         if (
-            dataType.kind === "f32array" ||
-            dataType.kind === "u16array" ||
-            dataType.kind === "u32array"
+            isTypedArrayType(dataType)
         ) {
             // Reads widen to JavaScript numbers; writes keep the raw
             // element lvalue and record the storage so assignment inserts
@@ -980,14 +981,11 @@ export class DataLowerer {
                             )
                           : undefined
                       : element.kind === "number"
-                        ? entry.staticNumber !== undefined
-                            ? // Re-formatted as a double: the
-                              // element's own text is a float
-                              // literal, and widening one back does
-                              // not always give the same value.
-                              doubleLiteral(
-                                  entry.staticNumber,
-                              )
+                        ? // A static lane only: `castNumber` writes it at
+                          // this sink's own double width, and a runtime
+                          // one rejects the whole materialization below.
+                          entry.staticNumber !== undefined
+                            ? this.context.castNumber(entry, "double")
                             : undefined
                         : undefined,
               );
@@ -1500,9 +1498,7 @@ export class DataLowerer {
             }
         }
         if (
-            (dataType?.kind === "f32array" ||
-                dataType?.kind === "u16array" ||
-                dataType?.kind === "u32array") &&
+            isTypedArrayType(dataType) &&
             method === "fill"
         ) {
             if (call.arguments.length !== 1) {
@@ -1528,9 +1524,7 @@ export class DataLowerer {
             };
         }
         if (
-            (dataType?.kind === "f32array" ||
-                dataType?.kind === "u16array" ||
-                dataType?.kind === "u32array") &&
+            isTypedArrayType(dataType) &&
             method === "set"
         ) {
             return this.compileTypedArraySet(
@@ -2276,9 +2270,9 @@ export class DataLowerer {
         switch (dataType.kind) {
             case "number":
                 if (value.kind !== "number") break;
-                return value.staticNumber !== undefined
-                    ? doubleLiteral(value.staticNumber)
-                    : value.cpp;
+                // A data-model number is a native double, which is the
+                // width `castNumber` writes a static lane at.
+                return this.context.castNumber(value, "double");
             case "boolean":
                 if (value.kind === "boolean") return value.cpp;
                 break;

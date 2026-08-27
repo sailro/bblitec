@@ -121,6 +121,26 @@ export function isDataTuple(
     );
 }
 
+/** The typed-array kinds this model carries, as one narrowing test. */
+export type TypedArrayKind = "f32array" | "u16array" | "u32array";
+
+/**
+ * Whether a data type is one of them.
+ *
+ * Every typed-array method and every native-function parameter rule asks
+ * this, and each site that spelled the three-way disjunction itself was a
+ * place a fourth kind could be forgotten.
+ */
+export function isTypedArrayType(
+    dataType: DataType | undefined,
+): dataType is DataType & { kind: TypedArrayKind } {
+    return (
+        dataType?.kind === "f32array" ||
+        dataType?.kind === "u16array" ||
+        dataType?.kind === "u32array"
+    );
+}
+
 /**
  * The `arity` components of a native tuple expression, as float expressions.
  *

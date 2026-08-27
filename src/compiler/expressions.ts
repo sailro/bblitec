@@ -926,9 +926,20 @@ export class ExpressionLowerer {
      * silhouette. Recording the static value generation can fold is what
      * lets `castNumber` write the lane at each sink's own width instead.
      *
-     * Only lanes take this. A number in an ordinary expression position is
-     * consumed where it is written, so its text is already at the width
-     * that position asked for.
+     * Only lanes take this, and the boundary is load-bearing rather than
+     * merely tidy. `staticNumber` is also what `compileCondition` and
+     * `staticTextValue` read to decide a value is a compile-time constant,
+     * and an unrolled loop's index binding carries one — so recording the
+     * fold on EVERY number Value additionally folds conditions over a loop
+     * index. Measured: it collapses `index % 11 === 0 ? 40 : 28` per
+     * iteration across scenes 50, 92, 93 and 97, and elides a function in
+     * `regression-runtime-sweep`. Those folds are not wrong, but they are a
+     * different change with their own measurement, so this one stops at the
+     * position whose width is genuinely undecided: a lane, which is stored
+     * and read back by a sink it cannot see. A number in an ordinary
+     * expression position is consumed where it is written, already at the
+     * width that position asked for.
+     * `test/compiler.test.ts` pins both halves.
      */
     private laneValue(expression: ts.Expression): Value {
         const value = this.compileValue(expression);

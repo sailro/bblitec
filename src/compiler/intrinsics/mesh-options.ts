@@ -219,11 +219,12 @@ export function compileSphereOptions(
                     `Sphere option '${name}' must be numeric.`,
                 );
             }
-            // The record's own property was compiled at the default float
-            // precision, but the pin halves a diameter as a JavaScript
-            // number before the vertex chain rounds. Restate the value at
-            // that precision, or widen the expression where the scene
-            // computes it.
+            // `castNumber`'s rule -- a static lane is re-formatted at the
+            // sink's own width -- with one addition it does not make: the
+            // runtime arm is widened EXPLICITLY. The pin halves a diameter
+            // as a JavaScript number before the vertex chain rounds, and a
+            // named cast is what makes a scene computing that option in a
+            // float expression visible here rather than silently narrow.
             return value.staticNumber !== undefined
                 ? doubleLiteral(value.staticNumber)
                 : `static_cast<double>(${value.cpp})`;

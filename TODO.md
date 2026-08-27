@@ -465,6 +465,43 @@ below rather than blocking a scene here.
   PinnedShadowBinding*>` parallel to each stage's slot list, filled once. The
   material-slot table is asked first already, so an ordinary base-colour or
   ORM binding no longer pays for it.
+- [ ] Carry the pin's own vertex-buffer layout into the generated attribute
+  table instead of stating it in both PALs. `createThinInstanceFragment`
+  declares `_bufferGroup`, `_arrayStride`, `_stepMode` and `_offset` per
+  attribute, and generation already executes that fragment — but
+  `variantAttributes` (`src/pinned-pbr-variant-cpp.ts`) reflects only
+  `location`/`name`/`wgsl_type` out of the composed WGSL and drops the
+  layout half. `vertex_stream_stride` and its siblings
+  (`native/src/pal_gpu_shared.hpp`) now state that half once for both
+  backends, which is the containment; what it is not is derived. A pin that
+  moves a stride, or adds a third instance-stepped group, composes,
+  generates and links cleanly and then renders garbage — nothing refuses.
+  Closing it means widening the generated attribute row and building each
+  backend's buffer list from data. The same row would retire
+  `pinned_vertex_input`'s hand-written instance-stream entries; its
+  *vertex*-stream offsets are genuinely ours, because they are `GpuVertex`.
+- [ ] A thin-instanced Standard draw composes its parent world twice per
+  frame. `instance_parent_draw_world` is called once by the write phase
+  (the instance-parent uniform each PAL pushes) and once by
+  `standard_draw_world` for the same draw, with the same arguments and a
+  bit-identical result — before the eye-relative wiring the two produced
+  different values, so it was not a duplicate. Under floating origin each
+  call is a TRS compose plus a 4x4 double multiply. Removing it means
+  caching the matrix on the backend's own mesh record when the write phase
+  computes it, which is state whose invalidation nothing measures; at one
+  such mesh in the corpus (scene 204) it is not yet worth the key. Filed
+  beside the offset hoist above, which the same draw path shares.
+- [ ] Read the Standard family's instance-colour slot by observing the pin
+  rather than lifting its text. `standardInstanceColorSlot`
+  (`src/pinned-standard-variants.ts`) reads the `BC` string out of
+  `rebuildSingle`'s own declaration, which pins the *text*; the shape around
+  it — the `hasInstanceColor` fork, the spread-and-replace, the slot name —
+  is restated here, and that shape is what the repo's own rule says must not
+  drift. `importPinnedModuleObserving` exists for exactly this case: drive
+  the renderable and record the fragments it pushes. Blocked on the same
+  thing the node ESM caster view is blocked on — `rebuildSingle` needs a
+  scene, a mesh and a device to run at all, which is a recording harness
+  this port does not have for the Standard family yet.
 - [ ] `shader_stage_block_floats` allocates a `std::vector<float>` per stage
   block per draw (`native/src/pal_gpu_shared.hpp`). Removing it needs a
   caller-owned scratch buffer threaded through both backends and the render
