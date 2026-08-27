@@ -128,6 +128,11 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:fog": [],
     "renderer:geometry-output": [],
     "renderer:post-process": [],
+    "renderer:high-precision-matrix": [],
+    "renderer:floating-origin": [
+        "src/pal_sdl_gpu.cpp",
+        "src/pal_dawn.cpp",
+    ],
 };
 
 export const featureOrder = Object.keys(featureSources) as Feature[];

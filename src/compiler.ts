@@ -1987,6 +1987,8 @@ class Compiler
     ): Value {
         this.expectArgumentCount(call, 1, 2);
         let msaaSamples: 1 | 4 = 4;
+        let highPrecisionMatrix = false;
+        let floatingOrigin = false;
         if (call.arguments[1]) {
             const options = this.expectObjectLiteral(
                 call.arguments[1],
@@ -1994,9 +1996,34 @@ class Compiler
             validateObjectProperties(
                 this,
                 options,
-                ["msaaSamples", "requiredLimits"],
-                "Reached engine options support msaaSamples and requiredLimits.",
+                [
+                    "msaaSamples",
+                    "requiredLimits",
+                    "useHighPrecisionMatrix",
+                    "useFloatingOrigin",
+                ],
+                "Reached engine options support msaaSamples, requiredLimits, " +
+                    "useHighPrecisionMatrix and useFloatingOrigin.",
             );
+            highPrecisionMatrix = this.engineFlagOption(
+                options,
+                "useHighPrecisionMatrix",
+            );
+            floatingOrigin = this.engineFlagOption(
+                options,
+                "useFloatingOrigin",
+            );
+            // `createEngine`'s own synchronous precondition: subtracting an
+            // F64-accurate eye offset from an already-narrowed world
+            // translation recovers nothing, so the pin refuses the pair
+            // rather than rendering something plausible.
+            if (floatingOrigin && !highPrecisionMatrix) {
+                this.fail(
+                    call.arguments[1],
+                    "useFloatingOrigin requires useHighPrecisionMatrix on " +
+                        "the engine.",
+                );
+            }
             const samples = this.objectProperty(
                 options,
                 "msaaSamples",
@@ -2033,12 +2060,49 @@ class Compiler
             `auto ${cppName} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
         );
         this.defaultEngineCpp = cppName;
+        // The policy travels as reached features, which is what every other
+        // emission decision reads: `useHighPrecisionMatrix` is what the
+        // pin's process-global allocator swaps on, and this port composes
+        // every world in double already -- so it reaches generation as the
+        // precondition floating origin needs rather than as a storage
+        // choice, and `useFloatingOrigin` is the one that changes what is
+        // emitted.
+        if (highPrecisionMatrix) {
+            this.reachFeature("renderer:high-precision-matrix", call);
+        }
+        if (floatingOrigin) {
+            this.reachFeature("renderer:floating-origin", call);
+        }
         return {
             kind: "engine",
             cpp: cppName,
             engineCpp: cppName,
             msaaSamples,
         };
+    }
+
+    /**
+     * One `true`-only engine flag, as the pin coerces it.
+     *
+     * `createEngine` reads each with `!!options?.flag`, so a literal `false`
+     * is the default and only `true` turns anything on -- but a value this
+     * compiler cannot fold is not a flag it can answer, so it refuses rather
+     * than taking the default.
+     */
+    private engineFlagOption(
+        options: ts.ObjectLiteralExpression,
+        name: string,
+    ): boolean {
+        const property = this.objectProperty(options, name);
+        if (!property) return false;
+        const value = this.resolveStaticExpression(property);
+        if (value.kind === ts.SyntaxKind.TrueKeyword) return true;
+        if (value.kind === ts.SyntaxKind.FalseKeyword) return false;
+        this.fail(
+            property,
+            `Engine option ${name} is a compile-time boolean: the whole ` +
+                "engine's precision policy is decided from it at generation.",
+        );
     }
 
     public allocateTemporaryCppName(label: string): string {

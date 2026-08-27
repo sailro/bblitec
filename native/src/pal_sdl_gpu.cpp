@@ -1485,7 +1485,9 @@ void draw_pinned_variant(
                 conventions.skeleton_draw,
                 conventions.world_from_palette,
                 variant_entry.uses_local_position,
-                pinned_record),
+                pinned_record,
+                scene,
+                engine),
             item.mesh.value);
     std::vector<std::uint8_t> pinned_material(
         variant_entry.material_ubo_bytes,
@@ -2643,7 +2645,11 @@ void draw_standard_variant(
         pinned_mesh_block(
             scene,
             engine,
-            standard_draw_world(record, entry.uses_local_position),
+            standard_draw_world(
+                record,
+                entry.uses_local_position,
+                scene,
+                engine),
             item.mesh.value);
     const upstream::StandardMaterialUniforms material_block =
         standard_material_block(material, features);
@@ -6403,6 +6409,7 @@ bool run_gpu_engine(Engine& engine) {
             for (BillboardPass& billboard : state.billboard_passes) {
                 upload_billboard_pass(
                     state.device,
+                    scene,
                     engine,
                     billboard,
                     frame_view,

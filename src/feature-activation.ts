@@ -675,6 +675,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/frame-graph/post-process-task.ts",
         consumers: ["features.cmake"],
     },
+    "renderer:high-precision-matrix": {
+        provenance: "src/math/_matrix-allocator.ts",
+        consumers: ["features.cmake"],
+    },
+    "renderer:floating-origin": {
+        provenance: "src/large-world/floating-origin.ts",
+        consumers: ["features.cmake"],
+    },
 };
 
 /** The runtime features the inventory maps, in emission order. */
@@ -1269,6 +1277,24 @@ function capabilityRows(
                 ? "reached a shadow generator but composes no PBR variant"
                 : "not reached",
             "src/material/pbr/fragments/pbr-shadow-fragment.ts",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_FLOATING_ORIGIN",
+            "capability",
+            has("renderer:floating-origin"),
+            [
+                // The engine's own option, and the only one that changes
+                // what is emitted: `createEngine` refuses it without
+                // `useHighPrecisionMatrix`, so a scene reaching it reached
+                // both.
+                [
+                    has("renderer:floating-origin"),
+                    "scene source created its engine with useFloatingOrigin",
+                ],
+            ],
+            "not reached",
+            "src/large-world/floating-origin.ts",
             ["render_capabilities.hpp"],
         ),
         checkedRow(

@@ -468,6 +468,7 @@ inline DawnBillboardPass create_dawn_billboard_pass(
  */
 inline void upload_dawn_billboard_pass(
     WGPUQueue queue,
+    [[maybe_unused]] const Scene& scene,
     Engine& engine,
     DawnBillboardPass& pass,
     const std::array<float, 16>& view_projection,
@@ -516,7 +517,15 @@ inline void upload_dawn_billboard_pass(
     if (!billboard_needs_upload(system, pass.upload_stamp, view)) {
         return;
     }
-    upstream::billboard_upload_instances(system, view, pass.sorted);
+    upstream::billboard_upload_instances(
+        system,
+        view,
+        pass.sorted
+#if BBLITE_FLOATING_ORIGIN
+        ,
+        floating_origin_offset(scene, engine)
+#endif
+    );
     wgpuQueueWriteBuffer(
         queue,
         pass.instances,
