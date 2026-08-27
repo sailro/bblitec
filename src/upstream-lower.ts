@@ -740,6 +740,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 "upstream/src/camera_arc_rotate.cpp",
                 cameraLowerer.lowerArcRotateFactory(
                     features.includes("loader:gltf-cameras"),
+                    features.includes("renderer:floating-origin"),
                 ),
                 generated,
                 "upstream/include/bblite/upstream/camera_math.hpp",

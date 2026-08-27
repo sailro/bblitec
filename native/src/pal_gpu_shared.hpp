@@ -119,12 +119,19 @@ inline void apply_light_floating_origin(
         // light and 2 for a spot. A direction-only entry is left alone.
         const float type = entries[written].vLightData[3];
         if (type == 0.0f || type == 2.0f) {
-            entries[written].vLightData[0] = static_cast<float>(
-                static_cast<double>(light.position.x) - offset.x);
-            entries[written].vLightData[1] = static_cast<float>(
-                static_cast<double>(light.position.y) - offset.y);
-            entries[written].vLightData[2] = static_cast<float>(
-                static_cast<double>(light.position.z) - offset.z);
+            // From the light's WORLD translation, which is what
+            // `applyLightFoOffset` rewrites the slot from -- and what the
+            // writer beside it already reads. `light.position` agrees for
+            // an unparented light and would drift the moment one is not.
+            const auto lane = [&](std::size_t cell) {
+                return static_cast<double>(light.local_matrix[cell]);
+            };
+            entries[written].vLightData[0] =
+                static_cast<float>(lane(12) - offset.x);
+            entries[written].vLightData[1] =
+                static_cast<float>(lane(13) - offset.y);
+            entries[written].vLightData[2] =
+                static_cast<float>(lane(14) - offset.z);
         }
         ++written;
     }
@@ -1531,7 +1538,7 @@ inline upstream::SceneUniforms pinned_scene_block(
     // The pin's fragment reads the view direction from `vEyePosition`, and its
     // reflection path from `view`. Both come from the camera the pass renders
     // with, the same one `build_pbr_uniforms` reads.
-    const std::array<float, 16> camera_world =
+    const std::array<upstream::CameraMatrixScalar, 16> camera_world =
         upstream::camera_world_matrix(camera);
 #if BBLITE_FLOATING_ORIGIN
     const Vec3d fo_offset = floating_origin_offset(scene, engine);
@@ -1554,9 +1561,9 @@ inline upstream::SceneUniforms pinned_scene_block(
         static_cast<float>(fo_camera_eye.y - fo_offset.y),
         static_cast<float>(fo_camera_eye.z - fo_offset.z),
 #else
-        camera_world[12],
-        camera_world[13],
-        camera_world[14],
+        static_cast<float>(camera_world[12]),
+        static_cast<float>(camera_world[13]),
+        static_cast<float>(camera_world[14]),
 #endif
         1.0f,
     };
@@ -2830,6 +2837,10 @@ struct BillboardUploadStamp {
     std::array<float, 16> view{};
     std::uint32_t count = 0;
     bool uploaded = false;
+#if BBLITE_FLOATING_ORIGIN
+    /** The eye the anchors in the buffer were made relative to. */
+    Vec3d fo_offset{};
+#endif
 };
 
 /**
@@ -2843,9 +2854,23 @@ struct BillboardUploadStamp {
 inline bool billboard_needs_upload(
     const BillboardSystemRecord& system,
     const BillboardUploadStamp& stamp,
-    const std::array<float, 16>& view) {
+    const std::array<float, 16>& view,
+    [[maybe_unused]] Vec3d fo_offset) {
     if (system.count == 0) return false;
     if (!stamp.uploaded || stamp.count != system.count) return true;
+#if BBLITE_FLOATING_ORIGIN
+    // The anchors are uploaded eye-relative, so the offset is an input to
+    // the bytes -- a cutout system, which otherwise uploads once per count
+    // and never again, would hold the offset it first saw. The pin folds
+    // the camera's own version into the same stamp for the same reason
+    // (`lightFoVersion`, `wrapRenderableForFO`).
+    if (
+        stamp.fo_offset.x != fo_offset.x ||
+        stamp.fo_offset.y != fo_offset.y ||
+        stamp.fo_offset.z != fo_offset.z) {
+        return true;
+    }
+#endif
     const bool cutout =
         system.depth_mode == BillboardDepthMode::cutout;
     return !(cutout || stamp.view == view);
@@ -2854,10 +2879,14 @@ inline bool billboard_needs_upload(
 inline void stamp_billboard_upload(
     BillboardUploadStamp& stamp,
     const BillboardSystemRecord& system,
-    const std::array<float, 16>& view) {
+    const std::array<float, 16>& view,
+    [[maybe_unused]] Vec3d fo_offset) {
     stamp.view = view;
     stamp.count = system.count;
     stamp.uploaded = true;
+#if BBLITE_FLOATING_ORIGIN
+    stamp.fo_offset = fo_offset;
+#endif
 }
 
 /**

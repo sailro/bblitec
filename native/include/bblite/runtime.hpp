@@ -832,7 +832,12 @@ struct MeshRecord {
      */
     std::string name;
     PrimitiveKind primitive = PrimitiveKind::box;
-    Vec3 position{};
+    // The pin holds a node's translation as three JavaScript numbers, and
+    // at large-world coordinates the float32 ULP is half a unit -- enough
+    // to move a silhouette before the eye-relative subtraction can recover
+    // anything. Rotation and scaling stay float: they are small by
+    // construction and every consumer reads them at that width.
+    Vec3d position{};
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     Vec3 scaling{1.0f, 1.0f, 1.0f};

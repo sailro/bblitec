@@ -269,8 +269,9 @@ const lightProperties: Readonly<
             supportsCompound: true,
         },
     },
-    // A spot light carries the same colour pair as the other positional
-    // kinds. Its `angle`, `exponent` and `range` are settable upstream and
+    // A spot light carries the same colour pair and the same `range` as the
+    // other positional kinds -- `_writeLightUbo` packs it into the same
+    // lane for both. Its `angle` and `exponent` are settable upstream and
     // are not written by any reached scene, so they stay unlowered and fail
     // explicitly rather than being accepted and ignored.
     spot: {
@@ -286,6 +287,12 @@ const lightProperties: Readonly<
             nativeProperty: "specular_color",
             valueKind: "color3",
             supportsCompound: false,
+        },
+        range: {
+            collection: "lights",
+            nativeProperty: "range",
+            valueKind: "number",
+            supportsCompound: true,
         },
     },
 };

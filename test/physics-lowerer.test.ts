@@ -196,7 +196,10 @@ test("mesh bounds apply scene-code overrides before sizing an aggregate", () => 
 });
 
 test("a body's integrated pose writes the two fields the pin writes", () => {
-    assert.match(lowered.source, /mesh\.position = Vec3\{/);
+    // The translation is the record's own width: the pin holds a node's
+    // position as three JavaScript numbers, so an integrated pose writes
+    // them without narrowing first.
+    assert.match(lowered.source, /mesh\.position = Vec3d\{/);
     assert.match(lowered.source, /mesh\.rotation_quaternion = Vec4\{/);
     assert.match(lowered.source, /\+\+mesh\.transform_version;/);
 });

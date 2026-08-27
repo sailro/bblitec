@@ -928,6 +928,9 @@ export class RendererLowerer {
 // (an effect-only scene compiles no render plan); included here so every
 // TU that renders through the plan still sees the one definition.
 #include <bblite/upstream/pinned_surface.hpp>
+// CameraMatrixScalar: the width the camera's world is kept at, which the
+// view transpose below reads it back in.
+#include <bblite/upstream/camera_math.hpp>
 
 #include <array>
 #include <vector>
@@ -1260,7 +1263,7 @@ std::array<float, 16> build_view_projection(
 // the pinned PBR variants read it out of the scene block a PAL fills, where the
 // transcribed fragment never needed it.
 std::array<float, 16> build_view_matrix(
-    const std::array<float, 16>& camera_world);
+    const std::array<CameraMatrixScalar, 16>& camera_world);
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
@@ -1404,7 +1407,7 @@ float dot(Vec3 left, Vec3 right) {
 // Outside the anonymous namespace because a PAL binding the pinned PBR
 // variants fills the pin's own scene block, which carries scene.view.
 std::array<float, 16> build_view_matrix(
-    const std::array<float, 16>& world) {
+    const std::array<CameraMatrixScalar, 16>& world) {
 ${viewMatrixBody}\
     return view;
 }
@@ -1705,12 +1708,16 @@ RenderDrawLists build_render_task_draw_lists(
 // reads the eye straight back out of column 3, so these are the same
 // float32 values every pinned consumer sees.
 CameraBasis camera_basis(const CameraRecord& camera) {
-    const std::array<float, 16> world = camera_world_matrix(camera);
+    const std::array<CameraMatrixScalar, 16> world =
+        camera_world_matrix(camera);
+    const auto lane = [&](std::size_t cell) {
+        return static_cast<float>(world[cell]);
+    };
     return CameraBasis{
-        Vec3{world[12], world[13], world[14]},
-        Vec3{world[8], world[9], world[10]},
-        Vec3{world[0], world[1], world[2]},
-        Vec3{world[4], world[5], world[6]},
+        Vec3{lane(12), lane(13), lane(14)},
+        Vec3{lane(8), lane(9), lane(10)},
+        Vec3{lane(0), lane(1), lane(2)},
+        Vec3{lane(4), lane(5), lane(6)},
     };
 }
 
@@ -1736,16 +1743,22 @@ void sort_transparent_draws(
         // meshes), and an imported clone root's post-deformation translation.
         // The pinned center is their composed world translation.
         const std::array<float, 16>& parent = mesh.instance_parent_matrix;
+        // The pin's own statement, at the record's width: mesh.position
+        // is a double, so each row accumulates in double and narrows once
+        // -- the same single store every other world composition makes.
         const Vec3 center{
-            parent[0] * mesh.position.x + parent[4] * mesh.position.y +
+            static_cast<float>(
+                parent[0] * mesh.position.x + parent[4] * mesh.position.y +
                 parent[8] * mesh.position.z + parent[12] +
-                mesh.outer_position.x,
-            parent[1] * mesh.position.x + parent[5] * mesh.position.y +
+                mesh.outer_position.x),
+            static_cast<float>(
+                parent[1] * mesh.position.x + parent[5] * mesh.position.y +
                 parent[9] * mesh.position.z + parent[13] +
-                mesh.outer_position.y,
-            parent[2] * mesh.position.x + parent[6] * mesh.position.y +
+                mesh.outer_position.y),
+            static_cast<float>(
+                parent[2] * mesh.position.x + parent[6] * mesh.position.y +
                 parent[10] * mesh.position.z + parent[14] +
-                mesh.outer_position.z,
+                mesh.outer_position.z),
         };
         const Vec3 delta{
             center.x - eye.x,
@@ -2341,11 +2354,17 @@ SolidSkyboxSceneUniforms build_solid_skybox_scene_uniforms(
     // layout that stage wants -- the frame's matrix beside the view and the
     // eye position it offsets the cube by. One camera world serves all
     // three, which is also the order the pin's writers read it in.
-    const std::array<float, 16> world = camera_world_matrix(camera);
+    const std::array<CameraMatrixScalar, 16> world =
+        camera_world_matrix(camera);
     SolidSkyboxSceneUniforms result;
     result.view_projection = view_projection;
     result.view = build_view_matrix(world);
-    result.eye_position = {world[12], world[13], world[14], 0.0f};
+    result.eye_position = {
+        static_cast<float>(world[12]),
+        static_cast<float>(world[13]),
+        static_cast<float>(world[14]),
+        0.0f,
+    };
     return result;
 }
 `

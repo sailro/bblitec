@@ -145,7 +145,10 @@ export class CameraLowerer {
         };
     }
 
-    public lowerArcRotateFactory(gltfCameras = false): LoweredSource {
+    public lowerArcRotateFactory(
+        gltfCameras = false,
+        highPrecisionMatrix = false,
+    ): LoweredSource {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
@@ -200,10 +203,10 @@ ${lowerMat4MultiplyWriterCpp(this.context)}
 // on the left, the camera's own look-at local on the right. The record's
 // parent_world is the imported camera's fixup-node world, written by the
 // glTF loader.
-std::array<float, 16> camera_parented_world(
+std::array<CameraMatrixScalar, 16> camera_parented_world(
     const CameraRecord& camera,
-    const std::array<float, 16>& local) {
-    std::array<float, 16> world{};
+    const std::array<CameraMatrixScalar, 16>& local) {
+    std::array<CameraMatrixScalar, 16> world{};
     mat4_multiply_into(world, 0, camera.parent_world, 0, local, 0);
     return world;
 }
@@ -221,7 +224,20 @@ std::array<float, 16> camera_parented_world(
 namespace bbl::upstream {
 
 Vec3d arc_rotate_eye_position(const CameraRecord& camera);
-std::array<float, 16> camera_world_matrix(const CameraRecord& camera);
+/**
+ * The width the camera's world matrix is kept at.
+ *
+ * The pin's \`allocateMat4()\` returns a Float32Array by default and a
+ * Float64Array once an engine asks for \`useHighPrecisionMatrix\`, and
+ * \`getViewMatrix\` reads the world back at whichever width it was stored
+ * in. So under HPM the transpose sees the unrounded basis and the view is
+ * narrowed once, at the GPU store -- narrowing the world first would round
+ * twice, which shows on a silhouette.
+ */
+using CameraMatrixScalar = ${highPrecisionMatrix ? "double" : "float"};
+
+std::array<CameraMatrixScalar, 16> camera_world_matrix(
+    const CameraRecord& camera);
 
 } // namespace bbl::upstream
 `,
@@ -254,16 +270,16 @@ ${parentArm}// ${this.context.provenance(lookAtModule, lookAtSymbol)}
 // storage is the \`allocateMat4()\` Float32Array. So every term is
 // computed in double and stored once as float, and \`getViewMatrix\`
 // downstream reads these rounded values exactly as the pin does.
-std::array<float, 16> ${gltfCameras ? "camera_local_matrix" : "camera_world_matrix"}(const CameraRecord& camera) {
+std::array<CameraMatrixScalar, 16> ${gltfCameras ? "camera_local_matrix" : "camera_world_matrix"}(const CameraRecord& camera) {
     const Vec3d eye = arc_rotate_eye_position(camera);
-    std::array<float, 16> out{};
-    out[3] = 0.0f;
-    out[7] = 0.0f;
-    out[11] = 0.0f;
-    out[12] = static_cast<float>(eye.x);
-    out[13] = static_cast<float>(eye.y);
-    out[14] = static_cast<float>(eye.z);
-    out[15] = 1.0f;
+    std::array<CameraMatrixScalar, 16> out{};
+    out[3] = 0;
+    out[7] = 0;
+    out[11] = 0;
+    out[12] = static_cast<CameraMatrixScalar>(eye.x);
+    out[13] = static_cast<CameraMatrixScalar>(eye.y);
+    out[14] = static_cast<CameraMatrixScalar>(eye.z);
+    out[15] = 1;
 
     // Left-handed: +Z points from the eye towards the target.
     double zx = camera.target.x - eye.x;
@@ -286,9 +302,9 @@ std::array<float, 16> ${gltfCameras ? "camera_local_matrix" : "camera_world_matr
         x_length = std::sqrt(xx * xx + xy * xy + xz * xz);
     }
     if (x_length < ${this.context.doubleLiteral(degenerateEpsilon)}) {
-        out[0] = 1.0f;
-        out[5] = 1.0f;
-        out[10] = 1.0f;
+        out[0] = 1;
+        out[5] = 1;
+        out[10] = 1;
         return out;
     }
     const double inverse_x = 1.0 / x_length;
@@ -296,21 +312,23 @@ std::array<float, 16> ${gltfCameras ? "camera_local_matrix" : "camera_world_matr
     xy *= inverse_x;
     xz *= inverse_x;
 
-    out[0] = static_cast<float>(xx);
-    out[1] = static_cast<float>(xy);
-    out[2] = static_cast<float>(xz);
+    out[0] = static_cast<CameraMatrixScalar>(xx);
+    out[1] = static_cast<CameraMatrixScalar>(xy);
+    out[2] = static_cast<CameraMatrixScalar>(xz);
     // yAxis = cross(zAxis, xAxis) -- already unit, both operands are.
-    out[4] = static_cast<float>(zy * xz - zz * xy);
-    out[5] = static_cast<float>(zz * xx - zx * xz);
-    out[6] = static_cast<float>(zx * xy - zy * xx);
-    out[8] = static_cast<float>(zx);
-    out[9] = static_cast<float>(zy);
-    out[10] = static_cast<float>(zz);
+    out[4] = static_cast<CameraMatrixScalar>(zy * xz - zz * xy);
+    out[5] = static_cast<CameraMatrixScalar>(zz * xx - zx * xz);
+    out[6] = static_cast<CameraMatrixScalar>(zx * xy - zy * xx);
+    out[8] = static_cast<CameraMatrixScalar>(zx);
+    out[9] = static_cast<CameraMatrixScalar>(zy);
+    out[10] = static_cast<CameraMatrixScalar>(zz);
     return out;
 }
 ${gltfCameras ? `
-std::array<float, 16> camera_world_matrix(const CameraRecord& camera) {
-    const std::array<float, 16> local = camera_local_matrix(camera);
+std::array<CameraMatrixScalar, 16> camera_world_matrix(
+    const CameraRecord& camera) {
+    const std::array<CameraMatrixScalar, 16> local =
+        camera_local_matrix(camera);
     return camera.has_parent_world
         ? camera_parented_world(camera, local)
         : local;
@@ -718,10 +736,18 @@ Vec3 transform_bounds_point(Vec3 point, const MeshRecord& mesh) {
         point.z * mesh.scaling.z,
     };
     point = rotate_bounds_point(point, mesh.rotation);
+    // The translation is the record's double; the sum is taken at that
+    // width and stored once, as every other consumer of it does.
     return Vec3{
-        point.x + mesh.position.x + mesh.outer_position.x,
-        point.y + mesh.position.y + mesh.outer_position.y,
-        point.z + mesh.position.z + mesh.outer_position.z,
+        static_cast<float>(
+            static_cast<double>(point.x) + mesh.position.x +
+            static_cast<double>(mesh.outer_position.x)),
+        static_cast<float>(
+            static_cast<double>(point.y) + mesh.position.y +
+            static_cast<double>(mesh.outer_position.y)),
+        static_cast<float>(
+            static_cast<double>(point.z) + mesh.position.z +
+            static_cast<double>(mesh.outer_position.z)),
     };
 }
 

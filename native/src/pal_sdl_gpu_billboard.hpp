@@ -317,7 +317,14 @@ inline void upload_billboard_pass(
     // buffer of its own, so re-uploading an identical buffer every frame
     // is the one real per-frame cost here -- every other upload in this
     // renderer is version-gated the same way.
-    if (!billboard_needs_upload(system, pass.upload_stamp, view)) {
+    const Vec3d fo_offset =
+#if BBLITE_FLOATING_ORIGIN
+        floating_origin_offset(scene, engine);
+#else
+        Vec3d{};
+#endif
+    if (
+        !billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;
     }
     upstream::billboard_upload_instances(
@@ -326,7 +333,7 @@ inline void upload_billboard_pass(
         pass.sorted
 #if BBLITE_FLOATING_ORIGIN
         ,
-        floating_origin_offset(scene, engine)
+        fo_offset
 #endif
     );
     update_buffer(
@@ -334,7 +341,7 @@ inline void upload_billboard_pass(
         pass.instances,
         pass.sorted.data(),
         pass.sorted.size() * sizeof(float));
-    stamp_billboard_upload(pass.upload_stamp, system, view);
+    stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }
 
 /** Records the billboard draw into a pass the scene renderer already began. */

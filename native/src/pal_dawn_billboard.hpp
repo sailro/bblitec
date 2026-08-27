@@ -514,7 +514,14 @@ inline void upload_dawn_billboard_pass(
     // One gating rule for both backends (`billboard_needs_upload`): an
     // unchanged view over an unchanged count re-sorts and re-uploads
     // nothing.
-    if (!billboard_needs_upload(system, pass.upload_stamp, view)) {
+    const Vec3d fo_offset =
+#if BBLITE_FLOATING_ORIGIN
+        floating_origin_offset(scene, engine);
+#else
+        Vec3d{};
+#endif
+    if (
+        !billboard_needs_upload(system, pass.upload_stamp, view, fo_offset)) {
         return;
     }
     upstream::billboard_upload_instances(
@@ -523,7 +530,7 @@ inline void upload_dawn_billboard_pass(
         pass.sorted
 #if BBLITE_FLOATING_ORIGIN
         ,
-        floating_origin_offset(scene, engine)
+        fo_offset
 #endif
     );
     wgpuQueueWriteBuffer(
@@ -532,7 +539,7 @@ inline void upload_dawn_billboard_pass(
         0,
         pass.sorted.data(),
         pass.sorted.size() * sizeof(float));
-    stamp_billboard_upload(pass.upload_stamp, system, view);
+    stamp_billboard_upload(pass.upload_stamp, system, view, fo_offset);
 }
 
 /** Records the draw into an encoder the scene renderer already opened. */
