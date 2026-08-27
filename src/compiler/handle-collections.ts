@@ -166,6 +166,16 @@ export interface HandleCollectionsContext
     nextSceneLightIndex(kind?: LightKind): number;
 }
 
+/**
+ * The value kinds a compile-time tuple may hold and still be a handle list.
+ *
+ * Deliberately narrow: a tuple of these grows at generation and emits
+ * nothing, so widening it means some consumer reads a list whose members
+ * have no native representation to store. Each entry is here because a
+ * reached scene builds a list of them.
+ */
+const handleTupleKinds: ReadonlySet<string> = new Set(["mesh"]);
+
 /** One member of an asset-derived collection, in document order. */
 interface HandleCollectionMember {
     name: string;
@@ -750,6 +760,54 @@ export class HandleCollections {
             fromSet: system.nodeParticleSetIndex,
             fromSystem: system.nodeParticleSystemIndex,
         });
+        return { kind: "void", cpp: "" };
+    }
+
+    /**
+     * `<local>.push(<handle>)` onto a compile-time tuple of engine handles.
+     *
+     * A scene builds its shadow-caster list that way — `const casters =
+     * [sphere]`, then one push per box inside a loop generation unrolls —
+     * so the final contents ARE a compile-time value, and the consumer
+     * (`setShadowTaskCasterMeshes`) reads them as one. The push therefore
+     * MOVES the tuple rather than emitting anything: the scope holds the
+     * same Value object, so appending to its elements is what a later read
+     * of the name sees.
+     *
+     * Only a tuple of engine handles takes this, and only one that already
+     * holds at least one — a tuple's kind is what its elements are, and an
+     * empty one names nothing. A list of plain data is the data model's own
+     * array instead, which grows through `compileDataMethodCall` and emits
+     * a real `push_back`; a mixed push fails naming both kinds, because a
+     * consumer reading the tuple back would find two shapes in it.
+     */
+    public compileHandleTuplePush(
+        call: ts.CallExpression,
+        callee: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        if (callee.name.text !== "push") return undefined;
+        const owner = this.context.unwrap(callee.expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const tuple = this.context.lookupOptional(owner);
+        if (
+            tuple?.kind !== "tuple" ||
+            !tuple.tupleElements ||
+            tuple.tupleElements.length === 0
+        ) {
+            return undefined;
+        }
+        const kind = tuple.tupleElements[0]!.kind;
+        if (!handleTupleKinds.has(kind)) return undefined;
+        this.context.expectArgumentCount(call, 1, 1);
+        const pushed = this.context.compileValue(call.arguments[0]!);
+        if (pushed.kind !== kind) {
+            this.context.fail(
+                call.arguments[0]!,
+                `'${owner.text}' holds ${kind} handles; pushing a ` +
+                    `${pushed.kind} would leave two shapes in one list.`,
+            );
+        }
+        tuple.tupleElements.push(pushed);
         return { kind: "void", cpp: "" };
     }
 

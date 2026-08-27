@@ -3566,12 +3566,15 @@ WGPUTextureView shadow_map_view(
 std::vector<ShadowGeneratorHandle> shadow_generators_in_light_order(
     const Scene& scene,
     const Engine& engine) {
-    std::vector<ShadowGeneratorHandle> generators;
+    // One entry per scene light, so a row's light slot indexes it directly.
+    // A light with no generator keeps the default invalid handle, which is
+    // what the caller's bounds test reads.
+    std::vector<ShadowGeneratorHandle> generators(scene.lights.size());
     pal::for_each_shadow_generator(
         scene,
         engine,
-        [&](ShadowGeneratorHandle handle, LightHandle, std::size_t) {
-            generators.push_back(handle);
+        [&](ShadowGeneratorHandle handle, LightHandle, std::size_t slot) {
+            generators[slot] = handle;
         });
     return generators;
 }
@@ -3626,7 +3629,9 @@ WGPUBindGroupEntry shadow_group_entry(
     const Engine& engine,
     std::span<const ShadowGeneratorHandle> generators,
     const upstream::PinnedShadowBinding& row) {
-    if (row.light >= generators.size()) {
+    if (
+        row.light >= generators.size() ||
+        generators[row.light].value >= engine.shadow_generators.size()) {
         dawn_error(
             ("a composed shadow binding names light " +
              std::to_string(row.light) +

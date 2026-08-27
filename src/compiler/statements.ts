@@ -1020,22 +1020,24 @@ export class StatementLowerer {
             index < length.staticNumber;
             index += 1
         ) {
-            const before = context.emittedLineCount();
-            context.emit("{");
-            context.increaseIndent();
+            // The bodies are emitted flat, into the scope the loop
+            // itself stands in, because that is what unrolling a loop
+            // means: the statements are written out. A C++ block would
+            // make each iteration's locals invisible to everything
+            // after the loop, and a scene that collects what its body
+            // creates -- a shadow-caster list built from `casters.push`
+            // -- names exactly those locals. The generator scope pushed
+            // here already prefixes each iteration's names uniquely, so
+            // flattening cannot collide two iterations.
             context.pushScope(
                 context.allocateBlockPrefix(),
             );
-            // The index declaration is emitted by the binding; the body
-            // starts after it, which is what "produced no code" means here.
-            let bodyStart = 0;
             try {
                 context.bindCompileTimeValue(indexBinding, {
                     kind: "number",
                     cpp: `${index}.0`,
                     staticNumber: index,
                 });
-                bodyStart = context.emittedLineCount();
                 const statements = ts.isBlock(
                     statement.statement,
                 )
@@ -1046,15 +1048,6 @@ export class StatementLowerer {
                 }
             } finally {
                 context.popScope();
-                context.decreaseIndent();
-            }
-            // A body that lowers to nothing -- every statement in it a
-            // compile-time record, as a particle simulation's steps are --
-            // would leave a block declaring an index nothing reads.
-            if (context.emittedLineCount() === bodyStart) {
-                context.truncateEmittedLines(before);
-            } else {
-                context.emit("}");
             }
         }
         return true;

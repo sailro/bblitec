@@ -26,6 +26,10 @@ export interface ShadowIntrinsicContext
     expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression;
+    /** A local bound to a compile-time tuple, or undefined. */
+    tupleElements(
+        expression: ts.Expression,
+    ): readonly Value[] | undefined;
     requireEngine(value: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
@@ -33,7 +37,7 @@ export interface ShadowIntrinsicContext
     ): string | undefined;
     fail(node: ts.Node, message: string): never;
     recordShadowGenerator(entry: {
-        kind: "pcf-spot" | "esm-directional";
+        kind: "pcf-spot" | "pcf-directional" | "esm-directional";
         lightIndex: number;
         esm?: {
             mapSize?: number;
@@ -64,6 +68,23 @@ const spotOptions = [
     "darkness",
     "near",
     "far",
+] as const;
+
+/**
+ * The options `createPcfDirectionalShadowGenerator` takes.
+ *
+ * The spot factory's first three, then the ortho pair that replaces its
+ * `near`/`far`: a directional light has no position to project from, so the
+ * volume is fitted to the casters and these two are the depth range that fit
+ * projects into. `normalBias` and `forceRefreshEveryFrame` are unreached and
+ * refuse by name, exactly as they do on the other two factories.
+ */
+const pcfDirectionalOptions = [
+    "mapSize",
+    "bias",
+    "darkness",
+    "orthoMinZ",
+    "orthoMaxZ",
 ] as const;
 
 /**
@@ -169,6 +190,83 @@ export function compileShadowIntrinsic(
                     `})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
                 shadowGeneratorIndex: index,
+            };
+        }
+
+        case "createPcfDirectionalShadowGenerator": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const light = context.compileValue(call.arguments[1]!);
+            context.expectKind(light, "light", call.arguments[1]!);
+            if (light.lightKind !== "directional") {
+                context.fail(
+                    call.arguments[1]!,
+                    "A PCF directional shadow generator takes a " +
+                        "directional light, received a " +
+                        `${light.lightKind ?? "unknown"} light.`,
+                );
+            }
+            if (light.sceneLightIndex === undefined) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A shadow generator's light must be added to the scene " +
+                        "first: the composed receiver fragment names its " +
+                        "varyings and bindings by the light's scene index.",
+                );
+            }
+            const directionalResolved: Record<string, string> = {
+                mapSize: "bbl::upstream::pcf_directional_default_map_size",
+                bias: "bbl::upstream::pcf_directional_default_bias",
+                darkness: "bbl::upstream::pcf_directional_default_darkness",
+                orthoMinZ:
+                    "bbl::upstream::pcf_directional_default_ortho_min_z",
+                orthoMaxZ:
+                    "bbl::upstream::pcf_directional_default_ortho_max_z",
+            };
+            if (call.arguments[2]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[2],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    pcfDirectionalOptions,
+                    "PCF directional shadow generator options",
+                );
+                for (const name of pcfDirectionalOptions) {
+                    const expression = context.objectProperty(options, name);
+                    if (!expression) continue;
+                    // Only the map extent decides a GPU texture, so only it
+                    // resolves at generation; the ortho bounds stay run-time
+                    // expressions the way the spot's near/far do.
+                    directionalResolved[name] = name === "mapSize"
+                        ? compilePositiveInteger(context, expression)
+                        : context.compileNumber(expression, "double");
+                }
+            }
+            const directionalIndex = context.recordShadowGenerator({
+                kind: "pcf-directional",
+                lightIndex: light.sceneLightIndex,
+            });
+            // Both: the resources, the receiver arm and the caster pass are
+            // the PCF family's, and the second names which factory to emit.
+            context.reachFeature("shadow:pcf", call);
+            context.reachFeature("shadow:pcf-directional", call);
+            return {
+                kind: "shadow-generator",
+                cpp:
+                    `bbl::create_pcf_directional_shadow_generator(` +
+                    `${engine.cpp}, ${light.cpp}, ` +
+                    `bbl::PcfDirectionalShadowOptions{` +
+                    `${
+                        pcfDirectionalOptions
+                            .map((name) => directionalResolved[name])
+                            .join(", ")
+                    }` +
+                    `})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+                shadowGeneratorIndex: directionalIndex,
             };
         }
 
@@ -290,17 +388,29 @@ export function compileShadowIntrinsic(
                     "This shadow generator was not created in this scene.",
                 );
             }
-            const array = context.expectStaticArrayLiteral(
-                call.arguments[1]!,
-            );
+            // Two shapes, one meaning. The caster list is a compile-time
+            // value either way: an array literal at the call site, or a
+            // local the scene grew with `push` inside a loop generation
+            // unrolls -- which is how scene 207 writes it. Both arrive as
+            // the same list of mesh values, so what differs is only where
+            // the elements were compiled.
+            const listNode = call.arguments[1]!;
+            const tuple = context.tupleElements(listNode);
+            const entries: readonly { mesh: Value; node: ts.Node }[] = tuple
+                ? tuple.map((mesh) => ({ mesh, node: listNode }))
+                : context
+                    .expectStaticArrayLiteral(listNode)
+                    .elements.map((element) => ({
+                        mesh: context.compileValue(element),
+                        node: element,
+                    }));
             const emitted: string[] = [];
             const casters: ShadowCasterMeshManifest[] = [];
-            for (const element of array.elements) {
-                const mesh = context.compileValue(element);
-                context.expectKind(mesh, "mesh", element);
+            for (const { mesh, node } of entries) {
+                context.expectKind(mesh, "mesh", node);
                 if (mesh.sceneMeshIndex === undefined) {
                     context.fail(
-                        element,
+                        node,
                         "A shadow caster must be a scene-code mesh: an " +
                             "imported one's material composes through its " +
                             "asset's own variant rows.",

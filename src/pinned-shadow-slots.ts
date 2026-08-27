@@ -30,6 +30,10 @@ export interface ShadowLightSlot {
  */
 const shadowGeneratorModules: Readonly<Record<string, string>> = {
     "pcf-spot": "src/shadow/pcf-spotlight-shadow-generator.ts",
+    // Its own factory, and its own `_shadowType` literal to read: the two
+    // PCF generators agree on that string, and this map exists so the
+    // agreement is the PIN's rather than an assumption here.
+    "pcf-directional": "src/shadow/pcf-directional-shadow-generator.ts",
     "esm-directional": "src/shadow/esm-directional-shadow-generator.ts",
 };
 
@@ -44,13 +48,23 @@ export function pinnedShadowFilter(
     }
     const file = sharedUpstreamStore().getSourceFile(modulePath);
     let filter: string | undefined;
+    // The three factories do not spell it identically: two write a bare
+    // literal and the directional PCF writes `"pcf" as const`. The
+    // assertion is a type-level narrowing with no value in it, so it is
+    // unwrapped rather than being a second shape to accept.
+    const literal = (node: ts.Expression): ts.Expression =>
+        ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)
+            ? literal(node.expression)
+            : ts.isParenthesizedExpression(node)
+                ? literal(node.expression)
+                : node;
     const visit = (node: ts.Node): void => {
         if (
             ts.isPropertyAssignment(node) &&
-            node.name.getText(file) === "_shadowType" &&
-            ts.isStringLiteral(node.initializer)
+            node.name.getText(file) === "_shadowType"
         ) {
-            filter = node.initializer.text;
+            const value = literal(node.initializer);
+            if (ts.isStringLiteral(value)) filter = value.text;
         }
         ts.forEachChild(node, visit);
     };

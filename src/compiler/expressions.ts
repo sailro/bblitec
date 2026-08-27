@@ -1155,6 +1155,17 @@ export class ExpressionLowerer {
             if (lightPush) {
                 return lightPush;
             }
+            // After the data-model arm above, so a list of plain data still
+            // grows through its own `push_back`; this one owns the case that
+            // arm declines, a compile-time tuple of engine handles.
+            const handlePush =
+                this.context.handleCollections.compileHandleTuplePush(
+                    call,
+                    callee,
+                );
+            if (handlePush) {
+                return handlePush;
+            }
             const found =
                 this.context.handleCollections.compileFind(
                     call,

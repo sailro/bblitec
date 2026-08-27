@@ -34,6 +34,8 @@ import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 const baseModule = "src/shadow/shadow-base.ts";
 const spotModule = "src/shadow/pcf-spotlight-shadow-generator.ts";
 const hooksModule = "src/shadow/pcf-shadow-task-hooks.ts";
+const pcfDirectionalModule =
+    "src/shadow/pcf-directional-shadow-generator.ts";
 const esmModule = "src/shadow/esm-directional-shadow-generator.ts";
 const sceneModule = "src/scene/scene-core.ts";
 
@@ -322,9 +324,15 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
         // `near`/`far` are Windows macro names.
         ["near", { cpp: "near_plane", type: "scalar" }],
         ["far", { cpp: "far_plane", type: "scalar" }],
-        ["offX", { cpp: "0.0", type: "scalar" }],
-        ["offY", { cpp: "0.0", type: "scalar" }],
-        ["offZ", { cpp: "0.0", type: "scalar" }],
+        // The pin's own floating-origin offset: `renderPcfShadowMap` and
+        // `renderEsmShadowMap` both read the active camera's world
+        // translation and hand it in, so the light view and the caster fold
+        // land in the same eye-relative frame the mesh worlds are packed
+        // into. With the mode off the caller passes the zero vector, which
+        // is what the pin's own `foCam ? ... : 0` resolves to.
+        ["offX", { cpp: "eye.x", type: "scalar" }],
+        ["offY", { cpp: "eye.y", type: "scalar" }],
+        ["offZ", { cpp: "eye.z", type: "scalar" }],
     ]);
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
@@ -381,7 +389,8 @@ function lowerComputeSpotLightMatrix(context: LoweringContext): string {
 inline ShadowLightMatrix compute_spot_light_matrix(
     const LightRecord& light,
     double near_plane,
-    double far_plane) {
+    double far_plane,
+    Vec3d eye) {
 ${body}
 }`;
 }
@@ -428,9 +437,15 @@ function lowerComputeDirectionalLightMatrix(
         ["light.position.z", { cpp: "light.position.z", type: "scalar" }],
         ["orthoMinZ", { cpp: "ortho_min_z", type: "scalar" }],
         ["orthoMaxZ", { cpp: "ortho_max_z", type: "scalar" }],
-        ["offX", { cpp: "0.0", type: "scalar" }],
-        ["offY", { cpp: "0.0", type: "scalar" }],
-        ["offZ", { cpp: "0.0", type: "scalar" }],
+        // The pin's own floating-origin offset: `renderPcfShadowMap` and
+        // `renderEsmShadowMap` both read the active camera's world
+        // translation and hand it in, so the light view and the caster fold
+        // land in the same eye-relative frame the mesh worlds are packed
+        // into. With the mode off the caller passes the zero vector, which
+        // is what the pin's own `foCam ? ... : 0` resolves to.
+        ["offX", { cpp: "eye.x", type: "scalar" }],
+        ["offY", { cpp: "eye.y", type: "scalar" }],
+        ["offZ", { cpp: "eye.z", type: "scalar" }],
     ]);
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
@@ -518,7 +533,8 @@ inline ShadowLightMatrix compute_directional_light_matrix(
     const LightRecord& light,
     const std::vector<ShadowCaster>& casters,
     double ortho_min_z,
-    double ortho_max_z) {
+    double ortho_max_z,
+    Vec3d eye) {
 ${body}
 }`;
 }
@@ -606,6 +622,41 @@ function esmDefaults(context: LoweringContext): PinnedEsmDefaults {
         blurScale: read("blurScale"),
         darkness: read("darkness"),
         frustumEdgeFalloff: read("frustumEdgeFalloff"),
+        orthoMinZ: read("orthoMinZ"),
+        orthoMaxZ: read("orthoMaxZ"),
+    };
+}
+
+/** The pin's own defaults for a directional-light PCF generator. */
+export interface PinnedPcfDirectionalDefaults {
+    mapSize: number;
+    bias: number;
+    darkness: number;
+    orthoMinZ: number;
+    orthoMaxZ: number;
+}
+
+/**
+ * Read from `createPcfDirectionalShadowGenerator`'s own `??` chain.
+ *
+ * The factory is the spot generator's GPU state over the ESM's
+ * caster-fitted volume, and its defaults follow that split: `mapSize`,
+ * `bias` and `darkness` are its own, while `near`/`far` give way to the
+ * ortho pair `computeDirectionalLightMatrix` takes.
+ */
+function pcfDirectionalDefaults(
+    context: LoweringContext,
+): PinnedPcfDirectionalDefaults {
+    const { file, declaration } = context.functionDeclaration(
+        pcfDirectionalModule,
+        "createPcfDirectionalShadowGenerator",
+    );
+    const read = (local: string): number =>
+        optionDefault(context, declaration, local, file);
+    return {
+        mapSize: read("mapSize"),
+        bias: read("bias"),
+        darkness: read("darkness"),
         orthoMinZ: read("orthoMinZ"),
         orthoMaxZ: read("orthoMaxZ"),
     };
@@ -1011,6 +1062,7 @@ export function pinnedShadowHeader(context: LoweringContext): string {
     const target = assertPcfResourceContracts(context);
     const defaults = pcfSpotDefaults(context);
     const esm = esmDefaults(context);
+    const pcfDirectional = pcfDirectionalDefaults(context);
     const casterFallback = esmCasterBoundsFallback(context);
     const trs = pinnedTrsComposition(context);
     const floats = (values: readonly number[]): string =>
@@ -1045,6 +1097,22 @@ inline constexpr double pcf_spot_default_near = ${
 /** \`light.range === Number.MAX_VALUE ? 10000 : light.range\`. */
 inline constexpr double pcf_spot_unbounded_far = ${
         context.doubleLiteral(defaults.far)
+    };
+
+/** The pin's own defaults for a directional-light PCF generator. */
+inline constexpr std::uint32_t pcf_directional_default_map_size =
+    ${pcfDirectional.mapSize}u;
+inline constexpr double pcf_directional_default_bias = ${
+        context.doubleLiteral(pcfDirectional.bias)
+    };
+inline constexpr double pcf_directional_default_darkness = ${
+        context.doubleLiteral(pcfDirectional.darkness)
+    };
+inline constexpr double pcf_directional_default_ortho_min_z = ${
+        context.doubleLiteral(pcfDirectional.orthoMinZ)
+    };
+inline constexpr double pcf_directional_default_ortho_max_z = ${
+        context.doubleLiteral(pcfDirectional.orthoMaxZ)
     };
 
 /**
@@ -1203,12 +1271,14 @@ inline ShadowInfoUniforms shadow_info_block(
 inline void update_esm_directional_shadow(
     ShadowGeneratorRecord& generator,
     const LightRecord& light,
-    const std::vector<ShadowCaster>& casters) {
+    const std::vector<ShadowCaster>& casters,
+    Vec3d eye) {
     const ShadowLightMatrix matrix = compute_directional_light_matrix(
         light,
         casters,
         generator.ortho_min_z,
-        generator.ortho_max_z);
+        generator.ortho_max_z,
+        eye);
     generator.light_matrix = matrix.view_projection;
     generator.caster_view = matrix.view;
     generator.caster_view_projection = matrix.view_projection;
@@ -1226,15 +1296,46 @@ inline void update_esm_directional_shadow(
  */
 inline void update_pcf_spot_shadow(
     ShadowGeneratorRecord& generator,
-    const LightRecord& light) {
+    const LightRecord& light,
+    Vec3d eye) {
     const ShadowLightMatrix matrix = compute_spot_light_matrix(
         light,
         generator.near_plane,
-        generator.far_plane);
+        generator.far_plane,
+        eye);
     generator.light_matrix = matrix.view_projection;
     generator.caster_view = matrix.view;
     generator.caster_view_projection =
         bias_view_projection(matrix.view_projection, generator.bias);
+}
+
+/**
+ * The same two matrices for a DIRECTIONAL PCF generator.
+ *
+ * \`createPcfDirectionalShadowGenerator\` hands \`renderPcfShadowMap\` a
+ * builder that calls \`computeDirectionalLightMatrix\` instead of the spot
+ * volume, and nothing else about the generator changes -- so this is the
+ * ESM's matrix source under the PCF's bias split. A directional light has
+ * no position to project from, so the near and far planes come back OUT of
+ * the caster fit rather than going in.
+ */
+inline void update_pcf_directional_shadow(
+    ShadowGeneratorRecord& generator,
+    const LightRecord& light,
+    const std::vector<ShadowCaster>& casters,
+    Vec3d eye) {
+    const ShadowLightMatrix matrix = compute_directional_light_matrix(
+        light,
+        casters,
+        generator.ortho_min_z,
+        generator.ortho_max_z,
+        eye);
+    generator.light_matrix = matrix.view_projection;
+    generator.caster_view = matrix.view;
+    generator.caster_view_projection =
+        bias_view_projection(matrix.view_projection, generator.bias);
+    generator.near_plane = matrix.near_plane;
+    generator.far_plane = matrix.far_plane;
 }
 
 } // namespace bbl::upstream
@@ -1265,6 +1366,11 @@ export function shadowFactorySource(
     // compiled beside the receiver's -- so the arm below exists only for a
     // scene that reached one.
     nodeEsmCasters = false,
+    // Whether this scene reaches the DIRECTIONAL PCF generator. It shares
+    // every resource the spot one builds and differs only in the volume its
+    // light matrix is fitted with, so what the flag gates is the factory
+    // alone -- no caster view, no second map format, no receiver arm.
+    pcfDirectionalShadows = false,
 ): LoweredSource {
     // One family's caster view, under the filter its task carries. The node
     // family composes only the ESM half -- `buildNodeRenderables` re-compiles
@@ -1360,11 +1466,43 @@ ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
     generator.darkness = options.darkness;
     generator.near_plane = options.near_plane;
     generator.far_plane = options.far_plane;
-    upstream::update_pcf_spot_shadow(generator, engine.lights[light.value]);
+    // The factory's own first fit, before any frame: the pin builds it
+    // at creation from a camera that has not moved, which is the zero
+    // offset in either mode.
+    upstream::update_pcf_spot_shadow(
+        generator, engine.lights[light.value], Vec3d{});
     engine.shadow_generators.push_back(std::move(generator));
     return ShadowGeneratorHandle{
         static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
 }
+
+${!pcfDirectionalShadows ? "" : `ShadowGeneratorHandle create_pcf_directional_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    PcfDirectionalShadowOptions options) {
+    if (light.value >= engine.lights.size()) {
+        throw std::runtime_error("Invalid shadow generator light handle.");
+    }
+    if (engine.lights[light.value].kind != LightKind::directional) {
+        throw std::runtime_error(
+            "A PCF directional shadow generator requires a directional "
+            "light.");
+    }
+    ShadowGeneratorRecord generator;
+    generator.filter = ShadowFilter::pcf_directional;
+    generator.map_size = options.map_size;
+    generator.bias = options.bias;
+    generator.darkness = options.darkness;
+    generator.ortho_min_z = options.ortho_min_z;
+    generator.ortho_max_z = options.ortho_max_z;
+    // Like the ESM generator's, this light matrix fits the CASTERS, which
+    // are registered after the factory returns -- so the first fit happens
+    // at the task's first frame rather than here.
+    engine.shadow_generators.push_back(std::move(generator));
+    return ShadowGeneratorHandle{
+        static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
+}
+`}
 
 ${!esmShadows ? "" : `ShadowGeneratorHandle create_esm_directional_shadow_generator(
     Engine& engine,

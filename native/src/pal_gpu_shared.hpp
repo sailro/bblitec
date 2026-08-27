@@ -1609,7 +1609,7 @@ inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
 }
 #endif
 
-#if BBLITE_SHADOWS_ESM
+#if BBLITE_SHADOW_RECEIVERS
 /**
  * The casters `computeDirectionalLightMatrix` folds, as it reads them.
  *
@@ -1618,8 +1618,14 @@ inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
  * carrier is filled here and the fold stays the pin's. A mesh with no
  * geometry takes the pin's own `?? [...]` fallback, which the generated
  * header carries from its literal.
+ *
+ * Not the ESM generator's alone: BOTH directional generators fit their
+ * volume to the caster bounds, because a directional light has no position
+ * to project from. Only the spot generator builds its volume from the
+ * light, which is why this is gated on the receiver half rather than on
+ * either filter.
  */
-inline void esm_shadow_casters(
+inline void fitted_shadow_casters(
     const Engine& engine,
     const ShadowGeneratorRecord& generator,
     std::vector<upstream::ShadowCaster>& casters) {
@@ -1654,26 +1660,33 @@ inline void esm_shadow_casters(
 
 #if BBLITE_SHADOW_RECEIVERS
 /**
- * The scene's generators in `scene.lights` order.
+ * The scene's shadow generators, each with its light's own slot in
+ * `scene.lights`.
  *
- * That walk IS the ordinal every shadow contract names: the pin's own
- * `ShadowTask` schedules one render task per generator in it, the composed
- * receiver numbers its group-2 rows in it, and `build_shadow_task` pushes
- * caster views in it. Stated once so a backend that keys densely and one
- * that keys by handle cannot disagree about which generator is light `n`.
+ * That slot IS the ordinal every shadow contract names. The pin composes a
+ * receiver's group-2 rows as `shadowTex_<lightIndex>`, where `lightIndex`
+ * is "the position of its light in `scene.lights`" -- so a scene whose
+ * shadow-casting light is not its first light numbers its rows from the
+ * light, not from a count of generators. Counting generators instead
+ * agrees with the light order exactly while every light carries one, and
+ * scene 207 -- an ambient hemispheric light beside a shadow-casting
+ * directional -- is where the two part company.
+ *
+ * Stated once so a backend that keys densely and one that keys by handle
+ * cannot disagree about which generator is light `n`.
  */
 template <typename Visit>
 inline void for_each_shadow_generator(
     const Scene& scene,
     const Engine& engine,
     Visit&& visit) {
-    std::size_t slot = 0;
-    for (const LightHandle light : scene.lights) {
+    for (std::size_t slot = 0; slot < scene.lights.size(); ++slot) {
+        const LightHandle light = scene.lights[slot];
         if (light.value >= engine.lights.size()) continue;
         const ShadowGeneratorHandle handle =
             engine.lights[light.value].shadow_generator;
         if (handle.value >= engine.shadow_generators.size()) continue;
-        visit(handle, light, slot++);
+        visit(handle, light, slot);
     }
 }
 
@@ -1725,18 +1738,40 @@ inline void refresh_shadow_generators(
             std::size_t slot) {
             ShadowGeneratorRecord& generator =
                 engine.shadow_generators[handle.value];
+            // The pin's own floating-origin offset for a shadow map:
+            // `renderPcfShadowMap` and `renderEsmShadowMap` each read the
+            // active camera's world translation and build the light view
+            // and the caster fit against it, so the map lands in the same
+            // eye-relative frame the mesh worlds are packed into. Off the
+            // mode this is the zero vector, which is the pin's own
+            // `foCam ? ... : 0`.
+            const Vec3d eye = frame_floating_origin_offset(scene, engine);
 #if BBLITE_SHADOWS_ESM
             if (generator.filter == ShadowFilter::esm_directional) {
-                esm_shadow_casters(engine, generator, refresh.casters);
+                fitted_shadow_casters(engine, generator, refresh.casters);
                 upstream::update_esm_directional_shadow(
                     generator,
                     engine.lights[light.value],
-                    refresh.casters);
+                    refresh.casters,
+                    eye);
             } else
 #endif
+            // The third arm needs no define of its own: it shares every
+            // resource the spot generator builds, and what it needs beside
+            // them -- the caster fit -- is the receiver half's, not the
+            // ESM's.
+            if (generator.filter == ShadowFilter::pcf_directional) {
+                fitted_shadow_casters(engine, generator, refresh.casters);
+                upstream::update_pcf_directional_shadow(
+                    generator,
+                    engine.lights[light.value],
+                    refresh.casters,
+                    eye);
+            } else
             upstream::update_pcf_spot_shadow(
                 generator,
-                engine.lights[light.value]);
+                engine.lights[light.value],
+                eye);
             const upstream::ShadowInfoUniforms block =
                 upstream::shadow_info_block(generator);
             const bool moved = !refresh.uploaded[handle.value] ||

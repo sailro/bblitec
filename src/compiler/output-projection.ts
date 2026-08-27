@@ -81,6 +81,7 @@ export const featureSources: Record<Feature, string[]> = {
     "scene:remove": [],
     "shadow:esm": [],
     "shadow:pcf": [],
+    "shadow:pcf-directional": [],
     "shadow:task": [],
     "sprite:2d": [],
     "sprite:uv-scroll": [],

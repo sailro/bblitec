@@ -1809,8 +1809,24 @@ struct AssetRecord {
  */
 /** Which pinned filter a generator is, which decides both its resources
  *  and how its receiver block packs. */
+/**
+ * Which pinned generator built a shadow map.
+ *
+ * The two PCF arms share everything the receiver sees -- the same
+ * `depth32float` map, the same comparison sampler, the same
+ * `createShadowFragment` binding types -- and differ only in the projection
+ * their light-space matrix is fitted with, which is why every consumer that
+ * asks about a generator's RESOURCES tests for the ESM arm alone.
+ */
 enum class ShadowFilter {
     pcf_spot,
+    /**
+     * `createPcfDirectionalShadowGenerator`: the spot generator's own GPU
+     * state over the ESM's caster-fitted orthographic volume, which is
+     * exactly how the pin assembles it -- `renderPcfShadowMap` with
+     * `computeDirectionalLightMatrix` as its matrix builder.
+     */
+    pcf_directional,
     esm_directional,
 };
 
@@ -2459,6 +2475,23 @@ struct EsmDirectionalShadowOptions {
     std::uint32_t esm_index = 0;
 };
 
+/**
+ * `PcfDirectionalShadowGeneratorConfig`, as the reached slice resolves it.
+ *
+ * The spot generator's own three, plus the ortho volume the caster fit
+ * projects into — a directional light has no position to project from, so
+ * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
+ * takes. `normalBias` and `forceRefreshEveryFrame` are unreached and refuse
+ * by name, exactly as they do on the other two factories.
+ */
+struct PcfDirectionalShadowOptions {
+    std::uint32_t map_size = 1024;
+    double bias = 0.00005;
+    double darkness = 0.0;
+    double ortho_min_z = 1.0;
+    double ortho_max_z = 10000.0;
+};
+
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
     Engine& engine,
     LightHandle light,
@@ -2467,6 +2500,10 @@ ShadowGeneratorHandle create_esm_directional_shadow_generator(
     Engine& engine,
     LightHandle light,
     EsmDirectionalShadowOptions options);
+ShadowGeneratorHandle create_pcf_directional_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    PcfDirectionalShadowOptions options);
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,

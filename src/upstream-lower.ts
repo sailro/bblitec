@@ -1799,6 +1799,7 @@ ${composed.wgsl}`,
                     context,
                     features.includes("shadow:esm"),
                     nodeEsmCasters,
+                    features.includes("shadow:pcf-directional"),
                 ),
                 generated,
             );

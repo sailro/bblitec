@@ -2255,8 +2255,11 @@ void update_shadow_generators(
     const Scene& scene,
     Engine& engine) {
     if (engine.shadow_generators.empty()) return;
-    if (state.shadow_generators.size() < engine.shadow_generators.size()) {
-        state.shadow_generators.resize(engine.shadow_generators.size());
+    // Indexed by a composed row's LIGHT slot, so it is sized to the scene's
+    // lights rather than to its generators: a scene whose shadow light sits
+    // behind an ambient one names a slot no generator count reaches.
+    if (state.shadow_generators.size() < scene.lights.size()) {
+        state.shadow_generators.resize(scene.lights.size());
     }
     if (!state.shadow_comparison_sampler) {
         SDL_GPUSamplerCreateInfo info{};
@@ -2319,9 +2322,9 @@ void update_shadow_generators(
             const upstream::ShadowInfoUniforms& block,
             bool moved) {
             GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
-            // Kept densely beside the map and the buffer because
-            // `shadow_info_uniform_for` binds it by a composed row's LIGHT
-            // ordinal, which is this slot and not the generator's handle.
+            // Kept beside the map and the buffer under the composed row's
+            // LIGHT slot, which is what `shadow_info_uniform_for` binds by
+            // -- not the generator's handle.
             gpu.block = block;
             if (
                 generator.task.value < engine.frame_tasks.size() &&

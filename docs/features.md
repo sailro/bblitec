@@ -1114,6 +1114,22 @@ their formats and usages, both blur stages, the two texel steps, the
 sampler — so none of it is restated here. The blur stages deploy and compile
 like any other composed pair.
 
+**The PCF directional generator.** The third factory is the other two
+combined, and is built as such: the spot generator's `depth32float` map,
+comparison sampler and shared receiver block, sized by the same
+`computeDirectionalLightMatrix` caster fit the ESM directional one uses. It
+needs no define of its own — every resource it wants some sibling already
+builds — so what the port adds for it is the factory, its defaults read off
+the pinned module, and the third arm of the per-frame refresh.
+
+**A composed row names a LIGHT, not a generator.** The pin numbers a
+receiver's group-2 rows `shadowTex_<lightIndex>`, where the index is "the
+position of its light in `scene.lights`" — so a scene whose shadow-casting
+light sits behind an ambient one names row 1 with one generator in the
+scene. Both backends resolve a row through that light slot. Counting
+generators instead agrees exactly while every light carries one, which is
+why it survived until a scene put a hemispheric light first.
+
 **Group 2 is reflected, not counted.** `createShadowFragment` picks each
 binding's TYPE from its own light's filter, so a scene mixing the two
 filters declares a `texture_2d<f32>` beside a `texture_depth_2d`, and a
@@ -1135,13 +1151,14 @@ receiver then binds the map, the comparison sampler and the receiver block as
 the pin's group 2, and `shadowFactors[lightIndex]` scales that light's diffuse
 and specular contribution.
 
-What refuses at generation, by name: the PCF directional and cascaded
-generators, a node receiver (`node-shadow.ts` is the third sibling of that one
+What refuses at generation, by name: the cascaded generator, a node
+receiver (`node-shadow.ts` is the third sibling of that one
 core, and needs the node family's group-2 wiring), a `receiveShadows` written
 to anything but `true` (the variant is selected at generation), an imported
 mesh as caster or receiver, and every generator option past the two factories'
 own reached sets (`mapSize`, `bias`,
-`darkness`, `near`, `far` for the spot; those plus `depthScale`,
+`darkness`, `near`, `far` for the spot and the directional PCF; those plus
+`depthScale`,
 `blurKernel`, `blurScale`, `frustumEdgeFalloff` and the two ortho bounds for
 the directional) — `normalBias` and `forceRefreshEveryFrame` among them.
 
@@ -1469,12 +1486,12 @@ build error with a source location, not a silently different image.
   siblings, which is how the corpus composes one document out of another; a
   package import refuses, because that is the boundary keeping the route to
   plain data
-- shadows cover the pinned PCF spot and ESM directional generators over all
-  three material families' receivers ([above](#shadows) carries the split).
-  The PCF directional and cascaded generators, an imported mesh as caster or
-  receiver, a computed `receiveShadows`, a PBR caster through the ESM
-  generator, and every generator option past each factory's own reached set
-  each fail at generation naming what they reached
+- shadows cover the pinned PCF spot, PCF directional and ESM directional
+  generators over all three material families' receivers
+  ([above](#shadows) carries the split). The cascaded generator, an imported
+  mesh as caster or receiver, a computed `receiveShadows`, a PBR caster
+  through the ESM generator, and every generator option past each factory's
+  own reached set each fail at generation naming what they reached
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
   (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,

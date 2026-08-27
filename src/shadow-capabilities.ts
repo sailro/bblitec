@@ -197,18 +197,6 @@ const floatingOriginUnwired: readonly {
     why: string;
 }[] = [
     {
-        feature: "shadow:pcf",
-        why: "a shadow generator builds its light view and projection from " +
-            "absolute caster bounds, so the map would not line up with " +
-            "eye-relative geometry",
-    },
-    {
-        feature: "shadow:esm",
-        why: "a shadow generator builds its light view and projection from " +
-            "absolute caster bounds, so the map would not line up with " +
-            "eye-relative geometry",
-    },
-    {
         feature: "loader:splat",
         why: "a splat cloud composes its own absolute world and multiplies " +
             "it by the frame's view",
