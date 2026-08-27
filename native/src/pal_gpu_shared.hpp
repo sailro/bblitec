@@ -973,9 +973,9 @@ inline std::array<float, 16> shader_draw_world(
         x.x, x.y, x.z, 0.0f,
         y.x, y.y, y.z, 0.0f,
         z.x, z.y, z.z, 0.0f,
-        mesh.position.x + mesh.outer_position.x,
-        mesh.position.y + mesh.outer_position.y,
-        mesh.position.z + mesh.outer_position.z,
+        static_cast<float>(mesh.position.x + mesh.outer_position.x),
+        static_cast<float>(mesh.position.y + mesh.outer_position.y),
+        static_cast<float>(mesh.position.z + mesh.outer_position.z),
         1.0f,
     };
 }

@@ -1,0 +1,9 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "The generic audio adaptation metadata still claimed no corpus application reached audio; it now describes the reachability and minimal-package validation that applies to any audio-using input",
+      "applied": true
+    }
+  ]
+}

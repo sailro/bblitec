@@ -331,8 +331,9 @@ export function compileAdaptations(
                     "across runs (`BBLITE_AUDIO_CAPTURE`), which is what " +
                     "makes a PCM comparison against the browser's own " +
                     "`OfflineAudioContext` render a measurement",
-                "no corpus scene reaches audio, so nothing published is " +
-                    "gated on it yet",
+                "compiler reachability and minimal-package checks verify " +
+                    "that only requested audio node factories and their " +
+                    "core runtime dependencies are linked",
             ],
         });
     }
