@@ -1,0 +1,17 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Browser-only call erasure discarded reached argument calls even though JavaScript evaluates arguments before the erased callee; argument-call effects are now lowered generically while callback bodies remain deferred",
+      "applied": true
+    },
+    {
+      "summary": "The numeric-expression predicate classified every prefix unary expression as numeric, sending boolean negation to the numeric error path; it now admits only unary plus and minus",
+      "applied": true
+    },
+    {
+      "summary": "The evaluated-call AST walk maintained its own mutable short-circuit flag even though TypeScript child traversal already returns the first truthy result; it now delegates directly to that traversal contract",
+      "applied": true
+    }
+  ]
+}

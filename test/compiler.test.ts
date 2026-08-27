@@ -3391,6 +3391,50 @@ test("erases browser declarations rooted at globalThis", () => {
     );
 });
 
+test("preserves argument calls when erasing a browser-only call", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            let state = 0;
+            function advance(): number {
+                state++;
+                return state;
+            }
+            console.log("state", advance());
+            const box = createBox(engine);
+            box.position.x = state;
+        }
+    `);
+
+    assert.match(result.cpp, /v_state\+\+;/);
+    assert.match(result.cpp, /\.position\.x = v_state;/);
+    assert.doesNotMatch(result.cpp, /console/);
+});
+
+test("lowers boolean negation in value position", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            let muted = false;
+            function setMuted(value: boolean): void {
+                muted = value;
+            }
+            setMuted(!muted);
+            if (muted) {
+                createBox(engine);
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /bool v_fn\d+_value = !\(v_muted\);/);
+    assert.match(result.cpp, /v_muted = v_fn\d+_value;/);
+    assert.match(result.cpp, /if \(v_muted\)/);
+});
+
 test("folds static n-ary Math extrema before browser short circuiting", () => {
     const result = compileSource(`
         import { createBox, createEngine } from "@babylonjs/lite";

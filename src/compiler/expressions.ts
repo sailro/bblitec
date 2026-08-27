@@ -37,6 +37,21 @@ import type {
     UserFunctionLowerer,
 } from "./user-functions.js";
 
+/**
+ * Calls in an argument are evaluated before their enclosing call. Stop at a
+ * nested function boundary because creating a callback does not execute its
+ * body.
+ */
+function containsEvaluatedCall(node: ts.Node): boolean {
+    if (ts.isFunctionLike(node)) {
+        return false;
+    }
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+        return true;
+    }
+    return ts.forEachChild(node, containsEvaluatedCall) ?? false;
+}
+
 export interface ExpressionContext
     extends PromiseLoweringContext,
         UserFunctionContext {
@@ -791,6 +806,23 @@ export class ExpressionLowerer {
     private compileBrowserValue(
         expression: ts.Expression,
     ): Value {
+        const unwrapped = this.context.unwrap(expression);
+        if (ts.isCallExpression(unwrapped)) {
+            for (const argument of unwrapped.arguments) {
+                if (!containsEvaluatedCall(argument)) {
+                    continue;
+                }
+                const value = this.compileValue(argument);
+                if (value.kind === "engine" || value.cpp.length === 0) {
+                    continue;
+                }
+                this.context.emit(
+                    value.requiresExplicitDiscard
+                        ? `static_cast<void>(${value.cpp});`
+                        : `${value.cpp};`,
+                );
+            }
+        }
         const browserValue =
             this.context.evaluateBrowserValue(expression);
         return this.materializeBrowserPrimitive(expression, {

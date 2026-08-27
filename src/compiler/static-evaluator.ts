@@ -707,7 +707,9 @@ export class StaticEvaluator {
         }
         return (
             ts.isNumericLiteral(unwrapped) ||
-            ts.isPrefixUnaryExpression(unwrapped) ||
+            (ts.isPrefixUnaryExpression(unwrapped) &&
+                (unwrapped.operator === ts.SyntaxKind.PlusToken ||
+                    unwrapped.operator === ts.SyntaxKind.MinusToken)) ||
             ts.isBinaryExpression(unwrapped) ||
             (ts.isPropertyAccessExpression(unwrapped) &&
                 ts.isIdentifier(unwrapped.expression) &&
