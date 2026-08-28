@@ -151,6 +151,19 @@ act on it — not what was tried.
   gates and `parity --differential` compare whole images, not functions.
 - [ ] Add backend-layout tests: nothing checks a compiled stage's `.slots`
   register layout against what the PAL binds.
+  Two native-hygiene items sit here rather than in the code, each an
+  all-or-nothing sweep this change has no measurement for:
+  - **The `std::size_t` sentinel is spelled out about thirty times** across
+    `pal_dawn.cpp`, `pal_sdl_gpu.cpp` and `pal_gpu_shared.hpp`, whose
+    comments already call it npos without defining one. A `constexpr
+    std::size_t npos` there retires every spelling — but converting one site
+    and leaving twenty-nine is worse than the status quo, so it wants the
+    whole pass.
+  - **The two backends' `post_process_program` find-or-create caches are one
+    shape over disjoint types**, and their keys genuinely differ (SDL's omits
+    `extra_textures`, `uniform_binding` and `uniform_size`). Sharing them
+    needs a find-or-create template in `pal_gpu_shared.hpp`, which today
+    carries only vertex packing, decode and the variant-key resolvers.
 
 ## P1 — Developer experience
 
@@ -162,7 +175,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-88 corpus scenes remain unregistered; measured scenes are in
+87 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). None of them compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -216,7 +229,9 @@ body/shape surface 7 (deferred), `createTransformNode` 6 (103, 101, 222,
 want the frame-yield-in-a-loop this runtime refuses by design, so it
 finishes 129), text 3 (180, 181, 275), `createTorusKnot` 3 (214, 215, 228)
 and the sprite animation manager 2 (58, 59, which also need two `_shared`
-modules the corpus does not carry).
+modules the corpus does not carry). Of the singles that table pointed at,
+scene 144 shipped; scene 129 -- the one picking scene whose chain carries no
+frame-yield-in-a-loop -- is the next.
 The shadow family finished the four scenes it finishes outright — 18, then
 4 and 22 with the ESM directional generator, the heightmap ground and the
 PBR receiver, then 207 with the PCF directional one — and the
@@ -267,10 +282,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (61 scenes):** 16, 17, 20, 43,
+**Integrate first (60 scenes):** 16, 17, 20, 43,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
 129,
-140, 144, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 218, 219,
+140, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
@@ -660,16 +675,6 @@ below rather than blocking a scene here.
 - [ ] Scene 140: the ESM directional generator above, then a node material.
   Its browser-derived booleans fold for the bare reference query and its
   `ground.receiveShadows` assignment now lowers.
-- [ ] Scene 144: support `createBloomPostProcessTask`. Its chain is four
-  passes over the composite machinery scene 148 shipped, but its merge is
-  built by calling `createPostProcessTask` directly with an inline `_shader`,
-  which the observation seam does not see: composing bloom needs that seam
-  moved from the leaf entry points to `createPostProcessTask` itself, across
-  the modules reachable from the composite (`src/upstream-graph.ts` already
-  owns reachability). Its merge writer would then lower from `bloom.ts`'s own
-  body rather than an effect module. The scene also needs `goToFrame`'s
-  optional engine argument — its current first blocker — and the dragon
-  asset's `KHR_materials_pbrSpecularGlossiness`.
 - [ ] Scene 156: the deterministic cross-fade. Property-animation blending
   shipped with scene 155; 156 adds `crossFadeAnimationGroups` and the
   manager's `_preUpdate` weight-fade jobs

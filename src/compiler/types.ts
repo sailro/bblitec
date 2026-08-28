@@ -763,6 +763,13 @@ export interface GeometryOutputTaskManifest {
 export type PostProcessOptionValue =
     | number
     | boolean
+    /**
+     * A string setting a composite forwards to the pass it ends on --
+     * `sourceSamplingMode` is the reached one. The framework consumes it
+     * for an ordinary pass, but from a composite's side it is config the
+     * pin reads itself, so it travels to the factory unread.
+     */
+    | string
     | { x: number; y: number }
     /**
      * A member of one of the pin's own enums, unresolved. Scene code writes

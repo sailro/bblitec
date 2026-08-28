@@ -325,6 +325,15 @@ function compileOptionValue(
     }
     if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return true;
     if (unwrapped.kind === ts.SyntaxKind.FalseKeyword) return false;
+    // A composite forwards its own pass settings to the pass it ends on, and
+    // `sourceSamplingMode` is a string among them. It reaches the factory
+    // unread: which of its options the composed text branches on is the
+    // pin's question, not this table's. The evaluator resolves a bound
+    // constant and a concatenation too, which is what every other string
+    // this file reads goes through.
+    if (ts.isStringLiteralLike(unwrapped)) {
+        return context.compileStringLiteral(unwrapped);
+    }
     // `DepthOfFieldBlurLevel.High`: an enum the scene imported from Babylon
     // Lite, whose value the pinned module decides at composition.
     if (

@@ -2497,6 +2497,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene144",
+        name: "Scene 144 - Bloom",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene144.ts",
+        title: "Babylon Lite Native - Bloom",
+        parity: {
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene217",
         name: "Scene 217 - Material Plugins",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene217.ts",

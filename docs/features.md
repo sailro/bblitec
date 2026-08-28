@@ -1299,9 +1299,14 @@ from the source's own descriptor. Blur, chromatic aberration, black and white,
 the red/cyan anaglyph and the circle of confusion are reached; each contributes
 only a shader record and a `writeUniforms` body.
 
-A **composite** — depth of field — is one entry point that builds a chain of
-those passes over intermediate targets it owns, and the caller still sees one
-task: one `addTask`, one `updateUniforms`, one output. Which passes, in what
+A **composite** — depth of field, and bloom — is one entry point that builds
+a chain of those passes over intermediate targets it owns, and the caller
+still sees one task: one `addTask`, one `updateUniforms`, one output. Bloom's
+chain is extract-highlights, two separable blurs and a merge that adds the
+blurred highlights back over the source; its three intermediates are sized to
+`floor(sourceSize * bloomScale)` and its blur kernels are scaled by the same
+factor, so the chain is a function of its config exactly as depth of field's
+is. Which passes, in what
 order, over which textures and at which sizes is decided entirely by its
 config, so generation runs the pin's own factory and emits the chain it built.
 Nothing about depth of field is written into this port: its eight passes and
@@ -1315,6 +1320,14 @@ at 0.75, 0.375 and 0.1875 — re-evaluated whenever the frame graph is built, so
 a window resize moves the whole chain with it. The fractions are not read off
 one run: generation composes twice against sources of different sizes and
 formats, and refuses any extent a single fraction does not reproduce exactly.
+
+One pass in that family is not built through a leaf factory at all: bloom's
+merge calls `createPostProcessTask` itself with a `_shader` written inline in
+the composite's own body. So the observation watches that entry point beside
+the leaves, and the merge's parameters and uniform writer are read from the
+composite rather than from the pass — which publishes neither, its `_shader`
+closing over the composite's own state
+([fidelity](fidelity.md#attribution)).
 
 **Compile time: the stage.** The effect's factory runs under Node against a
 descriptor-only render target and the pin's own `getShaderModule` concatenates

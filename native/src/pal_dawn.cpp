@@ -395,8 +395,18 @@ struct DawnPostProcessProgram {
 };
 
 struct DawnPostProcessTask {
-    /** Borrowed from `DawnState::post_process_programs`, which owns it. */
-    const DawnPostProcessProgram* program = nullptr;
+    /**
+     * Its program's index in `DawnState::post_process_programs`, resolved
+     * once and kept across frames.
+     *
+     * An index rather than a pointer because that vector grows: a pass
+     * whose program is created first has its entry reallocated out from
+     * under it the moment a later pass in the same task creates a second
+     * one, and the next frame then binds through a dangling pointer. Bloom
+     * is where that first became reachable -- four passes over three
+     * distinct programs.
+     */
+    std::size_t program = std::numeric_limits<std::size_t>::max();
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
 };
@@ -6722,7 +6732,7 @@ void save_dawn_geometry_id_buffer(
  * chain repeats the first and varies the second, so depth of field's six
  * blurs share one entry here.
  */
-const DawnPostProcessProgram& post_process_program(
+std::size_t post_process_program(
     DawnState& state,
     const upstream::PostProcessShaderInfo& info,
     WGPUTextureFormat format,
@@ -6731,8 +6741,11 @@ const DawnPostProcessProgram& post_process_program(
     std::size_t extra_textures) {
     const std::uint32_t uniform_size =
         (info.uniform_byte_length + 15u) & ~15u;
-    for (const DawnPostProcessProgram& program :
-         state.post_process_programs) {
+    for (std::size_t index = 0;
+         index < state.post_process_programs.size();
+         ++index) {
+        const DawnPostProcessProgram& program =
+            state.post_process_programs[index];
         if (
             program.module_index == info.module_index &&
             program.format == format &&
@@ -6741,7 +6754,7 @@ const DawnPostProcessProgram& post_process_program(
             program.extra_textures == extra_textures &&
             program.uniform_binding == info.uniform_binding &&
             program.uniform_size == uniform_size) {
-            return program;
+            return index;
         }
     }
     DawnPostProcessProgram program;
@@ -6827,7 +6840,7 @@ const DawnPostProcessProgram& post_process_program(
         dawn_error("post-process pipeline creation failed.");
     }
     state.post_process_programs.push_back(program);
-    return state.post_process_programs.back();
+    return state.post_process_programs.size() - 1;
 }
 
 /**
@@ -6886,8 +6899,8 @@ void record_post_process_pass(
             state.render_targets[pass.source.target.value]
                 .height;
     }
-    if (!gpu.program) {
-        gpu.program = &post_process_program(
+    if (gpu.program == std::numeric_limits<std::size_t>::max()) {
+        gpu.program = post_process_program(
             state,
             info,
             state.render_targets[pass.output_target.value].color_format,
@@ -6896,10 +6909,12 @@ void record_post_process_pass(
                 : task_sample_count(state, output_record.samples),
             pass.alpha_mode,
             pass.extra_textures.size());
-        if (gpu.program->uniform_size > 0) {
+        const DawnPostProcessProgram& created =
+            state.post_process_programs[gpu.program];
+        if (created.uniform_size > 0) {
             WGPUBufferDescriptor uniform_descriptor =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
-            uniform_descriptor.size = gpu.program->uniform_size;
+            uniform_descriptor.size = created.uniform_size;
             uniform_descriptor.usage =
                 WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
             gpu.uniforms = wgpuDeviceCreateBuffer(
@@ -6940,12 +6955,12 @@ void record_post_process_pass(
                 WGPU_BIND_GROUP_ENTRY_INIT;
             uniform_binding.binding = info.uniform_binding;
             uniform_binding.buffer = gpu.uniforms;
-            uniform_binding.size = gpu.program->uniform_size;
+            uniform_binding.size = created.uniform_size;
             group_entries.push_back(uniform_binding);
         }
         WGPUBindGroupDescriptor group_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        group_descriptor.layout = gpu.program->group_layout;
+        group_descriptor.layout = created.group_layout;
         group_descriptor.entryCount = group_entries.size();
         group_descriptor.entries = group_entries.data();
         gpu.group = wgpuDeviceCreateBindGroup(
@@ -6953,8 +6968,10 @@ void record_post_process_pass(
             &group_descriptor);
         pass.uniforms_dirty = true;
     }
+    const DawnPostProcessProgram& program =
+        state.post_process_programs[gpu.program];
     if (gpu.uniforms && pass.uniforms_dirty) {
-        std::vector<float> data(gpu.program->uniform_size / 4u, 0.0f);
+        std::vector<float> data(program.uniform_size / 4u, 0.0f);
         upstream::write_post_process_uniforms(
             engine,
             pass,
@@ -6968,7 +6985,7 @@ void record_post_process_pass(
             gpu.uniforms,
             0,
             data.data(),
-            gpu.program->uniform_size);
+            program.uniform_size);
         pass.uniforms_dirty = false;
     }
     WGPURenderPassColorAttachment attachment =
@@ -7009,7 +7026,7 @@ void record_post_process_pass(
             static_cast<std::uint32_t>(rectangle.width),
             static_cast<std::uint32_t>(rectangle.height));
     }
-    wgpuRenderPassEncoderSetPipeline(post_pass, gpu.program->pipeline);
+    wgpuRenderPassEncoderSetPipeline(post_pass, program.pipeline);
     wgpuRenderPassEncoderSetBindGroup(
         post_pass,
         0,

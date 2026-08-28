@@ -45,6 +45,18 @@ export interface PostProcessEffect {
     intrinsic: string;
     /** The pinned module it lives in, by its own source path. */
     module: string;
+    /**
+     * The pinned function whose body declares this effect's `_shader`,
+     * where that is not the entry point itself.
+     *
+     * Bloom's merge is the reached case: the composite writes its `_shader`
+     * inline rather than calling a leaf factory, so the default it reads
+     * and the `writeUniforms` that reads it are declared inside
+     * `createBloomPostProcessTask`. Naming it keeps this row's own
+     * `intrinsic` free to be a name of its own, which is what stops the
+     * effect and composite tables from sharing a key.
+     */
+    declaredIn?: string;
     /** The scalars the effect's `writeUniforms` reads, in storage order. */
     params: readonly PostProcessParamSlot[];
     /**
@@ -84,19 +96,31 @@ export interface PostProcessComposite {
     /** The pinned module it lives in, by its own source path. */
     module: string;
     /**
-     * The leaf entry points the composite builds its passes through, by the
+     * The entry points the composite builds its passes through, by the
      * `lib`-relative module each is imported from.
      *
      * The observation seam rewrites the composite's own imports, so it sees a
-     * pass only if the composite reached it through one of these. A composite
-     * that calls `createPostProcessTask` directly -- bloom builds its merge
-     * that way -- has no entry point to name, and composing it needs the seam
-     * moved to that one function across the reachable graph. Until then a
+     * pass only if the composite reached it through one of these -- and a
      * chain that ends on an unobserved pass is refused rather than composed
      * short: `runComposite` checks the composite's own `outputTexture`
-     * against the last pass it saw.
+     * against the last pass it saw. The seam is keyed by specifier rather
+     * than by effect module, so `createPostProcessTask` itself is nameable
+     * here like any leaf.
      */
     passes: Readonly<Record<string, readonly string[]>>;
+    /**
+     * A pass the composite builds by calling `createPostProcessTask` itself
+     * rather than through a leaf effect module, by that observed symbol.
+     *
+     * Bloom's merge is the reached case: its `_shader` is written inline in
+     * the composite's own body, so there is no leaf factory to read a
+     * default off and no pass object publishing the scalar its
+     * `writeUniforms` reads. Both live on the composite instead, which is
+     * why the value names an effect row keyed by the composite's own
+     * intrinsic -- the merge's parameters and its writer are the composite's.
+     */
+    inlinePass?: { symbol: string; effect: string };
+
     /** The config options naming textures the composite reads. */
     extraTextures: readonly string[];
     /** Whether any of its passes reads the camera's near and far planes. */
@@ -121,6 +145,28 @@ export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
         extraTextures: ["depthTexture"],
         usesCamera: true,
     },
+    {
+        intrinsic: "createBloomPostProcessTask",
+        module: "src/post-process/bloom.ts",
+        passes: {
+            "./extract-highlights.js": [
+                "createExtractHighlightsPostProcessTask",
+            ],
+            "./blur.js": ["createBlurPostProcessTask"],
+            // The merge, which the composite builds itself rather than
+            // through a leaf module -- see `inlinePass` below.
+            "../frame-graph/post-process-task.js": ["createPostProcessTask"],
+        },
+        inlinePass: {
+            symbol: "createPostProcessTask",
+            effect: "createBloomMergePostProcessTask",
+        },
+        // Bloom reads only its source: the blurred highlights its merge binds
+        // are its own intermediate, which the observation reports off the
+        // pass's `_shader.extraTextures` rather than from a config option.
+        extraTextures: [],
+        usesCamera: false,
+    },
 ];
 
 export function postProcessComposite(
@@ -132,6 +178,37 @@ export function postProcessComposite(
 }
 
 export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
+    {
+        // Bloom's merge: `source.rgb + blurred.rgb * weight`. It is the one
+        // pass whose `_shader` the pin writes inline in a composite's own
+        // body rather than in a module of its own, so `weight` is defaulted
+        // and the `writeUniforms` that reads it is declared inside
+        // `createBloomPostProcessTask` -- which is what `declaredIn` says.
+        // The pin exports no such entry point, so the name below is this
+        // table's own and reaches no call site.
+        intrinsic: "createBloomMergePostProcessTask",
+        module: "src/post-process/bloom.ts",
+        declaredIn: "createBloomPostProcessTask",
+        params: [{ path: "weight", fallback: 0.25 }],
+        // The blurred highlights bind after the source, but as the
+        // composite's own intermediate rather than a config option, so the
+        // observation reads them off the pass's `_shader.extraTextures`.
+        extraTextures: [],
+        usesCamera: false,
+    },
+    {
+        // Bloom's first stage: it keeps pixels whose luminance clears the
+        // threshold and zeroes the rest. Its writer raises the threshold to
+        // gamma space, which the lowerer takes from the pinned body.
+        intrinsic: "createExtractHighlightsPostProcessTask",
+        module: "src/post-process/extract-highlights.ts",
+        params: [
+            { path: "threshold", fallback: 0.9 },
+            { path: "exposure", fallback: 1 },
+        ],
+        extraTextures: [],
+        usesCamera: false,
+    },
     {
         intrinsic: "createBlurPostProcessTask",
         module: "src/post-process/blur.ts",

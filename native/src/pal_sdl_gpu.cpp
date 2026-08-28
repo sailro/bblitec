@@ -578,8 +578,18 @@ struct GpuPostProcessProgram {
 };
 
 struct GpuPostProcessTask {
-    /** Borrowed from `GpuState::post_process_programs`, which owns it. */
-    const GpuPostProcessProgram* program = nullptr;
+    /**
+     * Its program's index in `GpuState::post_process_programs`, resolved
+     * once and kept across frames.
+     *
+     * An index rather than a pointer because that vector grows: a pass
+     * whose program is created first has its entry reallocated out from
+     * under it the moment a later pass in the same task creates a second
+     * one, and the next frame then binds through a dangling pointer. Bloom
+     * is where that first became reachable -- four passes over three
+     * distinct programs.
+     */
+    std::size_t program = std::numeric_limits<std::size_t>::max();
     /**
      * What each fragment texture slot names, resolved from the `.slots`
      * sidecar once: -1 is the pass's source, and 0.. indexes its extra
@@ -4296,20 +4306,23 @@ void release(GpuState& state) {
  * composite's chain repeats the first and varies the second, so depth of
  * field's six blurs share one entry here.
  */
-const GpuPostProcessProgram& post_process_program(
+std::size_t post_process_program(
     GpuState& state,
     std::uint32_t module_index,
     SDL_GPUTextureFormat format,
     SDL_GPUSampleCount samples,
     std::uint32_t alpha_mode) {
-    for (const GpuPostProcessProgram& program :
-         state.post_process_programs) {
+    for (std::size_t index = 0;
+         index < state.post_process_programs.size();
+         ++index) {
+        const GpuPostProcessProgram& program =
+            state.post_process_programs[index];
         if (
             program.module_index == module_index &&
             program.format == format &&
             program.samples == samples &&
             program.alpha_mode == alpha_mode) {
-            return program;
+            return index;
         }
     }
     GpuPostProcessProgram program;
@@ -4362,7 +4375,7 @@ const GpuPostProcessProgram& post_process_program(
     SDL_ReleaseGPUShader(state.device, vertex_shader);
     SDL_ReleaseGPUShader(state.device, fragment_shader);
     state.post_process_programs.push_back(std::move(program));
-    return state.post_process_programs.back();
+    return state.post_process_programs.size() - 1;
 }
 
 /**
@@ -4447,13 +4460,13 @@ void record_post_process_pass(
                 SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
                     SDL_GPU_TEXTUREUSAGE_SAMPLER);
     }
-    if (!gpu.program) {
+    if (gpu.program == std::numeric_limits<std::size_t>::max()) {
         // A pass writes into its own output, whose format the frame graph
         // already resolved -- a composite's intermediate may name its own
         // (the circle-of-confusion map is r16) or follow its source's. The
         // pin builds the pipeline against that target's own sample count and
         // resolves nothing; what it refuses is a multisampled *source*.
-        gpu.program = &post_process_program(
+        gpu.program = post_process_program(
             state,
             shader_info.module_index,
             state.render_targets[pass.output_target.value].color_format,
@@ -4466,11 +4479,12 @@ void record_post_process_pass(
              ~15u) /
                 4u,
             0.0f);
+        const GpuPostProcessProgram& created =
+            state.post_process_programs[gpu.program];
         std::size_t extra_slot = 0;
         gpu.texture_sources.reserve(
-            gpu.program->fragment_slots.textures.size());
-        for (const std::string& name :
-             gpu.program->fragment_slots.textures) {
+            created.fragment_slots.textures.size());
+        for (const std::string& name : created.fragment_slots.textures) {
             if (name == "sourceTextureSampler") {
                 gpu.texture_sources.push_back(-1);
                 continue;
@@ -4487,6 +4501,8 @@ void record_post_process_pass(
                 static_cast<int>(extra_slot++));
         }
     }
+    const GpuPostProcessProgram& program =
+        state.post_process_programs[gpu.program];
     if (!gpu.uniform_data.empty()) {
         std::fill(
             gpu.uniform_data.begin(),
@@ -4504,14 +4520,14 @@ void record_post_process_pass(
             gpu.uniform_data.size() * sizeof(float);
         // At most one block per stage, so the slot the
         // compaction left it at is zero when it survived.
-        if (!gpu.program->vertex_slots.uniforms.empty()) {
+        if (!program.vertex_slots.uniforms.empty()) {
             SDL_PushGPUVertexUniformData(
                 command,
                 0,
                 gpu.uniform_data.data(),
                 static_cast<Uint32>(uniform_bytes));
         }
-        if (!gpu.program->fragment_slots.uniforms.empty()) {
+        if (!program.fragment_slots.uniforms.empty()) {
             SDL_PushGPUFragmentUniformData(
                 command,
                 0,
@@ -4541,7 +4557,7 @@ void record_post_process_pass(
             &pass_target,
             1,
             nullptr);
-    SDL_BindGPUGraphicsPipeline(post_pass, gpu.program->pipeline);
+    SDL_BindGPUGraphicsPipeline(post_pass, program.pipeline);
     if (pass.has_viewport) {
         const PixelViewport rectangle =
             upstream::resolve_post_process_viewport(

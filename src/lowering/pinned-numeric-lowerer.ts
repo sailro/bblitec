@@ -224,6 +224,12 @@ export class PinnedNumericLowerer {
         this.callerBindings = new Set(scope.bindings.keys());
     }
 
+    /** Module-scope constants resolved so far, undefined while resolving. */
+    private readonly moduleConstants = new Map<
+        string,
+        PinnedBinding | undefined
+    >();
+
     private fail(node: ts.Node, what: string): never {
         throw new Error(
             `Unsupported pinned ${what}: ${node.getText(this.file)}.`,
@@ -1152,6 +1158,54 @@ export class PinnedNumericLowerer {
         return current;
     }
 
+    /**
+     * A module-scope `const` of the file being lowered, as its own value.
+     *
+     * `pinned-shader-text.ts` states the rule this follows: a name the
+     * module DECLARES is the pin's own text and is read straight off that
+     * declaration, and only a name it does not declare — an import, or
+     * something the caller owns — has to be supplied through `bindings`. So
+     * an unbound identifier resolves here before it fails, which is what
+     * lets a pinned body reach its own constants (`extract-highlights.ts`
+     * raises its threshold through a module-scope `TO_GAMMA_SPACE`) without
+     * every caller pre-binding them.
+     *
+     * The initializer is LOWERED rather than folded, so the arithmetic
+     * stays the pin's; one this translator cannot lower fails by the name
+     * that reads it, naming the constant rather than the reader.
+     */
+    private moduleConstant(name: string): PinnedBinding | undefined {
+        const cached = this.moduleConstants.get(name);
+        if (cached !== undefined) return cached;
+        let initializer: ts.Expression | undefined;
+        for (const statement of this.file.statements) {
+            if (
+                !ts.isVariableStatement(statement) ||
+                (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+            ) {
+                continue;
+            }
+            for (const declaration of statement.declarationList.declarations) {
+                if (
+                    ts.isIdentifier(declaration.name) &&
+                    declaration.name.text === name
+                ) {
+                    initializer = declaration.initializer;
+                }
+            }
+        }
+        if (!initializer) return undefined;
+        // A binding under its own name first, so a constant that names
+        // itself recurses no further than one step and fails there.
+        this.moduleConstants.set(name, undefined);
+        const binding: PinnedBinding = {
+            cpp: `(${this.expression(initializer)})`,
+            type: "scalar",
+        };
+        this.moduleConstants.set(name, binding);
+        return binding;
+    }
+
     public expression(expression: ts.Expression): string {
         const node = this.unwrap(expression);
         if (ts.isNumericLiteral(node)) {
@@ -1161,7 +1215,8 @@ export class PinnedNumericLowerer {
             if (node.text === "Infinity") {
                 return "std::numeric_limits<double>::infinity()";
             }
-            const binding = this.scope.bindings.get(node.text);
+            const binding = this.scope.bindings.get(node.text) ??
+                this.moduleConstant(node.text);
             if (!binding) this.fail(node, "identifier");
             // A view is a pointer; naming it bare would be an address.
             return binding.cpp;
