@@ -327,6 +327,12 @@ correct where an in-place row swap is impossible. `loadBasisTexture2D` sets
 it and `loadKtxTexture2D` does not ([fidelity](fidelity.md#shader-contract)
 carries the contract).
 
+Neither loader's sampler options are lowered, because the reached calls pass
+none. A `loadKtxTexture2D` whose suffixes are not an array literal fails at
+generation, as does a KTX file whose `glInternalFormat` is outside the pin's
+table. KTX2 — the container `KHR_texture_basisu` redirects a glTF texture to —
+needs the pin's second decoder and is unreached.
+
 ### Environment compilation
 
 Three environment routes exist and they do not split the same way:
@@ -513,6 +519,21 @@ bit-exact on scenes where SDL_GPU carries DXC-versus-browser rounding. The
 identity of that compiler is measurable: a Dawn built without
 `DAWN_USE_BUILT_DXC` falls back to FXC and carries a systemic one-LSB error on
 lit surfaces, which DXC does not.
+
+**What a custom shader variant may reach.** The supported WGSL subset plus
+the `world`, `view`, `projection`, `viewProjection` and `worldViewProjection`
+system uniforms, which head a stage's block in declaration order — `view` and
+`projection` are the two factors of the product the pass already built,
+carried beside it so the three cannot come from two cameras. The pin's other
+four (`worldView`, `cameraPosition`, `screenSize`, `alphaCutoff`),
+matrix-valued custom uniforms, and a stage reading both a system and a custom
+uniform all refuse. A sampler is named by a string and binds a 2D float
+texture from `loadTexture2D` in the fragment stage: a typed
+`ShaderSamplerDecl`, a depth or comparison sampler, a `2d-array` view, a
+sampler the vertex stage reads (SDL_GPU gives a vertex texture its own
+register space), a fifth sampler (the fifth pair of the shared mesh texture
+group is the reflection cube), a texture from any other loader, and storage
+buffers each fail by name.
 
 ## Run-time feature sets
 
@@ -731,38 +752,33 @@ carries only what a UV set cannot express: the dedicated occlusion pair a
 TEXCOORD_1 occlusion binds, and the second ORM sample the orm-unpack split
 takes at occlusion's own transform.
 
-A Standard material's `diffuseTexture` also takes a colour render target,
-which is how one pass displays another's output: the pin hands that
-attachment back carrying `invertY: true`, so the slot samples V-flipped
-through the material's UV block — the flip contract, and why it lives there
-rather than at upload, is in [fidelity](fidelity.md#shader-contract).
-A `createTexture2DFromPixels` texture is the second source the slot takes:
-upstream has one `Texture2D` whatever built it, so the record copies the
-texels, the sampler and the texture-object properties across, and the
-already-decoded arm of the shared upload reads them straight through. A
-loaded image — an ordinary one, a KTX container or a transcoded Basis file —
-is the third, and travels whole for the same reason: the sampler, the upload
-flip and the texture-object `invertY` the UV block reads are the texture's
-rather than the slot's. `setStandardEmissiveTexture` takes an image too, and
-the composed variant follows: only a render target carries the pin's
-`_sampleType === "depth"`, which is what selects the extension's
-unfilterable-float binding. Three sources still refuse by name with a source
-location: a depth-only render target is the wrong *aspect*, because the pin
-gives that arm the opposite flip and a different sampler; a geometry task's
-attachment is the wrong *source*, owned by a pass rather than by the scene;
-and an image whose own `srgb` option is set is the wrong *encoding*, since
-the slot's is the material family's.
+A Standard `diffuseTexture` takes three sources, because upstream has one
+`Texture2D` whatever built it. A colour render target is how one pass
+displays another's output: the pin hands the attachment back carrying
+`invertY: true`, so the slot samples V-flipped through the material's UV
+block (the flip contract is in [fidelity](fidelity.md#shader-contract)). A
+`createTexture2DFromPixels` texture copies its texels, sampler and
+texture-object properties across, and the already-decoded arm of the shared
+upload reads them through. A loaded image — ordinary, KTX or transcoded Basis
+— travels whole, because the sampler, the upload flip and the texture-object
+`invertY` the UV block reads belong to the texture, not the slot.
+`setStandardEmissiveTexture` takes an image too, and the composed variant
+follows: only a render target carries the pin's `_sampleType === "depth"`,
+which selects the extension's unfilterable-float binding. Three sources
+refuse by name with a source location: a depth-only render target (wrong
+*aspect* — that arm takes the opposite flip and a different sampler), a
+geometry task's attachment (wrong *source*, owned by a pass), and an image
+setting its own `srgb` option (wrong *encoding*, which is the family's).
 
 `enableMaterialUvTransform(material)` marks a hand-built Standard material
-for independent per-texture transforms, which is the pin's own opt-in for its
-ninth Standard extension. The mark is the whole native contract: it is what
-`stdUvTransformExt._meshFeatures` reads back, so it joins the composed
-variant key, and the extension's own uniform block — one 2x2 matrix plus a
-translation per texture channel, in the pin's fixed diffuse/emissive/bump/
-specular/ambient/lightmap/opacity order — is filled by that module's own
-writer over the `uScale`, `vScale`, `uOffset`, `vOffset`, `uAng` and
-`invertY` the scene wrote on each texture. A material nothing marks composes
-exactly what it always did.
+for independent per-texture transforms — the pin's opt-in for its ninth
+Standard extension. The mark is the whole native contract: it is what
+`stdUvTransformExt._meshFeatures` reads back, so it joins the variant key,
+and the extension's uniform block (a 2x2 matrix plus translation per channel,
+in the pin's fixed diffuse/emissive/bump/specular/ambient/lightmap/opacity
+order) is filled by that module's own writer over the `uScale`, `vScale`,
+`uOffset`, `vOffset`, `uAng` and `invertY` the scene wrote. A material
+nothing marks composes exactly what it did before.
 
 A shader material also takes the two remaining halves of its own program.
 Its `samplers` become the pin's own `<name>` / `<name>Sampler` pair, every
@@ -1001,25 +1017,23 @@ per-sprite instance writes, and the straight-alpha blend, on both GPU
 backends from one generated WGSL pair. The pinned renderer split and
 instance layout are in [fidelity](fidelity.md#shader-contract).
 
-A sprite already added can be edited, and a layer can be emptied.
-`updateSprite2DIndex` rewrites one slot from a `Partial<Sprite2DProps>`
-where every field the caller omits keeps the value already there, and
-`clearSprite2DLayer` drops a layer's count and its size shadow without
-touching the instance floats. Both go through the pin's own single
-writer, whose two arms — add and update — are the only place the
-preserve rules live; which quantity each rule reads back, and why the
-size cannot come from the instance data, is in
-[fidelity](fidelity.md#shader-contract).
+A sprite already added can be edited and a layer emptied.
+`updateSprite2DIndex` rewrites one slot from a `Partial<Sprite2DProps>`,
+every omitted field keeping the value already there, and
+`clearSprite2DLayer` drops a layer's count and size shadow without touching
+the instance floats. Both go through the pin's single writer, whose add and
+update arms are the only place the preserve rules live
+([fidelity](fidelity.md#shader-contract) says which quantity each reads back
+and why the size cannot come from the instance data).
 
 A renderer's layer list is live too: `addSpriteRendererLayer`,
-`removeSpriteRendererLayer` and `disposeSpriteRenderer` each move it
-after the renderer exists. Both backends keep one GPU record per layer,
-keyed by that layer as the pin keys its own, so a moved list adds and
-drops records rather than rebuilding the set — a version compare says
-when to walk it, the same shape a scene whose mesh set changed takes.
-Disposing also unregisters, which is what stops the frame loop walking
-that renderer and moves the frame's clear to whichever context is now
-first.
+`removeSpriteRendererLayer` and `disposeSpriteRenderer` each move it after
+the renderer exists. Both backends keep one GPU record per layer, keyed by
+that layer as the pin keys its own, so a moved list adds and drops records
+rather than rebuilding the set, with a version compare saying when to walk it
+— the shape a scene whose mesh set changed takes. Disposing also
+unregisters, stopping the frame loop from walking that renderer and moving
+the frame's clear to whichever context is now first.
 
 A layer opts into per-sprite UV scroll by setting an offset: the first
 `setSprite2DUvOffset` widens that layer's instance layout in place, adds the
@@ -1030,12 +1044,12 @@ keeps the narrow layout. The atlas address modes a tiling scroll needs come
 through `textureOptions`, which the pin spreads over the loader's own
 defaults.
 
-Either family may draw with a custom fragment shader. The caller supplies a
-WGSL body; the pin's own composer wraps it in the stage the engine owns, and
-generation folds that composer rather than assembling a second one, so the
-program is the pin's around the caller's text. Building the descriptor is the
-opt-in — upstream it registers the hook the always-loaded path reaches the
-feature through — and a layer or system without one draws the stock shader.
+Either family may draw with a custom fragment shader: the caller supplies a
+WGSL body and the pin's own composer wraps it in the stage the engine owns,
+folded rather than reassembled, so the program is the pin's around the
+caller's text. Building the descriptor is the opt-in — upstream it registers
+the hook the always-loaded path reaches the feature through — and a layer or
+system without one draws the stock shader.
 The `fx` block a body may read (`fx.time`, and the `fx.params` vec4 the
 per-family setter writes) binds beside the family's own block, declared
 whether or not the body names it, as upstream declares it. What the body does
@@ -1145,50 +1159,47 @@ exponential-shadow-map directional light, and a single receiver may sample
 one of each.
 
 `createPcfSpotlightShadowGenerator(engine, light, cfg)` owns the GPU state —
-a `depth32float` map at `mapSize`, a comparison sampler under the pin's own
+a `depth32float` map at `mapSize`, a comparison sampler under the pin's
 `less`, and the receiver block — while the casters are a *task* input
-(`setShadowTaskCasterMeshes`), which is where upstream keeps them too.
-`registerSceneWithShadowSupport` is what installs the scheduling: it is
-`registerScene` plus the scene-owned shadow task, unshifted ahead of the
-scene's own render task, and the split exists upstream so an ordinary bundle
-retains no shadow code at all. This port keeps it as a different generated
-call for the same reason.
+(`setShadowTaskCasterMeshes`), where upstream keeps them.
+`registerSceneWithShadowSupport` installs the scheduling: `registerScene`
+plus the scene-owned shadow task, unshifted ahead of the scene's render task.
+The split exists upstream so an ordinary bundle retains no shadow code, and
+this port keeps it as a separate generated call for that reason.
 
 **Compile time: which fragment a receiver composes.** `mesh.receiveShadows`
-turns into the pin's `MSH_RECEIVE_SHADOWS`, which is a composition key rather
-than a uniform lane: the receiving mesh's variant carries the shadow
-fragment's per-light varyings, bindings and sampling code, named after each
-light's index in `scene.lights`. So the scene's shadow-light slots are
-composition input, and a light added at a different position composes a
-different fragment. The caster draws through its own material's no-colour view
-— the same arm a scene-code `createStandardNoColorMaterialView` reaches — with
-the receive bit dropped, exactly as `rebuildSingle` computes `receiveShadows`
-as `!shadowOutput && ...`.
+becomes the pin's `MSH_RECEIVE_SHADOWS`, a composition key rather than a
+uniform lane: the variant carries the shadow fragment's per-light varyings,
+bindings and sampling code, named after each light's index in `scene.lights`.
+The scene's shadow-light slots are therefore composition input, and a light
+added at a different position composes a different fragment. The caster draws
+through its material's no-colour view — the arm a scene-code
+`createStandardNoColorMaterialView` reaches — with the receive bit dropped,
+as `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`.
 
 **Both material families receive.** `createStdShadowFragment` and
-`createPbrShadowFragment` are two wrappers around one pinned core, differing
-in which fragment slot the sampling code lands in, so this port composes them
-through one path and reflects one shape of group-2 row for either. The PBR
-receiver carries one more of the pin's own rules with it: `rebuildSingle`
-resolves `lightCount === 1 && !receiveShadows ? 1 : 2`, so a receiving PBR
-mesh never lands on the single-light arm — its shadow factor is applied inside
-the multi-light loop — and generation composes no such pair.
+`createPbrShadowFragment` wrap one pinned core, differing only in which
+fragment slot the sampling code lands in, so this port composes them through
+one path and reflects one shape of group-2 row. The PBR receiver carries one
+further pinned rule: `rebuildSingle` resolves
+`lightCount === 1 && !receiveShadows ? 1 : 2`, so a receiving PBR mesh never
+lands on the single-light arm — its shadow factor applies inside the
+multi-light loop — and generation composes no such pair.
 
 **The ESM directional generator.**
 `createEsmDirectionalShadowGenerator(engine, light, cfg)` differs from the
-spot generator in what it stores rather than in how it is scheduled. A
-directional light has no position to project from, so its light-space volume
-is fitted to the CASTERS: `computeDirectionalLightMatrix` folds each caster's
-eight world-space AABB corners into light space and sizes an orthographic
-projection to that box, refitted every frame because the casters move. Its
-caster pass then writes an *exponential* depth into an `rgba16float` colour
-attachment — through `createStandardEsmShadowMaterialView`, a different view
-from the depth-only one a PCF caster takes — and the map is blurred in two
-passes through a separable Gaussian whose tap table the pin FOLDS from
-`blurKernel`: `createShadowBlurFragmentWGSL(64)` emits 33 linear-sampled taps
-with their own offsets and weights, so the kernel decides shader text. What
-the receiver samples is the second blur half, which is what the pinned
-factory sets `sg._depthTexture` to.
+spot generator in what it stores, not in how it is scheduled. A directional
+light has no position to project from, so its light-space volume is fitted to
+the CASTERS: `computeDirectionalLightMatrix` folds each caster's eight
+world-space AABB corners into light space and sizes an orthographic
+projection to that box, refitted every frame. Its caster pass writes an
+*exponential* depth into an `rgba16float` colour attachment through
+`createStandardEsmShadowMaterialView` — not the depth-only view a PCF caster
+takes — and the map is blurred in two separable Gaussian passes whose tap
+table the pin FOLDS from `blurKernel`: `createShadowBlurFragmentWGSL(64)`
+emits 33 linear-sampled taps with their offsets and weights, so the kernel
+decides shader text. The receiver samples the second blur half, which is what
+the pinned factory sets `sg._depthTexture` to.
 
 Everything that generator builds is read by running the pinned factory
 against a device that records what it was asked for — four textures with

@@ -98,8 +98,10 @@ them reported a moved cell, and the `stability` pair said why — scene 14's is
 one channel-byte on one pixel, a peak run-to-run MAD of 0.000002. Scene 126's
 Dawn side is the widest of them: its foreground alternates between 0.001
 and 0.005 across consecutive runs, which is what its threshold has to
-clear. That pair of `stability`
-runs is the entry fee, because a whitelist row excuses those cells
+clear. A whitelist row is per scene *and* per backend: a cross-backend cell moves
+when either side does, so one wobbling backend excuses it, while that scene's
+own `goldenVersusSdlGpu` cells stay compared regardless. That pair of
+`stability` runs is the entry fee, because the row excuses those cells
 permanently: scene 120's Dawn wobble spans 0.002 against a 0.004 foreground,
 so a regression smaller than that would hide behind it.
 
