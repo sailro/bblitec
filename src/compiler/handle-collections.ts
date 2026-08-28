@@ -39,6 +39,7 @@ import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import type { DataType } from "./data-types.js";
 import { requireGroupSource } from "./intrinsics/animation.js";
 import {
+    isHandleCollectionProperty,
     nativeLocation,
     readHandleCollection,
 } from "./properties.js";
@@ -274,6 +275,13 @@ export class HandleCollections {
         const unwrapped =
             this.unwrapCollectionExpression(expression);
         if (!ts.isPropertyAccessExpression(unwrapped)) {
+            return undefined;
+        }
+        // Do not compile an arbitrary property's owner merely to discover
+        // that the collection table never names the property. Besides being
+        // needless work, that can claim an unrelated nested access before
+        // its own lowering surface sees the complete path.
+        if (!isHandleCollectionProperty(unwrapped.name.text)) {
             return undefined;
         }
         const owner = this.context.compileValue(
@@ -685,11 +693,11 @@ export class HandleCollections {
         expression: ts.Expression,
     ): readonly Value[] | undefined {
         const unwrapped = this.context.unwrap(expression);
-        if (!ts.isIdentifier(unwrapped)) {
-            return undefined;
-        }
-        const value =
-            this.context.lookupOptional(unwrapped);
+        const value = ts.isIdentifier(unwrapped)
+            ? this.context.lookupOptional(unwrapped)
+            : ts.isCallExpression(unwrapped)
+              ? this.context.compileValue(unwrapped)
+              : undefined;
         return value?.kind === "tuple"
             ? value.tupleElements
             : undefined;

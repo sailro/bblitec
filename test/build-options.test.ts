@@ -150,3 +150,13 @@ test("shader compilation gates non-target formats", () => {
     assert.doesNotMatch(script, /Copy-Item \$cached(?:Dxil|Spirv)/);
     assert.match(script, /Copy-IfDifferent \$cachedDxil/);
 });
+
+test("native shader snapshots track additions and removals", () => {
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    assert.match(cmake, /list\(SORT BBLITE_GENERATED_SHADER_FILES\)/);
+    assert.match(cmake, /bblite-generated-shaders\.manifest/);
+    assert.match(
+        cmake,
+        /DEPENDS\s+\$\{BBLITE_GENERATED_SHADER_FILES\}\s+"\$\{BBLITE_GENERATED_SHADER_MANIFEST\}"/,
+    );
+});

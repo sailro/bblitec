@@ -12,6 +12,18 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
 
+const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
+    "audio-engine",
+    "audio-buffer",
+    "audio-context",
+    "audio-node",
+    "audio-param",
+    "data",
+    "static-fetch-response",
+    "platform-keyboard-event",
+    "platform-mouse-event",
+]);
+
 export interface BrowserErasureContext {
     unwrap(expression: ts.Expression): ts.Expression;
     canvasSizeProperty(
@@ -20,9 +32,11 @@ export interface BrowserErasureContext {
     lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined;
+    resolveThisField(name: string): Value | undefined;
     isDefaultLibraryIdentifier(
         identifier: ts.Identifier,
     ): boolean;
+    isBrowserDomValue(expression: ts.Expression): boolean;
     isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
     /** Runtime visibility callback parameter, while compiling its body. */
     platformDocumentHidden(): string | undefined;
@@ -139,8 +153,18 @@ export class BrowserErasure {
             // browser value does.
             return (
                 bound === "browser" ||
-                bound === "node-particle-2d-binding"
+                bound === "node-particle-2d-binding" ||
+                (bound === undefined &&
+                    this.context.isBrowserDomValue(unwrapped))
             );
+        }
+        if (
+            (ts.isPropertyAccessExpression(unwrapped) ||
+                ts.isElementAccessExpression(unwrapped)) &&
+            !this.isNativeDomBridge(unwrapped) &&
+            this.context.isBrowserDomValue(unwrapped)
+        ) {
+            return true;
         }
         if (
             ts.isNewExpression(unwrapped) &&
@@ -252,6 +276,45 @@ export class BrowserErasure {
             return false;
         }
         return false;
+    }
+
+    private isNativeDomBridge(
+        expression: ts.Expression,
+    ): boolean {
+        const owner = (node: ts.Expression): Value | undefined => {
+            const unwrapped = this.context.unwrap(node);
+            if (ts.isIdentifier(unwrapped)) {
+                return this.context.lookupOptional(unwrapped);
+            }
+            if (
+                ts.isPropertyAccessExpression(unwrapped) &&
+                unwrapped.expression.kind ===
+                    ts.SyntaxKind.ThisKeyword
+            ) {
+                return this.context.resolveThisField(
+                    unwrapped.name.text,
+                );
+            }
+            if (ts.isPropertyAccessExpression(unwrapped)) {
+                return owner(unwrapped.expression);
+            }
+            if (
+                ts.isCallExpression(unwrapped) &&
+                ts.isPropertyAccessExpression(
+                    unwrapped.expression,
+                )
+            ) {
+                return owner(
+                    unwrapped.expression.expression,
+                );
+            }
+            return undefined;
+        };
+        const value = owner(expression);
+        return (
+            value !== undefined &&
+            NATIVE_DOM_BRIDGE_KINDS.has(value.kind)
+        );
     }
 
     private isPlatformTimeCall(

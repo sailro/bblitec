@@ -1,8 +1,9 @@
 #pragma once
 
+#include <bblite/js_data.hpp>
+
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -17,69 +18,9 @@
 
 namespace bbl::ts {
 
-class ArrayBuffer {
-  public:
-    explicit ArrayBuffer(std::vector<std::uint8_t> bytes) : bytes_(std::move(bytes)) {}
-
-    [[nodiscard]] std::size_t byte_length() const { return bytes_.size(); }
-    [[nodiscard]] const std::uint8_t* data() const { return bytes_.data(); }
-    [[nodiscard]] const std::vector<std::uint8_t>& bytes() const { return bytes_; }
-
-  private:
-    std::vector<std::uint8_t> bytes_;
-};
-
-template <typename T>
-class TypedArray {
-  public:
-    TypedArray(const ArrayBuffer& buffer, std::size_t byte_offset, std::size_t length) : values_(length) {
-        const std::size_t byte_length = length * sizeof(T);
-        if (byte_offset + byte_length > buffer.byte_length()) {
-            throw std::runtime_error("TypedArray view exceeds ArrayBuffer.");
-        }
-        std::memcpy(values_.data(), buffer.data() + byte_offset, byte_length);
-    }
-
-    [[nodiscard]] std::size_t length() const { return values_.size(); }
-    [[nodiscard]] const T* data() const { return values_.data(); }
-
-  private:
-    std::vector<T> values_;
-};
-
-using Uint8Array = TypedArray<std::uint8_t>;
-
-class DataView {
-  public:
-    explicit DataView(const ArrayBuffer& buffer, std::size_t byte_offset = 0, std::size_t byte_length = 0)
-        : buffer_(&buffer),
-          byte_offset_(byte_offset),
-          byte_length_(byte_length == 0 ? buffer.byte_length() - byte_offset : byte_length) {
-        if (byte_offset_ + byte_length_ > buffer.byte_length()) {
-            throw std::runtime_error("DataView exceeds ArrayBuffer.");
-        }
-    }
-
-    [[nodiscard]] std::uint32_t get_uint32(std::size_t offset, bool little_endian) const {
-        if (offset + 4 > byte_length_) throw std::runtime_error("DataView read exceeds buffer.");
-        const std::uint8_t* bytes = buffer_->data() + byte_offset_ + offset;
-        if (little_endian) {
-            return static_cast<std::uint32_t>(bytes[0]) |
-                (static_cast<std::uint32_t>(bytes[1]) << 8) |
-                (static_cast<std::uint32_t>(bytes[2]) << 16) |
-                (static_cast<std::uint32_t>(bytes[3]) << 24);
-        }
-        return (static_cast<std::uint32_t>(bytes[0]) << 24) |
-            (static_cast<std::uint32_t>(bytes[1]) << 16) |
-            (static_cast<std::uint32_t>(bytes[2]) << 8) |
-            static_cast<std::uint32_t>(bytes[3]);
-    }
-
-  private:
-    const ArrayBuffer* buffer_;
-    std::size_t byte_offset_;
-    std::size_t byte_length_;
-};
+using ArrayBuffer = js::ArrayBuffer;
+using Uint8Array = js::U8Array;
+using DataView = js::DataView;
 
 class TextDecoder {
   public:

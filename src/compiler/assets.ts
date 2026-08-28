@@ -8,6 +8,7 @@
 // through their contexts.
 import ts from "typescript";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import {
     findRepositoryRoot,
@@ -53,7 +54,10 @@ export function registerAsset(
     kind: CompileAsset["kind"],
     faceSize?: number,
 ): CompileAsset {
-    source = resolveBundledAsset(source);
+    source = resolveBundledAsset(
+        source,
+        context.options.fileName,
+    );
     const key = `${kind}:${source}:${faceSize ?? ""}`;
     const existing = context.assets.get(key);
     if (existing) {
@@ -265,25 +269,37 @@ export function registerSpriteAtlasAsset(
  * they build sits one ulp from a rounding boundary in three places, so the
  * bytes the golden's own engine produced are the ones that ship.
  */
-export function registerPixelsAsset(
+/**
+ * Returns a bakeable module-produced pixel buffer when the expression has
+ * that shape. Runtime Uint8Array expressions deliberately return undefined
+ * so the intrinsic can lower their bytes directly instead of manufacturing
+ * an asset.
+ */
+export function probePixelsAsset(
     context: AssetRegistryContext,
     expression: ts.Expression,
-): { cpp: string; source: string } {
-    const registered = registerExecutedModuleAsset(
+): { cpp: string; source: string } | undefined {
+    const unwrapped = context.unwrap(expression);
+    // A module call with arguments is a runtime producer, not the
+    // zero-argument generation hook. Declining it here lets the intrinsic's
+    // native Uint8Array path compile the call normally.
+    if (
+        ts.isCallExpression(unwrapped) &&
+        unwrapped.arguments.length !== 0
+    ) {
+        return undefined;
+    }
+    return registerExecutedModuleAsset(
         context,
         expression,
         "pixels",
         "pixel buffer",
     );
-    if (!registered) {
-        context.fail(
-            expression,
-            "Texture pixels must come from a module function this compiler can run at generation.",
-        );
-    }
-    return registered;
 }
-export function resolveBundledAsset(source: string): string {
+export function resolveBundledAsset(
+    source: string,
+    entryFileName?: string,
+): string {
     if (source === "/brdf-lut.png") {
         const pin = readUpstreamPin();
         return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
@@ -295,6 +311,18 @@ export function resolveBundledAsset(source: string): string {
             `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
             "/lab/public/textures/environment.env"
         );
+    }
+    if (source.startsWith("/") && entryFileName) {
+        const entryDirectory = dirname(resolve(entryFileName));
+        const local = resolve(
+            entryDirectory,
+            `.${source}`,
+        );
+        if (existsSync(local)) {
+            return relative(entryDirectory, local)
+                .split(sep)
+                .join("/");
+        }
     }
     if (source.startsWith("/")) {
         // Root-relative asset paths always mean the pinned lab/public

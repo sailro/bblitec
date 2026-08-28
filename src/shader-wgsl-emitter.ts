@@ -20,6 +20,8 @@ function emitExpression(expression: ShaderExpression): string {
             return `${expression.type}(${expression.arguments
                 .map(emitExpression)
                 .join(", ")})`;
+        case "member":
+            return `(${emitExpression(expression.expression)}).${expression.member}`;
         case "number":
             return expression.value;
         case "path":
@@ -158,6 +160,19 @@ export function emitNativeWgslProgram(
               "};",
           ].join("\n")
         : undefined;
+    if (module.rawSource !== undefined) {
+        return [
+            "// Native-specialized WGSL generated from the bblitec shader surface.",
+            emitUniformBlock(block),
+            emitSamplerBindings(program, stage),
+            defineLines.length > 0 ? defineLines.trimEnd() : undefined,
+            vertexInput,
+            module.rawSource.trim(),
+            "",
+        ]
+            .filter((value): value is string => value !== undefined)
+            .join("\n");
+    }
     const moduleStructs = module.structs.map((struct) =>
         [
             `struct ${struct.name} {`,

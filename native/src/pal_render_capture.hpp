@@ -956,11 +956,28 @@ inline void write_draw_uniforms(
         }
         case upstream::RenderMaterialKind::shader: {
             // The custom-shader path packs its block from the variant's
-            // reflected gathers, so it has no named struct to parse; the
-            // floats are reported in block order the same way.
-            if (draw.item.material.value < engine.materials.size()) {
+            // reflected gathers, so it has no named struct to parse. Mirror
+            // the real draw path's per-mesh world products before packing:
+            // passing only the frame factors made capture fail for any
+            // shader that declared worldView even though rendering itself
+            // supplied it correctly.
+            if (
+                draw.item.material.value < engine.materials.size() &&
+                draw.item.mesh.value < engine.meshes.size()) {
                 const MaterialRecord& material =
                     engine.materials[draw.item.material.value];
+                const std::array<float, 16> shader_world =
+                    shader_draw_world(engine.meshes[draw.item.mesh.value]);
+                const std::array<float, 16> shader_wvp =
+                    shader_world_view_projection(
+                        pass_matrices.view_projection, shader_world);
+                const auto shader_wv = shader_world_view(
+                    pass_matrices.view, shader_world);
+                ShaderPassMatrices shader_pass_matrices = pass_matrices;
+                shader_pass_matrices.world = &shader_world;
+                shader_pass_matrices.world_view =
+                    shader_wv ? &*shader_wv : nullptr;
+                shader_pass_matrices.world_view_projection = &shader_wvp;
                 const upstream::ShaderVariantInfo& info =
                     upstream::shader_variant_info(draw.item.shader_variant);
                 const auto emit_block =
@@ -970,7 +987,7 @@ inline void write_draw_uniforms(
                         if (!block.present) return;
                         const std::vector<float> floats =
                             shader_stage_block_floats(
-                                block, pass_matrices, material);
+                                block, shader_pass_matrices, material);
                         write_float_block(
                             json,
                             stage,
@@ -1312,12 +1329,8 @@ inline void write_billboard_draw_list(
  * with the exact sixteen-float layer block its pass pushes
  * (`build_sprite_layer_ubo`) and the six-index, count-instance draw shape.
  *
- * Reachability note: the scene frame loops currently refuse a sprite
- * renderer registered beside a scene (`reject_uncomposed_sprites`), so
- * this section is empty in every capture a scene writes today. Its real
- * callers are the sprite-only loops (`pal_*_sprite.cpp`), which write it
- * through `write_standalone_render_capture` below; a future composition
- * pairs against the same writer.
+ * Both scene backends and the sprite-only loops use this writer, so capture
+ * describes the same ordered overlay contexts that the submitted frame draws.
  *
  * The custom-shader fx block is skipped for the billboard writer's
  * reason: its time lane is frame-clock state; the params ride the layer.

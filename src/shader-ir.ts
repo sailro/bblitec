@@ -28,6 +28,7 @@ export type ShaderExpression =
     | { kind: "binary"; operator: "+" | "-" | "*" | "/" | "<"; left: ShaderExpression; right: ShaderExpression }
     | { kind: "call"; name: string; arguments: ShaderExpression[] }
     | { kind: "construct"; type: ShaderType; arguments: ShaderExpression[] }
+    | { kind: "member"; expression: ShaderExpression; member: string }
     | { kind: "number"; value: string }
     | { kind: "path"; parts: string[] };
 
@@ -56,6 +57,8 @@ export interface ShaderEntryPoint {
 export interface ShaderModule {
     structs: ShaderStruct[];
     entryPoint: ShaderEntryPoint;
+    /** Source retained verbatim when it uses WGSL beyond the typed subset. */
+    rawSource?: string;
 }
 
 export interface ShaderUniformMemberReflection {
@@ -347,6 +350,13 @@ class WgslSubsetParser {
 
     private parseExpression(minimumPrecedence = 0): ShaderExpression {
         let expression = this.parsePrimaryExpression();
+        while (this.accept(".")) {
+            expression = {
+                kind: "member",
+                expression,
+                member: this.expectIdentifier(),
+            };
+        }
         const precedences: Record<string, number | undefined> = {
             "<": 1,
             "+": 2,
@@ -475,6 +485,225 @@ class WgslSubsetParser {
     }
 }
 
+function validateBalancedWgsl(source: string): void {
+    const stack: string[] = [];
+    const pairs: Record<string, string> = {
+        "(": ")",
+        "{": "}",
+        "[": "]",
+    };
+    let index = 0;
+    while (index < source.length) {
+        if (source.startsWith("//", index)) {
+            const end = source.indexOf("\n", index + 2);
+            index = end < 0 ? source.length : end + 1;
+            continue;
+        }
+        const character = source[index]!;
+        if (pairs[character]) {
+            stack.push(pairs[character]!);
+        } else if ([")", "}", "]"].includes(character)) {
+            const expected = stack.pop();
+            if (expected !== character) {
+                throw new Error(
+                    `Unbalanced WGSL delimiter '${character}' at offset ${index}.`,
+                );
+            }
+        }
+        index += 1;
+    }
+    if (stack.length > 0) {
+        throw new Error(
+            `Unclosed WGSL delimiter; expected '${stack.at(-1)}'.`,
+        );
+    }
+}
+
+/** Removes comments and normalizes token spacing for raw-module identity. */
+function canonicalRawWgsl(source: string): string {
+    const tokens: string[] = [];
+    let index = 0;
+    while (index < source.length) {
+        if (/\s/.test(source[index]!)) {
+            index += 1;
+            continue;
+        }
+        if (source.startsWith("//", index)) {
+            const end = source.indexOf("\n", index + 2);
+            index = end < 0 ? source.length : end + 1;
+            continue;
+        }
+        if (source.startsWith("/*", index)) {
+            let depth = 1;
+            index += 2;
+            while (index < source.length && depth > 0) {
+                if (source.startsWith("/*", index)) {
+                    depth += 1;
+                    index += 2;
+                } else if (source.startsWith("*/", index)) {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            if (depth > 0) {
+                throw new Error("Unclosed WGSL block comment.");
+            }
+            continue;
+        }
+        const identifier = source
+            .slice(index)
+            .match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+        if (identifier) {
+            tokens.push(identifier);
+            index += identifier.length;
+            continue;
+        }
+        const number = source
+            .slice(index)
+            .match(
+                /^(?:0[xX][0-9A-Fa-f]+[iu]?|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[fhiu]?)/,
+            )?.[0];
+        if (number) {
+            tokens.push(number);
+            index += number.length;
+            continue;
+        }
+        const operator = [
+            ">>=",
+            "<<=",
+            "->",
+            "==",
+            "!=",
+            "<=",
+            ">=",
+            "&&",
+            "||",
+            "+=",
+            "-=",
+            "*=",
+            "/=",
+            "%=",
+            "&=",
+            "|=",
+            "^=",
+            ">>",
+            "<<",
+        ].find((candidate) =>
+            source.startsWith(candidate, index),
+        );
+        if (operator) {
+            tokens.push(operator);
+            index += operator.length;
+            continue;
+        }
+        tokens.push(source[index]!);
+        index += 1;
+    }
+    return tokens
+        .join(" ")
+        .replace(/\s+([,;:()\[\]{}<>.])/g, "$1")
+        .replace(/([@({\[<.])\s+/g, "$1")
+        .trim();
+}
+
+function parseRawModule(
+    source: string,
+    stage: ShaderStage,
+): ShaderModule {
+    const canonicalSource = canonicalRawWgsl(source);
+    validateBalancedWgsl(canonicalSource);
+    const entry = new RegExp(
+        `@${stage}\\s+fn\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*` +
+            `\\(([^)]*)\\)\\s*->\\s*` +
+            `(?:@location\\((\\d+)\\)\\s*)?` +
+            `([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\\s*\\{`,
+    ).exec(canonicalSource);
+    if (!entry) {
+        throw new Error(
+            `Expected one @${stage} WGSL entry point with an explicit return type.`,
+        );
+    }
+    const parameters: ShaderParameter[] = [];
+    const parameterText = entry[2]!.trim();
+    if (parameterText.length > 0) {
+        for (const part of parameterText.split(",")) {
+            const match =
+                /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\s*$/.exec(
+                    part,
+                );
+            if (!match) {
+                throw new Error(
+                    `Unsupported @${stage} entry parameter '${part.trim()}'.`,
+                );
+            }
+            parameters.push({ name: match[1]!, type: match[2]! });
+        }
+    }
+    const structs: ShaderStruct[] = [];
+    const structPattern =
+        /struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([\s\S]*?)\}\s*;?/g;
+    for (const match of canonicalSource.matchAll(structPattern)) {
+        const members: ShaderStructMember[] = [];
+        const memberPattern =
+            /\s*(?:@(builtin|location)\(([^)]+)\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\s*,?/gy;
+        const body = match[2]!;
+        let offset = 0;
+        while (offset < body.length) {
+            memberPattern.lastIndex = offset;
+            const member = memberPattern.exec(body);
+            if (!member || member.index !== offset) {
+                if (/^\s*$/.test(body.slice(offset))) break;
+                throw new Error(
+                    `Unsupported shader struct member near '${body.slice(offset).trim().slice(0, 40)}'.`,
+                );
+            }
+            const type = member[4]!.replace(/\s+/g, "");
+            if (!shaderTypes.has(type as ShaderType)) {
+                throw new Error(
+                    `Unsupported WGSL shader type '${type}' in struct '${match[1]}'.`,
+                );
+            }
+            const attribute = member[1]
+                ? {
+                      kind: member[1] as "builtin" | "location",
+                      value:
+                          member[1] === "location"
+                              ? Number.parseInt(member[2]!, 10)
+                              : member[2]!,
+                  }
+                : undefined;
+            members.push({
+                name: member[3]!,
+                type: type as ShaderType,
+                ...(attribute ? { attribute } : {}),
+            });
+            offset = memberPattern.lastIndex;
+        }
+        structs.push({ name: match[1]!, members });
+    }
+    return {
+        structs,
+        entryPoint: {
+            stage,
+            name: entry[1]!,
+            parameters,
+            returnType: entry[4]!,
+            ...(entry[3]
+                ? {
+                      returnAttribute: {
+                          kind: "location" as const,
+                          value: Number.parseInt(entry[3], 10),
+                      },
+                  }
+                : {}),
+            statements: [],
+        },
+        rawSource: canonicalSource,
+    };
+}
+
 /**
  * The system uniforms this port fills, each with the C++ enumerator the
  * generated variant table names it by. Declaration order here IS the
@@ -488,6 +717,7 @@ class WgslSubsetParser {
  */
 export const shaderSystemMatrixTable = [
     { name: "world", enumerator: "world" },
+    { name: "worldView", enumerator: "world_view" },
     { name: "view", enumerator: "view" },
     { name: "projection", enumerator: "projection" },
     { name: "viewProjection", enumerator: "view_projection" },
@@ -556,6 +786,11 @@ function expressionUsesPath(
         case "construct":
             return expression.arguments.some((argument) =>
                 expressionUsesPath(argument, matches));
+        case "member":
+            return expressionUsesPath(
+                expression.expression,
+                matches,
+            );
         case "path":
             return matches(expression.parts);
         case "number":
@@ -590,6 +825,11 @@ function stageReadsUniform(
     root: string,
     member: string,
 ): boolean {
+    if (module.rawSource !== undefined) {
+        return new RegExp(
+            `\\b${root}\\s*\\.\\s*${member}\\b`,
+        ).test(module.rawSource);
+    }
     return module.entryPoint.statements.some((statement) =>
         statementUsesPath(
             statement,
@@ -608,6 +848,11 @@ function stageReadsSampler(
     module: ShaderModule,
     name: string,
 ): boolean {
+    if (module.rawSource !== undefined) {
+        return new RegExp(
+            `\\b(?:${name}|${name}Sampler)\\b`,
+        ).test(module.rawSource);
+    }
     return module.entryPoint.statements.some((statement) =>
         statementUsesPath(
             statement,
@@ -696,14 +941,31 @@ function reflectUniformBlock(
 export function lowerWgslShaderProgram(
     source: ShaderMaterialProgramSource,
 ): ShaderIrProgram {
-    const vertex = new WgslSubsetParser(
-        tokenize(source.vertexSource),
-        "vertex",
-    ).parse();
-    const fragment = new WgslSubsetParser(
-        tokenize(source.fragmentSource),
-        "fragment",
-    ).parse();
+    const complexModule = (text: string): boolean =>
+        /(^|\n)\s*(?:const\s+|fn\s+)/.test(text) ||
+        /\bfor\s*\(/.test(text);
+    const lowerModule = (
+        text: string,
+        stage: ShaderStage,
+    ): ShaderModule => {
+        try {
+            return new WgslSubsetParser(
+                tokenize(text),
+                stage,
+            ).parse();
+        } catch (error: unknown) {
+            // The raw module path carries reached WGSL constructs that the
+            // typed subset has not learned yet (helper functions, constants,
+            // and loops). Always try the typed parser first: formatting a
+            // simple entry point with `fn` at the start of a line must not
+            // change its semantic identity or make two equivalent programs
+            // compare as raw source text.
+            if (!complexModule(text)) throw error;
+            return parseRawModule(text, stage);
+        }
+    };
+    const vertex = lowerModule(source.vertexSource, "vertex");
+    const fragment = lowerModule(source.fragmentSource, "fragment");
     const attributes = source.attributes.map((name) => {
         const attribute = attributeTypes[name];
         if (!attribute) throw new Error(`Unsupported vertex attribute '${name}'.`);

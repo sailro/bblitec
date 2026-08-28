@@ -614,6 +614,18 @@ void on_pointer_down(
     engine.pointer_down_callbacks.push_back(std::move(callback));
 }
 
+void on_mouse_down(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback) {
+    engine.mouse_down_callbacks.push_back(std::move(callback));
+}
+
+void on_mouse_up(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback) {
+    engine.mouse_up_callbacks.push_back(std::move(callback));
+}
+
 void on_visibility_change(
     Engine& engine,
     std::function<void(bool)> callback) {

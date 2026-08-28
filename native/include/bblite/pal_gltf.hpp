@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/ts_runtime.hpp>
+
 #include <bblite/pal_image.hpp>
 #include <bblite/pal.hpp>
 

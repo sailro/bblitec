@@ -7,6 +7,7 @@ import type { IntrinsicCallContext } from "./context.js";
 import {
     isDataTuple,
     tupleComponents,
+    type DataTypeRegistry,
 } from "../data-types.js";
 import {
     addressModeByPin,
@@ -21,6 +22,7 @@ import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext,
         PositiveIntegerContext {
+    readonly dataTypes: DataTypeRegistry;
     requireDefaultEngine(node: ts.Node): string;
     compileVec3(
         expression: ts.Expression,
@@ -36,9 +38,9 @@ export interface SpriteIntrinsicContext
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
-    registerPixelsAsset(
+    probePixelsAsset(
         expression: ts.Expression,
-    ): { cpp: string; source: string };
+    ): { cpp: string; source: string } | undefined;
     allocateTemporaryCppName(label: string): string;
     /** One layer or system built without a custom shader, so with the stock program. */
     recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
@@ -418,6 +420,111 @@ export function compileSpriteIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "createSpriteAtlasFromFrames": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const sources = context.compileValue(call.arguments[1]!);
+            if (
+                sources.kind !== "data" ||
+                sources.dataType?.kind !== "vector" ||
+                sources.dataType.element.kind !== "struct"
+            ) {
+                context.fail(
+                    call.arguments[1]!,
+                    "createSpriteAtlasFromFrames expects an array of frame-source records.",
+                );
+            }
+            const sourceType = sources.dataType.element;
+            const arrow = context.dataTypes.isReferenceStruct(sourceType.name);
+            const source = context.allocateTemporaryCppName("atlas_source");
+            const sourceList = context.allocateTemporaryCppName("atlas_sources");
+            const normalized = context.allocateTemporaryCppName("atlas_frames");
+            const access = (name: string): string => {
+                const field = context.dataTypes.structField(
+                    sourceType.name,
+                    name,
+                    call.arguments[1]!,
+                );
+                return `${source}${arrow ? "->" : "."}${field.name}`;
+            };
+            const optionalUnsigned = (name: string, fallback: string): string => {
+                const value = access(name);
+                return `(${value} ? bbl::js::to_uint32(*${value}) : ${fallback})`;
+            };
+            const pivot = access("pivot");
+            const options = optionsRecord(
+                context,
+                call.arguments[2],
+                "createSpriteAtlasFromFrames",
+            );
+            const numberOption = (name: string, fallback: string): string => {
+                const value = property(options, name);
+                if (!value) return fallback;
+                if (value.kind !== "number") {
+                    context.fail(call.arguments[2]!, `${name} must be numeric.`);
+                }
+                return `bbl::js::to_uint32(${value.cpp})`;
+            };
+            const sampling = property(options, "sampling");
+            if (
+                sampling &&
+                sampling.staticString !== "nearest" &&
+                sampling.staticString !== "linear"
+            ) {
+                context.fail(
+                    call.arguments[2]!,
+                    'sampling must be the literal "nearest" or "linear".',
+                );
+            }
+            const srgb = property(options, "srgb");
+            if (srgb && srgb.cpp !== "false") {
+                context.fail(
+                    call.arguments[2]!,
+                    "sRGB in-memory sprite atlases are not lowered yet.",
+                );
+            }
+            const premultiplied = property(options, "premultipliedAlpha");
+            if (premultiplied && premultiplied.kind !== "boolean") {
+                context.fail(
+                    call.arguments[2]!,
+                    "premultipliedAlpha must be boolean.",
+                );
+            }
+            const capacity = property(options, "capacityPx");
+            const capacityLanes = capacity
+                ? tupleOption(context, options, "capacityPx", call, 2)
+                : undefined;
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "sprite-atlas",
+                cpp:
+                    `([&]() { const auto& ${sourceList} = ${sources.cpp}; ` +
+                    `std::vector<bbl::SpriteAtlasFramePixelsView> ${normalized}; ` +
+                    `${normalized}.reserve(${sourceList}.size()); ` +
+                    `for (const auto& ${source} : ${sourceList}) { ` +
+                    `${normalized}.push_back(bbl::SpriteAtlasFramePixelsView{` +
+                    `${access("pixels")}.data(), ${access("pixels")}.size(), ` +
+                    `bbl::js::to_uint32(${access("width")}), ` +
+                    `bbl::js::to_uint32(${access("height")}), ` +
+                    `${optionalUnsigned("srcX", "0u")}, ` +
+                    `${optionalUnsigned("srcY", "0u")}, ` +
+                    `${optionalUnsigned("srcStrideBytes", "0u")}, ` +
+                    `(${pivot} ? bbl::Vec2{static_cast<float>((*${pivot})[0]), ` +
+                    `static_cast<float>((*${pivot})[1])} : bbl::Vec2{0.5f, 0.5f})}); } ` +
+                    `return bbl::create_sprite_atlas_from_frames(${engine.cpp}, ${normalized}, ` +
+                    `bbl::SpriteAtlasPackOptions{` +
+                    `${numberOption("paddingPx", "1u")}, ` +
+                    `${numberOption("maxWidthPx", "1024u")}, ` +
+                    `bbl::TextureFilter::${sampling?.staticString === "linear" ? "linear" : "nearest"}, ` +
+                    `${premultiplied?.cpp ?? "false"}, ` +
+                    `${capacityLanes ? "true" : "false"}, ` +
+                    `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[0]!})` : "0u"}, ` +
+                    `${capacityLanes ? `bbl::js::to_uint32(${capacityLanes[1]!})` : "0u"}}); }())`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
         case "loadSpriteAtlas": {
             context.expectArgumentCount(call, 3, 3);
             const engine = context.compileValue(
@@ -917,6 +1024,26 @@ export function compileSpriteIntrinsic(
             };
         }
 
+        case "clearBillboardSprites": {
+            context.expectArgumentCount(call, 1, 1);
+            const system = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                system,
+                "billboard-system",
+                call.arguments[0]!,
+            );
+            const engineCpp =
+                system.engineCpp ??
+                context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            return {
+                kind: "void",
+                cpp: `bbl::clear_billboard_sprites(${engineCpp}, ${system.cpp})`,
+            };
+        }
+
         case "createTexture2DFromPixels": {
             context.expectArgumentCount(call, 4, 5);
             const engine = context.compileValue(
@@ -927,11 +1054,27 @@ export function compileSpriteIntrinsic(
                 "engine",
                 call.arguments[0]!,
             );
-            // The bytes are a module's own, settled at generation, so they
-            // are baked as an asset the way a drawn atlas is.
-            const pixels = context.registerPixelsAsset(
+            // A zero-argument module producer remains bakeable. A reached
+            // runtime Uint8Array instead travels directly to the native
+            // factory, preserving WAD/decoded/generated pixel workflows.
+            const bakedPixels = context.probePixelsAsset(
                 call.arguments[1]!,
             );
+            const runtimePixels = bakedPixels
+                ? undefined
+                : context.compileValue(call.arguments[1]!);
+            if (
+                runtimePixels &&
+                !(
+                    runtimePixels.kind === "data" &&
+                    runtimePixels.dataType?.kind === "u8array"
+                )
+            ) {
+                context.fail(
+                    call.arguments[1]!,
+                    "createTexture2DFromPixels pixels must run at generation through a bakeable module producer or evaluate to a native Uint8Array.",
+                );
+            }
             const width = context.compileNumber(
                 call.arguments[2]!,
                 "double",
@@ -955,9 +1098,10 @@ export function compileSpriteIntrinsic(
             context.reachFeature("texture:pixels", call);
             return {
                 kind: "texture",
+                textureStorage: "pixels",
                 cpp:
                     `bbl::create_texture_2d_from_pixels(${engine.cpp}, ` +
-                    `bbl::asset_path(${pixels.cpp}), ${width}, ${height}` +
+                    `${bakedPixels ? `bbl::asset_path(${bakedPixels.cpp})` : runtimePixels!.cpp}, ${width}, ${height}` +
                     `${sampler.cpp})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
                 // A node-particle system's texture is assigned in scene
@@ -966,12 +1110,13 @@ export function compileSpriteIntrinsic(
                 // source does not settle carries no record at all, so the
                 // refusal lands at the assignment that needed one rather
                 // than at every pixels texture in the corpus.
-                ...(staticSize[0] !== undefined &&
+                ...(bakedPixels &&
+                staticSize[0] !== undefined &&
                 staticSize[1] !== undefined
                     ? {
                           pixelsTexture: {
-                              source: pixels.source,
-                              asset: pixels.cpp,
+                               source: bakedPixels.source,
+                               asset: bakedPixels.cpp,
                               width: staticSize[0],
                               height: staticSize[1],
                               options: sampler.named,
@@ -1022,18 +1167,22 @@ export function compileSpriteIntrinsic(
                 importedName === "createSprite2DCustomShader"
                     ? "sprite"
                     : "billboard";
-            // One program per family is composed, under a fixed name. A
-            // second descriptor would need the layer and system records to
-            // carry which program they draw with, so it refuses here rather
-            // than quietly drawing every layer with the first one.
+            // One distinct program per family is composed under a fixed
+            // name. Reusing the same descriptor is ordinary shader-module
+            // caching: each layer may bind different texture values while
+            // sharing the identical body and binding layout.
+            const existing = context
+                .spriteCustomShaders()
+                .find((entry) => entry.family === family);
+            const extraNames = extras.map(({ name }) => name);
             if (
-                context
-                    .spriteCustomShaders()
-                    .some((entry) => entry.family === family)
+                existing &&
+                (existing.fragment !== fragment.staticString ||
+                    existing.extraTextures.join("\0") !== extraNames.join("\0"))
             ) {
                 context.fail(
                     call,
-                    `A second ${family} custom shader is not lowered; one program per family is composed.`,
+                    `A second distinct ${family} custom shader is not lowered; one program per family is composed.`,
                 );
             }
             // Building a descriptor is the pin's own opt-in trigger: the
@@ -1046,11 +1195,13 @@ export function compileSpriteIntrinsic(
                     : "sprite:billboard-custom-shader",
                 call,
             );
-            context.recordSpriteCustomShader({
-                family,
-                fragment: fragment.staticString,
-                extraTextures: extras.map(({ name }) => name),
-            });
+            if (!existing) {
+                context.recordSpriteCustomShader({
+                    family,
+                    fragment: fragment.staticString,
+                    extraTextures: extraNames,
+                });
+            }
             return {
                 kind: `${family}-custom-shader`,
                 cpp: "",

@@ -43,3 +43,29 @@ export function stringLiteral(value: string): string {
 export function sanitizeCppIdentifier(name: string): string {
     return name.replace(/[^A-Za-z0-9_]/g, "_");
 }
+
+/** A source-level name that is safe as an unprefixed C++ identifier. */
+export function cppIdentifier(name: string): string {
+    const cleaned = sanitizeCppIdentifier(name);
+    const prefixed = /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned;
+    return cppKeywords.has(prefixed) ? `${prefixed}_` : prefixed;
+}
+
+const cppKeywords: ReadonlySet<string> = new Set([
+    "alignas", "alignof", "and", "and_eq", "asm", "atomic_cancel",
+    "atomic_commit", "atomic_noexcept", "auto", "bitand", "bitor",
+    "bool", "break", "case", "catch", "char", "char8_t", "char16_t",
+    "char32_t", "class", "compl", "concept", "const", "consteval",
+    "constexpr", "constinit", "const_cast", "continue", "co_await",
+    "co_return", "co_yield", "decltype", "default", "delete", "do",
+    "double", "dynamic_cast", "else", "enum", "explicit", "export",
+    "extern", "false", "float", "for", "friend", "goto", "if",
+    "inline", "int", "long", "mutable", "namespace", "new", "noexcept",
+    "not", "not_eq", "nullptr", "operator", "or", "or_eq", "private",
+    "protected", "public", "reflexpr", "register", "reinterpret_cast",
+    "requires", "return", "short", "signed", "sizeof", "static",
+    "static_assert", "static_cast", "struct", "switch", "synchronized",
+    "template", "this", "thread_local", "throw", "true", "try",
+    "typedef", "typeid", "typename", "union", "unsigned", "using",
+    "virtual", "void", "volatile", "wchar_t", "while", "xor", "xor_eq",
+]);

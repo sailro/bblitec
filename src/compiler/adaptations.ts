@@ -122,7 +122,7 @@ export function compileAdaptations(
             id: "plain-data-value-model",
             category: "language",
             sourceSemantics: "JavaScript objects and arrays are heap references with garbage collection; sparse arrays read undefined.",
-            nativeSemantics: "Plain-data objects compile to structs and vectors: a const local bound to an element or member binds a native reference, so writes through it reach the container, while a mutable local stays a copy that rejects writes; function object parameters pass by native reference; new Array elements zero-initialize. A structural mutation of a container makes references taken into it unusable, and later use is a compile error rather than a dangling read.",
+            nativeSemantics: "Plain-data values compile to native structs and identity-preserving containers. Arrays, maps, sets, recursive/stored records, const composite aliases, and composite function parameters retain shared or referenced storage; PAL-owned typed-array data is exposed as a borrowed span. Mutable aliases that cannot be represented safely reject writes. New Array elements zero-initialize, and resizing a container invalidates tracked element references so later use is a compile error rather than a dangling read.",
             risk: "medium",
             validation: ["compiler data-model tests", "differential logic parity gates"],
         });

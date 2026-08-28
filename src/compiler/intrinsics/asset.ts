@@ -524,6 +524,7 @@ export function compileAssetIntrinsic(
             context.reachFeature("texture:file", call);
             return {
                 kind: "texture",
+                textureStorage: "file",
                 cpp:
                     `bbl::load_file_texture(${engine.cpp}, ` +
                     `bbl::asset_path(${context.cppString(asset.output)}), ` +
@@ -561,6 +562,7 @@ export function compileAssetIntrinsic(
             context.reachFeature("texture:compressed", call);
             return {
                 kind: "texture",
+                textureStorage: "file",
                 cpp:
                     `bbl::load_compressed_texture(${engine.cpp}, ` +
                     `bbl::asset_path(${context.cppString(asset.output)}), ` +

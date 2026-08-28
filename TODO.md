@@ -16,9 +16,8 @@ act on it — not what was tried.
 
 ### Modules and functions
 
-- [ ] Add namespace/default imports and non-static module initialization.
+- [ ] Add namespace/default imports.
 - [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
-- [ ] Lower string-literal switch discriminants.
 - [ ] Add discriminated unions and numeric-literal narrowing beyond the
   checker's null analysis.
 - [ ] Route inline return expressions through double precision: inlined value
@@ -56,7 +55,7 @@ act on it — not what was tried.
 
 ### Classes and objects
 
-- [ ] Lower the required class/method/getter/setter/inheritance subset.
+- [ ] Extend local classes to setters and inheritance.
 
 ## P1 — Assets and materials
 
@@ -1062,13 +1061,10 @@ CLI exposes no combined-sampler emission.
     thick band, position-tolerant within 2 px, goldens under
     `reference/lite/audio/<case>.png`). That drops onto this repository's
     existing PNG/MAD harness directly.
-  - **The next capability is the buffer family.** `createBuffer`,
-    `getChannelData`, a source's `buffer` and `loop` all refuse by name, and
-    the PAL declares none of them, because the blocker is one thing: the
-    plain-data model has no borrowed float span, so a scene cannot write
-    samples into PAL-owned memory. Every demo that plays a recorded sound
-    needs it. `decodeAudioData` needs a second thing besides -- an audio
-    asset materialized at generation, the way textures are.
+  - **The buffer family now covers generated PCM.** `createBuffer`, mutable
+    `getChannelData` spans, and a source's `buffer` assignment lower through
+    the PAL. The remaining source property is `loop`; `decodeAudioData` still
+    needs an audio asset materialized at generation, the way textures are.
   - **`setMasterVolume` and `getMasterVolume` refuse**, and closing that means
     lowering `audio-param.ts`'s ramp component: the exp/log curve tables, the
     `MinRampDuration` gate, and `setValueCurveAtTime` reaching the PAL as a
@@ -1079,12 +1075,10 @@ CLI exposes no combined-sampler emission.
     UI, the visualizer and the media-stream tap on the Babylon side; the
     analyser/panner/delay/convolver/compressor/wave-shaper factories and
     `setTargetAtTime` on the Web Audio side.
-  - **The two blockers that keep the demos out of reach**, both language rather
-    than audio: `sound.ts` in every demo dispatches effects through a
-    string-literal `switch` (still unlowered, P1 above) and creates its engine
+  - **The remaining language blocker for the audio demos** is engine creation
     inside `void (async () => { try { ... } catch { ... } })()`, which needs
-    both escaping closures and `catch`. Sizing an audio demo means sizing those
-    first.
+    both escaping closures and `catch`; string-literal `switch` dispatch now
+    lowers.
   - **A minimal-size build cannot carry audio yet.**
     `tools/build-sdl-min.ps1` builds SDL3 with `SDL_AUDIO=OFF`, so an
     `audio:engine` scene against `BBLITE_SDL_DIR` has no device to open; the
@@ -1162,6 +1156,18 @@ CLI exposes no combined-sampler emission.
 - [ ] Track executable, shader, and asset sizes consistently.
 - [ ] Deduplicate resources and batch uploads before investigating meshlets,
   indirect draws, or GPU-driven culling.
+- [ ] Replace struct-name reference state and duplicated buffer/cache ownership
+  with typed identity and one backend-neutral shared-resource lifecycle; measure
+  compact geometry keys and binding views before changing their cache ABI.
+- [ ] Extend the typed WGSL subset through the reached `const`, `fn`, and `for`
+  constructs, then remove the strict raw-source fallback. Until those nodes
+  exist, rejecting unsupported reflected members and canonicalizing comments is
+  safer than inferring a typed layout the parser cannot represent.
+- [ ] Finish the remaining mechanical compiler/runtime consolidation: move the
+  mutation/escape walkers and large data-method dispatcher into their owning
+  modules, share the `Map`/`Set` container shell, and give capture/draw paths one
+  shader-matrix record. Add mutation-during-iteration and capture-equivalence
+  tests first; those behavior guards do not exist yet.
 
 ## P2 — Dual render backends
 

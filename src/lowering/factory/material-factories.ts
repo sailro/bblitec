@@ -350,6 +350,24 @@ void set_shader_texture(
     record.shader_textures[slot] = std::move(texture);
 }
 
+// The same Texture2D slot, filled by caller-provided RGBA pixels. The pin has
+// one Texture2D interface for file and pixels producers; the native material
+// normalizes both to the TextureData record consumed by the PALs.
+void set_shader_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    const PixelsTexture& texture) {
+    FileTexture normalized;
+    normalized.data.bytes = texture.rgba;
+    normalized.data.rgba_width = texture.width;
+    normalized.data.rgba_height = texture.height;
+    normalized.data.sampler = texture.sampler;
+    normalized.data.uv_transform = texture.uv_transform;
+    normalized.data.uv_invert_y = texture.uv_invert_y;
+    set_shader_texture(engine, material, slot, std::move(normalized));
+}
+
 void set_alpha_to_coverage(
     Engine& engine,
     MaterialHandle material,
@@ -448,6 +466,7 @@ void set_alpha_to_coverage(
             header: "",
             source: `// ${this.context.provenance(module, "createTexture2DFromPixels")}
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 
 #include <stdexcept>
@@ -455,9 +474,10 @@ void set_alpha_to_coverage(
 
 namespace bbl {
 
-PixelsTexture create_texture_2d_from_pixels(
-    Engine&,
-    const std::string& path,
+namespace {
+
+PixelsTexture create_texture_2d_from_bytes(
+    std::vector<std::uint8_t> bytes,
     double width,
     double height,
     PixelsTextureOptions options) {
@@ -466,7 +486,7 @@ PixelsTexture create_texture_2d_from_pixels(
             "createTexture2DFromPixels: width/height must be >= 1");
     }
     PixelsTexture texture;
-    texture.rgba = pal::read_binary_file(path);
+    texture.rgba = std::move(bytes);
     texture.width = static_cast<std::uint32_t>(width);
     texture.height = static_cast<std::uint32_t>(height);
     const std::size_t expected =
@@ -478,10 +498,6 @@ PixelsTexture create_texture_2d_from_pixels(
             std::to_string(texture.width) + "x" +
             std::to_string(texture.height) + " RGBA");
     }
-    // The pin resolves each override against its own default here, in the
-    // factory, which is why the defaults are read above rather than restated
-    // and why the caller passes only what it named. It creates no mip chain,
-    // so mip sampling clamps to the base level.
     texture.sampler.min_filter =
         options.has_min_filter ? options.min_filter : ${minFilter};
     texture.sampler.mag_filter =
@@ -494,6 +510,28 @@ PixelsTexture create_texture_2d_from_pixels(
     texture.sampler.max_anisotropy = 1.0f;
     texture.sampler.max_lod = 0.0f;
     return texture;
+}
+
+} // namespace
+
+PixelsTexture create_texture_2d_from_pixels(
+    Engine&,
+    const std::string& path,
+    double width,
+    double height,
+    PixelsTextureOptions options) {
+    return create_texture_2d_from_bytes(
+        pal::read_binary_file(path), width, height, options);
+}
+
+PixelsTexture create_texture_2d_from_pixels(
+    Engine&,
+    const js::U8Array& pixels,
+    double width,
+    double height,
+    PixelsTextureOptions options) {
+    return create_texture_2d_from_bytes(
+        pixels.to_vector(), width, height, options);
 }
 
 } // namespace bbl

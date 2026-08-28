@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
+import { staticColor3Value } from "./material-options.js";
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
@@ -219,6 +220,7 @@ export function compileMaterialIntrinsic(
             context.reachFeature("texture:file", call);
             return {
                 kind: "texture",
+                textureStorage: "solid",
                 cpp:
                     `bbl::create_solid_texture(` +
                     `${engine.cpp}, ${channels.join(", ")})`,
@@ -637,22 +639,26 @@ export function compileMaterialIntrinsic(
                 "texture",
                 call.arguments[2]!,
             );
-            // The reached slice binds a loaded image. `createSolidTexture2D`
-            // and `createTexture2DFromPixels` are the same value kind but
-            // different native types, so without this they would compile to
-            // a C++ overload error in the generated tree rather than a
-            // refusal naming the call.
-            if (!texture.textureFile) {
+            const cachedPixelsTexture =
+                texture.dataType?.kind === "handle" &&
+                texture.dataType.handle === "texture";
+            const setter = texture.textureFile
+                ? "set_shader_texture"
+                : texture.textureStorage === "pixels" ||
+                    cachedPixelsTexture
+                  ? "set_shader_pixels_texture"
+                  : undefined;
+            if (!setter) {
                 context.fail(
                     call.arguments[2]!,
-                    "Reached shader-material textures come from loadTexture2D.",
+                    "Reached shader-material textures come from loadTexture2D or createTexture2DFromPixels.",
                 );
             }
             context.expectSameEngine(material, texture, call);
             return {
                 kind: "void",
                 cpp:
-                    `bbl::set_shader_texture(` +
+                    `bbl::${setter}(` +
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp}, ${slot}u, ${texture.cpp})`,
             };
@@ -706,16 +712,20 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            const color = context.compileColor3(call.arguments[1]!);
-            const channels = color.match(/[0-9.eE+-]+(?=f)/g);
-            if (!channels || channels.length !== 3) {
+            const colorExpression = call.arguments[1]!;
+            const channels = staticColor3Value(context, colorExpression);
+            if (
+                !channels ||
+                channels.some((channel) => !Number.isFinite(channel))
+            ) {
                 context.fail(
-                    call.arguments[1]!,
+                    colorExpression,
                     "setPbrEmissive requires a static linear RGB colour.",
                 );
             }
+            const color = context.compileColor3(colorExpression);
             context.recordScenePbrEmissive(
-                channels.map(Number.parseFloat),
+                channels,
                 material.scenePbrMaterialIndex,
             );
             context.reachFeature("material:emissive", call);

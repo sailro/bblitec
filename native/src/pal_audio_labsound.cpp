@@ -20,11 +20,16 @@
 #include <bblite/pal.hpp>
 
 #include "pal_audio_sdl_device.hpp"
+#include "pal_runtime_trace.hpp"
 
 #include "LabSound/core/AudioContext.h"
 #include "LabSound/core/AudioDevice.h"
 #include "LabSound/core/AudioParam.h"
 #include "LabSound/core/GainNode.h"
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+#include "LabSound/core/AudioBus.h"
+#include "LabSound/core/SampledAudioNode.h"
+#endif
 #if BBLITE_HAS_AUDIO_BIQUAD_FILTER
 #include "LabSound/core/BiquadFilterNode.h"
 #endif
@@ -52,6 +57,13 @@
 namespace bbl::pal {
 namespace {
 
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+struct AudioBufferRecord {
+    std::vector<bbl::js::F32Array> channels;
+    std::shared_ptr<lab::AudioBus> bus;
+};
+#endif
+
 struct ContextRecord {
     std::shared_ptr<lab::AudioContext> context;
     std::shared_ptr<lab::AudioDestinationNode> destination;
@@ -74,6 +86,9 @@ struct ContextRecord {
     double sample_rate = 48000.0;
     /** Index 0 is the node `ctx.destination` names; see `audio_create_context`. */
     std::vector<std::shared_ptr<lab::AudioNode>> nodes;
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    std::vector<std::shared_ptr<AudioBufferRecord>> buffers;
+#endif
 };
 
 /** A node handle is `(context << 16) | index`, so one lookup finds both. */
@@ -157,6 +172,18 @@ const std::shared_ptr<lab::AudioNode>& require_node(AudioNodeHandle node)
 {
     return require_node(require_context(context_of(node.value)), node);
 }
+
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+std::shared_ptr<AudioBufferRecord>& require_buffer(AudioBufferHandle buffer)
+{
+    ContextRecord& record = require_context(context_of(buffer.value));
+    const std::uint32_t index = index_of(buffer.value);
+    if (index >= record.buffers.size() || !record.buffers[index]) {
+        throw std::runtime_error("Invalid audio buffer handle.");
+    }
+    return record.buffers[index];
+}
+#endif
 
 /**
  * LabSound registers every parameter under the Web Audio spelling
@@ -407,6 +434,14 @@ double audio_sample_rate(AudioContextHandle context)
     return require_context(context.value).sample_rate;
 }
 
+std::string audio_state(AudioContextHandle context)
+{
+    require_context(context.value);
+    // Creation opens and starts the native device atomically. A failed open
+    // throws, so every live handle has reached Web Audio's running state.
+    return "running";
+}
+
 void audio_resume(AudioContextHandle context)
 {
     ContextRecord& record = require_context(context.value);
@@ -462,6 +497,114 @@ AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context)
 #endif
 }
 
+AudioBufferHandle audio_create_buffer(
+    AudioContextHandle context,
+    std::uint32_t channels,
+    std::uint32_t frames,
+    double sample_rate)
+{
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (channels == 0 || frames == 0 || !(sample_rate > 0.0)) {
+        throw std::runtime_error("Invalid AudioBuffer dimensions or sample rate.");
+    }
+    ContextRecord& context_record = require_context(context.value);
+    if (context_record.buffers.size() >= 0xffffu) {
+        throw std::runtime_error("Too many audio buffers in one context.");
+    }
+    auto buffer = std::make_shared<AudioBufferRecord>();
+    buffer->channels.reserve(channels);
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        buffer->channels.emplace_back(frames, 0.0f);
+    }
+    buffer->bus = std::make_shared<lab::AudioBus>(
+        static_cast<int>(channels), static_cast<int>(frames), false);
+    buffer->bus->setSampleRate(static_cast<float>(sample_rate));
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        buffer->bus->setChannelMemory(
+            static_cast<int>(channel),
+            buffer->channels[channel].data(),
+            static_cast<int>(frames));
+    }
+    context_record.buffers.push_back(std::move(buffer));
+    const AudioBufferHandle handle{pack(
+        context.value,
+        static_cast<std::uint32_t>(context_record.buffers.size() - 1))};
+    if (runtime_trace_enabled()) {
+        std::fprintf(
+            stderr,
+            "[bblite trace] audio buffer=%u channels=%u frames=%u rate=%.0f\n",
+            handle.value, channels, frames, sample_rate);
+    }
+    return handle;
+#else
+    (void)context;
+    (void)channels;
+    (void)frames;
+    (void)sample_rate;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
+bbl::js::F32Array& audio_buffer_channel(
+    AudioBufferHandle buffer,
+    std::uint32_t channel)
+{
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    auto& record = require_buffer(buffer);
+    if (channel >= record->channels.size()) {
+        throw std::runtime_error("AudioBuffer channel index is out of range.");
+    }
+    return record->channels[channel];
+#else
+    (void)buffer;
+    (void)channel;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context)
+{
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    return create_node<lab::SampledAudioNode>(context);
+#else
+    (void)context;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
+void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
+{
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    if (context_of(source.value) != context_of(buffer.value)) {
+        throw std::runtime_error(
+            "An AudioBufferSourceNode and its buffer must share a context.");
+    }
+    auto sampled =
+        std::dynamic_pointer_cast<lab::SampledAudioNode>(require_node(source));
+    if (!sampled) {
+        throw std::runtime_error("Audio node is not a buffer source.");
+    }
+    const auto& buffer_record = require_buffer(buffer);
+    sampled->setBus(buffer_record->bus);
+    if (runtime_trace_enabled()) {
+        float peak = 0.0f;
+        for (const auto& channel : buffer_record->channels) {
+            for (const float sample : channel) {
+                peak = std::max(peak, std::fabs(sample));
+            }
+        }
+        std::fprintf(
+            stderr,
+            "[bblite trace] audio source=%u set-buffer=%u peak=%.6f\n",
+            source.value, buffer.value, peak);
+    }
+#else
+    (void)source;
+    (void)buffer;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
 void audio_connect(AudioNodeHandle source, AudioNodeHandle destination)
 {
     if (context_of(source.value) != context_of(destination.value)) {
@@ -483,13 +626,37 @@ void audio_disconnect(AudioNodeHandle node)
 
 void audio_node_start(AudioNodeHandle node, double when)
 {
-#if BBLITE_HAS_AUDIO_OSCILLATOR
+#if BBLITE_HAS_AUDIO_OSCILLATOR || BBLITE_HAS_AUDIO_BUFFER_SOURCE
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    // LabSound deliberately gives SampledAudioNode an absolute-time start
+    // overload which is not virtual. Calling through AudioScheduledSourceNode
+    // starts only the base scheduler and never enqueues the sample, producing
+    // a perfectly connected but silent buffer source. Preserve Web Audio's
+    // common `start(when)` surface by dispatching this concrete node first.
+    if (auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(
+            require_node(node))) {
+        sampled->start(static_cast<float>(when));
+        if (runtime_trace_enabled()) {
+            std::fprintf(
+                stderr,
+                "[bblite trace] audio source=%u start=%.6f\n",
+                node.value, when);
+        }
+        return;
+    }
+#endif
     auto scheduled =
         std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
     if (!scheduled) {
         throw std::runtime_error("Audio node is not a scheduled source.");
     }
     scheduled->start(static_cast<float>(when));
+    if (runtime_trace_enabled()) {
+        std::fprintf(
+            stderr,
+            "[bblite trace] audio source=%u start=%.6f\n",
+            node.value, when);
+    }
 #else
     (void)node;
     (void)when;
@@ -499,7 +666,7 @@ void audio_node_start(AudioNodeHandle node, double when)
 
 void audio_node_stop(AudioNodeHandle node, double when)
 {
-#if BBLITE_HAS_AUDIO_OSCILLATOR
+#if BBLITE_HAS_AUDIO_OSCILLATOR || BBLITE_HAS_AUDIO_BUFFER_SOURCE
     auto scheduled =
         std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
     if (!scheduled) {

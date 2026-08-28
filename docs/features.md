@@ -101,16 +101,22 @@ The reachable subset of TypeScript that lowers to C++20, from one statically
 analyzable entry file against one engine.
 
 - **Modules and functions.** Local imports and re-exports, module constants,
+  dependency-ordered top-level initializers (including private state observed
+  through exports and cross-module registrars),
   typed non-generic functions with defaults, lexical scopes, `if`/`else`,
   `for`/`while`, `switch` with `break`/`continue`, and `for-of`. Functions
   whose parameters and return type map entirely into the plain-data model are
   emitted once as real C++ functions; handle-touching helpers inline per call
-  site.
-- **Classes and factory records** exist only as compile-time instances: fields
-  become locals, methods and single-return getters inline at their call sites,
-  and a record carries the scope it closed over.
+  site. Mutually recursive plain-data functions lower as one native call-graph
+  component.
+- **Classes and factory records.** Reached local classes retain native identity,
+  fields, constructors, methods, getters, and parameter properties; purely
+  static factory records remain compile-time values and carry the scopes their
+  methods close over.
 - **The plain-data model.** Interface structs, `T | null` optionals, dynamic
-  arrays, `Float32Array`/`Uint32Array`, string-literal enum tags,
+  arrays, insertion-ordered `Map`/`Set`, `ArrayBuffer`/`DataView`,
+  `Uint8Array`/`Float32Array`/`Uint16Array`/`Uint32Array`, runtime strings,
+  string-literal enum tags,
   `Record<Union, T>` indexed by tag, readonly numeric tables, tuples,
   destructuring, object spread, and constant arrays materialized on demand.
   Resource handles are storable inside data. Const locals bind container
@@ -152,11 +158,12 @@ analyzable entry file against one engine.
   revokes an object URL and puts back a `Math.random` it replaced — and a
   `catch`, or a finalizer that emits, refuses.
 
-**Why compile time:** this is the compiler. There is no interpreter, no
-run-time module loading, and no run-time object identity — a compile-time
-record has no native representation to store or select between, so it cannot
-outlive generation. Static evaluation and inlining are how the subset reaches
-C++ at all. Each divergence this introduces is recorded per scene in
+**Why compile time:** this is the compiler. There is no interpreter or run-time
+module loading. Values that remain compile-time records have no native
+representation and cannot outlive generation; values whose identity becomes
+observable materialize as shared/reference-backed native storage instead.
+Static evaluation and inlining are how the remaining subset reaches C++ at all.
+Each divergence this introduces is recorded per scene in
 `fidelity.json` (`plain-data-value-model`, `deterministic-seeded-random`,
 `entry-main-wrapper-erasure`, `synchronous-aot-await`,
 `material-tracking-observers-dropped`).
@@ -1423,12 +1430,15 @@ refuses it rather than rendering something else.
 
 ### Runtime scene mutation
 
-`removeFromScene` with render-plan rematching, material-family append after
-registration, thin-instance flush and count updates, and mesh appends that
-wait for submitted work before rebuilding the mesh set. SDL_GPU batches a
-frame's small buffer creates and rewrites into one transfer/copy submission;
-short-lived custom-shader meshes reuse exact local geometry while their
-per-entry transforms and material values remain independent.
+`removeFromScene` with incremental render-plan rematching, material-family
+append after registration, thin-instance flush and count updates, and mesh
+appends without a queue-wide idle. SDL_GPU batches a frame's small buffer
+creates and rewrites into one transfer/copy submission. Short-lived
+custom-shader meshes reuse exact local geometry while their per-entry
+transforms and material values remain independent. Their texture/sampler pairs
+are owned once by the material rather than re-uploaded for every replacement;
+reference counts retire geometry as soon as no draw uses it, so repeated
+replacement does not turn the reuse cache into an ever-growing search.
 
 ### Diagnostics and capture
 
@@ -1488,16 +1498,17 @@ build error with a source location, not a silently different image.
 
 - one statically analyzable entry file and one engine; selected TypeScript
   expressions, assignments, callbacks, and intrinsics
-- no arbitrary object graphs, run-time object identity, or run-time module
-  loading. A class instance is a compile-time record that cannot be stored in
-  data or selected at run time, and a field holding a resource is wired once
-  rather than reassigned. Recursion, inheritance, statics, and value-returning
-  methods stay rejected
-- the plain-data model is value-semantic apart from const locals bound to a
-  container element or member, which bind a native reference; object
-  parameters pass by native reference; `new Array` elements zero-initialize;
-  and `Math.random` is the pinned seeded sequence — each recorded in
-  `fidelity.json`
+- no arbitrary object graphs or run-time module loading. Observable imported
+  module state initializes once in dependency order; purely static builders
+  remain generation-time values. Reached local classes retain identity, but
+  inheritance and statics remain rejected, and resource-holding fields cannot
+  be rebound after construction. Mutually recursive plain-data groups lower;
+  recursion carrying engine resources still refuses
+- the plain-data model preserves observable JavaScript identity for arrays,
+  maps, sets, stored/recursive records, composite parameters, and borrowed
+  typed-array spans. Aliases that cannot remain safe across container resizing
+  reject later use; `new Array` elements zero-initialize; and `Math.random` is
+  the pinned seeded sequence — each adaptation is recorded in `fidelity.json`
 - no networking. Physics is reached, behind a substituted solver
   ([below](#physics)), and a Web Audio prototype is reached behind a
   substituted engine ([fidelity](fidelity.md#audio-contract)) — the

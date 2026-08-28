@@ -11,7 +11,10 @@ import type {
     NodeParticleStep,
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
-import type { DataType } from "./data-types.js";
+import type {
+    DataType,
+    TypedArrayKind,
+} from "./data-types.js";
 
 export interface CompileOptions {
     fileName?: string;
@@ -716,6 +719,10 @@ export interface CompileAsset {
         // generation and packaged as the KTX1 container the runtime's one
         // compressed-texture reader takes.
         | "basis"
+        // Opaque bytes consumed by scene code through fetch().arrayBuffer().
+        // The compiler packages them unchanged and the native program reads
+        // the local payload synchronously through the PAL.
+        | "binary"
         | "texture";
     faceSize?: number;
     /**
@@ -932,6 +939,8 @@ export type ValueKind =
     | "physics-aggregate"
     /** Callback-local platform keyboard data; it has no storable JS shape. */
     | "platform-keyboard-event"
+    /** Callback-local platform mouse data; it has no storable JS shape. */
+    | "platform-mouse-event"
     // The navigation plugin: the Detour surface behind the PAL, held the
     // way `physics-world` holds the solver. A crowd is a second handle
     // over the same seam, because the pin models it as one too --
@@ -946,6 +955,7 @@ export type ValueKind =
     // engine record; `audio-context` is the `BaseAudioContext` it hands
     // back, which every reached demo builds its own graph on.
     | "audio-engine"
+    | "audio-buffer"
     | "audio-context"
     | "audio-node"
     | "audio-param"
@@ -1050,13 +1060,25 @@ export interface Value {
     kind: ValueKind;
     cpp: string;
     /**
+     * Keep this lookup nullable when it initializes a local even if
+     * TypeScript reports the binding itself as non-nullable.
+     *
+     * An open `Record<string | number, T>` has that checker shape, but an
+     * arbitrary JavaScript property can still be absent. Retaining the
+     * native nullable lets a later `!== undefined` test observe the miss
+     * before any use dereferences the value.
+     */
+    preserveUncheckedLookup?: true;
+    /**
      * A reached user function was inlined and left this value as its
      * result. If its call is used as a statement, C++ needs an explicit
      * discard instead of a bare value expression.
      */
     requiresExplicitDiscard?: boolean;
     dataType?: DataType;
-    dataStore?: "f32" | "u16" | "u32";
+    /** The expression returns existing mutable storage, not a JS value copy. */
+    borrowedData?: true;
+    dataStore?: TypedArrayKind;
     /**
      * Set on a value read out of a container of const elements (a span,
      * including a materialized constant table). It cannot be bound by
@@ -1065,8 +1087,23 @@ export interface Value {
      */
     readOnly?: boolean;
     callbackDeclaration?:
+        | ts.Identifier
+        | ts.FunctionDeclaration
         | ts.ArrowFunction
         | ts.FunctionExpression;
+    /**
+     * Runtime parameter types for a locally specialized recursive function.
+     * An undefined entry is a compile-time argument captured by the lambda.
+     */
+    nativeCallbackParameterTypes?: readonly (DataType | undefined)[];
+    /** Captured values learned from calls within one recursive specialization. */
+    nativeCallbackStaticArguments?: (Value | undefined)[];
+    /** Undefined is also the native void return type. */
+    nativeCallbackReturnType?: DataType;
+    /** Scope-carrying record a function-valued property was read from. */
+    callbackRecordOwner?: Value;
+    /** The concrete native texture record produced by a texture factory. */
+    textureStorage?: "file" | "pixels" | "solid";
     textureFile?: { srgb: boolean };
     /**
      * Which `scenePbrMaterials` entry this value names. The pin's opt-in
@@ -1206,8 +1243,12 @@ export interface Value {
      * `"true"`, which is what folds the scene's own not-found guard away.
      */
     optionalFoundCpp?: string;
+    /** JavaScript truthiness when it differs from mere optional presence. */
+    truthinessCpp?: string;
     /** Storage behind a nullable resource value whose `cpp` is its dereference. */
     optionalStorageCpp?: string;
+    /** Native pointer token carrying JavaScript identity for a data object. */
+    objectIdentityCpp?: string;
     /**
      * For a `handle-collection` value: where the collection lives and, when
      * it is asset-derived, which materialized asset decides its members.
@@ -1423,6 +1464,7 @@ export type Feature =
     | "particle:node"
     | "navigation:recast"
     | "audio:engine"
+    | "audio:buffer-source"
     | "audio:oscillator"
     | "audio:biquad-filter"
     | "audio:stereo-panner"

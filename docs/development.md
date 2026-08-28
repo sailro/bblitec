@@ -477,8 +477,10 @@ SPIR-V support; the vcpkg `directx-dxc` build is preferred.
 Native CMake builds snapshot the reached shader directory. Rebuild a scene
 after regenerating or recompiling its shaders. The snapshot is a stamped
 custom command the executable depends on, so shader-only changes redeploy
-beside the executable on single- and multi-config generators while unchanged
-builds remain no-op.
+beside the executable on single- and multi-config generators. A generated
+membership manifest also makes added or removed sidecars invalidate the
+snapshot even when cached files carry older timestamps; unchanged builds
+remain no-op.
 
 ## Native builds
 

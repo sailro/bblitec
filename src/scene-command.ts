@@ -347,7 +347,7 @@ async function parity(
     const scene = resolveScene(idOrSource);
     if (!scene.parity) throw new Error(`Scene '${scene.id}' has no parity definition.`);
     if (differential) {
-        await runSceneParityDifferential(scene.id);
+        await runSceneParityDifferential(idOrSource);
         return;
     }
     await runSceneParity([idOrSource, ...passthrough]);
@@ -1095,7 +1095,7 @@ async function runSceneBuild(
     jobsPerScene: number | undefined,
     captureOutput: boolean,
 ): Promise<void> {
-    const { cmake, environment, generator, windows, backend, vcpkg } =
+    const { cmake, environment, generator, windows, backend, tools, vcpkg } =
         buildSetup();
     const configureArguments = [
         "-S",
@@ -1107,7 +1107,10 @@ async function runSceneBuild(
         "-G",
         generator,
     ];
-    configureArguments.push(`-DBBLITE_BACKEND=${backend}`);
+    configureArguments.push(
+        `-DBBLITE_BACKEND=${backend}`,
+        `-DBBLITE_DAWN_DIR=${tools.dawnDirectory}`,
+    );
     // An SDL3 install to use instead of the toolchain's. Forwarded like
     // BBLITE_BACKEND so a whole-matrix run can be pointed at one build,
     // and included in the cache comparison below so switching it always
@@ -2058,10 +2061,10 @@ async function runDiagnose(
         heading(parityName);
         try {
             if (differential) {
-                await runSceneParityDifferential(scene.id);
+                await runSceneParityDifferential(idOrSource);
             } else {
                 await runSceneParity([
-                    scene.id,
+                    idOrSource,
                     ...(backend !== undefined
                         ? ["--backend", backend]
                         : []),
@@ -2094,7 +2097,7 @@ async function runDiagnose(
     ];
     let diffFindings: string[] | undefined;
     try {
-        const result = await runRenderDiff(scene.id, diffArguments);
+        const result = await runRenderDiff(idOrSource, diffArguments);
         diffFindings = result.findings;
         rungs.push({
             name: "diff",
@@ -2120,7 +2123,7 @@ async function runDiagnose(
             "./scene-compose-report.js"
         );
         const compose = await runComposeReport(
-            scene.id,
+            idOrSource,
             scenes,
             resolveScene,
             {

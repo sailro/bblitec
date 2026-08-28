@@ -6,7 +6,9 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -21,6 +23,17 @@ inline bool runtime_trace_enabled() {
         return text != "0" && text != "false" && text != "off";
     }();
     return enabled;
+}
+
+inline long runtime_trace_interval() {
+    static const long interval = [] {
+        const std::string text =
+            environment_variable("BBLITE_RUNTIME_TRACE_INTERVAL");
+        if (text.empty()) return 60L;
+        const long parsed = std::strtol(text.c_str(), nullptr, 10);
+        return std::max(1L, parsed);
+    }();
+    return interval;
 }
 
 inline void trace_keyboard_event(
@@ -80,6 +93,8 @@ inline void trace_scene_topology(
     std::size_t previous_items,
     std::size_t current_items,
     std::size_t shader_items,
+    std::size_t shader_geometry_cache,
+    std::size_t shader_material_cache,
     long frame) {
     if (!runtime_trace_enabled()) return;
     std::cerr
@@ -87,7 +102,9 @@ inline void trace_scene_topology(
         << " version=" << scene.mesh_membership_version
         << " scene-meshes=" << scene.meshes.size()
         << " render-items=" << previous_items << "->" << current_items
-        << " shader-items=" << shader_items;
+        << " shader-items=" << shader_items
+        << " shader-geometries=" << shader_geometry_cache
+        << " shader-materials=" << shader_material_cache;
     if (!scene.meshes.empty()) {
         const MeshHandle handle = scene.meshes.back();
         if (handle.value < engine.meshes.size()) {
@@ -96,6 +113,52 @@ inline void trace_scene_topology(
                 << engine.meshes[handle.value].name
                 << '\"';
         }
+    }
+    std::cerr << '\n';
+}
+
+/**
+ * Periodic dynamic-state census for interactive scene diagnostics.
+ *
+ * A changing scene can keep the same draw topology while only rewriting
+ * billboard instances.  The ordinary topology trace cannot see that, so this
+ * reports the frame delta, instance version, and a compact checksum of each
+ * active billboard buffer. It deliberately reads the portable engine records
+ * rather than a backend upload buffer, which makes the same trace meaningful
+ * on SDL_GPU and Dawn. The first few frames and then one frame per second are
+ * enough to show whether callbacks are advancing without flooding stderr.
+ */
+inline void trace_dynamic_frame(
+    const Engine& engine,
+    float delta_ms,
+    long frame) {
+    if (!runtime_trace_enabled()) return;
+    if (
+        frame > 5 &&
+        frame % runtime_trace_interval() != 0) return;
+
+    std::cerr
+        << "[bblite trace] dynamic frame=" << frame
+        << " delta-ms=" << delta_ms
+        << " billboard-systems=" << engine.billboard_systems.size();
+    for (std::size_t index = 0;
+         index < engine.billboard_systems.size();
+         ++index) {
+        const BillboardSystemRecord& system =
+            engine.billboard_systems[index];
+        const std::size_t active = std::min(
+            system.instance_data.size(),
+            static_cast<std::size_t>(system.count) *
+                system.instance_floats_per_sprite);
+        double checksum = 0.0;
+        for (std::size_t lane = 0; lane < active; ++lane) {
+            checksum += static_cast<double>(system.instance_data[lane]) *
+                static_cast<double>((lane % 17u) + 1u);
+        }
+        std::cerr
+            << " system[" << index << "]={count=" << system.count
+            << ",instance-version=" << system.instance_version
+            << ",checksum=" << checksum << '}';
     }
     std::cerr << '\n';
 }

@@ -54,10 +54,13 @@ Primary source ownership:
 | `src/compiler/browser-erasure.ts` | browser-only expression identification, compile-time values (including the reference pose's query string), erased instrumentation |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
+| `src/compiler/data-methods.ts` | the shared read/mutate/store classification for plain-data methods |
+| `src/compiler/module-initializers.ts` | reachability and dependency planning for observable imported-module state |
 | `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |
 | `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
-| `src/compiler/classes.ts` | compile-time class instances: fields as locals, inlined methods and getters |
+| `src/compiler/classes.ts` | reached local class identity, fields, constructors, inlined methods and getters |
+| `src/compiler/sprite-atlas-record.ts` | typed data-record projection into the native sprite-atlas handle model |
 | `src/compiler/promises.ts` | immediate AOT `Promise<T>` lowering |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
@@ -175,13 +178,19 @@ functions with native early returns; object parameters pass by native
 reference, matching JavaScript object aliasing. All other reached functions
 are inlined per call site with isolated symbol scopes, default parameters,
 and one final return. Recursive, generator, rest-parameter, and generic
-functions fail explicitly. Explicit blocks and `if`/`else` branches own
+functions are separated by capability: mutually recursive plain-data groups
+lower to forward-declared native callbacks, while generators, rest parameters,
+generics, and recursion carrying engine resources fail explicitly. Explicit
+blocks and `if`/`else` branches own
 nested symbol scopes and unique native names, so legal TypeScript shadowing
 does not leak or collide.
 
-The plain-data model is value-semantic by contract: locals bound from data
-paths are copies that reject writes, owned locals reject writes after they
-escape by copy, sparse `new Array` slots zero-initialize, and `Math.random`
+The plain-data model keeps JavaScript container identity where it is observable:
+arrays, maps, sets, recursive records, and borrowed typed-array views retain
+shared or referenced native storage; composite function parameters use the same
+read-only/mutable reference policy at every lowering path. Locals that cannot
+safely retain an alias reject writes, sparse `new Array` slots zero-initialize,
+and `Math.random`
 lowers to the pinned mulberry32 sequence with the browser capture harness
 installing the identical generator. Every such divergence is recorded in the
 generated `fidelity.json`.

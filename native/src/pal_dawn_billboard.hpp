@@ -76,9 +76,8 @@ struct DawnBillboardPass {
     BillboardSystemHandle system{};
     // The reordered upload, kept across frames.
     std::vector<float> sorted;
-    // What the buffer holds — the view it was sorted for and the count it
-    // carried — so `billboard_needs_upload` can gate the re-upload and a
-    // post-frame append invalidates it (pal_gpu_shared.hpp).
+    // What the buffer holds — its source instance version and the view it was
+    // sorted for — so `billboard_needs_upload` can gate the re-upload.
     BillboardUploadStamp upload_stamp;
 };
 
@@ -512,7 +511,7 @@ inline void upload_dawn_billboard_pass(
     }
 
     // One gating rule for both backends (`billboard_needs_upload`): an
-    // unchanged view over an unchanged count re-sorts and re-uploads
+    // unchanged view over unchanged instance data re-sorts and re-uploads
     // nothing.
     const Vec3d fo_offset =
         frame_floating_origin_offset(scene, engine);

@@ -55,9 +55,8 @@ struct BillboardPass {
     BillboardSystemHandle system{};
     // The reordered upload, kept so an unchanged view re-uploads nothing.
     std::vector<float> sorted;
-    // What the buffer holds — the view it was sorted for and the count it
-    // carried — so `billboard_needs_upload` can gate the re-upload and a
-    // post-frame append invalidates it (pal_gpu_shared.hpp).
+    // What the buffer holds — its source instance version and the view it was
+    // sorted for — so `billboard_needs_upload` can gate the re-upload.
     BillboardUploadStamp upload_stamp;
     // Where this system's fragment stage kept its two uniform blocks, from
     // the sidecar the shader step wrote beside it. A custom body that reads

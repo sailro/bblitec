@@ -29,7 +29,7 @@ namespace bbl {
 namespace {
 
 /** Whether these bytes are a PNG carrying a palette (`PLTE`) of its own. */
-bool png_carries_palette(const ts::ArrayBuffer& buffer) {
+bool png_carries_palette(const js::ArrayBuffer& buffer) {
     static constexpr std::array<std::uint8_t, 8> signature{
         0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
     const std::uint8_t* bytes =
@@ -75,7 +75,7 @@ bool png_carries_palette(const ts::ArrayBuffer& buffer) {
  */
 void correct_synthetic_grey_ramp(
     SDL_Surface* surface,
-    const ts::ArrayBuffer& buffer) {
+    const js::ArrayBuffer& buffer) {
     SDL_Palette* palette = SDL_GetSurfacePalette(surface);
     if (!palette || palette->ncolors < 2) return;
     if (png_carries_palette(buffer)) return;
@@ -91,7 +91,7 @@ void correct_synthetic_grey_ramp(
 
 } // namespace
 
-pal::DecodedImage pal::decode_image(const ts::ArrayBuffer& buffer) {
+pal::DecodedImage pal::decode_image(const js::ArrayBuffer& buffer) {
     SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
     if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
     SDL_Surface* source = IMG_Load_IO(stream, true);

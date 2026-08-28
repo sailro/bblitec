@@ -58,9 +58,33 @@ export class CompilerSymbols {
         if (!symbol) {
             return undefined;
         }
-        return (symbol.flags & ts.SymbolFlags.Alias) !== 0
+        const resolved = (symbol.flags & ts.SymbolFlags.Alias) !== 0
             ? this.checker.getAliasedSymbol(symbol)
             : symbol;
+        // A constructor parameter-property has one declaration but the
+        // checker may expose its declaration-name symbol at the parameter
+        // and its property-flavoured symbol at a use in the constructor
+        // body. Canonicalize both through that shared parameter declaration
+        // so lexical lookup does not depend on which view the checker gave
+        // the particular identifier.
+        const parameter = resolved.declarations?.find(
+            ts.isParameter,
+        );
+        if (
+            parameter &&
+            ts.isIdentifier(parameter.name) &&
+            ts.isParameterPropertyDeclaration(
+                parameter,
+                parameter.parent,
+            )
+        ) {
+            return (
+                this.checker.getSymbolAtLocation(
+                    parameter.name,
+                ) ?? resolved
+            );
+        }
+        return resolved;
     }
 
     /**

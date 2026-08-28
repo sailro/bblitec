@@ -38,6 +38,7 @@ import type { Feature, Value } from "./types.js";
  */
 export interface AudioReceiverContext extends PropertyContext {
     lookupOptional(identifier: ts.Identifier): Value | undefined;
+    resolveThisField(name: string): Value | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
 }
 
@@ -48,17 +49,18 @@ export interface AudioWriteContext extends AudioReceiverContext {
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    reachFeature(feature: Feature, site?: ts.Node): void;
     emit(line: string): void;
 }
 
 /** What a method call needs. The expression compiler satisfies it. */
 export interface AudioCallContext extends AudioWriteContext {
     allocateTemporaryCppName(label: string): string;
-    reachFeature(feature: Feature, site?: ts.Node): void;
 }
 
 const AUDIO_KINDS = new Set<string>([
     "audio-engine",
+    "audio-buffer",
     "audio-context",
     "audio-node",
     "audio-param",
@@ -101,6 +103,10 @@ const NODE_FACTORIES: Readonly<
         factory: "audio_create_stereo_panner",
         feature: "audio:stereo-panner",
     },
+    createBufferSource: {
+        factory: "audio_create_buffer_source",
+        feature: "audio:buffer-source",
+    },
 };
 
 /** `param.<method>(value, time)`. */
@@ -115,16 +121,6 @@ const PARAM_SCHEDULES: Readonly<Record<string, string>> = {
  * rather than compiling to something quieter.
  */
 const REFUSED_METHODS: Readonly<Record<string, string>> = {
-    createBuffer:
-        "a scene-synthesised AudioBuffer needs `getChannelData` to hand " +
-        "back a writable span of PAL-owned memory, which the plain-data " +
-        "model does not carry yet",
-    createBufferSource:
-        "a buffer source can never be given a bus while `createBuffer` " +
-        "and `decodeAudioData` both refuse, so it would be inert",
-    getChannelData:
-        "the same gap as createBuffer: a borrowed float span is not a " +
-        "plain-data type here",
     decodeAudioData:
         "an encoded audio file is an asset, and audio assets are not " +
         "materialized at generation yet",
@@ -182,6 +178,16 @@ function resolveAudioReceiver(
         return bound && AUDIO_KINDS.has(bound.kind) ? bound : undefined;
     }
     if (ts.isPropertyAccessExpression(node)) {
+        if (
+            node.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            const field = context.resolveThisField(
+                node.name.text,
+            );
+            return field && AUDIO_KINDS.has(field.kind)
+                ? field
+                : undefined;
+        }
         const owner = resolveAudioReceiver(context, node.expression);
         if (!owner) {
             return undefined;
@@ -206,6 +212,25 @@ export function compileAudioMethodCall(
     refuseAudioName(context, REFUSED_METHODS, method, call, "Web Audio");
 
     if (receiver.kind === "audio-context") {
+        if (method === "createBuffer") {
+            if (call.arguments.length !== 3) {
+                context.fail(
+                    call,
+                    "createBuffer expects channel count, frame count, and sample rate.",
+                );
+            }
+            context.reachFeature("audio:buffer-source", call);
+            return {
+                kind: "audio-buffer",
+                cpp:
+                    `bbl::pal::audio_create_buffer(${receiver.cpp}, ` +
+                    `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[0]!)}), ` +
+                    `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[1]!)}), ` +
+                    `${context.compileNumber(call.arguments[2]!, "double")})`,
+                dataType: { kind: "handle", handle: "audio-buffer" },
+                audioContextCpp: receiver.cpp,
+            };
+        }
         const factory = NODE_FACTORIES[method];
         if (!factory) {
             return undefined;
@@ -228,6 +253,20 @@ export function compileAudioMethodCall(
             kind: "audio-node",
             cpp: node,
             audioContextCpp: receiver.cpp,
+        };
+    }
+
+    if (receiver.kind === "audio-buffer" && method === "getChannelData") {
+        if (call.arguments.length !== 1) {
+            context.fail(call, "getChannelData expects exactly one channel index.");
+        }
+        return {
+            kind: "data",
+            cpp:
+                `bbl::pal::audio_buffer_channel(${receiver.cpp}, ` +
+                `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[0]!)}))`,
+            dataType: { kind: "f32array" },
+            borrowedData: true,
         };
     }
 
@@ -364,6 +403,18 @@ export function emitAudioPropertyAssignment(
 
     if (owner.kind !== "audio-node") {
         return false;
+    }
+
+    if (property === "buffer") {
+        const buffer = context.compileValue(right);
+        if (buffer.kind !== "audio-buffer") {
+            context.fail(right, "AudioBufferSourceNode.buffer expects an AudioBuffer.");
+        }
+        context.reachFeature("audio:buffer-source", expression);
+        context.emit(
+            `bbl::pal::audio_set_buffer(${owner.cpp}, ${buffer.cpp});`,
+        );
+        return true;
     }
 
     if (property === "onended") {
