@@ -1093,6 +1093,31 @@ A custom billboard program brings its own vertex stage, which is the one place
 the two families differ: the pin's billboard composer writes the view distance
 and the world position a custom body may read, and the stock stage does not.
 
+### Picking
+
+A GPU pick is a render, not a ray cast. `createGpuPicker(scene)` builds the
+picker, `pickAsync(picker, x, y)` renders every candidate into a ONE-PIXEL
+target through a view projection sheared so the sampled point lands on that
+pixel, writes each candidate's id as a colour and its clip depth to a second
+attachment, and reads the id back; `disposePicker` releases what the pass
+allocated. Nothing intersects geometry, which is why a Gaussian cloud picks
+at all -- it has no triangles, and its own pass draws the same splats it
+draws for the frame with the pick colour substituted for the blended one.
+
+Both modules are the pin's own text, composed by running
+`pickingShaderSource` and `buildPickingWgsl` at generation. The mesh
+pipeline compares GREATER over a depth buffer cleared to 0, this renderer's
+reverse-Z; the cloud pipeline compares LESS, which is what its own pinned
+pipeline declares and is kept rather than reconciled.
+
+`PickingInfo` carries WHICH node was hit -- the collection and the index --
+and `pickedMesh.name` reads through that pair where the scene asks for it,
+because upstream `pickedMesh` is a live node reference and a scene may
+rename the node between the pick and the read. Every other member refuses
+at the read site rather than returning a value this port cannot fill.
+[fidelity](fidelity.md#picking-contract) carries the two contracts the port
+owns, and the family's remaining arms are in `TODO.md`.
+
 ### Physics
 
 Rigid-body simulation, and the one family whose numbers are not the pin's.

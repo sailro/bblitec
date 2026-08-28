@@ -22,6 +22,12 @@ export interface SceneIntrinsicContext
         node: ts.Node,
     ): void;
     compileFrameCallback(expression: ts.Expression): string;
+    /**
+     * Records where the render loop starts, so the statements after it --
+     * the browser's own continuation -- are hoisted into the conductor's
+     * deferred queue rather than emitted after a call that never returns.
+     */
+    markEngineStart(engineCpp: string, node: ts.Node): void;
     /** The `scene.lights` slot the next added light fills. */
     nextSceneLightIndex(kind?: LightKind): number;
     requireEngine(value: Value, node: ts.Node): string;
@@ -337,6 +343,14 @@ export function compileSceneIntrinsic(
                 call.arguments[0]!,
             );
             context.reachFeature("backend:sdl", call);
+            // Upstream this returns to a continuation that runs alongside
+            // the frames it just scheduled; here the call blocks, so the
+            // statements after it are hoisted into the frame conductor's
+            // deferred queue.
+            context.markEngineStart(
+                engine.engineCpp ?? engine.cpp,
+                call,
+            );
             return {
                 kind: "void",
                 cpp: `bbl::start_engine(${engine.cpp})`,

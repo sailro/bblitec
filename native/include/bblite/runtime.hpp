@@ -153,6 +153,59 @@ struct ShadowGeneratorHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct GpuPickerHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+/**
+ * Which collection a pick resolved into.
+ *
+ * Upstream `PickingInfo.pickedMesh` is one object reference whatever was
+ * hit, because a mesh and a Gaussian cloud are both SceneNodes there. This
+ * port keeps them in separate collections, so the identity is the pair --
+ * and the name, which is all the reached slice reads, is resolved once at
+ * pick time rather than re-derived at every read.
+ */
+enum class PickedNodeKind : std::uint8_t {
+    none,
+    mesh,
+    splat_mesh,
+};
+
+/**
+ * The pin's `PickingInfo`, at the slice this port resolves.
+ *
+ * WHAT WAS HIT, and nothing more. `pickedPoint` and `distance` are the
+ * pin's `mat4Invert(vp)` applied to the sampled NDC and the depth
+ * attachment's value; `ray`, `bu`, `bv` and `thinInstanceIndex` belong to
+ * the detailed and advanced pipelines. None is declared here, because a
+ * field this port cannot fill is worse than one a scene cannot read: the
+ * property table serves `hit` and `pickedMesh.name`, and every other member
+ * refuses by name at the read site.
+ */
+struct PickingInfo {
+    bool hit = false;
+    /**
+     * WHICH node was hit. Upstream `pickedMesh` is a live reference and
+     * `.name` reads it at the moment the scene asks, so the identity is
+     * what the pick resolves and the name is read through it -- a scene
+     * that picks, renames the node and then reads would otherwise get the
+     * name the node had at pick time.
+     */
+    PickedNodeKind picked_kind = PickedNodeKind::none;
+    std::uint32_t picked_index = invalid_handle;
+};
+
+
+/**
+ * The picker's own state. The GPU resources it owns live with the renderer
+ * -- only the renderer knows how to make them -- so this record carries the
+ * scene it picks in and the slot the backend keeps its resources under.
+ */
+struct GpuPickerRecord {
+    bool disposed = false;
+};
+
 enum class PrimitiveKind {
     babylon,
     box,
@@ -1066,6 +1119,12 @@ struct Sprite2DView {
  * writes it rather than folded away.
  */
 struct SplatMeshRecord {
+    /**
+     * A cloud is a SceneNode upstream, so it carries the same name a mesh
+     * does -- and a GPU pick resolves to that name, which is the only reader
+     * this port has for it.
+     */
+    std::string name;
     std::uint32_t vertex_count = 0;
     std::uint32_t texture_width = 0;
     std::uint32_t texture_height = 0;
@@ -1961,6 +2020,19 @@ struct Engine {
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
     std::vector<ShadowGeneratorRecord> shadow_generators;
+    std::vector<GpuPickerRecord> gpu_pickers;
+    /**
+     * The live renderer's pick pass.
+     *
+     * A pick renders the scene into a one-pixel target and reads it back,
+     * which only the backend that owns the mesh buffers and the cloud's
+     * textures can do. The renderer installs this during setup and the
+     * generated `gpu_pick` calls it; a build whose loop has not started
+     * yet -- or whose backend does not implement picking -- leaves it
+     * empty and the pick reports a miss rather than shading something
+     * plausible.
+     */
+    std::function<PickingInfo(GpuPickerHandle, double, double)> pick_hook;
     // `engine._renderingContexts`, for the sprite half: registration
     // order is draw order across renderers.
     std::vector<SpriteRendererHandle> registered_sprite_renderers;
@@ -3119,6 +3191,21 @@ void start_engine(Engine& engine);
 void stop_engine(Engine& engine);
 /** `setTimeout(callback, 0)`; see `Engine::deferred_callbacks`. */
 void defer_callback(Engine& engine, std::function<void()> callback);
+
+/** `createGpuPicker(scene)`. */
+GpuPickerHandle create_gpu_picker(Scene& scene);
+/** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
+[[nodiscard]] std::string picked_node_name(
+    const Engine& engine,
+    const PickingInfo& info);
+/** `pickAsync(picker, x, y)`, resolved before the call returns. */
+PickingInfo gpu_pick(
+    Engine& engine,
+    GpuPickerHandle picker,
+    double x,
+    double y);
+/** `disposePicker(picker)`. */
+void dispose_picker(Engine& engine, GpuPickerHandle picker);
 /**
  * Run and clear everything `setTimeout` queued. Called by the frame
  * conductor after the frame's own callbacks, which is where the browser

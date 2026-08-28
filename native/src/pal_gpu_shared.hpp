@@ -884,6 +884,143 @@ inline Vec3 normalize_vec3(Vec3 value) {
         : Vec3{};
 }
 
+#if BBLITE_HAS_PICKING
+// GPU picking's backend-independent half: the two shears the pin computes
+// per pick, and the id encoding both attachments agree on. The pin puts
+// these in `picking/gpu-picker.ts` and `picking/gs-picking-pipeline.ts`;
+// each is lowered from its own body, and both backends read the same one.
+
+/** The pin's `SceneUniforms`: the sheared VP, then the sampled pixel. */
+struct PickSceneUniforms {
+    std::array<float, 16> view_projection{};
+    std::array<float, 2> fragment_coord{};
+    std::array<float, 2> _pad{};
+};
+
+/** The pin's `MeshUniforms`: the world matrix, then the id. */
+struct PickMeshUniforms {
+    std::array<float, 16> world{};
+    std::uint32_t pick_id = 0;
+    std::array<std::uint32_t, 3> _pad{};
+};
+
+/**
+ * The pin's whole scene block for one pick: `computePickVP` lowered from
+ * its own body, then the two lanes its caller writes after it.
+ *
+ * The shear maps the sampled point to the one pixel the target has -- each
+ * column's x and y scaled by the viewport extent and offset by the sample's
+ * NDC, so the sample lands at the origin of a 1x1 clip volume. Upstream
+ * fills `_pickVP[0..15]` here and `[16]`/`[17]` at the call site, then
+ * uploads all twenty floats as one buffer; `PickSceneUniforms` is that
+ * buffer, so the split does not survive into this port.
+ */
+inline PickSceneUniforms build_pick_scene_uniforms(
+    const std::array<float, 16>& vp,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height) {
+    PickSceneUniforms out;
+    const double ndc_x = 2.0 * sample_x / width - 1.0;
+    const double ndc_y = 1.0 - 2.0 * sample_y / height;
+    for (int column = 0; column < 4; ++column) {
+        const auto base = static_cast<std::size_t>(column * 4);
+        const double w3 = static_cast<double>(vp[base + 3]);
+        out.view_projection[base] = static_cast<float>(
+            width * (static_cast<double>(vp[base]) - ndc_x * w3));
+        out.view_projection[base + 1] = static_cast<float>(
+            height * (static_cast<double>(vp[base + 1]) - ndc_y * w3));
+        out.view_projection[base + 2] = vp[base + 2];
+        out.view_projection[base + 3] = vp[base + 3];
+    }
+    // The pin writes the sampled pixel's CENTRE; a discard predicate reads
+    // it, and the default one does not -- but the block uploads whole.
+    out.fragment_coord = {
+        static_cast<float>(std::floor(sample_x) + 0.5),
+        static_cast<float>(std::floor(sample_y) + 0.5)};
+    return out;
+}
+
+/**
+ * `computeGsPickMatrix`, lowered from its own body.
+ *
+ * The cloud's vertex stage already produced clip space, so its shear is a
+ * post-multiply rather than a replacement projection: scale by the viewport
+ * and translate by the sample's NDC.
+ */
+inline void compute_cloud_pick_matrix(
+    std::array<float, 16>& out,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height) {
+    const double ndc_x = 2.0 * sample_x / width - 1.0;
+    const double ndc_y = 1.0 - 2.0 * sample_y / height;
+    out = {
+        static_cast<float>(width), 0.0f, 0.0f, 0.0f,
+        0.0f, static_cast<float>(height), 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        static_cast<float>(-ndc_x * width),
+        static_cast<float>(-ndc_y * height),
+        0.0f, 1.0f};
+}
+
+/**
+ * One candidate the pick pass drew, in submission order.
+ *
+ * Upstream keeps mesh ranges and contributor ranges apart because a thin
+ * instance makes a mesh's range wider than one id; nothing in the reached
+ * slice does, so one id is one node and the two lists are one.
+ */
+struct PickRange {
+    std::uint32_t id = 0;
+    PickedNodeKind kind = PickedNodeKind::none;
+    std::uint32_t index = invalid_handle;
+};
+
+/**
+ * The id the one-pixel target held, resolved against what was drawn.
+ *
+ * Zero is the cleared attachment, which is upstream's "nothing here"; an
+ * id no range claims cannot happen while the draw loop and the range list
+ * agree, and saying so is cheaper than debugging a silent miss if they
+ * ever stop agreeing.
+ */
+inline PickingInfo resolve_pick_result(
+    const std::vector<PickRange>& ranges,
+    std::uint32_t pick_id) {
+    if (pick_id == 0) return PickingInfo{};
+    for (const PickRange& range : ranges) {
+        if (range.id != pick_id) continue;
+        PickingInfo info;
+        info.hit = true;
+        info.picked_kind = range.kind;
+        info.picked_index = range.index;
+        return info;
+    }
+    throw std::runtime_error(
+        "GPU pick read an id no candidate was drawn under.");
+}
+
+/** `encodeIdToColor`: the id's three bytes as unit floats. */
+inline std::array<float, 3> encode_pick_id_to_color(std::uint32_t id) {
+    return {
+        static_cast<float>((id >> 16) & 0xFFu) / 255.0f,
+        static_cast<float>((id >> 8) & 0xFFu) / 255.0f,
+        static_cast<float>(id & 0xFFu) / 255.0f,
+    };
+}
+
+/** The colour attachment's three bytes back into the id they encode. */
+inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
+    return (static_cast<std::uint32_t>(texel[0]) << 16) |
+           (static_cast<std::uint32_t>(texel[1]) << 8) |
+           static_cast<std::uint32_t>(texel[2]);
+}
+
+#endif
+
 inline std::vector<GpuVertex> transformed_vertices(
     const ModelGeometry& geometry,
     const MeshRecord& mesh) {

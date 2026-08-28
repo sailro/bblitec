@@ -50,6 +50,12 @@ interface PropertyRead {
     record?: readonly [collection: string, field: string];
     field?: string;
     helper?: string;
+    /**
+     * The helper's first argument is the owning engine. A read whose
+     * answer lives in a record the value only NAMES -- a pick result's
+     * node, say -- needs the collection as well as the value.
+     */
+    helperTakesEngine?: true;
     retag?: true;
     barrier?: true;
     /**
@@ -474,6 +480,34 @@ const propertyRules: readonly PropertyRule[] = [
         record: ["cameras", "name"],
     },
     {
+        // A pick answers with the id it read out of the one-pixel target,
+        // so `hit` is a field of the value rather than a lookup.
+        owner: "picking-info",
+        property: "hit",
+        value: "data",
+        dataType: { kind: "boolean" },
+        field: "hit",
+    },
+    {
+        // Upstream `pickedMesh` is the node object itself, and both kinds
+        // that can be hit carry a name. This port keeps meshes and clouds
+        // in separate collections, so the pick resolves the identity once
+        // and the value carries it: the retag reads nothing, and the one
+        // member the reached slice asks for is below.
+        owner: "picking-info",
+        property: "pickedMesh",
+        value: "picked-node",
+        retag: true,
+    },
+    {
+        owner: "picked-node",
+        property: "name",
+        value: "data",
+        dataType: { kind: "string" },
+        helper: "bbl::picked_node_name",
+        helperTakesEngine: true,
+    },
+    {
         // The pinned Mesh name — see MeshRecord::name for who fills it.
         owner: "mesh",
         property: "name",
@@ -650,10 +684,13 @@ export function readProperty(
         );
     }
     if (rule.helper) {
+        const engine = rule.helperTakesEngine
+            ? `${context.requireEngine(owner, expression)}, `
+            : "";
         return read(
             rule.helperArgument
-                ? `${rule.helper}(${owner.cpp}, ${rule.helperArgument})`
-                : `${rule.helper}(${owner.cpp})`,
+                ? `${rule.helper}(${engine}${owner.cpp}, ${rule.helperArgument})`
+                : `${rule.helper}(${engine}${owner.cpp})`,
         );
     }
     if (rule.barrier) {

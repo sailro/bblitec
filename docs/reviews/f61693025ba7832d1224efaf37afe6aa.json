@@ -1,0 +1,92 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "the pick walked the WRONG INDEX SPACE: `state.meshes` is indexed by render-plan item in both PALs, and both hooks indexed it by engine mesh handle -- equal only while every engine mesh is in the scene, in creation order, with nothing skipped. Scene 129 satisfied that by luck, and it broke the very contract the comment above it claimed, since `rematch_render_meshes` rebuilds `state.meshes` against the new plan on a membership change. Both hooks walk `render_plan.items` now, which inherits the plan's geometry skip for free",
+      "applied": true
+    },
+    {
+      "summary": "Dawn released NOTHING pick-related: `release_dawn_pick_targets` had zero call sites, and the two pipelines, three layouts, three buffers and three bind groups leaked with it, while `~DawnState` freed the splat and billboard passes sitting beside them",
+      "applied": true
+    },
+    {
+      "summary": "the SDL fragment pushes addressed slots resolved from the VERTEX sidecar. `picking.frag.slots` holds `b0 scene` alone -- the id reaches the fragment as a flat varying, not a block -- so the mesh push went to a slot the stage does not declare. It worked only because `scene` lands at b0 in both stages, the coincidence the sidecar exists to stop anyone relying on",
+      "applied": true
+    },
+    {
+      "summary": "picking state, its release and its headers all sat inside `#if BBLITE_HAS_SPLATS` on both backends, so a scene that picks without loading a cloud would not have compiled; the inner splat guard was tautological inside the outer one. The two guards are siblings now",
+      "applied": true
+    },
+    {
+      "summary": "the Dawn map callback threw from inside `wgpuInstanceWaitAny`, unwinding through Dawn's own C frame. Every other wait in this backend records the failure in `state.uncaptured_error` and lets the caller raise, which `pal_dawn_shared.hpp` states as the rule",
+      "applied": true
+    },
+    {
+      "summary": "the ternary string unification spread the other branch over each side, handing each the other's `engineCpp` and making the mismatch check below it unreachable -- a genuine two-engine pair would have emitted instead of failing. Only the literal side moves now, carrying nothing",
+      "applied": true
+    },
+    {
+      "summary": "`PickingInfo` froze the picked node's NAME at pick time, while upstream `pickedMesh` is a live reference read when the scene asks -- and this branch itself makes `splat.name` writable, so the staleness was reachable. The record carries the identity again and `picked_node_name` reads through it at the read site, reached by a property rule that now declares its helper takes the engine. This reverses an earlier simplification finding that called the pair unread; the standing 'scenes are living things' rule decides it",
+      "applied": true
+    },
+    {
+      "summary": "`PickSceneUniforms` IS the pin's `_pickVP` -- 16 floats plus the two lanes its caller writes -- but the helper filled only the first 16 of a 20-float array and both backends then copied and completed it by hand. `build_pick_scene_uniforms` returns the block whole, deleting the temp, the copy and the pixel-centre arithmetic twice; Dawn's byte-identical copy of the struct is gone with it",
+      "applied": true
+    },
+    {
+      "summary": "`PickRange` and the whole resolve loop were duplicated verbatim between the backends; both live in the shared conductor now, which is where the id encode/decode already lived",
+      "applied": true
+    },
+    {
+      "summary": "picking a thin-instanced mesh threw from the pass on both backends. It cannot refuse at the `createGpuPicker` call site -- such a mesh may be created after the picker -- so it refuses where the whole feature list is known, through the same late-refusal helper the sprite families use",
+      "applied": true
+    },
+    {
+      "summary": "the hoist could splice a block's closing brace into the deferred lambda, and inside a frame callback would silently no-op because the line was already spliced out. It checks the emitted lines' indentation now rather than the lowering scope -- scope depth was the wrong question, since scene 12's top-level call does not report entry-body scope at mark time -- and a second `startEngine` refuses",
+      "applied": true
+    },
+    {
+      "summary": "`GpuPickerRecord::scene` was write-only (each backend's hook captures the scene it was installed for), the SDL staging buffer was 512 bytes for a second download never issued, both colour attachments asked for SAMPLER usage nothing samples, the cloud shear was six indexed stores rather than one constant matrix, the quad's index count was a literal 6 where every other site reads the pin's table, and the SDL picking header hand-rolled `gpu_error`'s message shape",
+      "applied": true
+    },
+    {
+      "summary": "`scene_uniforms` was pushed per candidate though loop-invariant; the canvas-size map was rebuilt on every node of an expression walk; Dawn's parallel pointer list into `state.meshes` was redundant with `ranges` and was the shape of the bloom-composite crash; the pick hook is now cleared where the renderer state it captures dies; `DawnPickMeshUniforms` takes its 256-byte stride from `alignas` rather than a hand-counted 47-element tail",
+      "applied": true
+    },
+    {
+      "summary": "the frame yield inside a hoisted continuation is still erased, and both PALs compensate by bringing each cloud's sort current inside the pick. The honest fix is for a frame yield inside a deferred body to re-queue to the next frame -- `run_deferred_callbacks` already moves the queue out before draining, so the mechanism exists -- which would make `firstSortReady`'s barrier truthful by construction and delete both compensations. Not applied: it needs the statement lowerer to split a deferred body at a yield, which is its own change with its own gates; the compensation is idempotent, measured at 0.001/0.004 on both backends, and stated in fidelity.md. Filed in TODO.md under the picking entry",
+      "applied": false,
+      "blockedBy": "the statement lowerer cannot split a deferred body at a frame yield: the erasure is structural (`isFrameYield`) and the split needs a second `defer_callback` nested inside the first, which no lowering path emits today",
+      "filedIn": "TODO.md, under the GPU picking entry"
+    },
+    {
+      "summary": "picking a second Gaussian cloud still throws from the Dawn pass rather than refusing at generation. Not applied: generation carries no per-scene cloud count to refuse on -- `splatShaderModule` is singular and the manifest records fragments, not call sites -- so the refusal needs a count the compiler does not yet track. No corpus scene loads two clouds. Filed with the picking entry",
+      "applied": false,
+      "blockedBy": "generation carries no per-scene Gaussian-cloud count -- `splatShaderModule` is singular and the manifest records fragments rather than `loadSplat` call sites -- so there is nothing to refuse on",
+      "filedIn": "TODO.md, under the GPU picking entry"
+    },
+    {
+      "summary": "`PickRange::id` is derivable as `index + 1` today, collapsing the linear scan to a subscript. Not applied: the field mirrors the pin's own `meshRanges` base/count, which exists because a thin-instanced candidate makes one mesh span several ids -- the arm the entry above files. Collapsing it now would have to be undone by that work, and the scan is over three candidates once per scene",
+      "applied": false,
+      "blockedBy": "the thin-instance picking arm has not been built, and it is what decides whether a range spans one id or several; collapsing the field now would be undone by it",
+      "filedIn": "TODO.md, under the GPU picking entry"
+    },
+    {
+      "summary": "`record_cloud_pick_draw` re-types `record_splat_pass`'s binding tail, and Dawn's two pipeline creators are near-identical where SDL copies one descriptor and overrides four fields. Not applied: the cloud pick draw differs in pipeline, in two extra uniform pushes and in where its slots come from, so parameterising the shared writer would add an override path with one caller; the Dawn pair differs in bind-group count and vertex layout as well as depth compare. Both are worth revisiting when a third caller appears",
+      "applied": false,
+      "blockedBy": "no third caller exists to say which shape the shared writer should take, and a one-caller override path is the duplication in another form",
+      "filedIn": "TODO.md, under the GPU picking entry"
+    },
+    {
+      "summary": "Dawn's pick hook repeats the frame loop's lazy splat-pass creation. Not applied for the same reason as the entry above it: fixing the frame-yield contract removes the block entirely, and extracting a helper now would be undone by that",
+      "applied": false,
+      "blockedBy": "the frame-yield contract above it removes this block outright, so extracting a helper now would be undone by that work",
+      "filedIn": "TODO.md, under the GPU picking entry"
+    }
+  ]
+}

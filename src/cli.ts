@@ -8,6 +8,10 @@ import {
     compileSource,
     renderFeaturesCmake,
 } from "./compiler.js";
+import {
+    composeCloudPickingShader,
+    composeMeshPickingShader,
+} from "./pinned-picking-shaders.js";
 import type { CompiledShaderProgram } from "./compiler.js";
 import type {
     CompiledNodeParticles,
@@ -786,6 +790,17 @@ async function main(): Promise<void> {
     // Each reached post-process pass composes its module by running the
     // pinned factory: the effect's stage is the pin's text for the options
     // this scene passed, never a reproduction of it.
+    // A GPU pick draws through the pin's own two modules. Both are
+    // executed rather than re-typed, for the reason every composed stage
+    // here is: what deploys must be the text the browser compiled.
+    const pickingShaders = result.manifest.features.includes("picking:gpu")
+        ? {
+              mesh: await composeMeshPickingShader(),
+              ...(result.manifest.features.includes("loader:splat")
+                  ? { cloud: await composeCloudPickingShader() }
+                  : {}),
+          }
+        : undefined;
     const postProcessShaders = await Promise.all(
         result.manifest.postProcessTasks.map((task) =>
             composePostProcess({
@@ -882,6 +897,7 @@ async function main(): Promise<void> {
         geometryOutputTasks: result.manifest.geometryOutputTasks,
         postProcessTasks: result.manifest.postProcessTasks,
         postProcessShaders,
+        ...(pickingShaders !== undefined ? { pickingShaders } : {}),
         postProcessComposites,
         ...(nodeParticles.length > 0 ? { nodeParticles } : {}),
         ...(nodeParticleSprite2d.length > 0

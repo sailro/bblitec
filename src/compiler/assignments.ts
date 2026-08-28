@@ -1110,14 +1110,22 @@ export function emitPropertyAssignment(
             return;
         }
 
+        // A cloud is a SceneNode upstream exactly as a mesh is, so the name
+        // write is the same statement over the other collection. A GPU pick
+        // reads it back, which is what gives a splat scene a reason to set it.
         if (
-            target.kind === "mesh" &&
+            (target.kind === "mesh" || target.kind === "splat-mesh") &&
             property === "name"
         ) {
+            const collection = target.kind === "splat-mesh"
+                ? "splat_meshes"
+                : "meshes";
             requireSimpleAssignment(
                 context,
                 expression,
-                "mesh name",
+                target.kind === "splat-mesh"
+                    ? "splat cloud name"
+                    : "mesh name",
             );
             const name = context.compileValue(
                 expression.right,
@@ -1128,7 +1136,7 @@ export function emitPropertyAssignment(
                 expression.right,
             );
             context.emit(
-                `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].name = ${name.cpp};`,
+                `${context.requireEngine(target, expression)}.${collection}[${target.cpp}.value].name = ${name.cpp};`,
             );
             return;
         }

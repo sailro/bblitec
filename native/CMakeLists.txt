@@ -593,6 +593,21 @@ else()
     )
 endif()
 
+# A GPU pick renders the candidates into a one-pixel target and reads the id
+# back, so it needs its own pipelines and attachments inside whichever
+# backend is compiled -- and nothing at all in a scene that never picks.
+if("picking:gpu" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_PICKING=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_PICKING=0
+    )
+endif()
+
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
 # (`featureSources`). Nothing generated names Bullet.

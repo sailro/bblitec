@@ -39,6 +39,23 @@ import type {
 } from "./user-functions.js";
 
 /**
+ * Number formatters the language owns rather than the scene.
+ *
+ * What `containsEvaluatedCall` is really asking is "could dropping this
+ * argument drop an effect the program still needs" -- a user function's
+ * body may mutate state, so it has to run. `Number.prototype.toFixed` and
+ * its siblings cannot: they read one number and return a string. Treating
+ * them as calls made an erased `console.log` emit its whole formatted
+ * template as a discarded statement, which is dead work whose only visible
+ * trace is the compiler rejecting the discard.
+ */
+const PURE_NUMBER_FORMATTERS = new Set([
+    "toFixed",
+    "toPrecision",
+    "toExponential",
+]);
+
+/**
  * Calls in an argument are evaluated before their enclosing call. Stop at a
  * nested function boundary because creating a callback does not execute its
  * body.
@@ -46,6 +63,14 @@ import type {
 function containsEvaluatedCall(node: ts.Node): boolean {
     if (ts.isFunctionLike(node)) {
         return false;
+    }
+    if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        PURE_NUMBER_FORMATTERS.has(node.expression.name.text)
+    ) {
+        // The receiver may still hold one -- `advance().toFixed(1)`.
+        return containsEvaluatedCall(node.expression.expression);
     }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         return true;
@@ -1461,6 +1486,38 @@ export class ExpressionLowerer {
                 cpp: "",
                 recordProperties: selected,
             };
+        }
+        // A literal string and a string READ OUT OF A RECORD are the same
+        // type; only the kinds differ, because one carries a compile-time
+        // value and the other does not. The element-access path already
+        // treats the pair as one (a dynamic record key is either), and a
+        // branch that picks between a record's string and a literal -- the
+        // shape a pick result's name takes -- is the same question. The
+        // literal side widens, since `std::string` is the common type of
+        // the emitted conditional either way.
+        const stringValued = (value: Value): boolean =>
+            value.kind === "string" ||
+            (value.kind === "data" &&
+                value.dataType?.kind === "string");
+        if (
+            whenTrue.kind !== whenFalse.kind &&
+            stringValued(whenTrue) &&
+            stringValued(whenFalse)
+        ) {
+            // Only the literal side moves, and it carries nothing across:
+            // spreading the other branch would hand each side the other's
+            // `engineCpp`, which is what the mismatch check below exists
+            // to catch.
+            const asStringData = (value: Value): Value =>
+                value.kind === "string"
+                    ? {
+                          kind: "data",
+                          cpp: value.cpp,
+                          dataType: { kind: "string" },
+                      }
+                    : value;
+            whenTrue = asStringData(whenTrue);
+            whenFalse = asStringData(whenFalse);
         }
         if (
             whenTrue.kind !== whenFalse.kind ||

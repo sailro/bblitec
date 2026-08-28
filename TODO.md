@@ -302,16 +302,15 @@ platform boundary.
   or image skyboxes are rotation-invariant or unrelated; the remaining
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
-- [ ] Extend the splat slice past what scenes 120, 125, 126, 127 and 128
-  measure ([fidelity](docs/fidelity.md#gaussian-splats) carries the shipped
-  contracts). What remains, each refusing by name:
+- [ ] Extend the splat slice past what scenes 120, 125, 126, 127, 128 and
+  129 measure ([fidelity](docs/fidelity.md#gaussian-splats) carries the
+  shipped contracts). What remains, each refusing by name:
   - 121: `splatsData` + `updateData` — the row buffer handed back as a
     mutable `ArrayBuffer` and re-uploaded, which also needs `new
     Float32Array(buf)` over it and an indexed element assignment.
   - 124: a compressed PLY with spherical harmonics — the pin's second
     parser plus `gaussian-splatting-pipeline-sh` and its 1..5 rgba32uint SH
     textures.
-  - 129: `splat.name`, then the picking family.
   - `loadSOG` (122) needs a ZIP and a WebP decoder; `loadSPZ` (123) needs
     gzip.
   A second `loadSplat` naming a different plugin list also refuses: the
@@ -327,6 +326,43 @@ platform boundary.
   removing means caching it on the pass record — state whose invalidation
   nothing measures, for roughly 50ns a frame. The Dawn pair, which sat in
   one function, is hoisted.
+- [ ] Extend GPU picking past what scene 129 measures
+  ([features](docs/features.md#picking)). The reached slice is one
+  non-detailed pick over meshes and one cloud; each remaining arm refuses by
+  name:
+  - `enableDetailedPicking` and `getPickedNormal` (114, 117): a third
+    rgba32uint attachment, the primitive and barycentric readback, and the
+    CPU position and normal arrays `detailed-picking.ts` interpolates.
+  - `pickAsync`'s `filter`, `discard` and `ignore` options, which select
+    `picking-advanced-pipeline.ts` and `picking-ignore.ts`.
+  - a thin-instanced, VAT or morph/skeleton candidate: the first two need
+    the advanced pipeline's instance-composed id, the third the deform
+    projection `deform-picking-projection.ts` builds.
+  - `mesh.pickable`, the pin's own opt-out. No reached scene writes it, so
+    `MeshRecord` carries no lane rather than one that is always true; scene
+    118 is the scene that writes it.
+  - `PickingInfo.pickedPoint`, `distance` and `ray`. The pin derives the
+    first two from `mat4Invert(vp)` over the sampled NDC and the depth
+    attachment, which this port reads back but does not yet consume; the
+    record declares neither, so a scene reading one refuses at the property
+    rather than getting a zero.
+  - a second cloud in one pick: the shear and the id colour are single
+    buffers on Dawn, and a second would need the dynamic-offset treatment
+    the mesh blocks already get. It throws from the pass rather than
+    refusing at generation because no per-scene cloud count exists to
+    refuse on -- `splatShaderModule` is singular and the manifest records
+    fragments, not call sites.
+  - a frame yield inside a hoisted continuation. `startEngine`'s
+    continuation runs on the deferred queue, which `advance_frame` drains
+    BEFORE the frame's uploads, so `await new Promise(rAF)` inside it is
+    erased on a claim that is no longer true and both PALs compensate by
+    bringing each cloud's sort current inside the pick
+    ([fidelity](docs/fidelity.md#picking-contract)). The fix is for a
+    yield inside a deferred body to re-queue to the next frame --
+    `run_deferred_callbacks` already moves the queue out before draining,
+    so the boundary exists -- which makes `firstSortReady`'s barrier
+    truthful by construction and deletes both compensations, including
+    Dawn's copy of the frame loop's lazy splat-pass creation.
 - [ ] Collapse the rotation record onto the pin's one-lane model. Upstream
   `rotation` is an Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
   `scene/scene-node.ts`), so `composeTrsLocalMatrix` reads the quaternion

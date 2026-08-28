@@ -233,6 +233,23 @@ import {
 export { renderFeaturesCmake };
 import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
 
+/**
+ * A canvas size read, and which of the engine's two dimensions answers it.
+ *
+ * `clientWidth`/`clientHeight` are the CSS box rather than the backing
+ * store, and the pin reads both: `pickAsync` scales a pick coordinate by
+ * `backingWidth / clientWidth`. Native has no CSS layer -- the surface is
+ * the only size there is -- so the two fold to one value and that ratio is
+ * 1, which is what a capture at devicePixelRatio 1 measures on the browser
+ * side too.
+ */
+const CANVAS_SIZE_AXES = new Map<string, "width" | "height">([
+    ["width", "width"],
+    ["height", "height"],
+    ["clientWidth", "width"],
+    ["clientHeight", "height"],
+]);
+
 export class CompileError extends Error {
     public readonly fileName: string;
     public readonly line: number;
@@ -4371,11 +4388,11 @@ class Compiler
         expression: ts.Expression,
     ): "width" | "height" | undefined {
         const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            (unwrapped.name.text !== "width" &&
-                unwrapped.name.text !== "height")
-        ) {
+        if (!ts.isPropertyAccessExpression(unwrapped)) {
+            return undefined;
+        }
+        const axis = CANVAS_SIZE_AXES.get(unwrapped.name.text);
+        if (!axis) {
             return undefined;
         }
         const ownerType = this.checker.getTypeAtLocation(
@@ -4395,7 +4412,7 @@ class Compiler
                     member.getSymbol()?.getName() ?? "",
                 ),
             )
-            ? unwrapped.name.text
+            ? axis
             : undefined;
     }
 
@@ -5883,6 +5900,98 @@ class Compiler
     }
 
     /**
+     * Where `startEngine` lands in the entry body.
+     *
+     * Upstream `startEngine` schedules the render loop and RETURNS, so the
+     * rest of `main` runs interleaved with the frames it started -- which is
+     * how a scene picks, reads the result and mutates the scene before the
+     * capture. `pal::run_engine` does not return until the loop ends, so the
+     * same statements emitted in place would run after the capture and
+     * decide nothing. They are the browser's continuation, and the frame
+     * conductor already has the boundary it wants: the deferred-callback
+     * queue `advance_frame` drains.
+     */
+    private engineStartMark:
+        | { index: number; engine: string; node: ts.Node }
+        | undefined;
+
+    public markEngineStart(
+        engineCpp: string,
+        node: ts.Node,
+    ): void {
+        if (this.engineStartMark) {
+            this.fail(
+                node,
+                "A second startEngine is a restart this runtime does not " +
+                    "lower; the first one already owns the continuation.",
+            );
+        }
+        this.engineStartMark = {
+            index: this.body.length,
+            engine: engineCpp,
+            node,
+        };
+    }
+
+    /**
+     * Move everything after `bbl::start_engine(...)` into the callback the
+     * conductor runs at the next frame boundary, registered before the loop
+     * starts. A scene whose body ends at `startEngine` -- every scene that
+     * shipped before this contract -- has an empty continuation and emits
+     * exactly what it emitted before.
+     */
+    private hoistEngineContinuation(): void {
+        const mark = this.engineStartMark;
+        if (!mark) {
+            return;
+        }
+        let index = mark.index;
+        while (
+            index < this.body.length &&
+            !this.body[index]!.includes("bbl::start_engine(")
+        ) {
+            index += 1;
+        }
+        if (index >= this.body.length) {
+            return;
+        }
+        const tail = this.body.splice(index + 1);
+        if (tail.length === 0) {
+            return;
+        }
+        // The continuation has to be a run of statements at the call's own
+        // depth. A `startEngine` inside a block would leave that block's
+        // closing brace in the tail at a shallower indent, and moving it
+        // into the lambda would emit unbalanced C++ -- so the shape is
+        // checked here, where the emitted lines say what it is, rather
+        // than guessed from the lowering scope.
+        const depth = (line: string): number =>
+            line.length - line.trimStart().length;
+        const startDepth = depth(this.body[index]!);
+        const escapes = tail.find(
+            (line) =>
+                line.trim().length > 0 && depth(line) < startDepth,
+        );
+        if (escapes !== undefined) {
+            this.fail(
+                mark.node,
+                "startEngine is lowered at the entry body's top level " +
+                    "alone: the statements after it become the frame " +
+                    "conductor's deferred callback, and a block that " +
+                    "closes after it has no boundary for one.",
+            );
+        }
+        const indent = " ".repeat(startDepth);
+        this.body.splice(
+            index,
+            0,
+            `${indent}bbl::defer_callback(${mark.engine}, [&]() {`,
+            ...tail.map((line) => `    ${line}`),
+            `${indent}});`,
+        );
+    }
+
+    /**
      * Whether lowering is at the entry body's own top level rather than
      * inside a block it opened. What it decides: a binding emitted here
      * lives as long as the frame loop, which is what the pinned
@@ -5901,6 +6010,7 @@ class Compiler
     }
 
     private renderCpp(features: Feature[]): string {
+        this.hoistEngineContinuation();
         return renderMainCpp({
             features,
             jsDataReached: this.jsDataReached,

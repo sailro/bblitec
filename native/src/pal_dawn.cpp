@@ -43,6 +43,9 @@
 #if BBLITE_HAS_SPLATS
 #include "pal_dawn_splat.hpp"
 #endif
+#if BBLITE_HAS_PICKING
+#include "pal_dawn_picking.hpp"
+#endif
 #if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
 #include "pal_dawn_effect.hpp"
 #endif
@@ -464,6 +467,30 @@ struct DawnState : DawnDevice {
 #if BBLITE_HAS_SPLATS
     std::vector<DawnSplatPass> splat_passes;
 #endif
+#if BBLITE_HAS_PICKING
+    // A scene that picks without loading a cloud reaches every one of
+    // these and none of the cloud set below, so the two guards are
+    // siblings rather than nested.
+    DawnPickTargets pick_targets;
+    WGPURenderPipeline pick_mesh_pipeline = nullptr;
+    WGPUBindGroupLayout pick_scene_layout = nullptr;
+    WGPUBindGroupLayout pick_mesh_layout = nullptr;
+    WGPUBuffer pick_scene_buffer = nullptr;
+    WGPUBindGroup pick_scene_group = nullptr;
+    /** One slice per candidate, bound at a dynamic offset. */
+    WGPUBuffer pick_mesh_buffer = nullptr;
+    WGPUBindGroup pick_mesh_group = nullptr;
+    std::size_t pick_mesh_capacity = 0;
+#if BBLITE_HAS_SPLATS
+    WGPURenderPipeline pick_cloud_pipeline = nullptr;
+    WGPUBindGroupLayout pick_cloud_color_layout = nullptr;
+    WGPUBuffer pick_cloud_shear = nullptr;
+    WGPUBindGroup pick_cloud_shear_group = nullptr;
+    WGPUBuffer pick_cloud_color = nullptr;
+    WGPUBindGroup pick_cloud_color_group = nullptr;
+#endif
+#endif
+
     [[nodiscard]] bool multisampled() const {
         return sample_count > 1;
     }
@@ -1094,6 +1121,32 @@ WGPUBuffer esm_caster_params_buffer(
     }
 
     ~DawnState() {
+#if BBLITE_HAS_PICKING
+        release_dawn_pick_targets(pick_targets);
+        if (pick_mesh_pipeline) wgpuRenderPipelineRelease(pick_mesh_pipeline);
+        if (pick_scene_layout) wgpuBindGroupLayoutRelease(pick_scene_layout);
+        if (pick_mesh_layout) wgpuBindGroupLayoutRelease(pick_mesh_layout);
+        if (pick_scene_group) wgpuBindGroupRelease(pick_scene_group);
+        if (pick_scene_buffer) wgpuBufferRelease(pick_scene_buffer);
+        if (pick_mesh_group) wgpuBindGroupRelease(pick_mesh_group);
+        if (pick_mesh_buffer) wgpuBufferRelease(pick_mesh_buffer);
+#if BBLITE_HAS_SPLATS
+        if (pick_cloud_pipeline) {
+            wgpuRenderPipelineRelease(pick_cloud_pipeline);
+        }
+        if (pick_cloud_color_layout) {
+            wgpuBindGroupLayoutRelease(pick_cloud_color_layout);
+        }
+        if (pick_cloud_shear_group) {
+            wgpuBindGroupRelease(pick_cloud_shear_group);
+        }
+        if (pick_cloud_shear) wgpuBufferRelease(pick_cloud_shear);
+        if (pick_cloud_color_group) {
+            wgpuBindGroupRelease(pick_cloud_color_group);
+        }
+        if (pick_cloud_color) wgpuBufferRelease(pick_cloud_color);
+#endif
+#endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         for (DawnSpritePass& pass : sprite_passes) {
             release_dawn_sprite_pass(pass);
@@ -7120,6 +7173,160 @@ void record_post_process_pass(
 
 } // namespace
 
+
+#if BBLITE_HAS_PICKING
+/**
+ * The two pick pipelines. Both draw the pin's own attachment pair at one
+ * sample with no blending; the mesh pass compares GREATER because this
+ * renderer is reverse-Z, and the cloud pass compares LESS, which is what
+ * its own pinned pipeline declares.
+ */
+inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
+    WGPUDevice device,
+    WGPUBindGroupLayout scene_layout,
+    WGPUBindGroupLayout mesh_layout) {
+    WGPUShaderModule vertex = load_wgsl_module(device, "picking.vert");
+    WGPUShaderModule fragment = load_wgsl_module(device, "picking.frag");
+
+    const std::array<WGPUBindGroupLayout, 2> groups{
+        scene_layout, mesh_layout};
+    WGPUPipelineLayoutDescriptor layout_descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    layout_descriptor.bindGroupLayoutCount = groups.size();
+    layout_descriptor.bindGroupLayouts = groups.data();
+    WGPUPipelineLayout pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+    if (!pipeline_layout) dawn_error("pick pipeline layout");
+
+    // The renderer's interleaved stream read at its own pitch: the pin
+    // binds a position-only buffer, and these are the same numbers.
+    WGPUVertexAttribute position{};
+    position.shaderLocation = 0;
+    position.offset = 0;
+    position.format = WGPUVertexFormat_Float32x3;
+    WGPUVertexBufferLayout vertex_layout{};
+    vertex_layout.arrayStride = sizeof(GpuVertex);
+    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layout.attributeCount = 1;
+    vertex_layout.attributes = &position;
+
+    std::array<WGPUColorTargetState, 2> targets{};
+    fill_dawn_pick_targets(targets);
+
+    WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
+    fragment_state.module = fragment;
+    fragment_state.entryPoint = string_view("fs");
+    fragment_state.targetCount = targets.size();
+    fragment_state.targets = targets.data();
+
+    WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth.format = WGPUTextureFormat_Depth24Plus;
+    depth.depthCompare = WGPUCompareFunction_Greater;
+    depth.depthWriteEnabled = WGPUOptionalBool_True;
+
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = pipeline_layout;
+    descriptor.vertex.module = vertex;
+    descriptor.vertex.entryPoint = string_view("vs");
+    descriptor.vertex.bufferCount = 1;
+    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.fragment = &fragment_state;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    descriptor.depthStencil = &depth;
+    descriptor.multisample.count = 1;
+
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    wgpuPipelineLayoutRelease(pipeline_layout);
+    wgpuShaderModuleRelease(vertex);
+    wgpuShaderModuleRelease(fragment);
+    if (!pipeline) dawn_error("pick mesh render pipeline");
+    return pipeline;
+}
+
+#if BBLITE_HAS_SPLATS
+inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(
+    WGPUDevice device,
+    WGPUBindGroupLayout scene_layout,
+    WGPUBindGroupLayout cloud_layout,
+    WGPUBindGroupLayout color_layout) {
+    WGPUShaderModule vertex =
+        load_wgsl_module(device, "picking-splat.vert");
+    WGPUShaderModule fragment =
+        load_wgsl_module(device, "picking-splat.frag");
+
+    const std::array<WGPUBindGroupLayout, 3> groups{
+        scene_layout, cloud_layout, color_layout};
+    WGPUPipelineLayoutDescriptor layout_descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    layout_descriptor.bindGroupLayoutCount = groups.size();
+    layout_descriptor.bindGroupLayouts = groups.data();
+    WGPUPipelineLayout pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
+    if (!pipeline_layout) dawn_error("cloud pick pipeline layout");
+
+    WGPUVertexAttribute corner{};
+    corner.shaderLocation = 0;
+    corner.offset = 0;
+    corner.format = WGPUVertexFormat_Float32x2;
+    WGPUVertexBufferLayout quad_layout{};
+    quad_layout.arrayStride = 8;
+    quad_layout.stepMode = WGPUVertexStepMode_Vertex;
+    quad_layout.attributeCount = 1;
+    quad_layout.attributes = &corner;
+
+    WGPUVertexAttribute index{};
+    index.shaderLocation = 1;
+    index.offset = 0;
+    index.format = WGPUVertexFormat_Float32;
+    WGPUVertexBufferLayout order_layout{};
+    order_layout.arrayStride = 4;
+    order_layout.stepMode = WGPUVertexStepMode_Instance;
+    order_layout.attributeCount = 1;
+    order_layout.attributes = &index;
+    const std::array<WGPUVertexBufferLayout, 2> buffers{
+        quad_layout, order_layout};
+
+    std::array<WGPUColorTargetState, 2> targets{};
+    fill_dawn_pick_targets(targets);
+
+    WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
+    fragment_state.module = fragment;
+    fragment_state.entryPoint = string_view("fs");
+    fragment_state.targetCount = targets.size();
+    fragment_state.targets = targets.data();
+
+    WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
+    depth.format = WGPUTextureFormat_Depth24Plus;
+    depth.depthCompare = WGPUCompareFunction_Less;
+    depth.depthWriteEnabled = WGPUOptionalBool_True;
+
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = pipeline_layout;
+    descriptor.vertex.module = vertex;
+    descriptor.vertex.entryPoint = string_view("vs");
+    descriptor.vertex.bufferCount = buffers.size();
+    descriptor.vertex.buffers = buffers.data();
+    descriptor.fragment = &fragment_state;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    descriptor.depthStencil = &depth;
+    descriptor.multisample.count = 1;
+
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    wgpuPipelineLayoutRelease(pipeline_layout);
+    wgpuShaderModuleRelease(vertex);
+    wgpuShaderModuleRelease(fragment);
+    if (!pipeline) dawn_error("cloud pick render pipeline");
+    return pipeline;
+}
+#endif
+#endif
+
 bool run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
@@ -8581,6 +8788,398 @@ bool run_dawn_engine(Engine& engine) {
         benchmark_samples.reserve(
             static_cast<std::size_t>(benchmark_frames));
     }
+
+
+#if BBLITE_HAS_PICKING
+    // The pick pass. Installed before the loop, because the continuation
+    // that calls it arrives on the deferred queue at the first frame
+    // boundary; a pick taken before this point reports a miss, exactly as
+    // the pin's `pickAsync` does for a scene with no camera.
+    engine.pick_hook =
+        [&state, &engine, &scene, &render_plan](
+            GpuPickerHandle, double x, double y) -> PickingInfo {
+        if (scene.camera.value >= engine.cameras.size()) {
+            return PickingInfo{};
+        }
+        const CameraRecord& camera = engine.cameras[scene.camera.value];
+        // Native has no CSS box, so the pin's backing/client scale is 1.
+        const double width = static_cast<double>(engine.options.width);
+        const double height = static_cast<double>(engine.options.height);
+        if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
+            return PickingInfo{};
+        }
+        const double aspect = width / height;
+        const std::array<float, 16> view_projection =
+            upstream::build_view_projection(camera, aspect);
+        const std::array<float, 16> pick_view =
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera));
+        const std::array<float, 16> pick_projection =
+            upstream::build_scene_projection(camera, aspect);
+
+        ensure_dawn_pick_targets(state.device, state.pick_targets);
+        if (!state.pick_mesh_pipeline) {
+            state.pick_scene_layout =
+                create_dawn_pick_scene_layout(state.device);
+            state.pick_mesh_layout =
+                create_dawn_pick_mesh_layout(state.device);
+            state.pick_mesh_pipeline = create_dawn_pick_mesh_pipeline(
+                state.device,
+                state.pick_scene_layout,
+                state.pick_mesh_layout);
+            WGPUBufferDescriptor scene_buffer =
+                WGPU_BUFFER_DESCRIPTOR_INIT;
+            scene_buffer.usage =
+                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            scene_buffer.size = sizeof(PickSceneUniforms);
+            state.pick_scene_buffer =
+                wgpuDeviceCreateBuffer(state.device, &scene_buffer);
+            WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            scene_entry.binding = 0;
+            scene_entry.buffer = state.pick_scene_buffer;
+            scene_entry.size = sizeof(PickSceneUniforms);
+            WGPUBindGroupDescriptor scene_group =
+                WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            scene_group.layout = state.pick_scene_layout;
+            scene_group.entryCount = 1;
+            scene_group.entries = &scene_entry;
+            state.pick_scene_group =
+                wgpuDeviceCreateBindGroup(state.device, &scene_group);
+        }
+
+        const PickSceneUniforms scene_uniforms =
+            build_pick_scene_uniforms(
+                view_projection, x, y, width, height);
+        wgpuQueueWriteBuffer(
+            state.queue,
+            state.pick_scene_buffer,
+            0,
+            &scene_uniforms,
+            sizeof(scene_uniforms));
+
+        // Every candidate's block is written before the pass opens,
+        // because WebGPU forbids a queue write between draws inside one.
+        std::vector<PickRange> ranges;
+        std::vector<DawnPickMeshUniforms> blocks;
+        // Which plan item each block belongs to. Indices rather than
+        // pointers: the same function pushes into `state.splat_passes`
+        // below, and a raw pointer into a growing vector is the shape of
+        // the bloom-composite crash.
+        std::vector<std::size_t> drawn_items;
+        std::uint32_t next_id = 1;
+        // The RENDER PLAN, not `scene.meshes`: `state.meshes` is indexed
+        // by plan item and the plan skips a mesh with no geometry, so the
+        // two agree only while nothing has been skipped or removed.
+        for (std::size_t item_index = 0;
+             item_index < render_plan.items.size() &&
+             item_index < state.meshes.size();
+             ++item_index) {
+            const MeshHandle handle = render_plan.items[item_index].mesh;
+            const DawnMesh& mesh = state.meshes[item_index];
+            if (!mesh.vertices || !mesh.indices) continue;
+            DawnPickMeshUniforms block{};
+            // Identity: these vertices are baked to world here, where the
+            // pin keeps them local and multiplies by the node's world.
+            block.world = {
+                1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f};
+            block.pick_id = next_id;
+            blocks.push_back(block);
+            drawn_items.push_back(item_index);
+            ranges.push_back(
+                {next_id, PickedNodeKind::mesh, handle.value});
+            ++next_id;
+        }
+        if (blocks.size() > state.pick_mesh_capacity) {
+            if (state.pick_mesh_group) {
+                wgpuBindGroupRelease(state.pick_mesh_group);
+                state.pick_mesh_group = nullptr;
+            }
+            if (state.pick_mesh_buffer) {
+                wgpuBufferRelease(state.pick_mesh_buffer);
+                state.pick_mesh_buffer = nullptr;
+            }
+            state.pick_mesh_capacity = blocks.size();
+            WGPUBufferDescriptor mesh_buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
+            mesh_buffer.usage =
+                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            mesh_buffer.size = static_cast<std::uint64_t>(
+                state.pick_mesh_capacity * sizeof(DawnPickMeshUniforms));
+            state.pick_mesh_buffer =
+                wgpuDeviceCreateBuffer(state.device, &mesh_buffer);
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = 0;
+            entry.buffer = state.pick_mesh_buffer;
+            entry.size = sizeof(DawnPickMeshUniforms);
+            WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            group.layout = state.pick_mesh_layout;
+            group.entryCount = 1;
+            group.entries = &entry;
+            state.pick_mesh_group =
+                wgpuDeviceCreateBindGroup(state.device, &group);
+        }
+        if (!blocks.empty()) {
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.pick_mesh_buffer,
+                0,
+                blocks.data(),
+                blocks.size() * sizeof(DawnPickMeshUniforms));
+        }
+
+#if BBLITE_HAS_SPLATS
+        // The clouds are built lazily inside the frame loop, so a pick at
+        // the first frame boundary may arrive before any exist -- and the
+        // sort's GPU-side order buffer is written by the frame's upload,
+        // which runs after the deferred queue. `await splat.firstSortReady`
+        // is what the pin's own scene waits for, so the pick brings both
+        // current itself; the upload is idempotent.
+        if (state.splat_passes.empty()) {
+            for (const SplatMeshHandle handle : scene.splat_meshes) {
+                state.splat_passes.push_back(create_dawn_splat_pass(
+                    state.device,
+                    state.queue,
+                    state.frame_color_format,
+                    WGPUTextureFormat_Depth24PlusStencil8,
+                    state.sample_count,
+                    engine,
+                    handle));
+            }
+        }
+        for (DawnSplatPass& splat : state.splat_passes) {
+            upload_dawn_splat_pass(
+                state.queue,
+                engine,
+                splat,
+                pick_view,
+                pick_projection,
+                static_cast<float>(width),
+                static_cast<float>(height));
+        }
+        if (!state.splat_passes.empty() && !state.pick_cloud_pipeline) {
+            state.pick_cloud_color_layout =
+                create_dawn_pick_scene_layout(state.device);
+            state.pick_cloud_pipeline = create_dawn_pick_cloud_pipeline(
+                state.device,
+                state.pick_scene_layout,
+                state.splat_passes[0].layout,
+                state.pick_cloud_color_layout);
+            const auto uniform_pair =
+                [&](std::uint64_t size,
+                    WGPUBindGroupLayout layout,
+                    WGPUBuffer& buffer,
+                    WGPUBindGroup& group) {
+                    WGPUBufferDescriptor descriptor =
+                        WGPU_BUFFER_DESCRIPTOR_INIT;
+                    descriptor.usage = WGPUBufferUsage_Uniform |
+                                       WGPUBufferUsage_CopyDst;
+                    descriptor.size = size;
+                    buffer =
+                        wgpuDeviceCreateBuffer(state.device, &descriptor);
+                    WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+                    entry.binding = 0;
+                    entry.buffer = buffer;
+                    entry.size = size;
+                    WGPUBindGroupDescriptor descriptor_group =
+                        WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+                    descriptor_group.layout = layout;
+                    descriptor_group.entryCount = 1;
+                    descriptor_group.entries = &entry;
+                    group = wgpuDeviceCreateBindGroup(
+                        state.device, &descriptor_group);
+                };
+            uniform_pair(
+                64,
+                state.pick_scene_layout,
+                state.pick_cloud_shear,
+                state.pick_cloud_shear_group);
+            uniform_pair(
+                16,
+                state.pick_cloud_color_layout,
+                state.pick_cloud_color,
+                state.pick_cloud_color_group);
+        }
+        // One cloud per pick: the shear and the id colour are single
+        // buffers, so a second cloud would need the same dynamic-offset
+        // treatment the mesh blocks get. No reached scene loads two.
+        if (state.splat_passes.size() > 1) {
+            throw std::runtime_error(
+                "Picking more than one Gaussian cloud needs a per-cloud "
+                "id buffer; the reached slice loads one.");
+        }
+        for (const DawnSplatPass& splat : state.splat_passes) {
+            std::array<float, 16> shear{};
+            compute_cloud_pick_matrix(shear, x, y, width, height);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.pick_cloud_shear,
+                0,
+                shear.data(),
+                shear.size() * sizeof(float));
+            const std::array<float, 3> color =
+                encode_pick_id_to_color(next_id);
+            const std::array<float, 4> picking_block{
+                color[0], color[1], color[2], 0.0f};
+            wgpuQueueWriteBuffer(
+                state.queue,
+                state.pick_cloud_color,
+                0,
+                picking_block.data(),
+                picking_block.size() * sizeof(float));
+            ranges.push_back(
+                {next_id,
+                 PickedNodeKind::splat_mesh,
+                 splat.mesh.value});
+            ++next_id;
+        }
+#endif
+
+        WGPUCommandEncoderDescriptor encoder_descriptor =
+            WGPU_COMMAND_ENCODER_DESCRIPTOR_INIT;
+        WGPUCommandEncoder encoder =
+            wgpuDeviceCreateCommandEncoder(state.device, &encoder_descriptor);
+
+        std::array<WGPURenderPassColorAttachment, 2> attachments{};
+        for (WGPURenderPassColorAttachment& attachment : attachments) {
+            attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+            attachment.loadOp = WGPULoadOp_Clear;
+            attachment.storeOp = WGPUStoreOp_Store;
+        }
+        attachments[0].view = state.pick_targets.color_view;
+        attachments[0].clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
+        attachments[1].view = state.pick_targets.depth_color_view;
+        // 1 is "nothing here" under reverse-Z, which is the pin's clear.
+        attachments[1].clearValue = WGPUColor{1.0, 0.0, 0.0, 0.0};
+
+        WGPURenderPassDepthStencilAttachment depth_attachment =
+            WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+        depth_attachment.view = state.pick_targets.depth_view;
+        depth_attachment.depthLoadOp = WGPULoadOp_Clear;
+        depth_attachment.depthStoreOp = WGPUStoreOp_Discard;
+        depth_attachment.depthClearValue = 0.0f;
+
+        WGPURenderPassDescriptor pass_descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        pass_descriptor.colorAttachmentCount = attachments.size();
+        pass_descriptor.colorAttachments = attachments.data();
+        pass_descriptor.depthStencilAttachment = &depth_attachment;
+        WGPURenderPassEncoder pass =
+            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+
+        wgpuRenderPassEncoderSetPipeline(pass, state.pick_mesh_pipeline);
+        wgpuRenderPassEncoderSetBindGroup(
+            pass, 0, state.pick_scene_group, 0, nullptr);
+        for (std::size_t index = 0; index < blocks.size(); ++index) {
+            const DawnMesh& mesh = state.meshes[drawn_items[index]];
+            const std::uint32_t offset = static_cast<std::uint32_t>(
+                index * sizeof(DawnPickMeshUniforms));
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, state.pick_mesh_group, 1, &offset);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                mesh.indices,
+                WGPUIndexFormat_Uint32,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(
+                pass, mesh.index_count, 1, 0, 0, 0);
+        }
+#if BBLITE_HAS_SPLATS
+        for (const DawnSplatPass& splat : state.splat_passes) {
+            if (splat.vertex_count == 0) continue;
+            wgpuRenderPassEncoderSetPipeline(
+                pass, state.pick_cloud_pipeline);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 0, state.pick_cloud_shear_group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, splat.group, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 2, state.pick_cloud_color_group, 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 0, splat.quad, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 1, splat.order, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                splat.indices,
+                WGPUIndexFormat_Uint16,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(
+                pass,
+                static_cast<std::uint32_t>(
+                    upstream::splat_quad_indices.size()),
+                splat.vertex_count,
+                0,
+                0,
+                0);
+        }
+#endif
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+
+        WGPUTexelCopyTextureInfo source = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+        source.texture = state.pick_targets.color;
+        WGPUTexelCopyBufferInfo destination =
+            WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
+        destination.buffer = state.pick_targets.staging;
+        destination.layout.bytesPerRow = 256;
+        destination.layout.rowsPerImage = 1;
+        const WGPUExtent3D one{1, 1, 1};
+        wgpuCommandEncoderCopyTextureToBuffer(
+            encoder, &source, &destination, &one);
+
+        WGPUCommandBufferDescriptor finish =
+            WGPU_COMMAND_BUFFER_DESCRIPTOR_INIT;
+        WGPUCommandBuffer commands =
+            wgpuCommandEncoderFinish(encoder, &finish);
+        wgpuQueueSubmit(state.queue, 1, &commands);
+        wgpuCommandBufferRelease(commands);
+        wgpuCommandEncoderRelease(encoder);
+
+        WGPUBufferMapCallbackInfo map_callback =
+            WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+        map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
+        // Recorded rather than thrown: the callback runs inside
+        // `wgpuInstanceWaitAny`, so an exception would unwind through
+        // Dawn's own C frame. Every other wait in this backend reports a
+        // map failure the same way.
+        map_callback.callback =
+            [](WGPUMapAsyncStatus status,
+               WGPUStringView message,
+               void* userdata1,
+               void*) {
+                if (status != WGPUMapAsyncStatus_Success) {
+                    auto* error = static_cast<std::string*>(userdata1);
+                    if (error->empty()) *error = view_text(message);
+                }
+            };
+        map_callback.userdata1 = &state.uncaptured_error;
+        wait_for(
+            state.instance,
+            wgpuBufferMapAsync(
+                state.pick_targets.staging,
+                WGPUMapMode_Read,
+                0,
+                256,
+                map_callback));
+        if (!state.uncaptured_error.empty()) {
+            dawn_error("pick buffer map failed: " + state.uncaptured_error);
+        }
+        const void* mapped = wgpuBufferGetConstMappedRange(
+            state.pick_targets.staging, 0, 256);
+        if (!mapped) dawn_error("pick map returned no data.");
+        const std::uint32_t pick_id =
+            decode_pick_id(static_cast<const std::uint8_t*>(mapped));
+        wgpuBufferUnmap(state.pick_targets.staging);
+
+        return resolve_pick_result(ranges, pick_id);
+    };
+#endif
 
     CaptureGate captures(frame_options, limit, &engine);
     FrameClock frame_clock;
