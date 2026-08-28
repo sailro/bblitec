@@ -19,6 +19,7 @@ export type HandleKind =
     | "audio-buffer"
     | "camera"
     | "material"
+    | "sprite-layer"
     | "sprite-atlas"
     | "texture";
 
@@ -28,6 +29,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "audio-buffer": "bbl::pal::AudioBufferHandle",
     "camera": "bbl::CameraHandle",
     "material": "bbl::MaterialHandle",
+    "sprite-layer": "bbl::Sprite2DLayerHandle",
     "sprite-atlas": "bbl::SpriteAtlasHandle",
     "texture": "bbl::PixelsTexture",
 };
@@ -39,6 +41,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     Camera: "camera",
     Material: "material",
     ShaderMaterial: "material",
+    Sprite2DLayer: "sprite-layer",
     SpriteAtlas: "sprite-atlas",
     Texture2D: "texture",
 };
@@ -498,6 +501,9 @@ export class DataTypeRegistry {
                 type as ts.UnionType,
             );
         }
+        if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
+            return this.fromStructType(type, node);
+        }
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
         }
@@ -506,6 +512,12 @@ export class DataTypeRegistry {
         }
         if (type.symbol?.name === "DataView") {
             return { kind: "dataview" };
+        }
+        if (type.symbol?.name === "RegExpExecArray") {
+            return {
+                kind: "vector",
+                element: { kind: "string" },
+            };
         }
         // Web Audio buffers are opaque context-owned resources. They are safe
         // to retain in ordinary JS containers (sound caches are the common
@@ -756,6 +768,18 @@ export class DataTypeRegistry {
     private structIdentity(
         type: ts.Type,
     ): ts.Symbol | ts.Type {
+        // A generic alias symbol names the factory, not one instantiation.
+        // `Record<ClosedKeys, T>` and `Record<string, U>` therefore share the
+        // global `Record` symbol while exposing different property sets. Key
+        // instantiated aliases by the checker type itself so one mapping
+        // cannot poison the next; non-generic aliases and named interfaces
+        // retain their stable symbol identity.
+        if (
+            type.aliasSymbol &&
+            (type.aliasTypeArguments?.length ?? 0) > 0
+        ) {
+            return type;
+        }
         return type.aliasSymbol ?? type.symbol ?? type;
     }
 
@@ -845,11 +869,18 @@ export class DataTypeRegistry {
             return undefined;
         }
         const key = this.fromTsType(keyType, node);
-        if (key?.kind !== "enum") {
-            return undefined;
-        }
         const element = this.fromTsType(valueType, node);
         if (!element) {
+            return undefined;
+        }
+        if (key?.kind === "string" || key?.kind === "number") {
+            return {
+                kind: "map",
+                key: this.markStoredObjectReferences(key),
+                value: this.markStoredObjectReferences(element),
+            };
+        }
+        if (key?.kind !== "enum") {
             return undefined;
         }
         return {
@@ -919,7 +950,27 @@ export class DataTypeRegistry {
             );
         }
         this.emittedNamedTypes.add(dataType.name);
-        return `bblscene::${dataType.name}::${sanitizeIdentifier(literal)}`;
+        return `bblscene::${dataType.name}::${this.enumMemberIdentifier(definition, literal)}`;
+    }
+
+    /** A C++ identifier for one member, disambiguating punctuation aliases. */
+    private enumMemberIdentifier(
+        definition: DataEnumDefinition,
+        literal: string,
+    ): string {
+        const occurrences = new Map<string, number>();
+        for (const member of definition.members) {
+            const base = sanitizeIdentifier(member);
+            const occurrence =
+                (occurrences.get(base) ?? 0) + 1;
+            occurrences.set(base, occurrence);
+            if (member === literal) {
+                return occurrence === 1
+                    ? base
+                    : `${base}_${occurrence}`;
+            }
+        }
+        throw new Error(`Unknown enum member '${literal}'.`);
     }
 
     /**
@@ -1325,7 +1376,7 @@ export class DataTypeRegistry {
                 `enum class ${definition.name} {`,
                 ...definition.members.map(
                     (member) =>
-                        `    ${sanitizeIdentifier(member)},`,
+                        `    ${this.enumMemberIdentifier(definition, member)},`,
                 ),
                 "};",
                 "",
@@ -1339,7 +1390,7 @@ export class DataTypeRegistry {
                     `inline ${definition.name} ${definition.name}_from_string(const std::string& value) {`,
                     ...definition.members.map(
                         (member) =>
-                            `    if (value == ${JSON.stringify(member)}) return ${definition.name}::${sanitizeIdentifier(member)};`,
+                            `    if (value == ${JSON.stringify(member)}) return ${definition.name}::${this.enumMemberIdentifier(definition, member)};`,
                     ),
                     `    throw std::runtime_error("Invalid ${definition.name} value: " + value);`,
                     "}",

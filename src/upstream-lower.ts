@@ -1154,33 +1154,32 @@ ${wgsl}`,
             // A pure-2D particle bridge in an exact Multiply mode draws
             // the pin's OWN custom fragment, so it enters the same composer
             // the scene's own descriptor would. The composer takes one
-            // custom program per family, so a scene that also builds its
-            // own refuses here: the bridge owns only ITS layers, and
-            // nothing stops a scene making a custom layer beside them.
-            const sceneCustom = options.spriteCustomShaders.find(
+            // custom program index 1, so a scene that also builds its own
+            // descriptors still refuses here: the node-particle bridge does
+            // not travel through the scene compiler that assigns their ids.
+            const sceneCustoms = options.spriteCustomShaders.filter(
                 (entry) => entry.family === "sprite",
             );
-            if (particlePrograms.sprite2dMultiply && sceneCustom) {
+            if (particlePrograms.sprite2dMultiply && sceneCustoms.length > 0) {
                 throw new Error(
                     "A scene-code Sprite2D custom shader and an exact " +
                         "node-particle Multiply bridge both compose the " +
-                        "one custom sprite program; this port carries a " +
-                        "single program per family." +
+                        "custom sprite program index." +
                         refusalReachedFrom(
                             options.featureSites,
                             "sprite:custom-shader",
                         ),
                 );
             }
-            const custom = particlePrograms.sprite2dMultiply
-                ? {
+            const customs = particlePrograms.sprite2dMultiply
+                ? [{
                       family: "sprite" as const,
                       fragment: new NodeParticleLowerer(
                           context,
                       ).sprite2dMultiplyFragment(),
                       extraTextures: [],
-                  }
-                : sceneCustom;
+                  }]
+                : sceneCustoms;
             this.writeSource(
                 "upstream/src/sprite_2d.cpp",
                 sprites.lowerCore(),
@@ -1220,8 +1219,8 @@ ${wgsl}`,
                 // program is a second file rather than an edit of the first
                 // — a renderer can hold both, and a plain layer draws the
                 // stock shader as it does when the fx hook is null.
-                if (custom) {
-                    const shader = sprites.shaderSource(
+                for (const [customIndex, custom] of customs.entries()) {
+                    const customShader = sprites.shaderSource(
                         false,
                         custom.fragment,
                         custom.extraTextures,
@@ -1238,10 +1237,12 @@ ${wgsl}`,
                     // fourth file for the pair.
                     composedShaders.push({
                         output:
-                            "upstream/shaders/sprite_custom.frag.native.wgsl",
+                            customIndex === 0
+                                ? "upstream/shaders/sprite_custom.frag.native.wgsl"
+                                : `upstream/shaders/sprite_custom_${customIndex + 1}.frag.native.wgsl`,
                         data: spriteFragmentWgsl(
                             customProvenance,
-                            shader,
+                            customShader,
                         ),
                     });
                     generated.push({

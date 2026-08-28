@@ -59,6 +59,13 @@
 
 namespace bbl::pal {
 
+inline std::string sprite_fragment_shader_name(
+    std::uint32_t program) {
+    if (program == 0u) return "sprite.frag";
+    if (program == 1u) return "sprite_custom.frag";
+    return "sprite_custom_" + std::to_string(program) + ".frag";
+}
+
 #if BBLITE_FLOATING_ORIGIN
 /**
  * The scene's active camera, whose world translation IS the floating-origin
@@ -3474,12 +3481,15 @@ class FrameClock {
 public:
     [[nodiscard]] float advance(float fixed_delta_ms) {
         const double now = monotonic_milliseconds();
+        const bool first_frame = previous_ == 0.0;
         const float measured = previous_ > 0.0
             ? static_cast<float>(now - previous_)
             : 0.0f;
         previous_ = now;
         const float delta_ms =
-            fixed_delta_ms > 0.0f ? fixed_delta_ms : measured;
+            fixed_delta_ms > 0.0f && !first_frame
+                ? fixed_delta_ms
+                : measured;
         if (fixed_delta_ms > 0.0f) {
             advance_performance_milliseconds(delta_ms);
         }
@@ -3510,6 +3520,9 @@ inline DecodedImage decode_uploadable_image(
         image.rgba = texture_data.bytes;
     } else {
         image = decode_image(ts::ArrayBuffer(texture_data.bytes));
+    }
+    if (texture_data.premultiply_alpha) {
+        premultiply_image_alpha(image);
     }
     if (texture_data.invert_y && image.height > 1) {
         const std::size_t row_bytes =
@@ -4279,8 +4292,8 @@ inline std::vector<float> shader_stage_block_floats(
  */
 /**
  * Everything a frame does before anything is drawn, for every loop that
- * has a scene: resolve the delta, run the scene's own callbacks, then
- * drain what `setTimeout` queued.
+ * has a scene: resolve the delta, run application RAF callbacks registered
+ * before `startEngine`, then run the scene's own callbacks.
  *
  * A stopped engine advances none of it -- the pin's `stopEngine` clears
  * `_renderFn`, so no further frame runs at all and the canvas keeps what
@@ -4288,11 +4301,6 @@ inline std::vector<float> shader_stage_block_floats(
  * `CaptureGate` still has something pending, so a screenshot lands on the
  * frozen frame exactly as the browser harness takes one off the frozen
  * canvas.
- *
- * The drain sits after the scene's callbacks because that is where a
- * browser runs a zero-delay timeout: after the current turn, before the
- * next frame. A `stopEngine` queued from one therefore takes effect on
- * this frame's boundary, where the browser's does.
  *
  * Returns the frame's delta, because the frame body needs the same value
  * the before-render callbacks were given -- an animated billboard pass
@@ -4312,25 +4320,33 @@ inline std::vector<float> shader_stage_block_floats(
         frame_delta_ms > 0.0f
             ? frame_delta_ms
             : scene.fixed_delta_ms);
+    for (const auto& callback : engine.animation_frame_callbacks) {
+        callback(delta_ms);
+    }
     for (const auto& callback : scene.before_render) {
         callback(delta_ms);
     }
-    run_deferred_callbacks(engine);
     return delta_ms;
 }
 
 /**
  * The same boundary for a loop with no scene. A `SpriteRenderer` or an
- * `EffectRenderer` is its own rendering context on the engine, so it has
- * no before-render list to run -- but a scene-less driver can still queue
- * a timeout, and one that queued `stopEngine` and never drained would
- * simply never stop.
+ * `EffectRenderer` is its own rendering context on the engine, but an
+ * application can still own a requestAnimationFrame loop and queue a
+ * timeout. Both run from the same frame clock as custom-shader time.
  */
-inline void advance_frame(Engine& engine) {
+[[nodiscard]] inline float advance_frame(
+    Engine& engine,
+    FrameClock& frame_clock,
+    float frame_delta_ms) {
     if (engine.stopped) {
-        return;
+        return 0.0f;
     }
-    run_deferred_callbacks(engine);
+    const float delta_ms = frame_clock.advance(frame_delta_ms);
+    for (const auto& callback : engine.animation_frame_callbacks) {
+        callback(delta_ms);
+    }
+    return delta_ms;
 }
 
 /** The measured update boundary for a standalone FrameGraphContext. */
@@ -4341,11 +4357,34 @@ inline void advance_frame(Engine& engine) {
     float frame_delta_ms) {
     if (engine.stopped) return 0.0f;
     const float delta_ms = frame_clock.advance(frame_delta_ms);
+    for (const auto& callback : engine.animation_frame_callbacks) {
+        callback(delta_ms);
+    }
     for (const auto& callback : context.updates) {
         callback(delta_ms);
     }
-    run_deferred_callbacks(engine);
     return delta_ms;
+}
+
+/**
+ * Completes the browser frame turn after rendering has consumed its state.
+ * RAF callbacks registered after the awaited `startEngine` follow the
+ * engine-owned RAF callback, exactly as they do in the browser. A zero-delay
+ * timeout queued anywhere in the turn is then drained at the turn boundary.
+ */
+inline void finish_frame(Engine& engine) {
+    if (engine.stopped) return;
+    if (engine.post_render_animation_frame_callbacks_armed) {
+        for (const auto& callback :
+             engine.post_render_animation_frame_callbacks) {
+            callback(0.0f);
+        }
+    } else {
+        // `startEngine` resolves after this initial render; source following
+        // its await cannot have registered a callback for this RAF turn.
+        engine.post_render_animation_frame_callbacks_armed = true;
+    }
+    run_deferred_callbacks(engine);
 }
 
 class CaptureGate {

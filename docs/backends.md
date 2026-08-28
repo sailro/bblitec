@@ -177,6 +177,14 @@ comparison numbers. A backend that does not implement a flag refuses it rather
 than rendering something else, because a silent no-op reads as a backend delta
 and the differential would attribute it to the GPU stack.
 
+The conductor also owns application `requestAnimationFrame` callbacks. It
+preserves their registration phase around the engine render: pre-start
+callbacks run before rendering-context updates, while callbacks registered
+after awaited `startEngine` run after submission and update the following
+frame. The first engine frame reports zero even under a fixed capture delta,
+matching `startEngine`'s contract; the same fixed clock supplies their
+`performance.now()` timestamp.
+
 The vertex, deformation, texture and diagnostic payloads live there too:
 vertex packing, morph deltas and weights, image decode with the pinned
 `invertY` flip, RGBD decode, half-float conversion both ways, cluster

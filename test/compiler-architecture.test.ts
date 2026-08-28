@@ -387,7 +387,7 @@ test("keeps extracted option and manifest blocks in their modules", () => {
         [
             "src/compiler/sprite-atlas-record.ts",
             [
-                /A data SpriteAtlas currently requires/,
+                /A data SpriteAtlas requires a file or pixels texture/,
                 /SpriteAtlas frames require an array/,
             ],
         ],
@@ -605,11 +605,11 @@ test("composes registered sprite renderers over scene output", () => {
     assert.doesNotMatch(scene, /reject_uncomposed_sprites\(engine\)/);
     assert.match(
         scene,
-        /sprite_target\.texture = visible_color;[\s\S]{0,180}SDL_GPU_LOADOP_LOAD/,
+        /sprite_target\.texture = renderer\.has_target[\s\S]{0,180}: visible_color;[\s\S]{0,180}SDL_GPU_LOADOP_LOAD/,
     );
     assert.match(
         scene,
-        /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,300}record_sprite_pass\(/,
+        /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,2600}record_sprite_pass\(/,
     );
     assert.match(
         sprites,
@@ -619,12 +619,102 @@ test("composes registered sprite renderers over scene output", () => {
     assert.doesNotMatch(dawn, /reject_uncomposed_sprites\(engine\)/);
     assert.match(
         dawn,
-        /sprite_attachment\.view = surface_view;[\s\S]{0,180}WGPULoadOp_Load/,
+        /sprite_attachment\.view = renderer\.has_target[\s\S]{0,180}: surface_view;[\s\S]{0,180}WGPULoadOp_Load/,
     );
     assert.match(
         dawn,
-        /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,420}record_dawn_sprite_pass\(/,
+        /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,2600}record_dawn_sprite_pass\(/,
     );
+});
+
+test("keeps scene-less sprite render targets and renderer registration live", () => {
+    const sdl = source("native/src/pal_sdl_gpu_sprite.cpp");
+    const dawn = source("native/src/pal_dawn_sprite.cpp");
+
+    for (const backend of [sdl, dawn]) {
+        assert.match(backend, /handle_platform_event\(event, engine\);/);
+        assert.match(backend, /keyboard_replay\.dispatch\(frame, engine\);/);
+        assert.match(backend, /const auto sync_render_textures = \[&\]\(\)/);
+        assert.match(backend, /const auto sync_renderer_passes = \[&\]\(\)/);
+        assert.match(
+            backend,
+            /advance_frame\([\s\S]{0,220}sync_render_textures\(\);\s*sync_renderer_passes\(\);/,
+        );
+        assert.match(
+            backend,
+            /for \(std::size_t first_index = 0;[\s\S]{0,900}first_renderer\.has_target/,
+        );
+    }
+    assert.match(
+        dawn,
+        /WGPUTextureUsage_RenderAttachment \|\s*WGPUTextureUsage_TextureBinding/,
+    );
+});
+
+test("forwards DOM-compatible application input through every native loop", () => {
+    const events = source("native/src/pal_platform_events.hpp");
+    assert.match(events, /case SDL_SCANCODE_SPACE: return "Space";/);
+    assert.match(events, /if \(code == "Space"\) return " ";/);
+    assert.match(events, /engine\.key_down_callbacks/);
+    assert.match(events, /engine\.key_up_callbacks/);
+
+    for (const path of [
+        "native/src/pal_sdl_gpu.cpp",
+        "native/src/pal_dawn.cpp",
+        "native/src/pal_sdl_gpu_sprite.cpp",
+        "native/src/pal_dawn_sprite.cpp",
+        "native/src/pal_sdl_gpu_effect.cpp",
+        "native/src/pal_dawn_effect.cpp",
+        "native/src/pal_sdl_gpu_frame_graph.cpp",
+        "native/src/pal_dawn_frame_graph.cpp",
+    ]) {
+        const loop = source(path);
+        assert.match(loop, /handle_platform_event\(event, engine\);/);
+        assert.match(loop, /keyboard_replay\.dispatch\(frame, engine\);/);
+    }
+});
+
+test("reports zero delta on the fixed clock's first frame", () => {
+    const shared = source("native/src/pal_gpu_shared.hpp");
+
+    assert.match(shared, /const bool first_frame = previous_ == 0\.0;/);
+    assert.match(
+        shared,
+        /fixed_delta_ms > 0\.0f && !first_frame\s*\? fixed_delta_ms\s*:\s*measured/,
+    );
+});
+
+test("runs post-start RAF callbacks only after the engine render", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(runtime, /post_render_animation_frame_callbacks/);
+    assert.match(
+        shared,
+        /inline void finish_frame\(Engine& engine\)[\s\S]{0,900}post_render_animation_frame_callbacks/,
+    );
+    assert.match(shared, /post_render_animation_frame_callbacks_armed = true/);
+    for (const backend of [sdl, dawn]) {
+        assert.match(backend, /finish_frame\(engine\);[\s\S]{0,220}\+\+frame/);
+    }
+});
+
+test("keeps SpriteFx elapsed time at JavaScript number precision", () => {
+    for (const path of [
+        "native/src/pal_sdl_gpu_sprite.hpp",
+        "native/src/pal_dawn_sprite.hpp",
+        "native/src/pal_sdl_gpu_billboard.hpp",
+        "native/src/pal_dawn_billboard.hpp",
+    ]) {
+        const backend = source(path);
+        assert.match(backend, /double elapsed_ms = 0\.0;/);
+        assert.match(
+            backend,
+            /static_cast<float>\([^)]*elapsed_ms \/ 1000\.0\)/,
+        );
+    }
 });
 
 test("invalidates billboard uploads when same-count instance data changes", () => {

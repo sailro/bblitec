@@ -5034,11 +5034,16 @@ bool run_gpu_engine(Engine& engine) {
     GpuState state;
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
     std::vector<SpritePass> sprite_passes;
+    std::vector<SDL_GPUTexture*> sprite_render_textures;
     const auto release_sprite_passes = [&]() {
         for (SpritePass& pass : sprite_passes) {
             release_sprite_pass(state.device, pass);
         }
         sprite_passes.clear();
+        for (SDL_GPUTexture* texture : sprite_render_textures) {
+            if (texture) SDL_ReleaseGPUTexture(state.device, texture);
+        }
+        sprite_render_textures.clear();
     };
 #endif
     try {
@@ -5409,21 +5414,42 @@ bool run_gpu_engine(Engine& engine) {
             ? SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT
             : swapchain_format;
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-        // Sprite renderers are contexts composed after the scene. Build the
-        // GPU mirrors for every renderer already constructed, including one
-        // that registers itself from the first before-render callback.
-        // Their overlay target is always the final single-sample swapchain
-        // format, even when the 3D pass renders through HDR/MSAA first.
-        for (std::size_t index = 0;
-             index < engine.sprite_renderers.size();
-             ++index) {
-            sprite_passes.push_back(create_sprite_pass(
-                state.device,
-                engine,
-                SpriteRendererHandle{
-                    static_cast<std::uint32_t>(index)},
-                swapchain_format));
-        }
+        // Sprite rendering contexts and their render targets may be created
+        // by a before-render callback. Mirror all newly appended CPU records
+        // in handle order both here and immediately after each callback run.
+        const auto sync_sprite_gpu_contexts = [&]() {
+            while (
+                sprite_render_textures.size() <
+                engine.sprite_render_textures.size()) {
+                const SpriteRenderTextureRecord& texture =
+                    engine.sprite_render_textures[
+                        sprite_render_textures.size()];
+                SDL_GPUTextureCreateInfo info{};
+                info.type = SDL_GPU_TEXTURETYPE_2D;
+                info.format = swapchain_format;
+                info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                    SDL_GPU_TEXTUREUSAGE_SAMPLER;
+                info.width = texture.width;
+                info.height = texture.height;
+                info.layer_count_or_depth = 1;
+                info.num_levels = 1;
+                info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+                SDL_GPUTexture* gpu_texture =
+                    SDL_CreateGPUTexture(state.device, &info);
+                if (!gpu_texture) gpu_error("sprite render texture");
+                sprite_render_textures.push_back(gpu_texture);
+            }
+            while (sprite_passes.size() < engine.sprite_renderers.size()) {
+                sprite_passes.push_back(create_sprite_pass(
+                    state.device,
+                    engine,
+                    SpriteRendererHandle{static_cast<std::uint32_t>(
+                        sprite_passes.size())},
+                    sprite_render_textures,
+                    swapchain_format));
+            }
+        };
+        sync_sprite_gpu_contexts();
 #endif
 #if BBLITE_PINNED_MATERIALS
         // The pinned pipelines are built lazily on first use, long after this
@@ -6898,9 +6924,13 @@ bool run_gpu_engine(Engine& engine) {
             // `_update` for every sprite context precedes every `_record`,
             // sharing the scene's one batched upload submission. Registration
             // controls drawing, not whether its layer data stays current.
+            sync_sprite_gpu_contexts();
             for (SpritePass& sprite_pass : sprite_passes) {
                 sync_sprite_pass_layers(
-                    state.device, engine, sprite_pass);
+                    state.device,
+                    engine,
+                    sprite_pass,
+                    sprite_render_textures);
                 upload_sprite_pass(
                     state.device,
                     engine,
@@ -9515,16 +9545,6 @@ bool run_gpu_engine(Engine& engine) {
             // colour, in registration order. Rendering before the blit keeps
             // screenshots and presentation on the same composed image.
             if (!engine.registered_sprite_renderers.empty()) {
-                SDL_GPUColorTargetInfo sprite_target{};
-                sprite_target.texture = visible_color;
-                sprite_target.load_op = SDL_GPU_LOADOP_LOAD;
-                sprite_target.store_op = SDL_GPU_STOREOP_STORE;
-                SDL_GPURenderPass* sprite_pass =
-                    SDL_BeginGPURenderPass(
-                        command,
-                        &sprite_target,
-                        1,
-                        nullptr);
                 for (const SpriteRendererHandle handle :
                      engine.registered_sprite_renderers) {
                     if (handle.value >= sprite_passes.size()) {
@@ -9532,15 +9552,41 @@ bool run_gpu_engine(Engine& engine) {
                             "A SpriteRenderer created after the scene frame "
                             "started has no GPU pass yet.");
                     }
+                    const SpriteRendererRecord& renderer =
+                        engine.sprite_renderers[handle.value];
+                    const SpriteRenderTextureRecord* target_record =
+                        renderer.has_target
+                            ? &engine.sprite_render_textures[
+                                  renderer.target.value]
+                            : nullptr;
+                    SDL_GPUColorTargetInfo sprite_target{};
+                    sprite_target.texture = renderer.has_target
+                        ? sprite_render_textures[renderer.target.value]
+                        : visible_color;
+                    sprite_target.load_op = renderer.clear
+                        ? SDL_GPU_LOADOP_CLEAR
+                        : SDL_GPU_LOADOP_LOAD;
+                    sprite_target.store_op = SDL_GPU_STOREOP_STORE;
+                    sprite_target.clear_color = SDL_FColor{
+                        renderer.clear_value.r,
+                        renderer.clear_value.g,
+                        renderer.clear_value.b,
+                        renderer.clear_value.a};
+                    SDL_GPURenderPass* sprite_pass =
+                        SDL_BeginGPURenderPass(
+                            command,
+                            &sprite_target,
+                            1,
+                            nullptr);
                     record_sprite_pass(
                         command,
                         sprite_pass,
                         engine,
                         sprite_passes[handle.value],
-                        width,
-                        height);
+                        target_record ? target_record->width : width,
+                        target_record ? target_record->height : height);
+                    SDL_EndGPURenderPass(sprite_pass);
                 }
-                SDL_EndGPURenderPass(sprite_pass);
             }
 #endif
             if (capture_frame || transmission_enabled) {
@@ -9597,6 +9643,7 @@ bool run_gpu_engine(Engine& engine) {
                     true);
                 captures.cluster_buffer_saved = true;
             }
+            finish_frame(engine);
             const double end = monotonic_milliseconds();
             if (benchmark && frame >= warmup) {
                 samples.push_back(end - start);

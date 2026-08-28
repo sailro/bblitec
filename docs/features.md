@@ -540,6 +540,16 @@ runtime flag matrix, the capture gate that decides when a run may stop
 (including the bounded grace a deferred capture needs), and the clock the
 scene callbacks advance by.
 
+An application-owned `requestAnimationFrame` loop registers its callback on
+that same conductor, including a scene-less sprite application. Its timestamp
+comes from the PAL's browser-facing `performance.now()` clock: monotonic in an
+interactive run and advanced by the measured fixed delta in a capture. The
+first engine frame receives a zero delta. Registration order remains the
+browser's phase boundary: callbacks installed before `startEngine` update
+before its renderer; callbacks installed after awaiting `startEngine` run
+after the renderer and affect the following frame. The application may
+schedule itself again without growing the callback list.
+
 ### Cameras and input
 
 ArcRotate and Free cameras, default framing, target assignment and reads,
@@ -547,6 +557,11 @@ per-frame clamping of the reached properties, and the `enableOrthographicCamera`
 opt-in with its aspect-derived view volume. SDL provides the platform
 boundary: left-drag orbit, right/middle-drag pan, and wheel zoom for ArcRotate;
 Free cameras additionally take `WASD`/arrows plus `Space`/`Shift`.
+Application window listeners use the same event bridge in scene, sprite,
+effect, and frame-graph executables. SDL scancodes become DOM-compatible
+`KeyboardEvent.code`/`key` pairs (`Space`/`" "` included), pointer button
+events and visibility changes reach their registered callbacks, and no
+scene-less driver may silently consume those events as window management.
 
 ### Asset loading and upload
 
@@ -1032,6 +1047,13 @@ rather than rebuilding the set, with a version compare saying when to walk it
 — the shape a scene whose mesh set changed takes. Disposing also
 unregisters, stopping the frame loop from walking that renderer and moving
 the frame's clear to whichever context is now first.
+
+A sprite renderer may target a `SpriteRenderTexture` instead of the screen,
+and that texture may in turn become another layer's atlas. Render textures and
+renderers created by an application callback are synchronized before the
+frame's update/record split, then consecutive renderers for one target share a
+pass in registration order. Both backends end the offscreen pass before a
+later screen pass samples it, which is the platformer's scene-to-CRT chain.
 
 A layer opts into per-sprite UV scroll by setting an offset: the first
 `setSprite2DUvOffset` widens that layer's instance layout in place, adds the

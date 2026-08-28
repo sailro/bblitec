@@ -174,6 +174,7 @@ export async function waitForSceneReady(
     origin: string,
     awaitFrozenPose: boolean,
     search?: string,
+    fixedAnimationFrame?: number,
 ): Promise<void> {
     await gotoScenePage(page, origin, search);
     await page.waitForFunction(
@@ -192,7 +193,41 @@ export async function waitForSceneReady(
             { timeout: 120_000 },
         );
     }
-    await page.waitForTimeout(captureSettleMilliseconds);
+    if (fixedAnimationFrame !== undefined) {
+        const canvas = page.locator("#renderCanvas");
+        const expectedCaptureFrame = String(fixedAnimationFrame);
+        const deadline = Date.now() + 120_000;
+        try {
+            while (
+                (await canvas.getAttribute("data-fixed-capture-frame")) !==
+                expectedCaptureFrame
+            ) {
+                if (Date.now() >= deadline) {
+                    throw new Error("Timed out waiting for fixed browser RAF.");
+                }
+                await page.waitForTimeout(25);
+            }
+        } catch (error) {
+            const frame = await canvas.getAttribute(
+                "data-fixed-animation-frame",
+            );
+            const captureFrame = await canvas.getAttribute(
+                "data-fixed-capture-frame",
+            );
+            const callbacks = await canvas.getAttribute(
+                "data-fixed-animation-callbacks",
+            );
+            throw new Error(
+                `Fixed browser RAF did not reach frame ${fixedAnimationFrame}: ` +
+                    `schedulerFrame=${frame ?? "unset"}, ` +
+                    `captureFrame=${captureFrame ?? "unset"}, ` +
+                    `callbacks=${callbacks ?? "unset"}.`,
+                { cause: error },
+            );
+        }
+    } else {
+        await page.waitForTimeout(captureSettleMilliseconds);
+    }
 }
 
 /**

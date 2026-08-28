@@ -315,6 +315,12 @@ export async function runInstrumentedCapture(
         moduleSource,
         {
             sourcePath: scene.source,
+            ...(scene.parity?.referenceFrame !== undefined
+                ? {
+                      fixedAnimationFrame:
+                          scene.parity.referenceFrame,
+                  }
+                : {}),
             // The same stub the parity reference installs: a scene whose
             // manifest records `deterministic-seeded-random` must draw the
             // pinned sequence here too, or the capture describes a
@@ -339,6 +345,7 @@ export async function runInstrumentedCapture(
                 origin,
                 seekSeconds !== undefined,
                 scene.parity?.referenceSearch,
+                scene.parity?.referenceFrame,
             );
             mkdirSync(captureShadersDirectory(outputDirectory), {
                 recursive: true,

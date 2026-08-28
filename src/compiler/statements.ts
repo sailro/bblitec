@@ -80,6 +80,7 @@ export interface StatementLoweringContext {
     emitAssignment(expression: ts.BinaryExpression): void;
     compileValue(expression: ts.Expression): Value;
     compileCondition(expression: ts.Expression): string;
+    isBrowserOnlyExpression(expression: ts.Expression): boolean;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -648,6 +649,24 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.IfStatement,
     ): void {
+        if (
+            context.isBrowserOnlyExpression(statement.expression) &&
+            this.statementIsBrowserOnly(
+                context,
+                statement.thenStatement,
+            ) &&
+            (!statement.elseStatement ||
+                this.statementIsBrowserOnly(
+                    context,
+                    statement.elseStatement,
+                ))
+        ) {
+            // A DOM guard whose every branch is itself browser-only has no
+            // native observable effect. This covers optional UI setup while
+            // leaving mixed browser/native conditions to the established
+            // condition lowerer and its pinned static deductions.
+            return;
+        }
         const condition = context.compileCondition(
             statement.expression,
         );
@@ -701,6 +720,24 @@ export class StatementLowerer {
             }
         }
         context.emit("}");
+    }
+
+    private statementIsBrowserOnly(
+        context: StatementLoweringContext,
+        statement: ts.Statement,
+    ): boolean {
+        if (ts.isBlock(statement)) {
+            return statement.statements.every((child) =>
+                this.statementIsBrowserOnly(context, child),
+            );
+        }
+        if (!ts.isExpressionStatement(statement)) return false;
+        const expression = context.unwrap(statement.expression);
+        return (
+            ts.isCallExpression(expression) &&
+            ts.isIdentifier(expression.expression) &&
+            context.isBrowserOnlyExpression(expression)
+        );
     }
 
     /**
@@ -1668,6 +1705,17 @@ export class StatementLowerer {
                     context.emitDataAssignment(unwrapped)
                 ) {
                     return;
+                } else if (
+                    target.kind === "json-null" &&
+                    operator === "=" &&
+                    (context.isBrowserOnlyExpression(unwrapped.right) ||
+                        context.unwrap(unwrapped.right).kind ===
+                            ts.SyntaxKind.NullKeyword)
+                ) {
+                    // Browser timer ids exist only to cancel their browser
+                    // timers. When the timer call itself erases, its nullable
+                    // bookkeeping erases with it.
+                    return;
                 } else {
                     context.fail(
                         unwrapped.left,
@@ -1738,7 +1786,8 @@ export class StatementLowerer {
                 value.cpp.length > 0
             ) {
                 context.emit(
-                    value.requiresExplicitDiscard
+                    value.kind !== "void" ||
+                        value.requiresExplicitDiscard
                         ? `static_cast<void>(${value.cpp});`
                         : `${value.cpp};`,
                 );

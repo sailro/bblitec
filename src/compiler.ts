@@ -29,6 +29,7 @@ import {
     BrowserErasure,
     type BrowserErasureContext,
 } from "./compiler/browser-erasure.js";
+import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import {
     compileEnvironmentOptions,
     compileDdsEnvironmentOptions,
@@ -138,6 +139,7 @@ import {
     planImportedModuleInitializers,
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
+import { readPngDimensionsSync } from "./compiler/asset-bytes-sync.js";
 import {
     createCompilerProgram,
 } from "./compiler/program.js";
@@ -164,6 +166,7 @@ import {
 } from "./compiler/handle-collections.js";
 import {
     parameterIsReadOnly,
+    resolveFunctionDeclaration,
     type UserFunctionContext,
     UserFunctionLowerer,
 } from "./compiler/user-functions.js";
@@ -323,6 +326,8 @@ class Compiler
     private readonly nativeFunctionPrototypes: string[] =
         [];
     private readonly nativeFunctionDefinitions: string[] =
+        [];
+    private readonly staticNativeDeclarations: string[] =
         [];
     private readonly returnFrames: Array<
         | { kind: "native"; type: DataType | "void" }
@@ -801,6 +806,24 @@ class Compiler
                 cppType: "bbl::pal::AudioBufferHandle",
             };
         }
+        if (
+            name === "Texture2D" &&
+            this.identifierIsAssignedFromIntrinsic(
+                node,
+                "createRenderTexture2D",
+            )
+        ) {
+            return {
+                kind: "texture",
+                cppType: "bbl::SpriteRenderTextureHandle",
+            };
+        }
+        if (name === "SpriteRenderer") {
+            return {
+                kind: "sprite-renderer",
+                cppType: "bbl::SpriteRendererHandle",
+            };
+        }
         if (name?.endsWith("Node")) {
             return {
                 kind: "audio-node",
@@ -808,6 +831,43 @@ class Compiler
             };
         }
         return undefined;
+    }
+
+    /** Whether a nullable local is later filled by one pinned factory. */
+    private identifierIsAssignedFromIntrinsic(
+        node: ts.Node,
+        intrinsic: string,
+    ): boolean {
+        if (!ts.isIdentifier(node)) return false;
+        const symbol = this.symbols.valueSymbol(node);
+        if (!symbol) return false;
+        let found = false;
+        const visit = (candidate: ts.Node): void => {
+            if (found) return;
+            if (
+                ts.isBinaryExpression(candidate) &&
+                candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(this.unwrap(candidate.left)) &&
+                this.symbols.valueSymbol(
+                    this.unwrap(candidate.left) as ts.Identifier,
+                ) === symbol
+            ) {
+                const right = this.unwrap(candidate.right);
+                if (
+                    ts.isCallExpression(right) &&
+                    ts.isIdentifier(this.unwrap(right.expression)) &&
+                    this.symbols.importedName(
+                        this.unwrap(right.expression) as ts.Identifier,
+                    ) === intrinsic
+                ) {
+                    found = true;
+                    return;
+                }
+            }
+            ts.forEachChild(candidate, visit);
+        };
+        visit(node.getSourceFile());
+        return found;
     }
 
     public emitExpressionAsStatement(
@@ -827,6 +887,17 @@ class Compiler
         }
         if (!ts.isIdentifier(declaration.name)) {
             this.fail(declaration.name, "Only identifier variable declarations are supported.");
+        }
+        const declarationSymbol = this.symbols.valueSymbol(
+            declaration.name,
+        );
+        if (
+            declarationSymbol &&
+            this.hoistedCallbackBindings.has(declarationSymbol) &&
+            this.lookupOptional(declaration.name)
+        ) {
+            this.hoistedCallbackBindings.delete(declarationSymbol);
+            return;
         }
         const sourceName = declaration.name.text;
         const cppName = this.cppIdentifier(sourceName);
@@ -1003,7 +1074,7 @@ class Compiler
         if (value.kind === "void" || value.kind === "browser") {
             this.fail(declaration.initializer, `Expression assigned to '${sourceName}' does not produce a native value.`);
         }
-        if (isCompileTimeOnlyValue(value.kind)) {
+        if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
             this.defineVariable(declaration.name, value);
             return;
         }
@@ -1342,12 +1413,39 @@ class Compiler
                 : this.checker.getTypeAtLocation(declaration.name),
             typeSite,
         );
+        if (
+            annotated?.kind === "optional" &&
+            annotated.inner.kind === "struct"
+        ) {
+            // A rebindable nullable object carries JavaScript object identity:
+            // assigning another object selects that object, it does not copy
+            // its fields into optional inline storage. Reference-backed
+            // structs already encode both identity and null in their shared
+            // pointer, so use that representation for this declaration.
+            annotated = this.dataTypes.markStoredObjectReferences(annotated);
+        }
         const inferredMutableArray =
             !declaration.type &&
             ts.isIdentifier(declaration.name) &&
             ts.isArrayLiteralExpression(this.unwrap(declaration.initializer)) &&
             this.inferredArrayIsMutated(declaration.name);
         const initializer = this.unwrap(declaration.initializer);
+        const annotatedOpenRecordLiteral =
+            declaration.type !== undefined &&
+            annotated?.kind === "map" &&
+            ts.isObjectLiteralExpression(initializer) &&
+            ts.isIdentifier(declaration.name);
+        if (
+            annotatedOpenRecordLiteral &&
+            !this.openRecordContainerIsMutated(declaration.name as ts.Identifier) &&
+            !this.inferredObjectIsRebound(declaration.name as ts.Identifier)
+        ) {
+            // An immutable Record literal stays a compile-time record. A
+            // dynamic read materializes the existing namespace-scope Map,
+            // while a Record that is actually written needs ordinary Map
+            // storage here (the XML attribute parser is that shape).
+            return false;
+        }
         const inferredPlainObject =
             annotated?.kind === "struct" ||
             (annotated?.kind === "optional" &&
@@ -1554,6 +1652,44 @@ class Compiler
             if (mutated) return true;
         }
         return false;
+    }
+
+    private openRecordContainerIsMutated(
+        identifier: ts.Identifier,
+    ): boolean {
+        const symbol = this.symbols.valueSymbol(identifier);
+        if (!symbol) return false;
+        let mutated = false;
+        const directlyIndexes = (expression: ts.Expression): boolean =>
+            (ts.isElementAccessExpression(expression) ||
+                ts.isPropertyAccessExpression(expression)) &&
+            ts.isIdentifier(this.unwrap(expression.expression)) &&
+            this.symbols.valueSymbol(
+                this.unwrap(expression.expression) as ts.Identifier,
+            ) === symbol;
+        const visit = (node: ts.Node): void => {
+            if (mutated) return;
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+                directlyIndexes(node.left)
+            ) {
+                mutated = true;
+                return;
+            }
+            if (
+                (ts.isPrefixUnaryExpression(node) ||
+                    ts.isPostfixUnaryExpression(node)) &&
+                directlyIndexes(node.operand)
+            ) {
+                mutated = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(identifier.getSourceFile(), visit);
+        return mutated;
     }
 
     /** A non-literal inferred struct needs storage only when its binding changes. */
@@ -2045,6 +2181,19 @@ class Compiler
         return this.expressions.compileValue(expression);
     }
 
+    public compileBrowserGeneratedString(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const value = browserGeneratedString(this.checker, call);
+        return value === undefined
+            ? undefined
+            : {
+                  kind: "string",
+                  cpp: this.cppString(value),
+                  staticString: value,
+              };
+    }
+
     /** The complete chained property path containing a failed sub-read. */
     private propertyPathForDiagnostic(
         expression: ts.PropertyAccessExpression,
@@ -2114,7 +2263,8 @@ class Compiler
         if (
             !ts.isIdentifier(ownerExpression) &&
             !ts.isPropertyAccessExpression(ownerExpression) &&
-            !ts.isElementAccessExpression(ownerExpression)
+            !ts.isElementAccessExpression(ownerExpression) &&
+            !ts.isCallExpression(ownerExpression)
         ) {
             this.fail(
                 expression,
@@ -2146,6 +2296,14 @@ class Compiler
                     readOnly: true,
                 };
             }
+            if (property === "key") {
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.key`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            }
             this.fail(
                 expression.name,
                 `Platform keyboard events do not expose '${property}'.`,
@@ -2169,6 +2327,69 @@ class Compiler
             property,
         );
         if (fetchedProperty) return fetchedProperty;
+        if (owner.kind === "regexp" && property === "lastIndex") {
+            return {
+                kind: "number",
+                cpp: `${owner.cpp}.last_index`,
+            };
+        }
+        if (
+            owner.kind === "texture" &&
+            (property === "width" || property === "height")
+        ) {
+            let size = property === "width"
+                ? owner.textureWidth
+                : owner.textureHeight;
+            if (
+                size === undefined &&
+                owner.textureFile?.source &&
+                owner.textureFile.entryFileName
+            ) {
+                const dimensions = readPngDimensionsSync(
+                    owner.textureFile.source,
+                    owner.textureFile.entryFileName,
+                );
+                if (dimensions) {
+                    owner.textureWidth = dimensions.width;
+                    owner.textureHeight = dimensions.height;
+                    size = property === "width"
+                        ? dimensions.width
+                        : dimensions.height;
+                }
+            }
+            if (size === undefined) {
+                this.fail(
+                    expression,
+                    `Texture ${property} requires a PNG source with generation-known dimensions.`,
+                );
+            }
+            return {
+                kind: "number",
+                cpp: doubleLiteral(size),
+                staticNumber: size,
+            };
+        }
+        if (
+            owner.kind === "sprite-renderer" &&
+            property === "layers"
+        ) {
+            const engine = this.requireEngine(owner, expression);
+            return {
+                kind: "data",
+                cpp:
+                    `${engine}.sprite_renderers.at(` +
+                    `static_cast<std::size_t>(${owner.cpp}.value)).layers`,
+                dataType: {
+                    kind: "vector",
+                    element: {
+                        kind: "handle",
+                        handle: "sprite-layer",
+                    },
+                },
+                borrowedData: true,
+                engineCpp: engine,
+            };
+        }
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
             if (accessor) {
@@ -2712,14 +2933,63 @@ class Compiler
             .valueSymbol(callee)
             ?.declarations?.find(ts.isFunctionDeclaration);
         if (!declaration?.body) return false;
+        const resultType = this.checker.getTypeAtLocation(call);
+        if ((resultType.flags & ts.TypeFlags.Object) !== 0) {
+            const resultDeclarations = [
+                ...(resultType.symbol?.declarations ?? []),
+                ...(resultType.aliasSymbol?.declarations ?? []),
+            ];
+            const directlyDom = resultDeclarations.some((result) =>
+                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
+                    result.getSourceFile().fileName,
+                ),
+            );
+            if (!directlyDom) {
+                const carriesNativeData = resultType
+                    .getProperties()
+                    .some((property) => {
+                        const declaration = property.valueDeclaration ??
+                            property.declarations?.[0];
+                        if (!declaration) return false;
+                        const propertyType =
+                            this.checker.getTypeOfSymbolAtLocation(
+                                property,
+                                declaration,
+                            );
+                        return (
+                            propertyType.getCallSignatures().length === 0 &&
+                            this.dataTypes.fromTsType(
+                                propertyType,
+                                declaration,
+                            ) !== undefined
+                        );
+                    });
+                if (carriesNativeData) {
+                    // A DOM-using helper may still return an application
+                    // record whose native fields are polled later (the
+                    // platformer input controller). Erase its DOM statements
+                    // individually rather than tainting the whole object.
+                    return false;
+                }
+            }
+        }
         const hasBrowserInput = call.arguments.some((argument) =>
             this.isBrowserOnlyExpression(argument),
         );
+        const signature = this.checker.getSignatureFromDeclaration(
+            declaration,
+        );
+        const returnsVoid =
+            signature !== undefined &&
+            (this.checker.getReturnTypeOfSignature(signature).flags &
+                ts.TypeFlags.Void) !==
+                0;
         if (
             !hasBrowserInput ||
-            !call.arguments.every((argument) =>
-                this.isBrowserHelperArgument(argument),
-            )
+            (!returnsVoid &&
+                !call.arguments.every((argument) =>
+                    this.isBrowserHelperArgument(argument),
+                ))
         ) {
             return false;
         }
@@ -2946,7 +3216,8 @@ class Compiler
             if (!resolvedNumericOperands) {
                 this.fail(
                     unwrapped,
-                    "Browser-dependent condition cannot be determined for native AOT lowering.",
+                    "Browser-dependent condition cannot be determined for native AOT lowering " +
+                        `(browser operands: ${browserOperands.map((operand) => operand.getText()).join(", ") || unwrapped.getText()}).`,
                 );
             }
             // This is a mixed native/browser comparison. The browser side
@@ -3059,6 +3330,42 @@ class Compiler
                     ? rightValue.staticNumber
                     : undefined;
             if (
+                leftValue.staticString !== undefined &&
+                rightValue.staticString !== undefined
+            ) {
+                const equal =
+                    leftValue.staticString === rightValue.staticString;
+                const folded =
+                    unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+                        ? equal
+                        : unwrapped.operatorToken.kind ===
+                            ts.SyntaxKind.ExclamationEqualsEqualsToken
+                          ? !equal
+                          : undefined;
+                if (folded !== undefined) {
+                    return folded ? "true" : "false";
+                }
+            }
+            const isStringValue = (value: Value): boolean =>
+                value.kind === "string" ||
+                (value.kind === "data" &&
+                    value.dataType?.kind === "string");
+            if (
+                isStringValue(leftValue) &&
+                isStringValue(rightValue) &&
+                (unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                    unwrapped.operatorToken.kind ===
+                        ts.SyntaxKind.ExclamationEqualsEqualsToken)
+            ) {
+                return (
+                    `std::string(${leftValue.cpp}) ` +
+                    `${unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ` +
+                    `std::string(${rightValue.cpp})`
+                );
+            }
+            if (
                 staticLeft !== undefined &&
                 staticRight !== undefined &&
                 Number.isFinite(staticLeft) &&
@@ -3113,6 +3420,9 @@ class Compiler
             if (value.kind === "boolean") {
                 return value.cpp;
             }
+            if (value.optionalFoundCpp !== undefined) {
+                return value.optionalFoundCpp;
+            }
             if (
                 value.kind === "data" &&
                 value.dataType?.kind === "optional"
@@ -3161,12 +3471,23 @@ class Compiler
             if (value.optionalFoundCpp !== undefined) {
                 return value.optionalFoundCpp;
             }
+            if (
+                value.kind === "data" &&
+                value.dataType?.kind === "optional"
+            ) {
+                return `${value.cpp}.has_value()`;
+            }
             if (value.kind === "callback") {
                 return "true";
             }
             if (value.kind === "json-null") {
                 return "false";
             }
+            this.fail(
+                unwrapped,
+                "Expected a reached callback condition; property produced " +
+                    `${value.kind}${value.dataType ? ` ${JSON.stringify(value.dataType)}` : ""}.`,
+            );
         }
         this.fail(unwrapped, "Expected a reached callback condition.");
     }
@@ -3285,19 +3606,16 @@ class Compiler
         const start = this.body.length;
         const previousIndent = this.indentLevel;
         this.indentLevel = 0;
+        const parameter = this.allocateTemporaryCppName(
+            "frame_callback_value",
+        );
         this.frameCallbackDepth += 1;
         try {
-            const value =
-                this.userFunctions.compileReference(
-                    this,
-                    identifier,
-                );
-            if (!value) {
-                this.fail(
-                    identifier,
-                    `Callback '${identifier.text}' does not resolve to a local function.`,
-                );
-            }
+            const value = this.compileCallbackWithValues(
+                identifier,
+                [{ kind: "number", cpp: parameter }],
+                identifier,
+            );
             if (value.cpp.length > 0) {
                 this.emit(`${value.cpp};`);
             }
@@ -3306,7 +3624,7 @@ class Compiler
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
-        return `[&](float) {\n${callbackBody
+        return `[&](float ${parameter}) {\n${callbackBody
             .map((line) => `            ${line}`)
             .join("\n")}\n        }`;
     }
@@ -3394,6 +3712,14 @@ class Compiler
     public compileStringLiteral(expression: ts.Expression): string {
         const moduleAsset = this.moduleRelativeAssetUrl(expression);
         if (moduleAsset !== undefined) return moduleAsset;
+        const resolved = this.resolveStaticExpression(expression);
+        if (ts.isCallExpression(resolved)) {
+            const generated = browserGeneratedString(
+                this.checker,
+                resolved,
+            );
+            if (generated !== undefined) return generated;
+        }
         return this.evaluator.compileStringLiteral(expression);
     }
 
@@ -3709,6 +4035,56 @@ class Compiler
         return compileSpriteAtlasRecord(this, value, node);
     }
 
+    public compileSpriteAtlas(
+        expression: ts.Expression,
+    ): Value {
+        const unwrapped = this.unwrap(expression);
+        const value = this.compileValue(unwrapped);
+        if (value.kind === "record") {
+            const cpp = compileSpriteAtlasRecord(
+                this,
+                value,
+                expression,
+            );
+            if (cpp) {
+                const engineCpp = this.defaultEngine();
+                return {
+                    kind: "sprite-atlas",
+                    cpp,
+                    ...(engineCpp ? { engineCpp } : {}),
+                };
+            }
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "optional" &&
+            value.dataType.inner.kind === "handle" &&
+            value.dataType.inner.handle === "sprite-atlas"
+        ) {
+            const engineCpp = this.defaultEngine();
+            return {
+                kind: "sprite-atlas",
+                cpp: `(*${value.cpp})`,
+                dataType: value.dataType.inner,
+                ...(engineCpp ? { engineCpp } : {}),
+            };
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "handle" &&
+            value.dataType.handle === "sprite-atlas"
+        ) {
+            const engineCpp = this.defaultEngine();
+            return {
+                kind: "sprite-atlas",
+                cpp: value.cpp,
+                dataType: value.dataType,
+                ...(engineCpp ? { engineCpp } : {}),
+            };
+        }
+        return value;
+    }
+
     public probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
@@ -3727,6 +4103,10 @@ class Compiler
         file: ts.SourceFile,
     ): boolean {
         return file === this.sourceFile;
+    }
+
+    public sourceFiles(): readonly ts.SourceFile[] {
+        return this.program.getSourceFiles();
     }
 
     public reachThrow(): void {
@@ -3763,15 +4143,11 @@ class Compiler
             // that local.
             return false;
         }
-        // A shorthand property's own identifier resolves to the
-        // literal's property symbol, so the value symbol is what says
-        // which declaration the name actually refers to.
-        const symbol = this.symbols.valueSymbol(identifier);
-        return (symbol?.declarations ?? []).some(
-            (declaration) =>
-                ts.isFunctionDeclaration(declaration) &&
-                declaration.body !== undefined,
-        );
+        return resolveFunctionDeclaration(
+            this.checker,
+            identifier,
+            (node, message) => this.fail(node, message),
+        ) !== undefined;
     }
 
     /**
@@ -4209,6 +4585,18 @@ class Compiler
             target.audioMainBusCpp =
                 value.audioMainBusCpp;
         }
+        if (value.engineCpp !== undefined) {
+            target.engineCpp = value.engineCpp;
+        }
+        if (value.textureStorage !== undefined) {
+            target.textureStorage = value.textureStorage;
+            if (value.textureWidth !== undefined) {
+                target.textureWidth = value.textureWidth;
+            }
+            if (value.textureHeight !== undefined) {
+                target.textureHeight = value.textureHeight;
+            }
+        }
         return true;
     }
 
@@ -4464,6 +4852,31 @@ class Compiler
         );
         if (directlyDom) return true;
         const unwrapped = this.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            const bound = this.lookupOptional(unwrapped);
+            if (
+                bound &&
+                bound.kind !== "browser" &&
+                bound.kind !== "node-particle-2d-binding"
+            ) {
+                // A local function can bridge DOM setup and return an ordinary
+                // native record. Once that record is bound, its data fields do
+                // not become browser-only merely because the initializer also
+                // registered DOM listeners.
+                return false;
+            }
+            const declaration = this.symbols.valueSymbol(unwrapped)
+                ?.valueDeclaration;
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                declaration.initializer !== unwrapped &&
+                this.isBrowserOnlyExpression(declaration.initializer)
+            ) {
+                return true;
+            }
+        }
         return (
             (ts.isPropertyAccessExpression(unwrapped) ||
                 ts.isElementAccessExpression(unwrapped)) &&
@@ -4529,6 +4942,23 @@ class Compiler
         }
         const receiver = this.unwrap(callee.expression);
         if (
+            callee.name.text === "destroy" &&
+            call.arguments.length === 0 &&
+            ts.isPropertyAccessExpression(receiver) &&
+            receiver.name.text === "texture"
+        ) {
+            const texture = this.compileValue(
+                receiver.expression,
+            );
+            if (texture.kind === "texture") {
+                // The native engine owns render-target allocation for the
+                // lifetime of its renderer. Rebuilding the CRT chain stops
+                // referencing this handle; physical GPU reclamation remains
+                // engine-owned rather than exposing WebGPUTexture.destroy().
+                return { kind: "void", cpp: "" };
+            }
+        }
+        if (
             callee.name.text === "now" &&
             call.arguments.length === 0 &&
             ts.isIdentifier(receiver) &&
@@ -4553,6 +4983,44 @@ class Compiler
             return { kind: "void", cpp: "" };
         }
         return undefined;
+    }
+
+    /**
+     * Registers an application-owned browser animation loop on the native
+     * frame conductor. Browser RAF callbacks run in registration order. A
+     * callback registered before `startEngine` therefore updates before the
+     * engine-owned render callback, while one registered after the awaited
+     * start (the platformer conductor) runs after rendering and affects the
+     * following frame. Native startup itself remains deferred because its
+     * platform loop blocks.
+     *
+     * A recursive request inside the callback only re-arms the browser
+     * callback; the conductor is already recurring, so that call emits
+     * nothing. The callback belongs to the engine frame conductor, so
+     * scene-less applications do not fabricate a SceneContext that would
+     * select the wrong native renderer.
+     */
+    public compileAnimationFrameCall(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        this.expectArgumentCount(call, 1, 1);
+        if (this.frameCallbackDepth > 0) {
+            return { kind: "void", cpp: "" };
+        }
+        const engine = this.requireDefaultEngine(call);
+        const callback = this.compileFrameCallback(
+            call.arguments[0]!,
+        );
+        const callbacks = this.engineStartMark
+            ? "post_render_animation_frame_callbacks"
+            : "animation_frame_callbacks";
+        return {
+            kind: "void",
+            cpp:
+                `${engine}.${callbacks}.push_back(` +
+                `[&, callback = ${callback}](float) mutable { ` +
+                `callback(static_cast<float>(bbl::pal::performance_milliseconds())); })`,
+        };
     }
 
     /**
@@ -4585,6 +5053,7 @@ class Compiler
             call.arguments[0]!,
         );
         const callback = call.arguments[1]!;
+        this.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
         if (call.arguments[2]) {
             const options = this.unwrap(call.arguments[2]);
@@ -4675,6 +5144,53 @@ class Compiler
         return false;
     }
 
+    private readonly hoistedCallbackBindings = new Set<ts.Symbol>();
+
+    /**
+     * JavaScript closures may name a `const` declared later in the same
+     * function. Native callback lambdas need that storage to exist before
+     * registration, so materialize such locals just ahead of the listener
+     * and skip their original declaration when the source walk reaches it.
+     */
+    private hoistForwardCallbackBindings(
+        callback: ts.Expression,
+        before: number,
+    ): void {
+        const candidates = new Map<ts.Symbol, ts.VariableDeclaration>();
+        const belongsToCallback = (declaration: ts.Node): boolean => {
+            let current: ts.Node | undefined = declaration;
+            while (current) {
+                if (current === callback) return true;
+                current = current.parent;
+            }
+            return false;
+        };
+        const visit = (node: ts.Node): void => {
+            if (ts.isIdentifier(node)) {
+                const symbol = this.symbols.valueSymbol(node);
+                const declaration = symbol?.valueDeclaration;
+                if (
+                    symbol &&
+                    declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer &&
+                    declaration.pos > before &&
+                    ts.isIdentifier(declaration.name) &&
+                    !belongsToCallback(declaration) &&
+                    !this.lookupOptional(declaration.name)
+                ) {
+                    candidates.set(symbol, declaration);
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(callback);
+        for (const [symbol, declaration] of candidates) {
+            this.emitVariableDeclaration(declaration);
+            this.hoistedCallbackBindings.add(symbol);
+        }
+    }
+
     private compilePlatformCallback(
         callback: ts.Expression,
         cppParameter: string,
@@ -4693,14 +5209,31 @@ class Compiler
         let lines: string[];
         try {
             lines = this.captureEmittedLines(() => {
-                const result = this.compileCallbackWithValues(
-                    this.unwrap(callback) as
-                        | ts.Identifier
-                        | ts.ArrowFunction
-                        | ts.FunctionExpression,
-                    values,
-                    callback,
-                );
+                const unwrapped = this.unwrap(callback) as
+                    | ts.Identifier
+                    | ts.ArrowFunction
+                    | ts.FunctionExpression;
+                const bound = ts.isIdentifier(unwrapped)
+                    ? this.lookupOptional(unwrapped)
+                    : undefined;
+                const declaration =
+                    bound?.kind === "callback" &&
+                    bound.callbackDeclaration &&
+                    !ts.isMethodDeclaration(bound.callbackDeclaration)
+                        ? bound.callbackDeclaration
+                        : unwrapped;
+                const compile = () =>
+                    this.compileCallbackWithValues(
+                        declaration,
+                        values,
+                        callback,
+                    );
+                const result = bound?.callbackRecordOwner
+                    ? this.withRecordScopes(
+                          bound.callbackRecordOwner,
+                          compile,
+                      )
+                    : compile();
                 if (result.cpp.length > 0) {
                     this.emit(
                         result.requiresExplicitDiscard
@@ -5142,6 +5675,28 @@ class Compiler
         this.defineVariable(identifier, value);
     }
 
+    public materializeStaticNativeValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): Value {
+        const existing = this.lookupOptional(identifier);
+        if (existing) return existing;
+        const symbol = this.symbols.valueSymbol(identifier);
+        if (!symbol) {
+            this.fail(identifier, `Unable to resolve variable '${identifier.text}'.`);
+        }
+        const cppName = this.cppIdentifier(identifier.text);
+        this.staticNativeDeclarations.push(
+            `auto ${cppName} = ${value.cpp};`,
+        );
+        const stored = { ...value, cpp: cppName };
+        this.variableScopes[0]!.set(symbol, {
+            name: identifier.text,
+            value: stored,
+        });
+        return stored;
+    }
+
     /**
      * Binds an inlined user-function parameter. Unlike local
      * declarations (the pinned value model copies path-bound locals),
@@ -5222,14 +5777,23 @@ class Compiler
     public compileCallbackWithValues(
         declaration:
             | ts.Identifier
+            | ts.FunctionDeclaration
             | ts.ArrowFunction
-            | ts.FunctionExpression,
+            | ts.FunctionExpression
+            | ts.MethodDeclaration,
         arguments_: readonly Value[],
         callNode: ts.Node,
     ): Value {
+        const callable = ts.isFunctionDeclaration(declaration)
+            ? declaration.name ??
+              this.fail(
+                  declaration,
+                  "Callback function declarations require a name.",
+              )
+            : declaration;
         return this.userFunctions.compileCallbackWithValues(
             this,
-            declaration,
+            callable,
             arguments_,
             callNode,
         );
@@ -6024,6 +6588,8 @@ class Compiler
                 this.nativeFunctionPrototypes,
             nativeFunctionDefinitions:
                 this.nativeFunctionDefinitions,
+            staticNativeDeclarations:
+                this.staticNativeDeclarations,
             body: this.body,
         });
     }

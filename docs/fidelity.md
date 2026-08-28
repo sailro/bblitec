@@ -1230,6 +1230,16 @@ fixes (clamp on both axes, no mip chain, filter from `sampling`), and the
 texture is `rgba8unorm` with `srgb` off, so the atlas texels reach the blend
 stage as the bytes on disk.
 
+**The platformer golden is a frame, not a wall-clock delay.** Its attract
+camera and CRT grain both advance continuously, so a three-second browser
+settle does not name a reproducible state. The capture harness therefore
+drives `requestAnimationFrame` in registration order on a 60 Hz clock,
+counts from the scene-ready boundary, fixes `performance.now()` to that same
+clock, and freezes after every callback on frame 180 has run. Native derives
+`BBLITE_SCREENSHOT_FRAME` from that one registry value. This keeps the source
+live—the game loop and shader time still execute—while making the measured
+state identical on both sides.
+
 **A sprite layer is drawn by its own renderer, not by the scene.** Upstream's
 `SpriteRenderer` implements `RenderingContext` directly and registers on the
 engine rather than on a `SceneContext`, opens its own single-sample swapchain
@@ -1237,12 +1247,25 @@ pass, and draws one instanced quad per layer. Native mirrors that: a scene
 registering a sprite renderer and no scene compiles no scene renderer at all,
 and the sprite pass is a separate translation unit. The instance layout is the
 pinned pure-2D one — thirteen floats, 52 bytes, position/size/uvMin/uvMax/
-rotation/colour — and the layer UBO is the pinned sixteen floats. The reached
-slice is the straight-alpha blend on `depth: "none"` layers; depth-hosted
-layers, the other blend descriptors, custom shaders, uv scroll and coverage
-gamma are all behind upstream's own hooks and none is emitted. Both GPU
-backends draw it, from one generated WGSL pair and one instance layout, and
-on this scene they agree byte for byte with each other and with the golden.
+rotation/colour — and the layer UBO is the pinned sixteen floats. Reached
+`depth: "none"` layers cover the exported blend descriptors, the widened UV
+scroll layout, and custom fragment shaders with `fx.time`, `fx.params`, and
+extra textures; depth-hosted layers and coverage gamma remain unreached. Both
+GPU backends draw the same generated stock or pin-composed custom WGSL; their
+platformer captures differ by only 0.004 MAD, with 99.91% of pixels within one
+channel level.
+
+**A sprite target is another rendering context boundary, not a post-draw
+copy.** `createSpriteRenderTexture` produces a single-sample colour attachment
+that is also sampleable, and `setSpriteRendererTarget` directs a renderer's
+ordinary pass into it. A later renderer can use `createSpriteAtlasFromTexture`
+to sample those exact pixels. Both native drivers therefore group consecutive
+registered renderers by target and end one GPU render pass before a later one
+samples that target. The target and the later CRT renderer are created from
+the platformer's first application animation callback, so the GPU mirrors are
+created after the initial engine render. On the following turn the GPU mirrors
+are synchronized before upload; building only the startup list would
+permanently omit the chain.
 
 **One writer, two arms — because only the writer can see the previous
 sprite.** `writeInstance` is shared upstream by `addSprite2DIndex` and

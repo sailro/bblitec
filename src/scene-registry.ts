@@ -3,6 +3,12 @@ export interface SceneParityDefinition {
     referenceTimeSeconds?: number;
     referenceAnimationGroups?: string[];
     /**
+     * Freeze the browser RAF scheduler on this exact positive native frame and
+     * derive the native screenshot frame from the same value. Live
+     * application shaders must use this instead of a wall-clock settle.
+     */
+    referenceFrame?: number;
+    /**
      * The query string the pinned parity spec serves this scene at, when it
      * serves one (`"?seekTime=0"`). The reference page is navigated with it
      * and the compiler folds `window.location.search` to the same text, so
@@ -2652,6 +2658,21 @@ const sceneInputs: readonly SceneInput[] = [
             },
         },
     },
+    {
+        id: "platformer",
+        name: "Platformer",
+        source: "corpus/babylon-lite/lab/lite/src/demos/platformer.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Platformer",
+        parity: {
+            referenceFrame: 180,
+            maxFullMad: 0.05,
+            maxForegroundMad: 0.05,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
 ];
 
 /**
@@ -2671,11 +2692,21 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     if (!parity) {
         return resolved;
     }
+    const parityWithSeek = {
+        ...parity,
+        ...derivedSeekEnvironment(scene.id, parity),
+    };
+    const parityWithFrame = {
+        ...parityWithSeek,
+        ...derivedReferenceFrameEnvironment(
+            scene.id,
+            parityWithSeek,
+        ),
+    };
     return {
         ...resolved,
         parity: {
-            ...parity,
-            ...derivedSeekEnvironment(scene.id, parity),
+            ...parityWithFrame,
             reference: parity.reference ?? {
                 kind: "source",
                 path: `reference/${scene.id}/babylon-lite-golden.png`,
@@ -2683,6 +2714,34 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
             outputDirectory:
                 parity.outputDirectory ??
                 `artifacts/parity/${scene.id}`,
+        },
+    };
+}
+
+/** One frame index for the deterministic browser RAF and native capture. */
+function derivedReferenceFrameEnvironment(
+    sceneId: string,
+    parity: NonNullable<SceneInput["parity"]>,
+): { nativeEnvironment?: Record<string, string> } {
+    const frame = parity.referenceFrame;
+    const explicit =
+        parity.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME;
+    if (frame === undefined) return {};
+    if (!Number.isInteger(frame) || frame < 1) {
+        throw new Error(
+            `Scene '${sceneId}' has invalid referenceFrame=${frame}.`,
+        );
+    }
+    if (explicit !== undefined && Number(explicit) !== frame) {
+        throw new Error(
+            `Scene '${sceneId}' spells its capture frame twice and they disagree: ` +
+                `referenceFrame=${frame} but BBLITE_SCREENSHOT_FRAME='${explicit}'.`,
+        );
+    }
+    return {
+        nativeEnvironment: {
+            ...parity.nativeEnvironment,
+            BBLITE_SCREENSHOT_FRAME: String(frame),
         },
     };
 }

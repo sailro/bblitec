@@ -33,6 +33,36 @@ export function readAssetBytesSync(
     return bytes;
 }
 
+/** Reads only the fixed PNG header fields, and only when a dimension is used. */
+export function readPngDimensionsSync(
+    source: string,
+    entryFileName: string,
+): { width: number; height: number } | undefined {
+    const bytes = readAssetBytesSync(source, entryFileName);
+    if (
+        bytes.length < 24 ||
+        bytes[0] !== 0x89 ||
+        bytes[1] !== 0x50 ||
+        bytes[2] !== 0x4e ||
+        bytes[3] !== 0x47 ||
+        bytes[12] !== 0x49 ||
+        bytes[13] !== 0x48 ||
+        bytes[14] !== 0x44 ||
+        bytes[15] !== 0x52
+    ) {
+        return undefined;
+    }
+    const view = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+    );
+    return {
+        width: view.getUint32(16, false),
+        height: view.getUint32(20, false),
+    };
+}
+
 function readUncached(
     source: string,
     entryFileName: string,

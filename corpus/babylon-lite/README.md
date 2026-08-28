@@ -13,8 +13,8 @@ scenes and their SHA-256 hashes are recorded in
 it only as part of an explicit upstream-pin migration.
 
 Shared modules reached by registered scenes are copied byte-identically and
-hash-recorded in the same catalog, along with adopted upstream applications
-and their complete reached file graphs.
+hash-recorded in the same catalog, along with the four adopted upstream
+applications and their complete reached file graphs.
 
 ## External golden applications
 

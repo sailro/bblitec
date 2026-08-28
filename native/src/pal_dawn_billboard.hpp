@@ -63,7 +63,8 @@ struct DawnBillboardPass {
     WGPUBuffer fx_uniforms = nullptr;
     // The custom shader's own clock: seconds since this system's first
     // frame, which the pin accumulates inside its fx attachment.
-    float elapsed_ms = 0.0f;
+    // Mirrors the JavaScript `number` accumulator until the f32 UBO write.
+    double elapsed_ms = 0.0;
     WGPUTexture atlas = nullptr;
     WGPUTextureView atlas_view = nullptr;
     WGPUSampler sampler = nullptr;
@@ -501,7 +502,9 @@ inline void upload_dawn_billboard_pass(
         pass.elapsed_ms += delta_ms;
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
         upstream::build_sprite_fx_ubo(
-            pass.elapsed_ms / 1000.0f, system.shader_params, fx);
+            static_cast<float>(pass.elapsed_ms / 1000.0),
+            system.shader_params,
+            fx);
         wgpuQueueWriteBuffer(
             queue,
             pass.fx_uniforms,

@@ -18,6 +18,7 @@ export interface NativeFunctionContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: DataTypeRegistry;
     readonly dataLowerer: DataLowerer;
+    sourceFiles(): readonly ts.SourceFile[];
     isEntrySourceFile(file: ts.SourceFile): boolean;
     lookupIdentifierValue(
         identifier: ts.Identifier,
@@ -364,6 +365,16 @@ export class NativeFunctionLowerer {
             this.rejected.add(declaration);
             return undefined;
         }
+        if (this.containsGenerationTimeFetch(declaration)) {
+            // A statically known fetch is executed by the compiler, so its
+            // URL is part of the call-site specialization. Hoisting the
+            // helper into a native function would turn that URL into an
+            // ordinary std::string parameter before the fetch is lowered.
+            // Keep these helpers on the inliner so static strings continue
+            // through wrapper parameters into the generation-time sink.
+            this.rejected.add(declaration);
+            return undefined;
+        }
         const returnTsType =
             this.context.checker.getReturnTypeOfSignature(
                 checkerSignature,
@@ -377,6 +388,15 @@ export class NativeFunctionLowerer {
                 returnTsType,
                 declaration,
             );
+            if (
+                returnType?.kind === "struct" &&
+                this.returnTypeIsStored(returnTsType)
+            ) {
+                returnType =
+                    this.context.dataTypes.markStoredObjectReferences(
+                        returnType,
+                    );
+            }
             // A helper that hands back a resource handle touches the
             // engine to produce it, so it stays on the inline path
             // where the engine binding is in scope.
@@ -431,6 +451,84 @@ export class NativeFunctionLowerer {
         };
         this.signatures.set(declaration, signature);
         return signature;
+    }
+
+    private containsGenerationTimeFetch(
+        declaration: SupportedFunction,
+    ): boolean {
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "fetch"
+            ) {
+                found = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration.body ?? declaration);
+        return found;
+    }
+
+    /** Whether callers place this returned object behind a JS container. */
+    private returnTypeIsStored(returnType: ts.Type): boolean {
+        const target = this.context.checker.getNonNullableType(returnType);
+        const sameType = (candidate: ts.Type): boolean => {
+            const normalized = this.context.checker.getNonNullableType(
+                candidate,
+            );
+            return (
+                normalized === target ||
+                (normalized.aliasSymbol !== undefined &&
+                    normalized.aliasSymbol === target.aliasSymbol) ||
+                (normalized.symbol !== undefined &&
+                    normalized.symbol === target.symbol)
+            );
+        };
+        let stored = false;
+        const visit = (node: ts.Node): void => {
+            if (stored) return;
+            let storedTypeNode: ts.TypeNode | undefined;
+            if (ts.isArrayTypeNode(node)) {
+                storedTypeNode = node.elementType;
+            } else if (
+                ts.isTypeReferenceNode(node) &&
+                ts.isIdentifier(node.typeName)
+            ) {
+                const index = ["Map", "ReadonlyMap", "Record"].includes(
+                    node.typeName.text,
+                )
+                    ? 1
+                    : ["Array", "ReadonlyArray", "Set"].includes(
+                          node.typeName.text,
+                      )
+                      ? 0
+                      : -1;
+                storedTypeNode = index >= 0
+                    ? node.typeArguments?.[index]
+                    : undefined;
+            }
+            if (
+                storedTypeNode &&
+                sameType(
+                    this.context.checker.getTypeFromTypeNode(
+                        storedTypeNode,
+                    ),
+                )
+            ) {
+                stored = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const source of this.context.sourceFiles()) {
+            if (!source.isDeclarationFile) visit(source);
+            if (stored) break;
+        }
+        return stored;
     }
 
     private parameterIsReadOnly(
@@ -514,6 +612,16 @@ export class NativeFunctionLowerer {
                             this.context.lookupIdentifierValue(
                                 node,
                             );
+                        if (
+                            ts.isVariableDeclaration(bindingDeclaration) &&
+                            bindingDeclaration.initializer &&
+                            ts.isRegularExpressionLiteral(
+                                bindingDeclaration.initializer,
+                            )
+                        ) {
+                            captured = true;
+                            return;
+                        }
                         if (
                             bound &&
                             bound.kind !== "tuple" &&

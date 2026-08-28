@@ -76,6 +76,7 @@ struct EngineOptions {
 /** Browser-neutral keyboard data delivered by the platform event loop. */
 struct PlatformKeyboardEvent {
     std::string code{};
+    std::string key{};
     bool repeat = false;
 };
 
@@ -130,6 +131,10 @@ struct Sprite2DLayerHandle {
 };
 
 struct SpriteRendererHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct SpriteRenderTextureHandle {
     std::uint32_t value = invalid_handle;
 };
 
@@ -770,6 +775,10 @@ struct TextureData {
     // `flipY` to `copyExternalImageToTexture` (texture-2d.ts). The PALs'
     // shared `decode_uploadable_image` applies it as a row swap.
     bool invert_y = false;
+    // `createImageBitmap({ premultiplyAlpha: "premultiply" })` followed by
+    // `copyExternalImageToTexture({ premultipliedAlpha: true })` in the pin.
+    // The shared decode path applies the same byte transform before upload.
+    bool premultiply_alpha = false;
     // The pin's texture-OBJECT `invertY` property, a different thing from
     // the upload flip above: `loadTexture2D` results never carry the
     // property (its option only drives the flipped copy), so every image
@@ -1054,6 +1063,13 @@ struct SpriteAtlasRecord {
     // the chain this says rather than inferring one from the sampler.
     bool mip_maps = false;
     TextureSamplerState sampler{};
+    bool has_render_texture = false;
+    SpriteRenderTextureHandle render_texture{};
+};
+
+struct SpriteRenderTextureRecord {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
 };
 
 /**
@@ -1207,7 +1223,7 @@ struct Sprite2DLayerRecord {
     // composed program and binds the fx block beside its layer block. The
     // pin reaches both through a hook that is null until a descriptor
     // exists, so the flag is the same "is there one" question.
-    bool custom_shader = false;
+    std::uint32_t custom_shader = 0;
     // custom-shader-core.ts: the descriptor's extra textures, in the order
     // they bind after the atlas. Empty unless a custom shader named any.
     std::vector<PixelsTexture> custom_textures;
@@ -1253,7 +1269,7 @@ struct BillboardSystemRecord {
     // billboard-custom-shader.ts: the same opt-in the 2D layer carries --
     // a system built with a descriptor draws the composed program and
     // binds the fx block beside its system block.
-    bool custom_shader = false;
+    std::uint32_t custom_shader = 0;
     // custom-shader-core.ts: the descriptor's extra textures, in the order
     // they bind after the atlas. Empty unless a custom shader named any.
     std::vector<PixelsTexture> custom_textures;
@@ -1275,6 +1291,8 @@ struct SpriteRendererRecord {
     // same version-compare shape `mesh_membership_version` already gives a
     // scene whose mesh set moved.
     std::uint64_t layers_version = 0;
+    bool has_target = false;
+    SpriteRenderTextureHandle target{};
 };
 
 /**
@@ -2030,6 +2048,21 @@ struct Engine {
         mouse_up_callbacks;
     std::vector<std::function<void(bool)>> visibility_change_callbacks;
     /**
+     * Application-owned `requestAnimationFrame` callbacks registered before
+     * `startEngine`. Browser RAF callbacks run in registration order, so these
+     * precede the engine-owned render callback.
+     */
+    std::vector<std::function<void(float)>> animation_frame_callbacks;
+    /**
+     * Application-owned RAF callbacks registered after `startEngine` has
+     * resolved. The engine callback was registered first, so these run after
+     * the frame has been submitted and can only affect the following frame.
+     */
+    std::vector<std::function<void(float)>>
+        post_render_animation_frame_callbacks;
+    /** The awaited start resolves only after the engine's initial render. */
+    bool post_render_animation_frame_callbacks_armed = false;
+    /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
      * for the groups attached to it, so a measured seek has to reach it;
@@ -2054,6 +2087,7 @@ struct Engine {
     std::vector<Sprite2DLayerRecord> sprite_layers;
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
+    std::vector<SpriteRenderTextureRecord> sprite_render_textures;
     std::vector<SplatMeshRecord> splat_meshes;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
@@ -2611,7 +2645,8 @@ FileTexture load_file_texture(
     const std::string& path,
     TextureSamplerState sampler,
     bool invert_y,
-    bool srgb);
+    bool srgb,
+    bool premultiply_alpha = false);
 // `ktx-loader.ts` loadKtxTexture2D, past the suffix selection generation
 // resolved: the container is parsed and its blocks are uploaded as they
 // are. `invert_y` is the texture-object property the pin's own loader
@@ -2944,6 +2979,19 @@ struct LoadSpriteAtlasOptions {
     TextureAddressMode address_v = TextureAddressMode::clamp;
 };
 
+struct GridSpriteAtlasOptions {
+    double cell_width_px = 0.0;
+    double cell_height_px = 0.0;
+    bool has_columns = false;
+    double columns = 0.0;
+    bool has_rows = false;
+    double rows = 0.0;
+    double margin_px = 0.0;
+    double spacing_px = 0.0;
+    Vec2 pivot{0.5f, 0.5f};
+    bool premultiplied_alpha = false;
+};
+
 /** Normalized runtime input to the in-memory sprite-atlas shelf packer. */
 struct SpriteAtlasFramePixelsView {
     const std::uint8_t* pixels = nullptr;
@@ -2973,7 +3021,7 @@ struct Sprite2DLayerOptions {
     bool visible = true;
     float order = 0.0f;
     Vec2 pivot{0.5f, 0.5f};
-    bool custom_shader = false;
+    std::uint32_t custom_shader = 0;
     std::vector<PixelsTexture> custom_textures;
 };
 
@@ -2997,7 +3045,7 @@ struct BillboardSystemOptions {
     bool visible;
     float alpha_cutoff;
     bool has_alpha_cutoff;
-    bool custom_shader;
+    std::uint32_t custom_shader;
     std::vector<PixelsTexture> custom_textures;
     // particle-billboard-renderable.ts: the mode-4 wrapper's SECOND pass.
     // The pin builds it as `{...system, blendMode: createParticleBlend(2),
@@ -3067,6 +3115,23 @@ SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
     const std::string& path,
     LoadSpriteAtlasOptions options);
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
+    const FileTexture& texture,
+    GridSpriteAtlasOptions options);
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
+    SpriteRenderTextureHandle texture,
+    GridSpriteAtlasOptions options);
+SpriteRenderTextureHandle create_sprite_render_texture(
+    Engine& engine,
+    double width,
+    double height);
+void set_sprite_renderer_target(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    SpriteRenderTextureHandle target,
+    bool has_target);
 SpriteAtlasHandle create_sprite_atlas_from_frames(
     Engine& engine,
     const std::vector<SpriteAtlasFramePixelsView>& sources,

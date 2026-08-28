@@ -1268,7 +1268,7 @@ inline void write_billboard_draw_list(
         json.field("opacity", system.opacity);
         json.field("axis", system.axis);
         json.field("particlePasses", plan.particle_passes);
-        json.field("customShader", system.custom_shader);
+        json.field("customShader", system.custom_shader != 0u);
         json.field("customTextureCount", system.custom_textures.size());
         json.field("shaderParams", system.shader_params);
         write_sprite_blend(json, "blend", system.blend);
@@ -1379,7 +1379,7 @@ inline void write_sprite_renderer_list(
                 "instanceFloatsPerSprite",
                 layer.instance_floats_per_sprite);
             json.field("uvScroll", layer.uv_scroll);
-            json.field("customShader", layer.custom_shader);
+            json.field("customShader", layer.custom_shader != 0u);
             json.field(
                 "customTextureCount", layer.custom_textures.size());
             json.field("shaderParams", layer.shader_params);

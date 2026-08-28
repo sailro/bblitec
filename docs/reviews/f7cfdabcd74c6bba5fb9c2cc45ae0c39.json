@@ -1,0 +1,33 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "SDL and Dawn repeated the same startup loop that makes renderer passes current after synchronizing render textures. Both startup paths now reuse sync_renderer_passes(), keeping pass allocation and refresh ordering in one backend-local implementation.",
+      "applied": true
+    },
+    {
+      "summary": "Static file textures eagerly decoded PNG dimensions even when the source never observed width or height. The compiler now retains source metadata and reads the PNG header only when a dimension member is reached, avoiding unnecessary asset I/O for ordinary sprite textures.",
+      "applied": true
+    },
+    {
+      "summary": "Tuple callback indices were emitted as native locals even though each index is fixed by the statically unrolled tuple position. Binding them as compile-time values removes dead generated locals and lets downstream numeric lowering fold the index directly.",
+      "applied": true
+    },
+    {
+      "summary": "The returned-struct storage rule initially risked making every builder result reference-backed to satisfy LevelArea identity. The final scan asks whether that specific return type is stored in an Array, Map, Set, or Record anywhere in the reached program, preserving value semantics for pure builders while giving stored game records stable identity.",
+      "applied": true
+    },
+    {
+      "summary": "Live SDL key events and deterministic keyboard replay duplicated DOM event construction and callback selection. Both now use dispatch_platform_keyboard_event(), so Space code/key mapping and down/up routing have one implementation.",
+      "applied": true
+    },
+    {
+      "summary": "File-backed and render-target-backed grid atlases duplicated the full margin, spacing, row, column, UV, size, and pivot partition. Both now call populate_grid_sprite_atlas_frames(), preventing the two createGridSpriteAtlas paths from drifting.",
+      "applied": true
+    },
+    {
+      "summary": "SpriteRenderTextureRecord carried a destroyed flag that no writer or reader used because reached destroy calls deliberately retain engine-owned GPU resources. Removing it keeps the runtime record aligned with its actual state.",
+      "applied": true
+    }
+  ]
+}

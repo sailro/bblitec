@@ -1160,6 +1160,9 @@ export async function runSceneParity(
         config.referenceAnimationGroups,
         {
             seededRandom: usesSeededRandom(scene),
+            ...(config.referenceFrame !== undefined
+                ? { fixedAnimationFrame: config.referenceFrame }
+                : {}),
             ...(config.referenceSearch !== undefined
                 ? { search: config.referenceSearch }
                 : {}),

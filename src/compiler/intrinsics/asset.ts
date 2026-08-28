@@ -1,12 +1,14 @@
 import ts from "typescript";
 import type {
     CompileAsset,
+    ResolvedCompileOptions,
     SplatFragmentManifest,
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compressedTextureUrl } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
+import { addressModeByPin } from "../../pinned-address-modes.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -32,6 +34,7 @@ interface CompiledHdrEnvironmentOptions {
 export interface AssetIntrinsicContext
     extends IntrinsicCallContext,
         ObjectValidationContext {
+    readonly options: ResolvedCompileOptions;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -433,6 +436,9 @@ export function compileAssetIntrinsic(
             let mipMaps = true;
             let invertY = true;
             let srgb = false;
+            let premultiplyAlpha = false;
+            let addressModeU = "bbl::TextureAddressMode::repeat";
+            let addressModeV = "bbl::TextureAddressMode::repeat";
             if (call.arguments[2]) {
                 const options =
                     context.expectObjectLiteral(
@@ -450,15 +456,18 @@ export function compileAssetIntrinsic(
                     if (
                         ![
                             "invertY",
+                            "addressModeU",
+                            "addressModeV",
                             "magFilter",
                             "minFilter",
                             "mipMaps",
+                            "premultiplyAlpha",
                             "srgb",
                         ].includes(name ?? "")
                     ) {
                         context.fail(
                             property,
-                            "Reached loadTexture2D options support srgb, invertY, mipMaps, minFilter, and magFilter.",
+                            "Reached loadTexture2D options support srgb, invertY, premultiplyAlpha, mipMaps, minFilter, magFilter, addressModeU, and addressModeV.",
                         );
                     }
                 }
@@ -496,6 +505,37 @@ export function compileAssetIntrinsic(
                 if (magExpression) {
                     magFilter = filterName(magExpression);
                 }
+                const addressMode = (
+                    expression: ts.Expression,
+                ): string => {
+                    const unwrapped = context.unwrap(expression);
+                    if (ts.isConditionalExpression(unwrapped)) {
+                        return `(${context.compileBoolean(unwrapped.condition)} ? ${addressMode(unwrapped.whenTrue)} : ${addressMode(unwrapped.whenFalse)})`;
+                    }
+                    const mode = context.compileStringLiteral(expression);
+                    const mapped = addressModeByPin[mode];
+                    if (!mapped) {
+                        context.fail(
+                            expression,
+                            "Reached texture address modes support clamp-to-edge, mirror-repeat, and repeat.",
+                        );
+                    }
+                    return `bbl::${mapped}`;
+                };
+                const addressUExpression = context.objectProperty(
+                    options,
+                    "addressModeU",
+                );
+                if (addressUExpression) {
+                    addressModeU = addressMode(addressUExpression);
+                }
+                const addressVExpression = context.objectProperty(
+                    options,
+                    "addressModeV",
+                );
+                if (addressVExpression) {
+                    addressModeV = addressMode(addressVExpression);
+                }
                 const mipExpression =
                     context.objectProperty(
                         options,
@@ -529,6 +569,17 @@ export function compileAssetIntrinsic(
                             srgbExpression,
                         ) === "true";
                 }
+                const premultiplyExpression =
+                    context.objectProperty(
+                        options,
+                        "premultiplyAlpha",
+                    );
+                if (premultiplyExpression) {
+                    premultiplyAlpha =
+                        context.compileBoolean(
+                            premultiplyExpression,
+                        ) === "true";
+                }
             }
             // `maxAnisotropy: allLinear ? 4 : 1` — the pin asks for
             // anisotropic filtering only when nothing in the chain is
@@ -543,8 +594,8 @@ export function compileAssetIntrinsic(
                 `bbl::TextureFilter::${minFilter}, ` +
                 `bbl::TextureFilter::${magFilter}, ` +
                 `bbl::TextureMipmapMode::${mipMaps ? "linear" : "nearest"}, ` +
-                `bbl::TextureAddressMode::repeat, ` +
-                `bbl::TextureAddressMode::repeat, ` +
+                `${addressModeU}, ` +
+                `${addressModeV}, ` +
                 `${allLinear ? "4.0f" : "1.0f"}, ` +
                 `${mipMaps ? "1000.0f" : "0.0f"}}`;
             context.reachFeature("texture:file", call);
@@ -555,8 +606,15 @@ export function compileAssetIntrinsic(
                     `bbl::load_file_texture(${engine.cpp}, ` +
                     `bbl::asset_path(${context.cppString(asset.output)}), ` +
                     `${sampler}, ${invertY ? "true" : "false"}, ` +
-                    `${srgb ? "true" : "false"})`,
-                textureFile: { srgb },
+                    `${srgb ? "true" : "false"}, ` +
+                    `${premultiplyAlpha ? "true" : "false"})`,
+                textureFile: {
+                    srgb,
+                    source: url.startsWith("data:")
+                        ? url
+                        : asset.source,
+                    entryFileName: context.options.fileName,
+                },
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
             };

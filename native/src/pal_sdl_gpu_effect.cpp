@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "pal_platform_events.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
 
@@ -103,14 +104,21 @@ bool run_effect_gpu_engine(Engine& engine) {
         std::vector<double> samples_ms;
         bool running = true;
         long frame = 0;
+        FrameClock frame_clock;
+        KeyboardReplay keyboard_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                handle_platform_event(event, engine);
             }
+            keyboard_replay.dispatch(frame, engine);
             // A scene-less driver still serves a queued timeout, so a
             // `stopEngine` from one is not a silent no-op here.
-            advance_frame(engine);
+            (void)advance_frame(
+                engine,
+                frame_clock,
+                frame_options.frame_delta_ms);
             const double frame_start = monotonic_milliseconds();
 
             SDL_GPUCommandBuffer* command =
@@ -237,6 +245,7 @@ bool run_effect_gpu_engine(Engine& engine) {
                 gpu_error("SDL_SubmitGPUCommandBuffer effect");
             }
 
+            finish_frame(engine);
             if (benchmark && frame >= warmup) {
                 samples_ms.push_back(
                     monotonic_milliseconds() - frame_start);

@@ -126,6 +126,17 @@ export class BrowserErasure {
         }
         if (
             ts.isCallExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            (unwrapped.expression.text === "setInterval" ||
+                unwrapped.expression.text === "clearInterval") &&
+            this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            )
+        ) {
+            return true;
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
             this.context.isBrowserOnlyLocalCall(unwrapped)
         ) {
             return true;

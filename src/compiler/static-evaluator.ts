@@ -382,6 +382,24 @@ export class StaticEvaluator {
         expression: ts.Expression,
         precision: "float" | "double" = "float",
     ): string {
+        const castOptionalNumber = (
+            value: Value,
+            uncheckedElement = false,
+        ): string | undefined => {
+            if (
+                value.kind !== "data" ||
+                value.dataType?.kind !== "optional" ||
+                value.dataType.inner.kind !== "number" ||
+                (!value.preserveUncheckedLookup && !uncheckedElement)
+            ) {
+                return undefined;
+            }
+            this.onJsData();
+            const compiled = `bbl::js::number_from_optional(${value.cpp})`;
+            return precision === "float"
+                ? `static_cast<float>(${compiled})`
+                : compiled;
+        };
         const unwrapped =
             this.resolveStaticExpression(expression);
         const browserValue = this.isBrowserOnlyExpression(
@@ -487,6 +505,19 @@ export class StaticEvaluator {
             )})`;
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.EqualsToken
+            ) {
+                const value = this.resolveValue(unwrapped);
+                if (value.kind === "number") {
+                    return this.castNumber(value, precision);
+                }
+                this.fail(
+                    unwrapped,
+                    `Numeric assignment expression produced ${value.kind}.`,
+                );
+            }
             if (
                 unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.QuestionQuestionToken
@@ -638,6 +669,12 @@ export class StaticEvaluator {
             const value = resolved
                 ? this.narrowOptional(resolved, unwrapped)
                 : undefined;
+            const optionalNumber = value
+                ? castOptionalNumber(value)
+                : undefined;
+            if (optionalNumber !== undefined) {
+                return optionalNumber;
+            }
             if (
                 value?.kind === "number" ||
                 (value?.kind === "data" &&
@@ -651,6 +688,12 @@ export class StaticEvaluator {
             const value = resolved
                 ? this.narrowOptional(resolved, unwrapped)
                 : undefined;
+            const optionalNumber = value
+                ? castOptionalNumber(value, true)
+                : undefined;
+            if (optionalNumber !== undefined) {
+                return optionalNumber;
+            }
             if (
                 value?.kind === "number" ||
                 (value?.kind === "data" &&
@@ -665,6 +708,10 @@ export class StaticEvaluator {
                 resolved,
                 unwrapped,
             );
+            const optionalNumber = castOptionalNumber(value);
+            if (optionalNumber !== undefined) {
+                return optionalNumber;
+            }
             if (
                 value.kind !== "number" &&
                 !(
@@ -711,6 +758,10 @@ export class StaticEvaluator {
             // An UNguarded read narrows to nothing and still fails by
             // name below rather than dereferencing an empty optional.
             const narrowed = this.narrowOptional(value, unwrapped);
+            const optionalNumber = castOptionalNumber(narrowed);
+            if (optionalNumber !== undefined) {
+                return optionalNumber;
+            }
             if (
                 narrowed !== value &&
                 narrowed.dataType?.kind === "number"
@@ -1194,10 +1245,7 @@ export class StaticEvaluator {
             const value = ts.isIdentifier(unwrapped)
                 ? this.lookup(unwrapped)
                 : this.resolveProperty(unwrapped);
-            if (
-                value?.kind === "string" &&
-                value.staticString !== undefined
-            ) {
+            if (value?.staticString !== undefined) {
                 return value.staticString;
             }
             if (

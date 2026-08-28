@@ -206,6 +206,7 @@ parity scene intentionally does not.
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.093 / 0.101 | 0.093 / 0.101 | complete game loop, dynamic thin instances, custom materials, particles, keyboard and pointer input, and synthesized audio |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.477 / 0.464 | 0.477 / 0.464 | multi-module game, WAD parsing, dynamic world geometry, billboard and 2D sprite systems, input, collision, animation, and buffered audio |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.078 / 0.149 | 0.078 / 0.149 | scene-less frame graph, mutable timed state, uniform effect rendering, an offscreen target, and bloom without the scene/PBR renderer |
+| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | 0.013 / 0.013 | 0.010 / 0.010 | multi-module game loop, mutable sprite pools, XML atlases, UV-scrolled parallax, custom sprite shaders, dynamic offscreen render targets, CRT composition, keyboard input, and synthesized audio. Browser and native run the same registration-ordered 60 Hz frame 180, including the engine-render/application-RAF phase boundary |
 
 ## Project-owned differential gates
 
