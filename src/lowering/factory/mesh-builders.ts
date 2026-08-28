@@ -2226,7 +2226,7 @@ MeshHandle create_ground_from_height_map(
     PinnedMeshData data =
         pinned_create_flat_ground_data(options);
     const pal::DecodedImage image = pal::decode_image(
-        ts::ArrayBuffer(
+        js::ArrayBuffer(
             pal::read_binary_file(asset_path(height_map))));
     pinned_apply_heightmap(
         data,

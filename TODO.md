@@ -1159,6 +1159,15 @@ CLI exposes no combined-sampler emission.
 - [ ] Replace struct-name reference state and duplicated buffer/cache ownership
   with typed identity and one backend-neutral shared-resource lifecycle; measure
   compact geometry keys and binding views before changing their cache ABI.
+- [ ] Extend the typed WGSL subset through the reached `const`, `fn`, and `for`
+  constructs, then remove the strict raw-source fallback. Until those nodes
+  exist, rejecting unsupported reflected members and canonicalizing comments is
+  safer than inferring a typed layout the parser cannot represent.
+- [ ] Finish the remaining mechanical compiler/runtime consolidation: move the
+  mutation/escape walkers and large data-method dispatcher into their owning
+  modules, share the `Map`/`Set` container shell, and give capture/draw paths one
+  shader-matrix record. Add mutation-during-iteration and capture-equivalence
+  tests first; those behavior guards do not exist yet.
 
 ## P2 — Dual render backends
 

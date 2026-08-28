@@ -76,6 +76,26 @@ file(
     LIST_DIRECTORIES false
     "${BBLITE_GENERATED_SHADER_DIR}/*"
 )
+list(SORT BBLITE_GENERATED_SHADER_FILES)
+string(
+    JOIN "\n"
+    BBLITE_GENERATED_SHADER_MANIFEST_CONTENT
+    ${BBLITE_GENERATED_SHADER_FILES}
+)
+set(
+    BBLITE_GENERATED_SHADER_MANIFEST
+    "${CMAKE_CURRENT_BINARY_DIR}/bblite-generated-shaders.manifest"
+)
+# A cached shader sidecar can be newly materialized with an mtime older than
+# the existing snapshot stamp. File dependencies alone then look current even
+# though the reached shader set changed. CMake rewrites file(GENERATE) output
+# only when its content changes, so this sorted membership manifest invalidates
+# additions/removals without making unchanged builds redeploy.
+file(
+    GENERATE
+    OUTPUT "${BBLITE_GENERATED_SHADER_MANIFEST}"
+    CONTENT "${BBLITE_GENERATED_SHADER_MANIFEST_CONTENT}\n"
+)
 
 # Native GPU render backend selection. BOTH compiles the dual-backend
 # development binary (the differential gate); SDL_GPU and DAWN produce
@@ -206,7 +226,9 @@ if(BBLITE_GENERATED_SHADER_FILES)
         COMMAND
             "${CMAKE_COMMAND}" -E touch
             "${BBLITE_BUILD_SHADER_DIR}/.snapshot-stamp"
-        DEPENDS ${BBLITE_GENERATED_SHADER_FILES}
+        DEPENDS
+            ${BBLITE_GENERATED_SHADER_FILES}
+            "${BBLITE_GENERATED_SHADER_MANIFEST}"
         VERBATIM
     )
     add_custom_target(

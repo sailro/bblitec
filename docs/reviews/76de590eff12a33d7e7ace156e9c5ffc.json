@@ -1,0 +1,120 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The module-URL helper recognizer trusted property names without proving the URL/import.meta/replace structure; it now verifies the exact semantic shape and path replacement contract.",
+      "applied": true
+    },
+    {
+      "summary": "Imported module initialization failed open for private state and registrar modules; dependency-ordered initializers now materialize only runtime-observed mutable state while pure static data builders remain AOT.",
+      "applied": true
+    },
+    {
+      "summary": "The typeof fold answered optional, null, undefined, and unbound values through an object catch-all; lowering now preserves JavaScript null/undefined/unbound behavior and refuses unsettled runtime types.",
+      "applied": true
+    },
+    {
+      "summary": "Filesystem discovery could override a curated pinned URL mapping; explicit pinned asset mappings now win before any local path probe.",
+      "applied": true
+    },
+    {
+      "summary": "Three lowering paths disagreed about which data types pass by reference; one shared policy now covers vectors, strings, records, tuples, spans, tables, and enum maps consistently.",
+      "applied": true
+    },
+    {
+      "summary": "Speculative type probing registered unused records and enums; generated definitions are now committed from named-type reachability, and the all-scene compile/neutrality path confirms unreached engine and surface records do not leak.",
+      "applied": true
+    },
+    {
+      "summary": "The WGSL raw fallback could count comments as reads and silently omit unsupported struct members; raw source is canonicalized without comments and reflection refuses members it cannot represent instead of inventing a layout.",
+      "applied": true
+    },
+    {
+      "summary": "Insertion-ordered Map and Set used linear lookup and permanent tombstones; both now keep an unordered index for O(1) lookup while preserving list order and reclaim erased slots immediately or after active iteration.",
+      "applied": true
+    },
+    {
+      "summary": "Shared shader-texture bindings were copied into every mesh; render paths now read the cache-owned binding vector by reference.",
+      "applied": true
+    },
+    {
+      "summary": "Byte-array indexing/fill and JavaScript bitwise conversion paid avoidable checked access and fmod costs; U8 operations use the same unchecked convention as Array and ToUint32 has a direct common-range path.",
+      "applied": true
+    },
+    {
+      "summary": "Recursive user-function analysis rebuilt and recopied the call graph at each call site; direct edges and recursive groups are cached for the compilation.",
+      "applied": true
+    },
+    {
+      "summary": "Repeated hot-path one-liners were consolidated: numeric operator maps are module constants, tracing is cached/shared, padStart appends in place, missing-array defaults are global, and empty DataView state does not allocate.",
+      "applied": true
+    },
+    {
+      "summary": "Five array callback methods repeated the same callback validation, scope, argument tuple, and loop; one loop protocol now owns those mechanics and each method emits only its result behavior.",
+      "applied": true
+    },
+    {
+      "summary": "Shared GPU resource cleanup was duplicated between SDL_GPU and Dawn; generic release, prune, and teardown helpers now own the common lifecycle, and texture-binding consumers share cache storage.",
+      "applied": true
+    },
+    {
+      "summary": "Two live ArrayBuffer/U8Array/DataView implementations duplicated endian and storage behavior; ts_runtime now aliases the js_data supersets, pal_image consumes the canonical buffer, and generated heightmap code uses that same type.",
+      "applied": true
+    },
+    {
+      "summary": "Recursive callbacks and plain-data native functions duplicated signature, parameter binding, scope, and body emission; both declarator forms now use one binding/body implementation, and expressions no longer reimplement a callback call already attempted by user-functions.",
+      "applied": true
+    },
+    {
+      "summary": "Handle reachability and array-method semantics drifted across duplicated walkers/tables; carriesHandle lives on DataTypeRegistry and one classification table owns read, mutation, storage, and resize behavior.",
+      "applied": true
+    },
+    {
+      "summary": "Typed-array conversions, assignment operators, relative slice clamping, array length, and array-from loops had parallel spellings; each now routes through one table or generic helper.",
+      "applied": true
+    },
+    {
+      "summary": "compiler.ts accumulated unrelated module-initializer and sprite-atlas projection logic; those concerns moved to dedicated compiler modules with architecture ownership rows and tests.",
+      "applied": true
+    },
+    {
+      "summary": "Pinned sprite-frame projection could silently drift and repeated handle-reuse mechanics; the atlas record is asserted against the pin and uses one reuse helper.",
+      "applied": true
+    },
+    {
+      "summary": "Verified dead branches, duplicate state, stale comments, and redundant helpers from the review were removed; documentation, architecture ownership, feature boundaries, and TODO accounting were updated with a net deletion of completed obligations.",
+      "applied": true
+    },
+    {
+      "summary": "The final sweep exposed a stale heightmap generator reference to the retired ts buffer spelling; the generator now uses the canonical js buffer, fixing both heightmap/shadow scene builds generically.",
+      "applied": true
+    },
+    {
+      "summary": "The final parity sweep exposed that newly added cached shader sidecars could be older than an existing CMake snapshot stamp; a sorted generated membership manifest now invalidates additions/removals while unchanged builds remain no-op.",
+      "applied": true
+    },
+    {
+      "summary": "Replacing full CPU geometry keys, the remaining backend cache structs/acquire paths, and struct-name reference state needs a typed identity and compact cache ABI rather than another local helper.",
+      "applied": false,
+      "blockedBy": "No collision policy or representative geometry-key/binding-view measurement exists, and changing identity or cache ABI without those would risk aliasing resources across backends.",
+      "filedIn": "TODO.md — P1 item beginning 'Replace struct-name reference state and duplicated buffer/cache ownership'"
+    },
+    {
+      "summary": "The strict WGSL raw-source fallback is not deleted yet.",
+      "applied": false,
+      "blockedBy": "The typed WGSL subset does not yet represent the reached const, fn, and for constructs, so deleting the fallback now would reject supported custom shaders.",
+      "filedIn": "TODO.md — P1 item beginning 'Extend the typed WGSL subset'"
+    },
+    {
+      "summary": "The remaining mutation/escape walkers, large data-method dispatcher, Map/Set container shell, and shader draw/capture matrix packing are not fully extracted.",
+      "applied": false,
+      "blockedBy": "Mutation-during-iteration and capture-versus-draw equivalence guards do not exist yet; moving these semantics before adding those tests would make a behavior-preserving structural change unprovable.",
+      "filedIn": "TODO.md — P1 item beginning 'Finish the remaining mechanical compiler/runtime consolidation'"
+    }
+  ]
+}
