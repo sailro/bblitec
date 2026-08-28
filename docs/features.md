@@ -815,7 +815,7 @@ Material state written and read per frame: alpha mask/blend/coverage,
 reflectance, emissive strength, lighting intensities, double-sided, normal
 scale, shared texture scaling, the punctual falloff mode, transmission, IOR,
 volume, dispersion, clearcoat, sheen, iridescence, anisotropy, and the
-spec-gloss workflow replacement.
+`KHR_materials_pbrSpecularGlossiness` workflow replacement.
 
 ### Node materials
 

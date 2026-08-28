@@ -43,7 +43,7 @@ Primary source ownership:
 | Source | Responsibility |
 | --- | --- |
 | `src/cli.ts` | the `bblitec` entry: one scene compile end to end — frontend, asset materialization, composition, emitters, generated tree |
-| `src/compose-pipeline.ts` | the pinned variant-composition orchestration between settled assets and emitter options: scene arms, PBR/Standard variant tables, mesh-feature tables |
+| `src/compose-pipeline.ts` | pinned variant composition between settled assets and emitter options: scene arms, PBR/Standard variant tables, mesh-feature tables |
 | `src/babylon-asset-features.ts` | the `.babylon` asset scans generation keys on: light slots, texture selections, per-light mesh lists |
 | `src/feature-activation.ts` | the per-scene `upstream/feature-activation.json` activation inventory |
 | `src/compiler.ts` | entry-scene AST lowering, features, assets, generated main/CMake |
@@ -51,7 +51,7 @@ Primary source ownership:
 | `src/compiler/symbols.ts` | resolved Babylon import symbols and aliases |
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
 | `src/compiler/expressions.ts` | the value switch and call dispatch every expression position goes through |
-| `src/compiler/browser-erasure.ts` | browser-only expression identification, compile-time values (including the reference pose's query string), erased instrumentation |
+| `src/compiler/browser-erasure.ts` | browser-only expressions, their compile-time values (the reference pose's query string included), erased instrumentation |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/data-methods.ts` | the shared read/mutate/store classification for plain-data methods |
@@ -67,7 +67,7 @@ Primary source ownership:
 | `src/compiler/property-animation.ts` | compile-time clip/track/key lowering and group options |
 | `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
 | `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
-| `src/executed-module-assets.ts` | the assets a scene module produces rather than fetches: a drawn canvas2D atlas and a computed pixel buffer, each run in headless Chromium at generation and baked |
+| `src/executed-module-assets.ts` | assets a scene module produces rather than fetches — a drawn canvas2D atlas, a computed pixel buffer — run in headless Chromium and baked |
 | `src/compiler/adaptations.ts` | the reached-adaptation manifest entries generation records |
 | `src/compiler/option-helpers.ts` | the shared option-object validation contracts |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
@@ -75,48 +75,48 @@ Primary source ownership:
 | `src/upstream-source.ts` | pinned source-map reconstruction |
 | `src/upstream-graph.ts` | conservative reachable-module analysis — test-only until scene 144's bloom observation seam consumes it |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
-| `src/pinned-shader-composer.ts` | executes the pin's own `composeShader`, lifts named declarations out of a composition verbatim, and imports a pinned module with chosen imports observed |
-| `src/lowering/pinned-shader-defines.ts` | the `defines` half of the pin's own ShaderMaterial prelude: the `const` line `buildShaderPrelude` writes per entry, evaluated rather than restated |
-| `src/pinned-post-process.ts` | runs a post-process factory and the pin's own `getShaderModule`, so a pass deploys the module the browser compiles; runs a composite's factory to learn the chain it builds |
-| `src/post-process-effects.ts` | the reached effects: which options reach the composed text, which scalars the effect's writer reads, and which textures bind after the source |
+| `src/pinned-shader-composer.ts` | runs the pin's `composeShader`, lifts named declarations out of a composition verbatim, imports a pinned module with chosen imports observed |
+| `src/lowering/pinned-shader-defines.ts` | the `defines` half of the pin's ShaderMaterial prelude, evaluated from `buildShaderPrelude` |
+| `src/pinned-post-process.ts` | runs a post-process factory and `getShaderModule` so a pass deploys the browser's module; runs a composite's factory for the chain it builds |
+| `src/post-process-effects.ts` | per effect: which options reach the composed text, which scalars its writer reads, which textures bind after the source |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
-| `src/pinned-node-material.ts` | runs the pin's own node-material compiler over a Babylon NME graph, against a recording device, and refuses every arm outside the reached slice |
-| `src/pinned-node-particle.ts` | runs the pin's own node-particle parser, graph builder and CPU simulation in the browser and returns the particle state they froze -- the one port where the value is fragile past a rounding argument, because the seed draws through `Math.sin` |
-| `src/lowering/node-particle-lowerer.ts` | the folded half of the same family: the billboard and pure-2D bridges, their two blend mappings and the exact five-mode one, all from their own declarations over the baked state |
-| `src/pinned-splat-fragments.ts` | the Gaussian-splat shader plugins a `loadSplat` call names: the pin's own exported records, and its own `applyGsFragments` run over them -- a splicer that also mangles field names, so it is executed rather than restated |
-| `src/lowering/linear-depth-lowerer.ts` | `createLinearDepthMaterial`, folded out of the pinned factory that builds it: its two stages from the module constants it references, its declarations and fixed-function state from the `createShaderMaterial` call it makes |
-| `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's own parser lowered to C++, its block-compression format table, and the two folds generation needs from the same modules — which suffix a device's features select, and the URL rewrite that reaches it |
-| `src/basis-transcode.ts` | the one texture the browser produces: the pinned Basis loader run in headless Chromium, and the KTX1 container its transcode is packaged as |
+| `src/pinned-node-material.ts` | runs the pin's node-material compiler over an NME graph against a recording device, refusing every arm outside the reached slice |
+| `src/pinned-node-particle.ts` | runs the pin's node-particle parser, builder and CPU simulation in the browser and returns the frozen particle state |
+| `src/lowering/node-particle-lowerer.ts` | the folded half: the billboard and pure-2D bridges and their three blend mappings, from their own declarations over the baked state |
+| `src/pinned-splat-fragments.ts` | the splat shader plugins a `loadSplat` names, and `applyGsFragments` run over them |
+| `src/lowering/linear-depth-lowerer.ts` | `createLinearDepthMaterial`, folded from the factory that builds it — stages, declarations and fixed-function state |
+| `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's parser lowered to C++, its format table, and the suffix selection and URL rewrite generation folds |
+| `src/basis-transcode.ts` | the pinned Basis loader run in headless Chromium, packaged as a KTX1 container |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
-| `src/lowering/physics-lowerer.ts` | the rigid-body family: `havok.ts`'s own step gate, its four frame phases in order, the aggregate's ordering and the shape sizing `_buildShapeParams` derives, each emitted from the declaration that states it -- the solver behind the `HP_*` surface is the PAL's, which is the seam the pin itself draws by taking `hknp` as a parameter |
+| `src/lowering/physics-lowerer.ts` | the rigid-body family from `havok.ts`: the step gate, the four frame phases, the aggregate ordering and `_buildShapeParams`' shape sizing |
 | `src/compiler/intrinsics/physics.ts` | which physics calls a scene reached, and the erased solver module its `await HavokPhysics(...)` produced |
-| `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted rather than restated |
-| `src/compiler/intrinsics/audio.ts` | the Babylon half of the audio surface: the engine lifecycle a scene reaches, and every sound/bus/spatial entry point that refuses by name |
-| `src/compiler/audio-surface.ts` | the browser half: the Web Audio method calls and property writes a scene makes on the context the engine hands back (its reads live in the property-rule table) |
-| `src/lowering/shadow-lowerer.ts` | the shadow family: the pinned light-space basis, the spot volume, the 4x4 multiply and the caster's clip-space bias, each lowered from its own AST, beside the generator's GPU contracts asserted against the declarations that state them -- and the depth-only render task the pin's own `ensurePcfShadowTaskState` builds |
-| `src/compiler/intrinsics/shadow.ts` | which shadow surface a scene reached: the generator factory, its caster-mesh task input, and the registration that installs the scene-owned shadow task |
-| `src/lowering/line-lowerer.ts` | the line family: the polyline flatten emitted as C++ from its own pinned declaration, and the `ShaderMaterial` `createLineMaterial` composes -- its two stages folded out of that module's own text builders |
+| `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted |
+| `src/compiler/intrinsics/audio.ts` | the Babylon half of the audio surface: the engine lifecycle reached, and every sound/bus/spatial entry point that refuses by name |
+| `src/compiler/audio-surface.ts` | the browser half: Web Audio method calls and property writes on the context the engine hands back |
+| `src/lowering/shadow-lowerer.ts` | the shadow family: light-space basis, spot volume, 4x4 multiply, caster bias, the generator's GPU contracts, and the depth-only render task `ensurePcfShadowTaskState` builds |
+| `src/compiler/intrinsics/shadow.ts` | which shadow surface a scene reached: the generator factory, its caster-mesh task input, the registration installing the shadow task |
+| `src/lowering/line-lowerer.ts` | the line family: the polyline flatten as C++, and the `ShaderMaterial` `createLineMaterial` composes |
 | `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
-| `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation's seed: recorded for the executed bake, refused where lowered code would also answer it |
-| `src/compiler/particle-buffer.ts` | a particle buffer as generation-time state: a column the scene writes and a live-count guard it checks both move to the bake driver and emit nothing |
+| `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation seed: recorded for the bake, refused where lowered code would also answer it |
+| `src/compiler/particle-buffer.ts` | a particle buffer as generation-time state: column writes and live-count guards move to the bake driver and emit nothing |
 | `src/pinned-tone-mapping.ts` | the tone-mapping record a scene selects, read from the pinned module that owns it -- the curve is a value upstream, not a flag |
 | `src/data-url.ts` | a `data:` asset URL, whose bytes are the source text rather than a location to fetch |
 | `src/lowering/effect-lowerer.ts` | the fullscreen-effect family: the pin's own vertex stage lifted, its pass state asserted, and the two records a scene fills |
 | `src/lowering/render-target-lowerer.ts` | renderer-independent render-target allocation, including the pinned colour/depth texture-view fork |
 | `src/lowering/frame-graph-context-lowerer.ts` | scene-less task ownership, update callbacks, and engine registration from the pin's `FrameGraphContext` |
 | `src/pinned-effect-cpp.ts` | the C++ transcript of one `EffectWrapper`: which stages it draws and what its declared bind group holds |
-| `src/pinned-node-material-cpp.ts` | the C++ transcript of that run: the node variant table, its vertex inputs, the folded uniform bytes, and the pin's own mesh block mirrored |
+| `src/pinned-node-material-cpp.ts` | the C++ transcript of that run: node variant table, vertex inputs, folded uniform bytes, the pin's mesh block mirrored |
 | `src/compiler/node-material.ts` | which graph a `parseNodeMaterialFromSnippet` call reached: a static JSON literal read as data, or a module generation executes |
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
-| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads — the loader's own extension builders executed against a recording stub, not re-derived |
+| `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads, by executing the loader's own extension builders against a recording stub |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
 | `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
 | `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
-| `src/pinned-pbr-variant-cpp.ts` | the C++ mirrors of each variant's UBO layouts, offsets cross-checked against the composer's own, plus the generated variant-selector and material texture-slot tables |
+| `src/pinned-pbr-variant-cpp.ts` | C++ mirrors of each variant's UBO layout with offsets cross-checked against the composer, plus the variant-selector and texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
-| `src/lowering/pinned-trs.ts` | a `MeshRecord`'s local world matrix, from `eulerToQuat` and `mat4ComposeInto`: one home for the two emissions that need it, the thin-instance parent world and the navmesh merge |
+| `src/lowering/pinned-trs.ts` | a record's local world matrix from `eulerToQuat` and `mat4ComposeInto` — one home for every emission that needs it |
 | `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
-| `src/lowering/post-process-lowerer.ts` | the pass's own contracts — internal target, viewport rectangle, bind-group order, blend table — and each effect's `writeUniforms`, emitted from the pin's AST |
+| `src/lowering/post-process-lowerer.ts` | the pass's contracts (internal target, viewport, bind-group order, blend table) and each effect's `writeUniforms`, from the pin's AST |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | the generated `.babylon`/glTF loader C++ templates |
@@ -126,15 +126,15 @@ Primary source ownership:
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
 | `native/include/bblite/pal_physics.hpp` | the rigid-body solver contract: the `HP_*` surface the pinned physics layer calls on the module it is handed |
-| `native/src/pal_physics_bullet.cpp` | that surface over Bullet, plus the two ordering repairs Bullet needs and Havok does not ([fidelity](fidelity.md#physics-contract)) |
+| `native/src/pal_physics_bullet.cpp` | that surface over Bullet, plus its two ordering repairs ([fidelity](fidelity.md#physics-contract)) |
 | `native/include/bblite/pal_navigation.hpp` | the navigation contract: the Recast/Detour surface the pinned wrapper calls on the module it loads |
 | `native/include/bblite/pal_audio.hpp` | the Web Audio contract: the browser surface the pinned audio module calls, which is the seam the pin itself draws |
 | `native/src/pal_audio_labsound.cpp` | that surface over LabSound, a fork of WebKit's own WebAudio ([fidelity](fidelity.md#audio-contract)) |
 | `native/src/pal_audio_sdl_device.hpp` | SDL3 behind LabSound's `lab::AudioDevice`, so the platform stream stays SDL like every other service here |
-| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's own pinned recastnavigation commit, replaying `generateSoloNavMesh`, the Detour query and the crowd verbatim |
+| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's pinned recastnavigation commit, replaying `generateSoloNavMesh`, the Detour query and the crowd |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
-| `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
+| `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU — its own translation unit, since a sprite-only scene generates no camera or render-plan headers |
 | `native/src/pal_sdl_gpu_effect.cpp` | the fullscreen-effect frame driver on SDL_GPU, a separate translation unit for the same reason |
 | `native/src/pal_dawn_effect.cpp` | the same driver on Dawn |
 | `native/src/pal_sdl_gpu_frame_graph.cpp` | the scene-less ordered-task driver on SDL_GPU; task-family guards omit unreached effect or post-process machinery |
@@ -247,95 +247,8 @@ scene-local under `generated\<scene>`.
 
 ## Generated behavior
 
-The current generated slice includes:
-
-- engine, scene, camera, light, mesh, and material APIs
-- external glTF packaging and typed GLB loading, including vertex colors
-  and per-slot texture-coordinate selection
-- glTF sparse accessors, materialized at packaging by the pin's own
-  `preParse` hook so every accessor the generated loader reads is an
-  ordinary bufferView
-- glTF point, line and line-strip primitives, at the fixed-function state
-  the pin's own `buildPrimitiveState` gives each topology
-- property-animation managers, clips, groups, LINEAR/STEP scalar/vector
-  tracks, quaternion slerp, ranges, looping, and deterministic seeking
-- glTF animation-group masks, speed ratios, and `goToFrame`'s engine argument
-- glTF LINEAR/STEP/CUBICSPLINE transform animation, recursive skeleton hierarchies,
-  inverse bind matrices, and animated position/normal/tangent morph targets
-- direct single-target morph attachment for generated meshes through the same
-  tree-shaken deformation vertex layout
-- tree-shaken vertex-shader morphing and four-weight skinning with per-mesh
-  palettes and weights
-- post-deformation face normals for primitives that carry none, recomputed
-  each frame beside the GPU skinning that moves their positions
-- the HillValley-required `.babylon` loader slice
-- Standard/PBR/Grid material records, no-color views, and typed custom shaders
-- Babylon NME node materials: the graph compiled at generation by the pin's own
-  emitter and pipeline builder, deployed as the module it produced
-- metadata-driven `KHR_materials_clearcoat`, `KHR_materials_sheen`,
-  `KHR_materials_iridescence`, and `KHR_materials_dispersion` layers, plus
-  the `KHR_materials_pbrSpecularGlossiness` workflow replacement
-- authored transmission alpha/depth state with separate post-grab draw
-  ordering and full multi-light refraction composition
-- negative-transform winding, including clockwise front-face pipelines for
-  mirrored double-sided PBR meshes, plus generated normals and cotangent
-  normal mapping
-- `.env`/DDS parsing plus compile-time RGBE HDR/SH/cubemap materialization and
-  pinned 1024-sample GGX prefiltering
-- block-compressed textures: a KTX1 container parsed at load by the pin's own
-  parser and uploaded as the blocks and mip chain it carries, and a Basis
-  file transcoded by the pin's own loader at generation into the same
-  container
-- `EXT_lights_image_based` RGBD cubemaps plus an offline-generated,
-  half-float 1024-sample BRDF LUT
-- generated infinite-distance solid and HDR skybox behavior
-- finite root-positioned DDS background cubes matching Babylon Lite's scene
-  view-projection contract
-- rigid-body physics: the pinned `havok.ts` lowered whole -- world, bodies,
-  primitive shapes, the fixed step and its four phases -- over a solver the
-  PAL supplies, because the pin already takes that solver as a parameter.
-  The one deliberately non-bit-faithful family here
-  ([fidelity](fidelity.md#physics-contract))
-- percentage-closer-filtered spot and exponential-shadow-map directional
-  shadows: the pinned generator's own `depth32float` map and comparison
-  sampler, a caster pass rendering the material's no-colour view from the
-  light under the pin's standard-Z exception, and the receiver fragment the
-  pin composes per shadow-casting light
-- polyline systems: the pin's own flatten into one indexed mesh, drawn by the
-  `ShaderMaterial` its line material composes, at the `line-list` topology
-  that material names -- with per-point colours, a fixed-topology update, and
-  the per-instance RGBA stream a thin-instanced line material reads
-- pure-2D sprite layers and their own `SpriteRenderer` rendering context,
-  over a compile-time-drawn canvas2D atlas, on both GPU backends
-- node-particle graphs frozen at generation: the pin's own simulation run in
-  the browser and its particle state baked, drawn either through the
-  billboard family or through the pure-2D Sprite2D bridge the pin's own
-  bridges fold to, with the exact Babylon blend modes on both
-- ordered opaque/transparent draw lists, camera matrices, uniforms, and
-  frame-graph tasks
-- Standard/PBR geometry MRTs, depth-only passes, blits, and MSAA resolve
-- frame-graph post-process passes — blur, chromatic aberration, black and
-  white, anaglyph, circle of confusion — each drawing the pin's own composed
-  module, and the depth-of-field composite as the chain of them its own
-  factory builds
-- fullscreen effects: the caller's WGSL wrapped in the pin's own
-  fullscreen-triangle vertex stage, drawn either by a swapchain rendering
-  context of its own or by a frame-graph task into a render target
-- linear RGBA16F opaque/transmission rendering followed by one final
-  image-processing pass
-- reached custom WGSL lowered through a typed shader IR into target-selected
-  reflected shader sources
-- pinned Tint compilation from native-specialized reached WGSL to HLSL or
-  MSL; DXC emits the selected SDL-layout-compatible DXIL or SPIR-V artifact
-- generated GridMaterial WGSL compiled exclusively through Tint
-- generated frame-graph blit/depth and diagnostic WGSL compiled through Tint
-- generated ground and cubemap-skybox WGSL compiled through Tint
-- the shared material vertex WGSL through Tint
-- Babylon's own composed PBR and Standard variant stages — colour and
-  geometry MRT — executed verbatim on both backends, selected per renderable
-- directional, hemispheric, point, and spot Standard shading through the
-  pin's own lights block and per-mesh light selection
-- per-format content-addressed shader reuse across identical scene variants
+[features](features.md) is the catalogue of what the generated slice covers,
+family by family, and which half of the pipeline each family falls in.
 
 Each scene records:
 

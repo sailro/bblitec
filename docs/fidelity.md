@@ -276,8 +276,9 @@ pose reaches it; scene 14 at `cam.beta = 0.55` does.
 
 ### glTF material inputs
 
-Clearcoat, sheen and iridescence are metadata-driven PBR layers selected by
-`extensionsUsed` and composed into each material's own variant. Their
+Clearcoat (`KHR_materials_clearcoat`), sheen (`KHR_materials_sheen`) and
+iridescence (`KHR_materials_iridescence`) are metadata-driven PBR layers
+selected by `extensionsUsed` and composed into each material's own variant. Their
 per-material forks compose *different variants* rather than one fragment with a
 uniform:
 
