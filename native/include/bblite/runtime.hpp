@@ -175,12 +175,15 @@ enum class PickedNodeKind : std::uint8_t {
 };
 
 /**
- * The pin's `PickingInfo`, at the slice a non-detailed pick fills in.
+ * The pin's `PickingInfo`, at the slice this port resolves.
  *
- * `picked_point` and `distance` come from `mat4Invert(vp)` applied to the
- * sampled NDC and the depth attachment's value, exactly as `gpu-picker.js`
- * computes them; `ray`, `bu`, `bv`, `thinInstanceIndex` and the detailed
- * primitive fields belong to pipelines this port does not compose.
+ * WHAT WAS HIT, and nothing more. `pickedPoint` and `distance` are the
+ * pin's `mat4Invert(vp)` applied to the sampled NDC and the depth
+ * attachment's value; `ray`, `bu`, `bv` and `thinInstanceIndex` belong to
+ * the detailed and advanced pipelines. None is declared here, because a
+ * field this port cannot fill is worse than one a scene cannot read: the
+ * property table serves `hit` and `pickedMesh.name`, and every other member
+ * refuses by name at the read site.
  */
 struct PickingInfo {
     bool hit = false;
@@ -188,8 +191,6 @@ struct PickingInfo {
     std::uint32_t picked_index = invalid_handle;
     /** The hit node's name, empty when nothing was hit. */
     std::string picked_name;
-    Vec3d picked_point{};
-    double distance = 0.0;
 };
 
 /**

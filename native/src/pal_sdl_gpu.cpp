@@ -44,6 +44,9 @@
 #endif
 #if BBLITE_HAS_SPLATS
 #include "pal_sdl_gpu_splat.hpp"
+#if BBLITE_HAS_PICKING
+#include "pal_sdl_gpu_picking.hpp"
+#endif
 #endif
 #if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
 #include "pal_sdl_gpu_effect.hpp"
@@ -799,6 +802,20 @@ struct GpuState {
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<SplatPass> splat_passes;
+#if BBLITE_HAS_PICKING
+    // Built on the first pick and released with the renderer, as the pin
+    // builds them on first use and releases them in `disposePicker`.
+    PickTargets pick_targets;
+    SDL_GPUGraphicsPipeline* pick_mesh_pipeline = nullptr;
+    int pick_mesh_scene_slot = -1;
+    int pick_mesh_uniform_slot = -1;
+#if BBLITE_HAS_SPLATS
+    SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
+    int pick_cloud_scene_slot = -1;
+    int pick_cloud_mesh_slot = -1;
+    int pick_cloud_color_slot = -1;
+#endif
+#endif
 #endif
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
@@ -4116,6 +4133,21 @@ void release(GpuState& state) {
     state.billboard_passes.clear();
 #endif
 #if BBLITE_HAS_SPLATS
+#if BBLITE_HAS_PICKING
+    release_pick_targets(state.device, state.pick_targets);
+    if (state.pick_mesh_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device, state.pick_mesh_pipeline);
+        state.pick_mesh_pipeline = nullptr;
+    }
+#if BBLITE_HAS_SPLATS
+    if (state.pick_cloud_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device, state.pick_cloud_pipeline);
+        state.pick_cloud_pipeline = nullptr;
+    }
+#endif
+#endif
     for (SplatPass& splat : state.splat_passes) {
         release_splat_pass(state.device, splat);
     }
@@ -4720,6 +4752,237 @@ void record_post_process_pass(
 } // namespace
 #endif
 
+#if BBLITE_HAS_PICKING
+/**
+ * The two pick pipelines, built on first use.
+ *
+ * Both target the pin's own pair -- an `rgba8unorm` id and an `r32float`
+ * depth -- over a `depth24plus` buffer cleared to 0. The mesh pipeline
+ * compares GREATER because this port and the pin both render reverse-Z; the
+ * cloud pipeline compares LESS, which is the pin's own choice and is kept
+ * rather than reconciled: its vertex stage passes clip depth through a
+ * shear that leaves z alone, and changing the comparison would change which
+ * splat wins the pixel.
+ */
+inline void ensure_pick_pipelines(GpuState& state) {
+    if (state.pick_mesh_pipeline) return;
+
+    const PinnedStageSlots vertex_slots =
+        read_pinned_stage_slots("picking.vert");
+    const PinnedStageSlots fragment_slots =
+        read_pinned_stage_slots("picking.frag");
+    state.pick_mesh_scene_slot = stage_uniform_slot(vertex_slots, "scene");
+    state.pick_mesh_uniform_slot =
+        stage_uniform_slot(vertex_slots, "mesh");
+    if (state.pick_mesh_scene_slot < 0 ||
+        state.pick_mesh_uniform_slot < 0) {
+        gpu_error(
+            "picking.vert kept neither the scene nor the mesh block");
+    }
+
+    SDL_GPUShader* vertex_shader = load_shader(
+        state.device,
+        "picking.vert",
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        0,
+        static_cast<std::uint32_t>(vertex_slots.uniforms.size()),
+        "vs");
+    SDL_GPUShader* fragment_shader = load_shader(
+        state.device,
+        "picking.frag",
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        0,
+        static_cast<std::uint32_t>(fragment_slots.uniforms.size()),
+        "fs");
+
+    // The renderer's interleaved stream read at its own pitch: the pin
+    // binds a position-only buffer, and these are the same numbers.
+    SDL_GPUVertexBufferDescription vertex_buffer{};
+    vertex_buffer.slot = 0;
+    vertex_buffer.pitch = sizeof(GpuVertex);
+    vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    SDL_GPUVertexAttribute position{};
+    position.location = 0;
+    position.buffer_slot = 0;
+    position.format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3;
+    position.offset = 0;
+
+    SDL_GPUColorTargetDescription color_targets[2]{};
+    color_targets[0].format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    color_targets[1].format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader = vertex_shader;
+    info.fragment_shader = fragment_shader;
+    info.vertex_input_state.vertex_buffer_descriptions = &vertex_buffer;
+    info.vertex_input_state.num_vertex_buffers = 1;
+    info.vertex_input_state.vertex_attributes = &position;
+    info.vertex_input_state.num_vertex_attributes = 1;
+    info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    info.depth_stencil_state.enable_depth_test = true;
+    info.depth_stencil_state.enable_depth_write = true;
+    info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_GREATER;
+    info.target_info.color_target_descriptions = color_targets;
+    info.target_info.num_color_targets = 2;
+    info.target_info.depth_stencil_format =
+        SDL_GPU_TEXTUREFORMAT_D24_UNORM;
+    info.target_info.has_depth_stencil_target = true;
+
+    state.pick_mesh_pipeline =
+        SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    SDL_ReleaseGPUShader(state.device, vertex_shader);
+    SDL_ReleaseGPUShader(state.device, fragment_shader);
+    if (!state.pick_mesh_pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline picking");
+    }
+
+#if BBLITE_HAS_SPLATS
+    const PinnedStageSlots cloud_vertex_slots =
+        read_pinned_stage_slots("picking-splat.vert");
+    const PinnedStageSlots cloud_fragment_slots =
+        read_pinned_stage_slots("picking-splat.frag");
+    state.pick_cloud_scene_slot =
+        stage_uniform_slot(cloud_vertex_slots, "gsPickScene");
+    state.pick_cloud_mesh_slot =
+        stage_uniform_slot(cloud_vertex_slots, "u");
+    state.pick_cloud_color_slot =
+        stage_uniform_slot(cloud_fragment_slots, "picking");
+    if (state.pick_cloud_scene_slot < 0 ||
+        state.pick_cloud_mesh_slot < 0 ||
+        state.pick_cloud_color_slot < 0) {
+        gpu_error(
+            "picking-splat kept neither the shear, the cloud block nor "
+            "the pick colour");
+    }
+
+    SDL_GPUShader* cloud_vertex = load_shader(
+        state.device,
+        "picking-splat.vert",
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<std::uint32_t>(cloud_vertex_slots.textures.size()),
+        static_cast<std::uint32_t>(cloud_vertex_slots.uniforms.size()),
+        "vs");
+    SDL_GPUShader* cloud_fragment = load_shader(
+        state.device,
+        "picking-splat.frag",
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        static_cast<std::uint32_t>(cloud_fragment_slots.textures.size()),
+        static_cast<std::uint32_t>(cloud_fragment_slots.uniforms.size()),
+        "fs");
+
+    // The pin's own two streams: the unit quad, and the sorted splat index
+    // per instance.
+    SDL_GPUVertexBufferDescription cloud_buffers[2]{};
+    cloud_buffers[0].slot = 0;
+    cloud_buffers[0].pitch = sizeof(float) * 2;
+    cloud_buffers[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    cloud_buffers[1].slot = 1;
+    cloud_buffers[1].pitch = sizeof(float);
+    cloud_buffers[1].input_rate = SDL_GPU_VERTEXINPUTRATE_INSTANCE;
+    SDL_GPUVertexAttribute cloud_attributes[2]{};
+    cloud_attributes[0].location = 0;
+    cloud_attributes[0].buffer_slot = 0;
+    cloud_attributes[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+    cloud_attributes[1].location = 1;
+    cloud_attributes[1].buffer_slot = 1;
+    cloud_attributes[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
+
+    SDL_GPUGraphicsPipelineCreateInfo cloud_info = info;
+    cloud_info.vertex_shader = cloud_vertex;
+    cloud_info.fragment_shader = cloud_fragment;
+    cloud_info.vertex_input_state.vertex_buffer_descriptions =
+        cloud_buffers;
+    cloud_info.vertex_input_state.num_vertex_buffers = 2;
+    cloud_info.vertex_input_state.vertex_attributes = cloud_attributes;
+    cloud_info.vertex_input_state.num_vertex_attributes = 2;
+    cloud_info.depth_stencil_state.compare_op = SDL_GPU_COMPAREOP_LESS;
+
+    state.pick_cloud_pipeline =
+        SDL_CreateGPUGraphicsPipeline(state.device, &cloud_info);
+    SDL_ReleaseGPUShader(state.device, cloud_vertex);
+    SDL_ReleaseGPUShader(state.device, cloud_fragment);
+    if (!state.pick_cloud_pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline picking-splat");
+    }
+#endif
+}
+
+#if BBLITE_HAS_SPLATS
+/**
+ * One cloud's pick draw: the pin's own splat draw with the shear applied
+ * after its clip position and the pick colour in place of the blended one.
+ */
+inline void record_cloud_pick_draw(
+    SDL_GPUCommandBuffer* command,
+    SDL_GPURenderPass* pass,
+    const GpuState& state,
+    const Engine& engine,
+    const SplatPass& splat,
+    const CameraRecord& camera,
+    std::uint32_t pick_id,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height) {
+    if (splat.vertex_count == 0) return;
+    const SplatMeshRecord& record = engine.splat_meshes[splat.mesh.value];
+    SDL_BindGPUGraphicsPipeline(pass, state.pick_cloud_pipeline);
+
+    std::array<float, 16> shear{};
+    compute_cloud_pick_matrix(shear, sample_x, sample_y, width, height);
+    SDL_PushGPUVertexUniformData(
+        command,
+        static_cast<Uint32>(state.pick_cloud_scene_slot),
+        shear.data(),
+        static_cast<Uint32>(shear.size() * sizeof(float)));
+
+    upstream::SplatUniforms uniforms;
+    upstream::write_splat_uniforms(
+        uniforms,
+        upstream::build_splat_world(record),
+        upstream::build_view_matrix(
+            upstream::camera_world_matrix(camera)),
+        upstream::build_scene_projection(camera, width / height),
+        width,
+        height,
+        record.texture_width,
+        record.texture_height);
+    SDL_PushGPUVertexUniformData(
+        command,
+        static_cast<Uint32>(state.pick_cloud_mesh_slot),
+        &uniforms,
+        sizeof(uniforms));
+
+    const std::array<float, 3> color = encode_pick_id_to_color(pick_id);
+    const std::array<float, 4> picking_block{
+        color[0], color[1], color[2], 0.0f};
+    SDL_PushGPUFragmentUniformData(
+        command,
+        static_cast<Uint32>(state.pick_cloud_color_slot),
+        picking_block.data(),
+        static_cast<Uint32>(picking_block.size() * sizeof(float)));
+
+    SDL_GPUBufferBinding vertex_bindings[2]{};
+    vertex_bindings[0].buffer = splat.quad;
+    vertex_bindings[1].buffer = splat.order;
+    SDL_BindGPUVertexBuffers(pass, 0, vertex_bindings, 2);
+    SDL_GPUBufferBinding index_binding{};
+    index_binding.buffer = splat.indices;
+    SDL_BindGPUIndexBuffer(
+        pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
+    SDL_BindGPUVertexSamplers(
+        pass,
+        0,
+        splat.textures.data(),
+        static_cast<Uint32>(splat.textures.size()));
+    SDL_DrawGPUIndexedPrimitives(pass, 6, splat.vertex_count, 0, 0, 0);
+}
+#endif
+#endif
+
 bool run_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
     reject_unsupported_frame_options(
@@ -5160,6 +5423,258 @@ bool run_gpu_engine(Engine& engine) {
                 state.sample_count));
         }
 #endif
+#if BBLITE_HAS_PICKING
+        // The pick pass. Installed once the mesh buffers and the cloud
+        // textures exist, because that is what it draws; a pick taken
+        // before this point reports a miss, exactly as the pin's own
+        // `pickAsync` does for a scene with no camera.
+        engine.pick_hook =
+            [&state, &engine, &scene](
+                GpuPickerHandle, double x, double y) -> PickingInfo {
+            const CameraRecord* camera_record =
+                scene.camera.value < engine.cameras.size()
+                    ? &engine.cameras[scene.camera.value]
+                    : nullptr;
+            if (!camera_record) return PickingInfo{};
+            // Native has no CSS box, so the pin's backing/client scale is
+            // 1 and the sample is the coordinate the scene passed. The
+            // viewport is the whole surface: no reached scene picks
+            // through a camera viewport, and one that did would need the
+            // pin's `resolveCameraViewport` offset here.
+            const double width =
+                static_cast<double>(engine.options.width);
+            const double height =
+                static_cast<double>(engine.options.height);
+            if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
+                return PickingInfo{};
+            }
+            const std::array<float, 16> view_projection =
+                upstream::build_view_projection(
+                    *camera_record,
+                    width / height);
+
+            ensure_pick_targets(state.device, state.pick_targets);
+            ensure_pick_pipelines(state);
+
+            PickSceneUniforms scene_uniforms{};
+            std::array<float, 20> pick_vp{};
+            compute_pick_view_projection(
+                pick_vp, view_projection, x, y, width, height);
+            std::copy(
+                pick_vp.begin(),
+                pick_vp.begin() + 16,
+                scene_uniforms.view_projection.begin());
+            // The pin writes the sampled pixel's CENTRE into the two
+            // lanes after the matrix; a discard predicate reads them, and
+            // the default one does not -- but the block is uploaded whole
+            // either way.
+            const double pixel_x =
+                std::floor(x) + 0.5;
+            const double pixel_y =
+                std::floor(y) + 0.5;
+            scene_uniforms.fragment_coord = {
+                static_cast<float>(pixel_x),
+                static_cast<float>(pixel_y)};
+
+#if BBLITE_HAS_SPLATS
+            // `await splat.firstSortReady` is what the pin's own scene
+            // waits for before it picks, and the sort's GPU-side order
+            // buffer is written by the frame's upload -- which runs after
+            // the deferred queue this continuation arrives on. So the pick
+            // brings each cloud current itself: the upload is idempotent
+            // (`splat_sort_dirty` answers no when neither the world nor
+            // the view moved), and a pick that read an unwritten order
+            // buffer would sample the data textures at garbage indices and
+            // miss a cloud that covers the sample.
+            {
+                const std::array<float, 16> pick_view =
+                    upstream::build_view_matrix(
+                        upstream::camera_world_matrix(*camera_record));
+                for (SplatPass& splat : state.splat_passes) {
+                    upload_splat_pass(
+                        state.device, engine, splat, pick_view);
+                }
+            }
+#endif
+            SDL_GPUCommandBuffer* command =
+                SDL_AcquireGPUCommandBuffer(state.device);
+            if (!command) gpu_error("SDL_AcquireGPUCommandBuffer pick");
+
+            SDL_GPUColorTargetInfo color_targets[2]{};
+            color_targets[0].texture = state.pick_targets.color;
+            color_targets[0].load_op = SDL_GPU_LOADOP_CLEAR;
+            color_targets[0].store_op = SDL_GPU_STOREOP_STORE;
+            color_targets[0].clear_color = {0.0f, 0.0f, 0.0f, 0.0f};
+            color_targets[1].texture = state.pick_targets.depth_color;
+            color_targets[1].load_op = SDL_GPU_LOADOP_CLEAR;
+            color_targets[1].store_op = SDL_GPU_STOREOP_STORE;
+            // The pin clears the depth attachment to 1 and the depth
+            // buffer to 0: the colour lane holds the winning fragment's
+            // clip depth, and 1 is "nothing here" under reverse-Z.
+            color_targets[1].clear_color = {1.0f, 0.0f, 0.0f, 0.0f};
+
+            SDL_GPUDepthStencilTargetInfo depth_target{};
+            depth_target.texture = state.pick_targets.depth;
+            depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
+            depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            depth_target.clear_depth = 0.0f;
+            depth_target.cycle = true;
+
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(
+                command, color_targets, 2, &depth_target);
+            if (!pass) gpu_error("SDL_BeginGPURenderPass pick");
+
+            // Ids start at 1 so that 0 stays "nothing", which is what the
+            // cleared colour attachment reads back as.
+            std::uint32_t next_id = 1;
+            struct PickRange {
+                std::uint32_t id;
+                PickedNodeKind kind;
+                std::uint32_t index;
+            };
+            std::vector<PickRange> ranges;
+
+            SDL_BindGPUGraphicsPipeline(pass, state.pick_mesh_pipeline);
+            for (const MeshHandle handle : scene.meshes) {
+                if (handle.value >= state.meshes.size()) continue;
+                const MeshRecord& record = engine.meshes[handle.value];
+                // Every mesh the scene still holds is a candidate. The
+                // pin also tests `mesh.pickable !== false`; no reached
+                // scene writes that flag, so the record carries no lane
+                // for it rather than a lane that is always true. A
+                // removed mesh is not walked at all, which is what makes
+                // this scene's own `removeFromScene` visible to a later
+                // pick.
+                const GpuMesh& gpu = state.meshes[handle.value];
+                if (!gpu.vertices || !gpu.indices) continue;
+                if (record.thin_instanced) {
+                    throw std::runtime_error(
+                        "Picking a thin-instanced mesh needs the pin's "
+                        "advanced picking pipeline, which composes the "
+                        "instance stream into the id.");
+                }
+                PickMeshUniforms mesh_uniforms{};
+                // Identity: these vertices are already world-space here
+                // (`transformed_vertices`), where the pin keeps them
+                // local and multiplies by the node's world matrix.
+                mesh_uniforms.world = {
+                    1.0f, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 0.0f, 0.0f,
+                    0.0f, 0.0f, 1.0f, 0.0f,
+                    0.0f, 0.0f, 0.0f, 1.0f};
+                mesh_uniforms.pick_id = next_id;
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    static_cast<Uint32>(state.pick_mesh_scene_slot),
+                    &scene_uniforms,
+                    sizeof(scene_uniforms));
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    static_cast<Uint32>(state.pick_mesh_uniform_slot),
+                    &mesh_uniforms,
+                    sizeof(mesh_uniforms));
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    static_cast<Uint32>(state.pick_mesh_scene_slot),
+                    &scene_uniforms,
+                    sizeof(scene_uniforms));
+                SDL_PushGPUFragmentUniformData(
+                    command,
+                    static_cast<Uint32>(state.pick_mesh_uniform_slot),
+                    &mesh_uniforms,
+                    sizeof(mesh_uniforms));
+                SDL_GPUBufferBinding vertex_binding{};
+                vertex_binding.buffer = gpu.vertices;
+                SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                SDL_GPUBufferBinding index_binding{};
+                index_binding.buffer = gpu.indices;
+                SDL_BindGPUIndexBuffer(
+                    pass,
+                    &index_binding,
+                    SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                SDL_DrawGPUIndexedPrimitives(
+                    pass, gpu.index_count, 1, 0, 0, 0);
+                ranges.push_back(
+                    {next_id, PickedNodeKind::mesh, handle.value});
+                ++next_id;
+            }
+#if BBLITE_HAS_SPLATS
+            for (const SplatPass& splat : state.splat_passes) {
+                record_cloud_pick_draw(
+                    command,
+                    pass,
+                    state,
+                    engine,
+                    splat,
+                    *camera_record,
+                    next_id,
+                    x,
+                    y,
+                    width,
+                    height);
+                ranges.push_back(
+                    {next_id,
+                     PickedNodeKind::splat_mesh,
+                     splat.mesh.value});
+                ++next_id;
+            }
+#endif
+            SDL_EndGPURenderPass(pass);
+
+            SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+            SDL_GPUTextureRegion region{};
+            region.w = 1;
+            region.h = 1;
+            region.d = 1;
+            SDL_GPUTextureTransferInfo destination{};
+            destination.transfer_buffer = state.pick_targets.staging;
+            destination.pixels_per_row = 1;
+            destination.rows_per_layer = 1;
+            region.texture = state.pick_targets.color;
+            destination.offset = 0;
+            SDL_DownloadFromGPUTexture(copy, &region, &destination);
+            SDL_EndGPUCopyPass(copy);
+
+            SDL_GPUFence* fence =
+                SDL_SubmitGPUCommandBufferAndAcquireFence(command);
+            if (!fence) {
+                gpu_error("SDL_SubmitGPUCommandBufferAndAcquireFence pick");
+            }
+            if (!SDL_WaitForGPUFences(state.device, true, &fence, 1)) {
+                SDL_ReleaseGPUFence(state.device, fence);
+                gpu_error("SDL_WaitForGPUFences pick");
+            }
+            SDL_ReleaseGPUFence(state.device, fence);
+
+            const auto* mapped = static_cast<const std::uint8_t*>(
+                SDL_MapGPUTransferBuffer(
+                    state.device, state.pick_targets.staging, false));
+            if (!mapped) gpu_error("SDL_MapGPUTransferBuffer pick");
+            const std::uint32_t pick_id = decode_pick_id(mapped);
+            SDL_UnmapGPUTransferBuffer(
+                state.device, state.pick_targets.staging);
+
+            if (pick_id == 0) return PickingInfo{};
+            for (const PickRange& range : ranges) {
+                if (range.id != pick_id) continue;
+                PickingInfo info;
+                info.hit = true;
+                info.picked_kind = range.kind;
+                info.picked_index = range.index;
+                info.picked_name =
+                    range.kind == PickedNodeKind::mesh
+                        ? engine.meshes[range.index].name
+                        : engine.splat_meshes[range.index].name;
+                return info;
+            }
+            // An id the pass wrote that no range claims cannot happen
+            // while the two loops agree; saying so is cheaper than
+            // debugging a silent miss if they ever stop agreeing.
+            throw std::runtime_error(
+                "GPU pick read an id no candidate was drawn under.");
+        };
+#endif
+
 #if BBLITE_HAS_BILLBOARDS
         // One pass per system the scene registered, targeting the same
         // attachment and depth the scene's own draws do.
