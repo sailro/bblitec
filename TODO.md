@@ -24,18 +24,12 @@ act on it — not what was tried.
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
   inlined function.
-  **The lane half of this family is closed**: a tuple or record lane now
-  carries whatever static value generation can fold, and `castNumber` writes
-  it at the sink's own width, so a double sink no longer reads a lane already
-  rounded to float ([fidelity](docs/fidelity.md#shader-contract)). Scene 206
-  was the measurement — six mesh translations at 5e6 quantized to the float32
-  half-unit and moved a silhouette, 0.828 MAD against 0.000 with the lane
-  written wide. What remains is the RUNTIME half: a lane with no static value
-  keeps the `static_cast<float>` its first sink baked into `Value.cpp`, which
-  is right wherever that sink is the only one and wrong for the second. Closing
-  it needs the width model the paragraph above describes — tag the formatted
-  width on the Value rather than the text — and re-measuring the corpus, since
-  float wraps still bake into stored cpp on the runtime path.
+  The static lane half is done ([fidelity](docs/fidelity.md#shader-contract)).
+  What remains is the RUNTIME half: a lane with no static value keeps the
+  `static_cast<float>` its first sink baked into `Value.cpp`, right wherever
+  that sink is the only one and wrong for the second. Closing it needs the
+  width tagged on the Value rather than on the text, and a corpus
+  re-measurement, since float wraps still bake into stored cpp there.
 - [ ] Support off-center orthographic planes: `enableOrthographicCamera` accepts
   explicit `left`/`right`/`bottom`/`top` bounds replacing the half-extent
   derivation, and `disableOrthographicCamera` restores the perspective

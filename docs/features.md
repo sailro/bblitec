@@ -191,28 +191,24 @@ rather than left to be read off the guards:
 | `BBLITE_SHADOW_RECEIVERS` | the union of the two family defines | the GENERATOR half, which belongs to no family: the maps, the samplers, the receiver blocks, the caster pass, its standard-Z depth state, the per-frame matrix update and the release path |
 | `BBLITE_SHADOWS_ESM` | `shadow:esm`, and Standard variants are composed | the ESM generator's own four textures and separable blur. Still a Standard conjunction because what it gates includes the caster's own material view, and only the Standard family has one |
 
-The union is emitted as a union — `#define BBLITE_SHADOW_RECEIVERS
-(BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)` — so the containment is a
-fact the person writing the guard can see, and a helper's guard can be
-checked against its callers' by reading. All five come from one
-`shadowCapabilities` record; the activation inventory then checks that record
-against its own derivation from the reached features, which is a check only
-while the two stay different expressions.
+The union is emitted as one — `#define BBLITE_SHADOW_RECEIVERS
+(BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)` — so the containment is
+visible to whoever writes a guard, and a helper's guard checks against its
+callers' by reading. All five come from one `shadowCapabilities` record,
+which the activation inventory then checks against its own derivation from
+the reached features — a check only while the two stay different expressions.
 
-The feature list is finalized during compilation, before remote assets are
-materialized, with two deliberate exceptions joined afterwards: an asset's
-own lights — glTF `KHR_lights_punctual` kinds and `.babylon` point
-lights — and `EXT_lights_image_based` become `light:*` and
-`environment:ibl` features, because light features select `light_*.cpp`
-translation units, which only the feature list can. Every
-other capability an asset reaches without the scene source naming it lives
-in the capability header instead — scene transmission is the standing
-example, because Babylon Lite enables it from any transmissive material a
-loaded asset carries. Every activation across all the mechanisms — the
-feature list, the capability defines, the codecs, the emit options,
-variant composition, and the generation-time refusals — is recorded per
-scene in `upstream/feature-activation.json`, with the first reaching call
-site or asset and the pinned module each unit mirrors.
+The feature list is finalized during compilation, before remote assets
+materialize, with two exceptions joined afterwards: an asset's own lights
+(glTF `KHR_lights_punctual` kinds, `.babylon` point lights) and
+`EXT_lights_image_based` become `light:*` and `environment:ibl` features,
+because light features select `light_*.cpp` translation units and only the
+feature list can. Every other capability an asset reaches without the source
+naming it lives in the capability header — scene transmission being the
+standing example, since Babylon Lite enables it from any transmissive
+material a loaded asset carries. Every activation across all mechanisms is
+recorded per scene in `upstream/feature-activation.json`, with the first
+reaching call site or asset and the pinned module each unit mirrors.
 
 The rule that decides which mechanism owns a feature: a runtime feature
 exists for API the scene's own source can reach, and a capability exists for
@@ -221,13 +217,13 @@ has both (clearcoat, sheen and iridescence are feature-or-capability), and one
 without a setter has only the capability (dispersion, and the spec-gloss
 workflow replacement, which no scene API reaches at all).
 
-**Why compile time:** there is no dynamic module loading, so upstream's own
-`import()`-behind-a-predicate boundaries have to be resolved somewhere, and
-generation is the only place that can see both the source and the assets. The
-asset specializer mirrors upstream's predicates directly, which is what keeps
-a capability upstream holds off its core path from becoming unconditional
-here. It is also the whole of tree shaking: a scene reaching no skins emits no
-skinning code, no deformation vertex layout, and no matching shader variant.
+**Why compile time:** with no dynamic module loading, upstream's own
+`import()`-behind-a-predicate boundaries must resolve somewhere, and
+generation is the only place that sees both the source and the assets. The
+asset specializer mirrors upstream's predicates directly, which keeps a
+capability upstream holds off its core path from becoming unconditional here.
+It is also the whole of tree shaking: a scene reaching no skins emits no
+skinning code, no deformation vertex layout and no matching shader variant.
 
 ### Asset materialization
 
@@ -510,15 +506,14 @@ DXIL, SPIR-V, and MSL, and SDL_GPU carries no shader compiler at all, so those
 binaries have to exist before the executable runs. DXC cannot be dropped from
 the D3D12 path either, because Tint does not emit DXIL.
 
-**Why Dawn's half is run time:** Dawn is the browser's own WebGPU
-implementation and carries Tint and DXC *inside* it — the same components the
-offline path invokes as tools. Compiling at startup is the parity mechanism:
-the goldens were produced by that stack, so running it in-process removes the
-offline-versus-browser compile split rather than adapting to it, and Dawn is
-bit-exact on scenes where SDL_GPU carries DXC-versus-browser rounding. The
-identity of that compiler is measurable: a Dawn built without
-`DAWN_USE_BUILT_DXC` falls back to FXC and carries a systemic one-LSB error on
-lit surfaces, which DXC does not.
+**Why Dawn's half is run time:** Dawn carries Tint and DXC *inside* it — the
+components the offline path invokes as tools — so compiling at startup is the
+parity mechanism: the goldens came from that stack, and running it in-process
+removes the offline-versus-browser compile split rather than adapting to it.
+Dawn is bit-exact on scenes where SDL_GPU carries DXC-versus-browser
+rounding. That compiler's identity is measurable: a Dawn built without
+`DAWN_USE_BUILT_DXC` falls back to FXC and carries a systemic one-LSB error
+on lit surfaces, which DXC does not.
 
 **What a custom shader variant may reach.** The supported WGSL subset plus
 the `world`, `view`, `projection`, `viewProjection` and `worldViewProjection`
@@ -645,71 +640,66 @@ builds at the call site is bound to a name first, because the pool keeps
 referencing it for the whole frame loop; one built inside a block refuses,
 since the binding would not outlive it.
 
-`createGroundFromHeightMap` is the flat ground builder plus the pin's own
+`createGroundFromHeightMap` is the flat ground builder plus the pin's
 displacement pass, both lowered from their own bodies: the grid's Y is
-displaced by the image's weighted luminance and the normals rebuilt from
-per-face cross products, then the arrays go to `create_mesh_from_data`
-exactly as the pinned wrapper hands them over. The image is packaged like
-any other asset and decoded through the PAL — which is where a greyscale PNG
-turned out to be arriving a level dark, because SDL_image synthesises the
-ramp for a palette-less PNG as `(i * 255) / ncolors` rather than dividing by
-the last index. The PAL rebuilds that ramp where the file carries no `PLTE`
-of its own, which is the only case where the correct one is derivable rather
-than guessed.
+displaced by the image's weighted luminance, the normals rebuilt from
+per-face cross products, and the arrays handed to `create_mesh_from_data` as
+the pinned wrapper hands them over. The image is packaged and decoded like
+any other — which is where a greyscale PNG arrived a level dark, because
+SDL_image synthesises a palette-less PNG's ramp as `(i * 255) / ncolors`
+rather than dividing by the last index. The PAL rebuilds that ramp only where
+the file carries no `PLTE`, the one case where the correct ramp is derivable
+rather than guessed.
 
-`createTube` is lowered from its pinned chain — the circle swept along
+`createTube` is lowered from its pinned chain — a circle swept along
 `computePath3D`'s Frenet frames by Rodrigues rotation, triangulated by the
 ribbon builder with computed normals — every formula shape-asserted against
 the pinned AST and finished through `create_mesh_from_data`, so the only
-float rounding is the pin's own typed-array store. The reached slice is a
+float rounding is the pin's typed-array store. The reached slice is a
 multi-point path with explicit `radius` and `tessellation`; `cap`, `arc`,
-`radiusFunction`, an instance to update, and a single-point path refuse by
-name, and the pinned defaults that make the dropped arms unreachable (cap
+`radiusFunction`, an instance to update and a single-point path refuse by
+name, and the pinned defaults making the dropped arms unreachable (cap
 `NONE`, arc `1`) are anchored rather than assumed.
 
-**The rest of the builder family** — `createCylinder` (cylinders, cones and
+**The rest of the builder family** — `createCylinder` (cylinders, cones,
 truncated cones), `createDisc` (discs and pie slices), `createPolyhedron`,
-`createRibbon` and `createExtrudeShape` — is lowered from each pinned body
-by the same translator, and each measures byte-exact against the browser on
-scene 38. What separates this half from the five that shipped before it is
-storage: those preallocate a typed array and store into it, while these GROW
-a `number[]` and convert at the end, which is where their float rounding
-happens. So the translator gained a growable list (its `push`, its `length`,
-its indexing, and the `new F32(list)` that rounds it), a jagged list whose
-rows are lists, the pin's own `{x, y, z}` record as a value, and a local
-helper closure written out at each call site — which is how
-`createCap(false)` and `createCap(true)` fold their `isTop` the way the pin
-would have written the two bodies out.
+`createRibbon` and `createExtrudeShape` — is lowered from each pinned body by
+the same translator, all byte-exact against the browser on scene 38. What
+separates them from the five that shipped earlier is storage: those
+preallocate a typed array and store into it, while these GROW a `number[]`
+and convert at the end, which is where their float rounding happens. The
+translator therefore gained a growable list (`push`, `length`, indexing, and
+the `new F32(list)` that rounds it), a jagged list of lists, the pin's
+`{x, y, z}` record as a value, and a local helper closure written out at each
+call site — which is how `createCap(false)` and `createCap(true)` fold their
+`isTop` the way the pin would have written both bodies out.
 
-Two of them resolve at generation rather than at run time. The polyhedron's
-`POLYHEDRA` table is data and the `type` a scene names is a compile-time
-index, so generation picks the row and one polyhedron costs one table rather
-than fifteen. And a builder option is resolved from the factory's own `??`
-before the call, which is what lets the emitted body bind each option to the
-present arm — the same specialization the shadow generators take, read from
-the pin rather than restated. `createExtrudeShape` reuses the tube's frames
-and Rodrigues rotation and finishes through the ribbon under its own mesh
-name, because that is exactly how the pin composes it. `cap` refuses by
-name, as does a zero `diameter` that never named which end the cone belongs
-to -- the pin asks `options.diameterTop === 0` of the NAMED option, so a
-zero arriving through the shorthand would take an arm the pin does not.
+Two resolve at generation. The polyhedron's `POLYHEDRA` table is data and the
+`type` a scene names is a compile-time index, so one polyhedron costs one
+table rather than fifteen. And a builder option is resolved from the
+factory's own `??` before the call, binding each option to the present arm —
+the specialization the shadow generators take, read from the pin rather than
+restated. `createExtrudeShape` reuses the tube's frames and Rodrigues
+rotation and finishes through the ribbon under its own mesh name, as the pin
+composes it. `cap` refuses by name, as does a zero `diameter` that never
+named which end the cone belongs to: the pin asks `options.diameterTop === 0`
+of the NAMED option, so a zero arriving through the shorthand would take an
+arm the pin does not.
 
 A **line system** is one of those meshes rather than a renderer of its own:
-`createLineSystem` concatenates its polylines into a single indexed mesh —
-an index pair per segment, nothing joining one line to the next — and draws
-it with the `ShaderMaterial` `createLineMaterial` builds, whose `_topology`
-is `"line-list"`; the flatten's asserted rules and the composed program are
-the pin's own ([fidelity](fidelity.md#shader-contract)). Everything after
-that is the shader-material path: `updateLineSystem` rewrites positions and
-colours over an unchanged connectivity (a changed line or point count
-refuses, as upstream throws),
-and `setThinInstanceColors` binds the per-instance RGBA stream a material
-created with `useThinInstanceColors` reads. The colour precedence is the
-pin's own: vertex colours, instance colours, their product, or the
-`lineColor` uniform. `createLines`, `createDashedLines`,
-`updateDashedLines` and `setLineMaterialColor` are unreached and refuse by
-name, as does a line system whose material's vertex-colour setting
-disagrees with its geometry.
+`createLineSystem` concatenates its polylines into a single indexed mesh — an
+index pair per segment, nothing joining one line to the next — drawn with the
+`ShaderMaterial` `createLineMaterial` builds, whose `_topology` is
+`"line-list"`. The flatten's asserted rules and the composed program are the
+pin's own ([fidelity](fidelity.md#shader-contract)); everything after is the
+shader-material path. `updateLineSystem` rewrites positions and colours over
+unchanged connectivity (a changed line or point count refuses, as upstream
+throws), and `setThinInstanceColors` binds the per-instance RGBA stream a
+material created with `useThinInstanceColors` reads, at the pin's own colour
+precedence: vertex colours, instance colours, their product, or the
+`lineColor` uniform. `createLines`, `createDashedLines`, `updateDashedLines`
+and `setLineMaterialColor` refuse by name, as does a line system whose
+material's vertex-colour setting disagrees with its geometry.
 
 ### Lights
 
@@ -731,23 +721,23 @@ vectors no reached scene writes fail by name.
 
 ### Materials and material state
 
-Standard, PBR, and GridMaterial records, no-color material views, Standard
-cotangent-frame normal maps, PBR vertex colors and the Standard RGB ones
+Standard, PBR and GridMaterial records, no-colour material views, Standard
+cotangent-frame normal maps, PBR vertex colours and the Standard RGB ones
 behind `enableStandardVertexColors`, the opt-in `setPbrUnlit`, `setPbrSkybox`,
 `setPbrEmissive`, `setPbrClearCoat`, `setPbrSheen`, `setPbrIridescence`,
-`setPbrAnisotropy`, `setPbrGammaAlbedo`, and the reached `setPbrSubsurface`
+`setPbrAnisotropy`, `setPbrGammaAlbedo` and the reached `setPbrSubsurface`
 translucency/thickness shape, plus scene-local custom shader variants driven
 through their reflected uniform offsets. Scene-code PBR also carries the
 static `enableSpecularAA` and `usePhysicalLightFalloff` creation options into
-the pin's derivative roughness arm and its punctual falloff lane. A setter stamps the
-material the call names, so a scene carrying several scene-code materials
-reaches each of them independently.
+the pin's derivative roughness arm and its punctual falloff lane. A setter
+stamps the material the call names, so a scene carrying several scene-code
+materials reaches each independently.
 
 Each glTF texture slot samples the UV set its own `textureInfo` selects —
-base colour, metallic-roughness, normal, emissive, spec-gloss and occlusion,
-through the pin's own per-channel uv2 mask, and through
+base colour, metallic-roughness, normal, emissive, spec-gloss and occlusion —
+through the pin's per-channel uv2 mask, and through
 `KHR_texture_transform.texCoord` where a transform overrides the slot's own.
-The mask is composed into the fragment rather than uploaded, so the loader
+The mask composes into the fragment rather than uploading, so the loader
 carries only what a UV set cannot express: the dedicated occlusion pair a
 TEXCOORD_1 occlusion binds, and the second ORM sample the orm-unpack split
 takes at occlusion's own transform.
@@ -847,13 +837,12 @@ graph: its WGSL, the layout of the uniform block its named inputs produced,
 the vertex inputs it declares, and its cull state, with the block's bytes
 folded from the graph's own defaults.
 
-Two routes reach a graph, because the corpus writes them both ways: a module
+Two routes reach a graph, because the corpus writes them both ways. A module
 exporting the document as a literal is read as data — the fold, and the one
-to prefer, since a literal cannot drift — while a module that *builds* its
-graph at load from id counters, spread-composed inputs and arrays it pushes
-into is code this compiler does not lower, so it is executed instead, under
-Node. The rationale — a graph is structure, not pixels, which is why it runs
-under Node rather than in headless Chromium — and the fold contracts are in
+to prefer, since a literal cannot drift. A module that *builds* its graph at
+load from id counters, spread-composed inputs and pushed arrays is code this
+compiler does not lower, so it is executed under Node instead. Why under Node
+rather than headless Chromium, and the fold contracts, are in
 [fidelity](fidelity.md#shader-contract).
 
 **Run time: the draw.** A node draw binds the pin's own group scheme — the
@@ -861,26 +850,26 @@ per-pass scene block and lights in group 0, the graph's mesh block and uniform
 block in group 1 — and both backends execute the compiled stages, entered at
 the pin's own `vs_main`/`fs_main`.
 
-The reached slice covers the scene's lights and its environment. Both are
+The reached slice covers the scene's lights and its environment, both
 resources the port already holds for the material families — the lights array
 at the group-0 slot all three composed families share, and the specular cube
-and BRDF LUT the pin's own `node-env.ts` binds from the scene's
+and BRDF LUT the pin's `node-env.ts` binds from the scene's
 `EnvironmentTextures` — so a graph reaching them declares bindings rather than
-needing anything new. The five PBR layer blocks (clearcoat, sheen,
-anisotropy, iridescence, subsurface) declare nothing at all: each changes what
-`PBRMetallicRoughnessBlock` composes and the module binds the same resources
+needing anything new. The five PBR layer blocks (clearcoat, sheen, anisotropy,
+iridescence, subsurface) declare nothing: each changes what
+`PBRMetallicRoughnessBlock` composes, and the module binds the same resources
 either way.
 
 `FragDepthBlock` composes too: a graph writing `@builtin(frag_depth)` puts
 the depth *convention* into its own output, and both backends render under
 the pin's ([fidelity](fidelity.md#shader-contract)).
 
-A graph may also sample textures. `TextureBlock` and `ImageSourceBlock` each
+A graph may also sample textures: `TextureBlock` and `ImageSourceBlock` each
 declare a binding named after the block, and the scene supplies the image
-under that name (`parseNodeMaterialFromSnippet`'s `textures` record);
-generation joins the two, refusing a binding the record omits or a name the
+under that name through `parseNodeMaterialFromSnippet`'s `textures` record.
+Generation joins the two, refusing a binding the record omits or a name the
 graph declares no binding for. The pair's group-1 allocation belongs to the
-pin's own composition ([fidelity](fidelity.md#shader-contract)).
+pin's composition ([fidelity](fidelity.md#shader-contract)).
 
 What refuses at generation, naming the block that reached it: morph targets,
 shadows, clip planes and the mesh-attribute test. A graph fetched by snippet
@@ -1106,23 +1095,21 @@ and the world position a custom body may read, and the stock stage does not.
 
 ### Physics
 
-Rigid-body simulation, and the one family here whose numbers are not the
-pin's. The boundary is the pin's own: `createHavokWorld(scene, hknp)` takes
-the solver as a *parameter* and the pinned layer calls only `HP_*` entry
-points on it, so the rigid-body semantics are generated from the pinned
-module while the `HP_*` surface is one PAL translation unit
-(`native/include/bblite/pal_physics.hpp`). The solver behind that surface
-is Bullet rather than the proprietary Havok WASM module — `await
-HavokPhysics(...)` compiles to nothing, `@babylonjs/havok` stays a
-browser-only devDependency serving the reference page, and the solver a
-build links is selected by the `physics:world` feature. Two rigid-body
-solvers integrate different contact models, so this is the one adaptation
-that is not bit-faithful by construction — recorded per scene as
-`substituted-physics-solver`, measured by trajectory and by a pixel
-comparison at rest rather than by a threshold driven toward zero;
-[fidelity](fidelity.md#physics-contract) carries the why of the
-substitution, what stays lowered from the pinned declarations, and every
-measurement.
+Rigid-body simulation, and the one family whose numbers are not the pin's.
+The seam is the pin's own: `createHavokWorld(scene, hknp)` takes the solver as
+a *parameter* and the pinned layer calls only `HP_*` entry points on it, so
+the rigid-body semantics generate from the pinned module while the `HP_*`
+surface is one PAL translation unit
+(`native/include/bblite/pal_physics.hpp`). Behind it is Bullet rather than the
+proprietary Havok WASM module: `await HavokPhysics(...)` compiles to nothing,
+`@babylonjs/havok` stays a browser-only devDependency serving the reference
+page, and the `physics:world` feature selects the solver a build links. Two
+rigid-body solvers integrate different contact models, so this is the one
+adaptation not bit-faithful by construction — recorded per scene as
+`substituted-physics-solver` and measured by trajectory and by a pixel
+comparison at rest rather than against a threshold driven toward zero.
+[fidelity](fidelity.md#physics-contract) carries the substitution's why, what
+stays lowered from the pinned declarations, and every measurement.
 
 The reached slice: `createHavokWorld` with an explicit or defaulted gravity,
 `createPhysicsAggregate` over the four primitive shapes
@@ -1333,60 +1320,55 @@ Every post-process Babylon Lite ships is one `createPostProcessTask`: a
 fullscreen triangle over a single-sample source texture, a bind group of
 sampler, source view, the effect's extra views and its optional uniform block,
 and an output that is either the target the caller named or one the pass makes
-from the source's own descriptor. The same task record runs inside a
-scene-owned graph or a registered scene-less `FrameGraphContext`. Blur,
-chromatic aberration, black and white,
-the red/cyan anaglyph and the circle of confusion are reached; each contributes
-only a shader record and a `writeUniforms` body.
+from the source's descriptor. The same record runs inside a scene-owned graph
+or a registered scene-less `FrameGraphContext`. Blur, chromatic aberration,
+black and white, the red/cyan anaglyph and the circle of confusion are
+reached, each contributing only a shader record and a `writeUniforms` body.
 
-A **composite** — depth of field, and bloom — is one entry point that builds
-a chain of those passes over intermediate targets it owns, and the caller
+A **composite** — depth of field, and bloom — is one entry point building a
+chain of those passes over intermediate targets it owns, while the caller
 still sees one task: one `addTask`, one `updateUniforms`, one output. Bloom's
 chain is extract-highlights, two separable blurs and a merge that adds the
-blurred highlights back over the source; its three intermediates are sized to
-`floor(sourceSize * bloomScale)` and its blur kernels are scaled by the same
-factor, so the chain is a function of its config exactly as depth of field's
-is. Which passes, in what
-order, over which textures and at which sizes is decided entirely by its
-config, so generation runs the pin's own factory and emits the chain it built.
-Nothing about depth of field is written into this port: its eight passes and
-seven intermediates are what the factory made, its pass names derive from the
-name the scene gave the task, and the entry points it builds through are
-`@internal` in the pin and refused at a scene's call site here for the same
-reason.
+blurred highlights back over the source, its three intermediates sized to
+`floor(sourceSize * bloomScale)` and its blur kernels scaled by the same
+factor. Which passes, in what order, over which textures and at which sizes
+is decided entirely by the config, so generation runs the pin's factory and
+emits the chain it built. Nothing about depth of field is written into this
+port: its eight passes and seven intermediates are what the factory made, its
+pass names derive from the name the scene gave the task, and the entry points
+it builds through are `@internal` in the pin and refused at a scene's call
+site for that reason.
 
-An intermediate is sized as a fraction of the source — the blur pyramid runs
-at 0.75, 0.375 and 0.1875 — re-evaluated whenever the frame graph is built, so
-a window resize moves the whole chain with it. The fractions are not read off
-one run: generation composes twice against sources of different sizes and
+An intermediate is a fraction of the source — the blur pyramid runs at 0.75,
+0.375 and 0.1875 — re-evaluated whenever the frame graph is built, so a
+window resize moves the chain with it. The fractions are not read off one
+run: generation composes twice against sources of different sizes and
 formats, and refuses any extent a single fraction does not reproduce exactly.
 
-One pass in that family is not built through a leaf factory at all: bloom's
-merge calls `createPostProcessTask` itself with a `_shader` written inline in
-the composite's own body. So the observation watches that entry point beside
+Bloom's merge is the one pass not built through a leaf factory: it calls
+`createPostProcessTask` itself with a `_shader` written inline in the
+composite's body. The observation therefore watches that entry point beside
 the leaves, and the merge's parameters and uniform writer are read from the
-composite rather than from the pass — which publishes neither, its `_shader`
-closing over the composite's own state
+composite rather than from the pass, which publishes neither
 ([fidelity](fidelity.md#attribution)).
 
 **Compile time: the stage.** The effect's factory runs under Node against a
-descriptor-only render target and the pin's own `getShaderModule` concatenates
-the module — so what deploys is the text the browser compiles, for the options
+descriptor-only render target and the pin's `getShaderModule` concatenates
+the module, so what deploys is the text the browser compiles for the options
 this scene passed. Both stages live in one module, so it deploys twice — once
-per entry point — and SDL_GPU re-addresses the pin's groups exactly as it does
-for a composed material variant. What identifies a module is that text and not
-the pass that reached it: a blur pair differing only in its `direction` uniform
+per entry point — and SDL_GPU re-addresses the pin's groups as it does for a
+composed material variant. A module is identified by its text, not the pass
+that reached it: a blur pair differing only in its `direction` uniform
 composes one module and deploys it once. Why the factory is executed rather
-than folded — the blur's kernel-dependent taps, each a Gaussian printed
-through the pin's own formatter — is in [fidelity](fidelity.md#attribution).
+than folded is in [fidelity](fidelity.md#attribution).
 
-**Run time: the pass.** The parameters live on the task record and
-`updateUniforms` marks them for rewrite, which is the pin's own split between
-mutating a parameter and uploading the block; the uniform bytes are written by
-a generated writer lowered from each effect's own `writeUniforms`, so a pass
-whose values depend on the attachments reads them from the real targets. The
-two rules the pass takes from the pin — the output target's sample count, and
-the far-edges-up viewport rounding a copy task does not share — are in
+**Run time: the pass.** Parameters live on the task record and
+`updateUniforms` marks them for rewrite — the pin's own split between
+mutating a parameter and uploading the block — while the bytes come from a
+generated writer lowered from each effect's `writeUniforms`, so a pass whose
+values depend on the attachments reads them from the real targets. The two
+rules it takes from the pin (the output target's sample count, and the
+far-edges-up viewport rounding a copy task does not share) are in
 [fidelity](fidelity.md#attribution).
 
 ### Fullscreen effects
