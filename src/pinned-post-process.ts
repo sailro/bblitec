@@ -178,10 +178,19 @@ interface PinnedRenderTargetModule {
  * composite chose from one it took off the source.
  */
 interface CompositeRun {
-    passes: { intrinsic: string; task: PinnedPostProcessTask }[];
+    passes: {
+        intrinsic: string;
+        /** Built by the composite itself rather than through a leaf. */
+        inline: boolean;
+        task: PinnedPostProcessTask;
+    }[];
     inputs: Map<PinnedRenderTarget, string>;
     width: number;
     height: number;
+    /** The composite the factory returned: an inline pass reads its
+     *  parameters off this rather than off the pass, because the pass's
+     *  `_shader` closes over the composite's own state. */
+    composite: PinnedPostProcessTask;
 }
 
 /**
@@ -250,8 +259,16 @@ async function runComposite(
         pinnedEffectModule(composite),
         composite.passes,
         (intrinsic, value) => {
+            // A pass the composite built itself takes the descriptor's
+            // own name for it, and is marked so the parameter read below
+            // knows to look at the composite: its `_shader` closes over the
+            // composite's state, so the pass publishes none of it.
+            const inline = intrinsic === composite.inlinePass?.symbol;
             passes.push({
-                intrinsic,
+                intrinsic: inline
+                    ? composite.inlinePass!.effect
+                    : intrinsic,
+                inline,
                 task: value as PinnedPostProcessTask,
             });
         },
@@ -290,7 +307,7 @@ async function runComposite(
         config,
         compositionEngine(),
         undefined,
-    ) as { outputTexture?: PinnedRenderTarget };
+    ) as PinnedPostProcessTask & { outputTexture?: PinnedRenderTarget };
     // The observation seam only sees passes the composite builds through the
     // entry points its descriptor names, so a chain that ends somewhere else
     // would compose short and silently. What the composite says its output is
@@ -303,7 +320,7 @@ async function runComposite(
                 "builds through.",
         );
     }
-    return { passes, inputs, width, height };
+    return { passes, inputs, width, height, composite: task };
 }
 
 /**
@@ -348,7 +365,7 @@ export async function composeComposite(
     const intermediates: CompositeIntermediate[] = [];
     const indices = new Map<PinnedRenderTarget, number>();
     const engine = compositionEngine();
-    const passes = run.passes.map(({ intrinsic, task }, index) => {
+    const passes = run.passes.map(({ intrinsic, inline, task }, index) => {
         const other = check.passes[index]!;
         if (other.intrinsic !== intrinsic) {
             throw new Error(
@@ -389,7 +406,10 @@ export async function composeComposite(
                     ),
             ),
             target: reference(task.targetTexture, other.task.targetTexture),
-            params: compositePassParams(intrinsic, task),
+            params: compositePassParams(
+                intrinsic,
+                inline ? run.composite : task,
+            ),
         };
     });
     return { intrinsic: request.intrinsic, intermediates, passes };
@@ -402,6 +422,11 @@ export async function composeComposite(
  * name — `lensSize`, `direction.x` — so the effect table's own paths address
  * both. A runtime slot has no value yet by definition: the backend refreshes
  * it from the attachments before every write.
+ *
+ * An INLINE pass is read off the composite instead, and the caller passes it
+ * in: its `_shader` closes over the composite's own `params` object, so the
+ * scalar it writes is published by the composite (`bloom.weight`) and by
+ * nothing on the pass.
  */
 function compositePassParams(
     intrinsic: string,

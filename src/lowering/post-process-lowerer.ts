@@ -358,7 +358,7 @@ export class PostProcessLowerer {
     private assertEffectContracts(effect: PostProcessEffect): void {
         const { file, declaration } = this.context.functionDeclaration(
             effect.module,
-            effect.intrinsic,
+            effect.declaredIn ?? effect.intrinsic,
         );
         const fallbacks = new Map<string, ts.Expression>();
         for (const node of this.context.findNodes(
@@ -883,7 +883,7 @@ ${this.uniformWriterBody(effect)}
         }
         const { file, declaration } = this.context.propertyFunction(
             effect.module,
-            effect.intrinsic,
+            effect.declaredIn ?? effect.intrinsic,
             "writeUniforms",
         );
         // The effect's own state, spelled onto the records the emitted
@@ -941,6 +941,10 @@ ${this.uniformWriterBody(effect)}
                 type: "scalar",
             });
         }
+        // A name the effect module declares itself -- `extract-highlights.ts`
+        // raises its threshold through a module-scope `TO_GAMMA_SPACE` --
+        // resolves in the translator against that declaration, so only what
+        // the module does NOT declare is bound above.
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
             calls: pinnedNumericMathCalls(),

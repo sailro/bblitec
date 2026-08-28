@@ -1861,6 +1861,31 @@ pin rather than from its siblings: the pipeline's sample count is the
 *output target's*, and the normalized viewport rounds its far edges up where
 a copy task's rounds them down.
 
+**A composite's inline pass is read off the composite, because the pass
+publishes nothing.** Every post-process the pin ships builds its pass through
+a leaf factory whose module declares the `_shader` — except bloom's merge,
+which `bloom.ts` builds by calling `createPostProcessTask` directly with a
+`_shader` written inline. That closure captures the composite's own `params`,
+so the merge task carries no `weight` to read and its own module carries no
+default to check: both are declared inside `createBloomPostProcessTask`. The
+observation therefore watches `createPostProcessTask` beside the leaves — the
+seam is keyed by relative specifier, so that entry point is nameable like any
+other — marks the pass it produced, and reads its parameters off the composite
+the factory returned. The effect row names the pinned function that declares
+its `_shader`, which is what keeps its own name out of the composite table's
+key space.
+
+**A name a pinned module declares is read off that declaration.** A pinned
+body may reach a module-scope `const` of its own file — `extract-highlights.ts`
+raises its threshold to gamma space through `TO_GAMMA_SPACE` — and the
+translator resolves such a name against the module being lowered rather than
+requiring every caller to pre-bind it. The initializer is lowered rather than
+folded, so the arithmetic stays the pin's, and a constant this translator
+cannot lower fails by the name that reads it. Only what the module does NOT
+declare — an import, or a value the caller owns — travels through the caller's
+bindings, which is the rule `pinned-shader-text.ts` already states for the
+shader-text evaluator.
+
 **A depth attachment another task owns is loaded, not cleared.** The pin's
 geometry renderer publishes its depth as an eager wrapper target, and
 `createRenderTask`'s `const loadOp = (config.depth ? depthSrc._eager : ...)`

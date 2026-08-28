@@ -1,0 +1,41 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "`createExtractHighlightsPostProcessTask` was marked `internal: true`, which refuses it at a scene call site — but the pin does not mark it `@internal` and re-exports it from its own index, so the row made a public entry point unreachable here. The house rule in reverse: a capability upstream keeps ON its public path must not become unreachable. Flag dropped",
+      "applied": true
+    },
+    {
+      "summary": "binding an effect module's constants was done eagerly in the post-process lowerer, with a bare `catch` that dropped every non-numeric declaration and no `NodeFlags.Const` check; the rule belongs in `PinnedNumericLowerer`, where an unbound identifier now resolves against the module's own module-scope `const` and fails by the name that reads it. That is the rule `pinned-shader-text.ts` already states one file over, it generalizes to the fifteen other lowerers that pre-bind such names by hand, and it deletes `moduleConstants`, `tryLowerConstant` and the loop",
+      "applied": true
+    },
+    {
+      "summary": "the merge's effect row was keyed by the composite's own intrinsic, so `createBloomPostProcessTask` resolved in both the effect and the composite table — which made `engine.ts`'s `effect?.internal` check a live trap (marking that row internal, the honest description, would refuse every bloom scene) and let `inlinePass.effect` name any row while the params branch silently tested a different name. The row has its own name now plus a `declaredIn` saying which pinned function declares its `_shader`, so the two key spaces are disjoint",
+      "applied": true
+    },
+    {
+      "summary": "\"an inline pass reads its params off the composite\" was spelled transitively — rename the pass at observation, then test that the name equals the request's — so a descriptor typo would have read off the pass with no refusal; the observation records an explicit `inline` flag instead",
+      "applied": true
+    },
+    {
+      "summary": "the forwarded string option re-implemented `compileStringLiteral`'s first two predicates and stopped there, so a `sourceSamplingMode` written as a bound const or a concatenation fell through to the numeric path and refused with \"expected a number\"; it goes through `ts.isStringLiteralLike` and the evaluator, a strict superset the same file already calls three times",
+      "applied": true
+    },
+    {
+      "summary": "the Dawn PAL took the pointer-to-index fix by blanket substitution and kept no local, repeating the subscript seven times and pushing five lines to 88-99 columns in a file that wraps near 80; SDL had one local covering two of its five uses. Both now take one reference inside the resolve block and one after it",
+      "applied": true
+    },
+    {
+      "summary": "a named `npos`-style constant for the `std::numeric_limits<std::size_t>::max()` sentinel would retire about thirty spellings across the two PALs",
+      "applied": false,
+      "blockedBy": "the bare form is the established house idiom at ~30 pre-existing sites in these two files and in `pal_gpu_shared.hpp`, whose comments already call it npos without defining one; introducing the constant means converting all of them in one pass or leaving two spellings side by side, which is a sweep this change has no measurement for",
+      "filedIn": "TODO.md, under 'Add backend-layout tests', beside the other native-hygiene items"
+    },
+    {
+      "summary": "the two backends' `post_process_program` find-or-create caches are the same shape and could share a helper in `pal_gpu_shared.hpp`",
+      "applied": false,
+      "blockedBy": "the bodies are over disjoint types (WGPU versus SDL handles, formats, layouts) and the cache keys genuinely differ — SDL's omits `extra_textures`, `uniform_binding` and `uniform_size` — so a shared form needs a find-or-create template that does not exist there; `pal_gpu_shared.hpp` carries only vertex packing, decode and variant-key resolvers today",
+      "filedIn": "TODO.md, under 'Add backend-layout tests', beside the other native-hygiene items"
+    }
+  ]
+}
