@@ -24,18 +24,12 @@ act on it — not what was tried.
   returns compile through the default float path in compound numeric contexts.
   Strip static metadata from parameter bindings that are reassigned inside an
   inlined function.
-  **The lane half of this family is closed**: a tuple or record lane now
-  carries whatever static value generation can fold, and `castNumber` writes
-  it at the sink's own width, so a double sink no longer reads a lane already
-  rounded to float ([fidelity](docs/fidelity.md#shader-contract)). Scene 206
-  was the measurement — six mesh translations at 5e6 quantized to the float32
-  half-unit and moved a silhouette, 0.828 MAD against 0.000 with the lane
-  written wide. What remains is the RUNTIME half: a lane with no static value
-  keeps the `static_cast<float>` its first sink baked into `Value.cpp`, which
-  is right wherever that sink is the only one and wrong for the second. Closing
-  it needs the width model the paragraph above describes — tag the formatted
-  width on the Value rather than the text — and re-measuring the corpus, since
-  float wraps still bake into stored cpp on the runtime path.
+  The static lane half is done ([fidelity](docs/fidelity.md#shader-contract)).
+  What remains is the RUNTIME half: a lane with no static value keeps the
+  `static_cast<float>` its first sink baked into `Value.cpp`, right wherever
+  that sink is the only one and wrong for the second. Closing it needs the
+  width tagged on the Value rather than on the text, and a corpus
+  re-measurement, since float wraps still bake into stored cpp there.
 - [ ] Support off-center orthographic planes: `enableOrthographicCamera` accepts
   explicit `left`/`right`/`bottom`/`top` bounds replacing the half-extent
   derivation, and `disableOrthographicCamera` restores the perspective
@@ -176,108 +170,58 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-93 corpus scenes remain unregistered; measured scenes are in
-[status](docs/status.md). None of them compiles clean — the
-compiler-contract lane gates the rest. Each entry records the first blocker
-only; clearing it can expose another.
+93 corpus scenes remain unregistered and none compiles clean; measured scenes
+are in [status](docs/status.md). Each entry below records the **first blocker
+only** — clearing it can expose another, so size a scene with the strip probe
+in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
+choosing a shape. Compiling clean is not integration either: scene 206 compiled
+clean and measured 0.828, because the sweep answers what a scene *reaches* and
+only a capture answers what it renders.
 
-**A scene that compiles clean is not integrated, and the sweep cannot say
-which.** Scene 206 was the first unregistered scene ever to compile clean,
-and it measured 0.828 against its golden: its six mesh translations at
-5,000,000 had quantized to the float32 half-unit on the way into a double
-record lane. The compile sweep answers what a scene REACHES; only a capture
-answers what it renders. Graduate through the measurement, never through the
-sweep's verdict.
+Refresh the audit by building `dist` once, then compiling each scene directly —
+the command takes an unregistered path:
 
-Refresh the audit by building `dist` once, then compiling each scene directly:
-`node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts`.
-The command accepts an unregistered path.
+```bash
+node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts
+```
 
-**The corpus carries only the shared modules registered scenes import**,
-each pinned in `upstream/babylon-lite-corpus.json`. Integrating a scene that
-imports one starts by copying it out of the pinned upstream tree and pinning
-its SHA-256 beside the scenes. The twenty shipped node-material graphs and the
-ten shipped node-particle graphs are already there, as is scene 300's Sprite2D
-fixture; the remaining node-material and skin modules are not — and a missing
-module is invisible in a compile probe, because
-the compiler reports the unresolved identifier the import would have bound
-rather than the import.
+Read the verdict from the exit code. Grepping the output for "error" mis-scores
+scenes whose refusal is worded differently.
 
-**Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-28,
-after the builder gallery and the material-plugin scene):
-an unsupported constructor expression 4 (104, 105, 117, 149 — `new Map` in
-three of them and `new Promise` in the fourth, so it is not one contract),
-a numeric operator outside `+ - * / %` 3 (16, 47, 181), a four-argument call
-3 (`attachControl` with a gizmo-deferral options object: 49, 222, 224),
-a non-final value return 2 (218, 219, behind vertex-animation textures),
-`createTorusKnot` 2 (214, 215), `createUtilityLayer` 2 (221, 223),
-`createTransformNode` 2 (269, 270), `createSurface` 2 (227, 228),
-`loadFont` 2 (180, 275), `createPhysicsShape` 2 (101, 102).
-Everything else in the lane is a singleton, which is what the shipped waves
-did to the histogram: the large-world engine-option cluster is gone (202-207
-shipped; 200/201 report a promise chain and 209 its own API), and no
-cluster larger than four remains.
+**The corpus carries only the shared modules registered scenes import**, each
+pinned in `upstream/babylon-lite-corpus.json`. Integrating a scene that imports
+a new one starts by copying it out of the pinned tree and pinning its SHA-256.
+A missing module is invisible in a compile probe: the compiler reports the
+unresolved identifier the import would have bound, not the import.
 
-**Rank by the family a chain belongs to, because every remaining chain is
-short.** The full strip probe over all 88 unregistered scenes at this pin
-says 61 of them come back clean inside fourteen steps, so "cheap chain" no
-longer separates candidates — what does is how much of the mechanism already
-exists and how many scenes the family serves. The families the probe groups,
-by distinct scenes their calls touch anywhere in a chain: the physics
-body/shape surface 7 (deferred), `createTransformNode` 6 (103, 101, 222,
-224, 269, 270), the navigation tile cache 4 (171-174), `createUtilityLayer`
-4 (221-224, deferred), the GPU picker 3 (113, 115, 129 — 113 and 115 also
-want the frame-yield-in-a-loop this runtime refuses by design, so it
-finishes 129), text 3 (180, 181, 275), `createTorusKnot` 3 (214, 215, 228)
-and the sprite animation manager 2 (58, 59, which also need two `_shared`
-modules the corpus does not carry). Of the singles that table pointed at,
-scene 144 shipped; scene 129 -- the one picking scene whose chain carries no
-frame-yield-in-a-loop -- is the next.
-The shadow family finished the four scenes it finishes outright — 18, then
-4 and 22 with the ESM directional generator, the heightmap ground and the
-PBR receiver, then 207 with the PCF directional one — and the
-`receiveShadows` scenes that remain each hide a second subsystem, which is
-the entry below.
-Node materials shipped twenty of the thirty-one scenes reaching
-`parseNodeMaterialFromSnippet`; of the eleven that remain, eight sit behind a
-capability the reached slice refuses and three (111, 140, 141) behind blockers
-unrelated to node materials.
+**Rank by contracts-to-clean, not by first blocker.** A strip probe of the
+leading candidates at this pin:
 
-- [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
-  full and 0.28 foreground, identical on both backends. The composed fragment
-  is byte-identical to the browser's and the pose is not a clock offset, so
-  the palette is the suspect: this port conjugates the mesh world into it
-  where the pin keeps that world on the draw, and both scenes carry the shark
-  at a 0.01 root scale where the conjugation loses the most precision. Next
-  measurement: the same asset at unit scale.
+| Scenes | Contracts | What they are |
+| --- | ---: | --- |
+| 166 + 179 | 3 | `if (mesh.material)` truthiness; a closure-returning function (also blocks 20, 214, 215); the clustered-light subsystem |
+| 167 | 4 | the same truthiness; `uAng` on a `loadTexture2D` texture; `enablePbrLightmap`/`setPbrLightmap`; folding a runtime `scene.meshes` walk into a compile-time material selection |
+| 129 | — | `splat.name`, then `createGpuPicker`/`pickAsync` |
 
-**Rank by the whole family, not by the first blocker.** Node particles reached
-*eleven* scenes (262, 263, 264, 276, 277, 280, 281, 283, 284, 300, 301) and ten
-have shipped: seven as the frozen bake drawn through billboards, then the exact
-Multiply and MultiplyAdd blends and the pure-2D Sprite2D bridge. Only 300
-remains, and its blocker is an asset mechanism rather than a render one.
+`if (mesh.material)` is the shared contract across 166, 167 and 179; the hook
+is `Value.optionalFoundCpp`/`truthinessCpp`, which `compileBoolean` already
+consults. Families by distinct scenes their calls touch anywhere in a chain:
+the physics body/shape surface 7 (deferred), `createTransformNode` 6,
+the navigation tile cache 4, `createUtilityLayer` 4 (deferred), the GPU picker
+3 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses by
+design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
+also need two `_shared` modules the corpus does not carry).
 
-### The eight scenes 1.23.0 added
+### What 1.25.0 added
 
-Seven of the eight shipped. One remains.
+Three of these are the release's own new subsystems — a clustered spot field,
+an opt-in PBR lightmap and a local-cubemap probe array are each a pinned
+extension this port does not register at all — and 187 and 304 name whole
+families that arrived with the release. Read it as a capability list.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
-| 300 | an `OffscreenCanvas` construction in `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
-
-### The nine scenes 1.25.0 added
-
-All nine are first-lane: none needs a platform, user-input or external-service
-contract. Three of them are the release's own new subsystems and are the
-reason to read this table as a capability list rather than a backlog — a
-clustered spot field, an opt-in PBR lightmap and a local-cubemap probe array
-are each a pinned extension this port does not register at all, and 187 and
-304 name whole families (SMAA, and the FlowGraph/`KHR_interactivity` runtime)
-that arrived with the release.
-
-| Scene | First blocker | Family |
-| --- | --- | --- |
-| 166 | `if (mesh.material)` — a material handle read as a condition, then scene 179's `usePhysicalLightFalloff` write | clustered spot lights |
+| 166 | `if (mesh.material)`, then scene 179's `usePhysicalLightFalloff` write | clustered spot lights |
 | 167 | `enablePbrLightmap` | the opt-in PBR lightmap extension |
 | 186 | `corners.flat` | opt-in PBR local cubemap blending |
 | 187 | a non-literal string argument | SMAA |
@@ -285,27 +229,24 @@ that arrived with the release.
 | 303 | the public `createGridSpriteAtlas`, which this port reaches only as the fold inside `loadSpriteAtlas` | renderer-native Sprite2D Y-sort |
 | 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
 
-`186-debug` and `187-debug` are the two scenes' own debug variants and are
-counted in the 96 but not listed: each is its sibling behind a query
-parameter, so neither adds a capability.
+`186-debug` and `187-debug` are helper modules rather than scenes: they have no
+`main()`, so a sweep reports them clean and neither is integrable.
 
 **No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
-`createMeshFromData` half and scene 279 its `setThinInstances` half, but of
-the remaining scenes reaching `setThinInstances` (16, 17, 43, 103, 165, 204,
-219) or `removeFromScene` (129, 173, 271, 272) none compiles, and
-`flushThinInstances` and `setThinInstanceCount` are unreferenced under
-`corpus/` at this pin — so a project-owned gate stays their only validation.
+`createMeshFromData` half and scene 279 its `setThinInstances` half, but none
+of the remaining scenes reaching `setThinInstances` (16, 17, 43, 103, 165, 204,
+219) or `removeFromScene` (129, 173, 271, 272) compiles, and
+`flushThinInstances`/`setThinInstanceCount` are unreferenced under `corpus/`.
+Corpus scenes are the preferred validation: author a project-owned gate only
+for a contract no corpus scene exercises, and delete it once one does.
 
-Corpus scenes are the preferred validation: a feature is proven by the pinned
-scenes that reach it. Author a gate only for a contract no corpus scene
-exercises, and delete it once corpus scenes cover that contract.
-
-Scenes are partitioned by the boundary required to reproduce their deterministic
-reference behavior, not by incidental browser helpers. Capture-inert demo
+Scenes are partitioned by the boundary needed to reproduce their deterministic
+reference behaviour, not by incidental browser helpers: capture-inert demo
 controls and fixed-coordinate picking stay in the first lane when they can be
-erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
-deferred when its covered behavior needs a new platform, user-input, or
-external-service contract.
+erased or lowered, and a scene is deferred when its behaviour needs a new
+platform, user-input or external-service contract. No audited scene requires
+audio, touch, gamepad, AR or VR; add any future one that does to the deferred
+lane by default.
 
 **Integrate first (59 scenes):** 16, 17, 20, 43,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-124,
@@ -314,8 +255,7 @@ external-service contract.
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
-gizmos (223). The eight 1.23.0 added are all first-lane: none needs a platform,
-user-input or external-service contract. The navigation scenes moved here
+gizmos (223). The navigation scenes moved here
 when the toolset did: 175 and 170 are integrated, and what 171-174 still
 want is compiler contracts and the wrapper's tile-cache arm, not a new
 platform boundary.
@@ -323,10 +263,13 @@ platform boundary.
 **Defer (27 scenes):** 41, 42, 44-49, 100-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
 
-No audited scene requires audio, touch, gamepad, AR, or VR. Add any future scene
-that does to the deferred lane by default. Audio's own reach is upstream's
-demos rather than its scenes, which is why the Web Audio entry sits in P2
-below rather than blocking a scene here.
+- [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
+  full and 0.28 foreground, identical on both backends. The composed fragment
+  is byte-identical to the browser's and the pose is not a clock offset, so
+  the palette is the suspect: this port conjugates the mesh world into it
+  where the pin keeps that world on the draw, and both scenes carry the shark
+  at a 0.01 root scale where the conjugation loses the most precision. Next
+  measurement: the same asset at unit scale.
 
 ### Integration-first compiler contract gaps
 
@@ -360,17 +303,8 @@ below rather than blocking a scene here.
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
 - [ ] Extend the splat slice past what scenes 120, 125, 126, 127 and 128
-  measure.
-  Shipped: the plain `.ply`/`.splat` row layout, the pin's own
-  `applyGsFragments` splicing a scene's `GsShaderFragment` plugins into the
-  splat module, the `GaussianSplattingMesh` world composed from its own TRS
-  and all three of its TRS lanes written from scene code,
-  `createLinearDepthMaterial` beside the two pinned depth plugins, and
-  `bakeCurrentTransformIntoVertices` -- the row rewrite, the
-  `mat4Decompose` rotation it needs and the TRS reset each folded from
-  their own pinned declarations, with the loader retaining the row buffer
-  for the scene that reaches them.
-  What remains, each refusing by name:
+  measure ([fidelity](docs/fidelity.md#gaussian-splats) carries the shipped
+  contracts). What remains, each refusing by name:
   - 121: `splatsData` + `updateData` — the row buffer handed back as a
     mutable `ArrayBuffer` and re-uploaded, which also needs `new
     Float32Array(buf)` over it and an indexed element assignment.
@@ -600,17 +534,9 @@ below rather than blocking a scene here.
   `[first, last)` per clip beside the vectors and iterate that, keeping
   the `track.clip` test so correctness never depends on the grouping.
 - [ ] Extend the shadow family past the slice scenes 4, 18 and 22 measure.
-  Shipped: the pinned PCF spot, PCF directional and ESM directional
-  generators, their maps and samplers, the caster pass under the pin's
-  standard-Z exception, the ESM caster's own material view and its two-pass
-  separable blur, and BOTH material families' receiver fragments composed
-  per shadow-casting light over a reflected group 2
-  ([features](docs/features.md#shadows)), and the node receiver beside them
-  -- scenes 65 and 141 measure it. The directional PCF generator
-  landed with scene 207 and clears the only missing import in scenes 66, 72,
-  111 and 140 -- each hides more behind it, so the strip probe rather than
-  the import list is what sizes them. The cascaded family (`csm-*`) is
-  reached by none at this pin. Each remaining item fails by name:
+  The shipped slice is in [features](docs/features.md#shadows); the cascaded
+  family (`csm-*`) is reached by no scene at this pin. Each remaining item
+  fails by name:
   - a PBR caster through the ESM generator.
     `material/pbr/no-color-view.ts` is the PCF half and ships, gated by
     `regression-shadow-pbr-only`: the compose pipeline appends one caster
@@ -753,12 +679,9 @@ below rather than blocking a scene here.
   orthographic arm — so what the four still want is a source per matrix,
   not a mechanism.
 - [ ] Scene 17: extend reached PBR material options.
-- [ ] Extend the material-plugin slice past what scene 217 measures. Shipped:
-  the plugin folded from the scene's own declaration, `enableMaterialPlugins`
-  registering the pin's two bridges before generation composes, and the
-  per-signature index riding each family's feature bits — PBR through its
-  bridge's own `detect`, Standard through the bake the record carries. Every
-  member past `name` and `getCustomCode` refuses at the declaration, and the
+- [ ] Extend the material-plugin slice past what scene 217 measures
+  ([fidelity](docs/fidelity.md#shader-contract) carries the shipped shape).
+  Every member past `name` and `getCustomCode` refuses at the declaration, and the
   three that would cost native work are one item rather than seven:
   `getUniforms`/`writeUbo` put fields into the PBR material UBO and build the
   Standard self-managed `pluginUbo`, and `getSamplers`/`bindTextures`/
@@ -806,12 +729,7 @@ below rather than blocking a scene here.
 - [ ] Scenes 200, 201, 208, 209: the large-world bakes that remain.
   Read `docs/lite/architecture/35-large-world-rendering.md` in the pinned
   clone first — it is the specification for this entry and names the scene
-  behind every bake. **Shipped: the foundation plus 202, 203, 204, 205, 206
-  and 207** — the eye-relative mesh world, the zeroed view translation, the
-  eye-relative `vEyePosition`, the positional light entries, the sprite and
-  billboard anchors on both upload paths, the thin-instance parent world,
-  and the shadow light-space matrix with its caster fit. Each remaining
-  scene adds one bake: 208 the node-material mesh world, 209 Havok's
+  behind every bake. Each remaining scene adds one bake: 208 the node-material mesh world, 209 Havok's
   multi-region simulation. 200 and
   201 are the same far-from-origin scene with the mode off and on, and their
   captures MUST diverge (the pin's own parity spec requires cross-golden
@@ -914,12 +832,8 @@ earlier compiler error.
   the pin's own `?captureFrame=120` and measured on both backends. What
   remains is one capability per scene, and none of it is shared plumbing
   any more.
-  - **What the lane no longer stops on.** The freeze (`stopEngine`, the
-    zero-delay `setTimeout`, a checker-narrowed nullable) is lowered
-    ([fidelity](docs/fidelity.md#physics-contract)); every remaining blocker
-    below is a per-scene API.
-  - **First blockers, re-swept after that landed** -- each is now a scene
-    API rather than capture plumbing: a non-glTF container's entities (41);
+  - **First blockers**, each a per-scene API rather than shared plumbing:
+    a non-glTF container's entities (41);
     an aggregate `radius`/`extents` (42, 45, and both want more besides --
     `cloneTransformNode` and `applyPhysicsBodyForce`); `createTube` (43);
     a Color3 shape (44); an unresolved variable (46);
@@ -938,17 +852,9 @@ earlier compiler error.
     and faithful, and lands no scene on its own, which is why it is filed
     rather than done -- every scene that passes one also wants something
     else.
-  - **What a physics scene's threshold can and cannot mean.** Scene 40
-    measures 0.332/0.777 against the Havok golden, and that number is the
-    distance between two SOLVERS, not between this port and Babylon Lite
-    ([fidelity](docs/fidelity.md#physics-contract)). It cannot be driven to
-    zero. Worth knowing: Babylon Native faces the same problem -- it links
-    Ammo, which is Bullet compiled to WebAssembly -- and answers it by
-    generating its reference images from its own renderer and comparing
-    with a per-channel tolerance of 25 plus an allowed percentage of
-    differing pixels. That is a regression gate against itself rather than
-    a fidelity gate, and it is the alternative if the published browser
-    golden ever proves more misleading than useful here.
+  - A physics threshold gates this port's own solver, not agreement with
+    the pinned one, and cannot be driven to zero
+    ([fidelity](docs/fidelity.md#physics-contract)).
   - **Bullet's own gaps before this is more than a prototype**: the
     `double-precision` vcpkg feature is unevaluated (the transform chain
     around it is double, the solver is float), and nothing yet measures a
@@ -1041,91 +947,49 @@ CLI exposes no combined-sampler emission.
 ## P2 — Platform and performance
 
 - [ ] Add touch, gamepad, and fuller keyboard mapping.
-- [ ] Finish the Web Audio slice. A working prototype is on this branch:
-  `bblite/pal_audio.hpp` over LabSound with an SDL3 `lab::AudioDevice`
-  (`native/src/pal_audio_sdl_device.hpp`), an `audio:engine` runtime feature
-  selecting one translation unit, and `examples/audio-probe.ts` compiling to a
-  scene that opens a device and plays a scheduled triad. The contracts are in
-  [fidelity](docs/fidelity.md#audio-contract); the adaptation is recorded as
-  `substituted-audio-engine`. **The corpus reaches none of it**: no `sceneNNN`
-  scene uses audio at all. The reach, swept over the whole pinned tree for all
-  38 exported audio symbols, is nine files: upstream's seven *game* demos,
-  which use the engine for lifecycle only; `lab/lite/src/demos/audio-demo.ts`, the module's
-  own Tier-4 showcase, which is the one place `createSoundAsync`/`playSound`,
-  the microphone, the visualizer and the unmute UI are reached at all; and
-  `packages/babylon-lite-compat/src/audio/`, a Babylon.js-classic-shaped
-  wrapper in a separate package no corpus scene imports (out of scope here,
-  recorded so the next sweep does not rediscover it).
-  - **The seam is the pin's own, and it is the Web Audio API rather than
-    Babylon's sound API.** Every *game* demo uses the Lite engine for
-    lifecycle only -- `createAudioEngineAsync`, `engine.audioContext`,
-    `createSoundSourceAsync`, `unlockAudioEngineAsync` -- then builds its own
-    raw graph on the context. Only the module's own showcase reaches the sound
-    family, which is what makes refusing it the right call rather than a gap. The whole raw surface those eight files reach is
-    small: `createGain` (25), `createBufferSource` (12), `createBuffer` (7),
-    `createBiquadFilter` (7), `createOscillator` (6), `createStereoPanner` (1),
-    `decodeAudioData` (2), and three `AudioParam` schedulers
-    (`setValueAtTime` 22, `exponentialRampToValueAtTime` 20,
-    `linearRampToValueAtTime` 4).
-  - **What is measured**: `BBLITE_AUDIO_CAPTURE` renders the scene's graph
-    offline at the end of `run_engine` and writes 32-bit float WAV from the
-    same bus the reported peak/RMS is measured on. `examples/audio-probe.ts`
-    gives 48000 frames at 48 kHz, peak 0.032524, RMS 0.004254, byte-identical
-    across runs, per-100 ms RMS rising monotonically as its own
-    `exponentialRampToValueAtTime` says. The pinned engine accepts an
-    `OfflineAudioContext` for the same reason, so the browser half of a PCM
-    comparison exists -- **that comparison is the gate this slice still
-    lacks**, and it is the next thing worth building. Upstream has already
-    built the picture-shaped version of it and this port should reuse the
-    shape rather than invent one: `docs/lite/architecture/41-audio-engine.md`
-    Tier 3 rasterizes the offline PCM to a deterministic waveform PNG and
-    diffs it against a committed golden
-    (`tests/lite/audio/visual/waveform-golden.test.ts`, a pngjs rasterizer,
-    thick band, position-tolerant within 2 px, goldens under
-    `reference/lite/audio/<case>.png`). That drops onto this repository's
-    existing PNG/MAD harness directly.
-  - **The buffer family now covers generated PCM.** `createBuffer`, mutable
-    `getChannelData` spans, and a source's `buffer` assignment lower through
-    the PAL. The remaining source property is `loop`; `decodeAudioData` still
-    needs an audio asset materialized at generation, the way textures are.
-  - **`setMasterVolume` and `getMasterVolume` refuse**, and closing that means
-    lowering `audio-param.ts`'s ramp component: the exp/log curve tables, the
-    `MinRampDuration` gate, and `setValueCurveAtTime` reaching the PAL as a
-    span. The PAL entry point is deliberately absent until then rather than
-    declared and unused.
-  - **Everything else refuses by name**: the whole StaticSound/StreamingSound
-    family, buses, spatial, stereo, the analyzer, the microphone, the unmute
-    UI, the visualizer and the media-stream tap on the Babylon side; the
-    analyser/panner/delay/convolver/compressor/wave-shaper factories and
-    `setTargetAtTime` on the Web Audio side.
-  - **The remaining language blocker for the audio demos** is engine creation
-    inside `void (async () => { try { ... } catch { ... } })()`, which needs
-    both escaping closures and `catch`; string-literal `switch` dispatch now
-    lowers.
-  - **A minimal-size build cannot carry audio yet.**
-    `tools/build-sdl-min.ps1` builds SDL3 with `SDL_AUDIO=OFF`, so an
-    `audio:engine` scene against `BBLITE_SDL_DIR` has no device to open; the
-    pair is refused at configure naming both ways out. Closing it means a
-    second trimmed-SDL install root with `SDL_AUDIO=ON`, and measuring what
-    the subsystem plus LabSound cost against the 2.3 MB SDL_GPU baseline --
-    LabSound's core is ~1 MB of static archive before dead-stripping, and it
-    drags libnyquist in for one encoder call, so `MINSIZE` may want the
-    WAV writer to stop being LabSound's.
-  - **Still open, smaller**: LabSound logs at TRACE to stdout with no hook to
-    route it; `libnyquist` is fetched by LabSound's own CMake at `GIT_TAG
-    master`, so `tools/build-labsound.ps1` pins the commit itself and passes it
-    back through `LIBNYQUIST_SOURCE_DIR`; and LabSound is consumed by path
-    rather than through `find_package`, because its `install(EXPORT)` names
-    every backend target including the two this build does not compile.
-  - **Neutrality, measured**: with the change applied, `compile all` moves
-    exactly 438 generated files -- `build-inputs.json`, `build_stamp.hpp` and
-    `feature-activation.json`, one of each per registered scene, and nothing
-    else. The first two are the tracked-native-source digest, which any new PAL
-    translation unit moves by construction; the third gains the `audio:engine`
-    row every scene's inventory lists whether or not it reaches it. No
-    generated C++, shader, manifest or fidelity record moved. The stamp moving
-    does mean every scene's binary needs rebuilding before its parity number is
-    trustworthy again, so `npm run scenes:parity` is owed before this pushes.
+- [ ] Finish the Web Audio slice. A prototype exists: `bblite/pal_audio.hpp`
+  over LabSound with an SDL3 `lab::AudioDevice`, an `audio:engine` feature
+  selecting one translation unit, and `examples/audio-probe.ts`. The contracts
+  and the measured probe are in
+  [fidelity](docs/fidelity.md#audio-contract).
+
+  **No corpus scene reaches audio.** The reach is upstream's seven *game*
+  demos, which use the engine for lifecycle only and then build a raw Web
+  Audio graph on the context they are handed, plus the module's own Tier-4
+  showcase — the one place the sound family, microphone, visualizer and unmute
+  UI appear at all. So the seam is the Web Audio API rather than Babylon's
+  sound API, and the raw surface those files reach is small: `createGain` (25),
+  `createBufferSource` (12), `createBuffer` (7), `createBiquadFilter` (7),
+  `createOscillator` (6), `createStereoPanner` (1), `decodeAudioData` (2), and
+  three `AudioParam` schedulers (`setValueAtTime` 22,
+  `exponentialRampToValueAtTime` 20, `linearRampToValueAtTime` 4).
+
+  What remains:
+  - **The PCM comparison gate.** The pinned engine accepts an
+    `OfflineAudioContext`, so the browser half exists. Reuse upstream's shape
+    rather than inventing one: `docs/lite/architecture/41-audio-engine.md`
+    Tier 3 rasterizes offline PCM to a deterministic waveform PNG and diffs it
+    against a committed golden, which drops onto this repository's PNG/MAD
+    harness directly.
+  - `decodeAudioData`, which needs an audio asset materialized at generation
+    the way textures are, and a source's `loop`.
+  - `setMasterVolume`/`getMasterVolume`, which need `audio-param.ts`'s ramp
+    component lowered: the exp/log curve tables, the `MinRampDuration` gate,
+    and `setValueCurveAtTime` reaching the PAL as a span.
+  - Engine creation inside `void (async () => { try { … } catch { … } })()`,
+    which needs both escaping closures and `catch`.
+  - A minimal-size build: `build-sdl-min.ps1` sets `SDL_AUDIO=OFF`, so the
+    pair is refused at configure. Closing it means a second trimmed-SDL root
+    with audio on, and measuring LabSound (~1 MB static before dead-stripping,
+    dragging libnyquist in for one encoder call) against the 2.3 MB baseline.
+  - Smaller: LabSound logs at TRACE with no hook to route it, and is consumed
+    by path rather than `find_package` because its `install(EXPORT)` names
+    backend targets this build does not compile.
+
+  Everything else refuses by name — the StaticSound/StreamingSound family,
+  buses, spatial, stereo, the analyzer, microphone, unmute UI, visualizer and
+  media-stream tap on the Babylon side; the analyser/panner/delay/convolver/
+  compressor/wave-shaper factories and `setTargetAtTime` on the Web Audio side.
 
 - [ ] Give a billboard system the F64 anchor mirror the pin keeps. A sprite's
   anchor is stored in `BillboardSystemRecord::instance_data`, a

@@ -78,40 +78,39 @@ DXC invocation shape itself; delete the cache only after one of those.
 npm run scene -- parity scene33 --differential
 ```
 
-SDL_GPU and Dawn are two independent compiler and API stacks: agreement
-to one LSB puts the cause on the CPU side, disagreement on the GPU side
-([backends](backends.md) carries the rationale). One command separates
-the two.
+SDL_GPU and Dawn are independent compiler and API stacks: agreement to one
+LSB puts the cause on the CPU side, disagreement on the GPU side
+([backends](backends.md) carries the rationale).
 
-Scenes 9, 14, 37, 120, 126 and 128 are not bit-stable from run to run, so a
-moved cell for those six means nothing on its own — `scene -- neutrality` knows that and
-reports them as expected wobble. The scope is measured rather than assumed,
-per scene and per backend: every one of them is bit-identical under
-`BBLITE_MSAA=1`, so the wobble is the multisampled path, and it is not
-Dawn's alone — scene 9 wobbles on Dawn while measuring bit-stable on
-SDL_GPU across four runs, scene 14 is the mirror of that (SDL_GPU wobbles,
-Dawn bit-stable across three), and scenes 37, 120, 126 and 128 wobble on both
-(peak run-to-run MAD 0.000059, 0.000250, 0.000081 and 0.000007 on
-SDL_GPU). Scenes 128 and 14 are the narrowest of them and were both found the
-way an entry should be: a neutrality run over a change that could not reach
-them reported a moved cell, and the `stability` pair said why — scene 14's is
-one channel-byte on one pixel, a peak run-to-run MAD of 0.000002. Scene 126's
-Dawn side is the widest of them: its foreground alternates between 0.001
-and 0.005 across consecutive runs, which is what its threshold has to
-clear. That pair of `stability`
-runs is the entry fee, because a whitelist row excuses those cells
-permanently: scene 120's Dawn wobble spans 0.002 against a 0.004 foreground,
-so a regression smaller than that would hide behind it.
+Scenes 9, 14, 37, 120, 126 and 128 are not bit-stable run to run, so a moved
+cell for those six means nothing on its own — `scene -- neutrality` reports
+them as expected wobble. The scope is measured per scene and per backend:
+each is bit-identical under `BBLITE_MSAA=1`, so the wobble is the
+multisampled path, and it is not Dawn's alone. Scene 9 wobbles on Dawn while
+bit-stable on SDL_GPU across four runs; scene 14 is the mirror; scenes 37,
+120, 126 and 128 wobble on both (peak run-to-run MAD 0.000059, 0.000250,
+0.000081 and 0.000007 on SDL_GPU). Scenes 128 and 14 are the narrowest and
+were found the way an entry should be — a neutrality run over a change that
+could not reach them reported a moved cell and the `stability` pair said why
+(scene 14's is one channel-byte on one pixel, 0.000002). Scene 126's Dawn
+side is the widest: its foreground alternates between 0.001 and 0.005 across
+consecutive runs, which its threshold has to clear.
 
-**The wobble is not the native side's alone — the browser has it too**, which
-is worth knowing before it is mistaken for an upstream behaviour change.
-`scene -- capture` checks its screenshot byte-for-byte against the committed
-golden, and for these scenes it reports `DIFFERS` with nothing changed at all:
-two consecutive captures of scene 37 or scene 120 differ from each other as
-well as from the golden. So a `DIFFERS` verdict on a wobble scene is evidence
-of nothing until a second capture says whether the browser reproduced itself.
-Every other scene's capture is byte-identical to its golden, which is what
-makes the check worth having.
+A whitelist row is per scene *and* per backend: a cross-backend cell moves
+when either side does, so one wobbling backend excuses it, while that scene's
+own `goldenVersusSdlGpu` cells stay compared regardless. That pair of
+`stability` runs is the entry fee, because the row excuses those cells
+permanently — scene 120's Dawn wobble spans 0.002 against a 0.004 foreground,
+so a smaller regression would hide behind it.
+
+**The browser wobbles too**, which is worth knowing before it is mistaken for
+an upstream behaviour change. `scene -- capture` checks its screenshot
+byte-for-byte against the committed golden and reports `DIFFERS` for these
+scenes with nothing changed at all: two consecutive captures of scene 37 or
+120 differ from each other as well as from the golden. A `DIFFERS` verdict on
+a wobble scene is therefore evidence of nothing until a second capture says
+whether the browser reproduced itself. Every other scene's capture is
+byte-identical to its golden, which is what makes the check worth having.
 
 That check is a command for any scene:
 
@@ -123,13 +122,12 @@ npm run scene -- stability scene120 --backend sdl_gpu
 
 It renders the native side N times (default 5, `--runs N`; `--seek <t>` at a
 non-registry pose suppresses the golden columns and suffixes the artifacts
-`-seek<t>`) and prints every
-run against run 1 *and* against the golden — both columns always, because
-comparing runs only against each other hides a stable-but-wrong image, and the
-report says so out loud when the runs agree while all differing from the
-golden. `--single-sample` re-runs at one sample — the bisection that separates
-multisampling from everything else; its golden column is context only, since
-the goldens are multisampled.
+`-seek<t>`) and prints every run against run 1 *and* against the golden —
+both columns always, because comparing runs only against each other hides a
+stable-but-wrong image, and the report says so when the runs agree while all
+differing from the golden. `--single-sample` re-runs at one sample, the
+bisection separating multisampling from everything else; its golden column is
+context only, since the goldens are multisampled.
 
 ### 3. `scene -- diff` — the two captures, paired
 

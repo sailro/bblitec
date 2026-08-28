@@ -30,25 +30,22 @@ npm run scene -- list
 npm run sweep
 ```
 
-`dev:setup` is the idempotent Windows development bootstrap. It uses Visual
-Studio's installed CMake and vcpkg when they are not on `PATH`, installs the
-full development manifest once, and builds missing pinned Dawn, Tint, DXC, and
-LabSound artifacts. `doctor` is read-only and prints the resolved path or the
-missing prerequisite for Node.js, CMake, Ninja, the compiler, vcpkg, Dawn,
-PowerShell, DXC, Tint, LabSound, and Chromium. `sweep` is the full registered
-scene validation (`scene -- validate all`), including both GPU backends on
-Windows: compile, shaders, native build, differential parity, and published
-status verification.
+`dev:setup` is the idempotent Windows bootstrap: it falls back to Visual
+Studio's CMake and vcpkg when they are not on `PATH`, installs the development
+manifest once, and builds missing pinned Dawn, Tint, DXC and LabSound
+artifacts. `doctor` is read-only and prints the resolved path or the missing
+prerequisite for Node.js, CMake, Ninja, the compiler, vcpkg, Dawn, PowerShell,
+DXC, Tint, LabSound and Chromium. `sweep` is the full registered-scene
+validation (`scene -- validate all`) across both backends: compile, shaders,
+native build, differential parity, published status verification.
 
-Automated native parity does not flash an interactive window for every
-capture. On Windows the harness launches each executable with hidden process
-window state and `BBLITE_TEST_PASS=1`; SDL makes its test window non-focusable.
-The run still creates the real backend device and swapchain, renders and
-presents the selected frame, and reads it back to PNG on both SDL_GPU and
-Dawn. The browser reference is the headless side of the comparison. Therefore
-no visible windows during `npm run sweep` does not mean parity was skipped;
-the `validate: parity --differential ok` result and per-scene reports under
-`artifacts/parity/` are the evidence.
+Native parity flashes no window. On Windows the harness launches each
+executable with hidden process window state and `BBLITE_TEST_PASS=1`, and SDL
+makes its test window non-focusable, but the run still creates the real device
+and swapchain, presents the selected frame and reads it back to PNG on both
+backends. No visible window during `npm run sweep` therefore does not mean
+parity was skipped — the `validate: parity --differential ok` line and the
+per-scene reports under `artifacts/parity/` are the evidence.
 
 Use the generic scene command rather than adding scripts for ordinary work:
 
@@ -80,27 +77,9 @@ the generated engine's window title and size, default 1280x720 — and
 `--id-diagnostics` for the attribution buffers. The scene command supplies
 the title and attribution flag from the registry and leaves the size at its
 default, which is what every golden is captured at.
-`diff` captures both renderers and reports where they disagree; `compose`
-checks our material feature derivation by composing each material through
-Babylon Lite's own pipeline and comparing the whole fragment against the
-captured one. `measure` prints a PNG's non-background bounding box, pixel
-count and mean RGB (`--background r,g,b` overrides the top-left-pixel
-default) — the measure-the-PNG rule as a command, for any render or probe
-image. `parity --without ground|background` re-runs the native side with
-one element suppressed against the unchanged golden (artifacts suffixed
-`-without-<element>`, no threshold gate) — the residual-attribution
-bisection. `capture --seek-bracket` captures the browser at the seek and
-at ±1 frame and prints the one-frame motion scale a residual should be
-judged against. `stability` renders the native side N times and prints
-every run against the first *and* against the golden — both always,
-because run-to-run agreement alone hides a stable-but-wrong image.
-`stability` also takes `--seek <t>`: at a non-registry pose the golden
-columns are suppressed (two poses measure nothing) and artifacts gain a
-`-seek<t>` suffix so experiments never clobber registry-pose evidence.
-`diagnose` walks the diagnosis ladder for one scene — parity
-`--differential`, then `diff`, then `compose` over one shared capture —
-and prints each rung's verdict in order (`--backend`, `--seek` and
-`--gpu-debug` pass through).
+`diff`, `compose`, `measure`, `stability`, `geometry`, `probe-variants`,
+`uniforms` and `diagnose` are the diagnosis ladder: which one answers which
+question, and the flags each takes, are in [debugging](debugging.md#the-ladder).
 `clean --orphans` deletes build trees and `generated/` entries no registry
 scene owns; `--all` additionally removes owned build trees.
 `validate` chains compile, shaders, build, parity and the status check
@@ -108,23 +87,17 @@ with one summary line per stage, preserving every artifact on failure. A retry
 resumes the compile and shader stages only when their input fingerprint and
 on-disk outputs still match the completed stage; changed or missing inputs run
 the stage again.
-See [debugging](debugging.md) for the ladder they sit in.
-`geometry` captures each existing geometry-output copy task full-screen in
-Babylon Lite and native without changing the curated scene source; its
-native outputs and report carry the same `-gpu`/`-dawn` filename token as
-parity's, and it takes `--backend` and `--seek` (the latter with
-`--recapture-reference`) under the same rules.
 
-HDR scene compilation launches headless Chromium to run the pinned
-1024-sample GGX compute shader, a node-particle scene launches it to run
-the pin's own simulation to the frame the scene freezes, and a scene loading
-a `.basis` texture launches it to run the pinned loader's own transcode. Set
-`CHROME_PATH` when Chrome/Edge is not in a standard location. Those executed
-bakes replay from a content-addressed cache under `artifacts\bake-cache`
-(keyed on the pin, the input bytes, the parameters, the packager module and
-the browser build), so a warm recompile launches no Chromium and produces
-byte-identical output; the directory is disposable, and `BBLITE_BAKE_CACHE=0`
-disables the replay.
+
+Three compilations launch headless Chromium to run pinned code: an HDR scene
+for the 1024-sample GGX compute shader, a node-particle scene for the pin's
+simulation up to the frozen frame, and a `.basis` texture for the pinned
+loader's transcode. Set `CHROME_PATH` when Chrome or Edge is not in a standard
+location. Each replays from a content-addressed cache under
+`artifacts\bake-cache` keyed on the pin, input bytes, parameters, packager
+module and browser build, so a warm recompile launches no Chromium and
+produces byte-identical output; the directory is disposable and
+`BBLITE_BAKE_CACHE=0` disables the replay.
 
 Aggregate registered-scene workflows are registry-driven through `sweep`,
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
@@ -135,13 +108,13 @@ compiler gaps are fixed in the compiler rather than by adapting a scene.
 
 External golden applications follow the same rule. Before bringing one up,
 record its upstream revision and hash its entry point, every repository-local
-module it imports, and every reached asset. Run the copied entry point directly
-as an unregistered source. Never edit, wrap, fork, or simplify golden sources
-to make the native compile succeed. A failed exact-source probe is the feature
-backlog: address it generically in the compiler, lowerers, generated runtime,
-or PAL, add a focused regression test, then retry the unchanged golden. Remove
-temporary probe files afterward unless the application is deliberately adopted
-as durable corpus evidence.
+module it imports and every reached asset, then run the copied entry point
+directly as an unregistered source. Never edit, wrap, fork or simplify a
+golden source to make the native compile succeed: a failed exact-source probe
+*is* the feature backlog, addressed generically in the compiler, lowerers,
+generated runtime or PAL, given a focused regression test, then retried
+unchanged. Remove probe files afterwards unless the application is adopted as
+durable corpus evidence.
 
 ## Integrating a curated parity scene
 
@@ -513,10 +486,10 @@ remain no-op.
 
 ## Native builds
 
-`scene -- build` validates the native prerequisites once, configures the
-registry-derived build directory, and invokes `cmake --build`. On Windows it
-discovers Visual Studio's bundled CMake and vcpkg when `CMAKE_COMMAND` and
-`VCPKG_ROOT` are unset. Explicit variables override discovery.
+`scene -- build` validates prerequisites once, configures the registry-derived
+build directory and invokes `cmake --build`, discovering Visual Studio's
+bundled CMake and vcpkg on Windows when `CMAKE_COMMAND` and `VCPKG_ROOT` are
+unset. Explicit variables override discovery.
 
 Manual equivalent:
 
@@ -528,42 +501,38 @@ cmake -S native -B native\build-scene1-release `
 cmake --build native\build-scene1-release --config Release
 ```
 
-Ninja is the default on every platform. On Windows, the scene command locates
-Visual Studio, the latest MSVC toolset, the Windows SDK, Visual Studio's
-bundled CMake, vcpkg, Ninja, and the optional bundled clang-cl without
-requiring a Developer Command Prompt. `--compiler auto|clangcl|msvc` selects
-the development compiler; `auto` prefers clang-cl and falls back to MSVC. Set
-`BBLITE_DEV_COMPILER` for the same persistent choice and
-`BBLITE_CMAKE_GENERATOR` to override the generator. If the generator, compiler,
-make program, toolchain, or vcpkg install root differs from the CMake cache, the
-command replaces only that incompatible disposable scene build tree. All build
-trees are ignored and safe to delete.
+Ninja is the default everywhere. On Windows the scene command locates Visual
+Studio, the latest MSVC toolset, the Windows SDK, the bundled CMake, vcpkg,
+Ninja and the optional bundled clang-cl without a Developer Command Prompt.
+`--compiler auto|clangcl|msvc` selects the compiler (`auto` prefers clang-cl,
+falls back to MSVC); `BBLITE_DEV_COMPILER` makes that choice persistent and
+`BBLITE_CMAKE_GENERATOR` overrides the generator. When the generator,
+compiler, make program, toolchain or vcpkg install root differs from the CMake
+cache, only that incompatible scene build tree is replaced. All build trees
+are ignored and safe to delete.
 
 Warnings in the first-party `bblite_native` target are errors under MSVC,
 clang-cl, Clang, and GCC. Imported dependency headers remain system headers and
 dependency build warnings do not inherit the first-party error policy.
 
-Scenes build several at a time, but their CMake *configure* steps are
-serialized, because that is where vcpkg runs and concurrent vcpkg use is
-unreliable. Every development scene shares one full install at
-`artifacts\vcpkg-installed\development-full`. Its feature list is derived from
-every feature key in `native\vcpkg.json`, so adding a manifest feature
-automatically adds it to the reusable development set; one scene cannot
-reconcile another scene's packages away. This deliberately spends development
-disk space once to make switching among and building all scenes cheap. Set
-`BBLITE_VCPKG_INSTALLED_ROOT` to relocate the disposable shared cache.
-Compiling and linking touch nothing shared. A warm tree skips configure
-entirely, so the lock is normally uncontended. Shipping does not use this
-superset: its exact static tree contains only the selected scene/backend's
-reached dependencies.
+Scenes build several at a time with their CMake *configure* steps serialized,
+because that is where vcpkg runs and concurrent vcpkg use is unreliable.
+Every development scene shares one full install at
+`artifacts\vcpkg-installed\development-full`, its feature list derived from
+every feature key in `native\vcpkg.json` — so a new manifest feature joins the
+reusable set automatically and one scene cannot reconcile another's packages
+away. Compiling and linking touch nothing shared, and a warm tree skips
+configure entirely, so the lock is normally uncontended.
+`BBLITE_VCPKG_INSTALLED_ROOT` relocates the disposable cache. Shipping does
+not use the superset: its static tree carries only the selected
+scene/backend's reached dependencies.
 
 How many scenes run at once is configurable per stage; see
 [Build switches](#build-switches).
 
-An existing directory first configured without vcpkg is detected from its
-CMake cache and replaced automatically before configuration. `VCPKG_ROOT`
-remains the override for a vcpkg checkout other than the one discovered from
-Visual Studio or `PATH`.
+A directory first configured without vcpkg is detected from its CMake cache
+and replaced before configuration. `VCPKG_ROOT` overrides the checkout
+discovered from Visual Studio or `PATH`.
 
 Override the generator only when needed:
 
@@ -575,10 +544,9 @@ npm run scene -- process scene1
 Ninja places `bblite_native.exe` directly in the build directory; multi-config
 Visual Studio generators place it under `Release`.
 
-Native outputs are self-contained by default: CMake places `assets` and
-`shaders` beside the executable, and runtime lookup is relative to that
-executable. `BBLITE_ASSET_DIR` and `BBLITE_GPU_SHADER_DIR` remain explicit
-overrides for diagnostics and unusual layouts.
+Native outputs are self-contained: CMake places `assets` and `shaders` beside
+the executable and runtime lookup is relative to it. `BBLITE_ASSET_DIR` and
+`BBLITE_GPU_SHADER_DIR` override that for diagnostics and unusual layouts.
 
 Shader compilation uses `artifacts\shader-cache` for both halves of the
 offline path: each requested DXC format is independently keyed by source,
@@ -1056,10 +1024,8 @@ generation marker. `--cold` forces the configure regardless.
 
 ## Proving a change moved nothing
 
-Most changes are supposed to leave every measured scene where it was, and the
-proof should match what the change can possibly affect. The full matrix is not
-always the right tool, and for compiler-only work it is strictly weaker than
-the cheap one.
+The proof should match what the change can affect. For compiler-only work the
+full matrix is not just expensive but strictly weaker than the cheap proof.
 
 **A change confined to TypeScript is proved by the generated tree.** Compile
 every registered scene, then digest every file under `generated/`:
@@ -1072,19 +1038,17 @@ npm run scene -- compile all
 npm run scene -- neutrality-generated artifacts\generated-baseline.txt
 ```
 
-Byte-identical generated output plus an untouched `native/` tree means the
-build stamps are identical, which means the executables are the same binaries,
-which means the measurements cannot have moved. That is an exact proof rather
-than a measurement, and it costs a compile pass instead of a build-and-render
+Byte-identical generated output over an untouched `native/` tree means
+identical build stamps, so the executables are the same binaries and the
+measurements cannot have moved: an exact proof for the price of a compile
 pass. The command digests what is on disk and never compiles — hence the
-explicit `compile all` before each invocation. It exits non-zero and lists
-every added, removed or changed file when the tree moved.
+explicit `compile all` before each invocation — and exits non-zero listing
+every added, removed or changed file.
 
-Two conditions bound the digest. Top-level directories under `generated/` that
-no registry scene owns — a corpus sweep's `sceneNNN` leftovers, a deleted
-probe — are listed and excluded rather than counted; delete them when they are
-reported. And nothing else may use `dist/` while `npm run build` runs, because
-the build removes the directory first.
+Two conditions bound it. Top-level `generated/` directories no registry scene
+owns (a sweep's `sceneNNN` leftovers, a deleted probe) are listed and
+excluded, not counted; delete them when reported. And nothing else may use
+`dist/` while `npm run build` runs, because the build removes it first.
 
 **A change that reaches native sources, the PAL, or shader emission has to be
 measured**, because generated bytes changing tells you nothing about the
@@ -1099,35 +1063,19 @@ npm run scenes:parity
 npm run scene -- neutrality artifacts/parity-baseline
 ```
 
-`neutrality` prints every cell that moved and exits non-zero if any did. It
-compares `report-differential.json` only — a single-backend sweep produces
-nothing it can compare.
-`status:verify` performs the published half of the same comparison.
+`neutrality` prints every moved cell and exits non-zero if any did, comparing
+`report-differential.json` only — a single-backend sweep gives it nothing.
+`status:verify` performs the published half of the same comparison. Cells that
+move for any change and for none alike — the multisampled run-to-run wobble —
+are whitelisted per scene *and* per backend and excluded from the exit status;
+every other moved cell is real. The mechanism, magnitudes and the entry fee
+for a new whitelist row are in
+[debugging](debugging.md#2-which-side-is-it-on).
 
-It already knows the movements that are not findings: scenes 9, 14, 37, 120,
-126 and 128 do not render bit-identically from one run to the next, so those
-cells move for any change and for no change alike. They are reported as expected wobble and
-excluded from the exit status; every other moved cell is real. The whitelist
-is per scene AND per backend — scene 9's wobble is Dawn-only, scene 14's is
-SDL_GPU-only, scenes 37 and 120 wobble on both — because the mover is
-multisampling
-([debugging](debugging.md#2-which-side-is-it-on) carries the measured
-mechanism and the magnitudes). A cross-backend cell moves when either side
-does, so one wobbling backend excuses it; each scene's own
-`goldenVersusSdlGpu` cells stay compared regardless.
-
-Nothing else is on that list, and the entry fee is a measurement rather than a
-surprising neutrality run: `scene -- stability <id> --backend <b>` has to show
-the re-runs differing and `--single-sample` has to show them stop. A whitelist
-entry excuses those cells permanently, so it hides any regression smaller than
-the wobble.
-
-There is no hosted CI. During iteration, run only the smallest relevant tests,
-generation steps, affected native builds, and scene parity gates. Do not repeat
-the complete corpus matrix after every local change.
-
-Before pushing compiler, renderer, shader-interface, loader, animation, or PAL
-changes, run the canonical full validation sequence once:
+There is no hosted CI. During iteration run only the smallest relevant tests,
+generation steps, native builds and parity gates. Before pushing compiler,
+renderer, shader-interface, loader, animation or PAL changes, run the full
+sequence once:
 
 ```powershell
 npm run simplify:verify
@@ -1140,28 +1088,23 @@ npm run status:verify
 `simplify:verify` is gate 3 as a command: it fails until
 `docs/reviews/<content-hash>.json` records the `/simplify` angles run and, per
 finding, whether it was applied — and for an unapplied one, what blocks it and
-where it is filed. The hash is over the branch's own diff against `main`, so
-applying the findings changes it and the record is written last;
-`npm run simplify:record` prints the path. It runs first because the sweep
-below is the expensive step and a review that follows it guarantees a second
-one.
+where it is filed. The hash is over the branch's diff against `main`, so
+applying findings changes it and the record is written last
+(`npm run simplify:record` prints the path). It runs first because a review
+after the sweep guarantees a second sweep.
 
-`scenes:process` *is* compile, shaders and build. `npm run scene -- validate
-all` bundles the same three stages plus parity and `status:verify` behind one
-summary line per stage — its parity stage runs `--differential` when the
-pinned Dawn library is installed, mirroring `scenes:parity` — and stops at the
-first failing stage while preserving every artifact the completed stages
-wrote (`validate <id>` runs every stage for that scene alone and filters
-the status check to its row); `npm test` stays separate.
+`scenes:process` *is* compile, shaders and build. `scene -- validate all`
+bundles those three plus parity and `status:verify` behind one summary line
+per stage, runs `--differential` when the pinned Dawn library is installed,
+and stops at the first failure while preserving every artifact the completed
+stages wrote; `validate <id>` does the same for one scene and filters the
+status check to its row. `npm test` stays separate.
 
-`scenes:parity` runs both backends (`parity all --differential`) because
-[status](status.md) publishes an SDL_GPU and a Dawn number for every scene; a
-single-backend sweep leaves the second column unverified between manual runs.
-On a machine without the pinned Dawn library, run `npm run scene -- parity all`
-instead and treat the Dawn column as unmeasured.
-
-`status:verify` compares every published pair, and its severity colour, against
-the reports the parity run wrote. The table is checked data, not prose.
+`scenes:parity` runs both backends because [status](status.md) publishes an
+SDL_GPU and a Dawn number for every scene. Without the pinned Dawn library,
+run `scene -- parity all` and treat the Dawn column as unmeasured.
+`status:verify` compares every published pair and its severity colour against
+the reports the run wrote: the table is checked data, not prose.
 
 Do not run generation and native builds concurrently. Do not build multiple
 CMake trees concurrently against the same vcpkg installation.
@@ -1181,16 +1124,14 @@ the distinct mechanisms:
 `referenceTimeSeconds` and optional `referenceAnimationGroups` in
 `src/scene-registry.ts` describe browser capture seeking: the harness writes
 that time onto each named group and pauses it, so the pose lands on the next
-tick from whoever drives the group. The shape is upstream's own parity
-freeze — a frame-count gate that pauses and signals through
-`canvas.dataset.animationFrozen` — with the pose pinned by time rather than
-by frame count, since the native side measures a time. Native parity uses
-`BBLITE_ANIMATION_SEEK_SECONDS`. The groups are scene-source expressions
-evaluated where the seek is injected — a local name, or a spread of a
-container's own collection — and a scene that names none seeks
-`scene.animationGroups`, which is what a glTF file added whole exposes. A
-scene driving its clips through its own manager has to name them, since it
-never registers them with the scene.
+tick from whoever drives the group. The shape is upstream's own parity freeze
+— a frame-count gate signalling through `canvas.dataset.animationFrozen` —
+pinned by time rather than frame count, since the native side
+(`BBLITE_ANIMATION_SEEK_SECONDS`) measures a time. The groups are scene-source
+expressions evaluated where the seek is injected: a local name, or a spread of
+a container's collection. A scene naming none seeks `scene.animationGroups`,
+what a glTF file added whole exposes; one driving its clips through its own
+manager must name them, since it never registers them with the scene.
 
 ## Shipping demo packages
 
