@@ -102,6 +102,8 @@ Primary source ownership:
 | `src/pinned-tone-mapping.ts` | the tone-mapping record a scene selects, read from the pinned module that owns it -- the curve is a value upstream, not a flag |
 | `src/data-url.ts` | a `data:` asset URL, whose bytes are the source text rather than a location to fetch |
 | `src/lowering/effect-lowerer.ts` | the fullscreen-effect family: the pin's own vertex stage lifted, its pass state asserted, and the two records a scene fills |
+| `src/lowering/render-target-lowerer.ts` | renderer-independent render-target allocation, including the pinned colour/depth texture-view fork |
+| `src/lowering/frame-graph-context-lowerer.ts` | scene-less task ownership, update callbacks, and engine registration from the pin's `FrameGraphContext` |
 | `src/pinned-effect-cpp.ts` | the C++ transcript of one `EffectWrapper`: which stages it draws and what its declared bind group holds |
 | `src/pinned-node-material-cpp.ts` | the C++ transcript of that run: the node variant table, its vertex inputs, the folded uniform bytes, and the pin's own mesh block mirrored |
 | `src/compiler/node-material.ts` | which graph a `parseNodeMaterialFromSnippet` call reached: a static JSON literal read as data, or a module generation executes |
@@ -119,7 +121,7 @@ Primary source ownership:
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
 | `src/lowering/templates/` | the generated `.babylon`/glTF loader C++ templates |
 | `corpus/babylon-lite/` | byte-identical registered scene inputs from the pinned source commit |
-| `upstream/babylon-lite-scenes.json` | immutable corpus paths and SHA-256 evidence |
+| `upstream/babylon-lite-corpus.json` | immutable scene, support-module, and application paths with SHA-256 evidence |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
@@ -135,6 +137,8 @@ Primary source ownership:
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU, a separate translation unit because a sprite-only scene generates no camera or render-plan headers |
 | `native/src/pal_sdl_gpu_effect.cpp` | the fullscreen-effect frame driver on SDL_GPU, a separate translation unit for the same reason |
 | `native/src/pal_dawn_effect.cpp` | the same driver on Dawn |
+| `native/src/pal_sdl_gpu_frame_graph.cpp` | the scene-less ordered-task driver on SDL_GPU; task-family guards omit unreached effect or post-process machinery |
+| `native/src/pal_dawn_frame_graph.cpp` | the same scene-less task driver on Dawn |
 | `native/src/pal_sdl_gpu_effect.hpp` | the SDL_GPU effect pass mechanics both its `.cpp` driver and the scene renderer's frame-graph task draw through |
 | `native/src/pal_dawn_effect.hpp` | the Dawn effect pass mechanics, likewise shared by its driver and the frame graph |
 | `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, WGSL module loading, and the surface capture every driver screenshots through |

@@ -134,6 +134,12 @@ export const featureSources: Record<Feature, string[]> = {
     // scene registering one and no SceneContext compiles no scene renderer
     // and draws from this translation unit instead.
     "renderer:effect": ["src/pal_sdl_gpu_effect.cpp"],
+    // Render-target allocation is shared by scene and scene-less task graphs;
+    // the implementation is generated and therefore adds no PAL source.
+    "frame-graph:resources": [],
+    // A standalone FrameGraphContext has its own task-only driver. It does
+    // not pull the scene renderer, camera math, mesh upload, or image loader.
+    "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],
     "effect:wrapper": [],
     "effect:task": [],
     "renderer:pbr": ["src/pal_sdl_gpu.cpp"],

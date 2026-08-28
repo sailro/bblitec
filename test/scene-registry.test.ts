@@ -8,36 +8,42 @@ import {
     validateReferenceCapture,
 } from "../src/parity-scene.js";
 
-test("states the curated scene count the registry actually holds", () => {
-    // The README advertises the count in prose, which drifts silently:
-    // scene 256 graduated and left it reading 51. A curated scene is a
-    // pinned corpus scene (`sceneNNN`); primitives and the
-    // project-owned regression gates are counted separately there, and
-    // deliberately not here.
+test("states the curated scene and demo counts the registry actually holds", () => {
+    // Keep one measured headline rather than repeating counts in the proof
+    // points. Curated scenes are pinned `sceneNNN` corpus entries; demos are
+    // the exact upstream application gates.
     const curated = scenes.filter(({ id }) =>
         /^scene\d+$/.test(id),
     ).length;
+    const demos = scenes.filter(({ sourceOrigin }) =>
+        sourceOrigin === "babylon-lite-application",
+    ).length;
     const readme = readFileSync(resolve("README.md"), "utf8");
-    const stated = [
-        ...readme.matchAll(/(\d+) curated/g),
-    ].map((match) => Number(match[1]));
-    assert.ok(
-        stated.length > 0,
-        "README no longer states a curated scene count.",
+    const stated = /(\d+) curated parity scenes and (\d+) demos/.exec(
+        readme,
     );
-    for (const count of stated) {
-        assert.equal(
-            count,
-            curated,
-            `README says ${count} curated scenes; the registry holds ${curated}.`,
-        );
-    }
+    assert.ok(stated, "README no longer states the curated scene and demo counts.");
+    assert.equal(Number(stated[1]), curated);
+    assert.equal(Number(stated[2]), demos);
+    assert.equal([...readme.matchAll(/\d+ curated/g)].length, 1);
 });
 
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
-        scenes.map(({ id }) => id),
+        scenes
+            .filter(({ sourceOrigin }) =>
+                sourceOrigin !== "babylon-lite-application",
+            )
+            .map(({ id }) => id),
         ["primitives", "scene1", "scene3", "scene6", "scene14", "scene24", "scene28", "scene29", "scene31", "scene33", "scene35", "scene216", "scene150", "scene178", "scene210", "scene212", "scene243", "scene246", "scene247", "scene252", "scene254", "scene255", "scene258", "scene259", "scene265", "scene2", "scene7", "scene8", "scene5", "scene10", "scene12", "scene13", "scene32", "scene159", "scene160", "scene161", "scene162", "scene163", "audit-shader-frame-graph", "regression-runtime-sweep", "regression-sprite-layer-arms", "regression-instanced-ground", "regression-morph-ground", "regression-light-setters", "regression-compiler-state", "scene168", "scene176", "scene213", "scene151", "scene154", "scene152", "scene157", "scene158", "scene155", "scene240", "scene250", "scene170", "scene175", "regression-track-clamp", "scene110", "scene120", "scene125", "scene126", "scene127", "scene128", "scene116", "scene145", "scene146", "scene248", "scene245", "scene249", "scene257", "scene266", "scene267", "scene268", "scene30", "scene256", "scene260", "scene34", "scene9", "scene242", "scene23", "scene40", "scene273", "scene274", "scene244", "scene37", "scene253", "scene38", "scene39", "scene21", "scene19", "scene15", "scene50", "scene56", "scene57", "scene92", "scene93", "scene94", "scene95", "scene96", "scene97", "scene54", "scene55", "scene98", "scene177", "regression-animation-groups", "scene26", "scene27", "scene142", "scene143", "scene147", "scene11", "scene148", "scene60", "scene61", "scene77", "scene78", "scene79", "scene80", "scene82", "scene85", "scene88", "scene89", "scene63", "scene67", "scene68", "scene69", "scene70", "scene71", "scene84", "scene62", "scene81", "scene87", "scene74", "scene75", "scene76", "scene262", "scene263", "scene264", "scene276", "scene277", "scene280", "scene281", "scene283", "scene284", "scene278", "scene279", "scene301", "scene282", "scene220", "scene25", "scene36", "scene251", "scene18", "scene4", "scene203", "scene205", "scene204", "scene206", "scene207", "scene202", "scene65", "scene141", "scene22", "regression-gltf-sparse", "regression-gltf-uv-sets", "regression-gltf-topology", "regression-gltf-step-animation", "regression-shadow-esm-only", "regression-shadow-pbr-only", "scene144", "scene217"]
+    );
+    assert.deepEqual(
+        scenes
+            .filter(({ sourceOrigin }) =>
+                sourceOrigin === "babylon-lite-application",
+            )
+            .map(({ id }) => id),
+        ["tetris", "doom", "torus-states"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is

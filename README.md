@@ -14,15 +14,16 @@ Unsupported syntax and APIs fail at compile time with source locations.
 | [<img src="docs/images/scenes/scene1.png" alt="Scene 1" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene5.png" alt="Scene 5" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene7.png" alt="Scene 7" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Scene 14" width="170">](docs/status.md#curated-parity-scenes) |
 | :-: | :-: | :-: | :-: |
 | [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene11-banner.png" alt="Scene 11" width="170">](docs/status.md#curated-parity-scenes) |
+| [<img src="docs/images/scenes/tetris.png" alt="Tetris demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/doom.png" alt="Doom demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/torus-states.png" alt="Torus States demo" width="170">](docs/status.md#upstream-application-gates) | |
 
-*A few of the 157 curated parity scenes, compiled to native C++ and rendered
-on both GPU backends — click any frame for the measured numbers.*
+*A few of the 157 curated parity scenes and 3 demos, compiled to native C++
+and rendered on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points
 
 - Pinned upstream: `@babylonjs/lite@1.25.0`,
   commit `286525f8041dd9adc72b2c9962e8bff4d9aeb764`.
-- 157 curated Babylon Lite parity scenes, plus primitives and project-owned differential regression gates.
+- Curated Babylon Lite parity scenes and demos, plus primitives and project-owned differential regression gates.
 - External glTF/GLB support.
 - Support for Typescript structs, nullable objects, dynamic arrays,
   enums, switch/break/continue, destructuring, spread, runtime Math.

@@ -36,7 +36,7 @@ export interface SceneDefinition {
     id: string;
     name: string;
     source: string;
-    sourceOrigin?: "bblitec-regression";
+    sourceOrigin?: "bblitec-regression" | "babylon-lite-application";
     output: string;
     title: string;
     buildDirectory: string;
@@ -2535,6 +2535,53 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [89, 115, 153],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "tetris",
+        name: "Tetris",
+        source: "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Tetris",
+        parity: {
+            maxFullMad: 0.15,
+            maxForegroundMad: 0.15,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
+        id: "doom",
+        name: "Doom",
+        source: "corpus/babylon-lite/lab/lite/src/demos/doom.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Doom",
+        parity: {
+            maxFullMad: 0.6,
+            maxForegroundMad: 0.6,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
+        id: "torus-states",
+        name: "Torus States",
+        source: "corpus/babylon-lite/lab/lite/src/demos/torus-states.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Torus States",
+        parity: {
+            maxFullMad: 0.25,
+            maxForegroundMad: 0.25,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 8,
+            nativeEnvironment: {
+                ...adHocCaptureEnvironment(),
+                // The immutable browser reference reaches its measured
+                // post-start settle pose on this fixed-rate frame.
+                BBLITE_SCREENSHOT_FRAME: "184",
+            },
         },
     },
 ];

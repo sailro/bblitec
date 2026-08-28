@@ -26,5 +26,9 @@ std::string parent_path(const std::string& path);
 std::string executable_directory();
 std::string environment_variable(const char* name);
 double monotonic_milliseconds();
+// Browser-facing `performance.now()`. In ordinary runs this is the same
+// monotonic clock; fixed-delta captures advance it deterministically.
+double performance_milliseconds();
+void advance_performance_milliseconds(float delta_ms);
 
 } // namespace bbl::pal

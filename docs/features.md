@@ -1306,13 +1306,23 @@ left eye is the reached case — which gives that task its own copy of the pin's
 per-pass scene block and nothing else, since a second camera moves the
 view-projection and the eye position and no other value in it.
 
+A `FrameGraphContext` is the scene-less ownership form: it registers directly
+on the engine, runs its `update(deltaMs)` callback, and executes only the tasks
+added to its graph. Its SDL_GPU and Dawn drivers contain no scene, camera,
+mesh, material, image-loader, or PBR renderer. Render-target allocation is a
+separate reached feature shared with scene-owned graphs, so a program that
+uses both forms gets one resource implementation, while an effect-only graph
+does not compile post-process factories, shaders, samplers, or pass state.
+
 ### Post-process passes
 
 Every post-process Babylon Lite ships is one `createPostProcessTask`: a
 fullscreen triangle over a single-sample source texture, a bind group of
 sampler, source view, the effect's extra views and its optional uniform block,
 and an output that is either the target the caller named or one the pass makes
-from the source's own descriptor. Blur, chromatic aberration, black and white,
+from the source's own descriptor. The same task record runs inside a
+scene-owned graph or a registered scene-less `FrameGraphContext`. Blur,
+chromatic aberration, black and white,
 the red/cyan anaglyph and the circle of confusion are reached; each contributes
 only a shader record and a `writeUniforms` body.
 
@@ -1397,13 +1407,21 @@ its diffuse texture. Either way the pipeline is built against the *output
 target's* format and sample count, which is what the pin's own
 `targetSignatureKey` cache is keyed by.
 
+The smaller `UniformEffectWrapper` family takes the same fullscreen path with
+one aligned uniform block at binding zero. Generation lifts its own pinned
+default vertex stage and validates the uniform byte length; the per-frame
+setter updates the existing wrapper buffer. Its render task may be added to a
+scene-less `FrameGraphContext`, so a procedural graph needs neither an
+`EffectRenderer` nor a `SceneContext`.
+
 What refuses at generation, by name: a custom `vertexWGSL`, a `blend` state,
 the `EffectRenderer`'s per-frame `update` callback, the per-binding record
 form of `setEffectUniforms`, an effect texture from anything but
 `createSolidTexture2D`, and every `EffectBindingLayout` field past the five
 the corpus writes (`visibility`, `textureSampleType`, `viewDimension`,
-`samplerType`). The `UniformEffectWrapper` family — the pin's smaller
-uniform-only path — is unreached and unlowered.
+`samplerType`). The uniform-only family likewise refuses a custom
+`vertexWGSL`; its contract is deliberately the pinned default fullscreen
+stage plus the caller's fragment.
 
 ### Image processing
 

@@ -15,6 +15,7 @@ import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { pinnedInverseImageProcessingHeader } from "../src/lowering/pinned-inverse-image-processing.js";
@@ -1219,6 +1220,9 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     const tasks = new GeometryOutputLowerer(
         new LoweringContext(),
     ).lowerTaskRecords();
+    const targets = new RenderTargetLowerer(
+        new LoweringContext(),
+    ).lower();
     const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
         ground: false,
         skybox: false,
@@ -1242,7 +1246,9 @@ test("generates typed geometry task records and PBR MRT shaders", () => {
     });
     assert.match(tasks.source, /create_geometry_renderer_task/);
     assert.match(tasks.source, /create_copy_to_texture_task/);
-    assert.match(tasks.source, /create_render_target_texture/);
+    assert.match(targets.source, /create_render_target_texture/);
+    assert.match(targets.source, /swapchain_render_target/);
+    assert.doesNotMatch(tasks.source, /create_render_target_texture/);
     assert.match(tasks.source, /add_render_task_mesh/);
     assert.match(tasks.source, /scene\.tasks\.insert/);
     // The rectangle itself is the runtime's, beside NormalizedViewport; what

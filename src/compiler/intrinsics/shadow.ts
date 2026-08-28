@@ -398,6 +398,7 @@ export function compileShadowIntrinsic(
             const scene = context.compileValue(call.arguments[0]!);
             context.expectKind(scene, "scene", call.arguments[0]!);
             context.reachFeature("shadow:task", call);
+            context.reachFeature("frame-graph:resources", call);
             // The pin's shadow task is a frame-graph task unshifted ahead of
             // the scene's own render task, so a scene that reaches one has a
             // frame graph -- the same thing `addTask` says by materializing

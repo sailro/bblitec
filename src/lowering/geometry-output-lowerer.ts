@@ -4,103 +4,11 @@ import { LoweredSource, LoweringContext } from "./context.js";
 export class GeometryOutputLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    /**
-     * `createRenderTargetTexture`, whole: both arms and the fork between
-     * them.
-     *
-     * The pin writes one `if (!rt._colorTexture || !rt._colorView)` and two
-     * returns, and this port folds all three -- the FORK into `has_color`
-     * on the record (`pal::render_target_samples_depth` reads it in both
-     * backends), the DEPTH arm into the emissive slot's nearest sampler and
-     * depth sample type, and the COLOUR arm into the diffuse slot's
-     * bilinear sampler and the `invertY: true` that `isStandardUvInverted`
-     * reads to flip the material's UV block.
-     *
-     * One contract because it is one declaration: anchoring the arms
-     * separately let each be gated on whichever feature happened to fold
-     * it, and left the fork -- the thing that decides which arm a scene
-     * gets -- anchored by nothing at all. It is asserted here because this
-     * is where `create_render_target_texture` is emitted, so every build
-     * that has the function has checked the source it came from.
-     */
-    private assertPinnedRenderTargetTextureArms(rttModule: string): void {
-        const { declaration } = this.context.functionDeclaration(
-            rttModule,
-            "createRenderTargetTexture",
-        );
-        const missingColour = (name: string): boolean =>
-            !this.context.hasNode(
-                declaration,
-                (node) =>
-                    ts.isPrefixUnaryExpression(node) &&
-                    node.operator ===
-                        ts.SyntaxKind.ExclamationToken &&
-                    this.context
-                        .propertyPath(node.operand)
-                        ?.at(-1) === name,
-            );
-        if (missingColour("_colorTexture") || missingColour("_colorView")) {
-            this.context.contractError(
-                declaration,
-                "Expected the render-target texture to fork on the " +
-                    "absence of a colour texture and view.",
-            );
-        }
-        for (const [property, value] of [
-            ["aspect", "depth-only"],
-            ["_sampleType", "depth"],
-        ] as const) {
-            if (
-                !this.context.hasNode(
-                    declaration,
-                    (node) =>
-                        ts.isPropertyAssignment(node) &&
-                        this.context.propertyName(node.name) ===
-                            property &&
-                        ts.isStringLiteral(node.initializer) &&
-                        node.initializer.text === value,
-                )
-            ) {
-                this.context.contractError(
-                    declaration,
-                    `Expected ${property}: '${value}'.`,
-                );
-            }
-        }
-        if (
-            !this.context.hasNode(
-                declaration,
-                (node) =>
-                    ts.isPropertyAssignment(node) &&
-                    this.context.propertyName(node.name) === "invertY" &&
-                    node.initializer.kind === ts.SyntaxKind.TrueKeyword,
-            )
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected the colour render-target view to carry " +
-                    "invertY: true.",
-            );
-        }
-        for (const sampler of [
-            "getNearestSampler",
-            "getBilinearSampler",
-        ] as const) {
-            if (!this.context.hasCall(declaration, sampler)) {
-                this.context.contractError(
-                    declaration,
-                    `Expected ${sampler} for render-target views.`,
-                );
-            }
-        }
-    }
-
     public lowerTaskRecords(): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
         const actionsModule = "src/frame-graph/frame-graph-actions.ts";
         const renderModule = "src/frame-graph/render-task.ts";
-        const rttModule = "src/texture/rtt.ts";
         const geometryFile =
             this.context.sourceFile(geometryModule);
         const { declaration: createGeometryTask } =
@@ -402,12 +310,10 @@ export class GeometryOutputLowerer {
             );
         }
 
-        this.assertPinnedRenderTargetTextureArms(rttModule);
-
         return {
             modulePath: geometryModule,
             symbolName:
-                "createGeometryRendererTask,createRenderTarget,createRenderTargetTexture,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,RenderTask.addMesh",
+                "createGeometryRendererTask,createRenderTask,createCopyToTextureTask,addTask,addTaskAtStart,RenderTask.addMesh",
             header: `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -426,7 +332,7 @@ PixelViewport resolve_copy_viewport(
             source: `// ${this.context.provenance(
                 geometryModule,
                 "createGeometryRendererTask",
-                `${renderModule}#createRenderTask,RenderTask.addMesh, ${rttModule}#createRenderTargetTexture, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart`,
+                `${renderModule}#createRenderTask,RenderTask.addMesh, ${copyModule}#createCopyToTextureTask, and ${actionsModule}#addTask,addTaskAtStart`,
             )}
 #include <bblite/upstream/frame_graph_geometry.hpp>
 
@@ -488,73 +394,6 @@ TaskHandle append_task(Engine& engine, FrameTaskRecord task) {
 
 } // namespace
 
-RenderTargetHandle create_render_target(
-    Engine& engine,
-    RenderTargetOptions options) {
-    if (!options.has_color && !options.has_depth) {
-        throw std::runtime_error(
-            "Render target requires a color or depth attachment.");
-    }
-    if ((options.width == 0) != (options.height == 0)) {
-        throw std::runtime_error(
-            "Render target fixed dimensions must both be non-zero.");
-    }
-    if (
-        options.scale_source.value != invalid_handle &&
-        options.scale_source.value >= engine.render_targets.size()) {
-        throw std::runtime_error(
-            "Render target scales from a target that does not exist yet.");
-    }
-    engine.render_targets.push_back(RenderTargetRecord{
-        options.samples == 4 ? 4u : 1u,
-        options.has_color,
-        options.has_depth,
-        options.sampled_depth,
-        false,
-        options.width,
-        options.height,
-        options.scale_source,
-        options.width_ratio,
-        options.height_ratio,
-        options.format,
-        options.has_format,
-        options.shadow_map,
-    });
-    return RenderTargetHandle{
-        static_cast<std::uint32_t>(engine.render_targets.size() - 1)};
-}
-
-RenderTargetTexture create_render_target_texture(
-    Engine& engine,
-    RenderTargetOptions options) {
-    if (options.width == 0 || options.height == 0) {
-        throw std::runtime_error(
-            "Render target textures require fixed dimensions.");
-    }
-    if (!options.has_color && options.has_depth) {
-        options.sampled_depth = true;
-    }
-    const RenderTargetHandle target =
-        create_render_target(engine, options);
-    return RenderTargetTexture{
-        target,
-        render_target_texture(target),
-    };
-}
-
-RenderTargetHandle swapchain_render_target(Engine& engine) {
-    if (engine.swapchain_target.value == invalid_handle) {
-        RenderTargetRecord target;
-        target.samples = 1u;
-        target.has_color = true;
-        target.swapchain = true;
-        engine.render_targets.push_back(target);
-        engine.swapchain_target = RenderTargetHandle{
-            static_cast<std::uint32_t>(engine.render_targets.size() - 1)};
-    }
-    return engine.swapchain_target;
-}
-
 TaskHandle create_render_task(
     Engine& engine,
     Scene&,
@@ -614,13 +453,6 @@ TaskHandle create_copy_to_texture_task(
     task.kind = FrameTaskKind::copy;
     task.copy = std::move(options);
     return append_task(engine, std::move(task));
-}
-
-RenderTextureRef render_target_texture(RenderTargetHandle target) {
-    RenderTextureRef result;
-    result.source = RenderTextureSource::render_target;
-    result.target = target;
-    return result;
 }
 
 RenderTextureRef geometry_task_texture(

@@ -1851,7 +1851,8 @@ inline void write_render_capture(
 // Compiled exactly where a standalone loop exists to call it — a build
 // with neither standalone renderer would hold an unreachable definition.
 #if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
-    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER)
+    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
+    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER)
 /**
  * Write the frame of a scene with no scene renderer.
  *
@@ -1873,6 +1874,7 @@ inline void write_standalone_render_capture(
     int width,
     int height,
     long frame) {
+    (void)engine;
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
         throw std::runtime_error(

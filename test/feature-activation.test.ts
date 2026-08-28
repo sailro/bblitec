@@ -417,7 +417,12 @@ function familyInputs(): FeatureActivationInputs {
             spriteCustomShaders: [
                 { family: "sprite", fragment: "", extraTextures: [] },
             ],
-            effects: [{ name: "glow", fragment: "", bindings: [] }],
+            effects: [{
+                family: "effect",
+                name: "glow",
+                fragment: "",
+                bindings: [],
+            }],
             plainSpriteLayer: false,
             plainBillboardSystem: false,
             pinnedSkeletonPalette: true,

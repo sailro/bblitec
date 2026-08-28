@@ -122,4 +122,39 @@ double monotonic_milliseconds() {
     return std::chrono::duration<double, std::milli>(now).count();
 }
 
+namespace {
+
+struct PerformanceClockState {
+    bool initialized = false;
+    bool fixed = false;
+    double milliseconds = 0.0;
+};
+
+PerformanceClockState& performance_clock_state() {
+    static thread_local PerformanceClockState state;
+    if (!state.initialized) {
+        const std::string fixed_delta =
+            environment_variable("BBLITE_FRAME_DELTA_MS");
+        state.fixed = !fixed_delta.empty() &&
+            std::strtod(fixed_delta.c_str(), nullptr) > 0.0;
+        state.milliseconds = state.fixed ? 0.0 : monotonic_milliseconds();
+        state.initialized = true;
+    }
+    return state;
+}
+
+} // namespace
+
+double performance_milliseconds() {
+    auto& state = performance_clock_state();
+    return state.fixed ? state.milliseconds : monotonic_milliseconds();
+}
+
+void advance_performance_milliseconds(float delta_ms) {
+    auto& state = performance_clock_state();
+    if (state.fixed && delta_ms > 0.0f) {
+        state.milliseconds += static_cast<double>(delta_ms);
+    }
+}
+
 } // namespace bbl::pal

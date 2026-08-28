@@ -143,22 +143,24 @@ export function compileSceneIntrinsic(
                 context.compileValue(call.arguments[0]!);
             const task =
                 context.compileValue(call.arguments[1]!);
-            context.expectKind(
-                scene,
-                "scene",
-                call.arguments[0]!,
-            );
+            if (
+                scene.kind !== "scene" &&
+                scene.kind !== "frame-graph-context"
+            ) {
+                context.fail(
+                    call.arguments[0]!,
+                    `addTask requires a scene or frame-graph context, received ${scene.kind}.`,
+                );
+            }
             context.expectKind(
                 task,
                 "task",
                 call.arguments[1]!,
             );
             context.expectSameEngine(scene, task, call);
-            const defaultTask =
-                context.ensureDefaultRenderTask(
-                    scene,
-                    call,
-                );
+            const defaultTask = scene.kind === "scene"
+                ? context.ensureDefaultRenderTask(scene, call)
+                : undefined;
             const taskCall =
                 importedName === "addTaskAtStart"
                     ? `bbl::add_task_at_start(${scene.cpp}, ${task.cpp})`
@@ -168,6 +170,23 @@ export function compileSceneIntrinsic(
                 cpp: defaultTask
                     ? `${defaultTask};\n        ${taskCall}`
                     : taskCall,
+            };
+        }
+
+        case "registerFrameGraphContext": {
+            context.expectArgumentCount(call, 1, 1);
+            const frameGraph = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                frameGraph,
+                "frame-graph-context",
+                call.arguments[0]!,
+            );
+            const update = frameGraph.frameGraphUpdateCpp
+                ? `bbl::on_frame_graph_update(${frameGraph.cpp}, ${frameGraph.frameGraphUpdateCpp});\n        `
+                : "";
+            return {
+                kind: "void",
+                cpp: `${update}bbl::register_frame_graph_context(${frameGraph.cpp})`,
             };
         }
 

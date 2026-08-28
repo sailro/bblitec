@@ -256,6 +256,8 @@ export interface EffectBindingManifest {
  * restating.
  */
 export interface EffectManifest {
+    /** Which pinned API owns this wrapper's fullscreen-pass contract. */
+    family: "effect" | "uniform-effect";
     name: string;
     fragment: string;
     bindings: EffectBindingManifest[];
@@ -964,6 +966,7 @@ export type ValueKind =
     | "render-texture"
     | "record"
     | "scene"
+    | "frame-graph-context"
     | "sprite-atlas"
     | "sprite-layer"
     | "sprite-blend"
@@ -1371,6 +1374,8 @@ export interface Value {
     >;
     defaultRenderTask?: boolean;
     defaultRenderTaskEmitted?: boolean;
+    /** The context's optional per-frame `update(deltaMs)` callback. */
+    frameGraphUpdateCpp?: string;
     /** Shared across compiler aliases of one native scene. */
     sceneEnvironmentState?: {
         rotationSet: boolean;
@@ -1500,6 +1505,8 @@ export type Feature =
     | "sprite:billboard-custom-shader"
     | "renderer:sprite"
     | "renderer:effect"
+    | "frame-graph:resources"
+    | "renderer:frame-graph"
     | "effect:wrapper"
     | "effect:task"
     | "renderer:pbr"

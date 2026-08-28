@@ -7,6 +7,8 @@ import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { EngineLowerer } from "./lowering/engine-lowerer.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
+import { FrameGraphContextLowerer } from "./lowering/frame-graph-context-lowerer.js";
+import { RenderTargetLowerer } from "./lowering/render-target-lowerer.js";
 import { GltfLowerer } from "./lowering/gltf-lowerer.js";
 import { BabylonLowerer } from "./lowering/babylon-lowerer.js";
 import { FactoryLowerer } from "./lowering/factory-lowerer.js";
@@ -69,6 +71,7 @@ import {
 } from "./shadow-capabilities.js";
 import {
     EffectLowerer,
+    UniformEffectLowerer,
     effectStageStems,
 } from "./lowering/effect-lowerer.js";
 import { pinnedEffectVariantsHeader } from "./pinned-effect-cpp.js";
@@ -729,6 +732,20 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             }),
             generated,
         );
+        if (features.includes("frame-graph:resources")) {
+            this.writeSource(
+                "upstream/src/frame_graph_resources.cpp",
+                new RenderTargetLowerer(context).lower(),
+                generated,
+            );
+        }
+        if (features.includes("renderer:frame-graph")) {
+            this.writeSource(
+                "upstream/src/frame_graph_context.cpp",
+                new FrameGraphContextLowerer(context).lower(),
+                generated,
+            );
+        }
 
         if (
             features.includes("camera:arc-rotate") ||
@@ -1009,9 +1026,19 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             // take, and for the same reason: the pin builds one shader module
             // and names a stage in each half of the pipeline descriptor.
             const effects = new EffectLowerer(context);
-            const provenance = effects.provenance();
+            const uniformEffects = options.effects.some(
+                (effect) => effect.family === "uniform-effect",
+            )
+                ? new UniformEffectLowerer(context)
+                : undefined;
+            const provenances = new Set<string>();
             for (const [index, effect] of options.effects.entries()) {
-                const wgsl = effects.composeModule(effect.fragment);
+                const lowerer = effect.family === "uniform-effect"
+                    ? uniformEffects!
+                    : effects;
+                const provenance = lowerer.provenance();
+                provenances.add(provenance);
+                const wgsl = lowerer.composeModule(effect.fragment);
                 const stems = effectStageStems(index);
                 for (const stem of [stems.vertexStem, stems.fragmentStem]) {
                     composedShaders.push({
@@ -1022,6 +1049,7 @@ ${wgsl}`,
                     });
                 }
             }
+            const provenance = [...provenances].join(" ");
             this.tree.write(
                 "upstream/include/bblite/upstream/effect_variants.hpp",
                 pinnedEffectVariantsHeader(provenance, options.effects),

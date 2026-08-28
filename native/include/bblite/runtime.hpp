@@ -1750,6 +1750,7 @@ struct CameraRecord {
 };
 
 struct Scene;
+struct FrameGraphContext;
 
 // One glTF animation as scene code addresses it, mirroring the group
 // src/animation/animation-group.ts builds per clip. The play state lives with
@@ -1951,6 +1952,7 @@ struct Engine {
     std::vector<FrameTaskRecord> frame_tasks;
     RenderTargetHandle swapchain_target{};
     std::vector<Scene*> registered_scenes;
+    std::vector<FrameGraphContext*> registered_frame_graph_contexts;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
     std::vector<BillboardSystemRecord> billboard_systems;
@@ -2042,6 +2044,13 @@ struct Scene {
     float fog_start = 0.0f;
     float fog_end = 0.0f;
     Color3 fog_color{};
+};
+
+/** A scene-less rendering context that owns only an ordered task graph. */
+struct FrameGraphContext {
+    Engine* engine = nullptr;
+    std::vector<TaskHandle> tasks;
+    std::vector<std::function<void(float)>> updates;
 };
 
 // No member defaults: generation fills every field from the pin's own
@@ -2245,6 +2254,7 @@ struct DdsEnvironmentOptions {
 // copy of the pin's defaults waiting for a caller to trust it.
 Engine create_engine(EngineOptions options);
 Scene create_scene_context(Engine& engine);
+FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
 
 MeshHandle create_box(Engine& engine, BoxOptions options);
@@ -2601,7 +2611,6 @@ TaskHandle create_copy_to_texture_task(
     CopyTaskOptions options);
 TaskHandle create_post_process_task(
     Engine& engine,
-    Scene& scene,
     PostProcessTaskOptions options);
 void update_post_process_uniforms(Engine& engine, TaskHandle task);
 RenderTextureRef render_target_texture(RenderTargetHandle target);
@@ -2612,6 +2621,8 @@ RenderTextureRef geometry_task_output_texture(TaskHandle task);
 RenderTextureRef geometry_task_depth_texture(TaskHandle task);
 void add_task(Scene& scene, TaskHandle task);
 void add_task_at_start(Scene& scene, TaskHandle task);
+void add_task(FrameGraphContext& context, TaskHandle task);
+void add_task_at_start(FrameGraphContext& context, TaskHandle task);
 
 /**
  * `PcfSpotlightShadowGeneratorConfig`, as the reached slice resolves it.
@@ -3057,7 +3068,6 @@ void register_effect_renderer(
     EffectRendererHandle renderer);
 TaskHandle create_effect_render_task(
     Engine& engine,
-    Scene& scene,
     EffectTaskOptions options);
 SpriteRendererHandle create_sprite_renderer(
     Engine& engine,
@@ -3081,6 +3091,10 @@ void register_sprite_renderer(
     SpriteRendererHandle renderer);
 
 void register_scene(Scene& scene);
+void on_frame_graph_update(
+    FrameGraphContext& context,
+    std::function<void(float)> callback);
+void register_frame_graph_context(FrameGraphContext& context);
 /**
  * `registerSceneWithShadowSupport`: the ordinary registration plus the
  * scene-owned shadow task, which the pin installs ahead of the render task

@@ -194,7 +194,7 @@ Refresh the audit by building `dist` once, then compiling each scene directly:
 The command accepts an unregistered path.
 
 **The corpus carries only the shared modules registered scenes import**,
-each pinned in `upstream/babylon-lite-scenes.json`. Integrating a scene that
+each pinned in `upstream/babylon-lite-corpus.json`. Integrating a scene that
 imports one starts by copying it out of the pinned upstream tree and pinning
 its SHA-256 beside the scenes. The twenty shipped node-material graphs and the
 ten shipped node-particle graphs are already there, as is scene 300's Sprite2D

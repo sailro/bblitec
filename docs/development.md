@@ -37,7 +37,18 @@ LabSound artifacts. `doctor` is read-only and prints the resolved path or the
 missing prerequisite for Node.js, CMake, Ninja, the compiler, vcpkg, Dawn,
 PowerShell, DXC, Tint, LabSound, and Chromium. `sweep` is the full registered
 scene validation (`scene -- validate all`), including both GPU backends on
-Windows.
+Windows: compile, shaders, native build, differential parity, and published
+status verification.
+
+Automated native parity does not flash an interactive window for every
+capture. On Windows the harness launches each executable with hidden process
+window state and `BBLITE_TEST_PASS=1`; SDL makes its test window non-focusable.
+The run still creates the real backend device and swapchain, renders and
+presents the selected frame, and reads it back to PNG on both SDL_GPU and
+Dawn. The browser reference is the headless side of the comparison. Therefore
+no visible windows during `npm run sweep` does not mean parity was skipped;
+the `validate: parity --differential ok` result and per-scene reports under
+`artifacts/parity/` are the evidence.
 
 Use the generic scene command rather than adding scripts for ordinary work:
 
@@ -119,7 +130,7 @@ Aggregate registered-scene workflows are registry-driven through `sweep`,
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
 
 Registered Babylon Lite inputs live under `corpus\babylon-lite` and must match
-`upstream\babylon-lite-scenes.json` byte-for-byte. They are read-only evidence;
+`upstream\babylon-lite-corpus.json` byte-for-byte. They are read-only evidence;
 compiler gaps are fixed in the compiler rather than by adapting a scene.
 
 External golden applications follow the same rule. Before bringing one up,
@@ -172,17 +183,17 @@ other, so a missing one fails the corpus tests rather than degrading quietly.
 | File | What it carries |
 | --- | --- |
 | `src/scene-registry.ts` | the entry: id, source, title, thresholds, background, native environment |
-| `upstream/babylon-lite-scenes.json` | the SHA-256 of the corpus source, proving it matches the pin |
+| `upstream/babylon-lite-corpus.json` | the SHA-256 of every adopted scene, support module, and application file, proving it matches the pin |
 | `reference/<id>/babylon-lite-golden.png` | the browser golden |
 | `reference/exact-corpus-manifest.json` | `sourceSha256`, `referenceSha256`, `moduleSha256` over the browser module the capture harness builds, and `referenceSearch` for a scene the pin serves at a query |
-| `test/scene-registry.test.ts` | the registry id list in file order, and the curated count the README publishes |
-| `docs/images/scenes/scene<N>.png` | a 320x180 preview: a 4x4 box-filtered average of the golden |
+| `test/scene-registry.test.ts` | the registry id list in file order, and the curated scene/application counts the README publishes |
+| `docs/images/scenes/<id>.png` | a 320x180 preview: run `node tools/create-status-preview.mjs <native.png> docs/images/scenes/<id>.png` to make a 4x4 box-filtered average |
 | `docs/images/scenes/scene<N>-banner.png` | optional. The same box-filtered derivation taken over a centred window of the golden rather than the whole frame, for a README banner cell whose subject is too small to read at 170px |
 | `docs/status.md` | the published row, checked against measurement by `status:verify` |
 
-The README states the curated count twice, and a curated scene is a `sceneNNN`
-entry only — primitives and the project-owned regression gates are counted
-separately in the same sentence.
+The README states the measured counts once. A curated scene is a `sceneNNN`
+entry, while exact upstream applications carry their own source origin;
+primitives and project-owned regression gates are separate categories.
 
 Thresholds are set by measurement, not by intent: register with loose values,
 measure both backends, then tighten to just above what was measured. Scenes
@@ -270,23 +281,18 @@ re-synced: cross-check the changed file list against `src\scene-registry.ts`.
 
 ### 2. Move the pin
 
-Five files carry a pin, and four of them move together:
+Four locations carry a pin and move together:
 
 | File | What it holds |
 | --- | --- |
 | `upstream\babylon-lite.json` | `version` and `sourceVersion` |
-| `upstream\babylon-lite-scenes.json` | its *own* `version` and `sourceVersion`, beside the corpus digests |
+| `upstream\babylon-lite-corpus.json` | its *own* `version` and `sourceVersion`, beside all adopted source and asset digests |
 | `package.json` + lock | the dependency, via `npm install` |
 | `README.md` | the only prose copy of the pair |
-| `upstream\babylon-lite-goldens.json` | a **per-application** `sourceVersion` and every golden application's file digests |
 
-The fifth is the one to check rather than edit. A golden application's source
-graph is pinned to the commit it was *copied from*, not to the npm release, so
-a bump moves it only when the demo's own files moved with it — `npm test`
-answers that by digest. Its files may also come from outside the upstream
-repository entirely: doom reads a Freedoom IWAD that upstream gitignores and
-downloads from a pinned, checksum-verified release, so those three rows carry
-an `origin` URL instead of resting on the application's `sourceVersion`.
+An application's files may also come from outside the upstream repository.
+Those rows carry an `origin` URL naming the separately pinned download; the
+SHA-256 remains the byte-level contract regardless of where the file came from.
 
 **`sourceVersion` is the commit the published package embeds, not the release
 tag's object.** Read it from the package rather than from git — an annotated
@@ -304,8 +310,8 @@ Then sync the corpus, which is read-only evidence of the pinned tree.
 `corpus\babylon-lite\lab\lite\src\lite\` mirrors upstream's whole scene
 directory, so new scenes land there too; `shared\` and `_shared\` hold only
 the modules a registered scene imports, so those are copied by name. Refresh
-the `sha256` values in `upstream\babylon-lite-scenes.json` afterwards — it
-pins the registered scenes only.
+the `sha256` values in `upstream\babylon-lite-corpus.json` afterwards. The same
+catalog covers registered scenes, support modules, and adopted applications.
 
 ### 3. Fix the compatibility report
 

@@ -192,6 +192,20 @@ threshold on it can be driven to zero
 | 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | MultiplyAdd: that pass followed by a stock Add pass over the same instances, two pipelines and one renderable |
 | 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the pure-2D particle bridge: NPE world XY packed into Sprite2D layers with no scene at all, one Multiply layer beside a Multiply-then-Add pair the renderer's stable order keeps adjacent |
 
+## Upstream application gates
+
+These are complete applications copied byte-for-byte from the same pinned
+Babylon Lite source as the curated scenes. Their full reached source and asset
+graphs are SHA-256-checked, then compiled, rendered, and measured by the same
+two-backend validation path. They exercise cross-feature behavior that a small
+parity scene intentionally does not.
+
+| Application | Preview | SDL_GPU | Dawn | Coverage |
+| --- | :---: | ---: | ---: | --- |
+| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.093 / 0.101 | 0.093 / 0.101 | complete game loop, dynamic thin instances, custom materials, particles, keyboard and pointer input, and synthesized audio |
+| Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.477 / 0.464 | 0.477 / 0.464 | multi-module game, WAD parsing, dynamic world geometry, billboard and 2D sprite systems, input, collision, animation, and buffered audio |
+| Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.078 / 0.149 | 0.078 / 0.149 | scene-less frame graph, mutable timed state, uniform effect rendering, an offscreen target, and bloom without the scene/PBR renderer |
+
 ## Project-owned differential gates
 
 These scenes are authored in `bblitec`, but their browser reference still runs

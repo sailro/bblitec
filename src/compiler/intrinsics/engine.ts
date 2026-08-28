@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledRenderTargetOptions } from "./engine-options.js";
+import { validateObjectProperties } from "../option-helpers.js";
 
 interface CompiledGeometryTask {
     cpp: string;
@@ -77,6 +78,15 @@ export interface EngineIntrinsicContext
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
+    expectObjectLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
+    propertyName(name: ts.PropertyName): string | undefined;
+    compileFrameCallback(expression: ts.Expression): string;
 }
 
 function reachRenderer(
@@ -132,6 +142,43 @@ export function compileEngineIntrinsic(
             };
         }
 
+        case "createFrameGraphContext": {
+            context.expectArgumentCount(call, 1, 2);
+            const surface = context.compileValue(call.arguments[0]!);
+            context.expectKind(surface, "engine", call.arguments[0]!);
+            const options = call.arguments[1]
+                ? context.expectObjectLiteral(call.arguments[1])
+                : undefined;
+            if (options) {
+                validateObjectProperties(
+                    context,
+                    options,
+                    ["name", "clearColor", "update"],
+                    "A frame-graph context supports name, clearColor, and update.",
+                );
+            }
+            const update = options
+                ? context.objectProperty(options, "update")
+                : undefined;
+            context.reachFeature("renderer:frame-graph", call);
+            return {
+                kind: "frame-graph-context",
+                cpp: `bbl::create_frame_graph_context(${surface.cpp})`,
+                engineCpp: surface.engineCpp ?? surface.cpp,
+                ...(surface.msaaSamples
+                    ? { msaaSamples: surface.msaaSamples }
+                    : {}),
+                defaultRenderTask: false,
+                ...(update
+                    ? { frameGraphUpdateCpp: context.compileFrameCallback(update) }
+                    : {}),
+                sceneEnvironmentState: {
+                    rotationSet: false,
+                    hasTexturedSkybox: false,
+                },
+            };
+        }
+
         case "createRenderTarget": {
             context.expectArgumentCount(call, 1, 1);
             const engine =
@@ -140,7 +187,7 @@ export function compileEngineIntrinsic(
                 context.compileRenderTargetOptions(
                     call.arguments[0]!,
                 );
-            reachRenderer(context, call);
+            context.reachFeature("frame-graph:resources", call);
             return {
                 kind: "render-target",
                 cpp: `bbl::create_render_target(${engine}, ${options.cpp})`,
@@ -161,7 +208,7 @@ export function compileEngineIntrinsic(
                 context.compileRenderTargetOptions(
                     call.arguments[1]!,
                 );
-            reachRenderer(context, call);
+            context.reachFeature("frame-graph:resources", call);
             return {
                 kind: "render-target-texture",
                 cpp:
@@ -315,13 +362,22 @@ function compilePostProcessIntrinsic(
                 "point.",
         );
     }
-    context.expectArgumentCount(call, 3, 3);
+    context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(call.arguments[1]!);
-    const scene = context.compileValue(call.arguments[2]!);
     context.expectKind(engine, "engine", call.arguments[1]!);
-    context.expectKind(scene, "scene", call.arguments[2]!);
-    context.expectSameEngine(engine, scene, call);
-    reachRenderer(context, call);
+    const scene = call.arguments[2]
+        ? context.compileValue(call.arguments[2])
+        : undefined;
+    if (scene) {
+        context.expectKind(scene, "scene", call.arguments[2]!);
+        context.expectSameEngine(engine, scene, call);
+    }
+    if (scene) {
+        reachRenderer(context, call);
+    } else {
+        context.reachFeature("renderer:frame-graph", call);
+    }
+    context.reachFeature("frame-graph:resources", call);
     context.reachFeature("renderer:post-process", call);
     if (composite) {
         const built = context.compilePostProcessCompositeOptions(
@@ -335,7 +391,7 @@ function compilePostProcessIntrinsic(
             cpp:
                 `bbl::create_composite_post_process_task_${
                     built.manifest.compositeIndex
-                }(${engine.cpp}, ${scene.cpp}, ${built.cpp})`,
+                }(${engine.cpp}, ${built.cpp})`,
             engineCpp: engine.engineCpp ?? engine.cpp,
             postProcessComposite: built.manifest,
         };
@@ -349,8 +405,7 @@ function compilePostProcessIntrinsic(
     return {
         kind: "task",
         cpp:
-            `bbl::create_post_process_task(${engine.cpp}, ` +
-            `${scene.cpp}, ${compiled.cpp})`,
+            `bbl::create_post_process_task(${engine.cpp}, ${compiled.cpp})`,
         engineCpp: engine.engineCpp ?? engine.cpp,
         postProcessTask: compiled.manifest,
     };

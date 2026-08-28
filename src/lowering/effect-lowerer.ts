@@ -18,6 +18,118 @@ import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
+const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
+
+interface FullscreenEffectContract {
+    modulePath: string;
+    pipelineSymbol: string;
+    taskSymbol: string;
+    label: string;
+}
+
+function returnedExpression(
+    context: LoweringContext,
+    modulePath: string,
+    symbol: string,
+    index = 0,
+): ts.Expression {
+    const owner = context.functionDeclaration(modulePath, symbol).declaration;
+    const returned = context.findNodes(
+        owner,
+        (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
+    )[index]?.expression;
+    if (!returned) {
+        context.contractError(
+            owner,
+            `Pinned ${symbol} no longer returns ${index + 1} expression(s).`,
+        );
+    }
+    return returned;
+}
+
+/** Contract shared by the pin's classic and uniform fullscreen effects. */
+function assertFullscreenEffectContract(
+    context: LoweringContext,
+    contract: FullscreenEffectContract,
+): void {
+    const pipeline = context.functionDeclaration(
+        contract.modulePath,
+        contract.pipelineSymbol,
+    ).declaration;
+    const argument = context.callObjectArgument(
+        pipeline,
+        "createRenderPipeline",
+    );
+    context.assertExpressionShape(
+        context.propertyInitializer(argument, "primitive"),
+        '{ topology: "triangle-list" }',
+        `${contract.label} pipeline primitive state`,
+    );
+    context.assertExpressionShape(
+        context.propertyInitializer(argument, "multisample"),
+        "{ count: targetSignature._sampleCount }",
+        `${contract.label} pipeline sample count`,
+    );
+    for (const [stage, entryPoint] of [
+        ["vertex", "effectFullscreenVertex"],
+        ["fragment", "effectFragment"],
+    ] as const) {
+        const state = context.propertyInitializer(argument, stage);
+        if (!ts.isObjectLiteralExpression(state)) {
+            context.contractError(
+                state,
+                `Pinned ${contract.label} pipeline '${stage}' is no longer an object literal.`,
+            );
+        }
+        context.assertExpressionShape(
+            context.propertyInitializer(state, "entryPoint"),
+            `"${entryPoint}"`,
+            `${contract.label} ${stage} entry point`,
+        );
+    }
+    context.assertExpressionShape(
+        context.propertyInitializer(
+            context.callObjectArgument(
+                context.functionDeclaration(
+                    contract.modulePath,
+                    "getShaderModule",
+                ).declaration,
+                "createShaderModule",
+            ),
+            "code",
+        ),
+        "`${wrapper.options.vertexWGSL ?? DEFAULT_VERTEX_WGSL}\\n" +
+            "${wrapper.options.fragmentWGSL}`",
+        `${contract.label} shader module template`,
+    );
+    context.assertExpressionShape(
+        returnedExpression(context, contract.modulePath, "align4"),
+        "(value + 3) & ~3",
+        `${contract.label} uniform alignment`,
+    );
+    const task = context.functionDeclaration(
+        contract.modulePath,
+        contract.taskSymbol,
+    ).declaration;
+    const draw = context.findNodes(
+        task,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "draw",
+    )[0];
+    if (!draw || draw.arguments.length !== 1) {
+        context.contractError(
+            task,
+            `Pinned ${contract.label} task no longer records one draw call.`,
+        );
+    }
+    context.assertExpressionShape(
+        draw.arguments[0]!,
+        "3",
+        `${contract.label} fullscreen vertex count`,
+    );
+}
 
 /** The stems the two deployed stages of one effect take. */
 export function effectStageStems(
@@ -180,7 +292,6 @@ void register_effect_renderer(
 
 TaskHandle create_effect_render_task(
     Engine& engine,
-    Scene&,
     EffectTaskOptions options) {
     if (options.target.value >= engine.render_targets.size()) {
         throw std::runtime_error("Effect render task target is invalid.");
@@ -214,106 +325,32 @@ TaskHandle create_effect_render_task(
      * silent.
      */
     private assertPassContract(): void {
-        const { declaration } = this.context.functionDeclaration(
-            effectModule,
-            "getEffectPipeline",
-        );
-        const argument = this.context.callObjectArgument(
-            declaration,
-            "createRenderPipeline",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(argument, "primitive"),
-            '{ topology: "triangle-list" }',
-            "effect pipeline primitive state",
-        );
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(argument, "multisample"),
-            "{ count: targetSignature._sampleCount }",
-            "effect pipeline sample count",
-        );
-        for (const [stage, entryPoint] of [
-            ["vertex", "effectFullscreenVertex"],
-            ["fragment", "effectFragment"],
-        ] as const) {
-            const state = this.context.propertyInitializer(argument, stage);
-            if (!ts.isObjectLiteralExpression(state)) {
-                this.context.contractError(
-                    state,
-                    `Pinned effect pipeline '${stage}' is no longer an ` +
-                        "object literal.",
-                );
-            }
-            this.context.assertExpressionShape(
-                this.context.propertyInitializer(state, "entryPoint"),
-                `"${entryPoint}"`,
-                `effect ${stage} entry point`,
-            );
-        }
-        // The template this port actually reproduces. Lifting
-        // DEFAULT_VERTEX_WGSL protects the constant; this protects the shape
-        // around it, which is the half `composeModule` authors -- a pin that
-        // changed the separator, inserted a prelude or swapped the two halves
-        // would otherwise keep deploying a module the browser no longer
-        // compiles. It is also where `vertexWGSL` is refused: the `??` IS the
-        // decision the frontend declines to serve.
-        this.context.assertExpressionShape(
-            this.context.propertyInitializer(
-                this.context.callObjectArgument(
-                    this.context.functionDeclaration(
-                        effectModule,
-                        "getShaderModule",
-                    ).declaration,
-                    "createShaderModule",
-                ),
-                "code",
-            ),
-            "`${wrapper.options.vertexWGSL ?? DEFAULT_VERTEX_WGSL}\\n" +
-                "${wrapper.options.fragmentWGSL}`",
-            "effect shader module template",
-        );
+        assertFullscreenEffectContract(this.context, {
+            modulePath: effectModule,
+            pipelineSymbol: "getEffectPipeline",
+            taskSymbol: "createEffectRenderTask",
+            label: "effect",
+        });
 
         // The defaults the frontend restates beside the descriptor it reads.
         // Each is a value the pin can change silently -- a working build that
         // renders the wrong thing -- so the shape each one restates is
         // asserted here, exactly as the pass state above is.
-        const returnedExpression = (
-            symbol: string,
-            index = 0,
-        ): ts.Expression => {
-            const owner = this.context.functionDeclaration(
-                effectModule,
-                symbol,
-            ).declaration;
-            const returned = this.context.findNodes(
-                owner,
-                (node): node is ts.ReturnStatement =>
-                    ts.isReturnStatement(node),
-            )[index]?.expression;
-            if (!returned) {
-                this.context.contractError(
-                    owner,
-                    `Pinned ${symbol} no longer returns ${index + 1} ` +
-                        "expression(s).",
-                );
-            }
-            return returned;
-        };
-        this.context.assertExpressionShape(
-            returnedExpression("align4"),
-            "(value + 3) & ~3",
-            "effect uniform alignment",
-        );
         // Both arms: the frontend folds this lookup at generation, so a pin
         // that started matching on something else would silently bind a
         // sampler to a different texture.
         this.context.assertExpressionShape(
-            returnedExpression("matchesBinding"),
+            returnedExpression(this.context, effectModule, "matchesBinding"),
             "layout.binding === bindingNameOrIndex",
             "effect binding index match",
         );
         this.context.assertExpressionShape(
-            returnedExpression("matchesBinding", 1),
+            returnedExpression(
+                this.context,
+                effectModule,
+                "matchesBinding",
+                1,
+            ),
             "layout.name === bindingNameOrIndex || " +
                 "String(layout.binding) === bindingNameOrIndex",
             "effect binding name match",
@@ -381,30 +418,60 @@ TaskHandle create_effect_render_task(
             "effect wrapper name default",
         );
 
-        // The three-vertex draw, in both of the pin's own recorders.
-        for (const symbol of ["createEffectRenderTask", "createEffectRenderer"]) {
-            const owner = this.context.functionDeclaration(
-                effectModule,
-                symbol,
-            ).declaration;
-            const draw = this.context.findNodes(
-                owner,
-                (node): node is ts.CallExpression =>
-                    ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(node.expression) &&
-                    node.expression.name.text === "draw",
-            )[0];
-            if (!draw || draw.arguments.length !== 1) {
-                this.context.contractError(
-                    owner,
-                    `Pinned ${symbol} no longer records a single draw call.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                draw.arguments[0]!,
-                "3",
-                `${symbol} fullscreen vertex count`,
+        // The shared contract checks the task; the classic module also owns
+        // a registered renderer with the same fullscreen draw.
+        const draw = this.context.findNodes(
+            renderer,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "draw",
+        )[0];
+        if (!draw || draw.arguments.length !== 1) {
+            this.context.contractError(
+                renderer,
+                "Pinned createEffectRenderer no longer records one draw call.",
             );
         }
+        this.context.assertExpressionShape(
+            draw.arguments[0]!,
+            "3",
+            "createEffectRenderer fullscreen vertex count",
+        );
+    }
+}
+
+/** The newer uniform-only effect API owns a separate pinned module/contract. */
+export class UniformEffectLowerer {
+    private readonly vertexWgsl: string;
+
+    public constructor(private readonly context: LoweringContext) {
+        const file = this.context.sourceFile(uniformEffectModule);
+        this.vertexWgsl = this.context.stringValue(
+            this.context.variableInitializer(file, "DEFAULT_VERTEX_WGSL"),
+            file,
+        );
+        this.assertPassContract();
+    }
+
+    public composeModule(fragmentWgsl: string): string {
+        return `${this.vertexWgsl}\n${fragmentWgsl}`;
+    }
+
+    public provenance(): string {
+        return this.context.provenance(
+            uniformEffectModule,
+            "createUniformEffectWrapper",
+            "DEFAULT_VERTEX_WGSL",
+        );
+    }
+
+    private assertPassContract(): void {
+        assertFullscreenEffectContract(this.context, {
+            modulePath: uniformEffectModule,
+            pipelineSymbol: "getUniformEffectPipeline",
+            taskSymbol: "createUniformEffectRenderTask",
+            label: "uniform effect",
+        });
     }
 }

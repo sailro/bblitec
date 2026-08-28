@@ -3335,7 +3335,12 @@ public:
             ? static_cast<float>(now - previous_)
             : 0.0f;
         previous_ = now;
-        return fixed_delta_ms > 0.0f ? fixed_delta_ms : measured;
+        const float delta_ms =
+            fixed_delta_ms > 0.0f ? fixed_delta_ms : measured;
+        if (fixed_delta_ms > 0.0f) {
+            advance_performance_milliseconds(delta_ms);
+        }
+        return delta_ms;
     }
 
 private:
@@ -4183,6 +4188,21 @@ inline void advance_frame(Engine& engine) {
         return;
     }
     run_deferred_callbacks(engine);
+}
+
+/** The measured update boundary for a standalone FrameGraphContext. */
+[[nodiscard]] inline float advance_frame(
+    Engine& engine,
+    FrameGraphContext& context,
+    FrameClock& frame_clock,
+    float frame_delta_ms) {
+    if (engine.stopped) return 0.0f;
+    const float delta_ms = frame_clock.advance(frame_delta_ms);
+    for (const auto& callback : context.updates) {
+        callback(delta_ms);
+    }
+    run_deferred_callbacks(engine);
+    return delta_ms;
 }
 
 class CaptureGate {

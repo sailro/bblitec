@@ -51,6 +51,7 @@ export interface EffectIntrinsicContext
      * entry.
      */
     recordEffect(effect: {
+        family: "effect" | "uniform-effect";
         name: string;
         fragment: string;
         bindings: EffectBindingManifest[];
@@ -249,6 +250,76 @@ export function compileEffectIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "createUniformEffectWrapper": {
+            context.expectArgumentCount(call, 2, 2);
+            const engine = context.requireEngine(
+                context.compileValue(call.arguments[0]!),
+                call,
+            );
+            const object = context.expectObjectLiteral(call.arguments[1]!);
+            validateObjectProperties(
+                context,
+                object,
+                ["name", "fragmentWGSL", "uniformByteLength"],
+                "A uniform effect wrapper takes a name, fragmentWGSL, and uniformByteLength; a custom vertexWGSL is not lowered.",
+            );
+            const fragmentExpression = context.objectProperty(
+                object,
+                "fragmentWGSL",
+            );
+            const byteLengthExpression = context.objectProperty(
+                object,
+                "uniformByteLength",
+            );
+            if (!fragmentExpression || !byteLengthExpression) {
+                context.fail(
+                    object,
+                    "createUniformEffectWrapper requires fragmentWGSL and uniformByteLength.",
+                );
+            }
+            const fragment = context.compileStaticString(fragmentExpression);
+            if (fragment.trim().length === 0) {
+                context.fail(
+                    fragmentExpression,
+                    "createUniformEffectWrapper requires non-empty WGSL.",
+                );
+            }
+            const uniformBytes = align4(
+                compileStaticNumber(
+                    context,
+                    byteLengthExpression,
+                    "a uniform effect byte length",
+                ),
+            );
+            if (uniformBytes <= 0) {
+                context.fail(
+                    byteLengthExpression,
+                    "A uniform effect byte length must be positive.",
+                );
+            }
+            const nameExpression = context.objectProperty(object, "name");
+            const index = context.recordEffect({
+                family: "uniform-effect",
+                name: nameExpression
+                    ? context.compileStaticString(nameExpression)
+                    : "uniform-effect-wrapper",
+                fragment,
+                bindings: [{
+                    name: "",
+                    binding: 0,
+                    kind: "uniform",
+                    uniformBytes,
+                    texture: -1,
+                }],
+            });
+            context.reachFeature("effect:wrapper", call);
+            return {
+                kind: "effect-wrapper",
+                cpp: `bbl::create_effect_wrapper(${engine}, ${index}u)`,
+                engineCpp: engine,
+            };
+        }
+
         case "createEffectWrapper": {
             context.expectArgumentCount(call, 2, 2);
             const engine = context.requireEngine(
@@ -284,6 +355,7 @@ export function compileEffectIntrinsic(
             }
             const nameExpression = context.objectProperty(object, "name");
             const index = context.recordEffect({
+                family: "effect",
                 // The pin's own default when the descriptor names none.
                 name: nameExpression
                     ? context.compileStaticString(nameExpression)
@@ -299,6 +371,7 @@ export function compileEffectIntrinsic(
             };
         }
 
+        case "setUniformEffectUniforms":
         case "setEffectUniforms": {
             // The reached form is the pin's single-payload arm, which writes
             // the wrapper's first uniform slot. The record arm keys by
@@ -407,8 +480,9 @@ export function compileEffectIntrinsic(
             };
         }
 
+        case "createUniformEffectRenderTask":
         case "createEffectRenderTask": {
-            context.expectArgumentCount(call, 3, 3);
+            context.expectArgumentCount(call, 2, 3);
             const object = context.expectObjectLiteral(call.arguments[0]!);
             validateObjectProperties(
                 context,
@@ -421,8 +495,12 @@ export function compileEffectIntrinsic(
                 context.compileValue(call.arguments[1]!),
                 call,
             );
-            const scene = context.compileValue(call.arguments[2]!);
-            context.expectKind(scene, "scene", call.arguments[2]!);
+            const scene = call.arguments[2]
+                ? context.compileValue(call.arguments[2])
+                : undefined;
+            if (scene) {
+                context.expectKind(scene, "scene", call.arguments[2]!);
+            }
             const nameExpression = context.objectProperty(object, "name");
             const effectExpression = context.objectProperty(object, "effect");
             const targetExpression = context.objectProperty(object, "target");
@@ -435,15 +513,21 @@ export function compileEffectIntrinsic(
             }
             const wrapper = context.compileValue(effectExpression);
             context.expectKind(wrapper, "effect-wrapper", effectExpression);
+            if (scene) {
+                context.expectSameEngine(wrapper, scene, call);
+            }
             const target = context.compileValue(targetExpression);
             context.expectKind(target, "render-target", targetExpression);
             context.reachFeature("effect:wrapper", call);
             context.reachFeature("effect:task", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature(
+                scene ? "renderer:pbr" : "renderer:frame-graph",
+                call,
+            );
             return {
                 kind: "task",
                 cpp:
-                    `bbl::create_effect_render_task(${engine}, ${scene.cpp}, ` +
+                    `bbl::create_effect_render_task(${engine}, ` +
                     `bbl::EffectTaskOptions{` +
                     `${context.cppString(
                         context.compileStaticString(nameExpression),
