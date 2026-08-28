@@ -96,6 +96,11 @@ composed and which scene gates it; [status](status.md) carries the numbers.
 | GridMaterial | the pinned template functions evaluated at the reached option set | 213 |
 | Custom material | the entry file's WGSL through the typed shader IR | 159-163 |
 
+The project-owned `audit-shader-frame-graph` differential gate is pixel-exact
+against pinned Babylon Lite and verifies that alpha-card and circular-cutout
+materials retain their pipelines and uniforms when a frame-graph render task
+mirrors the scene. It is regression coverage, not upstream corpus coverage.
+
 The custom-material pipeline reflects uniform layout, binding order,
 attributes, varyings, stages and entry points, and PAL shader creation
 consumes the reflected uniform-buffer counts. Pinned Tint emits the
@@ -293,6 +298,74 @@ pose reaches it; scene 14 at `cam.beta = 0.55` does.
 
 ### glTF material inputs
 
+Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
+`extensionsUsed` and composed into each material's own pinned variant:
+
+- clearcoat adds a GGX/Kelemen direct lobe plus a Jones analytical IBL lobe and
+  attenuates the base layer by `1 - F(ccF0) * intensity`; the glTF loader
+  disables Babylon's base-F0 remap, so intensity zero degenerates exactly to
+  the base composition (Scene 28), while a coat created in scene code keeps it
+  (Scene 19) — see the fork below
+- sheen uses the Charlie distribution with Ashikhmin visibility, samples the
+  BRDF LUT blue channel at sheen roughness, and scales the base layer by
+  `1 - maxSheenColor * brdf.b` (Scene 29)
+- iridescence evaluates Babylon's thin-film airy summation in XYZ and blends
+  the result into base F0 by the iridescence intensity (Scene 178 from the
+  asset, Scene 177 from `setPbrIridescence`, where an omitted intensity is the
+  writer's own default 1 rather than the glTF loader's `iridescenceFactor ?? 0`)
+
+Each layer's per-material forks — the coat's base-F0 remap, the sheen model —
+compose different variants rather than one fragment with a uniform, exactly
+as the sections below record.
+Texture-less PBR factors follow Babylon's factor-texture bake:
+`uploadBaseColorFactorTexture` and `uploadOrmFactorTexture` write the
+factors into 1x1 8-bit texels (base color through `linearToSrgbByte`,
+metallic/roughness as linear bytes) and leave the shader uniforms at
+their defaults, so the browser shades with the quantized values.
+Native mirrors each path at its exact precision boundary:
+metallic/roughness quantize on the record (`round(f * 255) / 255` —
+the unorm decode is that division, so the white fallback times the
+quantized uniform is bit-equal to the baked texel), while the base
+color bakes the pinned sRGB bytes into the fallback texel itself with
+the shader uniform reverted to white, because the hardware sRGB
+decode of those bytes is the reference — a CPU transcription of the
+IEC formula measurably disagrees with the GPU's table; scene 255
+gates the texel-level port. The record keeps the raw alpha for the
+pinned blend semantics.
+**The base-colour slot's encoding is its texture's, not its family's.**
+`loadTexture2D` picks `rgba8unorm-srgb` or `rgba8unorm` from its caller's
+own `srgb` option and the format then lives on the `Texture2D`, so the
+material samples what the scene loaded: the glTF loader passes true for this
+slot, the texture-less factor bake writes an sRGB texel, a
+`createSolidTexture2D` texel is linear and sampled without decode, and a
+scene that decodes its own albedo in the fragment (`setPbrGammaAlbedo`,
+whose extension contributes `pow(rgb, 2.2)` and nothing else) loads the
+linear one. The record carries that choice as one lane rather than the slot
+assuming an image is sRGB, which is what lets those five cases share one
+rule; Scene 22 gates the linear-image arm and every glTF scene the sRGB one.
+
+An **animated** base color factor inverts that bake. `whiteFallback` in
+`animation-pointer-basecolor.ts` swaps the factor for `[1,1,1,1]` before
+the upload whenever a `KHR_animation_pointer` channel drives it and the
+material has no base color image, and hands the real factor back to be
+carried as a UBO field for the pointer writer to overwrite. Baking it as
+well applies the factor twice — the authored value in the texel and the
+animated value in the uniform, against the browser's uniform alone; Scene
+253 gates it. Because materials are built before animations are read, the
+answer is gathered in a pre-pass, as upstream gathers it.
+Environment horizon occlusion applies only to normal-mapped materials:
+the pinned `ibl-fragment` composes `eho = 1.0` without a normal map,
+and each material's composed variant carries whichever arm its features
+produce, so the factor follows the material by construction. Scene 247's
+metallic teapots gate this; applying the polynomial unconditionally
+darkens silhouette speculars there by one MSAA sample step across the
+instance field.
+Node TRS and world-matrix composition run in double precision and
+round once per component at the float32 store, matching JavaScript's
+number semantics in the pinned `mat4ComposeInto` and matrix multiply;
+this makes native glTF instance matrices bit-identical to the
+browser's uploaded thin-instance buffers.
+
 **Every texture slot samples the UV set its own `textureInfo` names.**
 `assemblePbrPropsExt` folds the six into one `_uv2Mask` — base colour 1, ORM 2,
 normal 4, emissive 8, spec-gloss 16, occlusion 32 — and `createPbrTemplateExt`
@@ -443,6 +516,17 @@ lanes at the identity, because the stage that would read them is not the stage
 drawing it. [Architecture](architecture.md#animation-and-deformation) carries
 the two transports and the refusal between them.
 ### Transmission and draw order
+
+Transmission uses an opaque scene-color copy, dielectric Fresnel
+`((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
+`exp(log(color)/distance*thickness)`. Scenes 30, 33, 176, and 212 gate the
+dependency chain. With 4x
+MSAA, PAL resolves and stores the opaque color attachment for the copy, then
+reloads the preserved multisample color and depth attachments before
+transmissive draws resume.
+`KHR_materials_dispersion` reuses that path and splits the refracted ray into
+per-RGB indices with Babylon's `spread = 0.04 * (20/dispersion) * (ior-1)`;
+Scene 212 gates it.
 
 The generated material records preserve Babylon's distinction between volume
 attenuation, thickness-based refraction depth, and glTF-only IOR-to-F0
@@ -613,6 +697,14 @@ Scene 151 gates directional-plus-hemispheric Standard lighting; the
 light-count boundary is in [features](features.md#lights).
 
 ### Lights
+
+**The pin fills two spare scene-block lanes with the canvas size, and so does
+this port.** `_packSceneUniforms` writes `eng.canvas.width` into
+`vFogColor.w` and `eng.canvas.height` into `_envPad0` on every scene, in the
+base pack rather than through a contributor. Nothing in the material families
+reads either, which is why the two lanes went unwritten here until a node
+graph's `ScreenSizeBlock` read them back through the pin's own
+`vec2(scene.vFogColor.w, scene._envPad0)`.
 
 **Standard lighting is the pin's own loop over the pin's own entries.** The
 composed Standard fragment declares `array<LightEntry, MAX_LIGHTS>` and walks
@@ -1242,6 +1334,13 @@ fault (`0xC0000005`); with the clear owner read once at startup the frame
 paints the disposed renderer's colour.
 
 ### Environment packaging
+
+HDR environments preserve mip zero and use the pinned WebGPU 1024-sample GGX
+prefilter for higher mips. The generated package records the pinned module,
+shader, source commit, and sample count.
+`EXT_lights_image_based` likewise materializes Babylon Lite's 256-square,
+1024-sample BRDF integration directly as RGBA16F and uploads decoded RGBD
+cubemap faces with the same half-float quantization as WebGPU.
 
 **A skybox size of zero asks the loader for the pinned default.** The
 generated loader resolves an unset `skyboxSize` to `createDefaultEnvironment`'s
