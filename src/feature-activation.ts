@@ -355,6 +355,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
         consumers: ["features.cmake", "deployed shaders"],
     },
+    "loader:splat-bake": {
+        provenance:
+            "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts" +
+            "#bakeCurrentTransformIntoVertices",
+        consumers: ["features.cmake"],
+    },
     "material:pbr": {
         provenance: "src/material/pbr/pbr-material.ts",
         consumers: CMAKE,

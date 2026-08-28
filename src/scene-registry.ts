@@ -1007,6 +1007,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene125",
+        name: "Scene 125 - Gaussian Splat Transform Bake",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene125.ts",
+        title: "Babylon Lite Native - Gaussian Splat Transform Bake",
+        // Both backends measure 0.000/0.000. What is left is the
+        // multisampled splat band the other clouds carry: SDL_GPU peaks at
+        // one more byte than Dawn, and the two backends differ from each
+        // other by the same max as each differs from the golden, which puts
+        // it on the GPU side rather than in the bake.
+        parity: {
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene126",
         name: "Scene 126 - Gaussian Splat Shader Plugin",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene126.ts",

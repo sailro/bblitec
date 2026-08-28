@@ -298,6 +298,32 @@ export function compileAssetIntrinsic(
             };
         }
 
+        case "bakeCurrentTransformIntoVertices": {
+            // src/mesh/GaussianSplatting/gaussian-splatting-bake.ts. The pin
+            // reads the cloud's own world matrix, rewrites every row through
+            // it, hands the result to `updateData`, and resets the TRS; each
+            // of those is lowered from its own declaration and the emitted
+            // entry point is where they meet.
+            //
+            // Reaching it is what makes the loader retain the row buffer:
+            // upstream keeps it on every cloud, and this port keeps it for a
+            // scene that reads it back.
+            context.expectArgumentCount(call, 1, 1);
+            const splat = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                splat,
+                "splat-mesh",
+                call.arguments[0]!,
+            );
+            context.reachFeature("loader:splat-bake", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::bake_current_transform_into_vertices(` +
+                    `${context.requireEngine(splat, call)}, ${splat.cpp})`,
+            };
+        }
+
         case "selectVariant": {
             // src/loader-gltf/material-variants.ts: `selectVariant` restores
             // every original material and then applies the chosen variant's

@@ -1015,12 +1015,6 @@ template <typename T>
     return std::fmod(left, right);
 }
 
-// JavaScript Math.round: a half rounds toward +Infinity, where std::round
-// rounds it away from zero. The two disagree at -0.5, -1.5, ...
-[[nodiscard]] inline double round_number(double value) {
-    return std::floor(value + 0.5);
-}
-
 // Numeric `a || b`: 0 and NaN fall through to the fallback.
 [[nodiscard]] inline double or_number(double value, double fallback) {
     return (value != 0.0 && !std::isnan(value)) ? value : fallback;
@@ -1196,6 +1190,22 @@ inline void typed_array_set(
  * exact for large magnitudes, where `floor(x) == x` makes this branch return
  * `x` unchanged, as the spec requires.
  */
+/**
+ * `Math.hypot`, as the plain root of the sum of squares.
+ *
+ * The ECMAScript spec leaves `Math.hypot` implementation-approximated, so
+ * no port can match V8 by construction; this is the adaptation the splat
+ * folds record as `splat-hypot-approximation`. One home rather than one per
+ * generated translation unit, for the reason `round_js` below has one.
+ */
+[[nodiscard]] inline double hypot_js(std::initializer_list<double> values) {
+    double sum = 0.0;
+    for (double value : values) {
+        sum += value * value;
+    }
+    return std::sqrt(sum);
+}
+
 [[nodiscard]] inline double round_js(double value) {
     if (!std::isfinite(value) || value == 0.0) {
         return value;

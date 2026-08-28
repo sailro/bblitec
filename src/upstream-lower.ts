@@ -1034,6 +1034,7 @@ ${wgsl}`,
         }
         if (features.includes("loader:splat")) {
             const splats = new SplatLowerer(context);
+            const bakesTransform = features.includes("loader:splat-bake");
             this.writeSource(
                 "upstream/src/splat_geometry.cpp",
                 splats.lowerGeometry(),
@@ -1048,9 +1049,17 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/splat_loader.cpp",
-                splats.lowerLoader(),
+                splats.lowerLoader({ retainRows: bakesTransform }),
                 generated,
             );
+            if (bakesTransform) {
+                this.writeSource(
+                    "upstream/src/splat_bake.cpp",
+                    splats.lowerBake(),
+                    generated,
+                    "upstream/include/bblite/upstream/splat_bake.hpp",
+                );
+            }
             // The pin's own module, split at its two entry points. Its
             // provenance names the pipeline that ships the WGSL, not a
             // composer -- nothing here composes.

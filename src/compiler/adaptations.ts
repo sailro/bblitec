@@ -100,10 +100,56 @@ export function compileAdaptations(
                 "The root of the sum of squares, since no port can match an " +
                 "unspecified approximation by construction. Measured over " +
                 "scene 120's 345,217 splats: 10 of 2,785,280 emitted floats " +
-                "differ, every one a covariance entry below 1e-19.",
+                "differ, every one a covariance entry below 1e-19. The " +
+                "transform bake reaches it again at a coarser sink -- its " +
+                "quaternion renormalisation divides by one and the result " +
+                "is rounded into a BYTE -- and scene 125 measures 0.000 on " +
+                "both backends there.",
             risk: "low",
             validation: [
                 "measured against the pinned builder on the packaged asset",
+                "scene 125 parity against the browser golden",
+            ],
+        });
+    }
+    if (features.includes("loader:splat-bake")) {
+        adaptations.push({
+            id: "splat-bake-in-place",
+            category: "asset-materialization",
+            sourceSemantics:
+                "bakeTransformIntoVertices copies the retained splatsData " +
+                "buffer, rewrites the copy, and hands it to updateData, " +
+                "which rebuilds the geometry and reseats the retained " +
+                "buffer.",
+            nativeSemantics:
+                "The caller owns the rows, so the emitted body rewrites " +
+                "them in place and the caller performs the rebuild. Both " +
+                "pinned statements are asserted at generation rather than " +
+                "emitted, because the end state is the same only while the " +
+                "pin still copies that buffer and hands back exactly it.",
+            risk: "low",
+            validation: [
+                "scene 125 parity against the browser golden",
+                "generation asserts the pinned copy and handover",
+            ],
+        });
+        adaptations.push({
+            id: "splat-rows-retained-on-reach",
+            category: "asset-materialization",
+            sourceSemantics:
+                "Every GaussianSplattingMesh retains its 32-byte row " +
+                "buffer as splatsData, matching BJS keepInRam: true.",
+            nativeSemantics:
+                "The loader retains it only for a scene that reaches the " +
+                "transform bake, the one entry point that reads it back. " +
+                "The rows are about half the four float payloads again " +
+                "(11 MB against 22 MB on scene 120), so a cloud nobody " +
+                "bakes carries none of it -- the same reach boundary every " +
+                "other generated capability draws.",
+            risk: "low",
+            validation: [
+                "generated splat_loader.cpp differs by the one retention " +
+                    "line between a baking and a non-baking scene",
             ],
         });
     }

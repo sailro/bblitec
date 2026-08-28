@@ -42,6 +42,7 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:gltf-variants": [],
     "loader:gltf-cameras": [],
     "loader:splat": [],
+    "loader:splat-bake": [],
     "material:pbr": [],
     "material:clearcoat": [],
     "material:sheen": [],

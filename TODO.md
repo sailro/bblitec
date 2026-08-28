@@ -176,7 +176,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-96 corpus scenes remain unregistered; measured scenes are in
+93 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). None of them compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -307,8 +307,8 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (60 scenes):** 16, 17, 20, 43,
-51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
+**Integrate first (59 scenes):** 16, 17, 20, 43,
+51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-124,
 129,
 140, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
@@ -359,11 +359,17 @@ below rather than blocking a scene here.
   or image skyboxes are rotation-invariant or unrelated; the remaining
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
-- [ ] Extend the splat slice past what scenes 120, 126, 127 and 128 measure.
+- [ ] Extend the splat slice past what scenes 120, 125, 126, 127 and 128
+  measure.
   Shipped: the plain `.ply`/`.splat` row layout, the pin's own
   `applyGsFragments` splicing a scene's `GsShaderFragment` plugins into the
-  splat module, the `GaussianSplattingMesh` world composed from its own TRS,
-  and `createLinearDepthMaterial` beside the two pinned depth plugins.
+  splat module, the `GaussianSplattingMesh` world composed from its own TRS
+  and all three of its TRS lanes written from scene code,
+  `createLinearDepthMaterial` beside the two pinned depth plugins, and
+  `bakeCurrentTransformIntoVertices` -- the row rewrite, the
+  `mat4Decompose` rotation it needs and the TRS reset each folded from
+  their own pinned declarations, with the loader retaining the row buffer
+  for the scene that reaches them.
   What remains, each refusing by name:
   - 121: `splatsData` + `updateData` — the row buffer handed back as a
     mutable `ArrayBuffer` and re-uploaded, which also needs `new
@@ -371,11 +377,6 @@ below rather than blocking a scene here.
   - 124: a compressed PLY with spherical harmonics — the pin's second
     parser plus `gaussian-splatting-pipeline-sh` and its 1..5 rgba32uint SH
     textures.
-  - 125: a splat cloud's `rotation` and `scaling` writes, then
-    `bakeCurrentTransformIntoVertices`. `build_splat_world` already composes
-    all three TRS lanes, so the two writes are call-site arms; the bake is
-    the capability, and it is what makes them observable at all in that
-    scene.
   - 129: `splat.name`, then the picking family.
   - `loadSOG` (122) needs a ZIP and a WebP decoder; `loadSPZ` (123) needs
     gzip.
@@ -392,6 +393,17 @@ below rather than blocking a scene here.
   removing means caching it on the pass record — state whose invalidation
   nothing measures, for roughly 50ns a frame. The Dawn pair, which sat in
   one function, is hoisted.
+- [ ] Collapse the rotation record onto the pin's one-lane model. Upstream
+  `rotation` is an Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
+  `scene/scene-node.ts`), so `composeTrsLocalMatrix` reads the quaternion
+  alone; `MeshRecord` and `SplatMeshRecord` carry both lanes and
+  `pinned-trs.ts` picks between them
+  ([fidelity](docs/fidelity.md#shader-contract)). They agree wherever a scene
+  writes one lane, which is every reached scene. **Blocked on a missing
+  capability**: the proxy needs `quatToEulerXYZ` folded, which nothing here
+  has. Closing it also deletes that Euler arm, moving emitted bytes for every
+  mesh in the corpus.
+
 - [ ] `renderer:pbr` is the feature that names the SCENE RENDER LOOP, not the
   PBR material family: `featureSources` maps it to `src/pal_sdl_gpu.cpp`, and
   `addBillboardSystem` and `loadSplat` both reach it for scenes with no PBR
@@ -593,27 +605,12 @@ below rather than blocking a scene here.
   standard-Z exception, the ESM caster's own material view and its two-pass
   separable blur, and BOTH material families' receiver fragments composed
   per shadow-casting light over a reflected group 2
-  ([features](docs/features.md#shadows)). The directional PCF generator
+  ([features](docs/features.md#shadows)), and the node receiver beside them
+  -- scenes 65 and 141 measure it. The directional PCF generator
   landed with scene 207 and clears the only missing import in scenes 66, 72,
   111 and 140 -- each hides more behind it, so the strip probe rather than
   the import list is what sizes them. The cascaded family (`csm-*`) is
   reached by none at this pin. Each remaining item fails by name:
-  - a node receiver, which finishes scenes 65 and 141 -- ONE contract each
-    by strip probe, the best scenes-per-contract left outside the physics
-    lane. It is NOT the group 2 the two material families share:
-    `node-shadow.ts` appends three bindings per light to the GRAPH's own
-    group 1, continuing its binding run, and mixes the factor by the
-    `meshU.receivesShadow` uniform rather than selecting a variant -- so
-    `mesh.receiveShadows` is a composition key for two families and a
-    per-mesh value for the third. Both scenes also CAST from their node
-    material, and `material/node/esm-shadow-view.ts` is the caster half:
-    small in itself, but `parseNodeMaterialFromSnippet` exposes neither the
-    ESM depth code nor the no-colour output, so composing that variant means
-    driving the pin's `node-renderable.ts` rebuild against a recording
-    device rather than the parse path this port drives today. Size that
-    first. 141 additionally wants the PBR ESM caster view, and its graph
-    module (`shared/scene65-nme.ts`, a one-line re-export of scene 63's) is
-    not in the corpus yet.
   - a PBR caster through the ESM generator.
     `material/pbr/no-color-view.ts` is the PCF half and ships, gated by
     `regression-shadow-pbr-only`: the compose pipeline appends one caster

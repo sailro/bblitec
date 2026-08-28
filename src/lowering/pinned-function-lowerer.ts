@@ -35,7 +35,13 @@ export interface PinnedFunctionParameter {
      * by const reference, which is what the shadow family's own
      * `Float32Array` parameters are.
      */
-    kind: "number" | "boolean" | "mat4" | "matrix";
+    kind:
+        | "number"
+        | "boolean"
+        | "mat4"
+        | "matrix"
+        | "mat4Const"
+        | "numberArray";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
      * where C++ forbids it (`near`/`far` are Windows macro names).
@@ -59,7 +65,91 @@ const parameterKinds: Readonly<
         annotation: "Float32Array",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
+    // `Mat4` is the pin's own alias for the same storage, and
+    // `ArrayLike<number>` is how `mat4Determinant3` spells "a matrix or a
+    // raw glTF `node.matrix`". Both are read-only here, so both land on the
+    // const reference `matrix` does -- they are separate kinds because the
+    // annotation is what gets checked, and checking the wrong one would
+    // accept a pin that swapped them.
+    mat4Const: {
+        annotation: "Mat4",
+        declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+    },
+    numberArray: {
+        annotation: "ArrayLike<number>",
+        declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+    },
 };
+
+/**
+ * The kinds that bind a matrix: every one of them is 16 floats the body
+ * indexes, so they share the translator's fixed-matrix binding and differ
+ * only in the annotation each checks.
+ */
+const matrixKinds: ReadonlySet<PinnedFunctionParameter["kind"]> = new Set([
+    "mat4",
+    "matrix",
+    "mat4Const",
+    "numberArray",
+]);
+
+/**
+ * The elements of a pinned tuple return, lowered through the caller's
+ * translator.
+ *
+ * The array-literal twin of `lowerObjectComponents`: unwrap, assert the
+ * literal, assert the arity, lower each element. `insideF32` takes the
+ * `new F32([...])` the matrix writers return; the callers keep their own
+ * `std::array<...>{...}` wrapper, because the two spell their braces
+ * differently and the components are what they share.
+ */
+export function lowerTupleComponents(
+    context: LoweringContext,
+    lowerer: PinnedNumericLowerer,
+    expression: ts.Expression | undefined,
+    options: {
+        arity: number;
+        at: ts.Node;
+        insideF32?: boolean;
+        cast?: string;
+    },
+): string[] {
+    let returned = expression
+        ? context.unwrapExpression(expression)
+        : undefined;
+    if (options.insideF32) {
+        if (
+            !returned ||
+            !ts.isNewExpression(returned) ||
+            !ts.isIdentifier(returned.expression) ||
+            returned.expression.text !== "F32" ||
+            returned.arguments?.length !== 1
+        ) {
+            return context.contractError(
+                options.at,
+                "Expected the pinned body to return `new F32([...])`.",
+            );
+        }
+        returned = context.unwrapExpression(returned.arguments[0]!);
+    }
+    if (!returned || !ts.isArrayLiteralExpression(returned)) {
+        return context.contractError(
+            options.at,
+            "Expected the pinned body to return an array literal.",
+        );
+    }
+    if (returned.elements.length !== options.arity) {
+        return context.contractError(
+            options.at,
+            `Expected ${options.arity} element(s), found ` +
+                `${returned.elements.length}.`,
+        );
+    }
+    return returned.elements.map((element) => {
+        const lowered = lowerer.expression(element);
+        return options.cast ? `${options.cast}(${lowered})` : lowered;
+    });
+}
 
 /**
  * The named components of a pinned vector object literal, each lowered
@@ -187,6 +277,12 @@ export function lowerPinnedFunction(
         calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
         /** See `PinnedNumericScope.matrixCalls`. */
         matrixCalls?: ReadonlySet<string>;
+        /** See `PinnedNumericScope.recordCalls`. */
+        recordCalls?: ReadonlyMap<string, readonly string[]>;
+        /** See `PinnedNumericScope.tupleCalls`. */
+        tupleCalls?: ReadonlyMap<string, number>;
+        /** See `PinnedNumericScope.booleanAnd`. */
+        booleanAnd?: boolean;
     },
 ): string {
     const { file, declaration } = context.functionDeclaration(
@@ -218,7 +314,7 @@ export function lowerPinnedFunction(
         }
         bindings.set(spec.pinned, {
             cpp: spec.cpp,
-            type: spec.kind === "mat4" || spec.kind === "matrix"
+            type: matrixKinds.has(spec.kind)
                 ? "f32"
                 : spec.kind === "boolean"
                   ? "bool"
@@ -230,6 +326,9 @@ export function lowerPinnedFunction(
         bindings,
         calls: options.calls ?? new Map(),
         ...(options.matrixCalls ? { matrixCalls: options.matrixCalls } : {}),
+        ...(options.recordCalls ? { recordCalls: options.recordCalls } : {}),
+        ...(options.tupleCalls ? { tupleCalls: options.tupleCalls } : {}),
+        ...(options.booleanAnd ? { booleanAnd: true } : {}),
         ...(options.returns === "void"
             ? {}
             : {

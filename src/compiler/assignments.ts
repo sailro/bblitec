@@ -1875,15 +1875,28 @@ export function emitPropertyAssignment(
             ? { collection: "splat_meshes", bumpsTransformVersion: false }
             : { collection: "meshes", bumpsTransformVersion: true };
         if (mesh.kind === "splat-mesh") {
-            // The reached slice writes a cloud's position; its rotation and
-            // scaling compose in `build_splat_world` already but nothing
-            // measures them, and `bakeCurrentTransformIntoVertices` is what
-            // the one corpus scene writing them also needs.
-            if (left.expression.name.text !== "position") {
+            // All three TRS lanes compose in `build_splat_world`, so a
+            // component write is the same statement over a different lane.
+            //
+            // `rotation` is the one that needs saying. Upstream it is an
+            // Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
+            // scene-node.ts) rather than storage of its own: a component
+            // write re-applies the whole cached triple through the pin's
+            // `eulerToQuat`. This record keeps the two lanes apart and
+            // `build_splat_world` derives the quaternion from the Euler lane
+            // through that same pinned writer, so the composed matrix is the
+            // proxy's — and the transform bake, which is where the pin's
+            // quaternion write would make the two disagree, clears both.
+            if (
+                left.expression.name.text !== "position" &&
+                left.expression.name.text !== "rotation" &&
+                left.expression.name.text !== "scaling"
+            ) {
                 context.fail(
                     left.expression,
                     `A splat cloud's '${left.expression.name.text}' is not ` +
-                        "lowered; the reached slice writes its position.",
+                        "lowered; the reached slice writes its position, " +
+                        "rotation and scaling.",
                 );
             }
         } else {

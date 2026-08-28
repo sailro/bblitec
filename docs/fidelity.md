@@ -977,6 +977,33 @@ Nothing caches it: the sort's own depth-transform gate and the UBO writer
 both re-derive it per frame, so a position write needs no version bump.
 Scene 127 measures it.
 
+**The transform bake is folded, and its TRS reset turns on an Euler proxy.**
+`bakeTransformIntoVertices` is arithmetic over the same 32-byte rows the
+geometry build reads -- a per-splat `mat4TransformCoord`, a scale by the
+matrix's X basis length, and a quaternion multiply repacked to four bytes --
+so it folds for the reason the geometry build does: its shape is the
+contract. The rotation it multiplies by comes from `mat4Decompose`, folded
+with `mat4Determinant3` and `_quatFromRotationBasis` beside it and
+specialized to the rotation its one caller reads; that specialization is
+licensed by an assertion on `mat4ToRotationQuat`'s own body rather than by
+inspection. Two statements are asserted instead of emitted: the pin copies
+`mesh.splatsData` and hands the copy to `updateData`, while this port
+rewrites the caller's rows in place and rebuilds the geometry itself, which
+is the same end state only while the pin still does both.
+
+The reset is where the two records differ and where the difference matters.
+Upstream `mesh.rotation` is an **Euler proxy** over `rotationQuaternion`
+(`createEulerProxy`, `scene-node.ts`): a component write re-applies the whole
+cached triple through `eulerToQuat`, so there is no separate Euler storage
+and clearing the quaternion clears the rotation. This port keeps the two as
+record lanes, with `build_splat_world` preferring the quaternion only while
+one is set -- so the emitted reset clears the Euler lane as well. Leaving it
+would compose the rotation a second time, which is the one way a faithful
+per-statement port of that function renders wrong. Scene 125 measures the
+whole chain at 0.000 on both backends; its remaining max of two bytes is the
+multisampled splat band, which the two backends also differ from each other
+by.
+
 **A linear-depth material is folded from the pinned factory that builds
 it.** `render/linear-depth-material.ts` is one `createShaderMaterial` call
 over two module-scope WGSL constants, so this port reaches it the way it
