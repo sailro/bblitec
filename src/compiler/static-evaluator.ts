@@ -47,6 +47,25 @@ type NarrowOptional = (
     expression: ts.Expression,
 ) => Value;
 
+const bitwiseFunctions = new Map<ts.SyntaxKind, string>([
+    [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
+    [ts.SyntaxKind.BarToken, "bitwise_or"],
+    [ts.SyntaxKind.CaretToken, "bitwise_xor"],
+    [ts.SyntaxKind.LessThanLessThanToken, "shift_left"],
+    [ts.SyntaxKind.GreaterThanGreaterThanToken, "shift_right"],
+    [
+        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+        "shift_right_unsigned",
+    ],
+]);
+
+const arithmeticOperators = new Map<ts.SyntaxKind, string>([
+    [ts.SyntaxKind.PlusToken, "+"],
+    [ts.SyntaxKind.MinusToken, "-"],
+    [ts.SyntaxKind.AsteriskToken, "*"],
+    [ts.SyntaxKind.SlashToken, "/"],
+]);
+
 export class StaticEvaluator {
     public constructor(
         private readonly staticConstants: ReadonlyMap<
@@ -538,20 +557,9 @@ export class StaticEvaluator {
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            const bitwiseFunction = new Map<
-                ts.SyntaxKind,
-                string
-            >([
-                [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
-                [ts.SyntaxKind.BarToken, "bitwise_or"],
-                [ts.SyntaxKind.CaretToken, "bitwise_xor"],
-                [ts.SyntaxKind.LessThanLessThanToken, "shift_left"],
-                [ts.SyntaxKind.GreaterThanGreaterThanToken, "shift_right"],
-                [
-                    ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
-                    "shift_right_unsigned",
-                ],
-            ]).get(unwrapped.operatorToken.kind);
+            const bitwiseFunction = bitwiseFunctions.get(
+                unwrapped.operatorToken.kind,
+            );
             if (bitwiseFunction) {
                 const compiled = `bbl::js::${bitwiseFunction}(${this.compileNumber(
                     unwrapped.left,
@@ -565,12 +573,9 @@ export class StaticEvaluator {
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
-            const operator = new Map<ts.SyntaxKind, string>([
-                [ts.SyntaxKind.PlusToken, "+"],
-                [ts.SyntaxKind.MinusToken, "-"],
-                [ts.SyntaxKind.AsteriskToken, "*"],
-                [ts.SyntaxKind.SlashToken, "/"],
-            ]).get(unwrapped.operatorToken.kind);
+            const operator = arithmeticOperators.get(
+                unwrapped.operatorToken.kind,
+            );
             if (!operator) {
                 this.fail(
                     unwrapped.operatorToken,

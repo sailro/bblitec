@@ -1,6 +1,6 @@
 #pragma once
 
-#include <bblite/ts_runtime.hpp>
+#include <bblite/js_data.hpp>
 
 #include <cstdint>
 #include <vector>
@@ -13,6 +13,6 @@ struct DecodedImage {
     std::vector<std::uint8_t> rgba;
 };
 
-DecodedImage decode_image(const ts::ArrayBuffer& buffer);
+DecodedImage decode_image(const js::ArrayBuffer& buffer);
 
 } // namespace bbl::pal

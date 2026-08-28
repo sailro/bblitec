@@ -198,6 +198,19 @@ const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
     ">>=": "shift_right",
     ">>>=": "shift_right_unsigned",
 };
+const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
+    [ts.SyntaxKind.EqualsToken, "="],
+    [ts.SyntaxKind.PlusEqualsToken, "+="],
+    [ts.SyntaxKind.MinusEqualsToken, "-="],
+    [ts.SyntaxKind.AsteriskEqualsToken, "*="],
+    [ts.SyntaxKind.SlashEqualsToken, "/="],
+    [ts.SyntaxKind.AmpersandEqualsToken, "&="],
+    [ts.SyntaxKind.BarEqualsToken, "|="],
+    [ts.SyntaxKind.CaretEqualsToken, "^="],
+    [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
+    [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
+    [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
+]);
 
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
@@ -1584,51 +1597,20 @@ export class StatementLowerer {
             );
             return;
         }
+        const assignmentOperator = ts.isBinaryExpression(unwrapped)
+            ? ASSIGNMENT_OPERATORS.get(
+                  unwrapped.operatorToken.kind,
+              )
+            : undefined;
         if (
             ts.isBinaryExpression(unwrapped) &&
-            [
-                ts.SyntaxKind.EqualsToken,
-                ts.SyntaxKind.PlusEqualsToken,
-                ts.SyntaxKind.MinusEqualsToken,
-                ts.SyntaxKind.AsteriskEqualsToken,
-                ts.SyntaxKind.SlashEqualsToken,
-                ts.SyntaxKind.AmpersandEqualsToken,
-                ts.SyntaxKind.BarEqualsToken,
-                ts.SyntaxKind.CaretEqualsToken,
-                ts.SyntaxKind.LessThanLessThanEqualsToken,
-                ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
-                ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
-            ].includes(unwrapped.operatorToken.kind)
+            assignmentOperator !== undefined
         ) {
             if (ts.isIdentifier(unwrapped.left)) {
                 const target = context.lookup(
                     unwrapped.left,
                 );
-                const operator = new Map<
-                    ts.SyntaxKind,
-                    string
-                >([
-                    [ts.SyntaxKind.EqualsToken, "="],
-                    [ts.SyntaxKind.PlusEqualsToken, "+="],
-                    [ts.SyntaxKind.MinusEqualsToken, "-="],
-                    [
-                        ts.SyntaxKind.AsteriskEqualsToken,
-                        "*=",
-                    ],
-                    [
-                        ts.SyntaxKind.SlashEqualsToken,
-                        "/=",
-                    ],
-                    [ts.SyntaxKind.AmpersandEqualsToken, "&="],
-                    [ts.SyntaxKind.BarEqualsToken, "|="],
-                    [ts.SyntaxKind.CaretEqualsToken, "^="],
-                    [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
-                    [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
-                    [
-                        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
-                        ">>>=",
-                    ],
-                ]).get(unwrapped.operatorToken.kind)!;
+                const operator = assignmentOperator;
                 if (
                     operator === "=" &&
                     context.emitOptionalResourceAssignment(

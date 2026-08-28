@@ -11,7 +11,10 @@ import type {
     NodeParticleStep,
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
-import type { DataType } from "./data-types.js";
+import type {
+    DataType,
+    TypedArrayKind,
+} from "./data-types.js";
 
 export interface CompileOptions {
     fileName?: string;
@@ -1075,7 +1078,7 @@ export interface Value {
     dataType?: DataType;
     /** The expression returns existing mutable storage, not a JS value copy. */
     borrowedData?: true;
-    dataStore?: "f32" | "u8" | "u16" | "u32";
+    dataStore?: TypedArrayKind;
     /**
      * Set on a value read out of a container of const elements (a span,
      * including a materialized constant table). It cannot be bound by

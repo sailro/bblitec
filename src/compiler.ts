@@ -15,7 +15,6 @@ import {
 } from "./compiler/assignments.js";
 import {
     registerAsset,
-    registerPixelsAsset,
     probePixelsAsset,
     registerSpriteAtlasAsset,
     resolveBundledAsset,
@@ -120,6 +119,7 @@ import {
 import {
     DataTypeRegistry,
     doubleLiteral as dataDoubleLiteral,
+    passesByReference,
     type DataIterationElement,
     type DataType,
 } from "./compiler/data-types.js";
@@ -128,9 +128,15 @@ import {
     type ExpressionContext,
 } from "./compiler/expressions.js";
 import {
+    captureDataFunctionBody,
     NativeFunctionLowerer,
     type NativeFunctionContext,
 } from "./compiler/native-functions.js";
+import {
+    isModuleInitializerStatement,
+    planImportedModuleInitializers,
+} from "./compiler/module-initializers.js";
+import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
 import {
     createCompilerProgram,
 } from "./compiler/program.js";
@@ -156,9 +162,14 @@ import {
     type HandleCollectionTarget,
 } from "./compiler/handle-collections.js";
 import {
+    parameterIsReadOnly,
     type UserFunctionContext,
     UserFunctionLowerer,
 } from "./compiler/user-functions.js";
+import {
+    mutatingArrayMethods,
+    storingDataMethods,
+} from "./compiler/data-methods.js";
 import type {
     CompileAsset,
     CompileOptions,
@@ -644,17 +655,12 @@ class Compiler
      * runtime copy of every lookup table merely because it was imported.
      */
     private emitImportedModuleInitializers(): void {
-        const modules = this.program
-            .getSourceFiles()
-            .filter(
-                (file) =>
-                    file !== this.sourceFile &&
-                    !file.isDeclarationFile &&
-                    !this.program.isSourceFileFromExternalLibrary(
-                        file,
-                    ) &&
-                    this.moduleHasObservableInitializer(file),
-            );
+        const modules = planImportedModuleInitializers(
+            this.program,
+            this.sourceFile,
+            this.checker,
+            this.symbols,
+        );
         if (modules.length === 0) return;
 
         // Once a module is materialized, its declarations name the native
@@ -680,7 +686,7 @@ class Compiler
             const moduleScope = this.variableScopes.at(-1)!;
             try {
                 for (const statement of file.statements) {
-                    if (this.isModuleInitializerStatement(statement)) {
+                    if (isModuleInitializerStatement(statement)) {
                         this.emitStatement(statement);
                     }
                 }
@@ -695,210 +701,6 @@ class Compiler
                 this.popScope();
             }
         });
-    }
-
-    private moduleHasObservableInitializer(
-        file: ts.SourceFile,
-    ): boolean {
-        const exportedState = this.exportedModuleVariableSymbols(file);
-        return (
-            exportedState.size > 0 &&
-            file.statements.some(
-                (statement) =>
-                    this.isModuleInitializerStatement(statement) &&
-                    this.nodeMayMutateSymbols(
-                        statement,
-                        exportedState,
-                        new Set(),
-                    ),
-            )
-        );
-    }
-
-    /** Variables whose initialized state is part of a module's public value. */
-    private exportedModuleVariableSymbols(
-        file: ts.SourceFile,
-    ): Set<ts.Symbol> {
-        const result = new Set<ts.Symbol>();
-        for (const statement of file.statements) {
-            if (
-                ts.isVariableStatement(statement) &&
-                statement.modifiers?.some(
-                    (modifier) =>
-                        modifier.kind ===
-                        ts.SyntaxKind.ExportKeyword,
-                )
-            ) {
-                for (const declaration of statement.declarationList
-                    .declarations) {
-                    if (!ts.isIdentifier(declaration.name)) continue;
-                    const symbol = this.symbols.valueSymbol(
-                        declaration.name,
-                    );
-                    if (symbol) result.add(symbol);
-                }
-                continue;
-            }
-            if (
-                ts.isExportDeclaration(statement) &&
-                !statement.moduleSpecifier &&
-                statement.exportClause &&
-                ts.isNamedExports(statement.exportClause)
-            ) {
-                for (const element of statement.exportClause.elements) {
-                    const local = element.propertyName ?? element.name;
-                    if (!ts.isIdentifier(local)) continue;
-                    const symbol = this.symbols.valueSymbol(local);
-                    if (symbol) result.add(symbol);
-                }
-            }
-        }
-        return result;
-    }
-
-    private isModuleInitializerStatement(
-        statement: ts.Statement,
-    ): boolean {
-        return !(
-            ts.isImportDeclaration(statement) ||
-            ts.isExportDeclaration(statement) ||
-            ts.isFunctionDeclaration(statement) ||
-            ts.isClassDeclaration(statement) ||
-            ts.isInterfaceDeclaration(statement) ||
-            ts.isTypeAliasDeclaration(statement) ||
-            ts.isEnumDeclaration(statement) ||
-            ts.isModuleDeclaration(statement)
-        );
-    }
-
-    /**
-     * Whether eagerly executed code can mutate one of a module's exported
-     * variables, following direct local helper calls transitively.
-     *
-     * Calls used only to build an immutable exported value remain on the
-     * existing AOT evaluator path. Runtime initialization is reserved for
-     * modules whose public container/object is observably populated by
-     * top-level work.
-     */
-    private nodeMayMutateSymbols(
-        node: ts.Node,
-        targets: ReadonlySet<ts.Symbol>,
-        activeFunctions: Set<ts.FunctionLikeDeclaration>,
-    ): boolean {
-        let found = false;
-        const targetsSymbol = (expression: ts.Expression): boolean => {
-            let current = expression;
-            while (true) {
-                if (ts.isIdentifier(current)) {
-                    const symbol = this.symbols.valueSymbol(current);
-                    return symbol !== undefined && targets.has(symbol);
-                }
-                if (
-                    ts.isPropertyAccessExpression(current) ||
-                    ts.isElementAccessExpression(current)
-                ) {
-                    current = current.expression;
-                    continue;
-                }
-                if (
-                    ts.isParenthesizedExpression(current) ||
-                    ts.isAsExpression(current) ||
-                    ts.isTypeAssertionExpression(current) ||
-                    ts.isNonNullExpression(current) ||
-                    ts.isSatisfiesExpression(current)
-                ) {
-                    current = current.expression;
-                    continue;
-                }
-                return false;
-            }
-        };
-        const localFunction = (
-            expression: ts.Expression,
-        ): ts.FunctionLikeDeclaration | undefined => {
-            if (!ts.isIdentifier(expression)) return undefined;
-            const declaration = this.symbols
-                .valueSymbol(expression)
-                ?.valueDeclaration;
-            if (declaration && ts.isFunctionLike(declaration)) {
-                return declaration as ts.FunctionLikeDeclaration;
-            }
-            if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                ts.isFunctionLike(declaration.initializer)
-            ) {
-                return declaration.initializer as ts.FunctionLikeDeclaration;
-            }
-            return undefined;
-        };
-        const visit = (current: ts.Node): void => {
-            if (found) return;
-            if (ts.isFunctionLike(current)) return;
-            if (
-                ts.isBinaryExpression(current) &&
-                current.operatorToken.kind >=
-                    ts.SyntaxKind.FirstAssignment &&
-                current.operatorToken.kind <=
-                    ts.SyntaxKind.LastAssignment &&
-                targetsSymbol(current.left)
-            ) {
-                found = true;
-                return;
-            }
-            if (
-                (ts.isPostfixUnaryExpression(current) ||
-                    ts.isPrefixUnaryExpression(current)) &&
-                targetsSymbol(current.operand)
-            ) {
-                found = true;
-                return;
-            }
-            if (
-                ts.isDeleteExpression(current) &&
-                targetsSymbol(current.expression)
-            ) {
-                found = true;
-                return;
-            }
-            if (ts.isCallExpression(current)) {
-                const callee = current.expression;
-                if (
-                    (ts.isPropertyAccessExpression(callee) ||
-                        ts.isElementAccessExpression(callee)) &&
-                    targetsSymbol(callee.expression)
-                ) {
-                    found = true;
-                    return;
-                }
-                if (current.arguments.some(targetsSymbol)) {
-                    found = true;
-                    return;
-                }
-                const called = localFunction(callee);
-                if (
-                    called?.body &&
-                    !activeFunctions.has(called)
-                ) {
-                    activeFunctions.add(called);
-                    if (
-                        this.nodeMayMutateSymbols(
-                            called.body,
-                            targets,
-                            activeFunctions,
-                        )
-                    ) {
-                        found = true;
-                        return;
-                    }
-                    activeFunctions.delete(called);
-                }
-            }
-            ts.forEachChild(current, visit);
-        };
-        visit(node);
-        return found;
     }
 
     private entryStatements(): readonly ts.Statement[] {
@@ -1082,15 +884,11 @@ class Compiler
                 declaration.initializer,
             )
         ) {
-            if (
-                this.emitRecursiveCallbackDeclaration(
-                    declaration.name,
-                    declaration.initializer,
-                    cppName,
-                )
-            ) {
-                return;
-            }
+            this.emitRecursiveCallbackDeclaration(
+                declaration.name,
+                declaration.initializer,
+                cppName,
+            );
             return;
         }
 
@@ -1192,6 +990,10 @@ class Compiler
             return;
         }
         if (value.kind === "data") {
+            const symbol = this.symbols.valueSymbol(
+                declaration.name,
+            );
+            if (symbol) this.staticConstants.delete(symbol);
             const narrowed =
                 this.dataLowerer.narrowForDeclaration(
                     value,
@@ -1232,9 +1034,9 @@ class Compiler
                 ts.isNewExpression(initializer) ||
                 ts.isObjectLiteralExpression(initializer) ||
                 ts.isArrayLiteralExpression(initializer);
-            // A const local bound to an element or member of a
-            // container binds a reference, so writes through it reach
-            // the container the way a JavaScript object binding does.
+            // A const local bound to a composite value or to a composite
+            // element/member binds a reference, so writes through it reach
+            // the same storage as a JavaScript object binding.
             // `let` keeps the copy: a reference cannot be reseated.
             const aliases =
                 !constructs &&
@@ -1245,18 +1047,15 @@ class Compiler
                 (declaration.parent.flags &
                     ts.NodeFlags.Const) !==
                     0 &&
-                (ts.isElementAccessExpression(initializer) ||
+                passesByReference(
+                    this.dataTypes,
+                    narrowed.dataType,
+                ) &&
+                (ts.isIdentifier(initializer) ||
+                    ts.isElementAccessExpression(initializer) ||
                     ts.isPropertyAccessExpression(
                         initializer,
                     )) &&
-                narrowed.dataType.kind !== "table" &&
-                narrowed.dataType.kind !== "optional" &&
-                !(
-                    narrowed.dataType.kind === "struct" &&
-                    this.dataTypes.isReferenceStruct(
-                        narrowed.dataType.name,
-                    )
-                ) &&
                 // A value read out of a span is const, so it cannot be
                 // bound by reference; the source language would not let
                 // it be written through either.
@@ -1302,11 +1101,7 @@ class Compiler
             } else {
                 this.dataLowerer.registerLocal(
                     cppName,
-                    constructs ||
-                        (narrowed.dataType.kind === "struct" &&
-                            this.dataTypes.isReferenceStruct(
-                                narrowed.dataType.name,
-                            ))
+                    constructs || referenceStruct
                         ? "owned"
                         : "copy",
                 );
@@ -1374,9 +1169,9 @@ class Compiler
         name: ts.Identifier,
         callback: ts.ArrowFunction | ts.FunctionExpression,
         cppName: string,
-    ): boolean {
+    ): void {
         const symbol = this.symbols.valueSymbol(name);
-        if (!symbol) return false;
+        if (!symbol) return;
         let recursive = false;
         const visit = (node: ts.Node): void => {
             if (recursive) return;
@@ -1394,13 +1189,14 @@ class Compiler
             ts.forEachChild(node, visit);
         };
         visit(callback.body);
-        if (!recursive) return false;
+        if (!recursive) return;
         if (!ts.isBlock(callback.body)) {
             this.fail(
                 callback.body,
                 "Recursive callbacks require a block body.",
             );
         }
+        const callbackBody = callback.body;
         const signature =
             this.checker.getSignatureFromDeclaration(callback);
         if (!signature) {
@@ -1441,19 +1237,29 @@ class Compiler
                     "Recursive callback parameters must have plain-data types.",
                 );
             }
-            const byReference = ![
-                "number",
-                "boolean",
-                "enum",
-            ].includes(type.kind);
-            return { declaration: parameter, name: parameter.name, type, byReference };
+            const byReference = passesByReference(
+                this.dataTypes,
+                type,
+            );
+            const readOnly = parameterIsReadOnly(
+                this.checker,
+                callback,
+                parameter.name,
+            );
+            return {
+                declaration: parameter,
+                name: parameter.name,
+                type,
+                byReference,
+                readOnly,
+            };
         });
         const returnCpp = returnType
             ? this.dataTypes.cppType(returnType)
             : "void";
-        const parameterTypes = parameters.map(({ type, byReference }) =>
+        const parameterTypes = parameters.map(({ type, byReference, readOnly }) =>
             byReference
-                ? `const ${this.dataTypes.cppType(type)}&`
+                ? `${readOnly ? "const " : ""}${this.dataTypes.cppType(type)}&`
                 : this.dataTypes.cppType(type),
         );
         this.reachJsData();
@@ -1465,39 +1271,13 @@ class Compiler
             cpp: cppName,
             callbackDeclaration: callback,
         });
-        this.pushScope(this.allocateUserFunctionPrefix());
-        try {
-            const parameterDeclarations = parameters.map(
-                ({ name: parameterName, type, byReference }) => {
-                    const parameterCpp = this.cppIdentifier(
-                        parameterName.text,
-                    );
-                    this.defineVariable(
-                        parameterName,
-                        this.dataLowerer.leafValue(
-                            parameterCpp,
-                            type,
-                        ),
-                    );
-                    if (
-                        type.kind !== "number" &&
-                        type.kind !== "boolean"
-                    ) {
-                        this.dataLowerer.registerLocal(
-                            parameterCpp,
-                            "owned",
-                        );
-                    }
-                    return `${byReference ? "const " : ""}${this.dataTypes.cppType(type)}${byReference ? "&" : ""} ${parameterCpp}`;
-                },
-            );
-            this.emit(
-                `${cppName} = [&](${parameterDeclarations.join(", ")}) -> ${returnCpp} {`,
-            );
-            this.increaseIndent();
-            this.beginNativeFunctionBody(returnType);
-            try {
-                for (const statement of callback.body.statements) {
+        const { parameterDeclarations, lines } =
+            captureDataFunctionBody(
+                this,
+                parameters,
+                returnType,
+                () => {
+                for (const statement of callbackBody.statements) {
                     this.emitStatement(statement);
                     if (
                         this.statementTerminatesAfterLowering(
@@ -1507,15 +1287,17 @@ class Compiler
                         break;
                     }
                 }
-            } finally {
-                this.endNativeFunctionBody();
-                this.decreaseIndent();
-            }
-            this.emit("};");
-        } finally {
-            this.popScope();
+                },
+            );
+        this.emit(
+            `${cppName} = [&](${parameterDeclarations.join(", ")}) -> ${returnCpp} {`,
+        );
+        this.increaseIndent();
+        for (const line of lines) {
+            this.emit(line);
         }
-        return true;
+        this.decreaseIndent();
+        this.emit("};");
     }
 
     /**
@@ -1602,6 +1384,12 @@ class Compiler
             // representation of that optionality.
             return false;
         }
+        if (ts.isIdentifier(declaration.name)) {
+            const symbol = this.symbols.valueSymbol(
+                declaration.name,
+            );
+            if (symbol) this.staticConstants.delete(symbol);
+        }
         this.reachJsData();
         const initializer = this.unwrap(
             declaration.initializer,
@@ -1660,45 +1448,86 @@ class Compiler
     private inferredArrayIsMutated(identifier: ts.Identifier): boolean {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) return false;
-        const mutatingMethods = new Set([
-            "copyWithin",
-            "fill",
-            "pop",
-            "push",
-            "reverse",
-            "shift",
-            "sort",
-            "splice",
-            "unshift",
-        ]);
-        let mutated = false;
-        const visit = (node: ts.Node): void => {
-            if (mutated) return;
-            if (
-                ts.isCallExpression(node) &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                ts.isIdentifier(node.expression.expression) &&
-                this.symbols.valueSymbol(node.expression.expression) === symbol &&
-                mutatingMethods.has(node.expression.name.text)
-            ) {
-                mutated = true;
-                return;
-            }
-            if (
-                ts.isBinaryExpression(node) &&
-                ts.isElementAccessExpression(node.left) &&
-                ts.isIdentifier(node.left.expression) &&
-                this.symbols.valueSymbol(node.left.expression) === symbol &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
-            ) {
-                mutated = true;
-                return;
-            }
-            ts.forEachChild(node, visit);
+        const aliases = new Set<ts.Symbol>([symbol]);
+        const namesAlias = (node: ts.Node): boolean =>
+            ts.isIdentifier(node) &&
+            aliases.has(this.symbols.valueSymbol(node)!);
+        const containsAlias = (node: ts.Node): boolean => {
+            let found = false;
+            const visit = (candidate: ts.Node): void => {
+                if (found) return;
+                if (namesAlias(candidate)) {
+                    found = true;
+                    return;
+                }
+                ts.forEachChild(candidate, visit);
+            };
+            visit(node);
+            return found;
         };
-        ts.forEachChild(identifier.getSourceFile(), visit);
-        return mutated;
+        let changed = true;
+        while (changed) {
+            changed = false;
+            let mutated = false;
+            const visit = (node: ts.Node): void => {
+                if (mutated) return;
+                if (
+                    ts.isVariableDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.initializer &&
+                    namesAlias(this.unwrap(node.initializer))
+                ) {
+                    const alias = this.symbols.valueSymbol(
+                        node.name,
+                    );
+                    if (alias && !aliases.has(alias)) {
+                        aliases.add(alias);
+                        changed = true;
+                    }
+                }
+                if (ts.isCallExpression(node)) {
+                    if (
+                        ts.isPropertyAccessExpression(
+                            node.expression,
+                        ) &&
+                        namesAlias(
+                            this.unwrap(
+                                node.expression.expression,
+                            ),
+                        ) &&
+                        mutatingArrayMethods.has(
+                            node.expression.name.text,
+                        )
+                    ) {
+                        mutated = true;
+                        return;
+                    }
+                    if (node.arguments.some(containsAlias)) {
+                        mutated = true;
+                        return;
+                    }
+                }
+                if (
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind >=
+                        ts.SyntaxKind.FirstAssignment &&
+                    node.operatorToken.kind <=
+                        ts.SyntaxKind.LastAssignment &&
+                    ((ts.isElementAccessExpression(node.left) &&
+                        namesAlias(
+                            this.unwrap(node.left.expression),
+                        )) ||
+                        namesAlias(this.unwrap(node.left)))
+                ) {
+                    mutated = true;
+                    return;
+                }
+                ts.forEachChild(node, visit);
+            };
+            ts.forEachChild(identifier.getSourceFile(), visit);
+            if (mutated) return true;
+        }
+        return false;
     }
 
     /**
@@ -1754,14 +1583,6 @@ class Compiler
             visit(node);
             return found;
         };
-        const storingMethods = new Set([
-            "add",
-            "push",
-            "set",
-            "splice",
-            "unshift",
-        ]);
-
         let changed = true;
         while (changed) {
             changed = false;
@@ -1825,7 +1646,7 @@ class Compiler
                         ts.isPropertyAccessExpression(
                             node.expression,
                         ) &&
-                        storingMethods.has(
+                        storingDataMethods.has(
                             node.expression.name.text,
                         ) &&
                         node.arguments.some(containsAlias)
@@ -3545,19 +3366,23 @@ class Compiler
         const moduleParameter = declaration.parameters[1]!.name;
         if (
             !ts.isIdentifier(pathParameter) ||
-            !ts.isIdentifier(moduleParameter) ||
-            !this.isModuleUrlHelperBody(
-                declaration.body,
-                pathParameter.text,
-                moduleParameter.text,
-            )
+            !ts.isIdentifier(moduleParameter)
         ) {
             return undefined;
         }
+        const replacements = this.moduleUrlPathReplacements(
+            declaration.body,
+            pathParameter.text,
+            moduleParameter.text,
+        );
+        if (!replacements) return undefined;
         const path = this.evaluator.compileStringLiteral(
             resolved.arguments[0]!,
         );
         const url = new URL(path, "https://bblite.invalid/");
+        for (const [search, replacement] of replacements) {
+            url.pathname = url.pathname.replace(search, replacement);
+        }
         return url.origin === "https://bblite.invalid"
             ? `${url.pathname}${url.search}${url.hash}`
             : url.href;
@@ -3574,44 +3399,85 @@ class Compiler
         );
     }
 
-    private isModuleUrlHelperBody(
+    private moduleUrlPathReplacements(
         body: ts.Block,
         pathParameter: string,
         moduleParameter: string,
-    ): boolean {
-        let urlVariable: string | undefined;
-        let returnsHref = false;
-        const visit = (node: ts.Node): void => {
+    ): readonly (readonly [string, string])[] | undefined {
+        const [declarationStatement, ...tail] = body.statements;
+        const returned = tail.at(-1);
+        if (
+            !declarationStatement ||
+            !ts.isVariableStatement(declarationStatement) ||
+            declarationStatement.declarationList.declarations.length !== 1 ||
+            !returned ||
+            !ts.isReturnStatement(returned) ||
+            !returned.expression
+        ) {
+            return undefined;
+        }
+        const declaration =
+            declarationStatement.declarationList.declarations[0]!;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.initializer ||
+            !ts.isNewExpression(declaration.initializer) ||
+            !ts.isIdentifier(declaration.initializer.expression) ||
+            declaration.initializer.expression.text !== "URL" ||
+            declaration.initializer.arguments?.length !== 2 ||
+            !ts.isIdentifier(declaration.initializer.arguments[0]!) ||
+            declaration.initializer.arguments[0]!.text !== pathParameter ||
+            !ts.isIdentifier(declaration.initializer.arguments[1]!) ||
+            declaration.initializer.arguments[1]!.text !== moduleParameter
+        ) {
+            return undefined;
+        }
+        const urlVariable = declaration.name.text;
+        if (
+            !ts.isPropertyAccessExpression(returned.expression) ||
+            !ts.isIdentifier(returned.expression.expression) ||
+            returned.expression.expression.text !== urlVariable ||
+            returned.expression.name.text !== "href"
+        ) {
+            return undefined;
+        }
+        const replacements: [string, string][] = [];
+        for (const statement of tail.slice(0, -1)) {
             if (
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.initializer &&
-                ts.isNewExpression(node.initializer) &&
-                ts.isIdentifier(node.initializer.expression) &&
-                node.initializer.expression.text === "URL" &&
-                node.initializer.arguments?.length === 2 &&
-                ts.isIdentifier(node.initializer.arguments[0]!) &&
-                node.initializer.arguments[0]!.text === pathParameter &&
-                ts.isIdentifier(node.initializer.arguments[1]!) &&
-                node.initializer.arguments[1]!.text === moduleParameter
+                !ts.isExpressionStatement(statement) ||
+                !ts.isBinaryExpression(statement.expression) ||
+                statement.expression.operatorToken.kind !==
+                    ts.SyntaxKind.EqualsToken
             ) {
-                urlVariable = node.name.text;
+                return undefined;
             }
+            const assignment = statement.expression;
+            const left = assignment.left;
+            const call = assignment.right;
             if (
-                urlVariable &&
-                ts.isReturnStatement(node) &&
-                node.expression &&
-                ts.isPropertyAccessExpression(node.expression) &&
-                ts.isIdentifier(node.expression.expression) &&
-                node.expression.expression.text === urlVariable &&
-                node.expression.name.text === "href"
+                !ts.isPropertyAccessExpression(left) ||
+                !ts.isIdentifier(left.expression) ||
+                left.expression.text !== urlVariable ||
+                left.name.text !== "pathname" ||
+                !ts.isCallExpression(call) ||
+                !ts.isPropertyAccessExpression(call.expression) ||
+                call.expression.name.text !== "replace" ||
+                !ts.isPropertyAccessExpression(call.expression.expression) ||
+                !ts.isIdentifier(call.expression.expression.expression) ||
+                call.expression.expression.expression.text !== urlVariable ||
+                call.expression.expression.name.text !== "pathname" ||
+                call.arguments.length !== 2 ||
+                !ts.isStringLiteralLike(call.arguments[0]!) ||
+                !ts.isStringLiteralLike(call.arguments[1]!)
             ) {
-                returnsHref = true;
+                return undefined;
             }
-            ts.forEachChild(node, visit);
-        };
-        visit(body);
-        return urlVariable !== undefined && returnsHref;
+            replacements.push([
+                call.arguments[0]!.text,
+                call.arguments[1]!.text,
+            ]);
+        }
+        return replacements;
     }
 
     private importedCall(
@@ -3779,93 +3645,7 @@ class Compiler
         value: Value,
         node: ts.Node,
     ): string | undefined {
-        if (value.kind !== "record") return undefined;
-        const property = (name: string): Value => {
-            const found = value.recordProperties?.[name];
-            if (!found) {
-                this.fail(node, `SpriteAtlas record is missing '${name}'.`);
-            }
-            return found;
-        };
-        const rawTexture = property("texture");
-        const texture =
-            rawTexture.kind === "data" &&
-            rawTexture.dataType?.kind === "optional" &&
-            rawTexture.dataType.inner.kind === "handle" &&
-            rawTexture.dataType.inner.handle === "texture"
-                ? this.dataLowerer.leafValue(
-                      `(*${rawTexture.cpp})`,
-                      rawTexture.dataType.inner,
-                  )
-                : rawTexture;
-        const size = property("textureSizePx");
-        const frames = property("frames");
-        const premultiplied = property("premultipliedAlpha");
-        if (
-            texture.kind !== "texture" ||
-            texture.textureStorage === "file" ||
-            texture.textureStorage === "solid"
-        ) {
-            this.fail(
-                node,
-                `A data SpriteAtlas currently requires a texture created from pixels; received ${texture.kind} ${texture.dataType ? JSON.stringify(texture.dataType) : "without data type"}.`,
-            );
-        }
-        const tupleLane = (tuple: Value, index: number): string => {
-            if (tuple.kind === "tuple") {
-                const lane = tuple.tupleElements?.[index];
-                if (lane?.kind !== "number") {
-                    this.fail(node, "SpriteAtlas tuple fields require numeric lanes.");
-                }
-                return lane.staticNumber !== undefined
-                    ? dataDoubleLiteral(lane.staticNumber)
-                    : lane.cpp;
-            }
-            if (tuple.kind === "data" && tuple.dataType?.kind === "tuple") {
-                return `${tuple.cpp}[${index}]`;
-            }
-            this.fail(node, "SpriteAtlas textureSizePx requires a 2-tuple.");
-        };
-        if (
-            frames.kind !== "data" ||
-            frames.dataType?.kind !== "vector" ||
-            frames.dataType.element.kind !== "struct"
-        ) {
-            this.fail(node, "SpriteAtlas frames require an array of frame records.");
-        }
-        if (premultiplied.kind !== "boolean") {
-            this.fail(node, "SpriteAtlas premultipliedAlpha must be boolean.");
-        }
-        const frameType = frames.dataType.element;
-        const arrow = this.dataTypes.isReferenceStruct(frameType.name);
-        const access = (base: string, name: string): string => {
-            const field = this.dataTypes.structField(frameType.name, name, node);
-            return `${base}${arrow ? "->" : "."}${field.name}`;
-        };
-        const engine = this.requireDefaultEngine(node);
-        const atlas = this.allocateTemporaryCppName("sprite_atlas");
-        const stored = this.allocateTemporaryCppName("sprite_frame");
-        const uvMin = access(stored, "uvMin");
-        const uvMax = access(stored, "uvMax");
-        const sourceSize = access(stored, "sourceSizePx");
-        const pivot = access(stored, "pivot");
-        this.reachJsData();
-        return (
-            `([&]() { bbl::SpriteAtlasRecord ${atlas}; ` +
-            `${atlas}.rgba = ${texture.cpp}.rgba; ` +
-            `${atlas}.width = bbl::js::to_uint32(${tupleLane(size, 0)}); ` +
-            `${atlas}.height = bbl::js::to_uint32(${tupleLane(size, 1)}); ` +
-            `${atlas}.premultiplied_alpha = ${premultiplied.cpp}; ` +
-            `${atlas}.mip_maps = false; ${atlas}.sampler = ${texture.cpp}.sampler; ` +
-            `for (const auto& ${stored} : ${frames.cpp}) { ` +
-            `${atlas}.frames.push_back(bbl::SpriteFrame{` +
-            `bbl::Vec2{static_cast<float>(${uvMin}[0]), static_cast<float>(${uvMin}[1])}, ` +
-            `bbl::Vec2{static_cast<float>(${uvMax}[0]), static_cast<float>(${uvMax}[1])}, ` +
-            `bbl::Vec2{static_cast<float>(${sourceSize}[0]), static_cast<float>(${sourceSize}[1])}, ` +
-            `bbl::Vec2{static_cast<float>(${pivot}[0]), static_cast<float>(${pivot}[1])}}); } ` +
-            `${engine}.sprite_atlases.push_back(std::move(${atlas})); ` +
-            `return bbl::SpriteAtlasHandle{static_cast<std::uint32_t>(${engine}.sprite_atlases.size() - 1)}; }())`
-        );
+        return compileSpriteAtlasRecord(this, value, node);
     }
 
     public probeStaticArrayLiteral(
@@ -4108,7 +3888,7 @@ class Compiler
     ): Value | undefined {
         const dataType =
             this.dataLowerer.dataTypeAt(name);
-        if (!dataType) {
+        if (!dataType || dataType.kind === "handle") {
             return undefined;
         }
         const cppName = this.allocateTemporaryCppName(
@@ -4464,12 +4244,6 @@ class Compiler
         faceSize?: number,
     ): CompileAsset {
         return registerAsset(this, source, kind, faceSize);
-    }
-
-    public registerPixelsAsset(
-        expression: ts.Expression,
-    ): { cpp: string; source: string } {
-        return registerPixelsAsset(this, expression);
     }
 
     public probePixelsAsset(
@@ -5334,7 +5108,7 @@ class Compiler
     ): void {
         const dataType =
             this.dataLowerer.dataTypeAt(identifier);
-        if (!dataType) {
+        if (!dataType || dataType.kind === "handle") {
             this.bindParameterValue(
                 identifier,
                 this.compileValue(argument),

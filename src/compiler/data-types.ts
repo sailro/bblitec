@@ -164,6 +164,49 @@ export function isTypedArrayType(
     );
 }
 
+/** Apply the reached ECMAScript store conversion for one typed-array lane. */
+export function typedArrayStoreExpression(
+    kind: TypedArrayKind,
+    value: string,
+): string {
+    switch (kind) {
+        case "u8array":
+            return `bbl::js::to_uint8(${value})`;
+        case "u16array":
+            return `bbl::js::to_uint16(${value})`;
+        case "u32array":
+            return `bbl::js::to_uint32(${value})`;
+        case "f32array":
+            return `static_cast<float>(${value})`;
+    }
+}
+
+/**
+ * Whether a native function parameter must alias its caller's JavaScript
+ * object rather than copy its native representation.
+ *
+ * Primitive values, strings, optional primitive values, non-owning spans,
+ * reference-backed structs, and tables already preserve their source
+ * semantics by value. Mutable containers and value-backed structs do not.
+ */
+export function passesByReference(
+    dataTypes: DataTypeRegistry,
+    dataType: DataType,
+): boolean {
+    return (
+        (dataType.kind === "struct" &&
+            !dataTypes.isReferenceStruct(dataType.name)) ||
+        dataType.kind === "vector" ||
+        dataType.kind === "map" ||
+        dataType.kind === "set" ||
+        dataType.kind === "tuple" ||
+        dataType.kind === "enummap" ||
+        dataType.kind === "arraybuffer" ||
+        dataType.kind === "dataview" ||
+        isTypedArrayType(dataType)
+    );
+}
+
 /**
  * The `arity` components of a native tuple expression, as float expressions.
  *
@@ -283,6 +326,8 @@ export class DataTypeRegistry {
     private readonly enumNames = new Set<string>();
     /** String-union enums that actually receive a runtime string value. */
     private readonly runtimeEnumParsers = new Set<string>();
+    /** Named data types that reached emitted C++ rather than a type probe. */
+    private readonly emittedNamedTypes = new Set<string>();
     private readonly tables = new Map<
         ts.Node,
         DataTableDefinition
@@ -301,8 +346,6 @@ export class DataTypeRegistry {
             elements: string[];
         }
     >();
-    private readonly mappingInProgress =
-        new Set<ts.Type>();
     private readonly structNamesInProgress = new Map<
         ts.Symbol | ts.Type,
         string
@@ -319,15 +362,6 @@ export class DataTypeRegistry {
         private readonly checker: ts.TypeChecker,
         private readonly fail: Fail,
     ) {}
-
-    public get empty(): boolean {
-        return (
-            this.structsByKey.size === 0 &&
-            this.enumsByKey.size === 0 &&
-            this.tables.size === 0 &&
-            this.tagTables.size === 0
-        );
-    }
 
     /**
      * Marks object values stored behind another JavaScript object/container
@@ -435,14 +469,6 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        const recursiveStruct =
-            this.structNamesInProgress.get(
-                this.structIdentity(type),
-            );
-        if (recursiveStruct) {
-            this.referenceStructNames.add(recursiveStruct);
-            return { kind: "struct", name: recursiveStruct };
-        }
         if (
             (type.flags &
                 (ts.TypeFlags.Number |
@@ -705,7 +731,6 @@ export class DataTypeRegistry {
                 : `Record${++this.anonymousStructIndex}`,
             this.structNames,
         );
-        this.mappingInProgress.add(type);
         this.structNamesInProgress.set(
             identity,
             provisionalName,
@@ -724,7 +749,6 @@ export class DataTypeRegistry {
             }
             return mapped;
         } finally {
-            this.mappingInProgress.delete(type);
             this.structNamesInProgress.delete(identity);
         }
     }
@@ -894,6 +918,7 @@ export class DataTypeRegistry {
                 `'${literal}' is not a member of ${dataType.name}.`,
             );
         }
+        this.emittedNamedTypes.add(dataType.name);
         return `bblscene::${dataType.name}::${sanitizeIdentifier(literal)}`;
     }
 
@@ -916,6 +941,7 @@ export class DataTypeRegistry {
                 `Unknown enum '${dataType.name}'.`,
             );
         }
+        this.emittedNamedTypes.add(dataType.name);
         this.runtimeEnumParsers.add(dataType.name);
         return `bblscene::${dataType.name}_from_string(${cpp})`;
     }
@@ -932,6 +958,37 @@ export class DataTypeRegistry {
         return (definition?.fields ?? []).map(
             (field) => field.type,
         );
+    }
+
+    /** Whether a plain-data shape owns an engine/PAL resource handle. */
+    public carriesHandle(
+        type: DataType,
+        seen = new Set<string>(),
+    ): boolean {
+        switch (type.kind) {
+            case "handle":
+                return true;
+            case "optional":
+                return this.carriesHandle(type.inner, seen);
+            case "vector":
+            case "span":
+            case "enummap":
+            case "set":
+                return this.carriesHandle(type.element, seen);
+            case "map":
+                return (
+                    this.carriesHandle(type.key, seen) ||
+                    this.carriesHandle(type.value, seen)
+                );
+            case "struct":
+                if (seen.has(type.name)) return false;
+                seen.add(type.name);
+                return this.structFieldTypes(type.name).some(
+                    (field) => this.carriesHandle(field, seen),
+                );
+            default:
+                return false;
+        }
     }
 
     public structFields(
@@ -1139,8 +1196,10 @@ export class DataTypeRegistry {
             case "handle":
                 return handleCppTypes[dataType.handle];
             case "struct":
+                this.emittedNamedTypes.add(dataType.name);
                 return `bblscene::${dataType.name}`;
             case "enum":
+                this.emittedNamedTypes.add(dataType.name);
                 return `bblscene::${dataType.name}`;
             case "optional":
                 if (
@@ -1163,6 +1222,9 @@ export class DataTypeRegistry {
             case "tuple":
                 return `bbl::js::Tuple<${dataType.arity}>`;
             case "enummap":
+                this.emittedNamedTypes.add(
+                    dataType.enumName,
+                );
                 return `bbl::js::EnumMap<${this.cppType(dataType.element)}, ${this.enumMembers(dataType.enumName).length}>`;
             case "table":
                 return `const ${this.tableCppType(dataType.dimensions)}&`;
@@ -1245,11 +1307,20 @@ export class DataTypeRegistry {
      * dependency order inside `namespace bblscene`.
      */
     public renderPreamble(): string {
-        if (this.empty) {
+        const used = this.reachableNamedTypes();
+        if (
+            used.structs.size === 0 &&
+            used.enums.size === 0 &&
+            this.tables.size === 0 &&
+            this.tagTables.size === 0
+        ) {
             return "";
         }
         const lines: string[] = ["namespace bblscene {", ""];
         for (const definition of this.enumsByKey.values()) {
+            if (!used.enums.has(definition.name)) {
+                continue;
+            }
             lines.push(
                 `enum class ${definition.name} {`,
                 ...definition.members.map(
@@ -1277,8 +1348,14 @@ export class DataTypeRegistry {
             }
         }
         const emitted = new Set<string>();
-        const structs = [...this.structsByKey.values()];
+        const structs = [...this.structsByKey.values()].filter(
+            (definition) =>
+                used.structs.has(definition.name),
+        );
         for (const name of this.referenceStructNames) {
+            if (!used.structs.has(name)) {
+                continue;
+            }
             lines.push(
                 `struct ${name}Data;`,
                 `using ${name} = std::shared_ptr<${name}Data>;`,
@@ -1332,6 +1409,72 @@ export class DataTypeRegistry {
         }
         lines.push("}  // namespace bblscene");
         return lines.join("\n");
+    }
+
+    private reachableNamedTypes(): {
+        structs: Set<string>;
+        enums: Set<string>;
+    } {
+        const structs = new Set<string>();
+        const enums = new Set<string>();
+        const visit = (dataType: DataType): void => {
+            switch (dataType.kind) {
+                case "struct": {
+                    if (structs.has(dataType.name)) {
+                        return;
+                    }
+                    structs.add(dataType.name);
+                    const definition = [
+                        ...this.structsByKey.values(),
+                    ].find(
+                        (candidate) =>
+                            candidate.name === dataType.name,
+                    );
+                    for (const field of
+                        definition?.fields ?? []) {
+                        visit(field.type);
+                    }
+                    return;
+                }
+                case "enum":
+                    enums.add(dataType.name);
+                    return;
+                case "optional":
+                    visit(dataType.inner);
+                    return;
+                case "vector":
+                case "set":
+                case "span":
+                    visit(dataType.element);
+                    return;
+                case "map":
+                    visit(dataType.key);
+                    visit(dataType.value);
+                    return;
+                case "enummap":
+                    enums.add(dataType.enumName);
+                    visit(dataType.element);
+                    return;
+                default:
+                    return;
+            }
+        };
+        for (const name of this.emittedNamedTypes) {
+            const struct = [
+                ...this.structsByKey.values(),
+            ].find(
+                (candidate) => candidate.name === name,
+            );
+            if (struct) {
+                visit({ kind: "struct", name });
+            } else {
+                enums.add(name);
+            }
+        }
+        for (const name of this.runtimeEnumParsers) {
+            enums.add(name);
+        }
+        return { structs, enums };
     }
 
     private structDependencies(

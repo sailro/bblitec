@@ -690,6 +690,87 @@ test("executes imported module initializers once in dependency order", () => {
     );
 });
 
+test("materializes private module state observed by an exported function", () => {
+    const result = compileSource(
+        `
+            import {
+                valueAt,
+            } from "./fixtures/compiler-modules/module-private-state.js";
+
+            const selected = valueAt(1);
+        `,
+        {
+            fileName:
+                "test/compiler-multi-file-entry.ts",
+        },
+    );
+
+    const values = result.cpp.match(
+        /bbl::js::Array<double> (v_module\d+_values) =/,
+    );
+    assert.ok(values, "private state has native storage");
+    const alias = result.cpp.match(
+        new RegExp(
+            `bbl::js::Array<double>& (v_module\\d+_target) = ${values[1]}`,
+        ),
+    );
+    assert.ok(alias, "the JavaScript container alias remains a reference");
+    assert.equal(
+        (result.cpp.match(new RegExp(`${alias[1]}\\.push_back`, "g")) ?? [])
+            .length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`${values[1]}\\[bbl::js::array_index\\(v_fn\\d+_index\\)\\]`),
+    );
+});
+
+test("materializes an inferred array mutated through a local alias", () => {
+    const result = compileSource(`
+        const values = [0];
+        const alias = values;
+        alias.push(4);
+        const selected = values[1];
+    `);
+
+    const values = result.cpp.match(
+        /bbl::js::Array<double> (v_values) =/,
+    );
+    assert.ok(values);
+    assert.match(
+        result.cpp,
+        new RegExp(`bbl::js::Array<double>& v_alias = ${values[1]}`),
+    );
+    assert.match(result.cpp, /v_alias\.push_back\(4\.0\)/);
+});
+
+test("materializes state populated by a dependent registrar module", () => {
+    const result = compileSource(
+        `
+            import {
+                firstValue,
+            } from "./fixtures/compiler-modules/module-registrar.js";
+
+            const selected = firstValue();
+        `,
+        {
+            fileName:
+                "test/compiler-multi-file-entry.ts",
+        },
+    );
+
+    const values = result.cpp.match(
+        /bbl::js::Array<double> (v_module\d+_values) =/,
+    );
+    assert.ok(values, "dependency state has native storage");
+    assert.match(result.cpp, new RegExp(`${values[1]}\\.push_back\\(11\\.0\\)`));
+    assert.match(
+        result.cpp,
+        new RegExp(`${values[1]}\\[bbl::js::array_index\\(0\\.0\\)\\]`),
+    );
+});
+
 test("keeps pure imported data builders on the static path", () => {
     const result = compileSource(
         `
@@ -1058,6 +1139,42 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
     );
 });
 
+test("lowers array callbacks through one native iteration protocol", () => {
+    const result = compileSource(`
+        const values: number[] = [1, 2, 3];
+        const found = values.find((value, index, owner) => value === owner[index]);
+        const filtered = values.filter((value) => value > 1);
+        const present = values.some((value) => value === 2);
+        const mapped = values.map((value) => value * 2);
+        let total = 0;
+        values.forEach((value) => { total += value; });
+    `);
+
+    for (const label of [
+        "find_source",
+        "filter_source",
+        "some_source",
+        "map_source",
+        "for_each_source",
+    ]) {
+        assert.match(
+            result.cpp,
+            new RegExp(`v_bblite_${label}_\\d+`),
+        );
+    }
+    assert.match(
+        result.cpp,
+        /v_bblite_find_result_\d+ = v_bblite_find_source_\d+\[/,
+    );
+    assert.match(result.cpp, /v_bblite_filter_result_\d+\.push_back/);
+    assert.match(result.cpp, /v_bblite_some_result_\d+ = true/);
+    assert.match(result.cpp, /v_bblite_map_result_\d+\.push_back/);
+    assert.match(
+        result.cpp,
+        /const std::size_t v_bblite_for_each_count_\d+/,
+    );
+});
+
 test("writes a tuple lane at its sink's own width", () => {
     // A lane is stored and read back by a sink it cannot see, so the width
     // belongs to the sink: `position.set` is a double record field, and a
@@ -1339,6 +1456,41 @@ test("stores and mutates a runtime string local", () => {
     assert.match(result.cpp, /std::string v_\w*name = ""/);
     assert.match(result.cpp, /v_\w*name \+= bbl::js::string_from_char_code/);
     assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
+});
+
+test("preserves undefined in typeof for maybe-absent runtime values", () => {
+    assert.doesNotThrow(() =>
+        compileSource(`
+            const absent = typeof undefined;
+            const nil = typeof null;
+        `)
+    );
+    const result = compileSource(`
+        interface Entry { value: number; }
+        const entries: Entry[] = [];
+        let index = 0;
+        const entry = entries[index];
+        const kind = typeof entry;
+    `);
+    assert.match(
+        result.cpp,
+        /v_bblite_element_found_\d+ \? "object" : "undefined"/,
+    );
+});
+
+test("specializes typeof for a settled inlined union parameter", () => {
+    const result = compileSource(`
+        function select(value: string | number): number {
+            return typeof value === "number"
+                ? value
+                : 3;
+        }
+        const fromString = select("abc");
+        const fromNumber = select(7);
+    `);
+
+    assert.match(result.cpp, /double v_fromString = 3\.0/);
+    assert.match(result.cpp, /double v_fromNumber = v_fn\d+_value/);
 });
 
 test("preserves existence guards for dynamically indexed object arrays", () => {
@@ -1833,6 +1985,41 @@ test("binds object data-path locals with shared identity", () => {
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
 
+test("copies spread objects and destructures reference-backed array entries", () => {
+    const result = compileSource(`
+        interface Row {
+            row: number;
+            colors: number[];
+        }
+        function sumRows(rows: Row[]): number {
+            let total = 0;
+            for (const { row, colors } of rows) {
+                total += row + colors[0]!;
+            }
+            return total;
+        }
+        const rows: Row[] = [];
+        const original: Row = { row: 1, colors: [2, 3] };
+        const moved: Row = { ...original, row: original.row + 1 };
+        rows.push(original, moved);
+        const total = sumRows(rows);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bblscene::Row v_moved = std::make_shared<bblscene::RowData>\(\*\(v_original\)\);/,
+    );
+    assert.match(result.cpp, /v_moved->row = \(v_original->row \+ 1\.0\);/);
+    assert.match(
+        result.cpp,
+        /v_bblite_item_\d+->row/,
+    );
+    assert.match(
+        result.cpp,
+        /v_bblite_item_\d+->colors/,
+    );
+});
+
 test("keeps an object element alive after its container is resized", () => {
     const result = compileSource(`
         interface Entry { value: number; }
@@ -2101,6 +2288,11 @@ test("compiles generated mesh data and the file-texture contract", () => {
             ),
         ),
     );
+    assert.doesNotMatch(
+        result.cpp,
+        /(?:Engine|Surface)Context\d*Data/,
+        "type probes must not leak unused context declarations",
+    );
 });
 
 test("keeps data URL asset payloads out of the generated manifest", () => {
@@ -2342,6 +2534,58 @@ test("carries scene-code PBR specular AA into composition and runtime", () => {
                 }
             `),
         /Expected a boolean literal/,
+    );
+});
+
+test("derives mapped PBR emissive colours from static source expressions", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            setPbrEmissive,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const base = createSolidTexture2D(engine, 1, 1, 1);
+            const orm = createSolidTexture2D(engine, 1, 0.5, 0);
+            const colors: readonly [number, number, number][] = [
+                [0.95, 0.24, 0.52],
+                [0.22, 0.34, 0.95],
+            ];
+            colors.map((rgb) => {
+                const material = createPbrMaterial({
+                    baseColorTexture: base,
+                    baseColorFactor: [rgb[0], rgb[1], rgb[2], 1],
+                    ormTexture: orm,
+                });
+                setPbrEmissive(material, [
+                    rgb[0] * 0.35,
+                    rgb[1] * 0.35,
+                    rgb[2] * 0.35,
+                ]);
+                return material;
+            });
+        }
+    `);
+
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials.map(
+            ({ emissiveColor }) => emissiveColor,
+        ),
+        [
+            [0.95 * 0.35, 0.24 * 0.35, 0.52 * 0.35],
+            [0.22 * 0.35, 0.34 * 0.35, 0.95 * 0.35],
+        ],
+    );
+    assert.equal(
+        result.cpp.match(/bbl::set_pbr_emissive\(/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /static_cast<float>\(\(0\.95 \* 0\.35\)\)/,
     );
 });
 
@@ -3102,6 +3346,10 @@ test("withdraws the length fold from a container handed to a call", () => {
     `);
 
     assert.match(result.cpp, /for \(; v_block\d+_i < bbl::js::array_length/);
+    assert.match(
+        result.cpp,
+        /void grow\(bbl::js::Array<double>& v_fn\d+_list\)/,
+    );
 });
 
 test("a list a loop grows decides its shape at the first push", () => {
@@ -4476,6 +4724,54 @@ test("folds module-relative demo asset URLs to the pinned public root", () => {
     ]);
 });
 
+test("applies every recognized module URL pathname transformation", () => {
+    const result = compileSource(
+        `
+            import { createEngine, loadTexture2D } from "@babylonjs/lite";
+            import { moduleAssetUrl } from "./fixtures/compiler-modules/asset-url-helper.js";
+
+            const textureUrl = moduleAssetUrl(
+                "/lite/bundle/demos/probe.png",
+                import.meta.url,
+            );
+            async function main() {
+                const engine = await createEngine({});
+                await loadTexture2D(engine, textureUrl);
+            }
+        `,
+        { fileName: "test/compiler-multi-file-entry.ts" },
+    );
+
+    assert.deepEqual(result.manifest.assets.map(({ source }) => source), [
+        pinnedAssetUrl("lab/public/bundle/demos/probe.png"),
+    ]);
+});
+
+test("keeps pinned root assets independent of adjacent filesystem files", () => {
+    const directory = mkdtempSync(
+        join(tmpdir(), "bblite-pinned-asset-"),
+    );
+    try {
+        writeFileSync(join(directory, "brdf-lut.png"), "not the pin");
+        const result = compileSource(
+            `
+                import { createEngine, loadTexture2D } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    await loadTexture2D(engine, "/brdf-lut.png");
+                }
+            `,
+            { fileName: join(directory, "entry.ts") },
+        );
+
+        assert.deepEqual(result.manifest.assets.map(({ source }) => source), [
+            pinnedAssetUrl("packages/babylon-lite/assets/brdf-lut.png"),
+        ]);
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
 test("folds module-relative asset URLs inside an imported consumer", () => {
     const result = compileSource(
         `
@@ -5432,6 +5728,58 @@ test("reaches a shader material's samplers and defines", () => {
     ]);
     // The slot the setter resolved is the declared index.
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
+});
+
+test("preserves shader-material identity through a typed class field", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createShaderMaterial,
+            setShaderFloat,
+            type ShaderMaterial,
+        } from "babylon-lite";
+
+        const vertexSource = \`struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+        };
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+            var out: VertexOutput;
+            out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+            return out;
+        }\`;
+        const fragmentSource = \`@fragment fn mainFragment() -> @location(0) vec4<f32> {
+            return vec4<f32>(shaderUniforms.brightness);
+        }\`;
+
+        class MaterialOwner {
+            private readonly material: ShaderMaterial;
+
+            constructor() {
+                this.material = createShaderMaterial({
+                    name: "class-owned",
+                    vertexSource,
+                    fragmentSource,
+                    attributes: ["position"],
+                    uniforms: [
+                        "worldViewProjection",
+                        { name: "brightness", type: "f32", defaultValue: 1 },
+                    ],
+                });
+                setShaderFloat(this.material, "brightness", 2.4);
+            }
+        }
+
+        async function main() {
+            await createEngine({});
+            const owner = new MaterialOwner();
+        }
+    `);
+
+    assert.deepEqual(result.manifest.shaderVariants, ["class-owned"]);
+    assert.match(
+        result.cpp,
+        /bbl::set_shader_uniform_value\([^;]*, 0u, 2\.4f\);/,
+    );
 });
 
 test("carries pixels textures through typed records and maps", () => {

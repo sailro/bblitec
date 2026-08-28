@@ -13,16 +13,24 @@ test("keeps JavaScript array helpers compatible with generated native vectors", 
     const runtime = source("native/include/bblite/js_data.hpp");
     assert.match(
         runtime,
-        /array_length\(const std::vector<T>& values\)/,
+        /template <typename Values>\s+\[\[nodiscard\]\] inline double array_length\(const Values& values\)/,
     );
     for (const kind of ["u8", "u16", "f32", "u32"]) {
         assert.match(
             runtime,
             new RegExp(
-                `${kind}_array_from\\(\\s*const std::vector<double>& values\\)`,
+                `template <typename Values>\\s+\\[\\[nodiscard\\]\\] inline [^\\n]+ ${kind}_array_from\\(const Values& values\\)`,
             ),
         );
     }
+});
+
+test("shares one binary-buffer runtime between generated and native code", () => {
+    const runtime = source("native/include/bblite/ts_runtime.hpp");
+    assert.match(runtime, /using ArrayBuffer = js::ArrayBuffer;/);
+    assert.match(runtime, /using Uint8Array = js::U8Array;/);
+    assert.match(runtime, /using DataView = js::DataView;/);
+    assert.doesNotMatch(runtime, /class (?:ArrayBuffer|DataView)/);
 });
 
 test("accepts value and identity-backed records in native vector paths", () => {
@@ -367,6 +375,20 @@ test("keeps extracted option and manifest blocks in their modules", () => {
             [
                 /names no scene-code PBR material/,
                 /creation-ordered across families/,
+            ],
+        ],
+        [
+            "src/compiler/module-initializers.ts",
+            [
+                /post-initializer identity/,
+                /Module storage read or written/,
+            ],
+        ],
+        [
+            "src/compiler/sprite-atlas-record.ts",
+            [
+                /A data SpriteAtlas currently requires/,
+                /SpriteAtlas frames require an array/,
             ],
         ],
     ];

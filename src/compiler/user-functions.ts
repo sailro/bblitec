@@ -1,16 +1,186 @@
 import ts from "typescript";
 import { sanitizeCppIdentifier } from "../cpp-literals.js";
-import type {
-    DataType,
-    DataTypeRegistry,
+import {
+    passesByReference,
+    type DataType,
+    type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
+import {
+    readOnlyDataMethods,
+    storingDataMethods,
+} from "./data-methods.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
     | ts.FunctionDeclaration
     | ts.FunctionExpression
     | ts.ArrowFunction;
+
+/** Conservatively determines whether a function leaves a parameter unchanged. */
+export function parameterIsReadOnly(
+    checker: ts.TypeChecker,
+    declaration: SupportedFunction,
+    parameter: ts.Identifier,
+    active = new Set<ts.Symbol>(),
+): boolean {
+    const symbol = checker.getSymbolAtLocation(parameter);
+    if (!symbol || !declaration.body) return false;
+    if (active.has(symbol)) return true;
+    active.add(symbol);
+    const aliases = new Set<ts.Symbol>([symbol]);
+    const unwrap = (expression: ts.Expression): ts.Expression => {
+        let current = expression;
+        while (
+            ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isTypeAssertionExpression(current) ||
+            ts.isNonNullExpression(current) ||
+            ts.isSatisfiesExpression(current)
+        ) {
+            current = current.expression;
+        }
+        return current;
+    };
+    const namesParameter = (node: ts.Node): boolean =>
+        ts.isIdentifier(node) &&
+        aliases.has(checker.getSymbolAtLocation(node)!);
+    const containsParameter = (node: ts.Node): boolean => {
+        let found = false;
+        const visit = (candidate: ts.Node): void => {
+            if (found) return;
+            if (namesParameter(candidate)) {
+                found = true;
+                return;
+            }
+            ts.forEachChild(candidate, visit);
+        };
+        visit(node);
+        return found;
+    };
+    const rootNamesParameter = (
+        expression: ts.Expression,
+    ): boolean => {
+        let current = unwrap(expression);
+        while (
+            ts.isPropertyAccessExpression(current) ||
+            ts.isElementAccessExpression(current)
+        ) {
+            current = unwrap(current.expression);
+        }
+        return namesParameter(current);
+    };
+    let readOnly = true;
+    const visit = (node: ts.Node): void => {
+        if (!readOnly) return;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind >=
+                ts.SyntaxKind.FirstAssignment &&
+            node.operatorToken.kind <=
+                ts.SyntaxKind.LastAssignment &&
+            rootNamesParameter(node.left)
+        ) {
+            readOnly = false;
+            return;
+        }
+        if (
+            (ts.isPrefixUnaryExpression(node) ||
+                ts.isPostfixUnaryExpression(node)) &&
+            (node.operator === ts.SyntaxKind.PlusPlusToken ||
+                node.operator ===
+                    ts.SyntaxKind.MinusMinusToken) &&
+            rootNamesParameter(node.operand)
+        ) {
+            readOnly = false;
+            return;
+        }
+        if (ts.isCallExpression(node)) {
+            if (
+                ts.isPropertyAccessExpression(
+                    node.expression,
+                ) &&
+                rootNamesParameter(
+                    node.expression.expression,
+                ) &&
+                !readOnlyDataMethods.has(
+                    node.expression.name.text,
+                )
+            ) {
+                readOnly = false;
+                return;
+            }
+            const signature = checker.getResolvedSignature(node);
+            const called = signature?.declaration;
+            for (const [index, argument] of node.arguments.entries()) {
+                if (!containsParameter(argument)) continue;
+                if (
+                    ts.isPropertyAccessExpression(
+                        node.expression,
+                    ) &&
+                    !rootNamesParameter(
+                        node.expression.expression,
+                    ) &&
+                    storingDataMethods.has(
+                        node.expression.name.text,
+                    )
+                ) {
+                    continue;
+                }
+                const calledParameter = called?.parameters[index];
+                if (
+                    !called ||
+                    !(
+                        ts.isFunctionDeclaration(called) ||
+                        ts.isFunctionExpression(called) ||
+                        ts.isArrowFunction(called)
+                    ) ||
+                    !calledParameter ||
+                    !ts.isIdentifier(calledParameter.name) ||
+                    !parameterIsReadOnly(
+                        checker,
+                        called,
+                        calledParameter.name,
+                        active,
+                    )
+                ) {
+                    readOnly = false;
+                    return;
+                }
+            }
+        }
+        if (
+            ts.isVariableDeclaration(node) &&
+            node.initializer &&
+            ts.isIdentifier(node.name) &&
+            rootNamesParameter(node.initializer)
+        ) {
+            const alias = checker.getSymbolAtLocation(
+                node.name,
+            );
+            if (alias) aliases.add(alias);
+            return;
+        }
+        if (
+            ts.isVariableDeclaration(node) &&
+            node.initializer &&
+            containsParameter(node.initializer) &&
+            (checker.getTypeAtLocation(node.initializer)
+                .flags &
+                ts.TypeFlags.Object) !==
+                0
+        ) {
+            // A composite wrapper can retain the parameter and expose a
+            // second mutation path that this local alias set cannot follow.
+            readOnly = false;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(declaration.body);
+    active.delete(symbol);
+    return readOnly;
+}
 
 /**
  * Resolves an identifier to a reachable local function declaration and
@@ -144,6 +314,15 @@ export interface UserFunctionContext {
 }
 
 export class UserFunctionLowerer {
+    private readonly directCallCache = new Map<
+        SupportedFunction,
+        ReadonlySet<SupportedFunction>
+    >();
+    private readonly recursiveGroupCache = new Map<
+        SupportedFunction,
+        readonly SupportedFunction[] | null
+    >();
+
     private readonly cache = new Map<
         SupportedFunction,
         UserFunctionIr
@@ -284,8 +463,81 @@ export class UserFunctionLowerer {
     ): Value | undefined {
         const parameterTypes = bound.nativeCallbackParameterTypes;
         const declaration = bound.callbackDeclaration;
-        if (!parameterTypes || !declaration || ts.isIdentifier(declaration)) {
+        if (!declaration) {
             return undefined;
+        }
+        if (ts.isIdentifier(declaration)) {
+            if (bound.cpp.length > 0) {
+                context.fail(
+                    declaration,
+                    "Native callback is missing its function signature.",
+                );
+            }
+            return undefined;
+        }
+        if (!parameterTypes) {
+            if (bound.cpp.length === 0) {
+                return undefined;
+            }
+            const signature = this.checker.getSignatureFromDeclaration(
+                declaration,
+            );
+            if (!signature) {
+                context.fail(
+                    declaration,
+                    "Native callback is missing its function signature.",
+                );
+            }
+            if (call.arguments.length > declaration.parameters.length) {
+                context.fail(
+                    call,
+                    "Native callback received too many arguments.",
+                );
+            }
+            const argumentsCpp = declaration.parameters.map(
+                (parameter, index) => {
+                    const argument =
+                        call.arguments[index] ??
+                        parameter.initializer;
+                    if (!argument) {
+                        context.fail(
+                            call,
+                            `Native callback requires argument ${index + 1}.`,
+                        );
+                    }
+                    const type = context.dataTypes.fromTsType(
+                        this.checker.getTypeAtLocation(parameter),
+                        parameter,
+                    );
+                    if (!type) {
+                        context.fail(
+                            parameter,
+                            "Native callback parameters must have plain-data types.",
+                        );
+                    }
+                    return context.compileForDataSink(
+                        argument,
+                        type,
+                    );
+                },
+            );
+            const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
+            const returnTsType =
+                this.checker.getReturnTypeOfSignature(signature);
+            if ((returnTsType.flags & ts.TypeFlags.Void) !== 0) {
+                return { kind: "void", cpp };
+            }
+            const returnType = context.dataTypes.fromTsType(
+                returnTsType,
+                declaration,
+            );
+            if (!returnType) {
+                context.fail(
+                    declaration,
+                    "Native callback return type must be plain data or void.",
+                );
+            }
+            return context.dataValue(cpp, returnType);
         }
         if (call.arguments.length > declaration.parameters.length) {
             context.fail(call, "Recursive function received too many arguments.");
@@ -341,28 +593,10 @@ export class UserFunctionLowerer {
         root: SupportedFunction,
         fail: Fail,
     ): readonly SupportedFunction[] | undefined {
-        const graph = new Map<SupportedFunction, Set<SupportedFunction>>();
-        const direct = (declaration: SupportedFunction): Set<SupportedFunction> => {
-            const cached = graph.get(declaration);
-            if (cached) return cached;
-            const callees = new Set<SupportedFunction>();
-            graph.set(declaration, callees);
-            const body = declaration.body;
-            const visit = (node: ts.Node): void => {
-                if (node !== body && ts.isFunctionLike(node)) return;
-                if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-                    const called = resolveFunctionDeclaration(
-                        this.checker,
-                        node.expression,
-                        fail,
-                    );
-                    if (called) callees.add(called);
-                }
-                ts.forEachChild(node, visit);
-            };
-            if (body) visit(body);
-            return callees;
-        };
+        const cached = this.recursiveGroupCache.get(root);
+        if (cached !== undefined) return cached ?? undefined;
+        const direct = (declaration: SupportedFunction) =>
+            this.directCalls(declaration, fail);
         const reachable = new Set<SupportedFunction>();
         const collect = (declaration: SupportedFunction): void => {
             if (reachable.has(declaration)) return;
@@ -370,27 +604,71 @@ export class UserFunctionLowerer {
             for (const called of direct(declaration)) collect(called);
         };
         collect(root);
-        const reachesRoot = (
-            declaration: SupportedFunction,
-            visiting = new Set<SupportedFunction>(),
-        ): boolean => {
-            if (declaration === root) return true;
-            if (visiting.has(declaration)) return false;
-            const next = new Set(visiting);
-            next.add(declaration);
+        const callers = new Map<
+            SupportedFunction,
+            Set<SupportedFunction>
+        >();
+        for (const declaration of reachable) {
             for (const called of direct(declaration)) {
-                if (reachesRoot(called, next)) return true;
+                if (!reachable.has(called)) continue;
+                const entries = callers.get(called) ?? new Set();
+                entries.add(declaration);
+                callers.set(called, entries);
             }
-            return false;
-        };
-        const group = [...reachable].filter(
-            (declaration) =>
-                declaration !== root && reachesRoot(declaration),
+        }
+        const reachesRoot = new Set<SupportedFunction>([
+            root,
+        ]);
+        const pending = [root];
+        while (pending.length > 0) {
+            const current = pending.pop()!;
+            for (const caller of callers.get(current) ?? []) {
+                if (reachesRoot.has(caller)) continue;
+                reachesRoot.add(caller);
+                pending.push(caller);
+            }
+        }
+        const group = [...reachable].filter((declaration) =>
+            reachesRoot.has(declaration),
         );
-        if (!direct(root).has(root) && group.length === 0) {
+        if (group.length === 1 && !direct(root).has(root)) {
+            this.recursiveGroupCache.set(root, null);
             return undefined;
         }
-        return [root, ...group];
+        const ordered = [
+            root,
+            ...group.filter((declaration) => declaration !== root),
+        ];
+        this.recursiveGroupCache.set(root, ordered);
+        return ordered;
+    }
+
+    private directCalls(
+        declaration: SupportedFunction,
+        fail: Fail,
+    ): ReadonlySet<SupportedFunction> {
+        const cached = this.directCallCache.get(declaration);
+        if (cached) return cached;
+        const callees = new Set<SupportedFunction>();
+        const body = declaration.body;
+        const visit = (node: ts.Node): void => {
+            if (node !== body && ts.isFunctionLike(node)) return;
+            if (
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression)
+            ) {
+                const called = resolveFunctionDeclaration(
+                    this.checker,
+                    node.expression,
+                    fail,
+                );
+                if (called) callees.add(called);
+            }
+            ts.forEachChild(node, visit);
+        };
+        if (body) visit(body);
+        this.directCallCache.set(declaration, callees);
+        return callees;
     }
 
     private lowerRecursiveGroup(
@@ -423,10 +701,18 @@ export class UserFunctionLowerer {
             }
             const parameterTypes = ir.parameters.map(({ type, declaration: parameter }) => {
                 const mapped = context.dataTypes.fromTsType(type, parameter);
-                return mapped && !this.carriesHandle(context.dataTypes, mapped)
+                return mapped && !context.dataTypes.carriesHandle(mapped)
                     ? mapped
                     : undefined;
             });
+            const parameterReadOnly = ir.parameters.map(
+                ({ name: parameter }) =>
+                    parameterIsReadOnly(
+                        this.checker,
+                        declaration,
+                        parameter,
+                    ),
+            );
             const cppName =
                 `bbl_recursive_${context.allocateUserFunctionPrefix()}` +
                 sanitizeCppIdentifier(this.declarationName(declaration));
@@ -441,7 +727,16 @@ export class UserFunctionLowerer {
                 nativeCallbackStaticArguments: captured,
                 ...(returnType ? { nativeCallbackReturnType: returnType } : {}),
             };
-            return { ir, declaration, returnType, parameterTypes, cppName, captured, value };
+            return {
+                ir,
+                declaration,
+                returnType,
+                parameterTypes,
+                parameterReadOnly,
+                cppName,
+                captured,
+                value,
+            };
         });
         const entryByDeclaration = new Map(
             entries.map((entry) => [entry.declaration, entry]),
@@ -466,8 +761,16 @@ export class UserFunctionLowerer {
                 ? context.dataTypes.cppType(entry.returnType)
                 : "void";
             const parametersCpp = entry.parameterTypes
-                .filter((type): type is DataType => type !== undefined)
-                .map((type) => this.recursiveParameterCpp(context.dataTypes, type));
+                .map((type, index) =>
+                    type
+                        ? this.recursiveParameterCpp(
+                              context.dataTypes,
+                              type,
+                              entry.parameterReadOnly[index]!,
+                          )
+                        : undefined,
+                )
+                .filter((type): type is string => type !== undefined);
             context.emit(
                 `std::function<${returnCpp}(${parametersCpp.join(", ")})> ${entry.cppName};`,
             );
@@ -550,6 +853,7 @@ export class UserFunctionLowerer {
             declaration: SupportedFunction;
             returnType: DataType | undefined;
             parameterTypes: readonly (DataType | undefined)[];
+            parameterReadOnly: readonly boolean[];
             cppName: string;
             captured: readonly (Value | undefined)[];
         },
@@ -576,7 +880,7 @@ export class UserFunctionLowerer {
                 }
                 const cppName = `bbl_recursive_arg_${runtimeIndex++}`;
                 parameterDeclarations.push(
-                    `${this.recursiveParameterCpp(context.dataTypes, type)} ${cppName}`,
+                    `${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!)} ${cppName}`,
                 );
                 parameterBindings.push({
                     parameter,
@@ -624,46 +928,12 @@ export class UserFunctionLowerer {
     private recursiveParameterCpp(
         dataTypes: DataTypeRegistry,
         type: DataType,
+        readOnly: boolean,
     ): string {
         const cpp = dataTypes.cppType(type);
-        if (
-            ["number", "boolean", "enum", "string"].includes(type.kind) ||
-            (type.kind === "struct" && dataTypes.isReferenceStruct(type.name))
-        ) {
-            return cpp;
-        }
-        return `${cpp}&`;
-    }
-
-    private carriesHandle(
-        dataTypes: DataTypeRegistry,
-        type: DataType,
-        seen = new Set<string>(),
-    ): boolean {
-        switch (type.kind) {
-            case "handle":
-                return true;
-            case "optional":
-                return this.carriesHandle(dataTypes, type.inner, seen);
-            case "vector":
-            case "span":
-            case "enummap":
-            case "set":
-                return this.carriesHandle(dataTypes, type.element, seen);
-            case "map":
-                return (
-                    this.carriesHandle(dataTypes, type.key, seen) ||
-                    this.carriesHandle(dataTypes, type.value, seen)
-                );
-            case "struct":
-                if (seen.has(type.name)) return false;
-                seen.add(type.name);
-                return dataTypes
-                    .structFieldTypes(type.name)
-                    .some((field) => this.carriesHandle(dataTypes, field, seen));
-            default:
-                return false;
-        }
+        return passesByReference(dataTypes, type)
+            ? `${readOnly ? "const " : ""}${cpp}&`
+            : cpp;
     }
 
     private declarationIdentifier(declaration: SupportedFunction): ts.Identifier {

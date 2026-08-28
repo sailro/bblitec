@@ -13,6 +13,7 @@ import {
     gridSpriteAtlasFramesCpp,
     pushAtlasHandleCpp,
 } from "./pinned-grid-atlas.js";
+import { assertFrameAtlasRule } from "./pinned-frame-atlas.js";
 import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
@@ -1100,6 +1101,7 @@ export class SpriteLowerer {
             layout.instanceFloats,
         );
         this.assertGridAtlas();
+        assertFrameAtlasRule(this.context);
         this.assertFrameResolution();
         this.assertAtlasLoader();
         this.assertInstanceBase();
@@ -1530,9 +1532,7 @@ SpriteAtlasHandle create_sprite_atlas_from_frames(
                 static_cast<float>(source.height)},
             source.pivot});
     }
-    engine.sprite_atlases.push_back(std::move(atlas));
-    return SpriteAtlasHandle{
-        static_cast<std::uint32_t>(engine.sprite_atlases.size() - 1)};
+${pushAtlasHandleCpp()}
 }
 
 Sprite2DLayerHandle create_sprite_2d_layer(

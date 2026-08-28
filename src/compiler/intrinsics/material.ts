@@ -2,6 +2,7 @@ import ts from "typescript";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
+import { staticColor3Value } from "./material-options.js";
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
@@ -711,16 +712,20 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            const color = context.compileColor3(call.arguments[1]!);
-            const channels = color.match(/[0-9.eE+-]+(?=f)/g);
-            if (!channels || channels.length !== 3) {
+            const colorExpression = call.arguments[1]!;
+            const channels = staticColor3Value(context, colorExpression);
+            if (
+                !channels ||
+                channels.some((channel) => !Number.isFinite(channel))
+            ) {
                 context.fail(
-                    call.arguments[1]!,
+                    colorExpression,
                     "setPbrEmissive requires a static linear RGB colour.",
                 );
             }
+            const color = context.compileColor3(colorExpression);
             context.recordScenePbrEmissive(
-                channels.map(Number.parseFloat),
+                channels,
                 material.scenePbrMaterialIndex,
             );
             context.reachFeature("material:emissive", call);

@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -46,6 +47,9 @@ class ArrayBuffer {
     [[nodiscard]] std::size_t byte_length() const { return bytes_->size(); }
     [[nodiscard]] const std::uint8_t* data() const { return bytes_->data(); }
     [[nodiscard]] std::uint8_t* data() { return bytes_->data(); }
+    [[nodiscard]] const std::vector<std::uint8_t>& bytes() const {
+        return *bytes_;
+    }
     [[nodiscard]] const std::shared_ptr<std::vector<std::uint8_t>>& storage() const {
         return bytes_;
     }
@@ -57,6 +61,10 @@ class ArrayBuffer {
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
 class U8Array {
   public:
+    using value_type = std::uint8_t;
+    using iterator = value_type*;
+    using const_iterator = const value_type*;
+
     U8Array()
         : storage_(std::make_shared<std::vector<std::uint8_t>>()) {}
     explicit U8Array(std::size_t length)
@@ -64,15 +72,32 @@ class U8Array {
           length_(length) {}
     explicit U8Array(const ArrayBuffer& buffer)
         : storage_(buffer.storage()), length_(buffer.byte_length()) {}
+    U8Array(
+        const ArrayBuffer& buffer,
+        std::size_t byte_offset,
+        std::size_t length)
+        : storage_(buffer.storage()),
+          offset_(byte_offset),
+          length_(length) {
+        if (offset_ > buffer.byte_length() ||
+            length_ > buffer.byte_length() - offset_) {
+            throw std::runtime_error("Uint8Array exceeds ArrayBuffer.");
+        }
+    }
 
     [[nodiscard]] std::size_t size() const { return length_; }
+    [[nodiscard]] std::size_t length() const { return length_; }
     [[nodiscard]] std::uint8_t* data() { return storage_->data() + offset_; }
     [[nodiscard]] const std::uint8_t* data() const { return storage_->data() + offset_; }
+    [[nodiscard]] iterator begin() { return data(); }
+    [[nodiscard]] iterator end() { return data() + length_; }
+    [[nodiscard]] const_iterator begin() const { return data(); }
+    [[nodiscard]] const_iterator end() const { return data() + length_; }
     [[nodiscard]] std::uint8_t& operator[](std::size_t index) {
-        return storage_->at(offset_ + index);
+        return storage_->data()[offset_ + index];
     }
     [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const {
-        return storage_->at(offset_ + index);
+        return storage_->data()[offset_ + index];
     }
     [[nodiscard]] ArrayBuffer buffer() const { return ArrayBuffer(storage_); }
     [[nodiscard]] std::size_t byte_offset() const { return offset_; }
@@ -171,8 +196,7 @@ class DataView {
         }
     }
 
-    std::shared_ptr<std::vector<std::uint8_t>> storage_ =
-        std::make_shared<std::vector<std::uint8_t>>();
+    std::shared_ptr<std::vector<std::uint8_t>> storage_;
     std::size_t offset_ = 0;
     std::size_t length_ = 0;
 };
@@ -375,10 +399,26 @@ struct InsertionOrderedSlot {
     bool active = true;
 };
 
+template <typename T>
+struct InsertionOrderedStorage {
+    using Slot = InsertionOrderedSlot<T>;
+    using Slots = std::list<Slot>;
+
+    void sweep_deleted() {
+        for (auto entry = entries.begin(); entry != entries.end();) {
+            entry = entry->active ? std::next(entry) : entries.erase(entry);
+        }
+    }
+
+    Slots entries;
+    std::size_t iterator_count = 0;
+};
+
 template <typename T, bool IsConst>
 class InsertionOrderedIterator {
   private:
-    using Slots = std::list<InsertionOrderedSlot<T>>;
+    using Storage = InsertionOrderedStorage<T>;
+    using Slots = typename Storage::Slots;
     using BaseIterator = std::conditional_t<
         IsConst,
         typename Slots::const_iterator,
@@ -391,10 +431,42 @@ class InsertionOrderedIterator {
     using reference = std::conditional_t<IsConst, const T&, T&>;
     using pointer = std::conditional_t<IsConst, const T*, T*>;
 
-    InsertionOrderedIterator(BaseIterator current, BaseIterator end)
-        : current_(current), end_(end) {
+    InsertionOrderedIterator(
+        std::shared_ptr<Storage> storage,
+        BaseIterator current,
+        BaseIterator end)
+        : storage_(std::move(storage)), current_(current), end_(end) {
+        ++storage_->iterator_count;
         skip_deleted();
     }
+    InsertionOrderedIterator(const InsertionOrderedIterator& other)
+        : storage_(other.storage_), current_(other.current_), end_(other.end_) {
+        if (storage_) ++storage_->iterator_count;
+    }
+    InsertionOrderedIterator(InsertionOrderedIterator&& other) noexcept
+        : storage_(std::move(other.storage_)),
+          current_(other.current_),
+          end_(other.end_) {}
+    InsertionOrderedIterator& operator=(
+        const InsertionOrderedIterator& other) {
+        if (this == &other) return *this;
+        release();
+        storage_ = other.storage_;
+        current_ = other.current_;
+        end_ = other.end_;
+        if (storage_) ++storage_->iterator_count;
+        return *this;
+    }
+    InsertionOrderedIterator& operator=(
+        InsertionOrderedIterator&& other) noexcept {
+        if (this == &other) return *this;
+        release();
+        storage_ = std::move(other.storage_);
+        current_ = other.current_;
+        end_ = other.end_;
+        return *this;
+    }
+    ~InsertionOrderedIterator() { release(); }
 
     [[nodiscard]] reference operator*() const { return current_->value; }
     [[nodiscard]] pointer operator->() const {
@@ -420,10 +492,20 @@ class InsertionOrderedIterator {
     }
 
   private:
+    void release() {
+        if (!storage_) return;
+        assert(storage_->iterator_count > 0);
+        --storage_->iterator_count;
+        if (storage_->iterator_count == 0) {
+            storage_->sweep_deleted();
+        }
+        storage_.reset();
+    }
     void skip_deleted() {
         while (current_ != end_ && !current_->active) ++current_;
     }
 
+    std::shared_ptr<Storage> storage_;
     BaseIterator current_;
     BaseIterator end_;
 };
@@ -443,74 +525,94 @@ class Map {
     }
 
     [[nodiscard]] bool has(const K& key) const {
-        return find(key) != entries_.end();
+        return find(key) != storage_->index.end();
     }
-    [[nodiscard]] typename MapGetResult<V>::Type get(const K& key) {
+    [[nodiscard]] typename MapGetResult<V>::Type get(const K& key) const {
         const auto entry = find(key);
-        return entry == entries_.end()
+        return entry == storage_->index.end()
             ? MapGetResult<V>::missing()
-            : MapGetResult<V>::found(entry->value.second);
+            : MapGetResult<V>::found(entry->second->value.second);
     }
     [[nodiscard]] V& at(const K& key) {
         const auto entry = find(key);
-        if (entry == entries_.end()) {
+        if (entry == storage_->index.end()) {
             throw std::out_of_range("Map key is not present.");
         }
-        return entry->value.second;
+        return entry->second->value.second;
     }
     [[nodiscard]] const V& at(const K& key) const {
         const auto entry = find(key);
-        if (entry == entries_.end()) {
+        if (entry == storage_->index.end()) {
             throw std::out_of_range("Map key is not present.");
         }
-        return entry->value.second;
+        return entry->second->value.second;
     }
     Map& set(const K& key, const V& value) {
         const auto entry = find(key);
-        if (entry == entries_.end()) {
-            entries_.push_back(Slot{Entry{key, value}});
-            ++size_;
+        if (entry == storage_->index.end()) {
+            storage_->entries.push_back(
+                Slot{Entry{key, value}});
+            storage_->index.emplace(
+                key,
+                std::prev(storage_->entries.end()));
         } else {
-            entry->value.second = value;
+            entry->second->value.second = value;
         }
         return *this;
     }
     [[nodiscard]] bool erase(const K& key) {
         const auto entry = find(key);
-        if (entry == entries_.end()) return false;
-        entry->active = false;
-        --size_;
+        if (entry == storage_->index.end()) return false;
+        const auto slot = entry->second;
+        storage_->index.erase(entry);
+        if (storage_->iterator_count > 0) {
+            slot->active = false;
+        } else {
+            storage_->entries.erase(slot);
+        }
         return true;
     }
     [[nodiscard]] Iterator begin() {
-        return Iterator(entries_.begin(), entries_.end());
+        return Iterator(
+            storage_,
+            storage_->entries.begin(),
+            storage_->entries.end());
     }
     [[nodiscard]] Iterator end() {
-        return Iterator(entries_.end(), entries_.end());
+        return Iterator(
+            storage_,
+            storage_->entries.end(),
+            storage_->entries.end());
     }
     [[nodiscard]] ConstIterator begin() const {
-        return ConstIterator(entries_.begin(), entries_.end());
+        const auto& entries = storage_->entries;
+        return ConstIterator(
+            storage_, entries.cbegin(), entries.cend());
     }
     [[nodiscard]] ConstIterator end() const {
-        return ConstIterator(entries_.end(), entries_.end());
+        const auto& entries = storage_->entries;
+        return ConstIterator(
+            storage_, entries.cend(), entries.cend());
     }
-    [[nodiscard]] std::size_t size() const { return size_; }
+    [[nodiscard]] std::size_t size() const {
+        return storage_->index.size();
+    }
 
   private:
-    [[nodiscard]] auto find(const K& key) {
-        return std::find_if(entries_.begin(), entries_.end(),
-            [&](const Slot& entry) {
-                return entry.active && entry.value.first == key;
-            });
-    }
+    using OrderedStorage = InsertionOrderedStorage<Entry>;
+    struct Storage : OrderedStorage {
+        std::unordered_map<
+            K,
+            typename OrderedStorage::Slots::iterator>
+            index;
+    };
+
     [[nodiscard]] auto find(const K& key) const {
-        return std::find_if(entries_.begin(), entries_.end(),
-            [&](const Slot& entry) {
-                return entry.active && entry.value.first == key;
-            });
+        return storage_->index.find(key);
     }
-    std::list<Slot> entries_;
-    std::size_t size_ = 0;
+
+    std::shared_ptr<Storage> storage_ =
+        std::make_shared<Storage>();
 };
 
 template <typename T>
@@ -529,55 +631,80 @@ class Set {
     }
 
     [[nodiscard]] bool has(const T& value) const {
-        return find(value) != values_.end();
+        return find(value) != storage_->index.end();
     }
     Set& add(const T& value) {
         if (!has(value)) {
-            values_.push_back(Slot{value});
-            ++size_;
+            storage_->entries.push_back(Slot{value});
+            storage_->index.emplace(
+                value,
+                std::prev(storage_->entries.end()));
         }
         return *this;
     }
     [[nodiscard]] bool erase(const T& value) {
         const auto entry = find(value);
-        if (entry == values_.end()) return false;
-        entry->active = false;
-        --size_;
+        if (entry == storage_->index.end()) return false;
+        const auto slot = entry->second;
+        storage_->index.erase(entry);
+        if (storage_->iterator_count > 0) {
+            slot->active = false;
+        } else {
+            storage_->entries.erase(slot);
+        }
         return true;
     }
     void clear() {
-        for (Slot& entry : values_) entry.active = false;
-        size_ = 0;
+        storage_->index.clear();
+        if (storage_->iterator_count > 0) {
+            for (Slot& entry : storage_->entries) {
+                entry.active = false;
+            }
+        } else {
+            storage_->entries.clear();
+        }
     }
     [[nodiscard]] Iterator begin() {
-        return Iterator(values_.begin(), values_.end());
+        return Iterator(
+            storage_,
+            storage_->entries.begin(),
+            storage_->entries.end());
     }
     [[nodiscard]] Iterator end() {
-        return Iterator(values_.end(), values_.end());
+        return Iterator(
+            storage_,
+            storage_->entries.end(),
+            storage_->entries.end());
     }
     [[nodiscard]] ConstIterator begin() const {
-        return ConstIterator(values_.begin(), values_.end());
+        const auto& entries = storage_->entries;
+        return ConstIterator(
+            storage_, entries.cbegin(), entries.cend());
     }
     [[nodiscard]] ConstIterator end() const {
-        return ConstIterator(values_.end(), values_.end());
+        const auto& entries = storage_->entries;
+        return ConstIterator(
+            storage_, entries.cend(), entries.cend());
     }
-    [[nodiscard]] std::size_t size() const { return size_; }
+    [[nodiscard]] std::size_t size() const {
+        return storage_->index.size();
+    }
 
   private:
-    [[nodiscard]] auto find(const T& value) {
-        return std::find_if(values_.begin(), values_.end(),
-            [&](const Slot& entry) {
-                return entry.active && entry.value == value;
-            });
-    }
+    using OrderedStorage = InsertionOrderedStorage<T>;
+    struct Storage : OrderedStorage {
+        std::unordered_map<
+            T,
+            typename OrderedStorage::Slots::iterator>
+            index;
+    };
+
     [[nodiscard]] auto find(const T& value) const {
-        return std::find_if(values_.begin(), values_.end(),
-            [&](const Slot& entry) {
-                return entry.active && entry.value == value;
-            });
+        return storage_->index.find(value);
     }
-    std::list<Slot> values_;
-    std::size_t size_ = 0;
+
+    std::shared_ptr<Storage> storage_ =
+        std::make_shared<Storage>();
 };
 
 template <typename T>
@@ -603,21 +730,39 @@ using Tuple = std::array<double, N>;
     return std::string(buffer, converted.ptr);
 }
 
-[[nodiscard]] inline std::string string_slice(
-    const std::string& value,
+[[nodiscard]] inline std::pair<std::size_t, std::size_t>
+relative_slice_bounds(
+    std::size_t length,
     double begin_value,
     double end_value) {
-    const auto size = static_cast<std::ptrdiff_t>(value.size());
+    const auto size = static_cast<std::ptrdiff_t>(length);
     const auto clamp = [size](double raw) {
-        auto index = static_cast<std::ptrdiff_t>(std::trunc(raw));
-        if (index < 0) index = std::max<std::ptrdiff_t>(0, size + index);
+        auto index = static_cast<std::ptrdiff_t>(
+            std::trunc(raw));
+        if (index < 0) {
+            index = std::max<std::ptrdiff_t>(
+                0,
+                size + index);
+        }
         return std::min(size, index);
     };
     const auto begin = clamp(begin_value);
     const auto end = std::max(begin, clamp(end_value));
-    return value.substr(
+    return {
         static_cast<std::size_t>(begin),
-        static_cast<std::size_t>(end - begin));
+        static_cast<std::size_t>(end),
+    };
+}
+
+[[nodiscard]] inline std::string string_slice(
+    const std::string& value,
+    double begin_value,
+    double end_value) {
+    const auto [begin, end] = relative_slice_bounds(
+        value.size(),
+        begin_value,
+        end_value);
+    return value.substr(begin, end - begin);
 }
 
 [[nodiscard]] inline std::string string_upper(std::string value) {
@@ -689,7 +834,8 @@ using Tuple = std::array<double, N>;
     prefix.reserve(needed);
     while (prefix.size() < needed) prefix += fill;
     prefix.resize(needed);
-    return prefix + value;
+    prefix.append(value);
+    return prefix;
 }
 
 // `Record<Union, T>` — one fixed slot per member of a string-literal
@@ -716,17 +862,8 @@ template <typename T, std::size_t N, typename Tag>
     return slots[index];
 }
 
-template <typename T>
-[[nodiscard]] inline double array_length(const Array<T>& values) {
-    return static_cast<double>(values.size());
-}
-
-template <typename T>
-[[nodiscard]] inline double array_length(const std::vector<T>& values) {
-    return static_cast<double>(values.size());
-}
-
-[[nodiscard]] inline double array_length(const U8Array& values) {
+template <typename Values>
+[[nodiscard]] inline double array_length(const Values& values) {
     return static_cast<double>(values.size());
 }
 
@@ -735,20 +872,11 @@ template <typename T>
     const Array<T>& values,
     double begin_value,
     double end_value) {
-    const auto size = static_cast<std::ptrdiff_t>(values.size());
-    const auto clamp = [size](double raw) {
-        auto index = static_cast<std::ptrdiff_t>(std::trunc(raw));
-        if (index < 0) index = std::max<std::ptrdiff_t>(0, size + index);
-        return std::min(size, index);
-    };
-    const auto begin = clamp(begin_value);
-    const auto end = std::max(begin, clamp(end_value));
+    const auto [begin, end] = relative_slice_bounds(
+        values.size(),
+        begin_value,
+        end_value);
     return Array<T>(values.begin() + begin, values.begin() + end);
-}
-
-template <typename T>
-[[nodiscard]] inline double array_length(Span<const T> values) {
-    return static_cast<double>(values.size());
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
@@ -816,6 +944,14 @@ inline void array_fill(Array<T>& values, const T& value) {
     }
 }
 
+// Typed arrays except Uint8Array use contiguous native vectors. Keep their
+// JavaScript `fill` route beside the ordinary Array overload so every typed
+// array kind accepted by the data lowerer has the same runtime operation.
+template <typename T>
+inline void array_fill(std::vector<T>& values, const T& value) {
+    std::fill(values.begin(), values.end(), value);
+}
+
 // `new Array<T>(count).fill(value)`.
 template <typename T>
 [[nodiscard]] inline Array<T> array_filled(double count, const T& value) {
@@ -854,23 +990,24 @@ template <typename T>
 }
 
 template <typename T>
+inline T missing_array_value{};
+
+template <typename T>
 [[nodiscard]] inline T& array_at_or_default(
     Array<T>& values,
     double index) {
-    static T missing{};
     return array_has_index(values, index)
         ? values[array_index(index)]
-        : missing;
+        : missing_array_value<T>;
 }
 
 template <typename T>
 [[nodiscard]] inline const T& array_at_or_default(
     const Array<T>& values,
     double index) {
-    static const T missing{};
     return array_has_index(values, index)
         ? values[array_index(index)]
-        : missing;
+        : missing_array_value<T>;
 }
 
 // JavaScript `%` (remainder keeps the dividend sign, like std::fmod).
@@ -904,19 +1041,12 @@ using U32Array = std::vector<std::uint32_t>;
         return 0u;
     }
     const double truncated = std::trunc(value);
+    if (truncated >= 0.0 && truncated < 4294967296.0) {
+        return static_cast<std::uint32_t>(truncated);
+    }
     const double wrapped = std::fmod(truncated, 4294967296.0);
     return static_cast<std::uint32_t>(
         wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped);
-}
-
-// ECMAScript ToInt32, expressed without relying on an implementation-defined
-// unsigned-to-signed conversion for values above INT32_MAX.
-[[nodiscard]] inline std::int32_t to_int32(double value) {
-    const std::uint32_t converted = to_uint32(value);
-    return converted <= 0x7fffffffu
-        ? static_cast<std::int32_t>(converted)
-        : static_cast<std::int32_t>(
-              static_cast<std::int64_t>(converted) - 0x100000000ll);
 }
 
 [[nodiscard]] inline std::int32_t uint32_as_int32(std::uint32_t value) {
@@ -981,7 +1111,7 @@ using U32Array = std::vector<std::uint32_t>;
 }
 
 template <typename Values>
-[[nodiscard]] inline U8Array u8_array_from_values(const Values& values) {
+[[nodiscard]] inline U8Array u8_array_from(const Values& values) {
     U8Array result(values.size());
     for (std::size_t index = 0; index < values.size(); ++index) {
         result[index] = to_uint8(values[index]);
@@ -989,19 +1119,8 @@ template <typename Values>
     return result;
 }
 
-[[nodiscard]] inline U8Array u8_array_from(const Array<double>& values) {
-    return u8_array_from_values(values);
-}
-
-[[nodiscard]] inline U8Array u8_array_from(
-    const std::vector<double>& values) {
-    return u8_array_from_values(values);
-}
-
 inline void array_fill(U8Array& values, std::uint8_t value) {
-    for (std::size_t index = 0; index < values.size(); ++index) {
-        values[index] = value;
-    }
+    std::fill(values.begin(), values.end(), value);
 }
 
 [[nodiscard]] inline F32Array f32_array_sized(double count) {
@@ -1028,34 +1147,20 @@ template <typename Output, typename Values, typename Convert>
     return result;
 }
 
-[[nodiscard]] inline U16Array u16_array_from(const Array<double>& values) {
+template <typename Values>
+[[nodiscard]] inline U16Array u16_array_from(const Values& values) {
     return typed_array_from_values<U16Array>(values, to_uint16);
 }
 
-[[nodiscard]] inline U16Array u16_array_from(
-    const std::vector<double>& values) {
-    return typed_array_from_values<U16Array>(values, to_uint16);
-}
-
-[[nodiscard]] inline F32Array f32_array_from(const Array<double>& values) {
+template <typename Values>
+[[nodiscard]] inline F32Array f32_array_from(const Values& values) {
     return typed_array_from_values<F32Array>(values, [](double value) {
         return static_cast<float>(value);
     });
 }
 
-[[nodiscard]] inline F32Array f32_array_from(
-    const std::vector<double>& values) {
-    return typed_array_from_values<F32Array>(values, [](double value) {
-        return static_cast<float>(value);
-    });
-}
-
-[[nodiscard]] inline U32Array u32_array_from(const Array<double>& values) {
-    return typed_array_from_values<U32Array>(values, to_uint32);
-}
-
-[[nodiscard]] inline U32Array u32_array_from(
-    const std::vector<double>& values) {
+template <typename Values>
+[[nodiscard]] inline U32Array u32_array_from(const Values& values) {
     return typed_array_from_values<U32Array>(values, to_uint32);
 }
 

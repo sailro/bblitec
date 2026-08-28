@@ -1000,23 +1000,85 @@ export class ExpressionLowerer {
             };
         }
         if (ts.isTypeOfExpression(unwrapped)) {
-            const operand = this.context.compileValue(
+            const expression = this.context.unwrap(
                 unwrapped.expression,
             );
+            if (
+                expression.kind === ts.SyntaxKind.NullKeyword
+            ) {
+                return {
+                    kind: "string",
+                    cpp: this.context.cppString("object"),
+                    staticString: "object",
+                };
+            }
+            if (
+                ts.isIdentifier(expression) &&
+                expression.text === "undefined" &&
+                !this.context.lookupOptional(expression)
+            ) {
+                return {
+                    kind: "string",
+                    cpp: this.context.cppString("undefined"),
+                    staticString: "undefined",
+                };
+            }
+            const operand = this.context.compileValue(
+                expression,
+            );
+            const dataType =
+                operand.dataType?.kind === "optional"
+                    ? operand.dataType.inner
+                    : operand.dataType;
             const type =
                 operand.kind === "number"
                     ? "number"
                     : operand.kind === "boolean"
                       ? "boolean"
                       : operand.kind === "string" ||
-                          operand.dataType?.kind === "string" ||
-                          operand.dataType?.kind === "enum"
+                          dataType?.kind === "string" ||
+                          dataType?.kind === "enum"
                         ? "string"
                         : operand.kind === "callback"
                           ? "function"
                           : operand.kind === "void"
                             ? "undefined"
-                            : "object";
+                          : "object";
+            const checkedType =
+                this.context.checker.getTypeAtLocation(
+                    expression,
+                );
+            const checkedMayBeUndefined =
+                (checkedType.flags &
+                    ts.TypeFlags.Undefined) !==
+                    0 ||
+                ((checkedType.flags &
+                    ts.TypeFlags.Union) !==
+                    0 &&
+                    (checkedType as ts.UnionType).types.some(
+                        (member) =>
+                            (member.flags &
+                                ts.TypeFlags.Undefined) !==
+                            0,
+                    ));
+            const present =
+                operand.parameterBinding &&
+                !checkedMayBeUndefined
+                    ? undefined
+                    : operand.optionalFoundCpp ??
+                      (operand.dataType?.kind === "optional"
+                          ? `${operand.cpp}.has_value()`
+                          : undefined);
+            if (present !== undefined) {
+                return {
+                    kind: "data",
+                    cpp:
+                        `(${present} ? ` +
+                        `${this.context.cppString(type)} : ` +
+                        `${this.context.cppString("undefined")})`,
+                    dataType: { kind: "string" },
+                };
+            }
             return {
                 kind: "string",
                 cpp: this.context.cppString(type),
@@ -1746,79 +1808,6 @@ export class ExpressionLowerer {
                 this.context.fail(
                     callee,
                     "Callback value is missing its declaration.",
-                );
-            }
-            if (bound.cpp.length > 0) {
-                const declaration = bound.callbackDeclaration;
-                const signature = ts.isIdentifier(declaration)
-                    ? undefined
-                    : this.context.checker.getSignatureFromDeclaration(
-                          declaration,
-                      );
-                if (!signature || ts.isIdentifier(declaration)) {
-                    this.context.fail(
-                        callee,
-                        "Native callback is missing its function signature.",
-                    );
-                }
-                if (call.arguments.length > declaration.parameters.length) {
-                    this.context.fail(
-                        call,
-                        `Callback '${callee.text}' received too many arguments.`,
-                    );
-                }
-                const argumentsCpp = declaration.parameters.map(
-                    (parameter, index) => {
-                        const argument =
-                            call.arguments[index] ??
-                            parameter.initializer;
-                        if (!argument) {
-                            this.context.fail(
-                                call,
-                                `Callback '${callee.text}' requires argument ${index + 1}.`,
-                            );
-                        }
-                        const type =
-                            this.context.dataTypes.fromTsType(
-                                this.context.checker.getTypeAtLocation(
-                                    parameter,
-                                ),
-                                parameter,
-                            );
-                        if (!type) {
-                            this.context.fail(
-                                parameter,
-                                "Native callback parameters must have plain-data types.",
-                            );
-                        }
-                        return this.context.dataLowerer.compileForSink(
-                            argument,
-                            type,
-                        );
-                    },
-                );
-                const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
-                const returnTsType =
-                    this.context.checker.getReturnTypeOfSignature(
-                        signature,
-                    );
-                if ((returnTsType.flags & ts.TypeFlags.Void) !== 0) {
-                    return { kind: "void", cpp };
-                }
-                const returnType =
-                    this.context.dataTypes.fromTsType(
-                        returnTsType,
-                        declaration,
-                    );
-                if (!returnType) {
-                    this.context.fail(
-                        declaration,
-                        "Native callback return type must be plain data or void.",
-                    );
-                }
-                return this.context.dataLowerer.leafValue(
-                    cpp,
-                    returnType,
                 );
             }
             const inRecordScope = <T>(work: () => T): T =>

@@ -20,6 +20,7 @@
 #include <bblite/pal.hpp>
 
 #include "pal_audio_sdl_device.hpp"
+#include "pal_runtime_trace.hpp"
 
 #include "LabSound/core/AudioContext.h"
 #include "LabSound/core/AudioDevice.h"
@@ -102,14 +103,6 @@ std::unordered_map<std::uint32_t, ContextRecord>& contexts()
 {
     static std::unordered_map<std::uint32_t, ContextRecord> map;
     return map;
-}
-
-bool audio_trace_enabled()
-{
-    const std::string value =
-        environment_variable("BBLITE_RUNTIME_TRACE");
-    return !value.empty() && value != "0" && value != "false" &&
-        value != "off";
 }
 
 /**
@@ -536,7 +529,7 @@ AudioBufferHandle audio_create_buffer(
     const AudioBufferHandle handle{pack(
         context.value,
         static_cast<std::uint32_t>(context_record.buffers.size() - 1))};
-    if (audio_trace_enabled()) {
+    if (runtime_trace_enabled()) {
         std::fprintf(
             stderr,
             "[bblite trace] audio buffer=%u channels=%u frames=%u rate=%.0f\n",
@@ -593,7 +586,7 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
     }
     const auto& buffer_record = require_buffer(buffer);
     sampled->setBus(buffer_record->bus);
-    if (audio_trace_enabled()) {
+    if (runtime_trace_enabled()) {
         float peak = 0.0f;
         for (const auto& channel : buffer_record->channels) {
             for (const float sample : channel) {
@@ -643,7 +636,7 @@ void audio_node_start(AudioNodeHandle node, double when)
     if (auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(
             require_node(node))) {
         sampled->start(static_cast<float>(when));
-        if (audio_trace_enabled()) {
+        if (runtime_trace_enabled()) {
             std::fprintf(
                 stderr,
                 "[bblite trace] audio source=%u start=%.6f\n",
@@ -658,7 +651,7 @@ void audio_node_start(AudioNodeHandle node, double when)
         throw std::runtime_error("Audio node is not a scheduled source.");
     }
     scheduled->start(static_cast<float>(when));
-    if (audio_trace_enabled()) {
+    if (runtime_trace_enabled()) {
         std::fprintf(
             stderr,
             "[bblite trace] audio source=%u start=%.6f\n",

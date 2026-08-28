@@ -9,10 +9,13 @@ import {
     dataTypesEqual,
     doubleLiteral,
     isTypedArrayType,
+    typedArrayStoreExpression,
     type DataIterationElement,
     type DataType,
+    type TypedArrayKind,
 } from "./data-types.js";
 import type { Value } from "./types.js";
+import { resizingArrayMethods } from "./data-methods.js";
 
 /**
  * The one-argument `Math` members scene code may call, each a `<cmath>`
@@ -42,14 +45,6 @@ const mathUnaryCalls: ReadonlyMap<string, string> = new Map([
  * a container belongs here too, because this is the only guard the length
  * fold below has.
  */
-const resizingArrayMethods: ReadonlySet<string> = new Set([
-    "push",
-    "pop",
-    "shift",
-    "unshift",
-    "splice",
-]);
-
 /** Names whose container can be resized, per entry source. */
 const resizedNamesByFile = new WeakMap<
     ts.SourceFile,
@@ -1395,14 +1390,7 @@ export class DataLowerer {
                     kind: "number",
                     cpp: indexed,
                     dataType: { kind: "number" },
-                    dataStore:
-                        dataType.kind === "f32array"
-                            ? "f32"
-                            : dataType.kind === "u8array"
-                              ? "u8"
-                            : dataType.kind === "u16array"
-                              ? "u16"
-                              : "u32",
+                    dataStore: dataType.kind,
                 };
             }
             return {
@@ -2078,7 +2066,7 @@ export class DataLowerer {
     private compileTypedArraySet(
         call: ts.CallExpression,
         target: Value,
-        kind: "u8array" | "f32array" | "u16array" | "u32array",
+        kind: TypedArrayKind,
     ): Value {
         if (call.arguments.length < 1 || call.arguments.length > 2) {
             this.context.fail(
@@ -2169,6 +2157,92 @@ export class DataLowerer {
               };
     }
 
+    /** Emit the shared callback protocol for reached JavaScript array methods. */
+    private emitArrayCallbackLoop(
+        call: ts.CallExpression,
+        method: "find" | "filter" | "some" | "map" | "forEach",
+        narrowed: Value,
+        dataType: DataType & { kind: "vector" },
+        snapshotLength: boolean,
+        initialize: (source: string) => void,
+        emitBody: (
+            result: Value,
+            callback:
+                | ts.Identifier
+                | ts.ArrowFunction
+                | ts.FunctionExpression,
+            source: string,
+            index: string,
+        ) => void,
+    ): void {
+        if (call.arguments.length !== 1) {
+            this.context.fail(
+                call,
+                `Array.${method} requires exactly one callback and no thisArg.`,
+            );
+        }
+        const callback = this.context.unwrap(call.arguments[0]!);
+        if (
+            !ts.isIdentifier(callback) &&
+            !ts.isArrowFunction(callback) &&
+            !ts.isFunctionExpression(callback)
+        ) {
+            this.context.fail(
+                callback,
+                `Array.${method} requires a local function or function literal callback.`,
+            );
+        }
+        const label = method === "forEach" ? "for_each" : method;
+        const source =
+            this.context.allocateTemporaryCppName(`${label}_source`);
+        const index =
+            this.context.allocateTemporaryCppName(`${label}_index`);
+        this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
+        initialize(source);
+        let bound = `${source}.size()`;
+        if (snapshotLength) {
+            const count =
+                this.context.allocateTemporaryCppName(`${label}_count`);
+            this.context.emit(
+                `const std::size_t ${count} = ${bound};`,
+            );
+            bound = count;
+        }
+        this.context.emit(
+            `for (std::size_t ${index} = 0; ${index} < ${bound}; ++${index}) {`,
+        );
+        this.context.increaseIndent();
+        this.context.pushScope(this.context.allocateBlockPrefix());
+        try {
+            const result = this.context.compileCallbackWithValues(
+                callback,
+                [
+                    this.leafValue(
+                        `${source}[${index}]`,
+                        dataType.element,
+                    ),
+                    {
+                        kind: "number",
+                        cpp: `static_cast<double>(${index})`,
+                        dataType: { kind: "number" },
+                    },
+                    {
+                        ...narrowed,
+                        kind: "data",
+                        cpp: source,
+                        dataType,
+                    },
+                ],
+                call,
+            );
+            emitBody(result, callback, source, index);
+        } finally {
+            this.context.popScope();
+            this.context.decreaseIndent();
+        }
+        this.context.emit("}");
+    }
+
     /**
      * Compiles data-container method calls (`push`, `pop`, `fill`) and the
      * `new Array(n).fill(v)` chain.
@@ -2230,13 +2304,7 @@ export class DataLowerer {
             );
             if (
                 typed?.kind === "data" &&
-                typed.dataType &&
-                [
-                    "u8array",
-                    "u16array",
-                    "u32array",
-                    "f32array",
-                ].includes(typed.dataType.kind)
+                isTypedArrayType(typed.dataType)
             ) {
                 if (call.arguments.length !== 1) {
                     this.context.fail(
@@ -2252,14 +2320,10 @@ export class DataLowerer {
                     call.arguments[0]!,
                     "double",
                 );
-                const value =
-                    typed.dataType.kind === "u8array"
-                        ? `bbl::js::to_uint8(${number})`
-                        : typed.dataType.kind === "u16array"
-                          ? `bbl::js::to_uint16(${number})`
-                          : typed.dataType.kind === "u32array"
-                            ? `bbl::js::to_uint32(${number})`
-                            : `static_cast<float>(${number})`;
+                const value = typedArrayStoreExpression(
+                    typed.dataType.kind,
+                    number,
+                );
                 this.context.emit(
                     `auto ${temporary} = ${typed.cpp};`,
                 );
@@ -2564,14 +2628,10 @@ export class DataLowerer {
                 call.arguments[0]!,
                 "double",
             );
-            const stored =
-                dataType.kind === "f32array"
-                    ? `static_cast<float>(${number})`
-                    : dataType.kind === "u8array"
-                      ? `bbl::js::to_uint8(${number})`
-                    : dataType.kind === "u16array"
-                      ? `bbl::js::to_uint16(${number})`
-                      : `bbl::js::to_uint32(${number})`;
+            const stored = typedArrayStoreExpression(
+                dataType.kind,
+                number,
+            );
             return {
                 kind: "void",
                 cpp: `bbl::js::array_fill(${narrowed.cpp}, ${stored})`,
@@ -2722,168 +2782,74 @@ export class DataLowerer {
             return { kind: "data", cpp: result, dataType };
         }
         if (method === "find") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Array.find requires exactly one callback and no thisArg.",
-                );
-            }
-            const callback = this.context.unwrap(call.arguments[0]!);
-            if (
-                !ts.isIdentifier(callback) &&
-                !ts.isArrowFunction(callback) &&
-                !ts.isFunctionExpression(callback)
-            ) {
-                this.context.fail(
-                    callback,
-                    "Array.find requires a local function or function literal callback.",
-                );
-            }
             const resultType = this.dataTypeAt(call) ?? {
                 kind: "optional" as const,
                 inner: dataType.element,
             };
-            const source = this.context.allocateTemporaryCppName(
-                "find_source",
-            );
             const result = this.context.allocateTemporaryCppName(
                 "find_result",
             );
-            const index = this.context.allocateTemporaryCppName(
-                "find_index",
-            );
-            this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
-            this.context.emit(
-                `${this.context.dataTypes.cppType(resultType)} ${result}{};`,
-            );
-            this.context.emit(
-                `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
-            );
-            this.context.increaseIndent();
-            this.context.pushScope(this.context.allocateBlockPrefix());
-            try {
-                const matched = this.context.compileCallbackWithValues(
-                    callback,
-                    [
-                        this.leafValue(
-                            `${source}[${index}]`,
-                            dataType.element,
-                        ),
-                        {
-                            kind: "number",
-                            cpp: `static_cast<double>(${index})`,
-                            dataType: { kind: "number" },
-                        },
-                        {
-                            kind: "data",
-                            cpp: source,
-                            dataType,
-                        },
-                    ],
-                    call,
-                );
-                if (matched.kind !== "boolean") {
-                    this.context.fail(
-                        callback,
-                        "Array.find callback must return a boolean value.",
+            this.emitArrayCallbackLoop(
+                call,
+                "find",
+                narrowed,
+                dataType,
+                false,
+                () =>
+                    this.context.emit(
+                        `${this.context.dataTypes.cppType(resultType)} ${result}{};`,
+                    ),
+                (matched, callback, source, index) => {
+                    if (matched.kind !== "boolean") {
+                        this.context.fail(
+                            callback,
+                            "Array.find callback must return a boolean value.",
+                        );
+                    }
+                    this.context.emit(`if (${matched.cpp}) {`);
+                    this.context.increaseIndent();
+                    this.context.emit(
+                        `${result} = ${source}[${index}];`,
                     );
-                }
-                this.context.emit(`if (${matched.cpp}) {`);
-                this.context.increaseIndent();
-                this.context.emit(
-                    `${result} = ${source}[${index}];`,
-                );
-                this.context.emit("break;");
-                this.context.decreaseIndent();
-                this.context.emit("}");
-            } finally {
-                this.context.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit("}");
+                    this.context.emit("break;");
+                    this.context.decreaseIndent();
+                    this.context.emit("}");
+                },
+            );
             this.registerLocal(result, "owned");
             return this.leafValue(result, resultType);
         }
         if (method === "filter") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Array.filter requires exactly one callback and no thisArg.",
-                );
-            }
-            const callback = this.context.unwrap(
-                call.arguments[0]!,
-            );
-            if (
-                !ts.isIdentifier(callback) &&
-                !ts.isArrowFunction(callback) &&
-                !ts.isFunctionExpression(callback)
-            ) {
-                this.context.fail(
-                    callback,
-                    "Array.filter requires a local function or function literal callback.",
-                );
-            }
-            const source =
-                this.context.allocateTemporaryCppName(
-                    "filter_source",
-                );
             const output =
                 this.context.allocateTemporaryCppName(
                     "filter_result",
                 );
-            const index =
-                this.context.allocateTemporaryCppName(
-                    "filter_index",
-                );
-            this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
-            this.context.emit(
-                `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}> ${output};`,
-            );
-            this.context.emit(`${output}.reserve(${source}.size());`);
-            this.context.emit(
-                `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
-            );
-            this.context.increaseIndent();
-            this.context.pushScope(
-                this.context.allocateBlockPrefix(),
-            );
-            try {
-                const matched =
-                    this.context.compileCallbackWithValues(
-                        callback,
-                        [
-                            this.leafValue(
-                                `${source}[${index}]`,
-                                dataType.element,
-                            ),
-                            {
-                                kind: "number",
-                                cpp: `static_cast<double>(${index})`,
-                                dataType: { kind: "number" },
-                            },
-                            {
-                                kind: "data",
-                                cpp: source,
-                                dataType,
-                            },
-                        ],
-                        call,
+            this.emitArrayCallbackLoop(
+                call,
+                "filter",
+                narrowed,
+                dataType,
+                false,
+                (source) => {
+                    this.context.emit(
+                        `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}> ${output};`,
                     );
-                if (matched.kind !== "boolean") {
-                    this.context.fail(
-                        callback,
-                        "Array.filter callback must return a boolean value.",
+                    this.context.emit(
+                        `${output}.reserve(${source}.size());`,
                     );
-                }
-                this.context.emit(
-                    `if (${matched.cpp}) ${output}.push_back(${source}[${index}]);`,
-                );
-            } finally {
-                this.context.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit("}");
+                },
+                (matched, callback, source, index) => {
+                    if (matched.kind !== "boolean") {
+                        this.context.fail(
+                            callback,
+                            "Array.filter callback must return a boolean value.",
+                        );
+                    }
+                    this.context.emit(
+                        `if (${matched.cpp}) ${output}.push_back(${source}[${index}]);`,
+                    );
+                },
+            );
             this.registerLocal(output, "owned");
             return {
                 kind: "data",
@@ -2892,85 +2858,32 @@ export class DataLowerer {
             };
         }
         if (method === "some") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Array.some requires exactly one callback and no thisArg.",
-                );
-            }
-            const callback = this.context.unwrap(
-                call.arguments[0]!,
-            );
-            if (
-                !ts.isIdentifier(callback) &&
-                !ts.isArrowFunction(callback) &&
-                !ts.isFunctionExpression(callback)
-            ) {
-                this.context.fail(
-                    callback,
-                    "Array.some requires a local function or function literal callback.",
-                );
-            }
-            const source =
-                this.context.allocateTemporaryCppName(
-                    "some_source",
-                );
             const result =
                 this.context.allocateTemporaryCppName(
                     "some_result",
                 );
-            const index =
-                this.context.allocateTemporaryCppName(
-                    "some_index",
-                );
-            this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
-            this.context.emit(`bool ${result} = false;`);
-            this.context.emit(
-                `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
+            this.emitArrayCallbackLoop(
+                call,
+                "some",
+                narrowed,
+                dataType,
+                false,
+                () => this.context.emit(`bool ${result} = false;`),
+                (matched, callback) => {
+                    if (matched.kind !== "boolean") {
+                        this.context.fail(
+                            callback,
+                            "Array.some callback must return a boolean value.",
+                        );
+                    }
+                    this.context.emit(`if (${matched.cpp}) {`);
+                    this.context.increaseIndent();
+                    this.context.emit(`${result} = true;`);
+                    this.context.emit("break;");
+                    this.context.decreaseIndent();
+                    this.context.emit("}");
+                },
             );
-            this.context.increaseIndent();
-            this.context.pushScope(
-                this.context.allocateBlockPrefix(),
-            );
-            try {
-                const matched =
-                    this.context.compileCallbackWithValues(
-                        callback,
-                        [
-                            this.leafValue(
-                                `${source}[${index}]`,
-                                dataType.element,
-                            ),
-                            {
-                                kind: "number",
-                                cpp: `static_cast<double>(${index})`,
-                                dataType: { kind: "number" },
-                            },
-                            {
-                                kind: "data",
-                                cpp: source,
-                                dataType,
-                            },
-                        ],
-                        call,
-                    );
-                if (matched.kind !== "boolean") {
-                    this.context.fail(
-                        callback,
-                        "Array.some callback must return a boolean value.",
-                    );
-                }
-                this.context.emit(`if (${matched.cpp}) {`);
-                this.context.increaseIndent();
-                this.context.emit(`${result} = true;`);
-                this.context.emit("break;");
-                this.context.decreaseIndent();
-                this.context.emit("}");
-            } finally {
-                this.context.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit("}");
             return {
                 kind: "boolean",
                 cpp: result,
@@ -2978,25 +2891,6 @@ export class DataLowerer {
             };
         }
         if (method === "map") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Array.map requires exactly one callback and no thisArg.",
-                );
-            }
-            const callback = this.context.unwrap(
-                call.arguments[0]!,
-            );
-            if (
-                !ts.isIdentifier(callback) &&
-                !ts.isArrowFunction(callback) &&
-                !ts.isFunctionExpression(callback)
-            ) {
-                this.context.fail(
-                    callback,
-                    "Array.map requires a local function or function literal callback.",
-                );
-            }
             const mappedType = this.dataTypeAt(call);
             if (mappedType?.kind !== "vector") {
                 this.context.fail(
@@ -3004,72 +2898,35 @@ export class DataLowerer {
                     "Array.map callback results must belong to the native data model.",
                 );
             }
-            const source =
-                this.context.allocateTemporaryCppName(
-                    "map_source",
-                );
             const output =
                 this.context.allocateTemporaryCppName(
                     "map_result",
                 );
-            const index =
-                this.context.allocateTemporaryCppName(
-                    "map_index",
-                );
-            const count =
-                this.context.allocateTemporaryCppName(
-                    "map_count",
-                );
-            this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
-            this.context.emit(
-                `bbl::js::Array<${this.context.dataTypes.cppType(mappedType.element)}> ${output};`,
-            );
-            this.context.emit(`${output}.reserve(${source}.size());`);
-            this.context.emit(
-                `const std::size_t ${count} = ${source}.size();`,
-            );
-            this.context.emit(
-                `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
-            );
-            this.context.increaseIndent();
-            this.context.pushScope(
-                this.context.allocateBlockPrefix(),
-            );
-            try {
-                const result =
-                    this.context.compileCallbackWithValues(
-                        callback,
-                        [
-                            this.leafValue(
-                                `${source}[${index}]`,
-                                dataType.element,
-                            ),
-                            {
-                                kind: "number",
-                                cpp: `static_cast<double>(${index})`,
-                                dataType: { kind: "number" },
-                            },
-                            {
-                                kind: "data",
-                                cpp: source,
-                                dataType,
-                            },
-                        ],
-                        call,
+            this.emitArrayCallbackLoop(
+                call,
+                "map",
+                narrowed,
+                dataType,
+                true,
+                (source) => {
+                    this.context.emit(
+                        `bbl::js::Array<${this.context.dataTypes.cppType(mappedType.element)}> ${output};`,
                     );
-                const value = this.compileKnownValueForSink(
-                    result,
-                    mappedType.element,
-                    callback,
-                );
-                this.context.emit(
-                    `${output}.push_back(${value});`,
-                );
-            } finally {
-                this.context.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit("}");
+                    this.context.emit(
+                        `${output}.reserve(${source}.size());`,
+                    );
+                },
+                (result, callback) => {
+                    const value = this.compileKnownValueForSink(
+                        result,
+                        mappedType.element,
+                        callback,
+                    );
+                    this.context.emit(
+                        `${output}.push_back(${value});`,
+                    );
+                },
+            );
             this.registerLocal(output, "owned");
             return {
                 kind: "data",
@@ -3078,73 +2935,23 @@ export class DataLowerer {
             };
         }
         if (method === "forEach") {
-            if (call.arguments.length !== 1) {
-                this.context.fail(
-                    call,
-                    "Array.forEach requires exactly one callback and no thisArg.",
-                );
-            }
-            const callback = this.context.unwrap(
-                call.arguments[0]!,
+            this.emitArrayCallbackLoop(
+                call,
+                "forEach",
+                narrowed,
+                dataType,
+                true,
+                () => undefined,
+                (result) => {
+                    if (result.cpp.length > 0) {
+                        this.context.emit(
+                            result.requiresExplicitDiscard
+                                ? `static_cast<void>(${result.cpp});`
+                                : `${result.cpp};`,
+                        );
+                    }
+                },
             );
-            if (
-                !ts.isIdentifier(callback) &&
-                !ts.isArrowFunction(callback) &&
-                !ts.isFunctionExpression(callback)
-            ) {
-                this.context.fail(
-                    callback,
-                    "Array.forEach requires a local function or function literal callback.",
-                );
-            }
-            const index =
-                this.context.allocateTemporaryCppName(
-                    "for_each_index",
-                );
-            const count =
-                this.context.allocateTemporaryCppName(
-                    "for_each_count",
-                );
-            this.context.emit(
-                `const std::size_t ${count} = ${narrowed.cpp}.size();`,
-            );
-            this.context.emit(
-                `for (std::size_t ${index} = 0; ${index} < ${count}; ++${index}) {`,
-            );
-            this.context.increaseIndent();
-            this.context.pushScope(
-                this.context.allocateBlockPrefix(),
-            );
-            try {
-                const result =
-                    this.context.compileCallbackWithValues(
-                        callback,
-                        [
-                            this.leafValue(
-                                `${narrowed.cpp}[${index}]`,
-                                dataType.element,
-                            ),
-                            {
-                                kind: "number",
-                                cpp: `static_cast<double>(${index})`,
-                                dataType: { kind: "number" },
-                            },
-                            narrowed,
-                        ],
-                        call,
-                    );
-                if (result.cpp.length > 0) {
-                    this.context.emit(
-                        result.requiresExplicitDiscard
-                            ? `static_cast<void>(${result.cpp});`
-                            : `${result.cpp};`,
-                    );
-                }
-            } finally {
-                this.context.popScope();
-                this.context.decreaseIndent();
-            }
-            this.context.emit("}");
             return { kind: "void", cpp: "" };
         }
         if (method === "push") {
@@ -4097,6 +3904,23 @@ export class DataLowerer {
                         unwrapped,
                     )
                 ) {
+                    if (
+                        unwrapped.properties.some((property) =>
+                            ts.isSpreadAssignment(property),
+                        )
+                    ) {
+                        const temporary =
+                            this.context.allocateTemporaryCppName(
+                                "spread",
+                            );
+                        this.emitSpreadStructDeclaration(
+                            temporary,
+                            unwrapped,
+                            dataType,
+                        );
+                        this.registerLocal(temporary, "owned");
+                        return temporary;
+                    }
                     return this.structLiteral(
                         unwrapped,
                         dataType,
@@ -5093,58 +4917,112 @@ export class DataLowerer {
 
     /**
      * Emits a declaration for an object literal with spread parts:
-     * `T name = <spread source>; name.field = override; ...`.
+     * a default object followed by source-ordered field writes. Compile-time
+     * records contribute only the keys they actually carry; a native struct
+     * contributes every field. This preserves JavaScript's last-write-wins
+     * spread semantics even when a partial record appears after explicit
+     * properties.
      */
     public emitSpreadStructDeclaration(
         cppName: string,
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "struct" },
     ): void {
-        const spreadIndex =
-            literal.properties.findIndex((property) =>
-                ts.isSpreadAssignment(property),
+        const referenceStruct =
+            this.context.dataTypes.isReferenceStruct(
+                dataType.name,
             );
-        const spread = literal.properties[spreadIndex];
-        if (
-            !spread ||
-            !ts.isSpreadAssignment(spread) ||
-            spreadIndex !== 0
-        ) {
-            this.context.fail(
-                literal,
-                "Object spread must be the first property.",
+        let declared = false;
+        const declareDefault = (): void => {
+            if (declared) return;
+            this.context.emit(
+                referenceStruct
+                    ? `${this.context.dataTypes.cppType(dataType)} ${cppName} = std::make_shared<bblscene::${dataType.name}Data>();`
+                    : `${this.context.dataTypes.cppType(dataType)} ${cppName}{};`,
             );
-        }
-        if (
-            literal.properties.filter((property) =>
-                ts.isSpreadAssignment(property),
-            ).length > 1
-        ) {
-            this.context.fail(
-                literal,
-                "Only one spread property is supported.",
+            declared = true;
+        };
+        const member = referenceStruct ? "->" : ".";
+        const assigned = new Set<string>();
+        const assign = (
+            sourceName: string,
+            sourceValue: Value,
+            node: ts.Node,
+        ): void => {
+            const field = this.context.dataTypes.structField(
+                dataType.name,
+                sourceName,
+                node,
             );
-        }
-        const source = this.compileForSink(
-            spread.expression,
-            dataType,
-        );
-        this.context.emit(
-            `${this.context.dataTypes.cppType(dataType)} ${cppName} = ${source};`,
-        );
-        for (const property of literal.properties.slice(
-            1,
-        )) {
+            this.context.emit(
+                `${cppName}${member}${field.name} = ${this.compileKnownValueForSink(sourceValue, field.type, node)};`,
+            );
+            assigned.add(field.name);
+        };
+        for (const property of literal.properties) {
+            if (ts.isSpreadAssignment(property)) {
+                const spread =
+                    this.compileDataPath(
+                        property.expression,
+                        "read",
+                    ) ??
+                    this.context.compileValue(
+                        property.expression,
+                    );
+                if (spread.kind === "record") {
+                    declareDefault();
+                    for (const [name, value] of Object.entries(
+                        spread.recordProperties ?? {},
+                    )) {
+                        assign(name, value, property);
+                    }
+                    continue;
+                }
+                if (
+                    spread.kind === "data" &&
+                    spread.dataType?.kind === "struct" &&
+                    dataTypesEqual(spread.dataType, dataType)
+                ) {
+                    if (!declared) {
+                        this.context.emit(
+                            `${this.context.dataTypes.cppType(dataType)} ${cppName} = ` +
+                                (referenceStruct
+                                    ? `std::make_shared<bblscene::${dataType.name}Data>(*(${spread.cpp}));`
+                                    : `${spread.cpp};`),
+                        );
+                        declared = true;
+                    } else {
+                        this.context.emit(
+                            referenceStruct
+                                ? `*${cppName} = *(${spread.cpp});`
+                                : `${cppName} = ${spread.cpp};`,
+                        );
+                    }
+                    for (const field of this.context.dataTypes.structFields(
+                        dataType.name,
+                        property,
+                    )) {
+                        assigned.add(field.name);
+                    }
+                    continue;
+                }
+                this.context.fail(
+                    property,
+                    "Object spread requires a compile-time record or native struct of the target type.",
+                );
+            }
             if (ts.isPropertyAssignment(property)) {
+                declareDefault();
                 const field =
                     this.context.dataTypes.structField(
                         dataType.name,
                         property.name.getText(),
                         property,
-                    );
-                this.context.emit(
-                    `${cppName}.${field.name} = ${this.compileForSink(property.initializer, field.type)};`,
                 );
+                this.context.emit(
+                    `${cppName}${member}${field.name} = ${this.compileForSink(property.initializer, field.type)};`,
+                );
+                assigned.add(field.name);
                 continue;
             }
             if (
@@ -5152,20 +5030,36 @@ export class DataLowerer {
                     property,
                 )
             ) {
+                declareDefault();
                 const field =
                     this.context.dataTypes.structField(
                         dataType.name,
                         property.name.text,
                         property,
-                    );
-                this.context.emit(
-                    `${cppName}.${field.name} = ${this.compileForSink(property.name, field.type)};`,
                 );
+                this.context.emit(
+                    `${cppName}${member}${field.name} = ${this.compileForSink(property.name, field.type)};`,
+                );
+                assigned.add(field.name);
                 continue;
             }
             this.context.fail(
                 property,
                 "Spread struct literals support plain property overrides.",
+            );
+        }
+        declareDefault();
+        const missing = this.context.dataTypes
+            .structFields(dataType.name, literal)
+            .find(
+                (field) =>
+                    field.type.kind !== "optional" &&
+                    !assigned.has(field.name),
+            );
+        if (missing) {
+            this.context.fail(
+                literal,
+                `Struct literal is missing field '${missing.name}'.`,
             );
         }
     }
@@ -5349,13 +5243,7 @@ export class DataLowerer {
                 }
                 const stored = assigned ?? right;
                 this.context.emit(
-                    target.dataStore === "u32"
-                        ? `${target.cpp} = bbl::js::to_uint32(${stored});`
-                        : target.dataStore === "u16"
-                          ? `${target.cpp} = bbl::js::to_uint16(${stored});`
-                          : target.dataStore === "u8"
-                            ? `${target.cpp} = bbl::js::to_uint8(${stored});`
-                          : `${target.cpp} = static_cast<float>(${stored});`,
+                    `${target.cpp} = ${typedArrayStoreExpression(target.dataStore, stored)};`,
                 );
                 return true;
             }
@@ -6200,7 +6088,13 @@ export class DataLowerer {
                         binding,
                     );
                 const value = this.leafValue(
-                    `${itemCpp}.${field.name}`,
+                    `${itemCpp}${
+                        this.context.dataTypes.isReferenceStruct(
+                            element.name,
+                        )
+                            ? "->"
+                            : "."
+                    }${field.name}`,
                     field.type,
                 );
                 define(binding.name, value);

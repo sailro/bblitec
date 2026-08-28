@@ -247,6 +247,13 @@ struct SharedShaderMaterialTextures {
     std::size_t users = 0;
 };
 
+[[nodiscard]] const std::vector<SDL_GPUTextureSamplerBinding>&
+mesh_shader_textures(const GpuMesh& mesh) {
+    return mesh.shared_shader_textures
+        ? mesh.shared_shader_textures->bindings
+        : mesh.shader_textures;
+}
+
 /**
  * This backend's member pair for one generated texture-slot row.
  *
@@ -460,12 +467,13 @@ GpuMeshSlotMembers mesh_slot_members(
 void bind_shader_material_textures(
     SDL_GPURenderPass* pass,
     const GpuMesh& mesh) {
-    if (mesh.shader_textures.empty()) return;
+    const auto& textures = mesh_shader_textures(mesh);
+    if (textures.empty()) return;
     SDL_BindGPUFragmentSamplers(
         pass,
         0,
-        mesh.shader_textures.data(),
-        static_cast<Uint32>(mesh.shader_textures.size()));
+        textures.data(),
+        static_cast<Uint32>(textures.size()));
 }
 
 void bind_mesh_vertex_buffers(
@@ -2031,6 +2039,8 @@ void draw_node_variant(
     // declares, the pair every other family already resolves.
     const auto resolve_texture =
         [&](const std::string& name) -> SDL_GPUTextureSamplerBinding {
+        const auto& shader_textures =
+            mesh_shader_textures(mesh);
         // The prefix is stripped once rather than re-concatenated onto every
         // candidate: this runs per declared name, per stage, per draw, per
         // frame, and building the comparison strings there allocated three
@@ -2047,12 +2057,12 @@ void draw_node_variant(
                     upstream::node_variant_textures[
                         entry.first_texture + index];
                 if (binding.name != declared) continue;
-                if (index >= mesh.shader_textures.size()) {
+                if (index >= shader_textures.size()) {
                     gpu_error(
                         "a node graph declares more textures than its "
                         "material carries.");
                 }
-                return mesh.shader_textures[index];
+                return shader_textures[index];
             }
         }
 #if BBLITE_NODE_SHADOWS
@@ -4022,11 +4032,9 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     if (mesh.owns_geometry_buffers) {
         SDL_ReleaseGPUBuffer(state.device, mesh.vertices);
     } else if (mesh.shared_geometry) {
-        if (mesh.shared_geometry->users == 0) {
-            gpu_error("Shader geometry reference count underflow.");
-        }
-        --mesh.shared_geometry->users;
-        mesh.shared_geometry = nullptr;
+        release_shared_user(
+            mesh.shared_geometry,
+            "Shader geometry reference count underflow.");
     }
 #if BBLITE_PBR_VARIANTS > 0
     if (mesh.pinned_vertices) {
@@ -4072,43 +4080,31 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     // The shader material's own pairs, which the upload loop created
     // outside the slot table.
     if (mesh.shared_shader_textures) {
-        if (mesh.shared_shader_textures->users == 0) {
-            gpu_error("Shader material texture reference count underflow.");
-        }
-        --mesh.shared_shader_textures->users;
-        mesh.shared_shader_textures = nullptr;
+        release_shared_user(
+            mesh.shared_shader_textures,
+            "Shader material texture reference count underflow.");
     } else {
         release_sprite_fragment_textures(state.device, mesh.shader_textures);
     }
 }
 
 void prune_shared_shader_geometries(GpuState& state) {
-    const auto unused = std::remove_if(
-        state.shared_shader_geometries.begin(),
-        state.shared_shader_geometries.end(),
-        [&](const std::unique_ptr<SharedShaderGeometry>& geometry) {
-            if (geometry->users != 0) return false;
-            SDL_ReleaseGPUBuffer(state.device, geometry->vertex_buffer);
-            SDL_ReleaseGPUBuffer(state.device, geometry->index_buffer);
-            return true;
+    prune_unused_shared(
+        state.shared_shader_geometries,
+        [&](SharedShaderGeometry& geometry) {
+            SDL_ReleaseGPUBuffer(state.device, geometry.vertex_buffer);
+            SDL_ReleaseGPUBuffer(state.device, geometry.index_buffer);
         });
-    state.shared_shader_geometries.erase(
-        unused,
-        state.shared_shader_geometries.end());
 }
 
 void prune_shared_shader_material_textures(GpuState& state) {
-    const auto unused = std::remove_if(
-        state.shared_shader_material_textures.begin(),
-        state.shared_shader_material_textures.end(),
-        [&](const std::unique_ptr<SharedShaderMaterialTextures>& textures) {
-            if (textures->users != 0) return false;
-            release_sprite_fragment_textures(state.device, textures->bindings);
-            return true;
+    prune_unused_shared(
+        state.shared_shader_material_textures,
+        [&](SharedShaderMaterialTextures& textures) {
+            release_sprite_fragment_textures(
+                state.device,
+                textures.bindings);
         });
-    state.shared_shader_material_textures.erase(
-        unused,
-        state.shared_shader_material_textures.end());
 }
 
 void release(GpuState& state) {
@@ -4128,16 +4124,23 @@ void release(GpuState& state) {
     for (GpuMesh& mesh : state.meshes) {
         release_gpu_mesh(state, mesh);
     }
-    for (const auto& geometry : state.shared_shader_geometries) {
-        SDL_ReleaseGPUBuffer(state.device, geometry->vertex_buffer);
-        SDL_ReleaseGPUBuffer(state.device, geometry->index_buffer);
-    }
-    state.shared_shader_geometries.clear();
-    for (const auto& textures :
-         state.shared_shader_material_textures) {
-        release_sprite_fragment_textures(state.device, textures->bindings);
-    }
-    state.shared_shader_material_textures.clear();
+    release_all_shared(
+        state.shared_shader_geometries,
+        [&](SharedShaderGeometry& geometry) {
+            SDL_ReleaseGPUBuffer(
+                state.device,
+                geometry.vertex_buffer);
+            SDL_ReleaseGPUBuffer(
+                state.device,
+                geometry.index_buffer);
+        });
+    release_all_shared(
+        state.shared_shader_material_textures,
+        [&](SharedShaderMaterialTextures& textures) {
+            release_sprite_fragment_textures(
+                state.device,
+                textures.bindings);
+        });
 #if BBLITE_GPU_MORPH_STORAGE
     if (state.empty_morph_deltas) {
         SDL_ReleaseGPUBuffer(state.device, state.empty_morph_deltas);
@@ -6294,8 +6297,6 @@ bool run_gpu_engine(Engine& engine) {
                         std::move(created));
                 }
                 ++gpu_mesh.shared_shader_textures->users;
-                gpu_mesh.shader_textures =
-                    gpu_mesh.shared_shader_textures->bindings;
             }
             return gpu_mesh;
         };

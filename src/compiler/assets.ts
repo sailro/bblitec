@@ -269,25 +269,6 @@ export function registerSpriteAtlasAsset(
  * they build sits one ulp from a rounding boundary in three places, so the
  * bytes the golden's own engine produced are the ones that ship.
  */
-export function registerPixelsAsset(
-    context: AssetRegistryContext,
-    expression: ts.Expression,
-): { cpp: string; source: string } {
-    const registered = registerExecutedModuleAsset(
-        context,
-        expression,
-        "pixels",
-        "pixel buffer",
-    );
-    if (!registered) {
-        context.fail(
-            expression,
-            "Texture pixels must come from a module function this compiler can run at generation.",
-        );
-    }
-    return registered;
-}
-
 /**
  * Returns a bakeable module-produced pixel buffer when the expression has
  * that shape. Runtime Uint8Array expressions deliberately return undefined
@@ -319,18 +300,6 @@ export function resolveBundledAsset(
     source: string,
     entryFileName?: string,
 ): string {
-    if (source.startsWith("/") && entryFileName) {
-        const entryDirectory = dirname(resolve(entryFileName));
-        const local = resolve(
-            entryDirectory,
-            `.${source}`,
-        );
-        if (existsSync(local)) {
-            return relative(entryDirectory, local)
-                .split(sep)
-                .join("/");
-        }
-    }
     if (source === "/brdf-lut.png") {
         const pin = readUpstreamPin();
         return `https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${pin.sourceVersion}/packages/babylon-lite/assets/brdf-lut.png`;
@@ -342,6 +311,18 @@ export function resolveBundledAsset(
             `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
             "/lab/public/textures/environment.env"
         );
+    }
+    if (source.startsWith("/") && entryFileName) {
+        const entryDirectory = dirname(resolve(entryFileName));
+        const local = resolve(
+            entryDirectory,
+            `.${source}`,
+        );
+        if (existsSync(local)) {
+            return relative(entryDirectory, local)
+                .split(sep)
+                .join("/");
+        }
     }
     if (source.startsWith("/")) {
         // Root-relative asset paths always mean the pinned lab/public

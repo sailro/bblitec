@@ -188,8 +188,13 @@ export interface CompiledSubsurfaceOptions {
 }
 
 /** A static RGB tuple in either source shape `compileColor3` accepts. */
-function staticColor3Value(
-    context: MaterialOptionContext,
+export function staticColor3Value(
+    context: PositiveIntegerContext & {
+        objectProperty(
+            object: ts.ObjectLiteralExpression,
+            name: string,
+        ): ts.Expression | undefined;
+    },
     expression: ts.Expression,
 ): readonly [number, number, number] | undefined {
     const node = context.resolveStaticExpression(expression);

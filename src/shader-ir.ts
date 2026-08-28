@@ -519,17 +519,107 @@ function validateBalancedWgsl(source: string): void {
     }
 }
 
+/** Removes comments and normalizes token spacing for raw-module identity. */
+function canonicalRawWgsl(source: string): string {
+    const tokens: string[] = [];
+    let index = 0;
+    while (index < source.length) {
+        if (/\s/.test(source[index]!)) {
+            index += 1;
+            continue;
+        }
+        if (source.startsWith("//", index)) {
+            const end = source.indexOf("\n", index + 2);
+            index = end < 0 ? source.length : end + 1;
+            continue;
+        }
+        if (source.startsWith("/*", index)) {
+            let depth = 1;
+            index += 2;
+            while (index < source.length && depth > 0) {
+                if (source.startsWith("/*", index)) {
+                    depth += 1;
+                    index += 2;
+                } else if (source.startsWith("*/", index)) {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            if (depth > 0) {
+                throw new Error("Unclosed WGSL block comment.");
+            }
+            continue;
+        }
+        const identifier = source
+            .slice(index)
+            .match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+        if (identifier) {
+            tokens.push(identifier);
+            index += identifier.length;
+            continue;
+        }
+        const number = source
+            .slice(index)
+            .match(
+                /^(?:0[xX][0-9A-Fa-f]+[iu]?|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[fhiu]?)/,
+            )?.[0];
+        if (number) {
+            tokens.push(number);
+            index += number.length;
+            continue;
+        }
+        const operator = [
+            ">>=",
+            "<<=",
+            "->",
+            "==",
+            "!=",
+            "<=",
+            ">=",
+            "&&",
+            "||",
+            "+=",
+            "-=",
+            "*=",
+            "/=",
+            "%=",
+            "&=",
+            "|=",
+            "^=",
+            ">>",
+            "<<",
+        ].find((candidate) =>
+            source.startsWith(candidate, index),
+        );
+        if (operator) {
+            tokens.push(operator);
+            index += operator.length;
+            continue;
+        }
+        tokens.push(source[index]!);
+        index += 1;
+    }
+    return tokens
+        .join(" ")
+        .replace(/\s+([,;:()\[\]{}<>.])/g, "$1")
+        .replace(/([@({\[<.])\s+/g, "$1")
+        .trim();
+}
+
 function parseRawModule(
     source: string,
     stage: ShaderStage,
 ): ShaderModule {
-    validateBalancedWgsl(source);
+    const canonicalSource = canonicalRawWgsl(source);
+    validateBalancedWgsl(canonicalSource);
     const entry = new RegExp(
         `@${stage}\\s+fn\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*` +
             `\\(([^)]*)\\)\\s*->\\s*` +
             `(?:@location\\((\\d+)\\)\\s*)?` +
             `([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\\s*\\{`,
-    ).exec(source);
+    ).exec(canonicalSource);
     if (!entry) {
         throw new Error(
             `Expected one @${stage} WGSL entry point with an explicit return type.`,
@@ -554,11 +644,27 @@ function parseRawModule(
     const structs: ShaderStruct[] = [];
     const structPattern =
         /struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{([\s\S]*?)\}\s*;?/g;
-    for (const match of source.matchAll(structPattern)) {
+    for (const match of canonicalSource.matchAll(structPattern)) {
         const members: ShaderStructMember[] = [];
         const memberPattern =
-            /(?:@(builtin|location)\(([^)]+)\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(f32|vec[234]<f32>|mat4x4<f32>)\s*,?/g;
-        for (const member of match[2]!.matchAll(memberPattern)) {
+            /\s*(?:@(builtin|location)\(([^)]+)\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*(?:<[^>]+>)?)\s*,?/gy;
+        const body = match[2]!;
+        let offset = 0;
+        while (offset < body.length) {
+            memberPattern.lastIndex = offset;
+            const member = memberPattern.exec(body);
+            if (!member || member.index !== offset) {
+                if (/^\s*$/.test(body.slice(offset))) break;
+                throw new Error(
+                    `Unsupported shader struct member near '${body.slice(offset).trim().slice(0, 40)}'.`,
+                );
+            }
+            const type = member[4]!.replace(/\s+/g, "");
+            if (!shaderTypes.has(type as ShaderType)) {
+                throw new Error(
+                    `Unsupported WGSL shader type '${type}' in struct '${match[1]}'.`,
+                );
+            }
             const attribute = member[1]
                 ? {
                       kind: member[1] as "builtin" | "location",
@@ -570,9 +676,10 @@ function parseRawModule(
                 : undefined;
             members.push({
                 name: member[3]!,
-                type: member[4]! as ShaderType,
+                type: type as ShaderType,
                 ...(attribute ? { attribute } : {}),
             });
+            offset = memberPattern.lastIndex;
         }
         structs.push({ name: match[1]!, members });
     }
@@ -593,7 +700,7 @@ function parseRawModule(
                 : {}),
             statements: [],
         },
-        rawSource: source,
+        rawSource: canonicalSource,
     };
 }
 

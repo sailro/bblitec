@@ -1130,6 +1130,46 @@ inline SharedTextures* find_shared_shader_material_textures(
     return found == cache.end() ? nullptr : found->get();
 }
 
+/** Drops one mesh's reference to a backend-owned shared cache entry. */
+template <typename Shared>
+inline void release_shared_user(
+    Shared*& shared,
+    const char* underflow_message) {
+    if (!shared) return;
+    if (shared->users == 0) {
+        throw std::runtime_error(underflow_message);
+    }
+    --shared->users;
+    shared = nullptr;
+}
+
+/** Releases and erases cache entries after their last mesh retires. */
+template <typename Cache, typename Release>
+inline void prune_unused_shared(
+    Cache& cache,
+    Release release) {
+    const auto unused = std::remove_if(
+        cache.begin(),
+        cache.end(),
+        [&](const auto& entry) {
+            if (entry->users != 0) return false;
+            release(*entry);
+            return true;
+        });
+    cache.erase(unused, cache.end());
+}
+
+/** Releases all backend objects in a cache during renderer teardown. */
+template <typename Cache, typename Release>
+inline void release_all_shared(
+    Cache& cache,
+    Release release) {
+    for (const auto& entry : cache) {
+        release(*entry);
+    }
+    cache.clear();
+}
+
 /**
  * The ordinary mesh TRS as a column-major world matrix.
  *

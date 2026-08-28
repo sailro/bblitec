@@ -323,6 +323,13 @@ struct DawnSharedShaderMaterialTextures {
     std::size_t users = 0;
 };
 
+[[nodiscard]] const std::vector<DawnSampledTexture>&
+mesh_shader_textures(const DawnMesh& mesh) {
+    return mesh.shared_shader_textures
+        ? mesh.shared_shader_textures->textures
+        : mesh.shader_textures;
+}
+
 struct DawnPipeline {
     WGPURenderPipeline pipeline = nullptr;
 };
@@ -989,12 +996,9 @@ WGPUBuffer esm_caster_params_buffer(
                 }
             }
             if (mesh.shared_shader_textures) {
-                if (mesh.shared_shader_textures->users == 0) {
-                    dawn_error(
-                        "Shader material texture reference count underflow.");
-                }
-                --mesh.shared_shader_textures->users;
-                mesh.shared_shader_textures = nullptr;
+                release_shared_user(
+                    mesh.shared_shader_textures,
+                    "Shader material texture reference count underflow.");
             } else {
                 release_dawn_extra_textures(mesh.shader_textures);
             }
@@ -1055,46 +1059,31 @@ WGPUBuffer esm_caster_params_buffer(
                 if (mesh.vertices) wgpuBufferRelease(mesh.vertices);
                 if (mesh.indices) wgpuBufferRelease(mesh.indices);
             } else if (mesh.shared_geometry) {
-                if (mesh.shared_geometry->users == 0) {
-                    dawn_error("Shader geometry reference count underflow.");
-                }
-                --mesh.shared_geometry->users;
-                mesh.shared_geometry = nullptr;
+                release_shared_user(
+                    mesh.shared_geometry,
+                    "Shader geometry reference count underflow.");
             }
     }
 
     void prune_shared_shader_geometries() {
-        const auto unused = std::remove_if(
-            shared_shader_geometries.begin(),
-            shared_shader_geometries.end(),
-            [](const std::unique_ptr<DawnSharedShaderGeometry>& geometry) {
-                if (geometry->users != 0) return false;
-                if (geometry->vertex_buffer) {
-                    wgpuBufferRelease(geometry->vertex_buffer);
+        prune_unused_shared(
+            shared_shader_geometries,
+            [](DawnSharedShaderGeometry& geometry) {
+                if (geometry.vertex_buffer) {
+                    wgpuBufferRelease(geometry.vertex_buffer);
                 }
-                if (geometry->index_buffer) {
-                    wgpuBufferRelease(geometry->index_buffer);
+                if (geometry.index_buffer) {
+                    wgpuBufferRelease(geometry.index_buffer);
                 }
-                return true;
             });
-        shared_shader_geometries.erase(
-            unused,
-            shared_shader_geometries.end());
     }
 
     void prune_shared_shader_material_textures() {
-        const auto unused = std::remove_if(
-            shared_shader_material_textures.begin(),
-            shared_shader_material_textures.end(),
-            [](const std::unique_ptr<
-                DawnSharedShaderMaterialTextures>& textures) {
-                if (textures->users != 0) return false;
-                release_dawn_extra_textures(textures->textures);
-                return true;
+        prune_unused_shared(
+            shared_shader_material_textures,
+            [](DawnSharedShaderMaterialTextures& textures) {
+                release_dawn_extra_textures(textures.textures);
             });
-        shared_shader_material_textures.erase(
-            unused,
-            shared_shader_material_textures.end());
     }
 
     void release_meshes() {
@@ -1213,21 +1202,21 @@ WGPUBuffer esm_caster_params_buffer(
         }
 #endif
         release_meshes();
-        for (const auto& geometry :
-             shared_shader_geometries) {
-            if (geometry->vertex_buffer) {
-                wgpuBufferRelease(geometry->vertex_buffer);
-            }
-            if (geometry->index_buffer) {
-                wgpuBufferRelease(geometry->index_buffer);
-            }
-        }
-        shared_shader_geometries.clear();
-        for (const auto& textures :
-             shared_shader_material_textures) {
-            release_dawn_extra_textures(textures->textures);
-        }
-        shared_shader_material_textures.clear();
+        release_all_shared(
+            shared_shader_geometries,
+            [](DawnSharedShaderGeometry& geometry) {
+                if (geometry.vertex_buffer) {
+                    wgpuBufferRelease(geometry.vertex_buffer);
+                }
+                if (geometry.index_buffer) {
+                    wgpuBufferRelease(geometry.index_buffer);
+                }
+            });
+        release_all_shared(
+            shared_shader_material_textures,
+            [](DawnSharedShaderMaterialTextures& textures) {
+                release_dawn_extra_textures(textures.textures);
+            });
 #if BBLITE_GPU_MORPH_STORAGE
         if (empty_morph_weights) {
             wgpuBufferRelease(empty_morph_weights);
@@ -5687,15 +5676,16 @@ WGPUBindGroup build_node_draw_group(
     // The images the scene supplied, uploaded with the mesh: the variant
     // table's order is the pin's allocation order, and the material's slots
     // were filled in that same order by `create_node_material`.
+    const auto& shader_textures = mesh_shader_textures(mesh);
     for (std::size_t index = 0; index < entry.texture_count; ++index) {
         const upstream::NodeVariantTexture& binding =
             upstream::node_variant_textures[entry.first_texture + index];
-        if (index >= mesh.shader_textures.size()) {
+        if (index >= shader_textures.size()) {
             dawn_error(
                 "a node graph declares more textures than its material "
                 "carries.");
         }
-        const DawnSampledTexture& supplied = mesh.shader_textures[index];
+        const DawnSampledTexture& supplied = shader_textures[index];
         WGPUBindGroupEntry view = WGPU_BIND_GROUP_ENTRY_INIT;
         view.binding = binding.texture;
         view.textureView = supplied.view;
@@ -6347,19 +6337,21 @@ DawnMeshBindings& bindings_for(
     // pairs ARE the declared indexes, so no compaction stands between the
     // record and the group.
     if (binding_traits.shader && binding_shader_info) {
+        const auto& shader_textures =
+            mesh_shader_textures(mesh);
         if (
-            mesh.shader_textures.size() <
+            shader_textures.size() <
             binding_shader_info->samplers.size()) {
             dawn_error(shader_sampler_shortfall(
                 *binding_shader_info,
-                mesh.shader_textures.size()));
+                shader_textures.size()));
         }
         for (
             std::size_t slot = 0;
             slot < binding_shader_info->samplers.size();
             ++slot) {
-            views[slot] = mesh.shader_textures[slot].view;
-            samplers[slot] = mesh.shader_textures[slot].sampler;
+            views[slot] = shader_textures[slot].view;
+            samplers[slot] = shader_textures[slot].sampler;
         }
     }
     const std::uint32_t pair_count =
@@ -7767,7 +7759,6 @@ bool run_dawn_engine(Engine& engine) {
                     std::move(created));
             }
             ++mesh.shared_shader_textures->users;
-            mesh.shader_textures = mesh.shared_shader_textures->textures;
         } else if (material) {
             mesh.shader_textures = upload_shader_textures();
         }

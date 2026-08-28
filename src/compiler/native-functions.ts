@@ -3,12 +3,13 @@ import { cppIdentifier } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
-    isTypedArrayType,
+    passesByReference,
     type DataType,
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import {
+    parameterIsReadOnly,
     resolveFunctionDeclaration,
     type SupportedFunction,
 } from "./user-functions.js";
@@ -53,16 +54,78 @@ export interface NativeFunctionContext {
     fail(node: ts.Node, message: string): never;
 }
 
+export interface DataFunctionParameter {
+    name: ts.Identifier;
+    type: DataType;
+    byReference: boolean;
+    readOnly: boolean;
+}
+
 interface NativeFunctionSignature {
     cppName: string;
-    parameters: {
-        name: ts.Identifier;
-        type: DataType | undefined;
-        byReference: boolean;
-        readOnly: boolean;
-    }[];
+    parameters: DataFunctionParameter[];
     returnType: DataType | undefined;
     declaration: SupportedFunction;
+}
+
+/**
+ * Binds one plain-data function signature and captures its lowered body.
+ * Namespace functions and local recursive lambdas differ only in the C++
+ * declaration wrapped around this shared body protocol.
+ */
+export function captureDataFunctionBody(
+    context: NativeFunctionContext,
+    parameters: readonly DataFunctionParameter[],
+    returnType: DataType | undefined,
+    emitBody: () => void,
+): { parameterDeclarations: string[]; lines: string[] } {
+    context.pushScope(
+        context.allocateUserFunctionPrefix(),
+    );
+    try {
+        const parameterDeclarations = parameters.map(
+            (parameter) => {
+                const cppName = context.cppLocalName(
+                    parameter.name.text,
+                );
+                const cppType = context.dataTypes.cppType(
+                    parameter.type,
+                );
+                context.defineVariable(
+                    parameter.name,
+                    context.dataLowerer.leafValue(
+                        cppName,
+                        parameter.type,
+                    ),
+                );
+                if (
+                    parameter.type.kind !== "number" &&
+                    parameter.type.kind !== "boolean"
+                ) {
+                    context.dataLowerer.registerLocal(
+                        cppName,
+                        "owned",
+                    );
+                }
+                return parameter.byReference
+                    ? `${parameter.readOnly ? "const " : ""}${cppType}& ${cppName}`
+                    : `${cppType} ${cppName}`;
+            },
+        );
+        context.beginNativeFunctionBody(returnType);
+        try {
+            return {
+                parameterDeclarations,
+                lines: context.captureEmittedLines(
+                    emitBody,
+                ),
+            };
+        } finally {
+            context.endNativeFunctionBody();
+        }
+    } finally {
+        context.popScope();
+    }
 }
 
 /**
@@ -319,7 +382,7 @@ export class NativeFunctionLowerer {
             // where the engine binding is in scope.
             if (
                 !returnType ||
-                this.carriesHandle(returnType)
+                this.context.dataTypes.carriesHandle(returnType)
             ) {
                 return undefined;
             }
@@ -339,24 +402,17 @@ export class NativeFunctionLowerer {
                 );
             if (
                 !parameterType ||
-                this.carriesHandle(parameterType)
+                this.context.dataTypes.carriesHandle(parameterType)
             ) {
                 return undefined;
             }
             parameters.push({
                 name: parameter.name,
                 type: parameterType,
-                byReference:
-                    (parameterType.kind === "struct" &&
-                        !this.context.dataTypes.isReferenceStruct(
-                            parameterType.name,
-                        )) ||
-                    parameterType.kind === "map" ||
-                    parameterType.kind === "set" ||
-                    parameterType.kind === "optional" ||
-                    parameterType.kind === "arraybuffer" ||
-                    parameterType.kind === "dataview" ||
-                    isTypedArrayType(parameterType),
+                byReference: passesByReference(
+                    this.context.dataTypes,
+                    parameterType,
+                ),
                 readOnly: this.parameterIsReadOnly(
                     declaration,
                     parameter.name,
@@ -381,129 +437,11 @@ export class NativeFunctionLowerer {
         declaration: SupportedFunction,
         parameter: ts.Identifier,
     ): boolean {
-        const symbol =
-            this.context.checker.getSymbolAtLocation(
-                parameter,
-            );
-        if (!symbol || !declaration.body) return false;
-        const namesParameter = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) &&
-            this.context.checker.getSymbolAtLocation(node) ===
-                symbol;
-        const containsParameter = (node: ts.Node): boolean => {
-            let found = false;
-            const visit = (candidate: ts.Node): void => {
-                if (found) return;
-                if (namesParameter(candidate)) {
-                    found = true;
-                    return;
-                }
-                ts.forEachChild(candidate, visit);
-            };
-            visit(node);
-            return found;
-        };
-        const rootNamesParameter = (
-            expression: ts.Expression,
-        ): boolean => {
-            let current = this.context.unwrap(expression);
-            while (
-                ts.isPropertyAccessExpression(current) ||
-                ts.isElementAccessExpression(current)
-            ) {
-                current = this.context.unwrap(
-                    current.expression,
-                );
-            }
-            return namesParameter(current);
-        };
-        const readOnlyMethods = new Set([
-            "at",
-            "concat",
-            "entries",
-            "every",
-            "filter",
-            "find",
-            "findIndex",
-            "findLast",
-            "findLastIndex",
-            "forEach",
-            "get",
-            "has",
-            "includes",
-            "indexOf",
-            "join",
-            "keys",
-            "lastIndexOf",
-            "map",
-            "reduce",
-            "reduceRight",
-            "slice",
-            "some",
-            "values",
-        ]);
-        let readOnly = true;
-        const visit = (node: ts.Node): void => {
-            if (!readOnly) return;
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >=
-                    ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <=
-                    ts.SyntaxKind.LastAssignment &&
-                rootNamesParameter(node.left)
-            ) {
-                readOnly = false;
-                return;
-            }
-            if (
-                (ts.isPrefixUnaryExpression(node) ||
-                    ts.isPostfixUnaryExpression(node)) &&
-                [
-                    ts.SyntaxKind.PlusPlusToken,
-                    ts.SyntaxKind.MinusMinusToken,
-                ].includes(node.operator) &&
-                rootNamesParameter(node.operand)
-            ) {
-                readOnly = false;
-                return;
-            }
-            if (ts.isCallExpression(node)) {
-                if (
-                    ts.isPropertyAccessExpression(
-                        node.expression,
-                    ) &&
-                    rootNamesParameter(
-                        node.expression.expression,
-                    ) &&
-                    !readOnlyMethods.has(
-                        node.expression.name.text,
-                    )
-                ) {
-                    readOnly = false;
-                    return;
-                }
-                if (
-                    node.arguments.some(containsParameter)
-                ) {
-                    readOnly = false;
-                    return;
-                }
-            }
-            if (
-                ts.isVariableDeclaration(node) &&
-                node.initializer &&
-                containsParameter(node.initializer)
-            ) {
-                // An alias can be mutated later. Keep the analysis
-                // conservative instead of attempting an alias graph here.
-                readOnly = false;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(declaration.body);
-        return readOnly;
+        return parameterIsReadOnly(
+            this.context.checker,
+            declaration,
+            parameter,
+        );
     }
 
     /**
@@ -512,55 +450,6 @@ export class NativeFunctionLowerer {
      * constants, functions, imports, and the function's own parameters and
      * locals are fine; captured bindings force the inline path.
      */
-    /**
-     * True when a type holds a resource handle anywhere inside it.
-     *
-     * A namespace-scope function has no engine binding in scope, and
-     * touching a handle always needs one. Checking only the outermost
-     * type would miss a struct or array of meshes, which reads as
-     * plain data here but still drives the engine at every use.
-     */
-    private carriesHandle(
-        dataType: DataType,
-        seen = new Set<string>(),
-    ): boolean {
-        switch (dataType.kind) {
-            case "handle":
-                return true;
-            case "optional":
-                return this.carriesHandle(
-                    dataType.inner,
-                    seen,
-                );
-            case "vector":
-            case "span":
-            case "enummap":
-            case "set":
-                return this.carriesHandle(
-                    dataType.element,
-                    seen,
-                );
-            case "map":
-                return (
-                    this.carriesHandle(dataType.key, seen) ||
-                    this.carriesHandle(dataType.value, seen)
-                );
-            case "struct": {
-                if (seen.has(dataType.name)) {
-                    return false;
-                }
-                seen.add(dataType.name);
-                return this.context.dataTypes
-                    .structFieldTypes(dataType.name)
-                    .some((field) =>
-                        this.carriesHandle(field, seen),
-                    );
-            }
-            default:
-                return false;
-        }
-    }
-
     private capturesEnclosingBindings(
         declaration: SupportedFunction,
     ): boolean {
@@ -699,69 +588,24 @@ export class NativeFunctionLowerer {
                   signature.returnType,
               )
             : "void";
-        this.context.pushScope(
-            this.context.allocateUserFunctionPrefix(),
-        );
-        const parameterDeclarations: string[] = [];
-        let lines: string[];
-        try {
-            for (const parameter of signature.parameters) {
-                const cppName = this.context.cppLocalName(
-                    parameter.name.text,
-                );
-                const dataType = parameter.type!;
-                const cppType =
-                    this.context.dataTypes.cppType(
-                        dataType,
-                    );
-                parameterDeclarations.push(
-                    parameter.byReference
-                        ? `${parameter.readOnly ? "const " : ""}${cppType}& ${cppName}`
-                        : `${cppType} ${cppName}`,
-                );
-                this.context.defineVariable(
-                    parameter.name,
-                    this.parameterValue(
-                        cppName,
-                        dataType,
-                    ),
-                );
-                if (
-                    dataType.kind !== "number" &&
-                    dataType.kind !== "boolean"
-                ) {
-                    this.context.dataLowerer.registerLocal(
-                        cppName,
-                        "owned",
-                    );
-                }
-            }
-            this.context.beginNativeFunctionBody(
+        const { parameterDeclarations, lines } =
+            captureDataFunctionBody(
+                this.context,
+                signature.parameters,
                 signature.returnType,
-            );
-            try {
-                lines = this.context.captureEmittedLines(
-                    () => {
-                        for (const statement of body.statements) {
-                            this.context.emitStatement(
+                () => {
+                    for (const statement of body.statements) {
+                        this.context.emitStatement(statement);
+                        if (
+                            this.context.statementTerminatesAfterLowering(
                                 statement,
-                            );
-                            if (
-                                this.context.statementTerminatesAfterLowering(
-                                    statement,
-                                )
-                            ) {
-                                break;
-                            }
+                            )
+                        ) {
+                            break;
                         }
-                    },
-                );
-            } finally {
-                this.context.endNativeFunctionBody();
-            }
-        } finally {
-            this.context.popScope();
-        }
+                    }
+                },
+            );
         const parameterList =
             parameterDeclarations.join(", ");
         this.context.registerNativeFunction(
@@ -774,24 +618,4 @@ export class NativeFunctionLowerer {
         );
     }
 
-    private parameterValue(
-        cppName: string,
-        dataType: DataType,
-    ): Value {
-        if (
-            dataType.kind === "number" ||
-            dataType.kind === "boolean"
-        ) {
-            return {
-                kind: dataType.kind,
-                cpp: cppName,
-                dataType,
-            };
-        }
-        return {
-            kind: "data",
-            cpp: cppName,
-            dataType,
-        };
-    }
 }

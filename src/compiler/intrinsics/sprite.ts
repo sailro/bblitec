@@ -38,9 +38,6 @@ export interface SpriteIntrinsicContext
     registerSpriteAtlasAsset(
         expression: ts.Expression,
     ): string;
-    registerPixelsAsset(
-        expression: ts.Expression,
-    ): { cpp: string; source: string };
     probePixelsAsset(
         expression: ts.Expression,
     ): { cpp: string; source: string } | undefined;
