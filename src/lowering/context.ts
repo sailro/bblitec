@@ -736,9 +736,184 @@ export class LoweringContext {
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.MinusToken) {
             return -this.numericValue(unwrapped.operand, file);
         }
+        if (ts.isIdentifier(unwrapped)) {
+            const bound = this.moduleConstant(file, unwrapped.text);
+            if (bound) return this.numericValue(bound.initializer, bound.file);
+        }
         return this.contractError(
             unwrapped,
             `Expected numeric constant, found ${unwrapped.getText(file)}.`,
+        );
+    }
+
+    /**
+     * The module-scope `const` a pinned module declares under a name, or the
+     * one it imports that name from.
+     *
+     * The pin names a value the moment a second module needs it — the HDR
+     * loader's LOD generation scale became `HDR_LOD_GENERATION_SCALE` in the
+     * pipeline module beside it — and a constant is no less a compile-time
+     * constant for having a name. Reading it where the pin declares it keeps
+     * the value the pin's; refusing the name instead would have to be
+     * answered by restating the number here, which is the copy that drifts.
+     *
+     * An aliased import resolves to nothing rather than to a guess.
+     */
+    private moduleConstant(
+        file: ts.SourceFile,
+        name: string,
+    ): { initializer: ts.Expression; file: ts.SourceFile } | undefined {
+        const local = this.moduleScopeConstant(file, name);
+        if (local) return { initializer: local, file };
+        const declaringPath = this.moduleOfImport(file.fileName, name);
+        if (!declaringPath) return undefined;
+        const declaring = this.sourceFile(declaringPath);
+        const initializer = this.moduleScopeConstant(declaring, name);
+        return initializer
+            ? { initializer, file: declaring }
+            : undefined;
+    }
+
+    /**
+     * The initializer of a module-scope `const` a pinned module declares.
+     *
+     * Two things narrow it, and both are the point. Only the file's own top
+     * level is consulted, so a same-named local inside some function is a
+     * different binding. And the declaration has to be `const`: the module
+     * this rule first reached is the demonstration — `hdr-ibl-pipeline.ts`
+     * declares `HDR_LOD_GENERATION_SCALE` on one line and a mutable
+     * `let _prefilteredEnvironmentExtraUsage = 0` counter on the next, and a
+     * scan that folded the second would bake a value the pin means to change.
+     */
+    public moduleScopeConstant(
+        file: ts.SourceFile,
+        name: string,
+    ): ts.Expression | undefined {
+        for (const statement of file.statements) {
+            if (
+                !ts.isVariableStatement(statement) ||
+                (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+            ) {
+                continue;
+            }
+            for (const declaration of statement.declarationList.declarations) {
+                if (
+                    ts.isIdentifier(declaration.name) &&
+                    declaration.name.text === name &&
+                    declaration.initializer
+                ) {
+                    return declaration.initializer;
+                }
+            }
+        }
+        return undefined;
+    }
+
+    /**
+     * The two sides of a pinned `<left> ?? <right>` default.
+     *
+     * Every lowerer that anchors a pinned default splits this expression, and
+     * each hand-rolled copy carries its own spelling of the same two tests.
+     * `coalescedPropertyDefault` in the glTF lowerers is the specialization
+     * that additionally names the property on the left; this is the general
+     * form, for the defaults whose left side is a bare parameter.
+     */
+    public nullishDefault(
+        expression: ts.Expression,
+    ): { left: ts.Expression; right: ts.Expression } | undefined {
+        const node = this.unwrapExpression(expression);
+        if (
+            !ts.isBinaryExpression(node) ||
+            node.operatorToken.kind !==
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            return undefined;
+        }
+        return { left: node.left, right: node.right };
+    }
+
+    /**
+     * The interface a pinned module declares under a name.
+     *
+     * The peer of `functionDeclaration` for the contracts that are types
+     * rather than bodies. A pinned options interface is the only description
+     * of an object this port hands a pinned factory — the package's bundled
+     * declarations do not carry the internal ones — so reading its members is
+     * how a supplied bag is checked against what the pin reads.
+     */
+    public interfaceDeclaration(
+        modulePath: string,
+        name: string,
+    ): { file: ts.SourceFile; declaration: ts.InterfaceDeclaration } {
+        const file = this.sourceFile(modulePath);
+        const declaration = file.statements.find(
+            (statement): statement is ts.InterfaceDeclaration =>
+                ts.isInterfaceDeclaration(statement) &&
+                statement.name.text === name,
+        );
+        if (!declaration) {
+            throw new Error(
+                `${modulePath} no longer declares interface '${name}'.`,
+            );
+        }
+        return { file, declaration };
+    }
+
+    /**
+     * The keys this port supplies for a pinned options object, against the
+     * members the pin declares for it.
+     *
+     * These bags are untyped on this side — their members are pinned values,
+     * so the object crosses over as a `Record<string, unknown>` — which makes
+     * a RENAME silent: the old key is ignored and the new one destructures to
+     * its parameter default. 1.25.0 folded `createPbrComposer`'s
+     * `_toneMappingHelpers`/`_toneMappingCall` into one `_tm` record and every
+     * composed PBR fragment came out with no tone mapping and no exposure,
+     * which nothing at generation could see.
+     *
+     * The rule is deliberately not set equality. A member the pin declares
+     * OPTIONAL is one the caller may legitimately omit — the composer's own
+     * `_tm` is optional, for a scene with tone mapping off — so what has to
+     * hold is that every supplied key is declared, and every REQUIRED
+     * declared key is supplied. An additive optional dependency upstream
+     * therefore passes, and a renamed or dropped one fails naming it.
+     */
+    public assertSuppliedOptions(
+        modulePath: string,
+        interfaceName: string,
+        supplied: readonly string[],
+    ): void {
+        const { declaration } = this.interfaceDeclaration(
+            modulePath,
+            interfaceName,
+        );
+        const members = declaration.members.flatMap((member) => {
+            const key = member.name
+                ? this.propertyName(member.name)
+                : undefined;
+            return key === undefined
+                ? []
+                : [{ key, required: member.questionToken === undefined }];
+        });
+        const declared = new Set(members.map(({ key }) => key));
+        const missing = members
+            .filter(({ key, required }) => required && !supplied.includes(key))
+            .map(({ key }) => key);
+        const unread = supplied.filter((key) => !declared.has(key));
+        if (missing.length === 0 && unread.length === 0) return;
+        this.contractError(
+            declaration,
+            `${interfaceName} declares [${[...declared].join(", ")}]; this ` +
+                `port supplies [${[...supplied].sort().join(", ")}]. ` +
+                (missing.length > 0
+                    ? `Required but unsupplied: ${missing.join(", ")}. `
+                    : "") +
+                (unread.length > 0
+                    ? `Supplied but undeclared: ${unread.join(", ")}. `
+                    : "") +
+                "A dependency the pin reads and this port does not supply " +
+                "takes its default silently, which is why the key set is " +
+                "checked rather than the values.",
         );
     }
 

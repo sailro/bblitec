@@ -43,15 +43,19 @@ function standardPluginConstant(
     name: "PLUGIN_INDEX_SHIFT" | "PLUGIN_INDEX_MASK",
 ): number {
     const file = context.sourceFile(STD_PLUGIN_BRIDGE);
-    return context.numericValue(
-        context.variableInitializer(file, name),
-        file,
-    );
+    const declared = context.moduleScopeConstant(file, name);
+    if (!declared) {
+        return context.contractError(
+            file,
+            `Expected ${STD_PLUGIN_BRIDGE} to declare ${name}.`,
+        );
+    }
+    return context.numericValue(declared, file);
 }
 
 /**
- * The shift `registerStdPlugins` bakes its signature index at, taken from
- * the expression that bakes it.
+ * The shift the Standard bridge bakes its signature index at, taken from the
+ * expression that bakes it.
  *
  * The generated Standard derivation re-emits that OR with the material
  * record's own field in place of the pin's `idx`, so what has to hold is the
@@ -59,11 +63,14 @@ function standardPluginConstant(
  * the operator, or moved the shift to the other operand would still export a
  * `PLUGIN_INDEX_SHIFT` worth reading while meaning something else. Asserting
  * the shape is what makes the emitted line the pin's own line.
+ *
+ * 1.25.0 moved the bake out of `registerStdPlugins` into the per-material
+ * `bakeStdPluginMaterial` the walk now calls, which is where it is read.
  */
 export function pinnedPluginBakeShift(context: LoweringContext): number {
     const { declaration } = context.functionDeclaration(
         STD_PLUGIN_BRIDGE,
-        "registerStdPlugins",
+        "bakeStdPluginMaterial",
     );
     const [bake] = context.findNodes(
         declaration,
@@ -74,14 +81,14 @@ export function pinnedPluginBakeShift(context: LoweringContext): number {
     if (!bake) {
         return context.contractError(
             declaration,
-            "Pinned registerStdPlugins no longer ORs its signature index " +
-                "into the material's computed feature word.",
+            "The pinned bakeStdPluginMaterial no longer ORs its signature " +
+                "index into the material's computed feature word.",
         );
     }
     context.assertExpressionShape(
         bake,
         "_computeStandardMaterialFeatures(mat) | (idx << PLUGIN_INDEX_SHIFT)",
-        "registerStdPlugins signature-index bake",
+        "bakeStdPluginMaterial signature-index bake",
     );
     return standardPluginConstant(context, "PLUGIN_INDEX_SHIFT");
 }
@@ -197,10 +204,9 @@ async function registerPluginBridges(
             }>("material/plugin/pbr-plugin-bridge.js"),
             importPinnedModule<{
                 registerStdPlugins: (
-                    meshes: readonly unknown[],
-                    engine: unknown,
+                    scene: unknown,
                     register: (ext: unknown) => void,
-                ) => void;
+                ) => (deltaMs: number) => void;
             }>("material/plugin/std-plugin-bridge.js"),
             importPinnedModule<{
                 _registerPbrExt: (ext: unknown) => void;
@@ -233,12 +239,23 @@ async function registerPluginBridges(
         _buildGroup: unknown;
         _renderFeatures?: { features: number };
     }[];
-    // The engine reaches `createUniformBuffer` only for a plugin list
-    // declaring UBO fields, and the compiler refuses `getUniforms` by name —
-    // so there is no engine to hand over and none is asked for.
+    // 1.25.0 gives the bridge the whole scene: it walks `scene.meshes` as
+    // before, and everything else it reads off one is lifetime state a
+    // built scene has. `_built` false is what this stand-in is — no bindings
+    // exist yet, so the bake queues no rebuild and releases nothing. The
+    // engine is RECORDED on each material's state and reached only to build
+    // a self-managed plugin UBO, which needs `getUniforms` — refused at
+    // generation by name — so the bake leaves the buffer null and the
+    // recorded engine unread. The disposer list is the scene's own;
+    // generation ends the process rather than tearing a scene down, so it is
+    // collected and never drained.
     stdBridge.registerStdPlugins(
-        materials.map((material) => ({ material })),
-        undefined,
+        {
+            meshes: materials.map((material) => ({ material })),
+            _built: false,
+            _disposables: [],
+            surface: { engine: null },
+        },
         stdFlags._registerStdExt,
     );
     const context = new LoweringContext(sharedUpstreamStore());

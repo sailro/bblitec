@@ -1438,10 +1438,27 @@ reproduced rather than approximated: the 27 floats the package carries are
 bit-identical to the ones an instrumented capture shows the browser uploading
 for Scene 19. The package is the format the HDR path emits, so the DDS file's
 face-major mip chain is transposed to mip-major during generation and one
-native reader serves both. Two differences from the HDR loader are the pin's
-own and are carried through: a DDS environment uses LOD generation scale 0.8
-rather than 1.0, and it writes no image-processing state at all, where the HDR
-loader sets exposure, contrast, and tone mapping.
+native reader serves both. One difference from the HDR loader is the pin's own
+and is carried through: a DDS environment writes no image-processing state at
+all, where the HDR loader sets exposure, contrast, and tone mapping.
+
+**All three environment routes now share one LOD generation scale, and it is
+read rather than restated.** `.env` and DDS have always passed `0.8` to
+`assembleEnvironmentTextures`; the HDR loader passed `1.0` until 1.25.0 named
+the value `HDR_LOD_GENERATION_SCALE` in `hdr-ibl-pipeline.ts` and set it to
+Babylon.js's own `0.8`, calling the old value a mismatch with the
+roughness-to-prefiltered-mip mapping. The scale is a *value* the loader hands
+over, so the emitted `lod_generation_scale` comes from the argument's own
+expression — a named constant is followed to the module that declares it,
+which is what turned that move into a generation failure rather than a
+silently different reflection blur.
+
+Scene 8 is the one reached HDR environment and it measures byte-identical
+either way, which is a fact about the scene rather than about the scale: its
+sphere is `microSurface: 1`, so `log2(cubemapDim * alphaG)` is negative
+before the scale multiplies it and `clamp(specLod, 0.0, maxLod)` returns mip
+zero for both values. A rougher HDR-lit surface is what would measure the
+difference, and the corpus has none.
 
 Per-texture UV transforms follow the pin's own per-material rule: generation
 executes the pinned `wrapTexture` and `needsGltfUvTransform`, so a material
@@ -1513,15 +1530,25 @@ restitution defaults, all three motion/shape/prestep enumerations with the
 pin's own numbering, the aggregate's ordering (shape, body, shape
 assignment, material, then mass — upstream comments that ordering because
 mass derives from the shape), the `mass === 0` static rule, and the
-bounding-box shape sizing. `_boundingCenter`, `_boundingExtents`, and
-`_boundingRadius` are translated statement by statement from their pinned
-ASTs: the optional bound pair specializes onto the native geometry record,
-array components widen from their stored floats into JavaScript-number
-doubles, and both `{ x, y, z }` return arms are emitted field by field from
-the object literals. `physics-lowerer.ts` asserts every remaining restated
-rule against the declaration that states it, including the *order* of the
-four phases, which no single expression would catch. Scene 40 directly gates
-the translated centre, ground extents, and sphere radius on both backends.
+shape sizing `_buildShapeParams` derives.
+
+That derivation is translated expression by expression from its own AST. Two
+things specialize, and both are the ones the three helpers it replaced in
+1.25.0 already specialized: the optional bound pair becomes the native
+geometry record's `present` flag with each `??` taking the pin's own literal
+fallback, and every component widens from its stored float into the
+JavaScript-number double the pin computes in. Everything else is the pin's
+expression — the four scale terms, the scaled extents, the centre the sphere
+and box cases share, and the segment a capsule and a cylinder span. The last
+of those is what the move changed: both used to take a fixed `{0,0,0}` to
+`{0,1,0}` unit segment and a largest-extent radius, and both now run from the
+mesh's own scaled Y range at `extents.x * 0.5`. `physics-lowerer.ts` asserts
+every remaining restated rule against the declaration that states it,
+including the *order* of the four phases, which no single expression would
+catch, and `setPhysicsShapeMaterial`'s static-friction default, which is what
+licenses the emitted aggregate writing one friction into both material
+channels. Scene 40 directly gates the translated centre, ground extents, and
+sphere radius on both backends.
 
 **What a substituted solver is measured by.** Two things, and the split
 matters because only one of them needs Havok.

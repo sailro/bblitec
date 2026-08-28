@@ -23,6 +23,8 @@
  */
 import type { JsonObject } from "./gltf-document.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import { LoweringContext } from "./lowering/context.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
 
 /** One vertex input the composed module declares, at its own location. */
 export interface ComposedNodeAttribute {
@@ -458,27 +460,38 @@ async function composeNodeEsmCaster(
         // The buffer is bound at run time, never read while compiling.
         { kind: "buffer" },
     );
+    // The same untyped-bag hazard `createPbrComposer`'s dependencies carry:
+    // a member the pin renames is ignored here and takes its default there,
+    // silently. Checked against the pinned interface's own members, so a
+    // renamed `_esmShadowDepthCode` fails rather than composing a caster
+    // with no depth code.
+    const casterOptions = {
+        _engine: engine,
+        // The shadow map's own format and state, which is what the pin
+        // passes here rather than the frame's.
+        _format: "rgba16float",
+        _depthStencilFormat: "depth32float",
+        _depthCompare: "less-equal",
+        _msaaSamples: 1,
+        _backFaceCulling: material._graph.backFaceCulling,
+        _noColorOutput: false,
+        _esmShadowOutput: true,
+        _esmShadowDepthCode,
+        _alphaMode: 0,
+        // The shared fragment body still names the env samplers even in
+        // the depth variant, so its declarations have to come with it.
+        _envEmitter: material._envHelpers?.emitEnv,
+    };
+    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+        "src/material/node/node-pipeline.ts",
+        "CompileOpts",
+        Object.keys(casterOptions),
+    );
     const compiled = pipeline.compileNodePipeline(
         material._state,
         material._vertexBody,
         material._fragmentBody,
-        {
-            _engine: engine,
-            // The shadow map's own format and state, which is what the pin
-            // passes here rather than the frame's.
-            _format: "rgba16float",
-            _depthStencilFormat: "depth32float",
-            _depthCompare: "less-equal",
-            _msaaSamples: 1,
-            _backFaceCulling: material._graph.backFaceCulling,
-            _noColorOutput: false,
-            _esmShadowOutput: true,
-            _esmShadowDepthCode,
-            _alphaMode: 0,
-            // The shared fragment body still names the env samplers even in
-            // the depth variant, so its declarations have to come with it.
-            _envEmitter: material._envHelpers?.emitEnv,
-        },
+        casterOptions,
     );
     if (compiled._esmShadowParamsBinding === null) {
         throw new Error(

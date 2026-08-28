@@ -80,7 +80,7 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.match(hdrAdapter.source, /scene\.environment\.specular_rgba16f = true/);
     assert.match(
         hdrAdapter.source,
-        /scene\.environment\.lod_generation_scale =\s*1\.0f/,
+        /scene\.environment\.lod_generation_scale =\s*0\.8f/,
     );
     assert.match(hdrAdapter.source, /scene\.environment\.tone_mapping_enabled = false/);
     assert.match(hdrAdapter.source, /scene\.environment\.skybox_uses_environment/);

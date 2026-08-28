@@ -332,12 +332,35 @@ async function reportScene(
         let composed = "";
         let key = "";
         let closest = -1;
+        let composable = false;
+        let refusal: unknown;
         for (const candidate of candidates) {
-            const variant = await composePinnedPbrVariant(input, {
-                ...candidate.options,
-                meshFeatures,
-                uv2Mask,
-            });
+            // An arm this material cannot compose UNDER is not an answer to
+            // the question the sweep asks, and it is not a finding either:
+            // the pin's own `refraction` fragment declares a dependency on
+            // `ibl`, so a transmissive material composes only under the
+            // environment arms and `composeShader` throws on the rest.
+            //
+            // Only the PIN's refusal is skipped. `topoSort` throws a bare
+            // `Error()` with no message, and every refusal this port raises
+            // carries one — the composer's own dependency check and the
+            // plugin-index read both throw from inside this call — so a
+            // message is the discriminator. Without it the sweep that exists
+            // to detect drift would report `ok` for a material whose other
+            // thirty-one arms died of a port defect.
+            let variant;
+            try {
+                variant = await composePinnedPbrVariant(input, {
+                    ...candidate.options,
+                    meshFeatures,
+                    uv2Mask,
+                });
+            } catch (error) {
+                if (error instanceof Error && error.message !== "") throw error;
+                refusal ??= error;
+                continue;
+            }
+            composable = true;
             const body = normalize(variant.fragmentWgsl);
             // Keep the candidate that agrees with some capture for longest, not
             // the first one composed: the reported divergence line is only a
@@ -361,6 +384,20 @@ async function reportScene(
             if (hit) break;
         }
 
+        if (!composable) {
+            gaps++;
+            subjectRows.push({ name, key, status: "gap" });
+            // The pin's refusal carries no message by construction — the
+            // catch above re-throws anything that does — so what this line
+            // can say is which arms were tried, not why each failed.
+            console.log(
+                `  GAP  ${JSON.stringify(name)} composes under none of the ` +
+                    `${candidates.length} candidate arms: the pinned ` +
+                    "composer refused every one" +
+                    (refusal === undefined ? " before it was reached" : ""),
+            );
+            continue;
+        }
         if (hit) {
             matched++;
             subjectRows.push({

@@ -149,36 +149,67 @@ test("the material carries the pin's own per-channel combine modes", () => {
     );
 });
 
-test("mesh bounds helpers are translated from the pinned AST", () => {
+test("shape parameters are translated from _buildShapeParams", () => {
+    assert.match(lowered.source, /havok\.ts#_buildShapeParams/);
+    // The prelude: each scale term from its own pinned `const`, the
+    // optional bound pair specialized onto `MeshBounds::present` with the
+    // pin's own literal fallback, and the scaled extents.
     assert.match(
         lowered.source,
-        /havok\.ts#_boundingCenter, _boundingExtents, _boundingRadius/,
-    );
-    assert.match(
-        lowered.source,
-        /Vec3d bounding_center[\s\S]*bounds\.minimum\.x\) \+ static_cast<double>\(bounds\.maximum\.x\)[\s\S]*return Vec3d\{0\.0, 0\.0, 0\.0\}/,
-    );
-    assert.match(
-        lowered.source,
-        /Vec3d bounding_extents[\s\S]*bounds\.maximum\.z\) - static_cast<double>\(bounds\.minimum\.z\)[\s\S]*return Vec3d\{1\.0, 1\.0, 1\.0\}/,
+        /shape\.scale_x = std::abs\(static_cast<double>\(scaling\.x\)\);/,
     );
     assert.match(
         lowered.source,
-        /double bounding_radius[\s\S]*std::max<double>\(\{dx, dy, dz\}\) \* 0\.5[\s\S]*return 0\.5/,
+        /shape\.scale_y = \(\(\(\(static_cast<double>\(scaling\.x\) \* static_cast<double>\(scaling\.y\)\) \* static_cast<double>\(scaling\.z\)\) < 0\.0\) \? \(-shape\.scale_y_magnitude\) : shape\.scale_y_magnitude\);/,
     );
-    // `_boundingRadius` owns the three extent differences in the pin; it no
-    // longer calls the separately transcribed extents helper.
-    const radius = lowered.source.slice(
-        lowered.source.indexOf("double bounding_radius"),
-        lowered.source.indexOf("/** `_syncBodyToNode`"),
+    assert.match(
+        lowered.source,
+        /shape\.minimum = Vec3d\{box\.present \? static_cast<double>\(box\.minimum\.x\) : -0\.5,/,
     );
-    assert.doesNotMatch(radius, /bounding_extents\(/);
+    assert.match(
+        lowered.source,
+        /shape\.maximum = Vec3d\{box\.present \? static_cast<double>\(box\.maximum\.x\) : 0\.5,/,
+    );
+    assert.match(
+        lowered.source,
+        /shape\.extents = Vec3d\{\(\(shape\.maximum\.x - shape\.minimum\.x\) \* shape\.scale_x\),/,
+    );
+    // The per-case derivations, each the right arm of the pin's own `??`.
+    assert.match(
+        lowered.source,
+        /Vec3d bounding_center[\s\S]*?return Vec3d\{\(\(\(shape\.minimum\.x \+ shape\.maximum\.x\) \* 0\.5\) \* shape\.scale_x\), \(\(\(shape\.minimum\.y \+ shape\.maximum\.y\) \* 0\.5\) \* shape\.scale_y\)/,
+    );
+    assert.match(
+        lowered.source,
+        /double sphere_radius[\s\S]*?return \(std::max<double>\(\{shape\.extents\.x, shape\.extents\.y, shape\.extents\.z\}\) \* 0\.5\);/,
+    );
+    assert.match(
+        lowered.source,
+        /Vec3d box_extents[\s\S]*?return shape\.extents;/,
+    );
+    // A capsule and a cylinder span the mesh's own Y range: the pin gave
+    // both the unit segment before 1.25.0, and reading the derivation is
+    // what moved them.
+    assert.match(
+        lowered.source,
+        /PinnedSegmentShape capsule_shape[\s\S]*?const double radius = \(shape\.extents\.x \* 0\.5\);[\s\S]*?Vec3d\{0\.0, \(\(shape\.minimum\.y \* shape\.scale_y\) \+ radius\), 0\.0\},\n *Vec3d\{0\.0, \(\(\(shape\.minimum\.y \* shape\.scale_y\) \+ shape\.extents\.y\) - radius\), 0\.0\}\}/,
+    );
+    assert.match(
+        lowered.source,
+        /PinnedSegmentShape cylinder_shape[\s\S]*?\(shape\.extents\.x \* 0\.5\),\n *Vec3d\{0\.0, \(shape\.minimum\.y \* shape\.scale_y\), 0\.0\},\n *Vec3d\{0\.0, \(\(shape\.minimum\.y \* shape\.scale_y\) \+ shape\.extents\.y\), 0\.0\}\}/,
+    );
+    // Each shape reads the prelude the aggregate built from the record's
+    // own scaling, rather than a second derivation.
+    assert.match(
+        lowered.source,
+        /const PinnedShapeBounds sized =\n *pinned_shape_bounds\(bounds, record\.scaling\);/,
+    );
 });
 
 test("mesh bounds apply scene-code overrides before sizing an aggregate", () => {
     const helper = lowered.source.slice(
         lowered.source.indexOf("MeshBounds mesh_bounds"),
-        lowered.source.indexOf("// havok.ts#_boundingCenter"),
+        lowered.source.indexOf("struct PinnedShapeBounds"),
     );
     assert.match(
         helper,

@@ -81,7 +81,9 @@ act on it — not what was tried.
 - [ ] Extend scene-code spot lights past the reached colour pair: the pinned
   light also exposes `angle`, `exponent`, and `range` as settable properties,
   whose setters fail explicitly.
-- [ ] Carry `usePhysicalLightFalloff` past the creation option. Scene 179
+- [ ] Carry `usePhysicalLightFalloff` past the creation option. Scenes 179 and
+  166 both write it; 166 stops one step earlier, on the `if (mesh.material)`
+  truthiness test that guards the write. Scene 179
   writes it as a property on a loader-returned material
   (`mat.usePhysicalLightFalloff = true` over `scene.meshes`), where scenes 22,
   141, 215 and 217 all pass it to `createPbrMaterial`; the lane is a plain
@@ -174,7 +176,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-87 corpus scenes remain unregistered; measured scenes are in
+96 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). None of them compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -262,6 +264,30 @@ Seven of the eight shipped. One remains.
 | Scene | First blocker | Family |
 | --- | --- | --- |
 | 300 | an `OffscreenCanvas` construction in `shared/npe-sprite2d-fixture` | node particles through Sprite2D |
+
+### The nine scenes 1.25.0 added
+
+All nine are first-lane: none needs a platform, user-input or external-service
+contract. Three of them are the release's own new subsystems and are the
+reason to read this table as a capability list rather than a backlog — a
+clustered spot field, an opt-in PBR lightmap and a local-cubemap probe array
+are each a pinned extension this port does not register at all, and 187 and
+304 name whole families (SMAA, and the FlowGraph/`KHR_interactivity` runtime)
+that arrived with the release.
+
+| Scene | First blocker | Family |
+| --- | --- | --- |
+| 166 | `if (mesh.material)` — a material handle read as a condition, then scene 179's `usePhysicalLightFalloff` write | clustered spot lights |
+| 167 | `enablePbrLightmap` | the opt-in PBR lightmap extension |
+| 186 | `corners.flat` | opt-in PBR local cubemap blending |
+| 187 | a non-literal string argument | SMAA |
+| 302 | `Number.parseFloat` | node particles with a moving emitter |
+| 303 | the public `createGridSpriteAtlas`, which this port reaches only as the fold inside `loadSpriteAtlas` | renderer-native Sprite2D Y-sort |
+| 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
+
+`186-debug` and `187-debug` are the two scenes' own debug variants and are
+counted in the 96 but not listed: each is its sibling behind a query
+parameter, so neither adds a capability.
 
 **No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
 `createMeshFromData` half and scene 279 its `setThinInstances` half, but of

@@ -20,6 +20,13 @@ import {
 } from "./pinned-shader-composer.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
+import type { PinnedToneMapping } from "./pinned-tone-mapping.js";
+import { LoweringContext } from "./lowering/context.js";
+import { sharedUpstreamStore } from "./upstream-source.js";
+
+/** The pinned interface naming everything `createPbrComposer` reads. */
+const composerDepsModule = "src/material/pbr/pbr-compose.ts";
+const composerDepsInterface = "PbrComposerDeps";
 
 /** The material fields the pin's feature derivation and extensions read. */
 export interface PinnedMaterialInput {
@@ -202,6 +209,26 @@ export async function pinnedMaterialFeatures(
     return pbrMaterial._computePbrMaterialFeatures(material);
 }
 
+/**
+ * The plugin signature index the PBR bridge's `detect` stamped on a material.
+ *
+ * The pin carries it on `Material._pi` rather than in a feature word, so it
+ * is read back with the same shape check the rest of this module applies to
+ * pinned values: a non-integer there means the bridge changed what it writes.
+ */
+function pinnedPluginIndex(material: PinnedMaterialInput): number {
+    const stamped = material._pi;
+    if (stamped === undefined) return 0;
+    if (typeof stamped !== "number" || !Number.isInteger(stamped)) {
+        throw new Error(
+            "The pinned PBR plugin bridge stamped a non-integer '_pi' on a " +
+                "material; the composer keys its variant and its cache by " +
+                "that index.",
+        );
+    }
+    return stamped;
+}
+
 export interface PinnedComposeOptions {
     /**
      * Bits the pin adds per renderable rather than per material.
@@ -234,8 +261,8 @@ export interface PinnedComposeOptions {
     singleLightBlock?: string;
     multiLightWgsl?: string;
     multiLightLoop?: string;
-    toneMappingHelpers?: string;
-    toneMappingCall?: string;
+    /** The pinned record the composer injects, or absent for no tone mapping. */
+    toneMapping?: PinnedToneMapping;
     uv2Mask?: number;
     /**
      * Compose the pin's geometry-output MRT arm instead of the colour
@@ -274,6 +301,7 @@ interface PinnedComposeFn {
         vbStrides?: unknown,
         vbKey?: string,
         uv2Mask?: number,
+        pluginIndex?: number,
     ): {
         _vertexWGSL: string;
         _fragmentWGSL: string;
@@ -294,6 +322,13 @@ export async function composePinnedPbrVariant(
     options: PinnedComposeOptions = {},
 ): Promise<PinnedPbrVariant> {
     const base = await pinnedMaterialFeatures(material);
+    // The PBR plugin bridge's own signature index. Its `detect` stamps
+    // `_pi` on the material while the feature derivation above runs -- 1.25.0
+    // moved it out of `features2`'s high bits, where it could collide with a
+    // native extension flag -- and the composer takes it as its own argument
+    // and its own cache key. So it is read back off the material the pin
+    // stamped rather than re-derived from the plugin list.
+    const pluginIndex = pinnedPluginIndex(material);
     // The ESM caster view's own feature word and depth code, from the pinned
     // factory rather than from a second statement of what it does.
     const esmView = options.esmShadowView
@@ -384,15 +419,14 @@ export async function composePinnedPbrVariant(
             createThinInstanceFragment: (hasInstanceColor: boolean) => unknown;
         }>("shader/fragments/thin-instance-fragment.js"),
     ]);
-    const composer = compose.createPbrComposer({
+    const deps = {
         _singleLightWGSL: options.singleLightWgsl ?? "",
         _getSingleLightBlock: options.singleLightBlock !== undefined
             ? () => options.singleLightBlock ?? ""
             : null,
         _multiLightWGSL: options.multiLightWgsl ?? "",
         _multiLightLoop: options.multiLightLoop ?? "",
-        _toneMappingHelpers: options.toneMappingHelpers ?? "",
-        _toneMappingCall: options.toneMappingCall ?? "",
+        _tm: options.toneMapping,
         _fogHelper: fog.PBR_FOG_HELPER,
         _fogBlock: fog.PBR_FOG_BLOCK,
         _createPbrTemplateExt: templateExt.createPbrTemplateExt,
@@ -401,7 +435,13 @@ export async function composePinnedPbrVariant(
         _shadowLights: shadowLights,
         _createThinInstanceFragment:
             thinInstance.createThinInstanceFragment,
-    });
+    };
+    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+        composerDepsModule,
+        composerDepsInterface,
+        Object.keys(deps),
+    );
+    const composer = compose.createPbrComposer(deps);
     if (options.geometry) {
         // The pin's own MRT arm: `pbr-geometry-view.ts` composes through
         // `composePbrGeometryShader`, which calls the same composer with
@@ -424,6 +464,7 @@ export async function composePinnedPbrVariant(
                     attachments: readonly number[],
                     emitColor: boolean,
                     uv2Mask?: number,
+                    pluginIndex?: number,
                 ) => {
                     _vertexWGSL: string;
                     _fragmentWGSL: string;
@@ -461,6 +502,7 @@ export async function composePinnedPbrVariant(
                 attachments,
                 options.geometry.emitColor,
                 options.uv2Mask ?? 0,
+                pluginIndex,
             );
             return {
                 fragmentKey: composed._fragmentKey,
@@ -485,6 +527,7 @@ export async function composePinnedPbrVariant(
         undefined,
         "",
         options.uv2Mask ?? 0,
+        pluginIndex,
     );
     return {
         fragmentKey: composed._fragmentKey,
