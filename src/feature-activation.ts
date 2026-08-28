@@ -708,6 +708,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(a RenderingContext on the engine, like a SpriteRenderer)",
         consumers: CMAKE,
     },
+    "frame-graph:resources": {
+        provenance:
+            "src/engine/render-target.ts createRenderTarget + " +
+            "src/texture/rtt.ts createRenderTargetTexture",
+        consumers: CMAKE,
+    },
+    "renderer:frame-graph": {
+        provenance:
+            "src/frame-graph/frame-graph-context.ts " +
+            "createFrameGraphContext/registerFrameGraphContext",
+        consumers: CMAKE,
+    },
     "effect:wrapper": {
         provenance:
             "src/effect/effect-renderer.ts createEffectWrapper " +

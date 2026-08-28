@@ -580,6 +580,43 @@ export interface EnginePrecisionPolicy {
 }
 
 /**
+ * Validate the DOM surface's device-pixel-ratio cap for a native surface.
+ *
+ * SDL windows are created directly at the compiler-requested backing-store
+ * size and without SDL_WINDOW_HIGH_PIXEL_DENSITY, so their effective DPR is
+ * always one. A static browser cap of one or greater is therefore already
+ * satisfied and emits no native state. Caps below one would request fewer
+ * backing pixels than the native target and must not be silently erased.
+ */
+export function compileEnginePixelRatioCap(
+    context: PositiveIntegerContext & {
+        objectProperty(
+            options: ts.ObjectLiteralExpression,
+            name: string,
+        ): ts.Expression | undefined;
+        fail(node: ts.Node, message: string): never;
+    },
+    options: ts.ObjectLiteralExpression,
+): void {
+    const expression = context.objectProperty(
+        options,
+        "maxDevicePixelRatio",
+    );
+    if (!expression) return;
+    const cap = compileStaticNumber(
+        context,
+        expression,
+        "maxDevicePixelRatio",
+    );
+    if (cap < 1) {
+        context.fail(
+            expression,
+            "Native surfaces support maxDevicePixelRatio values of 1 or greater: their requested size is already a one-to-one backing-store size.",
+        );
+    }
+}
+
+/**
  * `useHighPrecisionMatrix` and `useFloatingOrigin`, with the pin's own
  * precondition between them.
  *

@@ -17,7 +17,7 @@
 import type ts from "typescript";
 
 import type { DataType } from "./data-types.js";
-import type { Value, ValueKind } from "./types.js";
+import type { Feature, Value, ValueKind } from "./types.js";
 
 /** A property the compiled surface deliberately does not serve. */
 interface RefusedProperty {
@@ -95,6 +95,8 @@ interface PropertyRead {
      * This read is a clock rather than a constant: see `Value.impure`.
      */
     impure?: true;
+    /** A generated helper this property read makes reachable. */
+    feature?: Feature;
     /**
      * The plain-data type this read produces, when it produces data rather
      * than a handle or a scalar the compiler models itself. Set it and the
@@ -342,6 +344,7 @@ const propertyRules: readonly PropertyRule[] = [
         property: "scRT",
         value: "render-target",
         helper: "bbl::swapchain_render_target",
+        feature: "frame-graph:resources",
     },
     {
         owner: "camera",
@@ -552,6 +555,7 @@ export function cameraRecordField(
  */
 export interface PropertyContext {
     requireEngine(value: Value, node: ts.Node): string;
+    reachFeature(feature: Feature, site: ts.Node): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -580,6 +584,9 @@ export function readProperty(
     const rejection = rule.reject?.(owner);
     if (rejection) {
         context.fail(expression, rejection);
+    }
+    if (rule.feature) {
+        context.reachFeature(rule.feature, expression);
     }
     // An engine handle names itself; anything else carries the engine it
     // was created from, so the value read out of it stays resolvable.

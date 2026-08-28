@@ -69,4 +69,24 @@ inline bool run_effect_dawn_engine(Engine&) {
 }
 #endif
 
+// A standalone frame graph is a rendering context with ordered tasks and no
+// SceneContext, camera, mesh renderer, or material renderer.
+#if defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER && \
+    defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
+bool run_frame_graph_gpu_engine(Engine& engine);
+#else
+inline bool run_frame_graph_gpu_engine(Engine&) {
+    return false;
+}
+#endif
+
+#if defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER && \
+    defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN
+bool run_frame_graph_dawn_engine(Engine& engine);
+#else
+inline bool run_frame_graph_dawn_engine(Engine&) {
+    return false;
+}
+#endif
+
 } // namespace bbl::pal

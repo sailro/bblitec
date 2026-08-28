@@ -5590,6 +5590,15 @@ export class DataLowerer {
         ) {
             return `${value.cpp}.has_value()`;
         }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(value.dataType.name)
+        ) {
+            // An optional object stored in a Map/array uses the reference's
+            // null state directly rather than wrapping it in std::optional.
+            return `static_cast<bool>(${value.cpp})`;
+        }
         return undefined;
     }
 

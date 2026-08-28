@@ -123,10 +123,13 @@ namespace {
 // EffectRenderer each register on the engine rather than on a scene, so a
 // scene registering one and no SceneContext generates no render plan and
 // draws from that context's own translation unit instead.
-enum class RendererKind { scene, sprites, effects };
+enum class RendererKind { scene, sprites, effects, frame_graph };
 
 RendererKind renderer_kind(const Engine& engine) {
     if (!engine.registered_scenes.empty()) return RendererKind::scene;
+    if (!engine.registered_frame_graph_contexts.empty()) {
+        return RendererKind::frame_graph;
+    }
     if (!engine.registered_effect_renderers.empty()) {
         return RendererKind::effects;
     }
@@ -140,6 +143,7 @@ const char* renderer_name(RendererKind kind) {
     switch (kind) {
         case RendererKind::sprites: return "A sprite renderer";
         case RendererKind::effects: return "An effect renderer";
+        case RendererKind::frame_graph: return "A frame graph";
         case RendererKind::scene: break;
     }
     return "A scene";
@@ -155,6 +159,8 @@ bool run_sdl_gpu(Engine& engine, RendererKind kind) {
             return pal::run_sprite_gpu_engine(engine);
         case RendererKind::effects:
             return pal::run_effect_gpu_engine(engine);
+        case RendererKind::frame_graph:
+            return pal::run_frame_graph_gpu_engine(engine);
         case RendererKind::scene: break;
     }
     return pal::run_gpu_engine(engine);
@@ -166,6 +172,8 @@ bool run_dawn(Engine& engine, RendererKind kind) {
             return pal::run_sprite_dawn_engine(engine);
         case RendererKind::effects:
             return pal::run_effect_dawn_engine(engine);
+        case RendererKind::frame_graph:
+            return pal::run_frame_graph_dawn_engine(engine);
         case RendererKind::scene: break;
     }
     return pal::run_dawn_engine(engine);

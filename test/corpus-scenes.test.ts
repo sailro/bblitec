@@ -7,27 +7,7 @@ import {
     scenes,
 } from "../src/scene-registry.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
-
-interface CorpusSceneEntry {
-    id: string;
-    upstreamPath: string;
-    source: string;
-    sha256: string;
-}
-
-interface CorpusModuleEntry {
-    upstreamPath: string;
-    source: string;
-    sha256: string;
-}
-
-interface CorpusSceneManifest {
-    package: string;
-    version: string;
-    sourceVersion: string;
-    scenes: CorpusSceneEntry[];
-    modules?: CorpusModuleEntry[];
-}
+import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
 
 interface CorpusReferenceEntry {
     id: string;
@@ -50,34 +30,8 @@ interface CorpusReferenceManifest {
     scenes: CorpusReferenceEntry[];
 }
 
-function corpusManifest(): CorpusSceneManifest {
-    const value: unknown = JSON.parse(
-        readFileSync(
-            "upstream/babylon-lite-scenes.json",
-            "utf8",
-        ),
-    );
-    if (
-        typeof value !== "object" ||
-        value === null ||
-        Array.isArray(value)
-    ) {
-        throw new Error("Invalid corpus scene manifest.");
-    }
-    const manifest = value as Partial<CorpusSceneManifest>;
-    if (
-        typeof manifest.package !== "string" ||
-        typeof manifest.version !== "string" ||
-        typeof manifest.sourceVersion !== "string" ||
-        !Array.isArray(manifest.scenes)
-    ) {
-        throw new Error("Incomplete corpus scene manifest.");
-    }
-    return manifest as CorpusSceneManifest;
-}
-
 test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
-    const manifest = corpusManifest();
+    const manifest = readBabylonLiteCorpus();
     const pin = readUpstreamPin();
     assert.deepEqual(
         {
@@ -125,7 +79,7 @@ test("keeps registered Babylon Lite scenes byte-identical to the pin", () => {
 });
 
 test("keeps registered Babylon Lite support modules byte-identical to the pin", () => {
-    const manifest = corpusManifest();
+    const manifest = readBabylonLiteCorpus();
     for (const module of manifest.modules ?? []) {
         assert.match(
             module.upstreamPath,
@@ -147,7 +101,7 @@ test("keeps registered Babylon Lite support modules byte-identical to the pin", 
 });
 
 test("keeps exact-source corpus references immutable", () => {
-    const sources = corpusManifest();
+    const sources = readBabylonLiteCorpus();
     const value: unknown = JSON.parse(
         readFileSync(
             "reference/exact-corpus-manifest.json",

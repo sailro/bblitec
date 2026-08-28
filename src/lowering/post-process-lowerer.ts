@@ -592,7 +592,6 @@ namespace bbl {
 
 TaskHandle create_post_process_task(
     Engine& engine,
-    Scene&,
     PostProcessTaskOptions options) {
     if (options.passes.empty()) {
         throw std::runtime_error("Post-process task records no pass.");
@@ -679,7 +678,6 @@ ${this.compositeFactories()}
                 (_composite, index) =>
                     `TaskHandle create_composite_post_process_task_${index}(\n` +
                     "    Engine& engine,\n" +
-                    "    Scene& scene,\n" +
                     "    PostProcessCompositeInputs inputs);",
             )
             .join("\n\n");
@@ -808,14 +806,13 @@ ${this.compositeFactories()}
         });
         return `TaskHandle create_composite_post_process_task_${index}(
     Engine& engine,
-    Scene& scene,
     PostProcessCompositeInputs inputs) {
 ${lines.join("\n")}    PostProcessTaskOptions options;
     options.name = inputs.name;
     options.passes = {
 ${passes.join(",\n")},
     };
-    return create_post_process_task(engine, scene, std::move(options));
+    return create_post_process_task(engine, std::move(options));
 }`;
     }
 

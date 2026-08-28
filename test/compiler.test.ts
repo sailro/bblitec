@@ -3272,6 +3272,42 @@ test("preserves inferred object identity through container storage", () => {
     assert.match(result.cpp, /v_image->frame/);
 });
 
+test("keeps a rebound inferred Map object nullable until its fallback", () => {
+    const result = compileSource(`
+        interface Batch { values: number[] }
+        function batchFor(map: Map<string, Batch>, name: string): Batch {
+            let batch = map.get(name);
+            if (!batch) {
+                batch = { values: [] };
+                map.set(name, batch);
+            }
+            return batch;
+        }
+        const batches = new Map<string, Batch>();
+        let name = "walls";
+        batchFor(batches, name);
+    `);
+
+    assert.match(result.cpp, /static_cast<bool>\(v_\w*batch\)/);
+    assert.match(result.cpp, /v_\w*batch = std::make_shared/);
+});
+
+test("keeps a rebound inferred array object as a writable reference", () => {
+    const result = compileSource(`
+        interface Frame { rotated: boolean; values: number[] }
+        const frames: (Frame | undefined)[] = [];
+        let frame = frames[0];
+        if (!frame) {
+            frame = { rotated: false, values: [] };
+            frames[0] = frame;
+        }
+        frame.rotated = true;
+    `);
+
+    assert.match(result.cpp, /static_cast<bool>\(v_frame\)/);
+    assert.match(result.cpp, /v_frame->rotated = true/);
+});
+
 test("evaluates conditional data-branch preparation lazily", () => {
     const result = compileSource(`
         interface Row { value: number }
@@ -4461,7 +4497,7 @@ test("lowers platform time declarations to the native clock", () => {
 
     assert.match(
         result.cpp,
-        /bbl::pal::monotonic_milliseconds\(\)/,
+        /bbl::pal::performance_milliseconds\(\)/,
     );
     assert.ok(
         !result.manifest.adaptations.some(
@@ -5018,6 +5054,34 @@ test("dispatches a pinned subpath import as the pinned package", () => {
 });
 
 test("rejects unsupported dynamic engine and scene options", () => {
+    const pixelRatio = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        const MAX_DPR = 1;
+        async function main() {
+            await createEngine({}, { maxDevicePixelRatio: MAX_DPR });
+        }
+    `);
+    assert.doesNotMatch(pixelRatio.cpp, /maxDevicePixelRatio|MAX_DPR/);
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(cap: number) {
+                    await createEngine({}, { maxDevicePixelRatio: cap });
+                }
+            `),
+        /maxDevicePixelRatio must be a static number/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main() {
+                    await createEngine({}, { maxDevicePixelRatio: 0.5 });
+                }
+            `),
+        /support maxDevicePixelRatio values of 1 or greater/,
+    );
     assert.throws(
         () =>
             compileSource(`
@@ -5217,7 +5281,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
     assert.match(result.cpp, /bbl::load_environment/);
     assert.match(result.cpp, /bbl::create_default_camera/);
     assert.match(result.cpp, /\.alpha = 1\.77538;/);
-    assert.doesNotMatch(result.cpp, /performance|Object::assign|drawCallCount/);
+    assert.doesNotMatch(result.cpp, /Object::assign|drawCallCount/);
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
@@ -6065,6 +6129,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
         "camera:free",
         "loader:babylon",
         "material:standard",
+        "frame-graph:resources",
         "renderer:pbr",
         "renderer:geometry-output",
     ]);
@@ -6091,6 +6156,65 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
         ),
     );
     assert.equal(result.manifest.geometryOutputTasks.length, 2);
+});
+
+test("compiles a scene-less uniform-effect frame graph without the scene renderer", () => {
+    const fileName =
+        "corpus/babylon-lite/lab/lite/src/demos/torus-states.ts";
+    const source = readFileSync(resolve(fileName), "utf8");
+    const result = compileSource(source, { fileName });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "frame-graph:resources",
+        "renderer:frame-graph",
+        "effect:wrapper",
+        "effect:task",
+        "renderer:post-process",
+    ]);
+    assert.deepEqual(result.manifest.runtimeSources, [
+        "src/pal.cpp",
+        "src/pal_sdl.cpp",
+        "src/pal_sdl_gpu_frame_graph.cpp",
+    ]);
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/frame_graph_resources.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/frame_graph_context.cpp",
+        ),
+    );
+    assert.ok(!result.manifest.features.includes("renderer:pbr"));
+    assert.ok(!result.manifest.features.includes("renderer:geometry-output"));
+    assert.doesNotMatch(result.cmake, /pal_sdl_gpu\.cpp/);
+    assert.match(result.cpp, /bbl::create_frame_graph_context/);
+    assert.match(result.cpp, /bbl::on_frame_graph_update/);
+    assert.match(
+        result.cpp,
+        /v_from = std::make_shared<bblscene::MorphStateData>/,
+    );
+});
+
+test("compiles a scene-less post-process frame graph without effect tasks", () => {
+    const fileName = "test/fixtures/frame-graph-post-process-only.ts";
+    const result = compileSource(readFileSync(resolve(fileName), "utf8"), {
+        fileName,
+    });
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "frame-graph:resources",
+        "renderer:frame-graph",
+        "renderer:post-process",
+    ]);
+    assert.ok(!result.manifest.features.includes("effect:wrapper"));
+    assert.ok(!result.manifest.features.includes("effect:task"));
+    assert.doesNotMatch(result.cpp, /create_effect_render_task/);
 });
 
 test("compiles Babylon Lite scene 248 external glTF", () => {

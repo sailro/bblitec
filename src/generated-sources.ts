@@ -26,6 +26,14 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     { source: "upstream/src/engine.cpp", features: [] },
     { source: "upstream/src/scene_core.cpp", features: [] },
     {
+        source: "upstream/src/frame_graph_resources.cpp",
+        features: ["frame-graph:resources"],
+    },
+    {
+        source: "upstream/src/frame_graph_context.cpp",
+        features: ["renderer:frame-graph"],
+    },
+    {
         source: "upstream/src/animation_property.cpp",
         features: ["animation:property"],
     },

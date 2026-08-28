@@ -219,9 +219,16 @@ its bind group differently for the standing reason: SDL_GPU binds by the
 `.slots` sidecar and Dawn by the descriptor's own binding numbers — the
 sidecar contract is [below](#dawn-backend-architecture-nativesrcpal_dawncpp).
 
+The scene-less frame graph is a third rendering-context driver, split into
+`pal_sdl_gpu_frame_graph.cpp` and `pal_dawn_frame_graph.cpp`. It owns ordered
+render-target effect and post-process tasks without linking either scene
+renderer. Render-target resources are generated once and shared with
+scene-owned graphs; preprocessor guards remove an unreached task family from
+the driver, including its generated headers, pipelines, samplers, and state.
+
 Deleting a backend stays a matter of dropping its files. `BBLITE_BACKEND`
 removes every translation unit belonging to the backend it turns off,
-including its sprite and effect passes, and each entry point compiles to a
+including its sprite, effect, and scene-less frame-graph passes, and each entry point compiles to a
 stub that returns false, so the other backend keeps rendering every feature
 the scene reached.
 

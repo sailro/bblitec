@@ -3,31 +3,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { scenes } from "../src/scene-registry.js";
+import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
+import { readUpstreamPin } from "../src/upstream-source.js";
 
-interface GoldenFile {
-    upstreamPath: string;
-    /** Where a file that is NOT from the application's own repository came
-     *  from. Doom's IWAD and its two Freedoom licence files are the reached
-     *  case: upstream gitignores them and downloads a pinned, checksum-verified
-     *  Freedoom release instead, so the application's `sourceVersion` says
-     *  nothing about their bytes and this names the release that does. */
-    origin?: string;
-    source: string;
-    sha256: string;
-}
-
-interface GoldenApplication {
-    id: string;
-    repository: string;
-    sourceVersion: string;
-    entry: string;
-    reference: { source: string; sha256: string };
-    files: GoldenFile[];
-}
-
-const manifest = JSON.parse(
-    readFileSync(resolve("upstream/babylon-lite-goldens.json"), "utf8"),
-) as { applications: GoldenApplication[] };
+const manifest = readBabylonLiteCorpus();
 
 function sha256(path: string): string {
     return createHash("sha256")
@@ -36,12 +16,19 @@ function sha256(path: string): string {
 }
 
 test("keeps external golden applications byte-identical to their manifests", () => {
+    assert.deepEqual(
+        {
+            package: manifest.package,
+            version: manifest.version,
+            sourceVersion: manifest.sourceVersion,
+        },
+        readUpstreamPin(),
+    );
+    assert.match(manifest.repository, /^https:\/\//);
     const ids = new Set<string>();
     for (const application of manifest.applications) {
         assert.ok(!ids.has(application.id), `Duplicate golden '${application.id}'.`);
         ids.add(application.id);
-        assert.match(application.repository, /^https:\/\//);
-        assert.match(application.sourceVersion, /^[0-9a-f]{40}$/);
         assert.ok(
             application.files.some(({ source }) => source === application.entry),
             `${application.id} entry is not part of its immutable file set.`,
@@ -72,5 +59,18 @@ test("keeps external golden applications byte-identical to their manifests", () 
             application.reference.sha256,
             `${application.id} reference image differs from its recorded bytes.`,
         );
+    }
+
+    const registered = scenes.filter(
+        ({ sourceOrigin }) => sourceOrigin === "babylon-lite-application",
+    );
+    assert.deepEqual(
+        registered.map(({ id }) => id).sort(),
+        [...ids].sort(),
+    );
+    for (const application of manifest.applications) {
+        const scene = registered.find(({ id }) => id === application.id);
+        assert.equal(scene?.source, application.entry);
+        assert.equal(scene?.parity?.reference.path, application.reference.source);
     }
 });

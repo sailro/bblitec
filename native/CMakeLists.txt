@@ -197,6 +197,7 @@ if(NOT BBLITE_BACKEND_SDL_GPU)
         "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu.cpp"
         "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_sprite.cpp"
         "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_effect.cpp"
+        "${BBLITE_NATIVE_ROOT}/src/pal_sdl_gpu_frame_graph.cpp"
     )
 endif()
 
@@ -391,6 +392,12 @@ if(BBLITE_BACKEND_DAWN)
             PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_effect.cpp"
         )
     endif()
+    if("renderer:frame-graph" IN_LIST BBLITE_RUNTIME_FEATURES)
+        target_sources(
+            bblite_native
+            PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_frame_graph.cpp"
+        )
+    endif()
     target_link_libraries(bblite_native PRIVATE dawn::webgpu_dawn)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=1)
     get_target_property(BBLITE_DAWN_LIBRARY_TYPE dawn::webgpu_dawn TYPE)
@@ -487,6 +494,27 @@ else()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_EFFECT_RENDERER=0
+    )
+endif()
+
+if("renderer:frame-graph" IN_LIST BBLITE_RUNTIME_FEATURES)
+    # Screenshot capture encodes PNGs in the standalone task driver.
+    if(SDL3_FOUND)
+        find_package(SDL3_image CONFIG REQUIRED)
+        target_link_libraries(
+            bblite_native
+            PRIVATE
+            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
+        )
+    endif()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_FRAME_GRAPH_RENDERER=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_FRAME_GRAPH_RENDERER=0
     )
 endif()
 

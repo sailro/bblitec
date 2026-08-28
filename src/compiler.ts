@@ -48,6 +48,7 @@ import {
     compileGeometryTaskOptions,
     compileCopyTaskOptions,
     compileSceneDefaultRenderTask,
+    compileEnginePixelRatioCap,
     compileEnginePrecisionPolicy,
     geometryEnumMember,
     type EngineOptionContext,
@@ -1303,33 +1304,18 @@ class Compiler
     /**
      * Emits a data-typed local when the declaration carries an explicit
      * annotation mapping to a composite data type, or when an inferred array
-     * or object literal is subsequently mutated. The latter distinction
-     * preserves compile-time tuples and option records while giving ordinary
-     * JavaScript containers runtime identity as soon as the source writes
-     * through them (including through a reached local-function parameter).
+     * or inferred object value is subsequently mutated. The latter includes
+     * values initialized through an array element or function result, not
+     * only object literals: JavaScript gives all of them runtime identity.
+     * Immutable options remain compile-time records, while a write or rebind
+     * (including through a reached local-function parameter) materializes the
+     * object's native data storage.
      */
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
     ): boolean {
         if (!declaration.initializer) {
-            return false;
-        }
-        const inferredMutableArray =
-            !declaration.type &&
-            ts.isIdentifier(declaration.name) &&
-            ts.isArrayLiteralExpression(this.unwrap(declaration.initializer)) &&
-            this.inferredArrayIsMutated(declaration.name);
-        const inferredMutableObject =
-            !declaration.type &&
-            ts.isObjectLiteralExpression(this.unwrap(declaration.initializer)) &&
-            ts.isIdentifier(declaration.name) &&
-            this.inferredObjectIsMutated(declaration.name);
-        if (
-            !declaration.type &&
-            !inferredMutableArray &&
-            !inferredMutableObject
-        ) {
             return false;
         }
         const typeSite = declaration.type ?? declaration.name;
@@ -1339,6 +1325,30 @@ class Compiler
                 : this.checker.getTypeAtLocation(declaration.name),
             typeSite,
         );
+        const inferredMutableArray =
+            !declaration.type &&
+            ts.isIdentifier(declaration.name) &&
+            ts.isArrayLiteralExpression(this.unwrap(declaration.initializer)) &&
+            this.inferredArrayIsMutated(declaration.name);
+        const initializer = this.unwrap(declaration.initializer);
+        const inferredPlainObject =
+            annotated?.kind === "struct" ||
+            (annotated?.kind === "optional" &&
+                annotated.inner.kind === "struct");
+        const inferredMutableObject =
+            !declaration.type &&
+            ts.isIdentifier(declaration.name) &&
+            inferredPlainObject &&
+            (ts.isObjectLiteralExpression(initializer)
+                ? this.inferredObjectIsMutated(declaration.name)
+                : this.inferredObjectIsRebound(declaration.name));
+        if (
+            !declaration.type &&
+            !inferredMutableArray &&
+            !inferredMutableObject
+        ) {
+            return false;
+        }
         if (
             inferredMutableArray &&
             annotated?.kind === "vector" &&
@@ -1391,9 +1401,6 @@ class Compiler
             if (symbol) this.staticConstants.delete(symbol);
         }
         this.reachJsData();
-        const initializer = this.unwrap(
-            declaration.initializer,
-        );
         const spreadTarget =
             annotated.kind === "struct"
                 ? annotated
@@ -1430,7 +1437,9 @@ class Compiler
         }
         this.dataLowerer.registerLocal(
             cppName,
-            ts.isCallExpression(initializer) ||
+            (annotated.kind === "struct" &&
+                this.dataTypes.isReferenceStruct(annotated.name)) ||
+                ts.isCallExpression(initializer) ||
                 ts.isNewExpression(initializer) ||
                 ts.isObjectLiteralExpression(initializer) ||
                 ts.isArrayLiteralExpression(initializer)
@@ -1530,6 +1539,28 @@ class Compiler
         return false;
     }
 
+    /** A non-literal inferred struct needs storage only when its binding changes. */
+    private inferredObjectIsRebound(identifier: ts.Identifier): boolean {
+        const symbol = this.symbols.valueSymbol(identifier);
+        if (!symbol) return false;
+        let rebound = false;
+        const visit = (node: ts.Node): void => {
+            if (rebound) return;
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                this.symbols.valueSymbol(node.left) === symbol
+            ) {
+                rebound = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(identifier.getSourceFile(), visit);
+        return rebound;
+    }
+
     /**
      * Whether an inferred plain object needs native storage.
      *
@@ -1589,6 +1620,17 @@ class Compiler
             let mutated = false;
             const visit = (node: ts.Node): void => {
                 if (mutated) return;
+                if (
+                    ts.isBinaryExpression(node) &&
+                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                    ts.isIdentifier(node.left) &&
+                    aliases.has(this.symbols.valueSymbol(node.left)!)
+                ) {
+                    // Rebinding an inferred object still needs persistent
+                    // reference storage even when no field is written.
+                    mutated = true;
+                    return;
+                }
                 if (
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind >=
@@ -3512,14 +3554,16 @@ class Compiler
                 this,
                 options,
                 [
+                    "maxDevicePixelRatio",
                     "msaaSamples",
                     "requiredLimits",
                     "useHighPrecisionMatrix",
                     "useFloatingOrigin",
                 ],
-                "Reached engine options support msaaSamples, requiredLimits, " +
-                    "useHighPrecisionMatrix and useFloatingOrigin.",
+                "Reached engine options support maxDevicePixelRatio, msaaSamples, " +
+                    "requiredLimits, useHighPrecisionMatrix and useFloatingOrigin.",
             );
+            compileEnginePixelRatioCap(this, options);
             // Both flags reach generation: the pin's `_setHpmAllocator`
             // swaps a process-global allocator, so `useHighPrecisionMatrix`
             // decides the width every matrix this port composes is stored
@@ -4476,7 +4520,7 @@ class Compiler
         ) {
             return {
                 kind: "number",
-                cpp: "bbl::pal::monotonic_milliseconds()",
+                cpp: "bbl::pal::performance_milliseconds()",
                 impure: true,
             };
         }
@@ -4858,6 +4902,12 @@ class Compiler
                 cpp: `${owner.msaaSamples ?? 4}.0f`,
                 staticNumber: owner.msaaSamples ?? 4,
             };
+        }
+        if (
+            owner.kind === "frame-graph-context" &&
+            expression.name.text === "frameGraph"
+        ) {
+            return owner;
         }
         if (
             owner.kind === "camera" &&
@@ -5664,6 +5714,7 @@ class Compiler
         const engine = this.requireEngine(scene, node);
         this.reachFeature("renderer:pbr", node);
         this.reachFeature("renderer:geometry-output", node);
+        this.reachFeature("frame-graph:resources", node);
         const target =
             this.allocateTemporaryCppName(
                 "default_target",

@@ -6,6 +6,7 @@ import {
     parsePublishedRows,
     severityColor,
 } from "../src/verify-status.js";
+import { scenes } from "../src/scene-registry.js";
 
 const table = [
     "| Scene | Preview | SDL_GPU | Dawn | Coverage |",
@@ -88,6 +89,17 @@ test("the published table is in scene order", () => {
             parsePublishedRows(readFileSync("docs/status.md", "utf8")),
         ),
         [],
+    );
+});
+
+test("publishes every registered parity gate exactly once", () => {
+    const rows = parsePublishedRows(readFileSync("docs/status.md", "utf8"));
+    assert.deepEqual(
+        rows.map(({ sceneId }) => sceneId).sort(),
+        scenes
+            .filter(({ parity }) => parity !== undefined)
+            .map(({ id }) => id)
+            .sort(),
     );
 });
 
