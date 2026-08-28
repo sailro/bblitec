@@ -43,9 +43,34 @@ import type {
  * nested function boundary because creating a callback does not execute its
  * body.
  */
+/**
+ * Number formatters the language owns rather than the scene.
+ *
+ * What `containsEvaluatedCall` is really asking is "could dropping this
+ * argument drop an effect the program still needs" -- a user function's
+ * body may mutate state, so it has to run. `Number.prototype.toFixed` and
+ * its siblings cannot: they read one number and return a string. Treating
+ * them as calls made an erased `console.log` emit its whole formatted
+ * template as a discarded statement, which is dead work whose only visible
+ * trace is the compiler rejecting the discard.
+ */
+const PURE_NUMBER_FORMATTERS = new Set([
+    "toFixed",
+    "toPrecision",
+    "toExponential",
+]);
+
 function containsEvaluatedCall(node: ts.Node): boolean {
     if (ts.isFunctionLike(node)) {
         return false;
+    }
+    if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        PURE_NUMBER_FORMATTERS.has(node.expression.name.text)
+    ) {
+        // The receiver may still hold one -- `advance().toFixed(1)`.
+        return containsEvaluatedCall(node.expression.expression);
     }
     if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         return true;
@@ -1763,35 +1788,6 @@ export class ExpressionLowerer {
                         declaration,
                     );
                 }
-            }
-        }
-        // `Number.prototype.toFixed` over a value the static evaluator
-        // could not fold. The folded arm is the one the pin's own shader
-        // formatters take; this is the run-time twin, and both round the
-        // same way because `bbl::js::to_fixed` writes the spec's
-        // ties-away-from-zero step rather than leaving it to the C
-        // library's round-half-to-even.
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            callee.name.text === "toFixed"
-        ) {
-            const value = this.compileValue(callee.expression);
-            if (value.kind === "number") {
-                this.context.expectArgumentCount(call, 0, 1);
-                const digits = call.arguments[0]
-                    ? this.context.compileNumber(
-                          call.arguments[0],
-                          "double",
-                      )
-                    : "0";
-                this.context.reachJsData();
-                return {
-                    kind: "data",
-                    cpp:
-                        `bbl::js::to_fixed(${value.cpp}, ` +
-                        `static_cast<int>(${digits}))`,
-                    dataType: { kind: "string" },
-                };
             }
         }
         if (

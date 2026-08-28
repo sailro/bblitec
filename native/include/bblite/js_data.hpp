@@ -10,7 +10,6 @@
 #include <cassert>
 #include <charconv>
 #include <cmath>
-#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -729,43 +728,6 @@ using Tuple = std::array<double, N>;
         std::chars_format::general);
     assert(converted.ec == std::errc{});
     return std::string(buffer, converted.ptr);
-}
-
-/**
- * `Number.prototype.toFixed`.
- *
- * ECMA-262 rounds the exact binary value to `digits` decimals, ties away
- * from zero, and falls back to `ToString` outside the fixed range. A tie is
- * only reachable when the double is exactly representable at that decimal,
- * so the half-up step is written rather than left to the C library's
- * round-half-to-even.
- */
-[[nodiscard]] inline std::string to_fixed(double value, int digits) {
-    if (std::isnan(value)) return "NaN";
-    if (digits < 0 || digits > 100) {
-        throw std::range_error("toFixed() digits argument must be between 0 and 100");
-    }
-    if (!std::isfinite(value) || std::abs(value) >= 1e21) {
-        return number_to_string(value);
-    }
-    const double scale = std::pow(10.0, digits);
-    const double scaled = value * scale;
-    // `std::round` is ties-away-from-zero, which is the spec's rule.
-    double rounded = std::round(scaled);
-    // A scaled value that lands between two integers only because of the
-    // multiply keeps the nearer one: comparing the two candidates against
-    // the original is what the spec's "let n be an integer for which n /
-    // 10^f - x is as close to zero as possible" asks for.
-    const double lower = (rounded - 1.0) / scale;
-    const double upper = rounded / scale;
-    if (std::abs(lower - value) < std::abs(upper - value)) {
-        rounded -= 1.0;
-    }
-    char buffer[512];
-    const int written = std::snprintf(
-        buffer, sizeof(buffer), "%.*f", digits, rounded / scale);
-    if (written <= 0) return number_to_string(value);
-    return std::string(buffer, static_cast<std::size_t>(written));
 }
 
 [[nodiscard]] inline std::pair<std::size_t, std::size_t>

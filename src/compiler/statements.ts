@@ -128,8 +128,6 @@ export interface StatementLoweringContext {
     ): ts.Expression | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
     isFrameYield(expression: ts.Expression): boolean;
-    /** Whether the expression exists only in the browser build. */
-    isBrowserOnlyExpression(expression: ts.Expression): boolean;
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
