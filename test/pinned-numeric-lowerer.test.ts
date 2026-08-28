@@ -24,6 +24,8 @@ function lower(
     bindings: Iterable<[string, PinnedBinding]> = [],
     extra: Partial<{
         calls: ReadonlyMap<string, (args: readonly string[]) => string>;
+        tupleCalls: ReadonlyMap<string, number>;
+        recordCalls: ReadonlyMap<string, readonly string[]>;
     }> = {},
 ): string {
     const file = ts.createSourceFile(
@@ -35,6 +37,8 @@ function lower(
     const lowerer = new PinnedNumericLowerer(file, {
         bindings: new Map(bindings),
         calls: extra.calls ?? new Map(),
+        ...(extra.tupleCalls ? { tupleCalls: extra.tupleCalls } : {}),
+        ...(extra.recordCalls ? { recordCalls: extra.recordCalls } : {}),
     });
     return file.statements
         .flatMap((statement) => lowerer.statement(statement, ""))
@@ -159,4 +163,113 @@ test("refuses a statement kind it does not translate", () => {
         () => lower("switch (1) { default: break; }"),
         /Unsupported pinned statement/,
     );
+});
+
+// The three capabilities the Gaussian-splat transform bake's fold needed.
+// Each is declared BY THE CALLER, so the refusals matter as much as the
+// emissions: a pinned body reaching one the caller did not declare has to
+// fail generation rather than emit a guess.
+
+const tupleCall = new Map([["coord", 3]]);
+const tupleCalls = { tupleCalls: tupleCall, calls: new Map([
+    ["coord", (a: readonly string[]) => `coord(${a.join(", ")})`],
+]) };
+
+test("binds a tuple destructuring through one temporary", () => {
+    const emitted = lower("const [x, y, z] = coord(m);", [
+        ["m", { cpp: "m", type: "f32" }],
+    ], tupleCalls);
+    // One call, indexed three times -- not three calls.
+    assert.equal(emitted.match(/coord\(m\)/g)?.length, 1);
+    assert.match(emitted, /const auto pinned_\d+_\d+ = coord\(m\);/);
+});
+
+test("refuses a tuple destructuring of the wrong length", () => {
+    // The declared arity is what keeps this a generation error instead of an
+    // index past the end of the std::array the call returns.
+    assert.throws(
+        () => lower("const [x, y, z, w] = coord(m);", [
+            ["m", { cpp: "m", type: "f32" }],
+        ], tupleCalls),
+        /tuple binding of 4 from a 3-element call/,
+    );
+});
+
+test("refuses a tuple destructuring of a call the caller did not declare", () => {
+    assert.throws(
+        () => lower("const [x, y] = mystery(1);"),
+        /tuple binding pattern/,
+    );
+});
+
+const recordCalls = {
+    recordCalls: new Map([["basis", ["x", "y", "z", "w"]]]),
+    calls: new Map([["basis", () => "basis()"]]),
+};
+
+test("binds a record call's members by their own dotted text", () => {
+    const emitted = lower("const q = basis();\nconst n = q.x + q.w;", [], recordCalls);
+    assert.match(emitted, /const auto pinned_\d+_\d+ = basis\(\);/);
+    // The members read off the temporary rather than re-calling.
+    assert.equal(emitted.match(/basis\(\)/g)?.length, 1);
+    assert.match(emitted, /\.x \+ .*\.w/);
+});
+
+test("refuses a member read the caller did not list", () => {
+    assert.throws(
+        () => lower("const q = basis();\nconst n = q.missing;", [], recordCalls),
+        /Unsupported pinned/,
+    );
+});
+
+test("refuses binding one member of a record call", () => {
+    // The caller declares the record's members, not each member's own shape,
+    // so a name bound to `f(...).member` would have nothing readable off it.
+    assert.throws(
+        () => lower("const r = basis().x;", [], recordCalls),
+        /record member binding/,
+    );
+});
+
+test("stores through a mutable view at the view's own element width", () => {
+    const emitted = lower(
+        "const f32 = new F32(rows);\nf32[0] = 1.5;",
+        [["rows", {
+            cpp: "rows.data()",
+            bytesCpp: "rows.size()",
+            type: "u8-view",
+            mutable: true,
+        }]],
+    );
+    // The view is not const, and the store rounds where the pin's typed
+    // array store rounds.
+    assert.match(emitted, /float\* f32 = reinterpret_cast<float\*>/);
+    assert.match(emitted, /static_cast<float>\(1\.5\)/);
+});
+
+test("refuses a store through a view the caller left read-only", () => {
+    assert.throws(
+        () => lower(
+            "const f32 = new F32(rows);\nf32[0] = 1.5;",
+            [["rows", {
+                cpp: "rows.data()",
+                bytesCpp: "rows.size()",
+                type: "u8-view",
+            }]],
+        ),
+        /store through a read-only view/,
+    );
+});
+
+test("stores a byte through the spec's ToUint8 rather than a cast", () => {
+    const emitted = lower(
+        "const u8 = new U8(rows);\nu8[0] = 300;",
+        [["rows", {
+            cpp: "rows.data()",
+            bytesCpp: "rows.size()",
+            type: "u8-view",
+            mutable: true,
+        }]],
+    );
+    assert.match(emitted, /bbl::js::to_uint8\(300\.0\)/);
 });

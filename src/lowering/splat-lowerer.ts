@@ -30,6 +30,14 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
+import {
+    lowerPinnedFunction,
+    lowerTupleComponents,
+} from "./pinned-function-lowerer.js";
+import {
+    PINNED_DECOMPOSE_ROTATION,
+    lowerMat4DecomposeRotation,
+} from "./pinned-mat4-decompose.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 
@@ -40,9 +48,6 @@ const SORT_MODULE_MESH =
 const PIPELINE_MODULE =
     "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
 const BAKE_MODULE = "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts";
-const DECOMPOSE_MODULE = "src/math/mat4-decompose.ts";
-const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
-const QUAT_BASIS_MODULE = "src/math/quat-from-rotation-matrix.ts";
 
 /**
  * The pinned splat texture views, in the record-field spelling the runtime
@@ -98,10 +103,10 @@ const MATH_CALLS: ReadonlyMap<
     ...pinnedNumericMathCalls(),
     // JS rounds a half toward +Infinity; std::round rounds it away from zero,
     // so the two disagree at -0.5, -1.5, ...
-    ["Math.round", (a) => `bbl::js::round_number(${a[0]})`],
+    ["Math.round", (a) => `bbl::js::round_js(${a[0]})`],
     // Math.hypot is implementation-approximated by the ECMAScript spec; see
     // the module comment for the measured effect of using the plain root.
-    ["Math.hypot", (a) => `pinned_hypot({${a.join(", ")}})`],
+    ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
 ]);
 
 export class SplatLowerer {
@@ -594,18 +599,23 @@ ${gpuConstants}
 
 SplatGeometry build_splat_geometry(const std::vector<std::uint8_t>& rows);
 
+} // namespace bbl::upstream
+
+namespace bbl {
+
 /**
  * Moves one geometry build onto a cloud's record.
  *
  * Two callers fill exactly these fields -- the loader once, and the
  * transform bake again from rewritten rows -- so the assignment has one
- * home rather than two that must agree.
+ * home rather than two that must agree. It writes only port records, which
+ * is why it is not in \`upstream\`.
  */
 void apply_splat_geometry(
     SplatMeshRecord& record,
-    SplatGeometry& geometry);
+    upstream::SplatGeometry& geometry);
 
-} // namespace bbl::upstream
+} // namespace bbl
 `,
             source: `// ${this.context.provenance(DATA_MODULE, symbolName)}
 #include <bblite/js_data.hpp>
@@ -617,20 +627,6 @@ void apply_splat_geometry(
 #include <stdexcept>
 
 namespace bbl::upstream {
-
-namespace {
-
-// Math.hypot is implementation-approximated by the ECMAScript spec, so this
-// is the plain root of the sum of squares. See splat-lowerer.ts for the
-// measured effect and fidelity.json for the record. Every other JavaScript
-// numeric semantic this body needs comes from <bblite/js_data.hpp>.
-double pinned_hypot(std::initializer_list<double> values) {
-    double sum = 0.0;
-    for (double value : values) sum += value * value;
-    return std::sqrt(sum);
-}
-
-} // namespace
 
 ${textureSize}
 
@@ -808,8 +804,9 @@ ${body}
         const symbolName = "attachParsedSplat";
         // Upstream retains every cloud's rows (`splatsData`); this port
         // retains them where a reached call reads them back, which today is
-        // the transform bake alone. They are half again the size of the four
-        // float payloads, so the reach boundary is worth drawing.
+        // the transform bake alone. They are about half the size of the four
+        // float payloads again (11 MB against 22 MB on scene 120), so the
+        // reach boundary is worth drawing.
         const retention = options.retainRows
             ? "    record.rows = std::move(rows);\n"
             : "";
@@ -863,7 +860,7 @@ namespace bbl {
 // The record fields one geometry build fills, in one place: the loader
 // builds them once and the transform bake rebuilds them from rewritten
 // rows, and a field only one of the two carried would be the drift.
-void upstream::apply_splat_geometry(
+void apply_splat_geometry(
     SplatMeshRecord& record,
     upstream::SplatGeometry& geometry) {
     record.vertex_count =
@@ -899,7 +896,7 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
         upstream::build_splat_geometry(rows);
 
     SplatMeshRecord record;
-    upstream::apply_splat_geometry(record, geometry);
+    apply_splat_geometry(record, geometry);
 ${retention}    engine.splat_meshes.push_back(std::move(record));
     const SplatMeshHandle handle{
         static_cast<std::uint32_t>(engine.splat_meshes.size() - 1)};
@@ -910,108 +907,6 @@ ${retention}    engine.splat_meshes.push_back(std::move(record));
 } // namespace bbl
 `,
         };
-    }
-
-
-    /**
-     * A pinned numeric function, folded whole: its parameters bound by the
-     * caller, its body translated statement by statement.
-     *
-     * The three splat folds beside it each build this by hand; the bake
-     * chain needs five of them, so the frame they share is written once.
-     */
-    private foldNumericFunction(
-        file: ts.SourceFile,
-        declaration: ts.FunctionDeclaration,
-        bindings: Map<string, PinnedBinding>,
-        extra: {
-            calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
-            recordCalls?: ReadonlyMap<string, readonly string[]>;
-            tupleCalls?: ReadonlySet<string>;
-            returnValue?: (
-                expression: ts.Expression | undefined,
-                lowerer: PinnedNumericLowerer,
-            ) => string;
-            /** A body whose `return` is a plain number. */
-            scalarReturn?: boolean;
-            /** This body joins boolean conditions with `&&`. */
-            booleanAnd?: boolean;
-        },
-    ): string {
-        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
-            bindings,
-            calls: new Map([...MATH_CALLS, ...(extra.calls ?? new Map())]),
-            ...(extra.recordCalls ? { recordCalls: extra.recordCalls } : {}),
-            ...(extra.tupleCalls ? { tupleCalls: extra.tupleCalls } : {}),
-            ...(extra.booleanAnd ? { booleanAnd: true } : {}),
-            ...(extra.returnValue
-                ? {
-                      returnValue: (expression: ts.Expression | undefined) =>
-                          extra.returnValue!(expression, lowerer),
-                  }
-                : {}),
-            ...(extra.scalarReturn
-                ? {
-                      returnValue: (expression: ts.Expression | undefined) =>
-                          expression === undefined
-                              ? ""
-                              : lowerer.expression(expression),
-                  }
-                : {}),
-        });
-        return declaration
-            .body!.statements.flatMap((statement) =>
-                lowerer.statement(statement, "    "),
-            )
-            .join("\n");
-    }
-
-    /** The `x`, `y`, `z`, `w` of a pinned returned quaternion literal. */
-    private quatFields(
-        expression: ts.Expression | undefined,
-        at: ts.Node,
-        lowerer: PinnedNumericLowerer,
-    ): string[] {
-        if (!expression || !ts.isObjectLiteralExpression(expression)) {
-            return this.context.contractError(
-                at,
-                "Expected a pinned quaternion object literal.",
-            );
-        }
-        return this.objectFields(
-            expression,
-            ["x", "y", "z", "w"],
-            lowerer,
-            at,
-        );
-    }
-
-    /** One named member of a pinned returned object literal. */
-    private returnedMember(
-        expression: ts.Expression | undefined,
-        member: string,
-        at: ts.Node,
-    ): ts.ObjectLiteralExpression {
-        if (!expression || !ts.isObjectLiteralExpression(expression)) {
-            return this.context.contractError(
-                at,
-                `Expected a returned object literal carrying '${member}'.`,
-            );
-        }
-        for (const property of expression.properties) {
-            if (
-                ts.isPropertyAssignment(property) &&
-                ts.isIdentifier(property.name) &&
-                property.name.text === member &&
-                ts.isObjectLiteralExpression(property.initializer)
-            ) {
-                return property.initializer;
-            }
-        }
-        return this.context.contractError(
-            at,
-            `Expected the returned literal to carry '${member}'.`,
-        );
     }
 
 
@@ -1067,303 +962,145 @@ ${retention}    engine.splat_meshes.push_back(std::move(record));
     }
 
     /**
-     * `mat4Decompose`, specialized to the rotation its one caller reads,
-     * with the two math helpers it calls folded beside it.
+     * The bake module's own three helpers.
      *
-     * The specialization is checked rather than assumed: the adapter that
-     * reads it is asserted below to take `.rotation` and nothing else, so a
-     * pin that starts reading the scale or the translation fails generation
-     * instead of silently losing them.
-     */
-    private lowerDecomposeRotation(): string {
-        const determinant = this.declaration(
-            DETERMINANT_MODULE,
-            "mat4Determinant3",
-        );
-        const basis = this.declaration(
-            QUAT_BASIS_MODULE,
-            "_quatFromRotationBasis",
-        );
-        const decompose = this.declaration(DECOMPOSE_MODULE, "mat4Decompose");
-
-        const determinantBody = this.foldNumericFunction(
-            determinant.file,
-            determinant.declaration,
-            new Map<string, PinnedBinding>([
-                ["m", { cpp: "m", type: "f32-view" }],
-            ]),
-            { scalarReturn: true },
-        );
-        const basisBody = this.foldNumericFunction(
-            basis.file,
-            basis.declaration,
-            this.scalarParameters(basis.declaration),
-            {
-                booleanAnd: true,
-                returnValue: (expression, lowerer): string =>
-                    `PinnedQuat{${this.quatFields(
-                        expression,
-                        basis.declaration,
-                        lowerer,
-                    ).join(", ")}}`,
-            },
-        );
-        const decomposeBody = this.foldNumericFunction(
-            decompose.file,
-            decompose.declaration,
-            new Map<string, PinnedBinding>([
-                ["m", { cpp: "m", type: "f32-view" }],
-            ]),
-            {
-                calls: new Map<
-                    string,
-                    (args: readonly string[]) => string
-                >([
-                    [
-                        "mat4Determinant3",
-                        (a) => `pinned_mat4_determinant3(${a[0]})`,
-                    ],
-                    [
-                        "_quatFromRotationBasis",
-                        (a) =>
-                            `pinned_quat_from_rotation_basis(${a.join(", ")})`,
-                    ],
-                ]),
-                recordCalls: new Map([
-                    ["_quatFromRotationBasis", ["x", "y", "z", "w"]],
-                ]),
-                returnValue: (expression, lowerer): string =>
-                    `PinnedQuat{${this.quatFields(
-                        this.returnedMember(
-                            expression,
-                            "rotation",
-                            decompose.declaration,
-                        ),
-                        decompose.declaration,
-                        lowerer,
-                    ).join(", ")}}`,
-            },
-        );
-
-        const parameters = this.parameterList(basis.declaration);
-        return `/** The pin's own \`{x, y, z, w}\`, as its math helpers return one. */
-struct PinnedQuat {
-    double x;
-    double y;
-    double z;
-    double w;
-};
-
-double pinned_mat4_determinant3(const std::array<float, 16>& m) {
-${determinantBody}
-}
-
-PinnedQuat pinned_quat_from_rotation_basis(
-${parameters}) {
-${basisBody}
-}
-
-// mat4Decompose, specialized to the rotation its one caller reads. What
-// licenses dropping the translation and the scale is the assertion on that
-// caller's own body, not this signature.
-PinnedQuat pinned_mat4_decompose_rotation(const std::array<float, 16>& m) {
-${decomposeBody}
-}`;
-    }
-
-    /** A pinned function's parameters, each bound as a plain f64 scalar. */
-    private scalarParameters(
-        declaration: ts.FunctionDeclaration,
-    ): Map<string, PinnedBinding> {
-        return new Map(
-            declaration.parameters.map(
-                (parameter): [string, PinnedBinding] => [
-                    this.parameterName(declaration, parameter),
-                    {
-                        cpp: this.parameterName(declaration, parameter),
-                        type: "scalar",
-                    },
-                ],
-            ),
-        );
-    }
-
-    /** One pinned parameter's name, refusing a destructured one. */
-    private parameterName(
-        declaration: ts.FunctionDeclaration,
-        parameter: ts.ParameterDeclaration,
-    ): string {
-        if (!ts.isIdentifier(parameter.name)) {
-            return this.context.contractError(
-                declaration,
-                "Expected named pinned parameters.",
-            );
-        }
-        return parameter.name.text;
-    }
-
-    /** The pinned parameters as a C++ double parameter list. */
-    private parameterList(declaration: ts.FunctionDeclaration): string {
-        return declaration.parameters
-            .map(
-                (parameter) =>
-                    `    double ${this.parameterName(declaration, parameter)}`,
-            )
-            .join(",\n");
-    }
-
-    /**
-     * The bake module's own three helpers, each folded from its own body.
-     *
+     * Two are folded from their own bodies through the shared skeleton.
      * `mat4ToRotationQuat` is the one restated line in the chain: its body
-     * is a decompose and a four-component spread, and this port folds the
-     * decompose to the rotation alone. Both halves of that are asserted, so
-     * the restatement cannot outlive the shape it stands for.
+     * is a member selection and a four-component spread, carrying no
+     * arithmetic to drift, and folding it would mean giving up the
+     * `mat4Decompose` specialization to bind a nested record. It is
+     * asserted instead, and that assertion is what licenses both.
      */
     private lowerBakeHelpers(): string {
-        const coord = this.declaration(BAKE_MODULE, "mat4TransformCoord");
-        const multiply = this.declaration(BAKE_MODULE, "quatMultiply");
         const rotation = this.declaration(BAKE_MODULE, "mat4ToRotationQuat");
         this.assertDecomposeAdapter(rotation.declaration);
+        // Where a malformed tuple return is reported: the pinned body that
+        // returned it, not the call site that consumes it.
+        const coordAt = this.declaration(
+            BAKE_MODULE,
+            "mat4TransformCoord",
+        ).declaration;
+        const multiplyAt = this.declaration(
+            BAKE_MODULE,
+            "quatMultiply",
+        ).declaration;
 
-        const tupleReturn =
-            (declaration: ts.FunctionDeclaration, arity: number) =>
-            (
-                expression: ts.Expression | undefined,
-                lowerer: PinnedNumericLowerer,
-            ): string => {
-                const unwrapped = expression
-                    ? this.context.unwrapExpression(expression)
-                    : undefined;
-                if (
-                    !unwrapped ||
-                    !ts.isArrayLiteralExpression(unwrapped) ||
-                    unwrapped.elements.length !== arity
-                ) {
-                    return this.context.contractError(
-                        declaration,
-                        `Expected a ${arity}-element pinned tuple return.`,
-                    );
-                }
-                return `std::array<double, ${arity}>{${unwrapped.elements
-                    .map((element) => lowerer.expression(element))
-                    .join(", ")}}`;
-            };
-
-        const coordBody = this.foldNumericFunction(
-            coord.file,
-            coord.declaration,
-            this.helperBindings(coord.declaration),
-            { returnValue: tupleReturn(coord.declaration, 3) },
+        const coord = lowerPinnedFunction(
+            this.context,
+            BAKE_MODULE,
+            "mat4TransformCoord",
+            [
+                { pinned: "m", kind: "matrix", cpp: "m" },
+                { pinned: "x", kind: "number", cpp: "x" },
+                { pinned: "y", kind: "number", cpp: "y" },
+                { pinned: "z", kind: "number", cpp: "z" },
+            ],
+            {
+                cppName: "pinned_mat4_transform_coord",
+                returns: {
+                    type: "std::array<double, 3>",
+                    value: (lowerer, expression) =>
+                        `std::array<double, 3>{${lowerTupleComponents(
+                            this.context,
+                            lowerer,
+                            expression,
+                            { arity: 3, at: coordAt },
+                        ).join(", ")}}`,
+                },
+                calls: MATH_CALLS,
+            },
         );
-        const multiplyBody = this.foldNumericFunction(
-            multiply.file,
-            multiply.declaration,
-            this.helperBindings(multiply.declaration),
-            { returnValue: tupleReturn(multiply.declaration, 4) },
+        const multiply = lowerPinnedFunction(
+            this.context,
+            BAKE_MODULE,
+            "quatMultiply",
+            ["ax", "ay", "az", "aw", "bx", "by", "bz", "bw"].map((pinned) => ({
+                pinned,
+                kind: "number" as const,
+                cpp: pinned,
+            })),
+            {
+                cppName: "pinned_quat_multiply",
+                returns: {
+                    type: "std::array<double, 4>",
+                    value: (lowerer, expression) =>
+                        `std::array<double, 4>{${lowerTupleComponents(
+                            this.context,
+                            lowerer,
+                            expression,
+                            { arity: 4, at: multiplyAt },
+                        ).join(", ")}}`,
+                },
+                calls: MATH_CALLS,
+            },
         );
 
-        return `std::array<double, 3> pinned_mat4_transform_coord(
-    const std::array<float, 16>& m,
-    double x,
-    double y,
-    double z) {
-${coordBody}
-}
+        return `${coord}
 
 std::array<double, 4> pinned_mat4_to_rotation_quat(
     const std::array<float, 16>& m) {
-    const PinnedQuat q = pinned_mat4_decompose_rotation(m);
+    const PinnedQuat q = ${PINNED_DECOMPOSE_ROTATION}(m);
     return std::array<double, 4>{q.x, q.y, q.z, q.w};
 }
 
-std::array<double, 4> pinned_quat_multiply(
-${this.parameterList(multiply.declaration)}) {
-${multiplyBody}
-}`;
-    }
-
-    /**
-     * A bake helper's parameters: a leading matrix as a view, everything
-     * else a scalar. Which is which comes from the pinned signature's own
-     * first parameter name, so a renamed one fails rather than binding a
-     * double where the body indexes.
-     */
-    private helperBindings(
-        declaration: ts.FunctionDeclaration,
-    ): Map<string, PinnedBinding> {
-        return new Map(
-            declaration.parameters.map(
-                (parameter, index): [string, PinnedBinding] => {
-                    const name = this.parameterName(declaration, parameter);
-                    return [
-                        name,
-                        {
-                            cpp: name,
-                            type:
-                                index === 0 && name === "m"
-                                    ? "f32-view"
-                                    : "scalar",
-                        },
-                    ];
-                },
-            ),
-        );
+${multiply}`;
     }
 
     /**
      * `mat4ToRotationQuat` reads the decomposition's rotation and nothing
-     * else, and spreads exactly its four components in x/y/z/w order.
+     * else, and spreads exactly that value's four components in x/y/z/w
+     * order.
      *
-     * This is what licenses `pinned_mat4_decompose_rotation` returning the
-     * rotation alone, and the four-component body written out beside it.
+     * This is the whole licence for `pinned_mat4_decompose_rotation`
+     * returning the rotation alone and for the four-component body written
+     * out beside it, so it pins the callee, its argument, the member, and
+     * the identity of the local all four components read.
      */
     private assertDecomposeAdapter(
         declaration: ts.FunctionDeclaration,
     ): void {
         const statements = declaration.body!.statements;
-        const memberReads = this.context.findNodes(
-            declaration,
-            (node): node is ts.PropertyAccessExpression =>
-                ts.isPropertyAccessExpression(node) &&
-                ts.isCallExpression(
-                    this.context.unwrapExpression(node.expression),
-                ),
-        );
+        const bound = statements[0];
         if (
             statements.length !== 2 ||
-            memberReads.length !== 1 ||
-            memberReads[0]!.name.text !== "rotation" ||
-            !this.context.hasCall(declaration, "mat4Decompose")
+            bound === undefined ||
+            !ts.isVariableStatement(bound) ||
+            bound.declarationList.declarations.length !== 1
         ) {
             this.context.contractError(
                 declaration,
-                "Expected mat4ToRotationQuat to read only the " +
-                    "decomposition's rotation; this port folds " +
-                    "mat4Decompose to that member alone.",
+                "Expected mat4ToRotationQuat to bind one decomposition and " +
+                    "return its four components.",
             );
         }
-        const returned = statements[1];
-        const tuple =
-            returned !== undefined &&
-            ts.isReturnStatement(returned) &&
-            returned.expression !== undefined
-                ? this.context.unwrapExpression(returned.expression)
-                : undefined;
-        const components =
-            tuple && ts.isArrayLiteralExpression(tuple)
-                ? tuple.elements.map((element) =>
-                      ts.isPropertyAccessExpression(element)
-                          ? element.name.text
-                          : "",
-                  )
-                : [];
-        if (components.join(",") !== "x,y,z,w") {
+        const binding = bound.declarationList.declarations[0]!;
+        if (!ts.isIdentifier(binding.name) || !binding.initializer) {
             this.context.contractError(
                 declaration,
-                "Expected mat4ToRotationQuat to return [q.x, q.y, q.z, q.w].",
+                "Expected mat4ToRotationQuat to bind a named local.",
             );
         }
+        // The argument is pinned too: a decomposition of anything but this
+        // function's own parameter would emit `m` regardless.
+        this.context.assertExpressionShape(
+            binding.initializer,
+            "mat4Decompose(m).rotation",
+            "the mat4ToRotationQuat decomposition",
+        );
+        const returned = statements[1];
+        if (!returned || !ts.isReturnStatement(returned) ||
+            !returned.expression) {
+            this.context.contractError(
+                declaration,
+                "Expected mat4ToRotationQuat to return its components.",
+            );
+        }
+        const local = binding.name.text;
+        this.context.assertExpressionShape(
+            returned.expression,
+            `[${local}.x, ${local}.y, ${local}.z, ${local}.w]`,
+            "the mat4ToRotationQuat return",
+        );
     }
 
     /**
@@ -1383,11 +1120,28 @@ ${multiplyBody}
             BAKE_MODULE,
             "bakeCurrentTransformIntoVertices",
         );
-        const lanes: ReadonlyMap<string, string> = new Map([
-            ["position", "position"],
-            ["rotationQuaternion", "rotation_quaternion"],
-            ["scaling", "scaling"],
+        // Which lanes the reset covers and which components each carries,
+        // so the count below is derived from the rule rather than written
+        // as a number, and a pinned write landing on a component its lane
+        // does not have fails here instead of at the C++ compile.
+        const lanes: ReadonlyMap<
+            string,
+            { lane: string; components: readonly string[] }
+        > = new Map([
+            ["position", { lane: "position", components: ["x", "y", "z"] }],
+            [
+                "rotationQuaternion",
+                {
+                    lane: "rotation_quaternion",
+                    components: ["x", "y", "z", "w"],
+                },
+            ],
+            ["scaling", { lane: "scaling", components: ["x", "y", "z"] }],
         ]);
+        const expected = [...lanes.values()].reduce(
+            (total, { components }) => total + components.length,
+            0,
+        );
         const writes: string[] = [];
         for (const statement of declaration.body!.statements) {
             if (
@@ -1415,31 +1169,45 @@ ${multiplyBody}
                         "record has no lane for.",
                 );
             }
+            if (!lane.components.includes(target.name.text)) {
+                this.context.contractError(
+                    statement,
+                    `The bake resets '${owner.name.text}.` +
+                        `${target.name.text}', which that lane does not ` +
+                        "carry.",
+                );
+            }
             writes.push(
-                `    mesh.${lane}.${target.name.text} = ` +
-                    `${this.context
-                        .numericValue(statement.expression.right, file)
-                        .toFixed(1)}f;`,
+                `    mesh.${lane.lane}.${target.name.text} = ` +
+                    `${this.context.floatLiteral(
+                        this.context.numericValue(
+                            statement.expression.right,
+                            file,
+                        ),
+                    )};`,
             );
         }
-        if (writes.length !== 10) {
+        if (writes.length !== expected) {
             this.context.contractError(
                 declaration,
-                "Expected the bake to reset three position lanes, four " +
-                    "quaternion lanes and three scaling lanes.",
+                `Expected the bake to reset all ${expected} lanes of ` +
+                    `${[...lanes.keys()].join(", ")}.`,
             );
         }
         return `void reset_splat_transform(SplatMeshRecord& mesh) {
 ${writes.join("\n")}
     // Upstream's \`rotation\` is an Euler proxy over the quaternion above,
     // so clearing that quaternion is what clears it there. This record
-    // keeps the two apart and \`build_splat_world\` prefers the quaternion
-    // only while one is set, so the Euler lane is cleared with it.
+    // keeps the two apart, so the Euler lane is cleared with it -- leaving
+    // it set would compose the rotation a second time.
+    //
+    // \`has_rotation_quaternion\` is deliberately NOT set: both lanes now
+    // compose the identity either way, and setting it would make a
+    // \`rotation\` write AFTER a bake silently unreachable, because
+    // \`build_splat_world\` prefers the quaternion whenever the flag is on.
     mesh.rotation = Vec3{0.0f, 0.0f, 0.0f};
-    mesh.has_rotation_quaternion = true;
 }`;
     }
-
 
     /**
      * `bakeTransformIntoVertices` — the pin's own transform bake, folded
@@ -1468,7 +1236,7 @@ ${writes.join("\n")}
         }
         this.assertBakeBufferBoundary(declaration);
 
-        const decompose = this.lowerDecomposeRotation();
+        const decompose = lowerMat4DecomposeRotation(this.context);
         const helpers = this.lowerBakeHelpers();
         const reset = this.lowerBakeReset();
 
@@ -1515,10 +1283,10 @@ ${writes.join("\n")}
                     (a) => `pinned_quat_multiply(${a.join(", ")})`,
                 ],
             ]),
-            tupleCalls: new Set([
-                "mat4TransformCoord",
-                "mat4ToRotationQuat",
-                "quatMultiply",
+            tupleCalls: new Map([
+                ["mat4TransformCoord", 3],
+                ["mat4ToRotationQuat", 4],
+                ["quatMultiply", 4],
             ]),
         });
         // The body minus the two statements the boundary check covers: the
@@ -1572,15 +1340,6 @@ namespace bbl::upstream {
 
 namespace {
 
-// The same Math.hypot adaptation the geometry fold records: the spec leaves
-// it implementation-approximated, so this is the plain root of the sum of
-// squares.
-double pinned_hypot(std::initializer_list<double> values) {
-    double sum = 0.0;
-    for (double value : values) sum += value * value;
-    return std::sqrt(sum);
-}
-
 ${decompose}
 
 ${helpers}
@@ -1620,7 +1379,7 @@ void bake_current_transform_into_vertices(
         mesh.vertex_count) {
         throw std::runtime_error("GS vertex count mismatch");
     }
-    upstream::apply_splat_geometry(mesh, geometry);
+    apply_splat_geometry(mesh, geometry);
     upstream::reset_splat_transform(mesh);
 }
 

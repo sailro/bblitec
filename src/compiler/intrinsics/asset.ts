@@ -315,7 +315,7 @@ export function compileAssetIntrinsic(
                 "splat-mesh",
                 call.arguments[0]!,
             );
-            context.reachFeature("splat:bake", call);
+            context.reachFeature("loader:splat-bake", call);
             return {
                 kind: "void",
                 cpp:

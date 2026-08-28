@@ -1034,6 +1034,7 @@ ${wgsl}`,
         }
         if (features.includes("loader:splat")) {
             const splats = new SplatLowerer(context);
+            const bakesTransform = features.includes("loader:splat-bake");
             this.writeSource(
                 "upstream/src/splat_geometry.cpp",
                 splats.lowerGeometry(),
@@ -1048,12 +1049,10 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/splat_loader.cpp",
-                splats.lowerLoader({
-                    retainRows: features.includes("splat:bake"),
-                }),
+                splats.lowerLoader({ retainRows: bakesTransform }),
                 generated,
             );
-            if (features.includes("splat:bake")) {
+            if (bakesTransform) {
                 this.writeSource(
                     "upstream/src/splat_bake.cpp",
                     splats.lowerBake(),

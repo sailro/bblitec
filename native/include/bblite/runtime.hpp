@@ -1082,7 +1082,9 @@ struct SplatMeshRecord {
     // the same field names because one emitted composition serves both.
     // `build_splat_world` is that composition, and there is no cached
     // matrix here for the same reason the sort has no dirty flag: both
-    // re-derive from the record each frame.
+    // re-derive from the record each frame. Scene code writes all three
+    // lanes (scene 127 the position, scene 125 all of them before baking
+    // them away).
     Vec3 position{};
     Vec3 rotation{};
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};

@@ -164,7 +164,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/splat_bake.cpp",
-        features: ["splat:bake"],
+        features: ["loader:splat-bake"],
     },
     {
         source: "upstream/src/material_texture_setters.cpp",

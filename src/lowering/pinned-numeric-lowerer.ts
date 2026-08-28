@@ -201,9 +201,11 @@ export interface PinnedNumericScope {
      * The same split `matrixCalls` and `listCalls` draw, one shape further:
      * the translator carries no types, so which of `calls`' names returns a
      * tuple is the caller's to declare. The native spelling those callers
-     * give such a name must be indexable, which `std::array` is.
+     * give such a name must be indexable, which `std::array` is — and the
+     * declared ARITY is what keeps a destructuring of a different length a
+     * generation error instead of an index past that array's end.
      */
-    tupleCalls?: ReadonlySet<string>;
+    tupleCalls?: ReadonlyMap<string, number>;
     /**
      * Calls whose result is a small numeric RECORD, and which members the
      * body may read off one (`const q = _quatFromRotationBasis(...)`, then
@@ -470,9 +472,10 @@ export class PinnedNumericLowerer {
                 if (!declaration.initializer) {
                     this.fail(declaration, "binding pattern");
                 }
-                const temporary = `pinned_${lines.length}_${
-                    declaration.getStart(this.file)
-                }`;
+                const temporary = this.temporaryName(
+                    declaration,
+                    lines.length,
+                );
                 lines.push(
                     `${indent}const auto ${temporary} = ` +
                         `${this.expression(declaration.initializer)};`,
@@ -509,12 +512,23 @@ export class PinnedNumericLowerer {
                     ts.isIdentifier(initializer.expression)
                         ? initializer.expression.text
                         : undefined;
-                if (!callee || !this.scope.tupleCalls?.has(callee)) {
+                const arity = callee
+                    ? this.scope.tupleCalls?.get(callee)
+                    : undefined;
+                if (arity === undefined) {
                     this.fail(declaration, "tuple binding pattern");
                 }
-                const temporary = `pinned_${lines.length}_${
-                    declaration.getStart(this.file)
-                }`;
+                if (declaration.name.elements.length !== arity) {
+                    this.fail(
+                        declaration,
+                        `tuple binding of ${declaration.name.elements.length}` +
+                            ` from a ${arity}-element call`,
+                    );
+                }
+                const temporary = this.temporaryName(
+                    declaration,
+                    lines.length,
+                );
                 lines.push(
                     `${indent}const auto ${temporary} = ` +
                         `${this.expression(declaration.initializer!)};`,
@@ -1198,13 +1212,11 @@ export class PinnedNumericLowerer {
         if (binding?.type === "f32") return "float";
         if (binding?.type === "u32") return "std::uint32_t";
         // A mutable view rounds at its own element width, exactly as the
-        // typed array the pin stores through does. A read-only view has no
-        // store to round, and reaching one here would mean a body wrote
-        // through an alias the caller declared read-only -- which fails at
-        // the assignment rather than silently widening.
-        if (binding?.mutable && binding.type === "f32-view") return "float";
-        if (binding?.mutable && binding.type === "u8-view") {
-            return "std::uint8_t";
+        // typed array the pin stores through does. A read-only view never
+        // reaches here: `assignmentTarget` refuses the store first.
+        if (binding?.mutable) {
+            if (binding.type === "f32-view") return "float";
+            if (binding.type === "u8-view") return "std::uint8_t";
         }
         return undefined;
     }
@@ -1237,6 +1249,18 @@ export class PinnedNumericLowerer {
             return binding.cpp;
         }
         if (ts.isElementAccessExpression(unwrapped)) {
+            // A view the caller did not declare mutable is an alias over
+            // someone else's storage, so a store through one is refused
+            // here. Leaving it to the emitted `const` would report the same
+            // fact as a C++ compile error with no pinned source location.
+            const target = this.elementOwner(unwrapped);
+            if (
+                target &&
+                (target.type === "f32-view" || target.type === "u8-view") &&
+                !target.mutable
+            ) {
+                this.fail(unwrapped, "store through a read-only view");
+            }
             // Assigning past a list's end EXTENDS it in JavaScript, and the
             // pinned ribbon fills `us[p]` without sizing `us` first. A
             // fixed-size buffer cannot grow and is indexed directly; a list
@@ -1482,48 +1506,55 @@ export class PinnedNumericLowerer {
         ordinal: number,
     ): string[] | undefined {
         const unwrapped = this.unwrap(initializer);
-        const member = ts.isPropertyAccessExpression(unwrapped)
-            ? unwrapped.name.text
-            : undefined;
-        const call = this.unwrap(
-            member ? (unwrapped as ts.PropertyAccessExpression).expression
-                   : unwrapped,
-        );
+        // `const q = f(...).member` would have to know the member's own
+        // shape to bind anything readable off it, and the caller declares
+        // only the record's member names. It refuses rather than binding a
+        // name whose next read cannot resolve.
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            const owner = this.unwrap(unwrapped.expression);
+            if (
+                ts.isCallExpression(owner) &&
+                ts.isIdentifier(owner.expression) &&
+                this.scope.recordCalls?.has(owner.expression.text)
+            ) {
+                this.fail(unwrapped, "record member binding");
+            }
+            return undefined;
+        }
         if (
-            !ts.isCallExpression(call) ||
-            !ts.isIdentifier(call.expression)
+            !ts.isCallExpression(unwrapped) ||
+            !ts.isIdentifier(unwrapped.expression)
         ) {
             return undefined;
         }
-        const members = this.scope.recordCalls?.get(call.expression.text);
+        const members = this.scope.recordCalls?.get(unwrapped.expression.text);
         if (!members) return undefined;
-        if (member !== undefined && !members.includes(member)) {
-            this.fail(unwrapped, `record member '${member}'`);
-        }
-        const temporary = `pinned_${ordinal}_${initializer.getStart(this.file)}`;
-        // A member read binds that member's own value; the whole record
-        // binds every member the caller listed, each by its own text.
-        if (member !== undefined) {
-            this.scope.bindings.set(name, {
-                cpp: temporary,
-                type: "scalar",
-            });
-        } else {
-            for (const field of members) {
-                this.scope.bindings.set(`${name}.${field}`, {
-                    cpp: `${temporary}.${field}`,
-                    type: "scalar",
-                });
-            }
-            this.scope.bindings.set(name, {
-                cpp: temporary,
+        const temporary = this.temporaryName(initializer, ordinal);
+        // Every member the caller listed binds by its own dotted text, which
+        // is the same lookup `propertyAccess` opens with — so a later `q.x`
+        // resolves there rather than needing an arm of its own.
+        for (const field of members) {
+            this.scope.bindings.set(`${name}.${field}`, {
+                cpp: `${temporary}.${field}`,
                 type: "scalar",
             });
         }
+        this.scope.bindings.set(name, { cpp: temporary, type: "scalar" });
         return [
             `${indent}const auto ${temporary} = ` +
                 `${this.expression(unwrapped)};`,
         ];
+    }
+
+    /**
+     * The name of a temporary a destructuring binds through.
+     *
+     * Keyed by the node's own start offset so two destructurings in one
+     * body cannot collide, and written once because three declaration
+     * shapes need it.
+     */
+    private temporaryName(node: ts.Node, ordinal: number): string {
+        return `pinned_${ordinal}_${node.getStart(this.file)}`;
     }
 
     private propertyAccess(
@@ -1532,22 +1563,6 @@ export class PinnedNumericLowerer {
     ): string {
         const named = this.scope.bindings.get(node.getText(this.file));
         if (named) return named.cpp;
-        // A member read straight off a record-valued call, which the native
-        // spelling returns as a struct with the members the caller listed.
-        const owned = this.unwrap(node.expression);
-        if (
-            ts.isCallExpression(owned) &&
-            ts.isIdentifier(owned.expression) &&
-            this.scope.recordCalls?.has(owned.expression.text)
-        ) {
-            const members = this.scope.recordCalls.get(
-                owned.expression.text,
-            )!;
-            if (!members.includes(node.name.text)) {
-                this.fail(node, `record member '${node.name.text}'`);
-            }
-            return `${this.expression(owned)}.${node.name.text}`;
-        }
         const optional = this.optionalMember(node);
         if (optional) {
             const absent = absentOverride ?? optional.member.absent;

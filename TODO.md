@@ -393,6 +393,17 @@ below rather than blocking a scene here.
   removing means caching it on the pass record — state whose invalidation
   nothing measures, for roughly 50ns a frame. The Dawn pair, which sat in
   one function, is hoisted.
+- [ ] Collapse the rotation record onto the pin's one-lane model. Upstream
+  `rotation` is an Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
+  `scene/scene-node.ts`), so `composeTrsLocalMatrix` reads the quaternion
+  alone; `MeshRecord` and `SplatMeshRecord` carry both lanes and
+  `pinned-trs.ts` picks between them
+  ([fidelity](docs/fidelity.md#shader-contract)). They agree wherever a scene
+  writes one lane, which is every reached scene. **Blocked on a missing
+  capability**: the proxy needs `quatToEulerXYZ` folded, which nothing here
+  has. Closing it also deletes that Euler arm, moving emitted bytes for every
+  mesh in the corpus.
+
 - [ ] `renderer:pbr` is the feature that names the SCENE RENDER LOOP, not the
   PBR material family: `featureSources` maps it to `src/pal_sdl_gpu.cpp`, and
   `addBillboardSystem` and `loadSplat` both reach it for scenes with no PBR

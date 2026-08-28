@@ -1,0 +1,84 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "the five folded math functions hand-rolled a skeleton this repo already owns. `lowerPinnedFunction` (pinned-function-lowerer.ts) exists for exactly this job, and its own docstring records that the first two lowerings to take the shape hand-rolled it one commit apart and 'immediately diverged in contract strength — which is exactly the drift the shared skeleton exists to prevent'. This was the third hand-roll and diverged the same way: no parameter type-annotation check, signatures emitted separately from bindings so the two could disagree, and NO provenance line on any of the five emitted functions. Rewritten onto it: `foldNumericFunction`, `scalarParameters`, `parameterName`, `parameterList` and `helperBindings` are gone, two `parameterKinds` entries (`Mat4`, `ArrayLike<number>`) were added, and three scope knobs are forwarded the way `matrixCalls` already was",
+      "applied": true
+    },
+    {
+      "summary": "the three `src/math/` folds (`mat4Determinant3`, `_quatFromRotationBasis`, `mat4Decompose`) are general matrix maths living inside the splat lowerer, and a second consumer already half-exists — `renderer-lowerer.ts` pins `mat4Determinant3`'s text for the glTF mirrored-winding predicate. Moved to `src/lowering/pinned-mat4-decompose.ts` beside `pinned-trs.ts`, for the reason that file states",
+      "applied": true
+    },
+    {
+      "summary": "`reset_splat_transform` set `has_rotation_quaternion = true`, which opens a silent-ignore trap the diff itself created: this branch is what allows `splat.rotation.*` writes, and a rotation write AFTER a bake would compose the identity because `pinned-trs.ts` prefers the quaternion whenever that flag is set. The reset already zeroes both lanes, so the line bought nothing and cost a silently unreachable write. Deleted, with the reason written where the reset is",
+      "applied": true
+    },
+    {
+      "summary": "`recordCallBinding`'s `.member` arm and the matching arm in `propertyAccess` were both dead, and each was wrong in its own way if reached: the first bound the name as a scalar so the very next member read would miss, and the second re-lowered the whole call once per member, so `f(...).x + f(...).y` would have evaluated `f` twice. Both replaced by named refusals; the whole-record arm every reached fold takes is what remains",
+      "applied": true
+    },
+    {
+      "summary": "`tupleCalls` was a `Set` and so declared no arity — a destructuring of a different length would have indexed past the end of the `std::array` the call returns, as undefined behaviour rather than a generation error. It is a `Map<string, number>` now and the mismatch fails by name",
+      "applied": true
+    },
+    {
+      "summary": "`assertDecomposeAdapter` is the whole licence for restating `mat4ToRotationQuat` and for specializing `mat4Decompose` to its rotation, and it was leaky in two ways: it never checked the four returned components read the SAME local the decompose bound (`return [q.x, q.y, other.z, q.w]` passed), and it never checked the decomposed argument was the function's own parameter. Rewritten onto `context.assertExpressionShape`, which `assertBakeBufferBoundary` two functions above already used — shorter and strictly stronger",
+      "applied": true
+    },
+    {
+      "summary": "the emitted `pinned_hypot` — a RECORDED fidelity adaptation — had two copies, one per generated translation unit. Its sibling adaptation `Math.round` already had a shared home in `js_data.hpp`, and so does the seeded `Math.random`, so being an adaptation is not what decides the home. Moved to `bbl::js::hypot_js`; both copies deleted",
+      "applied": true
+    },
+    {
+      "summary": "`js_data.hpp` carried two `Math.round` helpers with genuinely different rules: `round_number` (`floor(x + 0.5)`) and the later `round_js`, whose own comment says it is written differently 'because the addition is not exact for large magnitudes'. The corrected one never replaced the original, and this branch added a second generated TU depending on the weaker one — four rounds per splat. `round_number` retired; its only consumer was the splat `MATH_CALLS` entry, so one rule remains in the header",
+      "applied": true
+    },
+    {
+      "summary": "the reset emitted its float literals through `.toFixed(1)}f` where `context.floatLiteral` exists: `toFixed(1)` renders `-0` as `0.0` (losing the sign bit that helper exists to preserve) and would silently emit `0.3f` for a pinned `0.25`. Also, `writes.length !== 10` was a magic number that checked no lane — a pinned `mesh.position.w` would have emitted and failed only in C++. The lanes map now carries its own components, the count derives from it, and a component its lane does not have fails by name",
+      "applied": true
+    },
+    {
+      "summary": "two comments claimed the retained rows are 'half again the size of the four float payloads'. They are about 0.42x — this file's own module docstring already said so correctly ('11 MB against 22 MB for scene 120'). Corrected in both places. Separately, `SplatMeshRecord`'s doc still said no reached scene moves its TRS, which scene 127 already contradicted and this branch makes wrong for all three lanes",
+      "applied": true
+    },
+    {
+      "summary": "`splat:bake` was the only feature prefix in the union with a single member and the only one whose family already has a different prefix — every capability layered on a loader takes that loader's (`loader:gltf` -> `loader:gltf-variants`, `loader:gltf-cameras`). Renamed to `loader:splat-bake`. Also: `apply_splat_geometry` was declared in `bbl::upstream` but defined as a qualified-id from inside `namespace bbl`, the only such definition in these emissions; it writes only port records, so it moved to `bbl`",
+      "applied": true
+    },
+    {
+      "summary": "the comment on the mutable-view store claimed a read-only view 'fails at the assignment', which was not true — the emitted `const` rejected it at the C++ compile, with no pinned source location. `assignmentTarget` now refuses it, so the comment states what happens. The twin `binding?.mutable && type === ...` tests became one guard, and the three destructuring frames share a `temporaryName` helper",
+      "applied": true
+    },
+    {
+      "summary": "the three new shared-translator capabilities shipped with no tests, against the repo rule 'Add tests when extending compiler or lowering behavior'. Eight cases added to `test/pinned-numeric-lowerer.test.ts`, covering both directions of each: the tuple binding emits ONE call indexed three times, a wrong-length destructuring refuses, a record call binds its members off one temporary, an unlisted member refuses, a member-binding refuses, a mutable view stores at its element width, a read-only view refuses, and a byte store goes through the spec's ToUint8",
+      "applied": true
+    },
+    {
+      "summary": "the `splat-hypot-approximation` adaptation record's stated scope predated the bake, which reaches `Math.hypot` at a far coarser sink — its quaternion renormalisation is rounded into a BYTE, against the covariance entries below 1e-19 the measurement cites. Scope widened, and the two adaptations this branch introduces are now recorded in `fidelity.json` rather than only in prose: the in-place-rewrite/caller-rebuild buffer boundary, and reach-gated row retention",
+      "applied": true
+    },
+    {
+      "summary": "`storedValue`'s u32 branch emits `static_cast<std::uint32_t>` where `listConversion` forty lines below states the same rule the other way ('the u32 one applies ECMAScript ToUint32, which WRAPS a negative where a static_cast would be undefined behaviour'), and `bbl::js::to_uint32` exists and is used by four other modules. It is a real two-answers-one-rule pair",
+      "applied": false,
+      "blockedBy": "reaches well outside this diff: it changes the emitted index text for every mesh builder and the splat sort, and two contract-anchor tests (`lowerer-anchors`, `upstream`) pin that text by regex. Rewriting those anchors to accommodate a change no reached value can observe — every index in play is non-negative and in range — is the shape of weakening an assertion to make it pass. It wants its own change with the differential matrix as its proof",
+      "filedIn": "not filed in TODO.md: the rule is already stated at `listConversion` in the same file, which is where the next reader meets it"
+    },
+    {
+      "summary": "efficiency angle: measured on the generated C++, nothing to fix. The row retention is correctly gated (scene 120's `splat_loader.cpp` differs from 125's by exactly one line, so a non-baking cloud pays 0 bytes); `apply_splat_geometry` moves all five payloads rather than copying, avoiding 25.2 MiB per call twice; the rotation quaternion and `scaleX` are hoisted out of the 345,217-splat loop where the pin hoists them; and the loop allocates nothing. The bake's second `build_splat_geometry` pass is ~20% redundant (the colour payload's input bytes are never rewritten) but is a load-time one-shot before `start_engine`, and forking the folded body the pin's own `updateData` calls whole would break the one-home rule the header states",
+      "applied": false,
+      "blockedBy": "nothing — there is no defect here to fix; recorded so the next review does not re-derive the measurements",
+      "filedIn": "not filed: no work remains"
+    },
+    {
+      "summary": "altitude angle: the record keeps two rotation lanes where upstream keeps one and exposes `rotation` as a proxy over the quaternion. The diff's handling (the bake clears both lanes) is correct at every reached observation point, but the two-lane record is the deeper thing",
+      "applied": false,
+      "blockedBy": "a capability that does not exist: the proxy needs `quatToEulerXYZ` folded, which nothing in src/ or native/ has. Closing it also deletes `pinned-trs.ts`'s Euler arm, moving emitted bytes for every mesh in the corpus, plus four lowerers and three PAL sites",
+      "filedIn": "TODO.md, P1 — Assets and materials, beside the splat slice"
+    }
+  ]
+}

@@ -24,7 +24,10 @@ import {
     type PinnedBinding,
     PinnedNumericLowerer,
 } from "./pinned-numeric-lowerer.js";
-import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import {
+    lowerPinnedFunction,
+    lowerTupleComponents,
+} from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
 import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
@@ -206,32 +209,12 @@ function matrixLiteral(
     expression: ts.Expression | undefined,
     declaration: ts.Node,
 ): string {
-    const returned = expression
-        ? context.unwrapExpression(expression)
-        : undefined;
-    if (
-        !returned ||
-        !ts.isNewExpression(returned) ||
-        !ts.isIdentifier(returned.expression) ||
-        returned.expression.text !== "F32" ||
-        returned.arguments?.length !== 1 ||
-        !ts.isArrayLiteralExpression(returned.arguments[0]!)
-    ) {
-        return context.contractError(
-            declaration,
-            "Expected the pinned body to return `new F32([...])`.",
-        );
-    }
-    const elements = returned.arguments[0].elements;
-    if (elements.length !== 16) {
-        return context.contractError(
-            declaration,
-            `Expected sixteen matrix elements, found ${elements.length}.`,
-        );
-    }
-    const lowered = elements.map(
-        (element) => `static_cast<float>(${lowerer.expression(element)})`,
-    );
+    const lowered = lowerTupleComponents(context, lowerer, expression, {
+        arity: 16,
+        at: declaration,
+        insideF32: true,
+        cast: "static_cast<float>",
+    });
     return `std::array<float, 16>{\n        ${lowered.join(",\n        ")}}`;
 }
 
