@@ -994,6 +994,19 @@ export type ValueKind =
      * declares nothing native.
      */
     | "splat-fragment"
+    // The GPU picker holds the 1x1 attachments, the depth buffer and the
+    // staging buffers its readback maps, so it is a native handle for the
+    // same reason a shadow generator is.
+    | "gpu-picker"
+    // What a pick resolved to. Upstream `PickingInfo` is a mutable object
+    // the contributor's own `resolve` fills in; here it is a value, because
+    // nothing in the reached slice writes one back.
+    | "picking-info"
+    // `PickingInfo.pickedMesh`. Upstream it is whichever node was hit and
+    // both kinds carry a `name`; this port keeps meshes and clouds in
+    // separate collections, so the value is the tagged pair and `.name` is
+    // the one member the reached slice reads.
+    | "picked-node"
     // The `ShadowGenerator` a filter factory returns. It holds GPU state
     // (a depth map, a comparison sampler, two uniform buffers), so it is a
     // native handle rather than a compile-time record -- but which lights
@@ -1477,6 +1490,12 @@ export type Feature =
     | "physics:world"
     | "physics:aggregate"
     | "scene:remove"
+    // GPU picking. One feature, because the pin's own split is by
+    // PIPELINE rather than by entry point: the simple pass, the advanced
+    // one and the detailed one are three modules behind one `pickAsync`,
+    // and this port reaches only the first. The GS contributor rides the
+    // splat feature that already selected the cloud.
+    | "picking:gpu"
     // The shadow family, split the way upstream splits it: the filter's own
     // resources and receiver composition (`shadow:pcf`), and the scene-owned
     // frame-graph task that schedules them (`shadow:task`), which

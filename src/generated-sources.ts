@@ -257,6 +257,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["navigation:recast"],
     },
     {
+        source: "upstream/src/picking.cpp",
+        features: ["picking:gpu"],
+    },
+    {
         source: "upstream/src/shadow.cpp",
         // Spread rather than spelled: the row and `reachesShadowGenerator`
         // are the same predicate, and a filter added to one list has to

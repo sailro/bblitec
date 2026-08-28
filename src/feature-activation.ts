@@ -514,6 +514,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/create-torus.ts",
         consumers: CMAKE,
     },
+    "picking:gpu": {
+        provenance: "src/picking/gpu-picker.ts",
+        consumers: CMAKE,
+    },
     "scene:remove": {
         provenance: "src/scene/scene-remove.ts",
         consumers: CMAKE,

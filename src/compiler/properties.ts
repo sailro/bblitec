@@ -474,6 +474,33 @@ const propertyRules: readonly PropertyRule[] = [
         record: ["cameras", "name"],
     },
     {
+        // A pick answers with the id it read out of the one-pixel target,
+        // so `hit` is a field of the value rather than a lookup.
+        owner: "picking-info",
+        property: "hit",
+        value: "data",
+        dataType: { kind: "boolean" },
+        field: "hit",
+    },
+    {
+        // Upstream `pickedMesh` is the node object itself, and both kinds
+        // that can be hit carry a name. This port keeps meshes and clouds
+        // in separate collections, so the pick resolves the identity once
+        // and the value carries it: the retag reads nothing, and the one
+        // member the reached slice asks for is below.
+        owner: "picking-info",
+        property: "pickedMesh",
+        value: "picked-node",
+        retag: true,
+    },
+    {
+        owner: "picked-node",
+        property: "name",
+        value: "data",
+        dataType: { kind: "string" },
+        field: "picked_name",
+    },
+    {
         // The pinned Mesh name — see MeshRecord::name for who fills it.
         owner: "mesh",
         property: "name",

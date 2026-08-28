@@ -1,0 +1,72 @@
+/**
+ * The two WGSL modules a GPU pick deploys, composed by the pin.
+ *
+ * Neither is written here. `pickingShaderSource` builds the mesh module
+ * from five fragments its own file declares -- the scene block, the mesh
+ * block, the discard input, a default `shouldDiscardPick` and the shared
+ * fragment stage -- and its vertex stage forks on whether a deform
+ * projection was supplied. `buildPickingWgsl` builds the cloud's module the
+ * same way and then runs it through `applyGsFragments` with the pin's own
+ * `gsGpuPickingFragment`, which is what replaces the alpha-blended colour
+ * with the pick id and discards a transparent splat.
+ *
+ * So both are EXECUTED. Re-typing either would restate a splice, a
+ * thirty-five-entry field mangler and two `?:` arms whose defaults are the
+ * whole reason the module compiles -- and would agree with upstream only
+ * until it moved. `buildPickingWgsl` is module-private, so it is re-exported
+ * through the same `data:` URL rewrite every other pinned composition uses
+ * rather than copied out.
+ */
+import {
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "./pinned-shader-composer.js";
+
+/** The pinned module that builds the mesh half. */
+const meshShaderModule = "picking/picking-shader.js";
+/** The pinned module that builds the cloud half. */
+const cloudPipelineModule = "picking/gs-picking-pipeline.js";
+
+interface MeshShaderExports {
+    pickingShaderSource(options?: {
+        discardWgsl?: string;
+        storage?: readonly unknown[];
+        _vertexProjection?: unknown;
+    }): string;
+}
+
+interface CloudPipelineExports {
+    buildPickingWgsl(detailed: boolean): string;
+}
+
+/**
+ * The mesh picking module, at the reached slice: no discard predicate, no
+ * storage bindings and no deform projection.
+ *
+ * Passing `{}` rather than nothing is deliberate -- it is what a pipeline
+ * built with `getPickingPipelineSet(engine, null, null)` passes, so the
+ * defaults that survive are the pin's own and not this port's reading of
+ * them.
+ */
+export async function composeMeshPickingShader(): Promise<string> {
+    const pinned = await importPinnedModule<MeshShaderExports>(
+        meshShaderModule,
+    );
+    return pinned.pickingShaderSource({});
+}
+
+/**
+ * The Gaussian-cloud picking module.
+ *
+ * `false` is the non-detailed arm: the detailed one adds a third
+ * `rgba32uint` attachment and the primitive index the barycentric readback
+ * needs, which no reached scene composes.
+ */
+export async function composeCloudPickingShader(): Promise<string> {
+    const pinned =
+        await importPinnedModuleWithExports<CloudPipelineExports>(
+            cloudPipelineModule,
+            ["buildPickingWgsl"],
+        );
+    return pinned.buildPickingWgsl(false);
+}

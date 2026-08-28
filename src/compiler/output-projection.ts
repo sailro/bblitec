@@ -86,6 +86,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:ribbon": [],
     "mesh:torus": [],
     "mesh:tube": [],
+    "picking:gpu": [],
     "scene:remove": [],
     "shadow:esm": [],
     "shadow:pcf": [],

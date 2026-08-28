@@ -1462,6 +1462,29 @@ export class ExpressionLowerer {
                 recordProperties: selected,
             };
         }
+        // A literal string and a string READ OUT OF A RECORD are the same
+        // type; only the kinds differ, because one carries a compile-time
+        // value and the other does not. The element-access path already
+        // treats the pair as one (a dynamic record key is either), and a
+        // branch that picks between a record's string and a literal -- the
+        // shape a pick result's name takes -- is the same question. The
+        // literal side widens, since `std::string` is the common type of
+        // the emitted conditional either way.
+        const stringValued = (value: Value): boolean =>
+            value.kind === "string" ||
+            (value.kind === "data" &&
+                value.dataType?.kind === "string");
+        if (
+            whenTrue.kind !== whenFalse.kind &&
+            stringValued(whenTrue) &&
+            stringValued(whenFalse)
+        ) {
+            const data = whenTrue.kind === "data"
+                ? whenTrue
+                : whenFalse;
+            whenTrue = { ...data, cpp: whenTrue.cpp };
+            whenFalse = { ...data, cpp: whenFalse.cpp };
+        }
         if (
             whenTrue.kind !== whenFalse.kind ||
             whenTrue.cpp.length === 0 ||

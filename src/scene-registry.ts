@@ -1067,6 +1067,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene129",
+        name: "Scene 129 - Gaussian Splat GPU Picking",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene129.ts",
+        title: "Babylon Lite Native - Gaussian Splat GPU Picking",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",

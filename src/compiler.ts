@@ -4371,11 +4371,25 @@ class Compiler
         expression: ts.Expression,
     ): "width" | "height" | undefined {
         const unwrapped = this.unwrap(expression);
-        if (
-            !ts.isPropertyAccessExpression(unwrapped) ||
-            (unwrapped.name.text !== "width" &&
-                unwrapped.name.text !== "height")
-        ) {
+        // `clientWidth`/`clientHeight` are the CSS box rather than the
+        // backing store, and the pin reads both: `pickAsync` scales a pick
+        // coordinate by `backingWidth / clientWidth`. Native has no CSS
+        // layer -- the surface is the only size there is -- so the two fold
+        // to one value and that ratio is 1, which is what a capture at
+        // devicePixelRatio 1 measures on the browser side too.
+        const canvasSizeNames = new Map([
+            ["width", "width"],
+            ["height", "height"],
+            ["clientWidth", "width"],
+            ["clientHeight", "height"],
+        ] as const);
+        if (!ts.isPropertyAccessExpression(unwrapped)) {
+            return undefined;
+        }
+        const axis = canvasSizeNames.get(
+            unwrapped.name.text as never,
+        );
+        if (!axis) {
             return undefined;
         }
         const ownerType = this.checker.getTypeAtLocation(
@@ -4395,7 +4409,7 @@ class Compiler
                     member.getSymbol()?.getName() ?? "",
                 ),
             )
-            ? unwrapped.name.text
+            ? axis
             : undefined;
     }
 
@@ -5883,6 +5897,66 @@ class Compiler
     }
 
     /**
+     * Where `startEngine` lands in the entry body.
+     *
+     * Upstream `startEngine` schedules the render loop and RETURNS, so the
+     * rest of `main` runs interleaved with the frames it started -- which is
+     * how a scene picks, reads the result and mutates the scene before the
+     * capture. `pal::run_engine` does not return until the loop ends, so the
+     * same statements emitted in place would run after the capture and
+     * decide nothing. They are the browser's continuation, and the frame
+     * conductor already has the boundary it wants: the deferred-callback
+     * queue `advance_frame` drains.
+     */
+    private engineStartMark:
+        | { index: number; engine: string }
+        | undefined;
+
+    public markEngineStart(engineCpp: string): void {
+        // The first `startEngine` owns the continuation. A second one is a
+        // restart the reached slice does not write, and taking the later
+        // mark would strand the first one's statements.
+        this.engineStartMark ??= {
+            index: this.body.length,
+            engine: engineCpp,
+        };
+    }
+
+    /**
+     * Move everything after `bbl::start_engine(...)` into the callback the
+     * conductor runs at the next frame boundary, registered before the loop
+     * starts. A scene whose body ends at `startEngine` -- every scene that
+     * shipped before this contract -- has an empty continuation and emits
+     * exactly what it emitted before.
+     */
+    private hoistEngineContinuation(): void {
+        const mark = this.engineStartMark;
+        if (!mark) {
+            return;
+        }
+        const index = this.body.findIndex(
+            (line, position) =>
+                position >= mark.index &&
+                line.includes("bbl::start_engine("),
+        );
+        if (index < 0) {
+            return;
+        }
+        const tail = this.body.splice(index + 1);
+        if (tail.length === 0) {
+            return;
+        }
+        const startLine = this.body.pop()!;
+        const indent = "        ";
+        this.body.push(
+            `${indent}bbl::defer_callback(${mark.engine}, [&]() {`,
+            ...tail.map((line) => `    ${line}`),
+            `${indent}});`,
+            startLine,
+        );
+    }
+
+    /**
      * Whether lowering is at the entry body's own top level rather than
      * inside a block it opened. What it decides: a binding emitted here
      * lives as long as the frame loop, which is what the pinned
@@ -5901,6 +5975,7 @@ class Compiler
     }
 
     private renderCpp(features: Feature[]): string {
+        this.hoistEngineContinuation();
         return renderMainCpp({
             features,
             jsDataReached: this.jsDataReached,

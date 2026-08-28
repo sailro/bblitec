@@ -17,6 +17,7 @@ import { LineLowerer } from "./lowering/line-lowerer.js";
 import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
+import { PickingLowerer } from "./lowering/picking-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import {
@@ -1897,6 +1898,13 @@ ${shadow.blurFragmentWgsl}`,
                 new NavigationLowerer(context).lowerNavigation(),
                 generated,
                 "upstream/include/bblite/upstream/navigation.hpp",
+            );
+        }
+        if (features.includes("picking:gpu")) {
+            this.writeSource(
+                "upstream/src/picking.cpp",
+                new PickingLowerer(context).lower(),
+                generated,
             );
         }
 
