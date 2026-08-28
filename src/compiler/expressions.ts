@@ -1504,11 +1504,20 @@ export class ExpressionLowerer {
             stringValued(whenTrue) &&
             stringValued(whenFalse)
         ) {
-            const data = whenTrue.kind === "data"
-                ? whenTrue
-                : whenFalse;
-            whenTrue = { ...data, cpp: whenTrue.cpp };
-            whenFalse = { ...data, cpp: whenFalse.cpp };
+            // Only the literal side moves, and it carries nothing across:
+            // spreading the other branch would hand each side the other's
+            // `engineCpp`, which is what the mismatch check below exists
+            // to catch.
+            const asStringData = (value: Value): Value =>
+                value.kind === "string"
+                    ? {
+                          kind: "data",
+                          cpp: value.cpp,
+                          dataType: { kind: "string" },
+                      }
+                    : value;
+            whenTrue = asStringData(whenTrue);
+            whenFalse = asStringData(whenFalse);
         }
         if (
             whenTrue.kind !== whenFalse.kind ||

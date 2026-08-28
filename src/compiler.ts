@@ -233,6 +233,23 @@ import {
 export { renderFeaturesCmake };
 import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
 
+/**
+ * A canvas size read, and which of the engine's two dimensions answers it.
+ *
+ * `clientWidth`/`clientHeight` are the CSS box rather than the backing
+ * store, and the pin reads both: `pickAsync` scales a pick coordinate by
+ * `backingWidth / clientWidth`. Native has no CSS layer -- the surface is
+ * the only size there is -- so the two fold to one value and that ratio is
+ * 1, which is what a capture at devicePixelRatio 1 measures on the browser
+ * side too.
+ */
+const CANVAS_SIZE_AXES = new Map<string, "width" | "height">([
+    ["width", "width"],
+    ["height", "height"],
+    ["clientWidth", "width"],
+    ["clientHeight", "height"],
+]);
+
 export class CompileError extends Error {
     public readonly fileName: string;
     public readonly line: number;
@@ -4371,24 +4388,10 @@ class Compiler
         expression: ts.Expression,
     ): "width" | "height" | undefined {
         const unwrapped = this.unwrap(expression);
-        // `clientWidth`/`clientHeight` are the CSS box rather than the
-        // backing store, and the pin reads both: `pickAsync` scales a pick
-        // coordinate by `backingWidth / clientWidth`. Native has no CSS
-        // layer -- the surface is the only size there is -- so the two fold
-        // to one value and that ratio is 1, which is what a capture at
-        // devicePixelRatio 1 measures on the browser side too.
-        const canvasSizeNames = new Map([
-            ["width", "width"],
-            ["height", "height"],
-            ["clientWidth", "width"],
-            ["clientHeight", "height"],
-        ] as const);
         if (!ts.isPropertyAccessExpression(unwrapped)) {
             return undefined;
         }
-        const axis = canvasSizeNames.get(
-            unwrapped.name.text as never,
-        );
+        const axis = CANVAS_SIZE_AXES.get(unwrapped.name.text);
         if (!axis) {
             return undefined;
         }

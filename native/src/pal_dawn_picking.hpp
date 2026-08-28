@@ -29,21 +29,19 @@
 
 namespace bbl::pal {
 
-/** The pin's `SceneUniforms`: the sheared VP, then the sampled pixel. */
-struct DawnPickSceneUniforms {
-    std::array<float, 16> view_projection{};
-    std::array<float, 2> fragment_coord{};
-    std::array<float, 2> _pad{};
-};
-
 /**
- * The pin's `MeshUniforms`, padded to WebGPU's 256-byte dynamic-offset
- * alignment so one buffer can carry every candidate's block.
+ * The pin's `MeshUniforms` at WebGPU's 256-byte dynamic-offset alignment,
+ * so one buffer can carry every candidate's block.
+ *
+ * The scene block needs no twin: `PickSceneUniforms` in
+ * `pal_gpu_shared.hpp` is the pin's own layout and both backends upload it
+ * unchanged. Only this one differs, and only in its stride -- which the
+ * language computes from `alignas` rather than a hand-counted tail, so a
+ * field added here cannot silently move it.
  */
-struct DawnPickMeshUniforms {
+struct alignas(256) DawnPickMeshUniforms {
     std::array<float, 16> world{};
     std::uint32_t pick_id = 0;
-    std::array<std::uint32_t, 47> _pad{};
 };
 static_assert(
     sizeof(DawnPickMeshUniforms) == 256,

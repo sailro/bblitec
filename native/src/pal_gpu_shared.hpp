@@ -905,31 +905,41 @@ struct PickMeshUniforms {
 };
 
 /**
- * `computePickVP`, lowered from its own body.
+ * The pin's whole scene block for one pick: `computePickVP` lowered from
+ * its own body, then the two lanes its caller writes after it.
  *
- * The shear maps the sampled point to the one pixel the target has: each
- * column's x and y are scaled by the viewport extent and offset by the
- * sample's NDC, so the sample lands at the origin of a 1x1 clip volume.
+ * The shear maps the sampled point to the one pixel the target has -- each
+ * column's x and y scaled by the viewport extent and offset by the sample's
+ * NDC, so the sample lands at the origin of a 1x1 clip volume. Upstream
+ * fills `_pickVP[0..15]` here and `[16]`/`[17]` at the call site, then
+ * uploads all twenty floats as one buffer; `PickSceneUniforms` is that
+ * buffer, so the split does not survive into this port.
  */
-inline void compute_pick_view_projection(
-    std::array<float, 20>& out,
+inline PickSceneUniforms build_pick_scene_uniforms(
     const std::array<float, 16>& vp,
     double sample_x,
     double sample_y,
     double width,
     double height) {
+    PickSceneUniforms out;
     const double ndc_x = 2.0 * sample_x / width - 1.0;
     const double ndc_y = 1.0 - 2.0 * sample_y / height;
     for (int column = 0; column < 4; ++column) {
-        const int base = column * 4;
+        const auto base = static_cast<std::size_t>(column * 4);
         const double w3 = static_cast<double>(vp[base + 3]);
-        out[static_cast<std::size_t>(base)] = static_cast<float>(
+        out.view_projection[base] = static_cast<float>(
             width * (static_cast<double>(vp[base]) - ndc_x * w3));
-        out[static_cast<std::size_t>(base) + 1] = static_cast<float>(
+        out.view_projection[base + 1] = static_cast<float>(
             height * (static_cast<double>(vp[base + 1]) - ndc_y * w3));
-        out[static_cast<std::size_t>(base) + 2] = vp[base + 2];
-        out[static_cast<std::size_t>(base) + 3] = vp[base + 3];
+        out.view_projection[base + 2] = vp[base + 2];
+        out.view_projection[base + 3] = vp[base + 3];
     }
+    // The pin writes the sampled pixel's CENTRE; a discard predicate reads
+    // it, and the default one does not -- but the block uploads whole.
+    out.fragment_coord = {
+        static_cast<float>(std::floor(sample_x) + 0.5),
+        static_cast<float>(std::floor(sample_y) + 0.5)};
+    return out;
 }
 
 /**
@@ -947,13 +957,52 @@ inline void compute_cloud_pick_matrix(
     double height) {
     const double ndc_x = 2.0 * sample_x / width - 1.0;
     const double ndc_y = 1.0 - 2.0 * sample_y / height;
-    out = {};
-    out[0] = static_cast<float>(width);
-    out[5] = static_cast<float>(height);
-    out[10] = 1.0f;
-    out[12] = static_cast<float>(-ndc_x * width);
-    out[13] = static_cast<float>(-ndc_y * height);
-    out[15] = 1.0f;
+    out = {
+        static_cast<float>(width), 0.0f, 0.0f, 0.0f,
+        0.0f, static_cast<float>(height), 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        static_cast<float>(-ndc_x * width),
+        static_cast<float>(-ndc_y * height),
+        0.0f, 1.0f};
+}
+
+/**
+ * One candidate the pick pass drew, in submission order.
+ *
+ * Upstream keeps mesh ranges and contributor ranges apart because a thin
+ * instance makes a mesh's range wider than one id; nothing in the reached
+ * slice does, so one id is one node and the two lists are one.
+ */
+struct PickRange {
+    std::uint32_t id = 0;
+    PickedNodeKind kind = PickedNodeKind::none;
+    std::uint32_t index = invalid_handle;
+};
+
+/**
+ * The id the one-pixel target held, resolved against what was drawn.
+ *
+ * Zero is the cleared attachment, which is upstream's "nothing here"; an
+ * id no range claims cannot happen while the draw loop and the range list
+ * agree, and saying so is cheaper than debugging a silent miss if they
+ * ever stop agreeing.
+ */
+inline PickingInfo resolve_pick_result(
+    const Engine& engine,
+    const std::vector<PickRange>& ranges,
+    std::uint32_t pick_id) {
+    if (pick_id == 0) return PickingInfo{};
+    for (const PickRange& range : ranges) {
+        if (range.id != pick_id) continue;
+        PickingInfo info;
+        info.hit = true;
+        info.picked_name = range.kind == PickedNodeKind::mesh
+            ? engine.meshes[range.index].name
+            : engine.splat_meshes[range.index].name;
+        return info;
+    }
+    throw std::runtime_error(
+        "GPU pick read an id no candidate was drawn under.");
 }
 
 /** `encodeIdToColor`: the id's three bytes as unit floats. */

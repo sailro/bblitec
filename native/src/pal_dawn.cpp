@@ -42,9 +42,9 @@
 #endif
 #if BBLITE_HAS_SPLATS
 #include "pal_dawn_splat.hpp"
+#endif
 #if BBLITE_HAS_PICKING
 #include "pal_dawn_picking.hpp"
-#endif
 #endif
 #if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
 #include "pal_dawn_effect.hpp"
@@ -466,7 +466,11 @@ struct DawnState : DawnDevice {
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<DawnSplatPass> splat_passes;
+#endif
 #if BBLITE_HAS_PICKING
+    // A scene that picks without loading a cloud reaches every one of
+    // these and none of the cloud set below, so the two guards are
+    // siblings rather than nested.
     DawnPickTargets pick_targets;
     WGPURenderPipeline pick_mesh_pipeline = nullptr;
     WGPUBindGroupLayout pick_scene_layout = nullptr;
@@ -487,7 +491,6 @@ struct DawnState : DawnDevice {
 #endif
 #endif
 
-#endif
     [[nodiscard]] bool multisampled() const {
         return sample_count > 1;
     }
@@ -1118,6 +1121,32 @@ WGPUBuffer esm_caster_params_buffer(
     }
 
     ~DawnState() {
+#if BBLITE_HAS_PICKING
+        release_dawn_pick_targets(pick_targets);
+        if (pick_mesh_pipeline) wgpuRenderPipelineRelease(pick_mesh_pipeline);
+        if (pick_scene_layout) wgpuBindGroupLayoutRelease(pick_scene_layout);
+        if (pick_mesh_layout) wgpuBindGroupLayoutRelease(pick_mesh_layout);
+        if (pick_scene_group) wgpuBindGroupRelease(pick_scene_group);
+        if (pick_scene_buffer) wgpuBufferRelease(pick_scene_buffer);
+        if (pick_mesh_group) wgpuBindGroupRelease(pick_mesh_group);
+        if (pick_mesh_buffer) wgpuBufferRelease(pick_mesh_buffer);
+#if BBLITE_HAS_SPLATS
+        if (pick_cloud_pipeline) {
+            wgpuRenderPipelineRelease(pick_cloud_pipeline);
+        }
+        if (pick_cloud_color_layout) {
+            wgpuBindGroupLayoutRelease(pick_cloud_color_layout);
+        }
+        if (pick_cloud_shear_group) {
+            wgpuBindGroupRelease(pick_cloud_shear_group);
+        }
+        if (pick_cloud_shear) wgpuBufferRelease(pick_cloud_shear);
+        if (pick_cloud_color_group) {
+            wgpuBindGroupRelease(pick_cloud_color_group);
+        }
+        if (pick_cloud_color) wgpuBufferRelease(pick_cloud_color);
+#endif
+#endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         for (DawnSpritePass& pass : sprite_passes) {
             release_dawn_sprite_pass(pass);
@@ -8802,13 +8831,13 @@ bool run_dawn_engine(Engine& engine) {
                 WGPU_BUFFER_DESCRIPTOR_INIT;
             scene_buffer.usage =
                 WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
-            scene_buffer.size = sizeof(DawnPickSceneUniforms);
+            scene_buffer.size = sizeof(PickSceneUniforms);
             state.pick_scene_buffer =
                 wgpuDeviceCreateBuffer(state.device, &scene_buffer);
             WGPUBindGroupEntry scene_entry = WGPU_BIND_GROUP_ENTRY_INIT;
             scene_entry.binding = 0;
             scene_entry.buffer = state.pick_scene_buffer;
-            scene_entry.size = sizeof(DawnPickSceneUniforms);
+            scene_entry.size = sizeof(PickSceneUniforms);
             WGPUBindGroupDescriptor scene_group =
                 WGPU_BIND_GROUP_DESCRIPTOR_INIT;
             scene_group.layout = state.pick_scene_layout;
@@ -8818,17 +8847,9 @@ bool run_dawn_engine(Engine& engine) {
                 wgpuDeviceCreateBindGroup(state.device, &scene_group);
         }
 
-        DawnPickSceneUniforms scene_uniforms{};
-        std::array<float, 20> pick_vp{};
-        compute_pick_view_projection(
-            pick_vp, view_projection, x, y, width, height);
-        std::copy(
-            pick_vp.begin(),
-            pick_vp.begin() + 16,
-            scene_uniforms.view_projection.begin());
-        scene_uniforms.fragment_coord = {
-            static_cast<float>(std::floor(x) + 0.5),
-            static_cast<float>(std::floor(y) + 0.5)};
+        const PickSceneUniforms scene_uniforms =
+            build_pick_scene_uniforms(
+                view_projection, x, y, width, height);
         wgpuQueueWriteBuffer(
             state.queue,
             state.pick_scene_buffer,
@@ -8838,14 +8859,8 @@ bool run_dawn_engine(Engine& engine) {
 
         // Every candidate's block is written before the pass opens,
         // because WebGPU forbids a queue write between draws inside one.
-        struct PickRange {
-            std::uint32_t id;
-            PickedNodeKind kind;
-            std::uint32_t index;
-        };
         std::vector<PickRange> ranges;
         std::vector<DawnPickMeshUniforms> blocks;
-        std::vector<const DawnMesh*> drawn;
         std::uint32_t next_id = 1;
         for (const MeshHandle handle : scene.meshes) {
             if (handle.value >= state.meshes.size()) continue;
@@ -8866,7 +8881,6 @@ bool run_dawn_engine(Engine& engine) {
                 0.0f, 0.0f, 0.0f, 1.0f};
             block.pick_id = next_id;
             blocks.push_back(block);
-            drawn.push_back(&mesh);
             ranges.push_back(
                 {next_id, PickedNodeKind::mesh, handle.value});
             ++next_id;
@@ -9050,21 +9064,24 @@ bool run_dawn_engine(Engine& engine) {
         wgpuRenderPassEncoderSetPipeline(pass, state.pick_mesh_pipeline);
         wgpuRenderPassEncoderSetBindGroup(
             pass, 0, state.pick_scene_group, 0, nullptr);
-        for (std::size_t index = 0; index < drawn.size(); ++index) {
+        // `ranges` already names every mesh drawn, in the order their
+        // blocks were written, so the candidate list is the draw list.
+        for (std::size_t index = 0; index < blocks.size(); ++index) {
+            const DawnMesh& mesh = state.meshes[ranges[index].index];
             const std::uint32_t offset = static_cast<std::uint32_t>(
                 index * sizeof(DawnPickMeshUniforms));
             wgpuRenderPassEncoderSetBindGroup(
                 pass, 1, state.pick_mesh_group, 1, &offset);
             wgpuRenderPassEncoderSetVertexBuffer(
-                pass, 0, drawn[index]->vertices, 0, WGPU_WHOLE_SIZE);
+                pass, 0, mesh.vertices, 0, WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
-                drawn[index]->indices,
+                mesh.indices,
                 WGPUIndexFormat_Uint32,
                 0,
                 WGPU_WHOLE_SIZE);
             wgpuRenderPassEncoderDrawIndexed(
-                pass, drawn[index]->index_count, 1, 0, 0, 0);
+                pass, mesh.index_count, 1, 0, 0, 0);
         }
 #if BBLITE_HAS_SPLATS
         for (const DawnSplatPass& splat : state.splat_passes) {
@@ -9122,15 +9139,21 @@ bool run_dawn_engine(Engine& engine) {
         WGPUBufferMapCallbackInfo map_callback =
             WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
         map_callback.mode = WGPUCallbackMode_WaitAnyOnly;
+        // Recorded rather than thrown: the callback runs inside
+        // `wgpuInstanceWaitAny`, so an exception would unwind through
+        // Dawn's own C frame. Every other wait in this backend reports a
+        // map failure the same way.
         map_callback.callback =
             [](WGPUMapAsyncStatus status,
-               WGPUStringView,
-               void*,
+               WGPUStringView message,
+               void* userdata1,
                void*) {
                 if (status != WGPUMapAsyncStatus_Success) {
-                    dawn_error("pick buffer map failed.");
+                    auto* error = static_cast<std::string*>(userdata1);
+                    if (error->empty()) *error = view_text(message);
                 }
             };
+        map_callback.userdata1 = &state.uncaptured_error;
         wait_for(
             state.instance,
             wgpuBufferMapAsync(
@@ -9139,6 +9162,9 @@ bool run_dawn_engine(Engine& engine) {
                 0,
                 256,
                 map_callback));
+        if (!state.uncaptured_error.empty()) {
+            dawn_error("pick buffer map failed: " + state.uncaptured_error);
+        }
         const void* mapped = wgpuBufferGetConstMappedRange(
             state.pick_targets.staging, 0, 256);
         if (!mapped) dawn_error("pick map returned no data.");
@@ -9146,20 +9172,7 @@ bool run_dawn_engine(Engine& engine) {
             decode_pick_id(static_cast<const std::uint8_t*>(mapped));
         wgpuBufferUnmap(state.pick_targets.staging);
 
-        if (pick_id == 0) return PickingInfo{};
-        for (const PickRange& range : ranges) {
-            if (range.id != pick_id) continue;
-            PickingInfo info;
-            info.hit = true;
-            info.picked_kind = range.kind;
-            info.picked_index = range.index;
-            info.picked_name = range.kind == PickedNodeKind::mesh
-                ? engine.meshes[range.index].name
-                : engine.splat_meshes[range.index].name;
-            return info;
-        }
-        throw std::runtime_error(
-            "GPU pick read an id no candidate was drawn under.");
+        return resolve_pick_result(engine, ranges, pick_id);
     };
 #endif
 

@@ -153,8 +153,6 @@ struct ShadowGeneratorHandle {
     std::uint32_t value = invalid_handle;
 };
 
-struct Scene;
-
 struct GpuPickerHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -187,8 +185,6 @@ enum class PickedNodeKind : std::uint8_t {
  */
 struct PickingInfo {
     bool hit = false;
-    PickedNodeKind picked_kind = PickedNodeKind::none;
-    std::uint32_t picked_index = invalid_handle;
     /** The hit node's name, empty when nothing was hit. */
     std::string picked_name;
 };
@@ -199,7 +195,6 @@ struct PickingInfo {
  * scene it picks in and the slot the backend keeps its resources under.
  */
 struct GpuPickerRecord {
-    Scene* scene = nullptr;
     bool disposed = false;
 };
 

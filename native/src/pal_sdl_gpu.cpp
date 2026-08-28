@@ -44,9 +44,9 @@
 #endif
 #if BBLITE_HAS_SPLATS
 #include "pal_sdl_gpu_splat.hpp"
+#endif
 #if BBLITE_HAS_PICKING
 #include "pal_sdl_gpu_picking.hpp"
-#endif
 #endif
 #if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
 #include "pal_sdl_gpu_effect.hpp"
@@ -802,19 +802,25 @@ struct GpuState {
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<SplatPass> splat_passes;
+#endif
 #if BBLITE_HAS_PICKING
     // Built on the first pick and released with the renderer, as the pin
-    // builds them on first use and releases them in `disposePicker`.
+    // builds them on first use and releases them in `disposePicker`. A
+    // scene that picks without loading a cloud reaches every one of these
+    // and none of the cloud pair below, which is why the two guards are
+    // siblings rather than nested.
     PickTargets pick_targets;
     SDL_GPUGraphicsPipeline* pick_mesh_pipeline = nullptr;
     int pick_mesh_scene_slot = -1;
     int pick_mesh_uniform_slot = -1;
+    /** The same two in the fragment stage, which keeps fewer. */
+    int pick_frag_scene_slot = -1;
+    int pick_frag_mesh_slot = -1;
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
     int pick_cloud_scene_slot = -1;
     int pick_cloud_mesh_slot = -1;
     int pick_cloud_color_slot = -1;
-#endif
 #endif
 #endif
     std::uint32_t color_width = 0;
@@ -4132,7 +4138,6 @@ void release(GpuState& state) {
     }
     state.billboard_passes.clear();
 #endif
-#if BBLITE_HAS_SPLATS
 #if BBLITE_HAS_PICKING
     release_pick_targets(state.device, state.pick_targets);
     if (state.pick_mesh_pipeline) {
@@ -4148,6 +4153,7 @@ void release(GpuState& state) {
     }
 #endif
 #endif
+#if BBLITE_HAS_SPLATS
     for (SplatPass& splat : state.splat_passes) {
         release_splat_pass(state.device, splat);
     }
@@ -4779,6 +4785,14 @@ inline void ensure_pick_pipelines(GpuState& state) {
         gpu_error(
             "picking.vert kept neither the scene nor the mesh block");
     }
+    // Read rather than assumed equal to the vertex stage's: the pin's
+    // fragment reads `scene.fragmentCoord` through the default discard
+    // predicate and takes the id as a flat varying, so it keeps one block
+    // where the vertex stage keeps two.
+    state.pick_frag_scene_slot =
+        stage_uniform_slot(fragment_slots, "scene");
+    state.pick_frag_mesh_slot =
+        stage_uniform_slot(fragment_slots, "mesh");
 
     SDL_GPUShader* vertex_shader = load_shader(
         state.device,
@@ -4978,7 +4992,13 @@ inline void record_cloud_pick_draw(
         0,
         splat.textures.data(),
         static_cast<Uint32>(splat.textures.size()));
-    SDL_DrawGPUIndexedPrimitives(pass, 6, splat.vertex_count, 0, 0, 0);
+    SDL_DrawGPUIndexedPrimitives(
+        pass,
+        static_cast<Uint32>(upstream::splat_quad_indices.size()),
+        splat.vertex_count,
+        0,
+        0,
+        0);
 }
 #endif
 #endif
@@ -5456,25 +5476,9 @@ bool run_gpu_engine(Engine& engine) {
             ensure_pick_targets(state.device, state.pick_targets);
             ensure_pick_pipelines(state);
 
-            PickSceneUniforms scene_uniforms{};
-            std::array<float, 20> pick_vp{};
-            compute_pick_view_projection(
-                pick_vp, view_projection, x, y, width, height);
-            std::copy(
-                pick_vp.begin(),
-                pick_vp.begin() + 16,
-                scene_uniforms.view_projection.begin());
-            // The pin writes the sampled pixel's CENTRE into the two
-            // lanes after the matrix; a discard predicate reads them, and
-            // the default one does not -- but the block is uploaded whole
-            // either way.
-            const double pixel_x =
-                std::floor(x) + 0.5;
-            const double pixel_y =
-                std::floor(y) + 0.5;
-            scene_uniforms.fragment_coord = {
-                static_cast<float>(pixel_x),
-                static_cast<float>(pixel_y)};
+            const PickSceneUniforms scene_uniforms =
+                build_pick_scene_uniforms(
+                    view_projection, x, y, width, height);
 
 #if BBLITE_HAS_SPLATS
             // `await splat.firstSortReady` is what the pin's own scene
@@ -5527,14 +5531,21 @@ bool run_gpu_engine(Engine& engine) {
             // Ids start at 1 so that 0 stays "nothing", which is what the
             // cleared colour attachment reads back as.
             std::uint32_t next_id = 1;
-            struct PickRange {
-                std::uint32_t id;
-                PickedNodeKind kind;
-                std::uint32_t index;
-            };
             std::vector<PickRange> ranges;
 
             SDL_BindGPUGraphicsPipeline(pass, state.pick_mesh_pipeline);
+            // Loop-invariant: pushed uniform state persists across draws,
+            // and every cloud draw below rebinds its own slots.
+            SDL_PushGPUVertexUniformData(
+                command,
+                static_cast<Uint32>(state.pick_mesh_scene_slot),
+                &scene_uniforms,
+                sizeof(scene_uniforms));
+            push_stage_uniform(
+                command,
+                state.pick_frag_scene_slot,
+                &scene_uniforms,
+                sizeof(scene_uniforms));
             for (const MeshHandle handle : scene.meshes) {
                 if (handle.value >= state.meshes.size()) continue;
                 const MeshRecord& record = engine.meshes[handle.value];
@@ -5565,22 +5576,12 @@ bool run_gpu_engine(Engine& engine) {
                 mesh_uniforms.pick_id = next_id;
                 SDL_PushGPUVertexUniformData(
                     command,
-                    static_cast<Uint32>(state.pick_mesh_scene_slot),
-                    &scene_uniforms,
-                    sizeof(scene_uniforms));
-                SDL_PushGPUVertexUniformData(
-                    command,
                     static_cast<Uint32>(state.pick_mesh_uniform_slot),
                     &mesh_uniforms,
                     sizeof(mesh_uniforms));
-                SDL_PushGPUFragmentUniformData(
+                push_stage_uniform(
                     command,
-                    static_cast<Uint32>(state.pick_mesh_scene_slot),
-                    &scene_uniforms,
-                    sizeof(scene_uniforms));
-                SDL_PushGPUFragmentUniformData(
-                    command,
-                    static_cast<Uint32>(state.pick_mesh_uniform_slot),
+                    state.pick_frag_mesh_slot,
                     &mesh_uniforms,
                     sizeof(mesh_uniforms));
                 SDL_GPUBufferBinding vertex_binding{};
@@ -5654,24 +5655,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_UnmapGPUTransferBuffer(
                 state.device, state.pick_targets.staging);
 
-            if (pick_id == 0) return PickingInfo{};
-            for (const PickRange& range : ranges) {
-                if (range.id != pick_id) continue;
-                PickingInfo info;
-                info.hit = true;
-                info.picked_kind = range.kind;
-                info.picked_index = range.index;
-                info.picked_name =
-                    range.kind == PickedNodeKind::mesh
-                        ? engine.meshes[range.index].name
-                        : engine.splat_meshes[range.index].name;
-                return info;
-            }
-            // An id the pass wrote that no range claims cannot happen
-            // while the two loops agree; saying so is cheaper than
-            // debugging a silent miss if they ever stop agreeing.
-            throw std::runtime_error(
-                "GPU pick read an id no candidate was drawn under.");
+            return resolve_pick_result(engine, ranges, pick_id);
         };
 #endif
 
@@ -9629,11 +9613,23 @@ bool run_gpu_engine(Engine& engine) {
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         release_sprite_passes();
 #endif
+#if BBLITE_HAS_PICKING
+        // The hook holds `state` and the scene by reference, both of which
+        // die here. Clearing it makes that structural rather than relying
+        // on every pick arriving inside the loop.
+        engine.pick_hook = nullptr;
+#endif
         release(state);
         return true;
     } catch (...) {
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         release_sprite_passes();
+#endif
+#if BBLITE_HAS_PICKING
+        // The hook holds `state` and the scene by reference, both of which
+        // die here. Clearing it makes that structural rather than relying
+        // on every pick arriving inside the loop.
+        engine.pick_hook = nullptr;
 #endif
         release(state);
         throw;

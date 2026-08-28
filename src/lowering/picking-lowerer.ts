@@ -68,7 +68,7 @@ GpuPickerHandle create_gpu_picker(Scene& scene) {
             "createGpuPicker requires a scene bound to an engine.");
     }
     Engine& engine = *scene.engine;
-    engine.gpu_pickers.push_back(GpuPickerRecord{&scene, false});
+    engine.gpu_pickers.push_back(GpuPickerRecord{false});
     return GpuPickerHandle{
         static_cast<std::uint32_t>(engine.gpu_pickers.size() - 1)};
 }

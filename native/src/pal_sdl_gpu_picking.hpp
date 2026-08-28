@@ -28,6 +28,8 @@
 
 #include <bblite/runtime.hpp>
 
+#include "pal_sdl_gpu_shared.hpp"
+
 #include <SDL3/SDL_gpu.h>
 
 #include <array>
@@ -81,9 +83,8 @@ inline SDL_GPUTexture* create_pick_attachment(
     info.sample_count = SDL_GPU_SAMPLECOUNT_1;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &info);
     if (!texture) {
-        throw std::runtime_error(
-            std::string("SDL_CreateGPUTexture ") + label + " failed: " +
-            SDL_GetError());
+        gpu_error(
+            (std::string("SDL_CreateGPUTexture ") + label).c_str());
     }
     return texture;
 }
@@ -95,28 +96,28 @@ inline void ensure_pick_targets(
     targets.color = create_pick_attachment(
         device,
         SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
         "pick-color");
     targets.depth_color = create_pick_attachment(
         device,
         SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
-        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
         "pick-depth-color");
     targets.depth = create_pick_attachment(
         device,
         SDL_GPU_TEXTUREFORMAT_D24_UNORM,
         SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
         "pick-depth");
-    // Both attachments are copied into one buffer, each at its own
-    // 256-aligned row, which is what a texture-to-buffer copy requires.
+    // One 256-aligned row, which is the minimum a texture-to-buffer copy
+    // takes. Only the id attachment is read back: the depth one is the
+    // pin's own second target and this port consumes nothing from it, so
+    // `PickingInfo` declares no `pickedPoint` for it to feed.
     SDL_GPUTransferBufferCreateInfo transfer{};
     transfer.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-    transfer.size = 512;
+    transfer.size = 256;
     targets.staging = SDL_CreateGPUTransferBuffer(device, &transfer);
     if (!targets.staging) {
-        throw std::runtime_error(
-            std::string("SDL_CreateGPUTransferBuffer pick failed: ") +
-            SDL_GetError());
+        gpu_error("SDL_CreateGPUTransferBuffer pick");
     }
 }
 
