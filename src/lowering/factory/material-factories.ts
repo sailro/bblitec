@@ -7,20 +7,24 @@ import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
 
 /**
- * Which arms of the Standard material's texture slots a scene reached.
+ * Which per-material writes a scene reached on a Standard material.
  *
- * One slot takes several sources — `diffuseTexture` alone is written from a
- * colour render target, a pixels texture and a loaded image — so the setters
- * are emitted per reached source rather than per slot, and the flags travel
- * named because six positional booleans read as an accident.
+ * Most are texture slots, and one slot takes several sources —
+ * `diffuseTexture` alone is written from a colour render target, a pixels
+ * texture and a loaded image — so those are emitted per reached source
+ * rather than per slot. The last two are marks rather than slots
+ * (`enableMaterialUvTransform`, and the plugin signature index), which is
+ * why the unit is named for the material rather than for its textures. The
+ * flags travel named because seven positional booleans read as an accident.
  */
-export interface StandardTextureSetters {
+export interface StandardMaterialSetters {
     diffuse: boolean;
     emissive: boolean;
     pixels: boolean;
     diffuseFile: boolean;
     emissiveFile: boolean;
     uvTransform: boolean;
+    plugins: boolean;
 }
 
 
@@ -1165,8 +1169,8 @@ MaterialHandle create_grid_material(
      * kept them apart before, in the Standard factory and the no-colour
      * view TU, neither of which is named for them.
      */
-    public lowerStandardTextureSetters(
-        reached: StandardTextureSetters,
+    public lowerStandardMaterialSetters(
+        reached: StandardMaterialSetters,
     ): LoweredSource {
         const {
             diffuse,
@@ -1175,6 +1179,7 @@ MaterialHandle create_grid_material(
             diffuseFile,
             emissiveFile,
             uvTransform,
+            plugins,
         } = reached;
         // The material module that owns `diffuseTexture` -- the property
         // every arm below writes. `rtt.ts` is where only ONE of the sources
@@ -1217,6 +1222,7 @@ MaterialHandle create_grid_material(
                     ? ["setStandardEmissiveTexture#file"]
                     : []),
                 ...(uvTransform ? ["enableMaterialUvTransform"] : []),
+                ...(plugins ? ["material.plugins"] : []),
             ].join(","),
             header: "",
             source: `// ${this.context.provenance(
@@ -1242,6 +1248,12 @@ MaterialHandle create_grid_material(
                         ? [
                             "src/material/enable-material-uv-transform.ts" +
                             "#enableMaterialUvTransform",
+                        ]
+                        : []),
+                    ...(plugins
+                        ? [
+                            "src/material/plugin/std-plugin-bridge.ts" +
+                            "#registerStdPlugins",
                         ]
                         : []),
                 ].join(" and "),
@@ -1354,6 +1366,24 @@ void enable_material_uv_transform(
     Engine& engine,
     MaterialHandle material) {
     standard_slot_material(engine, material).has_uv_transform = true;
+}
+` : ""}${plugins ? `
+// src/material/plugin/std-plugin-bridge.ts registerStdPlugins
+//
+// Upstream this walks the scene's meshes and pre-bakes a per-signature
+// index into each Standard plugin material's cached _renderFeatures, because
+// _computeStandardMaterialFeatures is not extension-extensible and the index
+// has to be there before the build reads it. Generation performs the same
+// numbering (the pin is handed the lists in this order and checked), so what
+// travels here is the index the material carries -- and
+// standard_material_features shifts it back into the variant key exactly as
+// the pin's OR does.
+void set_material_plugins(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint8_t signature_index) {
+    standard_slot_material(engine, material).plugin_signature_index =
+        signature_index;
 }
 ` : ""}
 } // namespace bbl

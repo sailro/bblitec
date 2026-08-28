@@ -1085,6 +1085,13 @@
             "reference": "reference/scene38/babylon-lite-golden.png",
             "referenceSha256": "98d9d8016e8eefcd576b32141a296038e9244c7fb9cfe5b21817edf7e028b017",
             "moduleSha256": "422cb6c0732f8a134051f918584747ae4725404afadda7153b46859b72c2a88e"
+        },
+        {
+            "id": "scene217",
+            "sourceSha256": "29b3ec3e16295447ba2d1b51ab9527c952e1391dfabda4dee7aaf50c8510cac0",
+            "reference": "reference/scene217/babylon-lite-golden.png",
+            "referenceSha256": "5ada51d6b958aa48f0acc0b95d6a9f353d94b907252155e8c2ed0b4a5e1f4288",
+            "moduleSha256": "1738b7a942c0888c25a14ea0bd04e75466a166e4f07924e727bf45c5d0487ffb"
         }
     ]
 }

@@ -74,6 +74,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Lights](#lights) | Run | directional, hemispheric, point, spot; per-mesh light sets |
 | [Materials and material state](#materials-and-material-state) | Run | Standard, PBR, Grid, no-color views, alpha and extension state |
 | [Node materials](#node-materials) | Compile → Run | a Babylon NME graph compiled by the pin's own emitter at generation; its draw and its blocks at run time |
+| [Material plugins](#material-plugins) | Compile | a scene's own WGSL spliced into the PBR or Standard fragment by the pin's own bridges |
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
@@ -852,6 +853,41 @@ id refuses too, because the fetch is a network read at page load, and a graph
 handed its own `blockLoader` refuses because that function is scene code
 deciding which emitter serves each block class.
 
+### Material plugins
+
+`material.plugins = [plugin]` layers a scene's own WGSL onto a built-in PBR
+or Standard material while the whole lighting, IBL and shadow pipeline stays
+the pin's. It is an explicit opt-in: `enableMaterialPlugins(scene)` registers
+the two plugin bridges into the global extension registries, and the hook
+loops the two families already walk carry the plugin from there — upstream
+changes no shared file for it, and neither does this port.
+
+**Compile time, all of it.** A `MaterialPlugin` is a plain object whose
+`name` and `getCustomCode(shaderType)` are constants the scene wrote, so the
+plugin is folded from its own declaration; everything after that is the pin's
+own `buildPluginFragment`, executed — which injection point maps onto which
+template slot, how two plugins sharing a slot concatenate, and the
+per-signature index that keys the compose and pipeline caches. What deploys
+is the composed fragment, byte-identical to the one the browser compiles.
+
+**Where the index rides differs by family, because the two variant selectors
+do.** A PBR draw resolves its variant by material index, so its composed row
+already carries the plugin and nothing travels at run time; the bridge's own
+`detect` puts the index into `features2` while generation derives the
+material. A Standard draw resolves by the feature word the material record
+derives, so the record carries the index and the generated derivation shifts
+it back in — which is exactly the pre-bake `registerStdPlugins` performs
+upstream, and for the same reason: Standard's feature computation is not
+extension-extensible.
+
+The reached slice is a plugin declaring a name and custom code. Everything
+past that refuses at generation naming the member: `getUniforms`/`writeUbo`
+(PBR material-UBO fields and the Standard self-managed `pluginUbo`),
+`getSamplers`/`bindTextures`/`getActiveTextures` (a texture and sampler pair
+the composed fragment reads), and `priority`, `isEnabled` and `defines`. The
+first two groups are what a plugin would need a bind-group contract for,
+which is why the reached slice adds no native binding at all.
+
 ### Animation playback
 
 Deterministic scene-level seeking over two separate runtimes: property
@@ -1408,6 +1444,7 @@ before it trusts a measurement.
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
 | Shadows | which receiver variant carries the pin's shadow fragment, and the per-light slots it names | the caster pass, the map, the light-space matrices, the comparison sampling |
 | Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, the textures the scene supplied, and the per-mesh light selection that block carries |
+| Material plugins | the plugin folded from its own declaration and spliced by the pin's own bridge; the signature index that keys each family's variant | nothing, for the reached slice — a Standard record carries its index so the derived feature word can select the composed variant |
 | Fullscreen effects | the caller's fragment wrapped in the pin's own vertex stage, and the bind-group layout the descriptor declared | the pass, its uniform bytes, and the textures the scene bound |
 
 ## Knobs
@@ -1504,6 +1541,13 @@ build error with a source location, not a silently different image.
   fifth pair of the shared mesh texture group is the reflection cube) and
   a texture from anywhere but `loadTexture2D` all fail by name, as do
   storage buffers
+- a material plugin declares a `name` and a `getCustomCode` returning literal
+  WGSL per injection point, both folded from the scene's own declaration. Its
+  uniform, sampler and texture hooks — `getUniforms`, `writeUbo`,
+  `getSamplers`, `bindTextures`, `getActiveTextures` — plus `priority`,
+  `isEnabled` and `defines` each refuse at the member that declares them, as
+  does a plugin on a material family neither of the pin's two bridges reads
+  ([above](#material-plugins))
 - a node material graph is taken inline; a snippet id fetches it from the
   snippet server at page load and fails. The graph itself is read as a JSON
   literal or executed as the module that builds it, and every block outside

@@ -10,6 +10,7 @@ import type {
     NodeParticleSprite2DRequest,
     NodeParticleStep,
 } from "../pinned-node-particle.js";
+import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { DataType } from "./data-types.js";
 
 export interface CompileOptions {
@@ -78,6 +79,22 @@ export interface CompileManifest {
      * two plugins sharing a slot in.
      */
     splatFragments: SplatFragmentManifest[];
+    /**
+     * The distinct `MaterialPlugin` lists a STANDARD material carries, in
+     * the order the first material carrying each was assigned one.
+     *
+     * The position is the identity: the pin's Standard bridge numbers a
+     * signature from one in the order `registerStdPlugins` first sees it,
+     * and it sees only Standard materials (it filters on `_buildGroup`). So
+     * the generated material record carries `position + 1`, composition
+     * hands the pin the same lists in the same order, and it refuses if the
+     * pin disagreed (`src/pinned-material-plugins.ts`).
+     *
+     * A PBR material's plugins ride `scenePbrMaterials` instead: its bridge
+     * numbers them itself during feature derivation, and a PBR draw
+     * resolves its variant by material index, so no index travels.
+     */
+    standardMaterialPlugins: MaterialPluginManifest[][];
     /** Every scene-code material creation, any family, for the handle count. */
     sceneMaterialCount: number;
     sceneMeshes: SceneMeshManifest[];
@@ -442,6 +459,12 @@ export interface ScenePbrMaterialManifest {
      * for the composer.
      */
     usePhysicalLightFalloff?: false;
+    /**
+     * `material.plugins = [...]`, folded. The pin's PBR bridge reads the
+     * list off the material in its own `detect`, so the composed input
+     * carries the plugins themselves rather than an index.
+     */
+    plugins?: readonly MaterialPluginManifest[];
     /**
      * Stamped by the pin's `setPbrGammaAlbedo`: `mat._gammaAlbedo = true`,
      * which the gamma extension's `detect` turns into
@@ -1049,6 +1072,14 @@ export interface Value {
      */
     scenePbrMaterialIndex?: number;
     /**
+     * A `createStandardMaterial` result, which is the family question
+     * `material.plugins` has to answer: the pin's Standard plugin bridge
+     * filters on `_buildGroup === standardGroupBuilder`, so a plugin on a
+     * grid, shader or node material composes nothing upstream and refuses
+     * here.
+     */
+    standardMaterial?: true;
+    /**
      * Which composed node graph a material value names.
      *
      * It rides a `parseNodeMaterialFromSnippet` result; the assignment that
@@ -1405,6 +1436,8 @@ export type Feature =
     | "material:standard-diffuse-render-texture"
     | "material:standard-diffuse-pixels-texture"
     | "material:standard-uv-transform"
+    | "material:plugins"
+    | "material:plugin-index"
     | "material:standard-emissive-render-texture"
     | "material:standard-diffuse-file-texture"
     | "material:standard-emissive-file-texture"

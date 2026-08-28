@@ -42,6 +42,7 @@ import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
+import { pinnedPlugins } from "./pinned-material-plugins.js";
 import type { ScenePbrMaterialManifest } from "./compiler/types.js";
 import {
     pinnedMeshFeaturesFromPrimitive,
@@ -849,6 +850,15 @@ export async function composeScenePbrVariants(
         }
         if (material.unlit) input["_unlit"] = true;
         if (material.skyboxMode) input["_skyboxMode"] = true;
+        // `material.plugins = [...]`, under the pin's own field name: the
+        // PBR bridge's `detect` reads it off the material, so the plugin
+        // index reaches `features2` through `_computePbrMaterialFeatures`
+        // exactly as every other extension's bits do. The objects carry the
+        // pin's `getCustomCode` shape rather than the folded record, because
+        // `pluginSignature` and `buildPluginFragment` call it.
+        if (material.plugins) {
+            input["plugins"] = pinnedPlugins(material.plugins);
+        }
         if (material.hasBaseColorTexture) input["baseColorTexture"] = {};
         if (material.baseColorFactor) {
             input.baseColorFactor = material.baseColorFactor;

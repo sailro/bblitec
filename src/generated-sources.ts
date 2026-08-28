@@ -171,6 +171,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "material:standard-diffuse-file-texture",
             "material:standard-emissive-file-texture",
             "material:standard-uv-transform",
+            "material:plugin-index",
         ],
     },
     {

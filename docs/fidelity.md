@@ -1147,6 +1147,40 @@ texture's binding pair and UV transform, since nothing samples them. Scene 29
 gates the glTF arm and Scene 21 the legacy one; a scene reaching both
 composes two variants, one per material, like any other fork.
 
+**A material plugin is folded from the scene and spliced by the pin.** The
+two halves are separated the way the fidelity rule separates them.
+`MaterialPlugin` is a plain object upstream and everything the bridges read
+off one for the reached slice is a constant the scene wrote — its `name`, and
+the WGSL `getCustomCode(shaderType)` returns per injection point — so it is
+folded from the scene's own AST, with each point name checked against the
+pin's own `FRAG_POINT_TO_SLOTS` and `VERT_POINT_TO_SLOT` rather than a list
+retyped here. Everything downstream is executed: `buildPluginFragment` maps
+each point onto its template slot, concatenates two plugins that share one,
+and the two bridges number a signature. Scene 217's composed Standard and PBR
+fragments are byte-identical to the ones an instrumented capture shows the
+browser compiling.
+
+`enableMaterialPlugins(scene)` is where the port reaches the feature, because
+it is where the pin does: it is the only thing that registers the bridges,
+which is what makes a plugin-free scene byte-identical to a build without the
+plugin system. A scene that attaches plugins and never calls it composes
+plugin-free here too.
+
+**The signature index rides each family's own key.** `pbrPluginExt.detect`
+returns it in `features2`, which `_computePbrMaterialFeatures` already runs
+for every material this port derives, and a PBR draw resolves its variant by
+material index — so nothing about a PBR plugin reaches the runtime.
+`stdPluginExt` has no `detect` to use: Standard's feature computation is not
+extension-extensible, so `registerStdPlugins` walks the scene's meshes and
+pre-bakes `_computeStandardMaterialFeatures(mat) | (idx << PLUGIN_INDEX_SHIFT)`
+into each plugin material's cached `_renderFeatures`, which `rebuildSingle`
+then reads back. This port has no pin meshes to walk, so it numbers the lists
+itself, hands `registerStdPlugins` one stand-in material per list in that
+order, and refuses generation if the pin disagreed about a single index. The
+number then rides `MaterialRecord::plugin_signature_index` and the generated
+`standard_material_features` shifts it back in at the same position, because
+the Standard variant selector's key is that derived word.
+
 **A node material is compiled by the pin, not re-emitted here.** A Babylon NME
 document is a graph, and `material/node/node-emitter.ts` turns it into WGSL
 through one emitter per block class — over a hundred of them, which are

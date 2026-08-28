@@ -2496,6 +2496,18 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundThreshold: 30,
         },
     },
+    {
+        id: "scene217",
+        name: "Scene 217 - Material Plugins",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene217.ts",
+        title: "Babylon Lite Native - Material Plugins",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [89, 115, 153],
+            backgroundThreshold: 30,
+        },
+    },
 ];
 
 /**

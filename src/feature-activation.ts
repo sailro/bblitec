@@ -575,6 +575,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/standard/fragments/std-uv-transform-fragment.ts",
         consumers: CMAKE,
     },
+    "material:plugins": {
+        provenance:
+            "src/material/plugin/enable-material-plugins.ts + " +
+            "src/material/plugin/plugin-bridge-shared.ts",
+        consumers: CMAKE,
+    },
+    "material:plugin-index": {
+        provenance:
+            "src/material/material.ts plugins + " +
+            "src/material/plugin/std-plugin-bridge.ts",
+        consumers: CMAKE,
+    },
     "texture:file": {
         provenance:
             "src/texture/texture-2d.ts + src/texture/solid-texture.ts",

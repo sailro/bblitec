@@ -589,6 +589,9 @@ export function readProperty(
                       owner.scenePbrMaterialIndex,
               }
             : {}),
+        ...(rule.carriesScenePbrMaterial && owner.standardMaterial
+            ? { standardMaterial: true as const }
+            : {}),
         ...(rule.carriesShadowGenerator &&
         owner.shadowGeneratorIndex !== undefined
             ? { shadowGeneratorIndex: owner.shadowGeneratorIndex }

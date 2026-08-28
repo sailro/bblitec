@@ -1087,6 +1087,7 @@ export function compileMaterialIntrinsic(
                 kind: "material",
                 cpp: `bbl::create_standard_material(${engine})`,
                 engineCpp: engine,
+                standardMaterial: true,
             };
         }
 
@@ -1153,6 +1154,27 @@ export function compileMaterialIntrinsic(
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp})`,
             };
+        }
+
+        case "enableMaterialPlugins": {
+            // src/material/plugin/enable-material-plugins.ts registers the
+            // two plugin bridges into the global PBR and Standard extension
+            // registries, and the pre-existing hook loops then compose the
+            // plugin fragment with no shared-code change at all. Generation
+            // performs the same registration before it composes
+            // (`src/pinned-material-plugins.ts`), so the call reaches the
+            // feature and emits nothing -- the same shape
+            // `enableStandardVertexColors` takes, and for the same reason.
+            //
+            // Reaching the feature HERE rather than at the `plugins` write
+            // is the pin's own boundary: a scene that attaches plugins and
+            // never calls this composes exactly what it composed before,
+            // because nothing registered the bridges.
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            context.reachFeature("material:plugins", call);
+            return { kind: "void", cpp: "" };
         }
 
         case "enableStandardVertexColors": {

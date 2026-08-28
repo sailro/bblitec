@@ -17,6 +17,7 @@ import {
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { executeModuleGraph } from "./executed-module-graph.js";
+import { enablePinnedMaterialPlugins } from "./pinned-material-plugins.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
@@ -144,6 +145,16 @@ export async function composeScenePipeline({
     emittedArms,
     tree,
 }: ComposePipelineContext): Promise<ComposedScenePipeline> {
+    // `enableMaterialPlugins(scene)` is the pin's own opt-in and the only
+    // thing that pulls the plugin bridges into a build, so registration
+    // lands here — before anything composes, and only for a scene that
+    // reached the call. A scene attaching plugins without it composes
+    // plugin-free, which is upstream's behaviour rather than a refusal.
+    if (result.manifest.features.includes("material:plugins")) {
+        await enablePinnedMaterialPlugins(
+            result.manifest.standardMaterialPlugins,
+        );
+    }
     const hasEnvironment = result.manifest.features.includes(
         "environment:ibl",
     );
@@ -578,6 +589,8 @@ export async function composeScenePipeline({
                 uvTransform: result.manifest.features.includes(
                     "material:standard-uv-transform",
                 ),
+                standardMaterialPlugins:
+                    result.manifest.standardMaterialPlugins,
                 thinInstances:
                     result.manifest.features.includes(
                         "mesh:thin-instances",

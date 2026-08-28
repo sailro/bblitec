@@ -162,7 +162,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-89 corpus scenes remain unregistered; measured scenes are in
+88 corpus scenes remain unregistered; measured scenes are in
 [status](docs/status.md). None of them compiles clean — the
 compiler-contract lane gates the rest. Each entry records the first blocker
 only; clearing it can expose another.
@@ -189,8 +189,8 @@ module is invisible in a compile probe, because
 the compiler reports the unresolved identifier the import would have bound
 rather than the import.
 
-**Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-27,
-after the node-shadow and large-world waves):
+**Largest first-blocker clusters** (swept against 1.24.0 on 2026-08-28,
+after the builder gallery and the material-plugin scene):
 an unsupported constructor expression 4 (104, 105, 117, 149 — `new Map` in
 three of them and `new Promise` in the fourth, so it is not one contract),
 a numeric operator outside `+ - * / %` 3 (16, 47, 181), a four-argument call
@@ -203,6 +203,20 @@ Everything else in the lane is a singleton, which is what the shipped waves
 did to the histogram: the large-world engine-option cluster is gone (202-207
 shipped; 200/201 report a promise chain and 209 its own API), and no
 cluster larger than four remains.
+
+**Rank by the family a chain belongs to, because every remaining chain is
+short.** The full strip probe over all 88 unregistered scenes at this pin
+says 61 of them come back clean inside fourteen steps, so "cheap chain" no
+longer separates candidates — what does is how much of the mechanism already
+exists and how many scenes the family serves. The families the probe groups,
+by distinct scenes their calls touch anywhere in a chain: the physics
+body/shape surface 7 (deferred), `createTransformNode` 6 (103, 101, 222,
+224, 269, 270), the navigation tile cache 4 (171-174), `createUtilityLayer`
+4 (221-224, deferred), the GPU picker 3 (113, 115, 129 — 113 and 115 also
+want the frame-yield-in-a-loop this runtime refuses by design, so it
+finishes 129), text 3 (180, 181, 275), `createTorusKnot` 3 (214, 215, 228)
+and the sprite animation manager 2 (58, 59, which also need two `_shared`
+modules the corpus does not carry).
 The shadow family finished the four scenes it finishes outright — 18, then
 4 and 22 with the ESM directional generator, the heightmap ground and the
 PBR receiver, then 207 with the PCF directional one — and the
@@ -253,10 +267,10 @@ erased or lowered inside the compiler, asset pipeline, or renderer. A scene is
 deferred when its covered behavior needs a new platform, user-input, or
 external-service contract.
 
-**Integrate first (62 scenes):** 16, 17, 20, 43,
+**Integrate first (61 scenes):** 16, 17, 20, 43,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-125,
 129,
-140, 144, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 217-219,
+140, 144, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269-271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118, 129), and display-only
@@ -291,9 +305,6 @@ below rather than blocking a scene here.
   with an independent node world; and direct mesh/other transform-node clone
   shapes remain explicitly refused.
 - [ ] Scene 229: lower the reached spread element.
-- [ ] Scene 250: support `enableGltfCameras` — the loader's `_camera` feature,
-  new in 1.21. One scene, self-contained, and the only glTF camera import in
-  the corpus.
 - [ ] Extend the Standard UV transform past what scene 282 measures. The
   channel writer is lowered from the pin's own AST, so the arithmetic covers
   all seven channels, but three inputs the fold does not reach would force a
@@ -609,11 +620,10 @@ below rather than blocking a scene here.
     near-duplicate branch for a task with its own camera. One consumer
     makes that proportionate today; the cascaded generator, which renders
     several light-space passes per light, is where it stops being.
-- [ ] Scenes 65, 66, 72, 214, 215, 271: what each still wants beside the
-  shadow generator above — 65 a node material with a `shadowGenerators`
-  option, 66 morph deltas behind a gzip graph, 72 an NME `blockLoader`,
-  214/215 `createTorusKnot` plus mulberry32 closures, 271 `unregisterScene`
-  and a frame yield.
+- [ ] Scenes 66, 72, 214, 215, 271: what each still wants beside the
+  shadow generator above — 66 morph deltas behind a gzip graph, 72 an NME
+  `blockLoader`, 214/215 the cascaded generator plus `createTorusKnot` and
+  mulberry32 closures, 271 `unregisterScene` and a frame yield.
 - [ ] Correct SDL_image's greyscale palette in the dependency rather than
   at the PAL boundary. A PNG with no `PLTE` of its own is expanded over a
   ramp SDL_image builds as `(i * 255) / ncolors` (`IMG_libpng.c`), where the
@@ -715,7 +725,56 @@ below rather than blocking a scene here.
   its own camera and aspect, and `build_scene_projection` answers for the
   orthographic arm — so what the four still want is a source per matrix,
   not a mechanism.
-- [ ] Scenes 17, 217: extend reached PBR material options.
+- [ ] Scene 17: extend reached PBR material options.
+- [ ] Extend the material-plugin slice past what scene 217 measures. Shipped:
+  the plugin folded from the scene's own declaration, `enableMaterialPlugins`
+  registering the pin's two bridges before generation composes, and the
+  per-signature index riding each family's feature bits — PBR through its
+  bridge's own `detect`, Standard through the bake the record carries. Every
+  member past `name` and `getCustomCode` refuses at the declaration, and the
+  three that would cost native work are one item rather than seven:
+  `getUniforms`/`writeUbo` put fields into the PBR material UBO and build the
+  Standard self-managed `pluginUbo`, and `getSamplers`/`bindTextures`/
+  `getActiveTextures` declare a texture and sampler pair the composed
+  fragment reads — so closing them is one bind-group contract per family,
+  reflected from the composed WGSL the way group 2 already is. `priority`,
+  `isEnabled` and `defines` fold into the signature and need no native
+  counterpart; `isEnabled` additionally needs the pin's own rebuild path,
+  since the toggle is a run-time variant change. No corpus scene at this pin
+  reaches any of them.
+  Four review findings sit here rather than in the code, each waiting on a
+  capability that does not exist yet:
+  - **The plugin sweep arm composes one dead Standard variant pair on scene
+    217.** Its only Standard material carries the plugin, so the unattached
+    arm is unselectable — but the compiler keeps no count of Standard
+    materials that took a `plugins` write against the Standard materials it
+    created, which is what would prove that. The `disableLighting` arm is
+    equally dead on the same scene, so the count would trim both or neither.
+  - **`getCustomCode` is folded by a walker of its own** where
+    `src/lowering/pinned-shader-text.ts` is already a general bounded
+    evaluator for a TypeScript function returning shader text — routing
+    through it would accept a template literal over a folded constant, and a
+    guard written any way but the one comparison the corpus uses. It is
+    bound to pinned modules by `(modulePath, symbolName)` and fails through
+    `contractError`, which carries a *pinned* source location; scene code
+    needs `context.fail(node, …)`. The capability is a supplied-declaration
+    entry point plus an injectable failure sink.
+  - **`Value.standardMaterial` should be a `materialFamily` lane.** The
+    boolean now propagates through the mesh assignment and the
+    `mesh.material` read beside `scenePbrMaterialIndex`, which is what
+    `material.plugins` needs. What a full lane would additionally close is
+    older: `enableMaterialUvTransform` and the Standard texture setters
+    accept any `kind: "material"`, so a grid or shader material silently
+    takes a Standard-only record write. Closing it means naming the family
+    at all five creation sites and refusing on it at every Standard-only
+    write.
+  - **The distinct-list-to-index registry is written three times** —
+    `recordStandardMaterialPlugins`, `compileNodeMaterialOptions`
+    (`src/compiler/node-material.ts`) and `reachShaderProgram`
+    (`src/compiler/shader-material.ts`) — and the single-statement-of-a-branch
+    read five times. Neither has a shared home to call, and each copy keys
+    differently, so the shared form needs a key-function parameter; it is an
+    extraction across five unrelated modules rather than a call.
 - [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
 - [ ] Scenes 200, 201, 208, 209: the large-world bakes that remain.
   Read `docs/lite/architecture/35-large-world-rendering.md` in the pinned
