@@ -249,6 +249,7 @@ inline std::uint32_t pass_depth_samples(
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <span>
 #include <string>
@@ -1094,6 +1095,41 @@ inline std::vector<GpuVertex> local_vertices(
     return transformed_vertices(geometry, identity_transform);
 }
 
+/** Find an exact immutable shader-geometry upload in a backend cache. */
+template <typename SharedGeometry>
+inline SharedGeometry* find_shared_shader_geometry(
+    const std::vector<std::unique_ptr<SharedGeometry>>& cache,
+    const std::vector<GpuVertex>& vertices,
+    const std::vector<std::uint32_t>& indices) {
+    const auto found = std::find_if(
+        cache.begin(),
+        cache.end(),
+        [&](const std::unique_ptr<SharedGeometry>& candidate) {
+            return candidate->vertices.size() == vertices.size() &&
+                candidate->indices == indices &&
+                (vertices.empty() ||
+                 std::memcmp(
+                     candidate->vertices.data(),
+                     vertices.data(),
+                     vertices.size() * sizeof(GpuVertex)) == 0);
+        });
+    return found == cache.end() ? nullptr : found->get();
+}
+
+/** Find the backend texture upload owned by one shader material. */
+template <typename SharedTextures>
+inline SharedTextures* find_shared_shader_material_textures(
+    const std::vector<std::unique_ptr<SharedTextures>>& cache,
+    MaterialHandle material) {
+    const auto found = std::find_if(
+        cache.begin(),
+        cache.end(),
+        [&](const std::unique_ptr<SharedTextures>& candidate) {
+            return candidate->material.value == material.value;
+        });
+    return found == cache.end() ? nullptr : found->get();
+}
+
 /**
  * The ordinary mesh TRS as a column-major world matrix.
  *
@@ -1125,8 +1161,8 @@ inline std::array<float, 16> shader_draw_world(
 
 /** The pin's projection-view product times one mesh world, preserving its
  *  explicit four-term accumulation order and float32 store boundary. */
-inline std::array<float, 16> shader_world_view_projection(
-    const float* view_projection,
+inline std::array<float, 16> shader_matrix_product(
+    const float* left,
     const std::array<float, 16>& world) {
     std::array<float, 16> result{};
     for (std::size_t column = 0; column < 4; ++column) {
@@ -1136,13 +1172,28 @@ inline std::array<float, 16> shader_world_view_projection(
         const double b3 = world[column * 4 + 3];
         for (std::size_t row = 0; row < 4; ++row) {
             result[column * 4 + row] = static_cast<float>(
-                (((static_cast<double>(view_projection[row]) * b0 +
-                   static_cast<double>(view_projection[4 + row]) * b1) +
-                  static_cast<double>(view_projection[8 + row]) * b2) +
-                 static_cast<double>(view_projection[12 + row]) * b3));
+                (((static_cast<double>(left[row]) * b0 +
+                   static_cast<double>(left[4 + row]) * b1) +
+                  static_cast<double>(left[8 + row]) * b2) +
+                 static_cast<double>(left[12 + row]) * b3));
         }
     }
     return result;
+}
+
+inline std::array<float, 16> shader_world_view_projection(
+    const float* view_projection,
+    const std::array<float, 16>& world) {
+    return shader_matrix_product(view_projection, world);
+}
+
+inline std::optional<std::array<float, 16>> shader_world_view(
+    const std::array<float, 16>* view,
+    const std::array<float, 16>& world) {
+    return view
+        ? std::optional<std::array<float, 16>>{
+              shader_matrix_product(view->data(), world)}
+        : std::nullopt;
 }
 
 /**
@@ -3005,22 +3056,6 @@ inline void apply_animation_seek(
 }
 
 /**
- * A scene that also registers sprite renderers composes two rendering
- * contexts in one frame (the pinned HUD-on-3D shape, corpus scene 52).
- * The sprite pass is recordable into any open render pass for exactly
- * that, but neither backend records it yet, and drawing the scene while
- * silently dropping the sprites would be measured as a parity residual
- * rather than a missing feature.
- */
-inline void reject_uncomposed_sprites(const Engine& engine) {
-    if (!engine.registered_sprite_renderers.empty()) {
-        throw std::runtime_error(
-            "A sprite renderer registered alongside a scene is not "
-            "composed into the scene's frame yet.");
-    }
-}
-
-/**
  * The renderer that owns the frame's clear, re-derived per frame.
  *
  * Upstream `startEngine` walks `engine._renderingContexts` in registration
@@ -3132,15 +3167,14 @@ inline BillboardDrawPlan billboard_draw_plan(
 
 /**
  * What a billboard pass last uploaded, so an unchanged frame re-uploads
- * nothing. The sorted order depends on the view alone, and the lowered
- * permutation only ever APPENDS instances — so the count is the instance
- * version, the way the sprite twin's `uploaded_version` is its layer's.
- * A setter that one day mutates an instance in place needs a real record
- * version; today none exists.
+ * nothing. The sorted order depends on both the view and the packed instance
+ * rows. Dynamic systems may clear and refill the same count, so the record's
+ * explicit version — not count — identifies the contents of the GPU buffer.
  */
 struct BillboardUploadStamp {
     std::array<float, 16> view{};
     std::uint32_t count = 0;
+    std::uint64_t instance_version = 0;
     bool uploaded = false;
 #if BBLITE_FLOATING_ORIGIN
     /** The eye the anchors in the buffer were made relative to. */
@@ -3162,7 +3196,12 @@ inline bool billboard_needs_upload(
     const std::array<float, 16>& view,
     [[maybe_unused]] Vec3d fo_offset) {
     if (system.count == 0) return false;
-    if (!stamp.uploaded || stamp.count != system.count) return true;
+    if (
+        !stamp.uploaded ||
+        stamp.count != system.count ||
+        stamp.instance_version != system.instance_version) {
+        return true;
+    }
 #if BBLITE_FLOATING_ORIGIN
     // The anchors are uploaded eye-relative, so the offset is an input to
     // the bytes -- a cutout system, which otherwise uploads once per count
@@ -3188,6 +3227,7 @@ inline void stamp_billboard_upload(
     [[maybe_unused]] Vec3d fo_offset) {
     stamp.view = view;
     stamp.count = system.count;
+    stamp.instance_version = system.instance_version;
     stamp.uploaded = true;
 #if BBLITE_FLOATING_ORIGIN
     stamp.fo_offset = fo_offset;
@@ -3658,6 +3698,61 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
 }
 
 /**
+ * Reconcile one backend's uploaded mesh rows with a rebuilt render plan.
+ *
+ * Plans preserve scene order, so a forward scan moves surviving rows,
+ * releases removed rows, and uploads only new rows. The GPU resource type and
+ * its release/upload operations remain backend-owned.
+ */
+template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
+inline std::vector<GpuMesh> rematch_render_meshes(
+    const std::vector<upstream::RenderItem>& previous_items,
+    const std::vector<upstream::RenderItem>& updated_items,
+    std::vector<GpuMesh>& uploaded_meshes,
+    ReleaseMesh&& release_mesh,
+    UploadItem&& upload_item) {
+    if (previous_items.size() != uploaded_meshes.size()) {
+        throw std::runtime_error(
+            "Render plan and uploaded mesh rows are out of sync.");
+    }
+    const auto same_source = [](
+                                 const upstream::RenderItem& left,
+                                 const upstream::RenderItem& right) {
+        return left.mesh.value == right.mesh.value &&
+            left.geometry == right.geometry &&
+            left.material.value == right.material.value;
+    };
+    std::vector<GpuMesh> result;
+    result.reserve(updated_items.size());
+    std::size_t previous_index = 0;
+    for (const upstream::RenderItem& item : updated_items) {
+        std::size_t scan = previous_index;
+        while (
+            scan < previous_items.size() &&
+            !same_source(previous_items[scan], item)) {
+            ++scan;
+        }
+        if (scan < previous_items.size()) {
+            for (std::size_t dropped = previous_index;
+                 dropped < scan;
+                 ++dropped) {
+                release_mesh(uploaded_meshes[dropped]);
+            }
+            result.push_back(std::move(uploaded_meshes[scan]));
+            previous_index = scan + 1;
+            continue;
+        }
+        result.push_back(upload_item(item));
+    }
+    for (std::size_t dropped = previous_index;
+         dropped < uploaded_meshes.size();
+         ++dropped) {
+        release_mesh(uploaded_meshes[dropped]);
+    }
+    return result;
+}
+
+/**
  * A material family appearing after registration must have composed
  * artifacts to draw with: generation composes variants from the whole
  * scene, so a family the tables never saw is a compiler contract broken,
@@ -3871,6 +3966,7 @@ inline bool block_is_shared_scene_matrix(
         case upstream::ShaderSystemMatrix::view_projection:
             return true;
         case upstream::ShaderSystemMatrix::world:
+        case upstream::ShaderSystemMatrix::world_view:
         case upstream::ShaderSystemMatrix::world_view_projection:
         case upstream::ShaderSystemMatrix::view:
         case upstream::ShaderSystemMatrix::projection:
@@ -3901,6 +3997,7 @@ struct ShaderPassMatrices {
     const std::array<float, 16>* view = nullptr;
     const std::array<float, 16>* projection = nullptr;
     const std::array<float, 16>* world = nullptr;
+    const std::array<float, 16>* world_view = nullptr;
     const std::array<float, 16>* world_view_projection = nullptr;
 };
 
@@ -3942,6 +4039,13 @@ inline std::vector<float> shader_stage_block_floats(
                 copy_from(
                     pass.world ? pass.world->data() : identity.data(),
                     "world");
+                break;
+            case upstream::ShaderSystemMatrix::world_view:
+                copy_from(
+                    pass.world_view
+                        ? pass.world_view->data()
+                        : nullptr,
+                    "worldView");
                 break;
             case upstream::ShaderSystemMatrix::view:
                 copy_from(

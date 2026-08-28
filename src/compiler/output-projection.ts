@@ -120,6 +120,7 @@ export const featureSources: Record<Feature, string[]> = {
     // entry-point list, with SDL3 as its platform stream. Everything
     // Babylon does with those nodes stays generated.
     "audio:engine": ["src/pal_audio_labsound.cpp"],
+    "audio:buffer-source": [],
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],

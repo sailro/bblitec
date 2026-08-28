@@ -30,12 +30,10 @@
  * Babylon's sound API: the surface every shipped consumer actually calls
  * is the browser's.
  *
- * **Every entry point here is one a generated scene can reach.** The
- * buffer family (`createBuffer`, `getChannelData`, a source's `buffer`)
- * and the ramp-curve scheduler are deliberately absent: the compiler
- * refuses their call sites by name, so declaring them would put dead
- * surface in a contract header. [TODO](../../../TODO.md) names what each
- * needs.
+ * **Every entry point here is one a generated scene can reach.** Buffer
+ * creation/playback is a separate reached feature, so applications that do
+ * not use sampled audio do not compile its node implementation. The
+ * ramp-curve scheduler remains absent and is refused by the compiler.
  *
  * The implementation behind it is LabSound (`pal_audio_labsound.cpp`), a
  * BSD-licensed C++ Web Audio engine forked from WebKit's, whose platform
@@ -66,6 +64,8 @@
  */
 
 #include <cstdint>
+#include <string>
+#include <bblite/js_data.hpp>
 
 namespace bbl::pal {
 
@@ -76,6 +76,11 @@ struct AudioContextHandle {
 
 /** One node in a context's graph. */
 struct AudioNodeHandle {
+    std::uint32_t value = 0;
+};
+
+/** One context-owned planar PCM buffer. */
+struct AudioBufferHandle {
     std::uint32_t value = 0;
 };
 
@@ -150,6 +155,9 @@ double audio_current_time(AudioContextHandle context);
 /** `ctx.sampleRate`. */
 double audio_sample_rate(AudioContextHandle context);
 
+/** `AudioContext.state` for a live context. */
+std::string audio_state(AudioContextHandle context);
+
 /** `ctx.resume()`. Inert on a capture context, as the pin's unlock is. */
 void audio_resume(AudioContextHandle context);
 
@@ -162,6 +170,24 @@ AudioNodeHandle audio_create_gain(AudioContextHandle context);
 AudioNodeHandle audio_create_oscillator(AudioContextHandle context);
 AudioNodeHandle audio_create_biquad_filter(AudioContextHandle context);
 AudioNodeHandle audio_create_stereo_panner(AudioContextHandle context);
+
+/** `ctx.createBuffer(channels, frames, sampleRate)`. */
+AudioBufferHandle audio_create_buffer(
+    AudioContextHandle context,
+    std::uint32_t channels,
+    std::uint32_t frames,
+    double sample_rate);
+
+/** `buffer.getChannelData(channel)`: a mutable view into retained PCM. */
+bbl::js::F32Array& audio_buffer_channel(
+    AudioBufferHandle buffer,
+    std::uint32_t channel);
+
+/** `ctx.createBufferSource()`. */
+AudioNodeHandle audio_create_buffer_source(AudioContextHandle context);
+
+/** `source.buffer = buffer`. */
+void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer);
 
 // -- graph ---------------------------------------------------------------
 

@@ -170,6 +170,15 @@ const handleCollections: readonly HandleCollectionRead[] = [
     },
 ];
 
+/** Whether any handle owner can expose a collection with this source name. */
+export function isHandleCollectionProperty(
+    property: string,
+): boolean {
+    return handleCollections.some(
+        (candidate) => candidate.property === property,
+    );
+}
+
 /** The rule in a table claiming this (owner kind, property) pair. */
 /**
  * `node.<name>` for every automatable parameter the PAL serves. A node
@@ -267,8 +276,9 @@ const propertyRules: readonly PropertyRule[] = [
     {
         owner: "audio-engine",
         property: "state",
-        unsupported:
-            "AudioEngine.state is a string this runtime does not carry; the reached slice unlocks unconditionally.",
+        value: "data",
+        helper: "bbl::pal::audio_state",
+        dataType: { kind: "string" },
     },
     {
         owner: "audio-engine",

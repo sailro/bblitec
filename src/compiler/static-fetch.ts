@@ -10,13 +10,18 @@ import ts from "typescript";
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { resolveBundledAsset } from "./assets.js";
-import type { Value } from "./types.js";
+import type { CompileAsset, Value } from "./types.js";
 
 export interface StaticFetchContext {
     readonly options: { fileName: string };
     compileStringLiteral(expression: ts.Expression): string;
     cppString(value: string): string;
     lookupOptional(identifier: ts.Identifier): Value | undefined;
+    registerAsset(
+        source: string,
+        kind: CompileAsset["kind"],
+    ): CompileAsset;
+    reachJsData(): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -35,24 +40,14 @@ export function compileStaticFetch(
         );
     }
     const logicalSource = context.compileStringLiteral(call.arguments[0]!);
-    const source = resolveBundledAsset(logicalSource);
-    let parsed: unknown;
-    try {
-        const bytes = readAssetBytesSync(source, context.options.fileName);
-        parsed = JSON.parse(new TextDecoder().decode(bytes));
-    } catch (error: unknown) {
-        context.fail(
-            call,
-            `Generation-time fetch of '${logicalSource}' failed: ${
-                error instanceof Error ? error.message : String(error)
-            }`,
-        );
-    }
+    const source = resolveBundledAsset(
+        logicalSource,
+        context.options.fileName,
+    );
     return {
         kind: "static-fetch-response",
         cpp: "",
         staticString: source,
-        staticJson: parsed,
     };
 }
 
@@ -63,16 +58,51 @@ export function compileStaticFetchMethod(
     method: string,
 ): Value | undefined {
     if (owner.kind !== "static-fetch-response") return undefined;
+    if (method === "arrayBuffer") {
+        if (call.arguments.length !== 0) {
+            context.fail(call, "Response.arrayBuffer() takes no arguments.");
+        }
+        if (!owner.staticString) {
+            context.fail(call.expression, "Fetched response has no static source.");
+        }
+        const asset = context.registerAsset(
+            owner.staticString,
+            "binary",
+        );
+        context.reachJsData();
+        return {
+            kind: "data",
+            cpp:
+                "bbl::js::ArrayBuffer(bbl::pal::read_binary_file(" +
+                `bbl::asset_path(${context.cppString(asset.output)})))`,
+            dataType: { kind: "arraybuffer" },
+        };
+    }
     if (method !== "json") {
         context.fail(
             call.expression,
-            `Generation-time fetch responses support json(), not '${method}()'.`,
+            `Generation-time fetch responses support json() and arrayBuffer(), not '${method}()'.`,
         );
     }
     if (call.arguments.length !== 0) {
         context.fail(call, "Response.json() takes no arguments.");
     }
-    return jsonValue(context, owner.staticJson, call);
+    let parsed: unknown;
+    try {
+        const bytes = readAssetBytesSync(
+            owner.staticString ?? "",
+            context.options.fileName,
+        );
+        parsed = JSON.parse(new TextDecoder().decode(bytes));
+    } catch (error: unknown) {
+        context.fail(
+            call,
+            `Generation-time fetch of '${owner.staticString ?? ""}' failed: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
+        );
+    }
+    return jsonValue(context, parsed, call);
 }
 
 export function staticFetchProperty(

@@ -85,10 +85,8 @@ test("the PAL header declares only what a generated scene can call", () => {
     // offer it.
     const header = source("native/include/bblite/pal_audio.hpp");
     for (const absent of [
-        "audio_create_buffer",
         "audio_buffer_channel_data",
         "audio_set_source_buffer",
-        "audio_create_buffer_source",
         "audio_param_set_value_curve",
         "audio_flush_connections",
     ]) {
@@ -96,6 +94,18 @@ test("the PAL header declares only what a generated scene can call", () => {
             header,
             new RegExp(`\\b${absent}\\b`),
             `${absent} is unreachable and must not be declared`,
+        );
+    }
+    for (const reached of [
+        "audio_create_buffer",
+        "audio_buffer_channel",
+        "audio_create_buffer_source",
+        "audio_set_buffer",
+    ]) {
+        assert.match(
+            header,
+            new RegExp(`\\b${reached}\\b`),
+            `${reached} is reached by sampled-audio graphs`,
         );
     }
 });
@@ -115,6 +125,26 @@ test("an audio parameter handle is a value, not a minted id", () => {
     // The lookup is LabSound's own generic one over the Web Audio
     // spellings, not a hand-maintained cast ladder.
     assert.match(pal, /param\(spelling\(handle\.name\)\)/);
+});
+
+test("sampled sources dispatch their non-virtual LabSound start", () => {
+    const pal = source("native/src/pal_audio_labsound.cpp");
+    const start = pal.slice(
+        pal.indexOf("void audio_node_start"),
+        pal.indexOf("void audio_node_stop"),
+    );
+    const sampled = start.indexOf(
+        "dynamic_pointer_cast<lab::SampledAudioNode>",
+    );
+    const scheduled = start.indexOf(
+        "dynamic_pointer_cast<lab::AudioScheduledSourceNode>",
+    );
+    assert.ok(sampled >= 0, "buffer sources dispatch as sampled nodes");
+    assert.ok(
+        scheduled > sampled,
+        "the non-virtual sampled start is selected before the base scheduler",
+    );
+    assert.match(start, /sampled->start\(/);
 });
 
 test("the audio thread allocates nothing", () => {

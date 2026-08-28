@@ -3,6 +3,7 @@ import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
     isDataTuple,
     tupleComponents,
+    type DataIterationElement,
     type DataType,
 } from "./data-types.js";
 import type {
@@ -30,6 +31,7 @@ export interface StatementLoweringContext {
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
     /** Marks that a scene threw, so the generated main includes <stdexcept>. */
     reachThrow(): void;
+    reachJsData(): void;
     cppString(value: string): string;
     emitDataAssignment(
         expression: ts.BinaryExpression,
@@ -44,7 +46,7 @@ export interface StatementLoweringContext {
     dataIterationTarget(
         expression: ts.Expression,
     ):
-        | { container: Value; element: DataType }
+        | { container: Value; element: DataIterationElement }
         | undefined;
     assetEntitiesIterationTarget(
         expression: ts.Expression,
@@ -58,7 +60,7 @@ export interface StatementLoweringContext {
     bindDataIterationVariable(
         name: ts.BindingName,
         itemCpp: string,
-        element: DataType,
+        element: DataIterationElement,
     ): void;
     activeNativeReturnType():
         | DataType
@@ -131,6 +133,8 @@ export interface StatementLoweringContext {
     ): boolean;
     emitPlatformEventListener(call: ts.CallExpression): boolean;
     eraseBrowserInstrumentation(position: number): void;
+    /** Whether a loop body reaches pinned scene construction at generation. */
+    requiresStaticIteration(statement: ts.Statement): boolean;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
     emit(line: string): void;
@@ -179,7 +183,21 @@ function bodyStatements(
         : [statement.statement];
 }
 
-
+// Small counted loops unroll because that keeps generation-known values
+// available to scene composition. Large loops stay native when they are only
+// data processing, but a body that reaches pinned scene construction must
+// still run at generation: emitting such a body once inside C++ would record
+// one AOT effect for many runtime iterations.
+const MAX_STATIC_INDEX_ITERATIONS = 32;
+const MAX_REQUIRED_STATIC_INDEX_ITERATIONS = 4096;
+const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
+    "&=": "bitwise_and",
+    "|=": "bitwise_or",
+    "^=": "bitwise_xor",
+    "<<=": "shift_left",
+    ">>=": "shift_right",
+    ">>>=": "shift_right_unsigned",
+};
 
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
@@ -226,6 +244,10 @@ export class StatementLowerer {
         }
         if (ts.isForStatement(statement)) {
             this.emitFor(context, statement);
+            return;
+        }
+        if (ts.isDoStatement(statement)) {
+            this.emitDo(context, statement);
             return;
         }
         if (ts.isWhileStatement(statement)) {
@@ -430,12 +452,10 @@ export class StatementLowerer {
         let pendingLabels: string[] = [];
         for (const clause of clauses) {
             if (ts.isDefaultClause(clause)) {
-                if (pendingLabels.length > 0) {
-                    context.fail(
-                        clause,
-                        "Case fallthrough into default is not supported.",
-                    );
-                }
+                // Empty cases immediately before the final default share
+                // its body. The emitted final `else` already selects every
+                // value not handled above, including those pending labels.
+                pendingLabels = [];
                 context.emit(
                     emittedBranch ? "} else {" : "{",
                 );
@@ -1005,6 +1025,23 @@ export class StatementLowerer {
         ) {
             return false;
         }
+        const requiresStaticIteration =
+            context.requiresStaticIteration(statement.statement);
+        if (
+            length.staticNumber > MAX_STATIC_INDEX_ITERATIONS &&
+            !requiresStaticIteration
+        ) {
+            return false;
+        }
+        if (
+            length.staticNumber > MAX_REQUIRED_STATIC_INDEX_ITERATIONS
+        ) {
+            context.fail(
+                statement.condition.right,
+                "A loop that reaches pinned scene construction must be " +
+                    "statically iterated, but its count is too large.",
+            );
+        }
         let indexMutation: ts.Node | undefined;
         const findIndexMutation = (node: ts.Node): void => {
             if (indexMutation) {
@@ -1079,6 +1116,20 @@ export class StatementLowerer {
         context.emit("}");
     }
 
+    private emitDo(
+        context: StatementLoweringContext,
+        statement: ts.DoStatement,
+    ): void {
+        context.emit("do {");
+        this.emitScopedBody(
+            context,
+            statement.statement,
+        );
+        context.emit(
+            `} while (${context.compileCondition(statement.expression)});`,
+        );
+    }
+
     private emitForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
@@ -1148,14 +1199,17 @@ export class StatementLowerer {
             return;
         }
         const staticLiteral =
-            ts.isIdentifier(declaration.name) &&
             !this.bindsEnclosingLoop(statement.statement)
                 ? context.probeStaticArrayLiteral(
                       statement.expression,
                   )
                 : undefined;
+        // Preserve runtime iteration for destructured materialized tables.
+        // Static destructuring is the fallback for tuples whose mixed or
+        // optional lanes cannot be represented as one native container.
         if (
-            !staticLiteral &&
+            (!staticLiteral ||
+                ts.isArrayBindingPattern(declaration.name)) &&
             this.emitRuntimeForOf(
                 context,
                 statement,
@@ -1172,12 +1226,6 @@ export class StatementLowerer {
                 "break/continue in for...of requires a runtime data container.",
             );
         }
-        if (!ts.isIdentifier(declaration.name)) {
-            context.fail(
-                declaration,
-                "Static for...of requires an identifier binding.",
-            );
-        }
         const values = context.expectStaticArrayLiteral(
             statement.expression,
         );
@@ -1186,8 +1234,9 @@ export class StatementLowerer {
                 context,
                 statement.statement,
                 () => {
-                    context.bindLocalValue(
-                        declaration.name as ts.Identifier,
+                    this.bindStaticIterationValue(
+                        context,
+                        declaration.name,
                         context.compileValue(element),
                     );
                 },
@@ -1319,10 +1368,15 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        if (!ts.isIdentifier(declaration.name)) {
+        if (
+            ts.isArrayBindingPattern(declaration.name) &&
+            context.dataIterationTarget(statement.expression)
+        ) {
+            // A homogeneous static table already has an exact native row
+            // representation. Keep its established range-for lowering;
+            // tuple unrolling is needed only for heterogeneous/optional rows.
             return false;
         }
-        const binding = declaration.name;
         const elements =
             context.handleCollections.tupleElements(
                 statement.expression,
@@ -1341,11 +1395,66 @@ export class StatementLowerer {
                 context,
                 statement.statement,
                 () => {
-                    context.bindLocalValue(binding, element);
+                    this.bindStaticIterationValue(
+                        context,
+                        declaration.name,
+                        element,
+                    );
                 },
             );
         }
         return true;
+    }
+
+    /** Binds one statically unrolled element, including tuple patterns. */
+    private bindStaticIterationValue(
+        context: StatementLoweringContext,
+        name: ts.BindingName,
+        value: Value,
+    ): void {
+        if (ts.isIdentifier(name)) {
+            context.bindLocalValue(name, value);
+            return;
+        }
+        if (!ts.isArrayBindingPattern(name)) {
+            context.fail(
+                name,
+                "Static for...of destructuring requires an array pattern.",
+            );
+        }
+        if (value.kind !== "tuple" || !value.tupleElements) {
+            context.fail(
+                name,
+                "Array destructuring in static for...of requires tuple elements.",
+            );
+        }
+        name.elements.forEach((binding, index) => {
+            if (ts.isOmittedExpression(binding)) return;
+            if (
+                !ts.isIdentifier(binding.name) ||
+                binding.initializer ||
+                binding.dotDotDotToken
+            ) {
+                context.fail(
+                    binding,
+                    "Tuple destructuring supports plain identifiers.",
+                );
+            }
+            const element = value.tupleElements![index];
+            if (element) {
+                context.bindLocalValue(
+                    binding.name,
+                    element,
+                );
+            } else {
+                // JavaScript binds an omitted tuple lane to `undefined`;
+                // optional trailing tuple members use that path routinely.
+                context.bindCompileTimeValue(binding.name, {
+                    kind: "json-null",
+                    cpp: "std::nullopt",
+                });
+            }
+        });
     }
 
     /**
@@ -1406,7 +1515,7 @@ export class StatementLowerer {
         const item =
             context.allocateTemporaryCppName("item");
         context.emit(
-            `for (const auto& ${item} : ${target.container.cpp}) {`,
+            `for (auto&& ${item} : ${target.container.cpp}) {`,
         );
         context.increaseIndent();
         context.pushScope(
@@ -1483,6 +1592,12 @@ export class StatementLowerer {
                 ts.SyntaxKind.MinusEqualsToken,
                 ts.SyntaxKind.AsteriskEqualsToken,
                 ts.SyntaxKind.SlashEqualsToken,
+                ts.SyntaxKind.AmpersandEqualsToken,
+                ts.SyntaxKind.BarEqualsToken,
+                ts.SyntaxKind.CaretEqualsToken,
+                ts.SyntaxKind.LessThanLessThanEqualsToken,
+                ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+                ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
             ].includes(unwrapped.operatorToken.kind)
         ) {
             if (ts.isIdentifier(unwrapped.left)) {
@@ -1504,6 +1619,15 @@ export class StatementLowerer {
                         ts.SyntaxKind.SlashEqualsToken,
                         "/=",
                     ],
+                    [ts.SyntaxKind.AmpersandEqualsToken, "&="],
+                    [ts.SyntaxKind.BarEqualsToken, "|="],
+                    [ts.SyntaxKind.CaretEqualsToken, "^="],
+                    [ts.SyntaxKind.LessThanLessThanEqualsToken, "<<="],
+                    [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
+                    [
+                        ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+                        ">>>=",
+                    ],
                 ]).get(unwrapped.operatorToken.kind)!;
                 if (
                     operator === "=" &&
@@ -1515,8 +1639,17 @@ export class StatementLowerer {
                     return;
                 }
                 if (target.kind === "number") {
+                    const right = context.compileNumber(
+                        unwrapped.right,
+                        "double",
+                    );
                     context.emit(
-                        `${target.cpp} ${operator} ${context.compileNumber(unwrapped.right, "double")};`,
+                        this.numericAssignmentCpp(
+                            context,
+                            target.cpp,
+                            operator,
+                            right,
+                        ),
                     );
                 } else if (
                     target.kind === "boolean" &&
@@ -1524,6 +1657,28 @@ export class StatementLowerer {
                 ) {
                     context.emit(
                         `${target.cpp} = ${context.compileCondition(unwrapped.right)};`,
+                    );
+                } else if (
+                    target.kind === "string" &&
+                    (operator === "=" || operator === "+=")
+                ) {
+                    const value = context.compileValue(
+                        unwrapped.right,
+                    );
+                    if (
+                        value.kind !== "string" &&
+                        !(
+                            value.kind === "data" &&
+                            value.dataType?.kind === "string"
+                        )
+                    ) {
+                        context.fail(
+                            unwrapped.right,
+                            `String assignment requires a string, received ${value.kind}.`,
+                        );
+                    }
+                    context.emit(
+                        `${target.cpp} ${operator} ${value.cpp};`,
                     );
                 } else if (
                     target.kind === "data" &&
@@ -1637,6 +1792,20 @@ export class StatementLowerer {
             unwrapped,
             `Unsupported expression statement: ${ts.SyntaxKind[unwrapped.kind]}.`,
         );
+    }
+
+    private numericAssignmentCpp(
+        context: StatementLoweringContext,
+        target: string,
+        operator: string,
+        right: string,
+    ): string {
+        const helper = BITWISE_ASSIGNMENT_HELPERS[operator];
+        if (!helper) {
+            return `${target} ${operator} ${right};`;
+        }
+        context.reachJsData();
+        return `${target} = bbl::js::${helper}(${target}, ${right});`;
     }
 
     private emitMemberSetCall(

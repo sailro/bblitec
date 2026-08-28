@@ -1,25 +1,35 @@
 import ts from "typescript";
-import { doubleLiteral, sanitizeCppIdentifier } from "../cpp-literals.js";
+import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
 /**
- * Native representation for the plain-data TypeScript subset: numbers,
- * booleans, interface-typed structs, string-literal-union enums, nullable
- * objects, dynamic arrays, readonly views, and all-number tuples. Engine
- * handles never enter this model; they keep their dedicated value kinds.
+ * Native representation for the TypeScript data subset: numbers, booleans,
+ * interface-typed structs, string-literal-union enums, nullable objects,
+ * containers, tuples, and the resource values whose native representation is
+ * safe to carry through those structures.
+ *
+ * Most resources below are trivially copyable ids. A pixels texture is the
+ * pin's value-shaped CPU upload record; it is also safe to copy into a cache,
+ * and remains a texture when read back out.
  */
-/**
- * The engine handles the data model can carry. Each is a trivially copyable
- * id, so the value-copy model needs no special case for them, and each pinned
- * type that names one maps here rather than at every use site.
- */
-export type HandleKind = "mesh" | "animation-group" | "camera";
+export type HandleKind =
+    | "mesh"
+    | "animation-group"
+    | "audio-buffer"
+    | "camera"
+    | "material"
+    | "sprite-atlas"
+    | "texture";
 
 const handleCppTypes: Record<HandleKind, string> = {
     "mesh": "bbl::MeshHandle",
     "animation-group": "bbl::AnimationGroupHandle",
+    "audio-buffer": "bbl::pal::AudioBufferHandle",
     "camera": "bbl::CameraHandle",
+    "material": "bbl::MaterialHandle",
+    "sprite-atlas": "bbl::SpriteAtlasHandle",
+    "texture": "bbl::PixelsTexture",
 };
 
 /** The pinned type name each handle kind is declared as. */
@@ -27,31 +37,33 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     Mesh: "mesh",
     AnimationGroup: "animation-group",
     Camera: "camera",
+    Material: "material",
+    ShaderMaterial: "material",
+    SpriteAtlas: "sprite-atlas",
+    Texture2D: "texture",
 };
 
 export type DataType =
     | { kind: "number" }
     | { kind: "boolean" }
-    // A resource handle stored inside plain data (the demo particle
-    // list keeps its meshes this way). Handles are trivially copyable
-    // ids, so the value-copy model carries them unchanged: copying a
-    // struct copies the id and both refer to the same resource, which
-    // is exactly the JavaScript object-reference behavior.
-    // A runtime string. Deliberately not inferred from a declared `string`
-    // type — not because inference is wrong, but because the record and
-    // union mappers REGISTER definitions as a side effect of speculative
-    // mapping (`structsByKey.set`, `registerEnum`), and the data lowerer
-    // probes types constantly: widening the mapper made probed-but-unused
-    // records register, pulling unused enum definitions into scene 274.
-    // Until registration is decoupled from probing, a string enters the
-    // model only where a declared-property rule names it, so its producer
-    // is always explicit.
+    | { kind: "arraybuffer" }
+    | { kind: "dataview" }
+    // A resource value stored inside ordinary data. Most are handles, while
+    // the pixels-texture arm maps the pin's Texture2D to its native upload
+    // record. `compileForSink` rejects texture producers represented by a
+    // different native record instead of allowing an invalid C++ conversion.
+    // A runtime string. String fields and parameters are part of the same
+    // plain-data model as numbers: fetched/decoded binary documents commonly
+    // carry names through records and containers before rendering reaches
+    // them.
     | { kind: "string" }
     | { kind: "handle"; handle: HandleKind }
     | { kind: "struct"; name: string }
     | { kind: "enum"; name: string }
     | { kind: "optional"; inner: DataType }
     | { kind: "vector"; element: DataType }
+    | { kind: "map"; key: DataType; value: DataType }
+    | { kind: "set"; element: DataType }
     | { kind: "span"; element: DataType }
     | { kind: "tuple"; arity: number }
     // `Record<Union, T>`: one slot per member of a string-literal
@@ -60,9 +72,19 @@ export type DataType =
     // than a growable array.
     | { kind: "enummap"; enumName: string; element: DataType }
     | { kind: "table"; dimensions: number[] }
+    | { kind: "u8array" }
     | { kind: "f32array" }
     | { kind: "u16array" }
     | { kind: "u32array" };
+
+/**
+ * The element exposed by a native data-container `for...of` loop.
+ * Maps expose a typed key/value entry rather than the all-number tuple used
+ * for ordinary numeric tuple values.
+ */
+export type DataIterationElement =
+    | DataType
+    | { kind: "map-entry"; key: DataType; value: DataType };
 
 export interface DataStructField {
     name: string;
@@ -122,7 +144,7 @@ export function isDataTuple(
 }
 
 /** The typed-array kinds this model carries, as one narrowing test. */
-export type TypedArrayKind = "f32array" | "u16array" | "u32array";
+export type TypedArrayKind = "u8array" | "f32array" | "u16array" | "u32array";
 
 /**
  * Whether a data type is one of them.
@@ -135,6 +157,7 @@ export function isTypedArrayType(
     dataType: DataType | undefined,
 ): dataType is DataType & { kind: TypedArrayKind } {
     return (
+        dataType?.kind === "u8array" ||
         dataType?.kind === "f32array" ||
         dataType?.kind === "u16array" ||
         dataType?.kind === "u32array"
@@ -170,6 +193,9 @@ export function dataTypesEqual(
         case "number":
         case "boolean":
         case "string":
+        case "arraybuffer":
+        case "dataview":
+        case "u8array":
         case "f32array":
         case "u16array":
         case "u32array":
@@ -192,6 +218,21 @@ export function dataTypesEqual(
             );
         case "vector":
         case "span":
+            return dataTypesEqual(
+                left.element,
+                (right as { element: DataType }).element,
+            );
+        case "map": {
+            const other = right as {
+                key: DataType;
+                value: DataType;
+            };
+            return (
+                dataTypesEqual(left.key, other.key) &&
+                dataTypesEqual(left.value, other.value)
+            );
+        }
+        case "set":
             return dataTypesEqual(
                 left.element,
                 (right as { element: DataType }).element,
@@ -222,27 +263,7 @@ export function dataTypesEqual(
 }
 
 function sanitizeIdentifier(name: string): string {
-    const cleaned = sanitizeCppIdentifier(name);
-    const prefixed = /^[0-9]/.test(cleaned)
-        ? `_${cleaned}`
-        : cleaned;
-    const reserved = new Set([
-        "auto", "bool", "break", "case", "catch", "char",
-        "class", "const", "continue", "default", "delete",
-        "do", "double", "else", "enum", "explicit",
-        "export", "extern", "false", "float", "for",
-        "friend", "goto", "if", "inline", "int", "long",
-        "namespace", "new", "operator", "private",
-        "protected", "public", "register", "return",
-        "short", "signed", "sizeof", "static", "struct",
-        "switch", "template", "this", "throw", "true",
-        "try", "typedef", "typeid", "typename", "union",
-        "unsigned", "using", "virtual", "void", "volatile",
-        "while",
-    ]);
-    return reserved.has(prefixed)
-        ? `${prefixed}_`
-        : prefixed;
+    return cppIdentifier(name);
 }
 
 /**
@@ -260,6 +281,8 @@ export class DataTypeRegistry {
         DataEnumDefinition
     >();
     private readonly enumNames = new Set<string>();
+    /** String-union enums that actually receive a runtime string value. */
+    private readonly runtimeEnumParsers = new Set<string>();
     private readonly tables = new Map<
         ts.Node,
         DataTableDefinition
@@ -280,6 +303,15 @@ export class DataTypeRegistry {
     >();
     private readonly mappingInProgress =
         new Set<ts.Type>();
+    private readonly structNamesInProgress = new Map<
+        ts.Symbol | ts.Type,
+        string
+    >();
+    private readonly structTypesByIdentity = new Map<
+        ts.Symbol | ts.Type,
+        DataType & { kind: "struct" }
+    >();
+    private readonly referenceStructNames = new Set<string>();
     private anonymousStructIndex = 0;
     private anonymousEnumIndex = 0;
 
@@ -298,9 +330,56 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Maps a checker type to a data type, or undefined when the type does
-     * not belong to the plain-data subset (engine handles, promises,
-     * functions, strings, ...).
+     * Marks object values stored behind another JavaScript object/container
+     * as references. Copies of arrays, maps, sets, and record fields retain
+     * the identity of their object-valued entries in JavaScript.
+     */
+    public markStoredObjectReferences(dataType: DataType): DataType {
+        switch (dataType.kind) {
+            case "struct":
+                this.referenceStructNames.add(dataType.name);
+                return dataType;
+            case "optional": {
+                const inner = this.markStoredObjectReferences(
+                    dataType.inner,
+                );
+                return inner.kind === "struct" &&
+                    this.isReferenceStruct(inner.name)
+                    ? inner
+                    : { kind: "optional", inner };
+            }
+            case "vector":
+            case "span": {
+                const element = this.markStoredObjectReferences(
+                    dataType.element,
+                );
+                return { ...dataType, element };
+            }
+            case "set":
+                return {
+                    kind: "set",
+                    element: this.markStoredObjectReferences(
+                        dataType.element,
+                    ),
+                };
+            case "map":
+                return {
+                    kind: "map",
+                    key: this.markStoredObjectReferences(
+                        dataType.key,
+                    ),
+                    value: this.markStoredObjectReferences(
+                        dataType.value,
+                    ),
+                };
+            default:
+                return dataType;
+        }
+    }
+
+    /**
+     * Maps a checker type to native data, or undefined for values whose host
+     * representation is opaque here (promises, functions, DOM objects, ...).
      */
     public fromTsType(
         type: ts.Type,
@@ -324,6 +403,14 @@ export class DataTypeRegistry {
             if (!inner) {
                 return undefined;
             }
+            if (
+                inner.kind === "struct" &&
+                this.isReferenceStruct(inner.name)
+            ) {
+                // Shared object handles carry null directly; wrapping one
+                // in Nullable would add a second, non-JavaScript state.
+                return inner;
+            }
             return { kind: "optional", inner };
         }
         return this.fromNonNullableType(type, node);
@@ -338,7 +425,7 @@ export class DataTypeRegistry {
         if (!mapped) {
             this.fail(
                 node,
-                `${role} type '${this.checker.typeToString(type)}' is outside the supported plain-data subset.`,
+                `${role} type '${this.checker.typeToString(type)}' is outside the supported native-data subset.`,
             );
         }
         return mapped;
@@ -348,6 +435,14 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
+        const recursiveStruct =
+            this.structNamesInProgress.get(
+                this.structIdentity(type),
+            );
+        if (recursiveStruct) {
+            this.referenceStructNames.add(recursiveStruct);
+            return { kind: "struct", name: recursiveStruct };
+        }
         if (
             (type.flags &
                 (ts.TypeFlags.Number |
@@ -364,6 +459,14 @@ export class DataTypeRegistry {
         ) {
             return booleanType;
         }
+        if (
+            (type.flags &
+                (ts.TypeFlags.String |
+                    ts.TypeFlags.StringLiteral)) !==
+            0
+        ) {
+            return { kind: "string" };
+        }
         if ((type.flags & ts.TypeFlags.Union) !== 0) {
             return this.fromUnionType(
                 type as ts.UnionType,
@@ -372,12 +475,37 @@ export class DataTypeRegistry {
         if ((type.flags & ts.TypeFlags.Object) === 0) {
             return undefined;
         }
+        if (type.symbol?.name === "ArrayBuffer") {
+            return { kind: "arraybuffer" };
+        }
+        if (type.symbol?.name === "DataView") {
+            return { kind: "dataview" };
+        }
+        // Web Audio buffers are opaque context-owned resources. They are safe
+        // to retain in ordinary JS containers (sound caches are the common
+        // case), but their PCM storage stays behind the audio PAL.
+        if (type.symbol?.name === "AudioBuffer") {
+            return { kind: "handle", handle: "audio-buffer" };
+        }
+        if (
+            (type.symbol?.declarations ?? []).some(
+                ts.isClassDeclaration,
+            )
+        ) {
+            // Reached local classes keep their methods and identity in the
+            // class lowerer. Treating their public fields as an anonymous
+            // struct would erase both at a parameter or field boundary.
+            return undefined;
+        }
         const recordMap = this.fromRecordType(type, node);
         if (recordMap) {
             return recordMap;
         }
         if (type.symbol?.name === "Float32Array") {
             return { kind: "f32array" };
+        }
+        if (type.symbol?.name === "Uint8Array") {
+            return { kind: "u8array" };
         }
         if (type.symbol?.name === "Uint16Array") {
             return { kind: "u16array" };
@@ -428,9 +556,48 @@ export class DataTypeRegistry {
                 if (!element) {
                     return undefined;
                 }
+                // Replacing an element and mutating the object stored in an
+                // element are separate permissions: even ReadonlyArray keeps
+                // object identity for its values.
+                const storedElement =
+                    this.markStoredObjectReferences(element);
                 return symbolName === "Array"
-                    ? { kind: "vector", element }
-                    : { kind: "span", element };
+                    ? { kind: "vector", element: storedElement }
+                    : { kind: "span", element: storedElement };
+            }
+            if (
+                symbolName === "Map" ||
+                symbolName === "ReadonlyMap"
+            ) {
+                const [keyType, valueType] =
+                    this.checker.getTypeArguments(reference);
+                if (!keyType || !valueType) return undefined;
+                const key = this.fromTsType(keyType, node);
+                const value = this.fromTsType(valueType, node);
+                if (!key || !value) return undefined;
+                return {
+                    kind: "map",
+                    key: this.markStoredObjectReferences(key),
+                    value: this.markStoredObjectReferences(value),
+                };
+            }
+            if (symbolName === "Set") {
+                const [elementType] =
+                    this.checker.getTypeArguments(reference);
+                if (!elementType) return undefined;
+                const element = this.fromTsType(
+                    elementType,
+                    node,
+                );
+                return element
+                    ? {
+                          kind: "set",
+                          element:
+                              this.markStoredObjectReferences(
+                                  element,
+                              ),
+                      }
+                    : undefined;
             }
         }
         if (
@@ -513,20 +680,65 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        if (this.mappingInProgress.has(type)) {
-            return undefined;
+        const identity = this.structIdentity(type);
+        const completed =
+            this.structTypesByIdentity.get(identity);
+        if (completed) {
+            return completed;
         }
+        const activeName =
+            this.structNamesInProgress.get(identity);
+        if (activeName) {
+            this.referenceStructNames.add(activeName);
+            return { kind: "struct", name: activeName };
+        }
+        const preferredName =
+            type.aliasSymbol?.name ??
+            (type.symbol &&
+            type.symbol.name !== "__type" &&
+            type.symbol.name !== "__object"
+                ? type.symbol.name
+                : undefined);
+        const provisionalName = this.uniqueName(
+            preferredName
+                ? sanitizeIdentifier(preferredName)
+                : `Record${++this.anonymousStructIndex}`,
+            this.structNames,
+        );
         this.mappingInProgress.add(type);
+        this.structNamesInProgress.set(
+            identity,
+            provisionalName,
+        );
         try {
-            return this.fromStructTypeInner(type, node);
+            const mapped = this.fromStructTypeInner(
+                type,
+                node,
+                provisionalName,
+            );
+            if (mapped?.kind === "struct") {
+                this.structTypesByIdentity.set(
+                    identity,
+                    mapped,
+                );
+            }
+            return mapped;
         } finally {
             this.mappingInProgress.delete(type);
+            this.structNamesInProgress.delete(identity);
         }
+    }
+
+    private structIdentity(
+        type: ts.Type,
+    ): ts.Symbol | ts.Type {
+        return type.aliasSymbol ?? type.symbol ?? type;
     }
 
     private fromStructTypeInner(
         type: ts.Type,
         node: ts.Node,
+        provisionalName: string,
     ): DataType | undefined {
         const properties =
             this.checker.getPropertiesOfType(type);
@@ -543,25 +755,24 @@ export class DataTypeRegistry {
                     property,
                     declaration ?? node,
                 );
-            const mapped = this.fromTsType(
+            const mappedValue = this.fromTsType(
                 propertyType,
                 declaration ?? node,
             );
-            if (!mapped) {
+            if (!mappedValue) {
                 return undefined;
             }
+            const mapped: DataType = this.markStoredObjectReferences(
+                (property.flags & ts.SymbolFlags.Optional) !== 0 &&
+                mappedValue.kind !== "optional"
+                    ? { kind: "optional", inner: mappedValue }
+                    : mappedValue,
+            );
             fields.push({
                 name: sanitizeIdentifier(property.name),
                 type: mapped,
             });
         }
-        const preferredName =
-            type.aliasSymbol?.name ??
-            (type.symbol &&
-            type.symbol.name !== "__type" &&
-            type.symbol.name !== "__object"
-                ? type.symbol.name
-                : undefined);
         const key = `${fields
             .map(
                 (field) =>
@@ -569,20 +780,24 @@ export class DataTypeRegistry {
             )
             .join(",")}`;
         const existing = this.structsByKey.get(key);
-        if (existing) {
+        if (
+            existing &&
+            !this.referenceStructNames.has(
+                provisionalName,
+            )
+        ) {
             return {
                 kind: "struct",
                 name: existing.name,
             };
         }
-        const name = this.uniqueName(
-            preferredName
-                ? sanitizeIdentifier(preferredName)
-                : `Record${++this.anonymousStructIndex}`,
-            this.structNames,
-        );
+        const name = provisionalName;
         this.structsByKey.set(key, { name, fields });
         return { kind: "struct", name };
+    }
+
+    public isReferenceStruct(name: string): boolean {
+        return this.referenceStructNames.has(name);
     }
 
     /**
@@ -680,6 +895,29 @@ export class DataTypeRegistry {
             );
         }
         return `bblscene::${dataType.name}::${sanitizeIdentifier(literal)}`;
+    }
+
+    /**
+     * Converts a runtime string that TypeScript control flow narrowed to a
+     * string-literal union. The parser is emitted only for enums that reach
+     * this bridge, keeping ordinary literal-only enums zero-cost.
+     */
+    public enumFromStringCpp(
+        dataType: DataType & { kind: "enum" },
+        cpp: string,
+        node: ts.Node,
+    ): string {
+        const definition = [
+            ...this.enumsByKey.values(),
+        ].find((entry) => entry.name === dataType.name);
+        if (!definition) {
+            this.fail(
+                node,
+                `Unknown enum '${dataType.name}'.`,
+            );
+        }
+        this.runtimeEnumParsers.add(dataType.name);
+        return `bblscene::${dataType.name}_from_string(${cpp})`;
     }
 
     /**
@@ -892,6 +1130,10 @@ export class DataTypeRegistry {
                 return "double";
             case "boolean":
                 return "bool";
+            case "arraybuffer":
+                return "bbl::js::ArrayBuffer";
+            case "dataview":
+                return "bbl::js::DataView";
             case "string":
                 return "std::string";
             case "handle":
@@ -901,9 +1143,21 @@ export class DataTypeRegistry {
             case "enum":
                 return `bblscene::${dataType.name}`;
             case "optional":
+                if (
+                    dataType.inner.kind === "struct" &&
+                    this.isReferenceStruct(
+                        dataType.inner.name,
+                    )
+                ) {
+                    return this.cppType(dataType.inner);
+                }
                 return `bbl::js::Nullable<${this.cppType(dataType.inner)}>`;
             case "vector":
                 return `bbl::js::Array<${this.cppType(dataType.element)}>`;
+            case "map":
+                return `bbl::js::Map<${this.cppType(dataType.key)}, ${this.cppType(dataType.value)}>`;
+            case "set":
+                return `bbl::js::Set<${this.cppType(dataType.element)}>`;
             case "span":
                 return `bbl::js::Span<const ${this.cppType(dataType.element)}>`;
             case "tuple":
@@ -912,6 +1166,8 @@ export class DataTypeRegistry {
                 return `bbl::js::EnumMap<${this.cppType(dataType.element)}, ${this.enumMembers(dataType.enumName).length}>`;
             case "table":
                 return `const ${this.tableCppType(dataType.dimensions)}&`;
+            case "u8array":
+                return "bbl::js::U8Array";
             case "f32array":
                 return "bbl::js::F32Array";
             case "u16array":
@@ -927,6 +1183,10 @@ export class DataTypeRegistry {
                 return "n";
             case "boolean":
                 return "b";
+            case "arraybuffer":
+                return "ab";
+            case "dataview":
+                return "dv";
             case "string":
                 return "str";
             case "handle":
@@ -939,6 +1199,10 @@ export class DataTypeRegistry {
                 return `o(${this.typeKey(dataType.inner)})`;
             case "vector":
                 return `v(${this.typeKey(dataType.element)})`;
+            case "map":
+                return `map(${this.typeKey(dataType.key)},${this.typeKey(dataType.value)})`;
+            case "set":
+                return `set(${this.typeKey(dataType.element)})`;
             case "span":
                 return `r(${this.typeKey(dataType.element)})`;
             case "tuple":
@@ -947,6 +1211,8 @@ export class DataTypeRegistry {
                 return `m(${dataType.enumName},${this.typeKey(dataType.element)})`;
             case "table":
                 return `g(${dataType.dimensions.join("x")})`;
+            case "u8array":
+                return "u8";
             case "f32array":
                 return "f32";
             case "u16array":
@@ -993,9 +1259,32 @@ export class DataTypeRegistry {
                 "};",
                 "",
             );
+            if (
+                this.runtimeEnumParsers.has(
+                    definition.name,
+                )
+            ) {
+                lines.push(
+                    `inline ${definition.name} ${definition.name}_from_string(const std::string& value) {`,
+                    ...definition.members.map(
+                        (member) =>
+                            `    if (value == ${JSON.stringify(member)}) return ${definition.name}::${sanitizeIdentifier(member)};`,
+                    ),
+                    `    throw std::runtime_error("Invalid ${definition.name} value: " + value);`,
+                    "}",
+                    "",
+                );
+            }
         }
         const emitted = new Set<string>();
         const structs = [...this.structsByKey.values()];
+        for (const name of this.referenceStructNames) {
+            lines.push(
+                `struct ${name}Data;`,
+                `using ${name} = std::shared_ptr<${name}Data>;`,
+                "",
+            );
+        }
         const emitStruct = (
             definition: DataStructDefinition,
         ): void => {
@@ -1017,7 +1306,7 @@ export class DataTypeRegistry {
                 }
             }
             lines.push(
-                `struct ${definition.name} {`,
+                `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
                 ...definition.fields.map(
                     (field) =>
                         `    ${this.cppType(field.type)} ${field.name};`,
@@ -1050,7 +1339,9 @@ export class DataTypeRegistry {
     ): string[] {
         switch (dataType.kind) {
             case "struct":
-                return [dataType.name];
+                return this.isReferenceStruct(dataType.name)
+                    ? []
+                    : [dataType.name];
             case "optional":
                 return this.structDependencies(
                     dataType.inner,

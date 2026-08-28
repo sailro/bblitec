@@ -641,6 +641,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "PAL, over LabSound with an SDL3 device)",
         consumers: CMAKE,
     },
+    "audio:buffer-source": {
+        provenance:
+            "the reached Web Audio graph creates an AudioBuffer, writes its " +
+            "channel data, and plays it through an AudioBufferSourceNode",
+        consumers: CMAKE,
+    },
     "audio:oscillator": {
         provenance:
             "the reached Web Audio graph calls AudioContext.createOscillator()",

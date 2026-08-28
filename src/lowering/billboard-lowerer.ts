@@ -1126,7 +1126,24 @@ double add_billboard_sprite_index(
         props.has_color ? props.color.w : 1.0f;
 
     system.count = index + 1u;
+    system.instance_version += 1u;
     return static_cast<double>(index);
+}
+
+void clear_billboard_sprites(
+    Engine& engine,
+    BillboardSystemHandle system_handle) {
+    if (system_handle.value >= engine.billboard_systems.size()) {
+        throw std::runtime_error("Invalid billboard system handle.");
+    }
+    // Keep the allocated instance buffer: the JavaScript system resets its
+    // logical count and reuses capacity when a dynamic set is refilled.
+    BillboardSystemRecord& system =
+        engine.billboard_systems[system_handle.value];
+    if (system.count != 0u) {
+        system.count = 0u;
+        system.instance_version += 1u;
+    }
 }
 
 // setBillboardShaderParams: the fx UBO the pipeline binds reads these four

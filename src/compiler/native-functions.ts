@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { sanitizeCppIdentifier } from "../cpp-literals.js";
+import { cppIdentifier } from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
@@ -21,6 +21,7 @@ export interface NativeFunctionContext {
     lookupIdentifierValue(
         identifier: ts.Identifier,
     ): Value | undefined;
+    compileValue(expression: ts.Expression): Value;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -148,7 +149,7 @@ export class NativeFunctionLowerer {
             // the expression is evaluated into the callee's local binding.
             return undefined;
         }
-        this.ensureEmitted(signature, callee);
+        this.ensureEmitted(signature);
         const argumentsCpp = signature.parameters.map(
             (parameter, index) => {
                 const argument = call.arguments[index];
@@ -186,8 +187,12 @@ export class NativeFunctionLowerer {
         expression: ts.Expression,
     ): boolean {
         const unwrapped = this.context.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            const bound =
+                this.context.lookupIdentifierValue(unwrapped);
+            return !bound || bound.kind === "data";
+        }
         return (
-            ts.isIdentifier(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         );
@@ -200,21 +205,7 @@ export class NativeFunctionLowerer {
         if (!returnType) {
             return { kind: "void", cpp };
         }
-        if (
-            returnType.kind === "number" ||
-            returnType.kind === "boolean"
-        ) {
-            return {
-                kind: returnType.kind,
-                cpp,
-                dataType: returnType,
-            };
-        }
-        return {
-            kind: "data",
-            cpp,
-            dataType: returnType,
-        };
+        return this.context.dataLowerer.leafValue(cpp, returnType);
     }
 
     private compileArgument(
@@ -230,11 +221,17 @@ export class NativeFunctionLowerer {
         }
         if (parameter.byReference) {
             if (parameter.readOnly) {
-                const path =
+                const rawPath =
                     this.context.dataLowerer.compileDataPath(
                         expression,
                         "read",
                     );
+                const path = rawPath
+                    ? this.context.dataLowerer.narrowOptional(
+                          rawPath,
+                          expression,
+                      )
+                    : undefined;
                 if (
                     path?.dataType &&
                     dataTypesEqual(path.dataType, dataType)
@@ -249,18 +246,26 @@ export class NativeFunctionLowerer {
             // JavaScript passes object references; the compiled subset
             // passes native references. Read access suffices here because
             // callee writes intentionally alias the caller's object.
-            const value =
+            const rawValue =
                 this.context.dataLowerer.compileDataPath(
                     expression,
                     "read",
-                );
+                ) ?? this.context.compileValue(expression);
+            const value =
+                rawValue.kind === "data"
+                    ? this.context.dataLowerer.narrowOptional(
+                          rawValue,
+                          expression,
+                      )
+                    : rawValue;
             if (
                 value?.kind !== "data" ||
-                !value.dataType
+                !value.dataType ||
+                !dataTypesEqual(value.dataType, dataType)
             ) {
                 this.context.fail(
                     expression,
-                    "By-reference data arguments require addressable locals or paths.",
+                    `By-reference data arguments require a matching addressable local or path; received ${value?.kind ?? "no value"} ${value?.dataType ? JSON.stringify(value.dataType) : "without a data type"}, expected ${JSON.stringify(dataType)}.`,
                 );
             }
             return value.cpp;
@@ -342,9 +347,15 @@ export class NativeFunctionLowerer {
                 name: parameter.name,
                 type: parameterType,
                 byReference:
-                    parameterType.kind === "struct" ||
-                    parameterType.kind === "vector" ||
+                    (parameterType.kind === "struct" &&
+                        !this.context.dataTypes.isReferenceStruct(
+                            parameterType.name,
+                        )) ||
+                    parameterType.kind === "map" ||
+                    parameterType.kind === "set" ||
                     parameterType.kind === "optional" ||
+                    parameterType.kind === "arraybuffer" ||
+                    parameterType.kind === "dataview" ||
                     isTypedArrayType(parameterType),
                 readOnly: this.parameterIsReadOnly(
                     declaration,
@@ -417,6 +428,8 @@ export class NativeFunctionLowerer {
             "findLast",
             "findLastIndex",
             "forEach",
+            "get",
+            "has",
             "includes",
             "indexOf",
             "join",
@@ -522,9 +535,15 @@ export class NativeFunctionLowerer {
             case "vector":
             case "span":
             case "enummap":
+            case "set":
                 return this.carriesHandle(
                     dataType.element,
                     seen,
+                );
+            case "map":
+                return (
+                    this.carriesHandle(dataType.key, seen) ||
+                    this.carriesHandle(dataType.value, seen)
                 );
             case "struct": {
                 if (seen.has(dataType.name)) {
@@ -629,7 +648,7 @@ export class NativeFunctionLowerer {
     }
 
     private uniqueName(preferred: string): string {
-        const sanitized = sanitizeCppIdentifier(preferred);
+        const sanitized = cppIdentifier(preferred);
         let name = sanitized;
         let suffix = 1;
         while (this.usedNames.has(name)) {
@@ -641,13 +660,13 @@ export class NativeFunctionLowerer {
 
     private ensureEmitted(
         signature: NativeFunctionSignature,
-        callee: ts.Identifier,
     ): void {
         if (this.active.has(signature.declaration)) {
-            this.context.fail(
-                callee,
-                `Recursive call to '${callee.text}' is not supported.`,
-            );
+            // Native data functions are declared before any definition is
+            // emitted, so a direct or mutual-recursion back-edge can call
+            // the signature already being generated. Inlined closures do
+            // not have that property and retain their separate rejection.
+            return;
         }
         if (this.emitted.has(signature.declaration)) {
             return;

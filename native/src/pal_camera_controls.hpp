@@ -26,9 +26,11 @@ struct CameraPointerState {
  * Opt-in frame-indexed keyboard input for deterministic native diagnostics.
  *
  * BBLITE_INPUT_REPLAY is a comma-separated sequence of DOM KeyboardEvent.code
- * values. One entry is dispatched as a down/up pair per frame; "-" is an idle
- * frame. It reaches the application's ordinary callbacks and does not mutate
- * generated source or camera state directly.
+ * values. A plain entry is dispatched as a down/up pair in one frame, `+Code`
+ * dispatches key-down only, `-Code` dispatches key-up only, and `-` is an idle
+ * frame. The split form deterministically exercises held-input behaviour. All
+ * forms reach the application's ordinary callbacks and do not mutate generated
+ * source or camera state directly.
  */
 class KeyboardReplay {
 public:
@@ -58,17 +60,27 @@ public:
         const std::string& code =
             codes_[static_cast<std::size_t>(frame)];
         if (code.empty() || code == "-") return;
+        const bool down_only = code.size() > 1 && code.front() == '+';
+        const bool up_only = code.size() > 1 && code.front() == '-';
+        const std::string_view event_code =
+            down_only || up_only
+                ? std::string_view(code).substr(1)
+                : std::string_view(code);
         const PlatformKeyboardEvent event{
-            .code = code,
+            .code = std::string(event_code),
             .repeat = false,
         };
-        trace_keyboard_event(code, true, false);
-        for (const auto& callback : engine.key_down_callbacks) {
-            callback(event);
+        if (!up_only) {
+            trace_keyboard_event(event_code, true, false);
+            for (const auto& callback : engine.key_down_callbacks) {
+                callback(event);
+            }
         }
-        trace_keyboard_event(code, false, false);
-        for (const auto& callback : engine.key_up_callbacks) {
-            callback(event);
+        if (!down_only) {
+            trace_keyboard_event(event_code, false, false);
+            for (const auto& callback : engine.key_up_callbacks) {
+                callback(event);
+            }
         }
     }
 
@@ -130,6 +142,8 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
         case SDL_SCANCODE_7: return "Digit7";
         case SDL_SCANCODE_8: return "Digit8";
         case SDL_SCANCODE_9: return "Digit9";
+        case SDL_SCANCODE_COMMA: return "Comma";
+        case SDL_SCANCODE_PERIOD: return "Period";
         default: return {};
     }
 }
@@ -148,7 +162,7 @@ inline void handle_platform_event(
             event.type == SDL_EVENT_KEY_DOWN,
             event.key.repeat);
         const PlatformKeyboardEvent keyboard_event{
-            .code = code,
+            .code = std::string(code),
             .repeat = event.key.repeat,
         };
         const auto& callbacks = event.type == SDL_EVENT_KEY_DOWN
@@ -162,6 +176,20 @@ inline void handle_platform_event(
     if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
         for (const auto& callback : engine.pointer_down_callbacks) {
             callback();
+        }
+    }
+    if (
+        event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+        event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+        const PlatformMouseEvent mouse_event{
+            .button = static_cast<double>(event.button.button - 1),
+        };
+        const auto& callbacks =
+            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+                ? engine.mouse_down_callbacks
+                : engine.mouse_up_callbacks;
+        for (const auto& callback : callbacks) {
+            callback(mouse_event);
         }
         return;
     }

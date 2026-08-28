@@ -11,6 +11,10 @@
 
 namespace bbl {
 
+namespace js {
+class U8Array;
+}
+
 inline constexpr float pi = 3.14159265358979323846f;
 // Camera angles are JavaScript numbers upstream, so `Math.PI / 2` reaches
 // `Math.cos` as a double and not as its float32 neighbour. The two differ
@@ -71,8 +75,13 @@ struct EngineOptions {
 
 /** Browser-neutral keyboard data delivered by the platform event loop. */
 struct PlatformKeyboardEvent {
-    std::string_view code{};
+    std::string code{};
     bool repeat = false;
+};
+
+/** Browser-neutral mouse-button data delivered by the platform event loop. */
+struct PlatformMouseEvent {
+    double button = 0.0;
 };
 
 struct MeshHandle {
@@ -1139,6 +1148,10 @@ struct BillboardSystemRecord {
     Vec3 axis{};
     float alpha_cutoff = 0.0f;
     std::uint32_t count = 0;
+    // Incremented whenever the active packed instance rows change. Count is
+    // not a sufficient upload stamp: a dynamic system may clear and refill
+    // the same number of sprites with different positions or atlas frames.
+    std::uint64_t instance_version = 0;
     std::uint32_t capacity = 0;
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
@@ -1902,6 +1915,10 @@ struct Engine {
     std::vector<std::function<void(const PlatformKeyboardEvent&)>>
         key_up_callbacks;
     std::vector<std::function<void()>> pointer_down_callbacks;
+    std::vector<std::function<void(const PlatformMouseEvent&)>>
+        mouse_down_callbacks;
+    std::vector<std::function<void(const PlatformMouseEvent&)>>
+        mouse_up_callbacks;
     std::vector<std::function<void(bool)>> visibility_change_callbacks;
     /**
      * Every animation manager created with this engine
@@ -2085,7 +2102,11 @@ std::vector<Vec3d> vec3_path(const Points& points) {
     std::vector<Vec3d> path;
     path.reserve(points.size());
     for (const auto& point : points) {
-        path.push_back(Vec3d{point.x, point.y, point.z});
+        if constexpr (requires { point.x; point.y; point.z; }) {
+            path.push_back(Vec3d{point.x, point.y, point.z});
+        } else {
+            path.push_back(Vec3d{point->x, point->y, point->z});
+        }
     }
     return path;
 }
@@ -2385,6 +2406,11 @@ void set_shader_texture(
     MaterialHandle material,
     std::uint32_t slot,
     FileTexture texture);
+void set_shader_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    const PixelsTexture& texture);
 void set_standard_diffuse_render_texture(
     Engine& engine,
     MaterialHandle material,
@@ -2683,6 +2709,12 @@ void on_key_up(
 void on_pointer_down(
     Engine& engine,
     std::function<void()> callback);
+void on_mouse_down(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback);
+void on_mouse_up(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback);
 void on_visibility_change(
     Engine& engine,
     std::function<void(bool)> callback);
@@ -2774,6 +2806,28 @@ struct LoadSpriteAtlasOptions {
     // scroll wants repeat on both axes.
     TextureAddressMode address_u = TextureAddressMode::clamp;
     TextureAddressMode address_v = TextureAddressMode::clamp;
+};
+
+/** Normalized runtime input to the in-memory sprite-atlas shelf packer. */
+struct SpriteAtlasFramePixelsView {
+    const std::uint8_t* pixels = nullptr;
+    std::size_t byte_length = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t src_x = 0;
+    std::uint32_t src_y = 0;
+    std::uint32_t src_stride_bytes = 0;
+    Vec2 pivot{0.5f, 0.5f};
+};
+
+struct SpriteAtlasPackOptions {
+    std::uint32_t padding_px = 1;
+    std::uint32_t max_width_px = 1024;
+    TextureFilter sampling = TextureFilter::nearest;
+    bool premultiplied_alpha = false;
+    bool has_capacity = false;
+    std::uint32_t capacity_width = 0;
+    std::uint32_t capacity_height = 0;
 };
 
 struct Sprite2DLayerOptions {
@@ -2871,6 +2925,10 @@ SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
     const std::string& path,
     LoadSpriteAtlasOptions options);
+SpriteAtlasHandle create_sprite_atlas_from_frames(
+    Engine& engine,
+    const std::vector<SpriteAtlasFramePixelsView>& sources,
+    SpriteAtlasPackOptions options);
 Sprite2DLayerHandle create_sprite_2d_layer(
     Engine& engine,
     SpriteAtlasHandle atlas,
@@ -2886,6 +2944,10 @@ double add_billboard_sprite_index(
     Engine& engine,
     BillboardSystemHandle system,
     BillboardSpriteProps props);
+
+void clear_billboard_sprites(
+    Engine& engine,
+    BillboardSystemHandle system);
 
 void add_billboard_system(
     Scene& scene,
@@ -2935,6 +2997,12 @@ struct PixelsTextureOptions {
 PixelsTexture create_texture_2d_from_pixels(
     Engine& engine,
     const std::string& path,
+    double width,
+    double height,
+    PixelsTextureOptions options = {});
+PixelsTexture create_texture_2d_from_pixels(
+    Engine& engine,
+    const js::U8Array& pixels,
     double width,
     double height,
     PixelsTextureOptions options = {});

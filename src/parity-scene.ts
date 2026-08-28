@@ -1028,6 +1028,13 @@ export function validateReferenceCapture(
     }
 }
 
+/** Preserve an ad-hoc scene's source path when a parity operation fans out.
+ * Its derived id is an output name, not a registry key that can resolve the
+ * scene in the child operation. */
+export function paritySceneTarget(scene: SceneDefinition): string {
+    return isRegisteredScene(scene) ? scene.id : scene.source;
+}
+
 export function resolveParityThresholds(
     config: SceneParityDefinition,
     backend: string,
@@ -1424,9 +1431,9 @@ export async function runSceneParity(
 // CPU side; disagreement puts it on the GPU side) — and writes the
 // combined report beside the per-backend ones.
 export async function runSceneParityDifferential(
-    sceneId: string,
+    sceneIdOrSource: string,
 ): Promise<void> {
-    const scene = resolveScene(sceneId);
+    const scene = resolveScene(sceneIdOrSource);
     const config = scene.parity;
     if (!config) {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
@@ -1438,11 +1445,12 @@ export async function runSceneParityDifferential(
     // the other's.
     const sdlImage = parityNativeImagePath(outputDirectory, "gpu");
     const dawnImage = parityNativeImagePath(outputDirectory, "dawn");
+    const sceneTarget = paritySceneTarget(scene);
     await withEnvironment("BBLITE_GPU_BACKEND", undefined, () =>
-        runSceneParity([sceneId]),
+        runSceneParity([sceneTarget]),
     );
     await withEnvironment("BBLITE_GPU_BACKEND", "dawn", () =>
-        runSceneParity([sceneId]),
+        runSceneParity([sceneTarget]),
     );
     const backendDelta = compareImages(sdlImage, dawnImage);
     const readBackendReport = (suffix: string): {

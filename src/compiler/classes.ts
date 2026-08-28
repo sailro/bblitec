@@ -1,13 +1,22 @@
 import ts from "typescript";
+import type {
+    DataType,
+    DataTypeRegistry,
+} from "./data-types.js";
 import type { Value } from "./types.js";
 
 export interface ClassLoweringContext {
     readonly checker: ts.TypeChecker;
+    readonly dataTypes: DataTypeRegistry;
     compileValue(expression: ts.Expression): Value;
     emitStatement(statement: ts.Statement): void;
     bindParameterValue(
         identifier: ts.Identifier,
         value: Value,
+    ): void;
+    bindClassParameterValue(
+        identifier: ts.Identifier,
+        argument: ts.Expression,
     ): void;
     bindClassField(
         name: ts.Identifier,
@@ -16,8 +25,20 @@ export interface ClassLoweringContext {
     pushScope(cppPrefix: string): void;
     popScope(): void;
     allocateUserFunctionPrefix(): string;
+    emit(line: string): void;
+    increaseIndent(): void;
+    decreaseIndent(): void;
+    beginNativeFunctionBody(
+        returnType: DataType | undefined,
+    ): void;
+    endNativeFunctionBody(): void;
+    dataValue(cpp: string, dataType: DataType): Value;
     defineThis(instance: Value | undefined): void;
     activeThis(): Value | undefined;
+    registerClassInstance(
+        instance: Value,
+        declaration: ts.ClassDeclaration,
+    ): void;
     unwrap(expression: ts.Expression): ts.Expression;
     fail(node: ts.Node, message: string): never;
 }
@@ -83,11 +104,31 @@ export class ClassLowerer {
     ): Value {
         this.rejectUnsupportedMembers(declaration);
         const fields: Record<string, Value> = {};
+        const getters: Record<
+            string,
+            ts.GetAccessorDeclaration
+        > = {};
+        for (const member of declaration.members) {
+            if (
+                ts.isGetAccessorDeclaration(member) &&
+                ts.isIdentifier(member.name)
+            ) {
+                getters[member.name.text] = member;
+            }
+        }
         const instance: Value = {
             kind: "record",
             cpp: "",
             recordProperties: fields,
+            recordGetters: getters,
         };
+        // Constructor bodies may call another method on `this`. Make the
+        // declaration discoverable as soon as the instance record exists,
+        // rather than only after construction has already returned.
+        this.context.registerClassInstance(
+            instance,
+            declaration,
+        );
 
         this.context.pushScope(
             this.context.allocateUserFunctionPrefix(),
@@ -123,6 +164,7 @@ export class ClassLowerer {
                 this.bindParameters(
                     constructorDeclaration,
                     expression.arguments ?? [],
+                    fields,
                 );
                 for (const statement of constructorDeclaration
                     .body?.statements ?? []) {
@@ -158,19 +200,44 @@ export class ClassLowerer {
                 `Class '${declaration.name?.text ?? "?"}' has no reached method '${methodName}'.`,
             );
         }
-        // Methods lower as inlined statements, so a value-returning
-        // method has nowhere to put its result. The reached classes are
-        // all command methods; say so rather than failing later on the
-        // return statement itself.
-        const returnsValue = method.body?.statements.some(
-            (statement) =>
-                ts.isReturnStatement(statement) &&
-                statement.expression !== undefined,
-        );
-        if (returnsValue) {
+        if (!method.body) {
             this.context.fail(
-                call,
-                `Method '${methodName}' returns a value; the reached class subset lowers void methods only.`,
+                method,
+                `Reached method '${methodName}' requires a body.`,
+            );
+        }
+        const signature =
+            this.context.checker.getSignatureFromDeclaration(
+                method,
+            );
+        const checkerReturn = signature
+            ? this.context.checker.getReturnTypeOfSignature(
+                  signature,
+              )
+            : undefined;
+        const effectiveReturn =
+            checkerReturn &&
+            method.modifiers?.some(
+                (modifier) =>
+                    modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            )
+                ? (this.context.checker.getAwaitedType(
+                      checkerReturn,
+                  ) ?? checkerReturn)
+                : checkerReturn;
+        const returnsVoid =
+            !effectiveReturn ||
+            (effectiveReturn.flags & ts.TypeFlags.Void) !== 0;
+        const returnType = returnsVoid
+            ? undefined
+            : this.context.dataTypes.fromTsType(
+                  effectiveReturn,
+                  method,
+              );
+        if (!returnsVoid && !returnType) {
+            this.context.fail(
+                method,
+                `Method '${methodName}' returns a value outside the native data model.`,
             );
         }
         this.context.pushScope(
@@ -180,15 +247,40 @@ export class ClassLowerer {
         this.context.defineThis(instance);
         try {
             this.bindParameters(method, call.arguments);
-            for (const statement of method.body?.statements ??
-                []) {
-                this.context.emitStatement(statement);
+            const result = returnsVoid
+                ? undefined
+                : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
+            this.context.emit(
+                returnsVoid
+                    ? "[&]() -> void {"
+                    : `const auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
+            );
+            this.context.increaseIndent();
+            this.context.beginNativeFunctionBody(
+                returnType,
+            );
+            try {
+                for (const statement of method.body.statements) {
+                    this.context.emitStatement(statement);
+                }
+            } finally {
+                this.context.endNativeFunctionBody();
+                this.context.decreaseIndent();
             }
+            this.context.emit("}();");
+            return result
+                ? {
+                      ...this.context.dataValue(
+                          result,
+                          returnType!,
+                      ),
+                      requiresExplicitDiscard: true,
+                  }
+                : { kind: "void", cpp: "" };
         } finally {
             this.context.defineThis(previousThis);
             this.context.popScope();
         }
-        return { kind: "void", cpp: "" };
     }
 
     /**
@@ -200,6 +292,7 @@ export class ClassLowerer {
             | ts.ConstructorDeclaration
             | ts.MethodDeclaration,
         argumentList: readonly ts.Expression[],
+        parameterProperties?: Record<string, Value>,
     ): void {
         declaration.parameters.forEach((parameter, index) => {
             if (!ts.isIdentifier(parameter.name)) {
@@ -217,10 +310,28 @@ export class ClassLowerer {
                     `Parameter '${parameter.name.text}' requires an argument or a default.`,
                 );
             }
-            this.context.bindParameterValue(
+            // The declared parameter type is the sink. A compile-time
+            // object record passed to a struct parameter must materialize
+            // as that struct before constructor field wiring observes it.
+            this.context.bindClassParameterValue(
                 parameter.name,
-                this.context.compileValue(argument),
+                argument,
             );
+            if (
+                parameterProperties &&
+                ts.isParameterPropertyDeclaration(
+                    parameter,
+                    declaration,
+                )
+            ) {
+                // TypeScript initializes a parameter-property before the
+                // constructor body. Expose that implicit field on the same
+                // compile-time instance record as an explicit declaration.
+                parameterProperties[parameter.name.text] =
+                    this.context.compileValue(
+                        parameter.name,
+                    );
+            }
         });
     }
 
@@ -234,13 +345,10 @@ export class ClassLowerer {
             );
         }
         for (const member of declaration.members) {
-            if (
-                ts.isGetAccessorDeclaration(member) ||
-                ts.isSetAccessorDeclaration(member)
-            ) {
+            if (ts.isSetAccessorDeclaration(member)) {
                 this.context.fail(
                     member,
-                    "Class accessors are outside the supported subset.",
+                    "Class setters are outside the supported subset.",
                 );
             }
             if (

@@ -9,6 +9,34 @@ function source(path: string): string {
     return readFileSync(path, "utf8");
 }
 
+test("keeps JavaScript array helpers compatible with generated native vectors", () => {
+    const runtime = source("native/include/bblite/js_data.hpp");
+    assert.match(
+        runtime,
+        /array_length\(const std::vector<T>& values\)/,
+    );
+    for (const kind of ["u8", "u16", "f32", "u32"]) {
+        assert.match(
+            runtime,
+            new RegExp(
+                `${kind}_array_from\\(\\s*const std::vector<double>& values\\)`,
+            ),
+        );
+    }
+});
+
+test("accepts value and identity-backed records in native vector paths", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    assert.match(
+        runtime,
+        /if constexpr \(requires \{ point\.x; point\.y; point\.z; \}\)/,
+    );
+    assert.match(
+        runtime,
+        /Vec3d\{point->x, point->y, point->z\}/,
+    );
+});
+
 test("uses TypeScript semantic symbols instead of import-name text matching", () => {
     const compiler = source("src/compiler.ts");
     assert.match(compiler, /createCompilerProgram/);
@@ -204,7 +232,7 @@ test("resolves property reads from one declared table", () => {
     assert.equal(
         (compiler.match(/readOwnerProperty\(/g) ?? [])
             .length,
-        5,
+        6,
     );
     assert.equal(
         (compiler.match(/readProperty\(/g) ?? []).length,
@@ -546,12 +574,103 @@ test("preserves multisampling across the transmission scene-color copy", () => {
     );
 });
 
+test("composes registered sprite renderers over scene output", () => {
+    const scene = source("native/src/pal_sdl_gpu.cpp");
+    const sprites = source("native/src/pal_sdl_gpu_sprite.hpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(scene, /#include "pal_sdl_gpu_sprite\.hpp"/);
+    assert.doesNotMatch(scene, /reject_uncomposed_sprites\(engine\)/);
+    assert.match(
+        scene,
+        /sprite_target\.texture = visible_color;[\s\S]{0,180}SDL_GPU_LOADOP_LOAD/,
+    );
+    assert.match(
+        scene,
+        /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,300}record_sprite_pass\(/,
+    );
+    assert.match(
+        sprites,
+        /GpuBufferUploadBatch\* buffer_uploads = nullptr/,
+    );
+    assert.match(dawn, /#include "pal_dawn_sprite\.hpp"/);
+    assert.doesNotMatch(dawn, /reject_uncomposed_sprites\(engine\)/);
+    assert.match(
+        dawn,
+        /sprite_attachment\.view = surface_view;[\s\S]{0,180}WGPULoadOp_Load/,
+    );
+    assert.match(
+        dawn,
+        /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,420}record_dawn_sprite_pass\(/,
+    );
+});
+
+test("invalidates billboard uploads when same-count instance data changes", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const lowerer = source("src/lowering/billboard-lowerer.ts");
+    const shared = source("native/src/pal_gpu_shared.hpp");
+
+    assert.match(
+        runtime,
+        /struct BillboardSystemRecord[\s\S]{0,1200}std::uint64_t instance_version = 0;/,
+    );
+    assert.match(
+        lowerer,
+        /system\.count = index \+ 1u;\s*system\.instance_version \+= 1u;/,
+    );
+    assert.match(
+        lowerer,
+        /if \(system\.count != 0u\)[\s\S]{0,120}system\.instance_version \+= 1u;/,
+    );
+    assert.match(
+        shared,
+        /stamp\.instance_version != system\.instance_version/,
+    );
+    assert.match(
+        shared,
+        /stamp\.instance_version = system\.instance_version;/,
+    );
+});
+
+test("does not idle either GPU backend for runtime scene topology updates", () => {
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(
+        sdl,
+        /scene\.mesh_membership_version !=[\s\S]{0,300}SDL releases GPU resources only when pending command/,
+    );
+    assert.doesNotMatch(sdl, /SDL_WaitForGPUIdle topology update/);
+    assert.match(
+        dawn,
+        /std::vector<DawnMesh> updated_meshes =[\s\S]{0,1200}rematch_render_meshes\([\s\S]{0,1200}rebuild_task_draw_lists\(\);/,
+    );
+    assert.doesNotMatch(dawn, /wgpuQueueOnSubmittedWorkDone/);
+});
+
+test("instrumented draw census follows the submitted screenshot frame", () => {
+    const capture = source("src/capture-instrumented.ts");
+
+    assert.match(capture, /const bundleDraws = \{\}/);
+    assert.match(capture, /let submittedPassDraws = \{\}/);
+    assert.match(
+        capture,
+        /GPUQueue\.prototype\.submit = function[\s\S]{0,500}window\.__draws = \{ \.\.\.bundleDraws, \.\.\.submittedPassDraws \}/,
+    );
+    assert.doesNotMatch(
+        capture,
+        /window\.__draws\[key\] = \(window\.__draws\[key\]/,
+    );
+});
+
 test("keeps dynamic shader geometry local and transforms it per draw", () => {
     const shared = source("native/src/pal_gpu_shared.hpp");
     const sdl = source("native/src/pal_sdl_gpu.cpp");
     const dawn = source("native/src/pal_dawn.cpp");
+    const capture = source("native/src/pal_render_capture.hpp");
 
     assert.match(shared, /inline std::vector<GpuVertex> local_vertices\(/);
+    assert.match(shared, /rematch_render_meshes\(/);
     assert.match(shared, /inline std::array<float, 16> shader_draw_world\(/);
     assert.match(
         shared,
@@ -568,6 +687,11 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
             /shader_material\s*\?\s*local_vertices\(geometry\)/,
         );
         assert.match(backend, /shared_shader_geometries/);
+        assert.match(backend, /shared_geometry->users/);
+        assert.match(backend, /prune_shared_shader_geometries/);
+        assert.match(backend, /shared_shader_material_textures/);
+        assert.match(backend, /shared_shader_textures->users/);
+        assert.match(backend, /prune_shared_shader_material_textures/);
         assert.match(backend, /shader_draw_world\(/);
         assert.match(backend, /shader_world_view_projection\(/);
         assert.match(
@@ -575,6 +699,12 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
             /item\.material_kind ==\s*upstream::RenderMaterialKind::shader[\s\S]{0,300}transform_version = mesh\.transform_version;[\s\S]{0,80}continue;/,
         );
     }
+    assert.match(capture, /shader_draw_world\(engine\.meshes\[/);
+    assert.match(capture, /shader_world_view\(\s*pass_matrices\.view/);
+    assert.match(
+        capture,
+        /shader_stage_block_floats\(\s*block, shader_pass_matrices, material\)/,
+    );
 
     // Local/shared geometry does not make the per-draw instance streams
     // global geometry. A custom shader can consume the matrix and colour
@@ -611,24 +741,24 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
 
 test("releases Dawn mesh dependents before their owned resources", () => {
     const dawn = source("native/src/pal_dawn.cpp");
-    const releaseMeshes = dawn.slice(
+    const releaseMesh = dawn.slice(
+        dawn.indexOf("    void release_mesh(DawnMesh& mesh)"),
         dawn.indexOf("    void release_meshes()"),
-        dawn.indexOf("    ~DawnState()"),
     );
-    const bindingRelease = releaseMeshes.indexOf(
+    const bindingRelease = releaseMesh.indexOf(
         "wgpuBindGroupRelease(binding.textures)",
     );
-    const drawStateRelease = releaseMeshes.indexOf(
+    const drawStateRelease = releaseMesh.indexOf(
         "release_dawn_draw_states(mesh.pinned_states)",
     );
-    const textureRelease = releaseMeshes.indexOf(
+    const textureRelease = releaseMesh.indexOf(
         "wgpuTextureViewRelease(mesh.owned_views[slot])",
     );
     assert.ok(bindingRelease >= 0);
     assert.ok(drawStateRelease > bindingRelease);
     assert.ok(textureRelease > drawStateRelease);
     assert.match(
-        releaseMeshes,
+        releaseMesh,
         /mesh\.owned_textures\[slot\] && mesh\.samplers\[slot\]/,
     );
 

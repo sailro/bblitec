@@ -120,6 +120,8 @@ function initScript(skipDrawIndexCount: number): string {
   window.__wgpuDump = dump;
   window.__draws = {};
   window.__texUploads = [];
+  const bundleDraws = {};
+  let submittedPassDraws = {};
   let nextBufferId = 1;
   let nextTextureId = 1;
   const bufferMeta = new WeakMap();
@@ -253,20 +255,37 @@ function initScript(skipDrawIndexCount: number): string {
 
   for (const proto of [GPURenderPassEncoder.prototype, GPURenderBundleEncoder.prototype]) {
     const tag = proto === GPURenderPassEncoder.prototype ? "pass" : "bundle";
+    const draws = tag === "pass" ? () => submittedPassDraws : () => bundleDraws;
     const origDrawIndexed = proto.drawIndexed;
     proto.drawIndexed = function (indexCount, instanceCount, firstIndex, baseVertex, firstInstance) {
       const key = tag + ".drawIndexed(" + indexCount + "," + (instanceCount ?? 1) + "," + (firstIndex ?? 0) + "," + (baseVertex ?? 0) + ")";
-      window.__draws[key] = (window.__draws[key] || 0) + 1;
+      const target = draws();
+      target[key] = (target[key] || 0) + 1;
       if (skipDrawIndexCount > 0 && indexCount === skipDrawIndexCount) return;
       return origDrawIndexed.call(this, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     };
     const origDraw = proto.draw;
     proto.draw = function (vertexCount, instanceCount, firstVertex, firstInstance) {
       const key = tag + ".draw(" + vertexCount + "," + (instanceCount ?? 1) + "," + (firstVertex ?? 0) + ")";
-      window.__draws[key] = (window.__draws[key] || 0) + 1;
+      const target = draws();
+      target[key] = (target[key] || 0) + 1;
       return origDraw.call(this, vertexCount, instanceCount, firstVertex, firstInstance);
     };
   }
+
+  // Render bundles are recorded once and replayed every frame; direct pass
+  // draws are recorded anew. Keep the bundles plus the last submitted pass
+  // instead of the union of every transient shape seen during the settle
+  // interval. The resulting census describes the screenshot's frame just as
+  // the native capture does.
+  const origSubmit = GPUQueue.prototype.submit;
+  GPUQueue.prototype.submit = function (commandBuffers) {
+    if (Object.keys(submittedPassDraws).length > 0) {
+      window.__draws = { ...bundleDraws, ...submittedPassDraws };
+      submittedPassDraws = {};
+    }
+    return origSubmit.call(this, commandBuffers);
+  };
 })();`;
 }
 

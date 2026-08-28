@@ -8,9 +8,13 @@ import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
+import { staticNumberValue } from "./option-helpers.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
+type LookupOptional = (
+    identifier: ts.Identifier,
+) => Value | undefined;
 type OnAwait = (expression: ts.AwaitExpression) => void;
 type ResolveSymbol = (
     identifier: ts.Identifier,
@@ -49,6 +53,7 @@ export class StaticEvaluator {
             ts.Symbol,
             ts.Expression
         >,
+        private readonly checker: ts.TypeChecker,
         private readonly resolveSymbol: ResolveSymbol,
         private readonly resolveProperty: ResolveProperty,
         private readonly resolveElement: ResolveElement,
@@ -59,6 +64,7 @@ export class StaticEvaluator {
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
         private readonly narrowOptional: NarrowOptional,
         private readonly lookup: Lookup,
+        private readonly lookupOptional: LookupOptional,
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
         private readonly onJsData: () => void,
@@ -327,6 +333,9 @@ export class StaticEvaluator {
                 // time generation succeeds the guard is settled.
                 return "true";
             }
+            if (value.truthinessCpp) {
+                return value.truthinessCpp;
+            }
             if (value.optionalFoundCpp) {
                 // A handle a search produced: upstream's `find` returns
                 // `undefined` when nothing matched, so the truthiness a
@@ -390,7 +399,55 @@ export class StaticEvaluator {
                 ? this.floatLiteral(value)
                 : this.doubleLiteral(value);
         }
+        if (
+            ts.isIdentifier(unwrapped) &&
+            (unwrapped.text === "Infinity" ||
+                unwrapped.text === "NaN")
+        ) {
+            const type = precision === "float"
+                ? "float"
+                : "double";
+            return unwrapped.text === "Infinity"
+                ? `std::numeric_limits<${type}>::infinity()`
+                : `std::numeric_limits<${type}>::quiet_NaN()`;
+        }
+        if (ts.isPostfixUnaryExpression(unwrapped)) {
+            const value = this.resolveValue(unwrapped);
+            if (value.kind === "number") {
+                return this.castNumber(value, precision);
+            }
+            this.fail(
+                unwrapped,
+                `Postfix numeric expression produced ${value.kind}.`,
+            );
+        }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
+            if (
+                unwrapped.operator === ts.SyntaxKind.PlusPlusToken ||
+                unwrapped.operator === ts.SyntaxKind.MinusMinusToken
+            ) {
+                const value = this.resolveValue(unwrapped);
+                if (value.kind === "number") {
+                    return this.castNumber(value, precision);
+                }
+                this.fail(
+                    unwrapped,
+                    `Prefix numeric expression produced ${value.kind}.`,
+                );
+            }
+            if (
+                unwrapped.operator ===
+                ts.SyntaxKind.TildeToken
+            ) {
+                const compiled = `bbl::js::bitwise_not(${this.compileNumber(
+                    unwrapped.operand,
+                    "double",
+                )})`;
+                this.onJsData();
+                return precision === "float"
+                    ? `static_cast<float>(${compiled})`
+                    : compiled;
+            }
             if (
                 unwrapped.operator !==
                     ts.SyntaxKind.MinusToken &&
@@ -466,6 +523,48 @@ export class StaticEvaluator {
                     ? `static_cast<float>(${compiled})`
                     : compiled;
             }
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AsteriskAsteriskToken
+            ) {
+                const compiled = `std::pow(${this.compileNumber(
+                    unwrapped.left,
+                    "double",
+                )}, ${this.compileNumber(
+                    unwrapped.right,
+                    "double",
+                )})`;
+                return precision === "float"
+                    ? `static_cast<float>(${compiled})`
+                    : compiled;
+            }
+            const bitwiseFunction = new Map<
+                ts.SyntaxKind,
+                string
+            >([
+                [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
+                [ts.SyntaxKind.BarToken, "bitwise_or"],
+                [ts.SyntaxKind.CaretToken, "bitwise_xor"],
+                [ts.SyntaxKind.LessThanLessThanToken, "shift_left"],
+                [ts.SyntaxKind.GreaterThanGreaterThanToken, "shift_right"],
+                [
+                    ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+                    "shift_right_unsigned",
+                ],
+            ]).get(unwrapped.operatorToken.kind);
+            if (bitwiseFunction) {
+                const compiled = `bbl::js::${bitwiseFunction}(${this.compileNumber(
+                    unwrapped.left,
+                    "double",
+                )}, ${this.compileNumber(
+                    unwrapped.right,
+                    "double",
+                )})`;
+                this.onJsData();
+                return precision === "float"
+                    ? `static_cast<float>(${compiled})`
+                    : compiled;
+            }
             const operator = new Map<ts.SyntaxKind, string>([
                 [ts.SyntaxKind.PlusToken, "+"],
                 [ts.SyntaxKind.MinusToken, "-"],
@@ -475,7 +574,7 @@ export class StaticEvaluator {
             if (!operator) {
                 this.fail(
                     unwrapped.operatorToken,
-                    "Only +, -, *, /, and % are supported in numeric expressions.",
+                    "Unsupported operator in numeric expression.",
                 );
             }
             const compiled = `(${this.compileNumber(
@@ -701,10 +800,34 @@ export class StaticEvaluator {
         }
         return (
             ts.isNumericLiteral(unwrapped) ||
+            (ts.isIdentifier(unwrapped) &&
+                (unwrapped.text === "Infinity" ||
+                    unwrapped.text === "NaN")) ||
             (ts.isPrefixUnaryExpression(unwrapped) &&
                 (unwrapped.operator === ts.SyntaxKind.PlusToken ||
-                    unwrapped.operator === ts.SyntaxKind.MinusToken)) ||
-            ts.isBinaryExpression(unwrapped) ||
+                    unwrapped.operator === ts.SyntaxKind.MinusToken ||
+                    unwrapped.operator === ts.SyntaxKind.TildeToken ||
+                    unwrapped.operator === ts.SyntaxKind.PlusPlusToken ||
+                    unwrapped.operator === ts.SyntaxKind.MinusMinusToken)) ||
+            (ts.isBinaryExpression(unwrapped) &&
+                [
+                    ts.SyntaxKind.PlusToken,
+                    ts.SyntaxKind.MinusToken,
+                    ts.SyntaxKind.AsteriskToken,
+                    ts.SyntaxKind.AsteriskAsteriskToken,
+                    ts.SyntaxKind.SlashToken,
+                    ts.SyntaxKind.PercentToken,
+                    ts.SyntaxKind.AmpersandToken,
+                    ts.SyntaxKind.BarToken,
+                    ts.SyntaxKind.CaretToken,
+                    ts.SyntaxKind.LessThanLessThanToken,
+                    ts.SyntaxKind.GreaterThanGreaterThanToken,
+                    ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+                    // Reached value-position `a || b` is the JavaScript
+                    // numeric fallback form compiled by compileNumber.
+                    ts.SyntaxKind.BarBarToken,
+                ].includes(unwrapped.operatorToken.kind) &&
+                !this.isBooleanExpression(unwrapped)) ||
             (ts.isPropertyAccessExpression(unwrapped) &&
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "Math" &&
@@ -727,12 +850,41 @@ export class StaticEvaluator {
         expression: ts.Expression,
     ): boolean {
         const unwrapped = this.unwrap(expression);
+        const type = this.checker.getTypeAtLocation(unwrapped);
+        const booleanType = (candidate: ts.Type): boolean =>
+            (candidate.flags &
+                (ts.TypeFlags.Boolean |
+                    ts.TypeFlags.BooleanLiteral)) !==
+                0 ||
+            ((candidate.flags & ts.TypeFlags.Union) !== 0 &&
+                (candidate as ts.UnionType).types.every(
+                    booleanType,
+                ));
+        if (booleanType(type)) {
+            return true;
+        }
+        if (this.isComparisonExpression(unwrapped)) {
+            return true;
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            return this.lookupOptional(unwrapped)?.kind === "boolean";
+        }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            return this.resolveProperty(unwrapped)?.kind === "boolean";
+        }
         return (
             unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
             unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
             (ts.isPrefixUnaryExpression(unwrapped) &&
                 unwrapped.operator ===
-                    ts.SyntaxKind.ExclamationToken)
+                    ts.SyntaxKind.ExclamationToken) ||
+            (ts.isBinaryExpression(unwrapped) &&
+                (unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken ||
+                    unwrapped.operatorToken.kind ===
+                        ts.SyntaxKind.BarBarToken) &&
+                this.isBooleanExpression(unwrapped.left) &&
+                this.isBooleanExpression(unwrapped.right))
         );
     }
 
@@ -763,19 +915,13 @@ export class StaticEvaluator {
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
-            if (
-                value.kind === "string" &&
-                value.staticString !== undefined
-            ) {
+            if (value.staticString !== undefined) {
                 return value.staticString;
             }
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
-            if (
-                value?.kind === "string" &&
-                value.staticString !== undefined
-            ) {
+            if (value?.staticString !== undefined) {
                 return value.staticString;
             }
         }
@@ -996,6 +1142,45 @@ export class StaticEvaluator {
         }
         if (ts.isNumericLiteral(unwrapped)) {
             return String(Number(unwrapped.text));
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(
+                unwrapped.expression,
+            ) &&
+            unwrapped.expression.name.text === "toFixed" &&
+            unwrapped.arguments.length <= 1
+        ) {
+            const staticContext = {
+                resolveStaticExpression: (
+                    value: ts.Expression,
+                ) => this.resolveStaticExpression(value),
+                lookup: (identifier: ts.Identifier) =>
+                    this.lookup(identifier),
+                lookupOptional: (identifier: ts.Identifier) =>
+                    this.lookupOptional(identifier),
+                fail: (node: ts.Node, message: string): never =>
+                    this.fail(node, message),
+            };
+            const number = staticNumberValue(
+                staticContext,
+                unwrapped.expression.expression,
+            );
+            const digits = unwrapped.arguments[0]
+                ? staticNumberValue(
+                      staticContext,
+                      unwrapped.arguments[0],
+                  )
+                : 0;
+            if (
+                number !== undefined &&
+                digits !== undefined &&
+                Number.isInteger(digits) &&
+                digits >= 0 &&
+                digits <= 100
+            ) {
+                return number.toFixed(digits);
+            }
         }
         if (
             ts.isIdentifier(unwrapped) ||

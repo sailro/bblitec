@@ -237,11 +237,16 @@ export function compileShaderMaterialOptions(
             "Scene-local shader materials require a name (it becomes the generated variant identity).",
         );
     }
-    const slug = context.compileStaticString(nameExpression)
-        .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
-        .replace(/[^A-Za-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .toLowerCase();
+    const nameValue = context.compileValue(
+        nameExpression,
+    );
+    const slug = nameValue.staticString !== undefined
+        ? nameValue.staticString
+              .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+              .replace(/[^A-Za-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, "")
+              .toLowerCase()
+        : `scene-shader-${context.reachedShaderPrograms.length}`;
     if (slug.length === 0) {
         context.fail(
             nameExpression,
@@ -260,8 +265,8 @@ export function compileShaderMaterialOptions(
     }
     // The pin names nine system uniforms; the reached subset is the three
     // that name a matrix a draw already holds, so serving one is a copy
-    // rather than a derivation. `view`, `projection`, `worldView`,
-    // `cameraPosition`, `screenSize` and `alphaCutoff` refuse by name.
+    // rather than a derivation. `cameraPosition`, `screenSize` and
+    // `alphaCutoff` refuse by name.
     for (const signature of uniforms) {
         if (
             !signature.includes(":") &&

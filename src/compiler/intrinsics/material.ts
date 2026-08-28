@@ -219,6 +219,7 @@ export function compileMaterialIntrinsic(
             context.reachFeature("texture:file", call);
             return {
                 kind: "texture",
+                textureStorage: "solid",
                 cpp:
                     `bbl::create_solid_texture(` +
                     `${engine.cpp}, ${channels.join(", ")})`,
@@ -637,22 +638,26 @@ export function compileMaterialIntrinsic(
                 "texture",
                 call.arguments[2]!,
             );
-            // The reached slice binds a loaded image. `createSolidTexture2D`
-            // and `createTexture2DFromPixels` are the same value kind but
-            // different native types, so without this they would compile to
-            // a C++ overload error in the generated tree rather than a
-            // refusal naming the call.
-            if (!texture.textureFile) {
+            const cachedPixelsTexture =
+                texture.dataType?.kind === "handle" &&
+                texture.dataType.handle === "texture";
+            const setter = texture.textureFile
+                ? "set_shader_texture"
+                : texture.textureStorage === "pixels" ||
+                    cachedPixelsTexture
+                  ? "set_shader_pixels_texture"
+                  : undefined;
+            if (!setter) {
                 context.fail(
                     call.arguments[2]!,
-                    "Reached shader-material textures come from loadTexture2D.",
+                    "Reached shader-material textures come from loadTexture2D or createTexture2DFromPixels.",
                 );
             }
             context.expectSameEngine(material, texture, call);
             return {
                 kind: "void",
                 cpp:
-                    `bbl::set_shader_texture(` +
+                    `bbl::${setter}(` +
                     `${context.requireEngine(material, call)}, ` +
                     `${material.cpp}, ${slot}u, ${texture.cpp})`,
             };

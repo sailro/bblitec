@@ -205,6 +205,26 @@ function emitFrameGraphTransmission(
     return true;
 }
 
+/**
+ * Assignment shapes recognized from their complete source structure.
+ *
+ * These run before plain-data path probing because their intermediate
+ * objects are intentionally generation-only and are not independently
+ * readable values.
+ */
+export function emitStructuralPropertyAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(expression.left);
+    return ts.isPropertyAccessExpression(left) &&
+        emitFrameGraphTransmission(
+            context,
+            expression,
+            left,
+        );
+}
+
 const commonLightProperties: Readonly<
     Record<string, DirectPropertyAssignment>
 > = {
@@ -341,6 +361,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
         expression: ts.Expression,
     ): ts.Expression;
     lookupOptional(identifier: ts.Identifier): Value | undefined;
+    resolveThisField(name: string): Value | undefined;
+    resolveRecordValue(expression: ts.Expression): Value | undefined;
     /**
      * Records the tone-mapping curve the scene selected, refusing a second
      * differing selection: the composed arms are closed at generation, so a
@@ -350,6 +372,23 @@ export interface AssignmentContext extends DeterministicRandomContext {
     selectToneMapping(name: string, node: ts.Node): void;
     lookup(identifier: ts.Identifier): Value;
     compileValue(expression: ts.Expression): Value;
+    /**
+     * Declares storage for a typed plain-data class field on its first
+     * constructor assignment. Returns undefined for resource/record fields,
+     * which remain compile-time bindings below.
+     */
+    bindClassDataField(
+        name: ts.Identifier,
+        initializer: ts.Expression,
+    ): Value | undefined;
+    bindClassField(
+        name: ts.Identifier,
+        initializer: ts.Expression,
+    ): void;
+    emitOptionalResourceAssignment(
+        expression: ts.BinaryExpression,
+        target: Value,
+    ): boolean;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -384,6 +423,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
     isBrowserOnlyExpression(
         expression: ts.Expression,
     ): boolean;
+    isBrowserDomValue(expression: ts.Expression): boolean;
     emit(line: string): void;
     /**
      * Records the feature and its first reaching scene-source call
@@ -679,25 +719,65 @@ export function emitPropertyAssignment(
     ) {
         return;
     }
-    if (context.isBrowserOnlyExpression(left)) {
+    // Web Audio is part of the browser type surface in TypeScript, but it
+    // has an explicit native owner in this compiler. Give that owner first
+    // refusal before the broad browser-only erasure gate below; otherwise a
+    // supported write such as `gain.value = 0.5` disappears as if it were a
+    // DOM-only operation.
+    if (emitAudioPropertyAssignment(context, expression, left)) {
+        return;
+    }
+    // The same distinction applies to a nullable Web Audio handle stored in
+    // a lowered class. Its declaration already created optional native
+    // storage, so an assignment to `this.context` or `this.node` must fill
+    // that storage before browser erasure considers the field's DOM type.
+    if (
+        operator === "=" &&
+        left.expression.kind === ts.SyntaxKind.ThisKeyword
+    ) {
+        const existing = context.resolveThisField(
+            left.name.text,
+        );
+        if (
+            existing &&
+            context.emitOptionalResourceAssignment(
+                expression,
+                existing,
+            )
+        ) {
+            return;
+        }
+    }
+    if (
+        context.isBrowserOnlyExpression(left) ||
+        context.isBrowserDomValue(left)
+    ) {
         context.eraseBrowserInstrumentation(
             expression.pos,
         );
         return;
     }
-    // `param.value = x`, `osc.type = "square"`. The audio handles are the
-    // one family whose writes go through the PAL rather than onto an
-    // engine record.
-    if (emitAudioPropertyAssignment(context, expression, left)) {
-        return;
+    if (operator === "=") {
+        const owner = context.resolveRecordValue(
+            left.expression,
+        );
+        if (owner) {
+            // Probe record wiring without evaluating an arbitrary RHS.
+            // Calls and data expressions may emit substantial native work;
+            // compiling one merely to discover it is not a record would run
+            // it again in the actual assignment path.
+            const right = context.unwrap(expression.right);
+            const assigned = ts.isObjectLiteralExpression(right)
+                ? context.compileValue(right)
+                : context.resolveRecordValue(right);
+            if (assigned?.kind === "record") {
+                owner.recordProperties ??= {};
+                owner.recordProperties[left.name.text] = assigned;
+                return;
+            }
+        }
     }
-    if (
-        emitFrameGraphTransmission(
-            context,
-            expression,
-            left,
-        )
-    ) {
+    if (emitStructuralPropertyAssignment(context, expression)) {
         return;
     }
     if (emitSceneLightListClear(context, expression, left)) {
@@ -838,10 +918,9 @@ export function emitPropertyAssignment(
         // Data fields never reach here: they resolve as data paths
         // above and assign through the local that holds them.
         //
-        // A resource field has no storage to assign through, only a
-        // compile-time binding, so it may be written exactly once. A
-        // second write inside a branch would otherwise make the new
-        // value visible on every path, which is a different program.
+        // The first write wires the field and materializes its value once.
+        // A second write remains outside the subset: it would need runtime
+        // class identity and branch-sensitive field storage.
         const instance = context.compileValue(
             left.expression,
         );
@@ -852,14 +931,35 @@ export function emitPropertyAssignment(
                 "'this' does not resolve to a class instance here.",
             );
         }
-        if (fields[left.name.text]) {
+        const existing = fields[left.name.text];
+        if (
+            existing &&
+            operator === "=" &&
+            context.emitOptionalResourceAssignment(
+                expression,
+                existing,
+            )
+        ) {
+            return;
+        }
+        if (existing) {
             context.fail(
                 expression,
                 `Field '${left.name.text}' is already bound; a class field that holds a resource is wired once and cannot be reassigned.`,
             );
         }
-        fields[left.name.text] = context.compileValue(
+        if (!ts.isIdentifier(left.name)) {
+            context.fail(
+                left.name,
+                "Private class fields are outside the supported subset.",
+            );
+        }
+        context.bindClassField(
+            left.name,
             expression.right,
+        );
+        fields[left.name.text] = context.compileValue(
+            left.name,
         );
         return;
     }
@@ -1744,6 +1844,24 @@ export function emitPropertyAssignment(
                         )
                         .join(", ") +
                     `});`,
+            );
+            return;
+        }
+        if (mesh.kind === "camera") {
+            const vector = left.expression.name.text;
+            if (vector !== "position" && vector !== "target") {
+                context.fail(
+                    left.expression,
+                    `A camera has no writable '${vector}' vector.`,
+                );
+            }
+            const component = ["x", "y", "z"][axis]!;
+            const engine = context.requireEngine(
+                mesh,
+                expression,
+            );
+            context.emit(
+                `${engine}.cameras[${mesh.cpp}.value].${vector}.${component} ${operator} ${context.compileNumber(expression.right, "double")};`,
             );
             return;
         }

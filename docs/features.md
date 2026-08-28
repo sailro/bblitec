@@ -1423,12 +1423,15 @@ refuses it rather than rendering something else.
 
 ### Runtime scene mutation
 
-`removeFromScene` with render-plan rematching, material-family append after
-registration, thin-instance flush and count updates, and mesh appends that
-wait for submitted work before rebuilding the mesh set. SDL_GPU batches a
-frame's small buffer creates and rewrites into one transfer/copy submission;
-short-lived custom-shader meshes reuse exact local geometry while their
-per-entry transforms and material values remain independent.
+`removeFromScene` with incremental render-plan rematching, material-family
+append after registration, thin-instance flush and count updates, and mesh
+appends without a queue-wide idle. SDL_GPU batches a frame's small buffer
+creates and rewrites into one transfer/copy submission. Short-lived
+custom-shader meshes reuse exact local geometry while their per-entry
+transforms and material values remain independent. Their texture/sampler pairs
+are owned once by the material rather than re-uploaded for every replacement;
+reference counts retire geometry as soon as no draw uses it, so repeated
+replacement does not turn the reuse cache into an ever-growing search.
 
 ### Diagnostics and capture
 

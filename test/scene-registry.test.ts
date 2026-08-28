@@ -3,7 +3,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { getScene, resolveScene, scenes } from "../src/scene-registry.js";
-import { validateReferenceCapture } from "../src/parity-scene.js";
+import {
+    paritySceneTarget,
+    validateReferenceCapture,
+} from "../src/parity-scene.js";
 
 test("states the curated scene count the registry actually holds", () => {
     // The README advertises the count in prose, which drifts silently:
@@ -151,13 +154,18 @@ test("derives defaults for an unregistered scene source", () => {
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
             BBLITE_SCREENSHOT_FRAME: "180",
         });
+        assert.equal(paritySceneTarget(scene), source);
     } finally {
         rmSync(source, { force: true });
     }
 });
 
 test("resolves a registered scene by source path", () => {
-    assert.equal(resolveScene("corpus/babylon-lite/lab/lite/src/lite/scene10.ts").id, "scene10");
+    const scene = resolveScene(
+        "corpus/babylon-lite/lab/lite/src/lite/scene10.ts",
+    );
+    assert.equal(scene.id, "scene10");
+    assert.equal(paritySceneTarget(scene), "scene10");
 });
 
 test("rejects ad-hoc sources that collide with registered scene ids", () => {
@@ -234,6 +242,10 @@ test("keeps package scene commands registry-driven", () => {
     );
     assert.match(sceneCommand, /discoverWindowsBuildTools/);
     assert.match(sceneCommand, /runGeometryOutputDiagnostics/);
+    assert.match(
+        sceneCommand,
+        /`-DBBLITE_DAWN_DIR=\$\{tools\.dawnDirectory\}`/,
+    );
     const parityScene = readFileSync("src/parity-scene.ts", "utf8");
     assert.match(parityScene, /windowsHide: true/);
     assert.match(parityScene, /BBLITE_TEST_PASS: "1"/);

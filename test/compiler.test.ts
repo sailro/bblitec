@@ -195,6 +195,48 @@ test("audio node factories publish independent link features", () => {
     assert.ok(!result.manifest.features.includes("audio:stereo-panner"));
 });
 
+test("preserves Web Audio writes and nullable class resource assignments", () => {
+    const result = compileSource(`
+        import {
+            createAudioEngineAsync,
+            createSoundSourceAsync,
+            type AudioEngine,
+        } from "@babylonjs/lite";
+
+        class SoundGraph {
+            private engine: AudioEngine | null = null;
+            private context: BaseAudioContext | null = null;
+            private output: GainNode | null = null;
+
+            async start(): Promise<void> {
+                const engine = await createAudioEngineAsync();
+                const output = engine.audioContext.createGain();
+                output.gain.value = 0.6;
+                await createSoundSourceAsync(engine, output);
+                this.engine = engine;
+                this.context = engine.audioContext;
+                this.output = output;
+            }
+        }
+
+        const graph = new SoundGraph();
+        void graph.start();
+    `);
+
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, 0\.6f\);/,
+    );
+    assert.match(
+        result.cpp,
+        /class_field_context_\d+ = v_[^;]*engine;/,
+    );
+    assert.match(
+        result.cpp,
+        /class_field_output_\d+ = v_[^;]*output;/,
+    );
+});
+
 test("lowers a light vector set to its own kind's entry point", () => {
     const result = compileSource(`
         import {
@@ -604,6 +646,72 @@ test("lowers imported typed user functions and constants", () => {
     );
 });
 
+test("executes imported module initializers once in dependency order", () => {
+    const result = compileSource(
+        `
+            import {
+                index,
+            } from "./fixtures/compiler-modules/module-derived.js";
+
+            let key = "v1";
+            const selected = index.get(key) ?? 0;
+        `,
+        {
+            fileName:
+                "test/compiler-multi-file-entry.ts",
+        },
+    );
+
+    const values = result.cpp.match(
+        /bbl::js::Array<double> (v_module\d+_values) =/,
+    );
+    const index = result.cpp.match(
+        /bbl::js::Map<std::string, double> (v_module\d+_index) =/,
+    );
+    assert.ok(values, "the dependency's exported array has native storage");
+    assert.ok(index, "the importer module's exported map has native storage");
+    assert.ok(
+        result.cpp.indexOf(values[0]!) <
+            result.cpp.indexOf(index[0]!),
+        "dependency storage is initialized before its importer",
+    );
+    assert.equal(
+        (result.cpp.match(new RegExp(`${values[1]}\\.push_back`, "g")) ?? [])
+            .length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`${index[1]}\\.set\\(`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`${index[1]}\\.get\\(v_key\\)`),
+    );
+});
+
+test("keeps pure imported data builders on the static path", () => {
+    const result = compileSource(
+        `
+            import {
+                row,
+            } from "./fixtures/compiler-modules/module-built.js";
+
+            const selected = row.value;
+        `,
+        {
+            fileName:
+                "test/compiler-multi-file-entry.ts",
+        },
+    );
+
+    assert.doesNotMatch(result.cpp, /v_module\d+_row/);
+    assert.match(
+        result.cpp,
+        /double v_selected = bblscene::buildRow\(\)\.value;/,
+    );
+});
+
 test("uses TypeChecker types for local function arguments", () => {
     assert.throws(
         () =>
@@ -793,12 +901,48 @@ test("'??' reaches sinks and conditions through the same dispatch", () => {
     // the condition position routes the selected boolean.
     assert.match(
         result.cpp,
-        /const auto (v_bblite_nullish_\d+) = v_fn\d+_bag\.primary;/,
+        /bblscene::Item v_fn\d+_chosen = \(static_cast<bool>\(v_fn\d+_bag\.primary\) \? v_fn\d+_bag\.primary : v_fn\d+_bag\.backup\);/,
     );
     assert.match(
         result.cpp,
         /if \(\(v_bblite_nullish_\d+\.has_value\(\) \? \(\*v_bblite_nullish_\d+\) : false\)\)/,
     );
+});
+
+test("lowers optional data property and element chains generically", () => {
+    const result = compileSource(`
+        type Trigger = "push" | "switch";
+        interface Def {
+            trigger: Trigger;
+            speed: number;
+        }
+        function isSwitch(def: Def | undefined): boolean {
+            return def?.trigger === "switch";
+        }
+        function speed(def: Def | undefined): number {
+            return def?.speed ?? 0;
+        }
+        const rows: Def[] = [{ trigger: "push", speed: 2 }];
+        let index = 1;
+        const selected = rows[index]?.speed ?? speed(undefined);
+        const matched = isSwitch(undefined);
+    `);
+
+    assert.match(
+        result.cpp,
+        /static_cast<bool>\(v_fn\d+_def\) \? bbl::js::Nullable<double>\{v_fn\d+_def->speed\} : bbl::js::Nullable<double>\{std::nullopt\}/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Nullable<bblscene::Trigger>/,
+    );
+    assert.match(
+        result.cpp,
+        /v_bblite_optional_compare_\d+\.has_value\(\) &&/,
+    );
+    assert.match(result.cpp, /#include <bblite\/js_data\.hpp>/);
+    assert.match(result.cpp, /bbl::js::array_has_index\(/);
+    assert.match(result.cpp, /bbl::js::array_at_or_default\(/);
 });
 
 test("lowers interface-typed structs, optionals, and enums", () => {
@@ -838,10 +982,14 @@ test("lowers interface-typed structs, optionals, and enums", () => {
     `);
 
     assert.match(result.cpp, /enum class Tag \{/);
-    assert.match(result.cpp, /struct Item \{/);
+    assert.match(result.cpp, /struct ItemData \{/);
     assert.match(
         result.cpp,
-        /bbl::js::Nullable<bblscene::Item> current;/,
+        /using Item = std::shared_ptr<ItemData>;/,
+    );
+    assert.match(
+        result.cpp,
+        /bblscene::Item current;/,
     );
     assert.match(
         result.cpp,
@@ -849,7 +997,7 @@ test("lowers interface-typed structs, optionals, and enums", () => {
     );
     assert.match(
         result.cpp,
-        /push_back\(bblscene::Item\{2\.0, true\}\)/,
+        /push_back\(std::make_shared<bblscene::ItemData>\(bblscene::ItemData\{2\.0, true\}\)\)/,
     );
     assert.match(
         result.cpp,
@@ -857,11 +1005,11 @@ test("lowers interface-typed structs, optionals, and enums", () => {
     );
     assert.match(
         result.cpp,
-        /current = std::nullopt;/,
+        /current = bblscene::Item\{\};/,
     );
     assert.match(
         result.cpp,
-        /\(\*v_fn\d+_bucket\.current\)\.weight/,
+        /v_fn\d+_bucket\.current->weight/,
     );
     assert.ok(
         result.manifest.adaptations.some(
@@ -886,11 +1034,11 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
 
     assert.match(
         result.cpp,
-        /bbl::js::array_filled<double>\(6\.0, 0\.0\)/,
+        /bbl::js::Array<double>\(static_cast<std::size_t>\(6\.0\), 0\.0\)/,
     );
     assert.match(
         result.cpp,
-        /v_board\[bbl::js::array_index\(2\.0\)\] = 5\.0;/,
+        /bbl::js::array_index_write\(v_board, bbl::js::array_index\(2\.0\)\) = 5\.0;/,
     );
     assert.match(
         result.cpp,
@@ -906,7 +1054,7 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
     );
     assert.match(
         result.cpp,
-        /for \(const auto& v_bblite_item_\d+ : v_board\)/,
+        /for \(auto&& v_bblite_item_\d+ : v_board\)/,
     );
 });
 
@@ -1024,30 +1172,241 @@ test("lowers a class instance into per-field bindings", () => {
         result.cpp,
         /bbl::js::Array<double> v_\w*heights/,
     );
-    assert.match(result.cpp, /double v_\w*total = 0\.0/);
+    assert.match(
+        result.cpp,
+        /double v_bblite_class_field_total_\d+ = 0\.0/,
+    );
     assert.doesNotMatch(result.cpp, /struct Stack/);
-    // The default `repeat = 2` unrolls twice and the explicit `1` once,
-    // so the count is what proves the default was applied.
+    // Each call gets its own inlined runtime loop, with the default and
+    // explicit repeat values preserved at their call sites.
+    assert.match(result.cpp, /v_fn\d+_repeat = 2\.0/);
+    assert.match(result.cpp, /v_fn\d+_repeat = 1\.0/);
     assert.equal(
         (result.cpp.match(/push_back/g) ?? []).length,
-        3,
+        2,
     );
 });
 
-test("rejects value-returning class methods", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                class Counter {
-                    private n = 1;
-                    value(): number {
-                        return this.n;
-                    }
+test("initializes constructor parameter-properties before the body", () => {
+    const result = compileSource(`
+        class Accumulator {
+            private total = 0;
+            constructor(private readonly scale: number) {
+                this.initialize(scale);
+            }
+            private initialize(value: number): void {
+                this.total = value;
+            }
+            add(value: number): void {
+                this.total += value * this.scale;
+            }
+        }
+        const accumulator = new Accumulator(2);
+        accumulator.add(3);
+    `);
+
+    assert.match(result.cpp, /double v_fn\d+_scale = 2\.0/);
+    assert.match(
+        result.cpp,
+        /v_bblite_class_field_total_\d+ = v_fn\d+_value/,
+    );
+    assert.match(
+        result.cpp,
+        /v_bblite_class_field_total_\d+ \+= \(v_fn\d+_value \* v_fn\d+_scale\)/,
+    );
+});
+
+test("iterates data nested inside a class record field", () => {
+    const result = compileSource(`
+        interface Entry { enabled: boolean; }
+        interface Catalog { entries: Entry[]; }
+        class Counter {
+            private readonly catalog: Catalog;
+            private total = 0;
+            constructor(catalog: Catalog) {
+                this.catalog = catalog;
+                this.scan();
+            }
+            private scan(): void {
+                for (const entry of this.catalog.entries) {
+                    if (!entry.enabled) continue;
+                    this.total += 1;
                 }
-                const counter = new Counter();
-                const total = counter.value();
-            `),
-        /lowers void methods only/,
+            }
+        }
+        const entries: Entry[] = [
+            { enabled: false },
+            { enabled: true },
+        ];
+        const counter = new Counter({ entries });
+    `);
+
+    assert.match(result.cpp, /for \(auto&&/);
+    assert.match(result.cpp, /continue;/);
+});
+
+test("materializes a numeric Record for dynamic optional lookup", () => {
+    const result = compileSource(`
+        interface Definition { enabled: boolean; weight: number; }
+        const definitions: Record<number, Definition> = {
+            1: { enabled: true, weight: 2 },
+            7: { enabled: false, weight: 4 },
+        };
+        function lookup(key: number): Definition | undefined {
+            return definitions[key];
+        }
+        let key = 7;
+        const definition = lookup(key);
+    `);
+
+    assert.match(
+        result.cpp,
+        /static bbl::js::Map<double, bblscene::Definition> values/,
+    );
+    assert.match(result.cpp, /\.get\(v_\w*key\)/);
+});
+
+test("guards a missing open Record key before dereferencing its local", () => {
+    const result = compileSource(`
+        const weapons: Record<string, number> = { Digit1: 1, Digit2: 2 };
+        function select(code: string): number {
+            const weapon = weapons[code];
+            if (weapon !== undefined) return weapon;
+            return -1;
+        }
+        let code = "ArrowUp";
+        const selected = select(code);
+    `);
+
+    const lookup = result.cpp.match(
+        /bbl::js::Nullable<double> (v_\w*weapon) = .*\.get\(.*\);/,
+    );
+    assert.ok(lookup);
+    const local = lookup[1]!;
+    const guard = result.cpp.indexOf(`${local}.has_value()`);
+    const dereference = result.cpp.indexOf(`(*${local})`);
+    assert.ok(guard >= 0, "the undefined guard tests the stored lookup");
+    assert.ok(
+        dereference > guard,
+        "the lookup is not dereferenced until after its guard",
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /double& v_\w*weapon = \*[^;]+\.get\(/,
+    );
+});
+
+test("preserves object identity through a dynamic Record lookup", () => {
+    const result = compileSource(`
+        interface Entry { value: number; }
+        const entries: Record<string, Entry> = {
+            one: { value: 1 },
+        };
+        function mutate(code: string): void {
+            const entry = entries[code];
+            if (entry !== undefined) entry.value++;
+        }
+        let code = "missing";
+        mutate(code);
+    `);
+
+    assert.match(
+        result.cpp,
+        /using Entry = std::shared_ptr<EntryData>;/,
+    );
+    assert.match(
+        result.cpp,
+        /static bbl::js::Map<std::string, bblscene::Entry> values/,
+    );
+    assert.match(result.cpp, /\.get\(v_\w*code\)/);
+    assert.match(result.cpp, /static_cast<bool>\(v_\w*entry\)/);
+    assert.match(result.cpp, /v_\w*entry->value\+\+;/);
+});
+
+test("stores and mutates a runtime string local", () => {
+    const result = compileSource(`
+        function build(bytes: Uint8Array): { name: string } {
+            let name = "";
+            for (let i = 0; i < bytes.length; i++) {
+                name += String.fromCharCode(bytes[i]!);
+            }
+            name = name.toUpperCase();
+            return { name };
+        }
+        const record = build(new Uint8Array([97, 98]));
+    `);
+
+    assert.match(result.cpp, /std::string v_\w*name = ""/);
+    assert.match(result.cpp, /v_\w*name \+= bbl::js::string_from_char_code/);
+    assert.match(result.cpp, /v_\w*name = bbl::js::string_upper/);
+});
+
+test("preserves existence guards for dynamically indexed object arrays", () => {
+    const result = compileSource(`
+        const sets: Set<number>[] = [new Set<number>(), new Set<number>()];
+        let left = 0;
+        let right = 1;
+        if (sets[left] && sets[right]) {
+            sets[left].add(right);
+            sets[right].add(left);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /if \(\(bbl::js::array_has_index\([^)]*\) && bbl::js::array_has_index\([^)]*\)\)\)/,
+    );
+    assert.equal((result.cpp.match(/\.add\(/g) ?? []).length, 2);
+});
+
+test("carries an unchecked object element's existence through a local", () => {
+    const result = compileSource(`
+        interface Entry { value: number; }
+        const entries: Entry[] = [{ value: 4 }];
+        let index = 1;
+        const entry = entries[index];
+        const values = entry ? [entry.value] : [];
+    `);
+
+    assert.match(result.cpp, /bbl::js::array_at_or_default\(/);
+    assert.match(
+        result.cpp,
+        /const bool v_bblite_element_found_\d+ = static_cast<bool>\(v_entry\)/,
+    );
+});
+
+test("materializes an iterable spread as a native array", () => {
+    const result = compileSource(`
+        const sets: Set<number>[] = [new Set<number>([1, 2])];
+        const arrays = sets.map((set) => [...set]);
+        const first = arrays[0]![0]!;
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::array_from_iterable<double>\(/,
+    );
+});
+
+test("lowers typed values returned by class methods", () => {
+    const result = compileSource(`
+        class Counter {
+            private n = 1;
+            value(enabled: boolean): number {
+                if (!enabled) return 0;
+                return this.n;
+            }
+        }
+        const counter = new Counter();
+        let enabled = true;
+        const total = counter.value(enabled);
+    `);
+
+    assert.match(result.cpp, /\[&\]\(\) -> double \{/);
+    assert.match(result.cpp, /return 0\.0;/);
+    assert.match(
+        result.cpp,
+        /return v_bblite_class_field_n_\d+;/,
     );
 });
 
@@ -1070,10 +1429,78 @@ test("rejects class inheritance", () => {
     );
 });
 
+test("materializes a constructor-assigned resource field once", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+        class Painter {
+            private material: StandardMaterial;
+            constructor() {
+                this.material = createStandardMaterial();
+            }
+            paint(mesh: Mesh): void {
+                mesh.material = this.material;
+            }
+        }
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const painter = new Painter();
+            painter.paint(createBox(engine, 1));
+            painter.paint(createBox(engine, 2));
+        }
+        main();
+    `);
+
+    assert.equal(
+        result.cpp.match(/bbl::create_standard_material/g)?.length,
+        1,
+    );
+});
+
+test("gives constructor-assigned resource fields distinct native storage", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+        class Renderer {
+            private engine: EngineContext;
+            private scene: SceneContext;
+            constructor(engine: EngineContext, scene: SceneContext) {
+                this.engine = engine;
+                this.scene = scene;
+            }
+            draw(): void {
+                addToScene(this.scene, createBox(this.engine, 1));
+            }
+        }
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const renderer = new Renderer(engine, scene);
+            renderer.draw();
+        }
+        main();
+    `);
+
+    assert.doesNotMatch(
+        result.cpp,
+        /auto&\s+(v_[A-Za-z0-9_]+)\s*=\s*\1;/,
+    );
+    assert.match(result.cpp, /v_bblite_class_field_engine_/);
+    assert.match(result.cpp, /v_bblite_class_field_scene_/);
+});
+
 test("rejects reassigning a resource-holding class field", () => {
-    // A resource field is a compile-time binding, not storage, so a
-    // second write would be visible on every path rather than the one
-    // that took it.
+    // Resource storage is wired once; branch-sensitive rebinding needs a
+    // runtime class representation that this subset does not yet provide.
     assert.throws(
         () =>
             compileSource(`
@@ -1382,7 +1809,7 @@ test("rejects indexOf where JavaScript would compare by identity", () => {
     );
 });
 
-test("binds const data-path locals as aliases", () => {
+test("binds object data-path locals with shared identity", () => {
     const result = compileSource(`
         interface Holder {
             inner: { count: number };
@@ -1397,43 +1824,49 @@ test("binds const data-path locals as aliases", () => {
         poke(holder);
     `);
 
-    // The local binds a reference, so the write reaches the holder the
-    // way a JavaScript object binding does.
-    assert.match(result.cpp, /&\s+v_\w*alias = /);
+    // Copying the shared object handle preserves JavaScript identity, so the
+    // field write still reaches the object stored in the holder.
+    assert.match(
+        result.cpp,
+        /bblscene::Record\d+ v_fn\d+_alias = v_fn\d+_holder\.inner;/,
+    );
+    assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
 
-test("rejects using an alias after its container is resized", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                interface Entry { value: number; }
-                const list: Entry[] = [{ value: 1 }];
-                const entry = list[0]!;
-                list.push({ value: 2 });
-                entry.value = 5;
-            `),
-        /resized after the binding/,
+test("keeps an object element alive after its container is resized", () => {
+    const result = compileSource(`
+        interface Entry { value: number; }
+        const list: Entry[] = [{ value: 1 }];
+        const entry = list[0]!;
+        list.push({ value: 2 });
+        entry.value = 5;
+    `);
+    assert.match(
+        result.cpp,
+        /bblscene::Entry v_entry = v_list\[bbl::js::array_index\(0\.0\)\];/,
     );
+    assert.match(result.cpp, /v_entry->value = 5\.0;/);
 });
 
-test("keeps mutable data-path locals value copies", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                interface Holder {
-                    inner: { count: number };
-                }
-                function poke(holder: Holder): void {
-                    let alias = holder.inner;
-                    alias.count = 5;
-                }
-                const holder: Holder = {
-                    inner: { count: 1 },
-                };
-                poke(holder);
-            `),
-        /value copy of a data path; writes through aliases/,
+test("mutable object aliases retain JavaScript identity", () => {
+    const result = compileSource(`
+        interface Holder {
+            inner: { count: number };
+        }
+        function poke(holder: Holder): void {
+            let alias = holder.inner;
+            alias.count = 5;
+        }
+        const holder: Holder = {
+            inner: { count: 1 },
+        };
+        poke(holder);
+    `);
+    assert.match(
+        result.cpp,
+        /bblscene::Record\d+ v_fn\d+_alias = v_fn\d+_holder\.inner;/,
     );
+    assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
 });
 
 test("seeds Math.random deterministically and records the adaptation", () => {
@@ -1506,6 +1939,23 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
     );
 });
 
+test("distinguishes omitted and explicit zero DataView lengths", () => {
+    const result = compileSource(`
+        const bytes = new Uint8Array(4);
+        const remaining = new DataView(bytes.buffer, 2);
+        const empty = new DataView(bytes.buffer, 2, 0);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::DataView\(v_bytes\.buffer\(\), bbl::js::array_index\(2\.0\)\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::DataView\(v_bytes\.buffer\(\), bbl::js::array_index\(2\.0\), bbl::js::array_index\(0\.0\)\);/,
+    );
+});
+
 test("inlines function-valued parameters at their call sites", () => {
     const result = compileSource(`
         function apply(count: number, producer: (index: number) => number): number {
@@ -1528,7 +1978,7 @@ test("inlines function-valued parameters at their call sites", () => {
     );
     assert.equal(
         result.cpp.match(
-            /v_fn0_total \+= static_cast<float>\(\(v_fn\d+_index \* 2\.0\)\);/g,
+            /v_fn0_total \+= \(v_fn\d+_index \* 2\.0\);/g,
         )?.length,
         3,
     );
@@ -2511,6 +2961,96 @@ test("unrolls a counted loop over a container it built and never resized", () =>
     );
 });
 
+test("keeps large constant-count data loops at runtime", () => {
+    const result = compileSource(`
+        const bytes = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) {
+            bytes[i] = i;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /for \(; v_block\d+_i < 256\.0; v_block\d+_i\+\+\) \{/,
+    );
+    assert.equal(
+        result.cpp.match(/bbl::js::to_uint8\(v_block\d+_i\)/g)?.length,
+        1,
+    );
+});
+
+test("statically iterates large loops that reach pinned scene construction", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "babylon-lite";
+        function addBox(engine: Awaited<ReturnType<typeof createEngine>>): void {
+            createBox(engine, 1);
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            for (let i = 0; i < 40; i++) {
+                addBox(engine);
+            }
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /for \(/);
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 40);
+});
+
+test("grows JavaScript arrays on indexed writes", () => {
+    const result = compileSource(`
+        interface Row { value: number }
+        const rows: Row[] = [];
+        rows[4] = { value: 7 };
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_write\(v_rows, bbl::js::array_index\(4\.0\)\) = /,
+    );
+});
+
+test("preserves inferred object identity through container storage", () => {
+    const result = compileSource(`
+        interface Image { frame: number }
+        interface Pending { img: Image }
+        const image = { frame: -1 };
+        const pending: Pending[] = [];
+        pending.push({ img: image });
+        pending[0]!.img.frame = 4;
+        const observed = image.frame;
+    `);
+
+    assert.match(
+        result.cpp,
+        /bblscene::Record\d+ v_image = std::make_shared<bblscene::Record\d+Data>/,
+    );
+    assert.match(result.cpp, /v_image->frame/);
+});
+
+test("evaluates conditional data-branch preparation lazily", () => {
+    const result = compileSource(`
+        interface Row { value: number }
+        const rows: Row[] = [{ value: 2 }];
+        let index = -1;
+        const selected = index >= 0 ? rows[index]! : null;
+        const nested = selected ? rows[selected.value]! : null;
+    `);
+
+    const guardedIndex = result.cpp.indexOf("= v_selected->value;");
+    assert.notEqual(guardedIndex, -1);
+    const branch = result.cpp.lastIndexOf(
+        "if (v_bblite_element_found_",
+        guardedIndex,
+    );
+    assert.notEqual(branch, -1);
+    assert.ok(branch < guardedIndex);
+    assert.equal(
+        result.cpp.match(/= v_selected->value;/g)?.length,
+        1,
+    );
+});
+
 test("emits an unrolled body flat, so what it declares outlives the loop", () => {
     // Unrolling a loop IS writing its statements out. A C++ block would make
     // each iteration's locals invisible to everything after it, and a scene
@@ -2582,9 +3122,54 @@ test("a list a loop grows decides its shape at the first push", () => {
 
     assert.doesNotMatch(result.cpp, /for \(/);
     assert.equal(
-        result.cpp.match(/push_back\(bblscene::Record\d+\{/g)?.length,
+        result.cpp.match(
+            /push_back\(std::make_shared<bblscene::Record\d+Data>/g,
+        )?.length,
         4,
     );
+});
+
+test("keeps an inferred static handle list available to render composition", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createDirectionalLight,
+            createEngine,
+            createPcfDirectionalShadowGenerator,
+            createSceneContext,
+            createSphere,
+            setShadowTaskCasterMeshes,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const light = createDirectionalLight([-1, -2, -1], 1);
+            addToScene(scene, light);
+            const sphere = createSphere(engine, { diameter: 1 });
+            addToScene(scene, sphere);
+            const casters = [sphere];
+            for (let i = 0; i < 2; i++) {
+                const box = createBox(engine, 1);
+                addToScene(scene, box);
+                casters.push(box);
+            }
+            const shadow = createPcfDirectionalShadowGenerator(
+                engine,
+                light,
+            );
+            setShadowTaskCasterMeshes(shadow, casters);
+        }
+
+        void main();
+    `);
+
+    assert.equal(
+        result.manifest.shadowGenerators[0]?.casters.length,
+        3,
+    );
+    assert.doesNotMatch(result.cpp, /Array<bbl::MeshHandle> v_casters/);
 });
 
 test("asks the pin's cone-tip question of the option the scene named", () => {
@@ -2629,7 +3214,7 @@ test("iterates runtime data arrays with range-for", () => {
 
     assert.match(
         result.cpp,
-        /for \(const auto& v_bblite_item_\d+ : bblscene::values\(\)\) \{/,
+        /for \(auto&& v_bblite_item_\d+ : bblscene::values\(\)\) \{/,
     );
     assert.match(
         result.cpp,
@@ -2637,15 +3222,15 @@ test("iterates runtime data arrays with range-for", () => {
     );
 });
 
-test("rejects non-array runtime iterables", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                for (const item of "abc") {
-                    const value = item;
-                }
-            `),
-        /Expected a static array literal/,
+test("iterates strings through their JavaScript characters", () => {
+    const result = compileSource(`
+        for (const item of "abc") {
+            const value = item;
+        }
+    `);
+    assert.match(
+        result.cpp,
+        /for \(auto&& v_bblite_item_\d+ : bbl::js::string_characters\("abc"\)\)/,
     );
 });
 
@@ -2671,20 +3256,38 @@ test("reports unsupported syntax in imported functions", () => {
                         "test/compiler-multi-file-entry.ts",
                 },
             ),
-        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement: DoStatement/,
+        /test[\\/]fixtures[\\/]compiler-modules[\\/]bad-helper\.ts:\d+:\d+: Unsupported statement:/,
     );
 });
 
-test("rejects recursive local functions", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                function recurse(value: number): number {
-                    return recurse(value);
-                }
-                const value = recurse(1);
-            `),
-        /Recursive call to 'recurse' is not supported/,
+test("lowers do-while loops with post-tested conditions", () => {
+    const result = compileSource(`
+        let value = 0;
+        do {
+            value++;
+        } while (value < 3);
+    `);
+    assert.match(
+        result.cpp,
+        /do \{[\s\S]*v_value\+\+;[\s\S]*\} while \(v_value < 3\.0\);/,
+    );
+});
+
+test("lowers recursive plain-data functions natively", () => {
+    const result = compileSource(`
+        function recurse(value: number): number {
+            if (value <= 0) return 0;
+            return recurse(value - 1);
+        }
+        const value = recurse(1);
+    `);
+    assert.match(
+        result.cpp,
+        /double recurse\(double v_\w*value\);/,
+    );
+    assert.match(
+        result.cpp,
+        /return bblscene::recurse\(\(v_\w*value - 1\.0\)\);/,
     );
 });
 
@@ -2979,7 +3582,7 @@ test("does not collapse conditional values to the true branch", () => {
 
     assert.match(
         result.cpp,
-        /double v_fn0_value = \(v_fn0_flag \? 0\.6f : 0\.4f\);/,
+        /double v_fn0_value = \(v_fn0_flag \? 0\.6 : 0\.4\);/,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -3034,6 +3637,23 @@ test("folds browser query predicates inside a runtime condition", () => {
     const queried = compileSource(source, { search: "?seekTime=0.5" });
     assert.match(queried.cpp, /if \(v_frameCount == 10\.0\)/);
     assert.match(queried.cpp, /\.position\.x = 3\.0/);
+});
+
+test("keeps a resolved browser number in a native counted loop", () => {
+    const result = compileSource(
+        `
+            const params = new URLSearchParams(window.location.search);
+            const count = parseFloat(params.get("count") || "");
+            let total = 0;
+            for (let i = 0; i < count; i++) {
+                total += i;
+            }
+        `,
+        { search: "?count=40" },
+    );
+
+    assert.match(result.cpp, /for \(; v_block\d+_i < 40\.0;/);
+    assert.doesNotMatch(result.cpp, /Browser-dependent condition/);
 });
 
 test("does not lower an unreachable logical right operand", () => {
@@ -3922,6 +4542,34 @@ test("materializes static fetched JSON through records, tuples, and typed arrays
     assert.doesNotMatch(result.cpp, /fetch|Response|JSON/);
 });
 
+test("packages a local root-relative binary fetch for native ArrayBuffer reads", () => {
+    const result = compileSource(
+        `
+            async function main() {
+                const response = await fetch(
+                    "/fixtures/compiler-modules/static-geometry.json",
+                );
+                if (!response.ok) throw new Error(String(response.status));
+                const bytes = await response.arrayBuffer();
+            }
+        `,
+        { fileName: "test/compiler-local-root-entry.ts" },
+    );
+
+    assert.deepEqual(result.manifest.assets, [
+        {
+            source: "fixtures/compiler-modules/static-geometry.json",
+            output: result.manifest.assets[0]!.output,
+            kind: "binary",
+        },
+    ]);
+    assert.match(
+        result.cpp,
+        /bbl::js::ArrayBuffer\(bbl::pal::read_binary_file\(bbl::asset_path\(/,
+    );
+    assert.doesNotMatch(result.cpp, /raw\.githubusercontent\.com/);
+});
+
 test("lowers a direct thin-instance upload helper", () => {
     const result = compileSource(`
         import {
@@ -4784,6 +5432,58 @@ test("reaches a shader material's samplers and defines", () => {
     ]);
     // The slot the setter resolved is the declared index.
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
+});
+
+test("carries pixels textures through typed records and maps", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createShaderMaterial,
+            createTexture2DFromPixels,
+            setShaderTexture,
+            type Texture2D,
+        } from "babylon-lite";
+
+        interface CachedImage {
+            texture: Texture2D;
+            width: number;
+            height: number;
+        }
+
+        const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+        const fragmentSource = \`@fragment fn mainFragment()->@location(0) vec4<f32>{return textureSample(image,imageSampler,vec2<f32>(0.5));}\`;
+
+        async function main() {
+            const engine = await createEngine({});
+            const images = new Map<string, CachedImage | null>();
+            const texture = createTexture2DFromPixels(
+                engine,
+                new Uint8Array([255, 0, 0, 255]),
+                1,
+                1,
+            );
+            images.set("red", { texture, width: 1, height: 1 });
+            const cached = images.get("red");
+            if (!cached) throw new Error("missing image");
+            const material = createShaderMaterial({
+                name: "cached-pixels",
+                vertexSource,
+                fragmentSource,
+                attributes: ["position"],
+                uniforms: ["worldViewProjection"],
+                samplers: ["image"],
+            });
+            setShaderTexture(material, "image", cached.texture);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::Map<std::string, bblscene::CachedImage>/,
+    );
+    assert.match(result.cpp, /bbl::PixelsTexture texture;/);
+    assert.match(result.cpp, /bbl::set_shader_pixels_texture\(/);
 });
 
 test("refuses the shader-material sampler and define shapes outside the reached slice", () => {
@@ -5935,11 +6635,11 @@ test("binds a loader group collection, resolves finds statically, and erases the
     // keeps its own time, the other group takes the seek value.
     assert.match(
         result.cpp,
-        /bbl::set_animation_current_time\(v_engine, [^,]+, 0\.25f\)/,
+        /bbl::set_animation_current_time\(v_engine, [^,]+, 0\.25\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::set_animation_current_time\(v_engine, [^,]+, 1\.5f\)/,
+        /bbl::set_animation_current_time\(v_engine, [^,]+, 1\.5\)/,
     );
     assert.ok(
         result.manifest.features.includes(
@@ -6015,7 +6715,7 @@ test("handle identity compares at run time when a side has no generation-known s
     );
     assert.match(
         result.cpp,
-        /\.value == v_idle\.value\) \? 0\.25f : 1\.5f\)/,
+        /\.value == v_idle\.value\) \? 0\.25 : 1\.5\)/,
     );
 });
 

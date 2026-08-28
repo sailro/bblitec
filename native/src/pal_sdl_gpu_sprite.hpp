@@ -389,7 +389,8 @@ inline void upload_sprite_pass(
     SDL_GPUDevice* device,
     Engine& engine,
     SpritePass& pass,
-    float delta_ms) {
+    float delta_ms,
+    GpuBufferUploadBatch* buffer_uploads = nullptr) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
@@ -405,12 +406,21 @@ inline void upload_sprite_pass(
             continue;
         }
         if (layer.count > 0) {
-            update_buffer(
-                device,
-                gpu.instances,
-                layer.instance_data.data(),
+            const std::size_t bytes =
                 static_cast<std::size_t>(layer.count) *
-                    layer.instance_floats_per_sprite * sizeof(float));
+                layer.instance_floats_per_sprite * sizeof(float);
+            if (buffer_uploads) {
+                buffer_uploads->update(
+                    gpu.instances,
+                    layer.instance_data.data(),
+                    bytes);
+            } else {
+                update_buffer(
+                    device,
+                    gpu.instances,
+                    layer.instance_data.data(),
+                    bytes);
+            }
         }
         gpu.uploaded = true;
         gpu.uploaded_version = layer.version;

@@ -1410,6 +1410,131 @@ ${gridSpriteAtlasFramesCpp(this.context)}
 ${pushAtlasHandleCpp()}
 }
 
+SpriteAtlasHandle create_sprite_atlas_from_frames(
+    Engine& engine,
+    const std::vector<SpriteAtlasFramePixelsView>& sources,
+    SpriteAtlasPackOptions options) {
+    if (sources.empty() && !options.has_capacity) {
+        throw std::runtime_error(
+            "createSpriteAtlasFromFrames: at least one frame is required.");
+    }
+    if (options.max_width_px == 0u) {
+        throw std::runtime_error(
+            "createSpriteAtlasFromFrames: maxWidthPx must be positive.");
+    }
+    const std::uint32_t shelf_width = options.has_capacity
+        ? std::min(options.max_width_px, options.capacity_width)
+        : options.max_width_px;
+    std::vector<std::uint32_t> xs(sources.size());
+    std::vector<std::uint32_t> ys(sources.size());
+    std::uint32_t pen_x = 0u;
+    std::uint32_t pen_y = 0u;
+    std::uint32_t shelf_height = 0u;
+    std::uint32_t content_width = 0u;
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        const SpriteAtlasFramePixelsView& source = sources[index];
+        if (source.width == 0u || source.height == 0u) {
+            throw std::runtime_error(
+                "createSpriteAtlasFromFrames: frame has non-positive size.");
+        }
+        const std::uint32_t stride = source.src_stride_bytes == 0u
+            ? source.width * 4u
+            : source.src_stride_bytes;
+        const std::uint64_t row_end =
+            static_cast<std::uint64_t>(source.src_x + source.width) * 4u;
+        if (row_end > stride) {
+            throw std::runtime_error(
+                "createSpriteAtlasFromFrames: source rectangle exceeds its stride.");
+        }
+        const std::uint64_t required =
+            static_cast<std::uint64_t>(source.src_y + source.height - 1u) * stride +
+            row_end;
+        if (required > source.byte_length) {
+            throw std::runtime_error(
+                "createSpriteAtlasFromFrames: source pixel buffer is too short.");
+        }
+        if (pen_x > 0u && pen_x + source.width > shelf_width) {
+            pen_y += shelf_height + options.padding_px;
+            pen_x = 0u;
+            shelf_height = 0u;
+        }
+        if (source.width > shelf_width) {
+            throw std::runtime_error(
+                "createSpriteAtlasFromFrames: frame exceeds shelf width.");
+        }
+        xs[index] = pen_x;
+        ys[index] = pen_y;
+        content_width = std::max(content_width, pen_x + source.width);
+        pen_x += source.width + options.padding_px;
+        shelf_height = std::max(shelf_height, source.height);
+    }
+    const std::uint32_t content_height = sources.empty()
+        ? 0u
+        : pen_y + shelf_height;
+    const std::uint32_t atlas_width = options.has_capacity
+        ? options.capacity_width
+        : std::max(1u, content_width);
+    const std::uint32_t atlas_height = options.has_capacity
+        ? options.capacity_height
+        : std::max(1u, content_height);
+    if (atlas_width == 0u || atlas_height == 0u ||
+        content_width > atlas_width || content_height > atlas_height) {
+        throw std::runtime_error(
+            "createSpriteAtlasFromFrames: atlas capacity is too small.");
+    }
+
+    SpriteAtlasRecord atlas;
+    atlas.width = atlas_width;
+    atlas.height = atlas_height;
+    atlas.rgba.assign(
+        static_cast<std::size_t>(atlas_width) * atlas_height * 4u, 0u);
+    atlas.premultiplied_alpha = options.premultiplied_alpha;
+    atlas.mip_maps = false;
+    atlas.sampler.min_filter = options.sampling;
+    atlas.sampler.mag_filter = options.sampling;
+    atlas.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    atlas.sampler.address_u = TextureAddressMode::clamp;
+    atlas.sampler.address_v = TextureAddressMode::clamp;
+    atlas.sampler.max_anisotropy = 1.0f;
+    atlas.sampler.max_lod = 0.0f;
+    atlas.frames.reserve(sources.size());
+    for (std::size_t index = 0; index < sources.size(); ++index) {
+        const SpriteAtlasFramePixelsView& source = sources[index];
+        const std::uint32_t stride = source.src_stride_bytes == 0u
+            ? source.width * 4u
+            : source.src_stride_bytes;
+        const std::size_t row_bytes =
+            static_cast<std::size_t>(source.width) * 4u;
+        for (std::uint32_t row = 0; row < source.height; ++row) {
+            const std::size_t source_offset =
+                static_cast<std::size_t>(source.src_y + row) * stride +
+                static_cast<std::size_t>(source.src_x) * 4u;
+            const std::size_t destination_offset =
+                (static_cast<std::size_t>(ys[index] + row) * atlas_width +
+                 xs[index]) * 4u;
+            std::copy_n(
+                source.pixels + source_offset,
+                row_bytes,
+                atlas.rgba.begin() +
+                    static_cast<std::ptrdiff_t>(destination_offset));
+        }
+        atlas.frames.push_back(SpriteFrame{
+            Vec2{
+                static_cast<float>(xs[index]) / atlas_width,
+                static_cast<float>(ys[index]) / atlas_height},
+            Vec2{
+                static_cast<float>(xs[index] + source.width) / atlas_width,
+                static_cast<float>(ys[index] + source.height) / atlas_height},
+            Vec2{
+                static_cast<float>(source.width),
+                static_cast<float>(source.height)},
+            source.pivot});
+    }
+    engine.sprite_atlases.push_back(std::move(atlas));
+    return SpriteAtlasHandle{
+        static_cast<std::uint32_t>(engine.sprite_atlases.size() - 1)};
+}
+
 Sprite2DLayerHandle create_sprite_2d_layer(
     Engine& engine,
     SpriteAtlasHandle atlas,
