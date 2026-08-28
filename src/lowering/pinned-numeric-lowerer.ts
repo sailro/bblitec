@@ -90,6 +90,20 @@ export interface PinnedBinding {
     /** For a view, the C++ expression giving its byte length. */
     bytesCpp?: string;
     /**
+     * Whether a view aliases storage the body may WRITE through.
+     *
+     * A view is read-only by default, which is what every reading fold
+     * needs and what keeps a store into one a generation failure rather
+     * than a silent write into a temporary. `bakeTransformIntoVertices` is
+     * the one pinned body that writes through its views: it copies the row
+     * buffer and then rewrites each splat's position, scale and packed
+     * quaternion through a `U8` and an `F32` over those same bytes. Marking
+     * the SOURCE mutable is what carries through to both, because the pin
+     * derives them from one buffer and expects a store through either to be
+     * visible in the other.
+     */
+    mutable?: true;
+    /**
      * `f32`/`u32` are owned buffers whose stores round to that width;
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
      * `f64-list` is a GROWABLE `number[]` the pin pushes onto, which holds
@@ -180,6 +194,27 @@ export interface PinnedNumericScope {
      * `new F32(normals)` after it would have nothing to convert.
      */
     listCalls?: ReadonlySet<string>;
+    /**
+     * Calls whose result is a fixed-length numeric TUPLE the pin
+     * destructures at the call site (`const [x, y, z] = f(...)`).
+     *
+     * The same split `matrixCalls` and `listCalls` draw, one shape further:
+     * the translator carries no types, so which of `calls`' names returns a
+     * tuple is the caller's to declare. The native spelling those callers
+     * give such a name must be indexable, which `std::array` is.
+     */
+    tupleCalls?: ReadonlySet<string>;
+    /**
+     * Calls whose result is a small numeric RECORD, and which members the
+     * body may read off one (`const q = _quatFromRotationBasis(...)`, then
+     * `q.x`).
+     *
+     * The third of the same split: the translator has no types, so a call's
+     * shape is the caller's to declare. Listing the members rather than
+     * accepting any is what makes a pin that renames one fail here instead
+     * of emitting a member the native struct does not have.
+     */
+    recordCalls?: ReadonlyMap<string, readonly string[]>;
     /** This body uses `||` only to join boolean conditions. */
     booleanOr?: boolean;
     /** This body uses `&&` only to join boolean conditions. */
@@ -458,6 +493,69 @@ export class PinnedNumericLowerer {
                 }
                 continue;
             }
+            // `const [x, y, z] = f(...)` -- the tuple twin of the object
+            // destructuring above, bound element by element off a named
+            // temporary. Only a call the caller declared tuple-valued
+            // qualifies: without that the initializer is a number and the
+            // indexing below would be nonsense, so an undeclared callee
+            // fails here rather than emitting it.
+            if (ts.isArrayBindingPattern(declaration.name)) {
+                const initializer = declaration.initializer
+                    ? this.unwrap(declaration.initializer)
+                    : undefined;
+                const callee =
+                    initializer &&
+                    ts.isCallExpression(initializer) &&
+                    ts.isIdentifier(initializer.expression)
+                        ? initializer.expression.text
+                        : undefined;
+                if (!callee || !this.scope.tupleCalls?.has(callee)) {
+                    this.fail(declaration, "tuple binding pattern");
+                }
+                const temporary = `pinned_${lines.length}_${
+                    declaration.getStart(this.file)
+                }`;
+                lines.push(
+                    `${indent}const auto ${temporary} = ` +
+                        `${this.expression(declaration.initializer!)};`,
+                );
+                declaration.name.elements.forEach((element, index) => {
+                    if (
+                        ts.isOmittedExpression(element) ||
+                        !ts.isIdentifier(element.name) ||
+                        element.propertyName ||
+                        element.dotDotDotToken
+                    ) {
+                        this.fail(declaration, "tuple binding element");
+                    }
+                    this.scope.bindings.set(element.name.text, {
+                        cpp: `${temporary}[${index}]`,
+                        type: "scalar",
+                    });
+                });
+                continue;
+            }
+            // `const q = f(...)` where the caller declared `f` record-valued,
+            // and `const q = f(...).member` where it declared the member: the
+            // temporary carries the record and each member the caller listed
+            // binds through it, so a later `q.x` resolves by its own text the
+            // way every other bound path does.
+            if (
+                ts.isIdentifier(declaration.name) &&
+                declaration.initializer &&
+                this.scope.recordCalls
+            ) {
+                const bound = this.recordCallBinding(
+                    declaration.name.text,
+                    declaration.initializer,
+                    indent,
+                    lines.length,
+                );
+                if (bound) {
+                    lines.push(...bound);
+                    continue;
+                }
+            }
             if (!ts.isIdentifier(declaration.name)) {
                 this.fail(declaration, "declaration");
             }
@@ -616,6 +714,7 @@ export class PinnedNumericLowerer {
                     ...(allocation.bytesCpp
                         ? { bytesCpp: allocation.bytesCpp }
                         : {}),
+                    ...(allocation.mutable ? { mutable: true as const } : {}),
                 });
                 lines.push(`${indent}${allocation.declare(name)}`);
                 continue;
@@ -689,6 +788,7 @@ export class PinnedNumericLowerer {
         | {
               type: PinnedBinding["type"];
               bytesCpp?: string;
+              mutable?: true;
               declare: (name: string) => string;
           }
         | undefined {
@@ -703,20 +803,27 @@ export class PinnedNumericLowerer {
         const argument = initializer.arguments[0]!;
         // `new U8(buffer)` / `new F32(buffer)` re-view an existing byte
         // buffer; the same constructors over a COUNT allocate.
-        const source = ts.isIdentifier(argument)
-            ? this.scope.bindings.get(argument.text)
+        const named = this.unwrap(argument);
+        const source = ts.isIdentifier(named)
+            ? this.scope.bindings.get(named.text)
             : undefined;
         if (source?.type === "u8-view") {
             if (constructor !== "U8" && constructor !== "F32") {
                 return undefined;
             }
             const element = constructor === "U8" ? "std::uint8_t" : "float";
+            // A view inherits the source buffer's mutability: the pin builds
+            // both of `bakeTransformIntoVertices`'s views over one buffer it
+            // then writes through, so a `const` view here would refuse the
+            // store the fold exists to perform.
+            const qualifier = source.mutable ? "" : "const ";
             return {
                 type: constructor === "U8" ? "u8-view" : "f32-view",
                 ...(source.bytesCpp ? { bytesCpp: source.bytesCpp } : {}),
+                ...(source.mutable ? { mutable: true as const } : {}),
                 declare: (name) =>
-                    `const ${element}* ${name} = ` +
-                    `reinterpret_cast<const ${element}*>(${source.cpp});`,
+                    `${qualifier}${element}* ${name} = ` +
+                    `reinterpret_cast<${qualifier}${element}*>(${source.cpp});`,
             };
         }
         // `new F32(list)` over a grown `number[]` is the pin's own rounding
@@ -848,6 +955,11 @@ export class PinnedNumericLowerer {
         if (element === "std::uint32_t") {
             return `static_cast<std::uint32_t>(${text})`;
         }
+        // A `Uint8Array` store is ECMAScript ToUint8, which truncates toward
+        // zero and then wraps modulo 256. A `static_cast` agrees inside the
+        // range and is undefined outside it, so the conversion is the spec's
+        // rather than the language's.
+        if (element === "std::uint8_t") return `bbl::js::to_uint8(${text})`;
         return text;
     }
 
@@ -1085,6 +1197,15 @@ export class PinnedNumericLowerer {
         const binding = this.elementOwner(target);
         if (binding?.type === "f32") return "float";
         if (binding?.type === "u32") return "std::uint32_t";
+        // A mutable view rounds at its own element width, exactly as the
+        // typed array the pin stores through does. A read-only view has no
+        // store to round, and reaching one here would mean a body wrote
+        // through an alias the caller declared read-only -- which fails at
+        // the assignment rather than silently widening.
+        if (binding?.mutable && binding.type === "f32-view") return "float";
+        if (binding?.mutable && binding.type === "u8-view") {
+            return "std::uint8_t";
+        }
         return undefined;
     }
 
@@ -1346,12 +1467,87 @@ export class PinnedNumericLowerer {
         return { present: optional.present, member };
     }
 
+    /**
+     * `const q = f(...)` / `const q = f(...).member` for a call the caller
+     * declared record-valued.
+     *
+     * Returns the lines to emit, or undefined when the initializer is not
+     * one of those two shapes — which leaves every other declaration to the
+     * paths below it.
+     */
+    private recordCallBinding(
+        name: string,
+        initializer: ts.Expression,
+        indent: string,
+        ordinal: number,
+    ): string[] | undefined {
+        const unwrapped = this.unwrap(initializer);
+        const member = ts.isPropertyAccessExpression(unwrapped)
+            ? unwrapped.name.text
+            : undefined;
+        const call = this.unwrap(
+            member ? (unwrapped as ts.PropertyAccessExpression).expression
+                   : unwrapped,
+        );
+        if (
+            !ts.isCallExpression(call) ||
+            !ts.isIdentifier(call.expression)
+        ) {
+            return undefined;
+        }
+        const members = this.scope.recordCalls?.get(call.expression.text);
+        if (!members) return undefined;
+        if (member !== undefined && !members.includes(member)) {
+            this.fail(unwrapped, `record member '${member}'`);
+        }
+        const temporary = `pinned_${ordinal}_${initializer.getStart(this.file)}`;
+        // A member read binds that member's own value; the whole record
+        // binds every member the caller listed, each by its own text.
+        if (member !== undefined) {
+            this.scope.bindings.set(name, {
+                cpp: temporary,
+                type: "scalar",
+            });
+        } else {
+            for (const field of members) {
+                this.scope.bindings.set(`${name}.${field}`, {
+                    cpp: `${temporary}.${field}`,
+                    type: "scalar",
+                });
+            }
+            this.scope.bindings.set(name, {
+                cpp: temporary,
+                type: "scalar",
+            });
+        }
+        return [
+            `${indent}const auto ${temporary} = ` +
+                `${this.expression(unwrapped)};`,
+        ];
+    }
+
     private propertyAccess(
         node: ts.PropertyAccessExpression,
         absentOverride?: string,
     ): string {
         const named = this.scope.bindings.get(node.getText(this.file));
         if (named) return named.cpp;
+        // A member read straight off a record-valued call, which the native
+        // spelling returns as a struct with the members the caller listed.
+        const owned = this.unwrap(node.expression);
+        if (
+            ts.isCallExpression(owned) &&
+            ts.isIdentifier(owned.expression) &&
+            this.scope.recordCalls?.has(owned.expression.text)
+        ) {
+            const members = this.scope.recordCalls.get(
+                owned.expression.text,
+            )!;
+            if (!members.includes(node.name.text)) {
+                this.fail(node, `record member '${node.name.text}'`);
+            }
+            return `${this.expression(owned)}.${node.name.text}`;
+        }
         const optional = this.optionalMember(node);
         if (optional) {
             const absent = absentOverride ?? optional.member.absent;

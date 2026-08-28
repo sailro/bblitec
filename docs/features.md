@@ -591,7 +591,17 @@ pipeline the way each half is best at:
 
 A cloud is a `SceneNode` upstream, so its world matrix composes from its own
 TRS through the same emitted composition a thin-instanced mesh's parent world
-takes; the reached slice writes its `position`.
+takes, and the reached slice writes all three of its lanes.
+
+`bakeCurrentTransformIntoVertices` then rewrites the cloud so that world
+matrix is no longer needed: every splat's position, scale and packed
+quaternion move through it, the geometry is rebuilt from the rewritten rows,
+and the TRS resets to the identity. It is **folded** like the geometry build
+beside it -- fixed math over the fixed row layout -- and it is the one entry
+point that reads the packaged rows back, so the loader retains them for a
+scene that reaches it and drops them otherwise
+([fidelity](fidelity.md#shader-contract) carries the Euler-proxy rule the
+reset turns on).
 
 The reached slice is the plain `.ply` and `.splat` row layout. A compressed or
 spherical-harmonic PLY refuses at generation, because it needs the pin's second

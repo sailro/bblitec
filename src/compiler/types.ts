@@ -1426,6 +1426,7 @@ export type Feature =
     | "loader:gltf-variants"
     | "loader:gltf-cameras"
     | "loader:splat"
+    | "splat:bake"
     | "material:pbr"
     | "material:clearcoat"
     | "material:sheen"

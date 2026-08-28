@@ -1048,9 +1048,19 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/splat_loader.cpp",
-                splats.lowerLoader(),
+                splats.lowerLoader({
+                    retainRows: features.includes("splat:bake"),
+                }),
                 generated,
             );
+            if (features.includes("splat:bake")) {
+                this.writeSource(
+                    "upstream/src/splat_bake.cpp",
+                    splats.lowerBake(),
+                    generated,
+                    "upstream/include/bblite/upstream/splat_bake.hpp",
+                );
+            }
             // The pin's own module, split at its two entry points. Its
             // provenance names the pipeline that ships the WGSL, not a
             // composer -- nothing here composes.

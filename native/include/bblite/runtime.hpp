@@ -1088,6 +1088,15 @@ struct SplatMeshRecord {
     Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
     bool has_rotation_quaternion = false;
     Vec3 scaling{1.0f, 1.0f, 1.0f};
+    // The packaged 32-byte rows, retained only where a reached call reads
+    // them back. Upstream keeps them on every cloud (`splatsData`, BJS
+    // `keepInRam: true`), but the one entry point that consumes them here
+    // is the transform bake, and they are half again the size of the four
+    // float payloads above -- so the loader fills this where the scene
+    // reaches `bakeCurrentTransformIntoVertices` and leaves it empty
+    // otherwise, which is the same reach boundary every other generated
+    // capability draws.
+    std::vector<std::uint8_t> rows;
 };
 
 struct Sprite2DLayerRecord {
@@ -2921,6 +2930,12 @@ struct SpriteRendererOptions {
 };
 
 SplatMeshHandle load_splat(Scene& scene, const std::string& path);
+// Bakes a cloud's own world matrix into its rows, rebuilds its geometry and
+// resets its TRS. Defined by the generated splat bake, which a scene reaches
+// through `bakeCurrentTransformIntoVertices`.
+void bake_current_transform_into_vertices(
+    Engine& engine,
+    SplatMeshHandle splat);
 SpriteAtlasHandle load_sprite_atlas(
     Engine& engine,
     const std::string& path,

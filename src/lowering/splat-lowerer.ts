@@ -39,6 +39,10 @@ const SORT_MODULE_MESH =
     "src/mesh/GaussianSplatting/gaussian-splatting-mesh.ts";
 const PIPELINE_MODULE =
     "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
+const BAKE_MODULE = "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts";
+const DECOMPOSE_MODULE = "src/math/mat4-decompose.ts";
+const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
+const QUAT_BASIS_MODULE = "src/math/quat-from-rotation-matrix.ts";
 
 /**
  * The pinned splat texture views, in the record-field spelling the runtime
@@ -590,6 +594,17 @@ ${gpuConstants}
 
 SplatGeometry build_splat_geometry(const std::vector<std::uint8_t>& rows);
 
+/**
+ * Moves one geometry build onto a cloud's record.
+ *
+ * Two callers fill exactly these fields -- the loader once, and the
+ * transform bake again from rewritten rows -- so the assignment has one
+ * home rather than two that must agree.
+ */
+void apply_splat_geometry(
+    SplatMeshRecord& record,
+    SplatGeometry& geometry);
+
 } // namespace bbl::upstream
 `,
             source: `// ${this.context.provenance(DATA_MODULE, symbolName)}
@@ -789,8 +804,15 @@ ${body}
             .join("\n");
     }
 
-    public lowerLoader(): LoweredSource {
+    public lowerLoader(options: { retainRows: boolean }): LoweredSource {
         const symbolName = "attachParsedSplat";
+        // Upstream retains every cloud's rows (`splatsData`); this port
+        // retains them where a reached call reads them back, which today is
+        // the transform bake alone. They are half again the size of the four
+        // float payloads, so the reach boundary is worth drawing.
+        const retention = options.retainRows
+            ? "    record.rows = std::move(rows);\n"
+            : "";
         const { declaration } = this.declaration(
             "src/loader-splat/load-splat.ts",
             symbolName,
@@ -838,20 +860,12 @@ ${body}
 
 namespace bbl {
 
-SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
-    if (!scene.engine) {
-        throw std::runtime_error("loadSplat requires a scene engine.");
-    }
-    Engine& engine = *scene.engine;
-    const std::vector<std::uint8_t> rows = pal::read_binary_file(path);
-    if (rows.size() % upstream::splat_row_length != 0u || rows.empty()) {
-        throw std::runtime_error(
-            "loadSplat: packaged splat rows are not a whole number of splats.");
-    }
-    upstream::SplatGeometry geometry =
-        upstream::build_splat_geometry(rows);
-
-    SplatMeshRecord record;
+// The record fields one geometry build fills, in one place: the loader
+// builds them once and the transform bake rebuilds them from rewritten
+// rows, and a field only one of the two carried would be the drift.
+void upstream::apply_splat_geometry(
+    SplatMeshRecord& record,
+    upstream::SplatGeometry& geometry) {
     record.vertex_count =
         static_cast<std::uint32_t>(geometry.vertexCount);
     record.texture_width =
@@ -869,12 +883,745 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
     record.cov_a_rgba = std::move(geometry.covARGBA);
     record.cov_b_rgba = std::move(geometry.covBRGBA);
     record.colors_rgba = std::move(geometry.colorsRGBA);
+}
 
-    engine.splat_meshes.push_back(std::move(record));
+SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
+    if (!scene.engine) {
+        throw std::runtime_error("loadSplat requires a scene engine.");
+    }
+    Engine& engine = *scene.engine;
+    std::vector<std::uint8_t> rows = pal::read_binary_file(path);
+    if (rows.size() % upstream::splat_row_length != 0u || rows.empty()) {
+        throw std::runtime_error(
+            "loadSplat: packaged splat rows are not a whole number of splats.");
+    }
+    upstream::SplatGeometry geometry =
+        upstream::build_splat_geometry(rows);
+
+    SplatMeshRecord record;
+    upstream::apply_splat_geometry(record, geometry);
+${retention}    engine.splat_meshes.push_back(std::move(record));
     const SplatMeshHandle handle{
         static_cast<std::uint32_t>(engine.splat_meshes.size() - 1)};
     scene.splat_meshes.push_back(handle);
     return handle;
+}
+
+} // namespace bbl
+`,
+        };
+    }
+
+
+    /**
+     * A pinned numeric function, folded whole: its parameters bound by the
+     * caller, its body translated statement by statement.
+     *
+     * The three splat folds beside it each build this by hand; the bake
+     * chain needs five of them, so the frame they share is written once.
+     */
+    private foldNumericFunction(
+        file: ts.SourceFile,
+        declaration: ts.FunctionDeclaration,
+        bindings: Map<string, PinnedBinding>,
+        extra: {
+            calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
+            recordCalls?: ReadonlyMap<string, readonly string[]>;
+            tupleCalls?: ReadonlySet<string>;
+            returnValue?: (
+                expression: ts.Expression | undefined,
+                lowerer: PinnedNumericLowerer,
+            ) => string;
+            /** A body whose `return` is a plain number. */
+            scalarReturn?: boolean;
+            /** This body joins boolean conditions with `&&`. */
+            booleanAnd?: boolean;
+        },
+    ): string {
+        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: new Map([...MATH_CALLS, ...(extra.calls ?? new Map())]),
+            ...(extra.recordCalls ? { recordCalls: extra.recordCalls } : {}),
+            ...(extra.tupleCalls ? { tupleCalls: extra.tupleCalls } : {}),
+            ...(extra.booleanAnd ? { booleanAnd: true } : {}),
+            ...(extra.returnValue
+                ? {
+                      returnValue: (expression: ts.Expression | undefined) =>
+                          extra.returnValue!(expression, lowerer),
+                  }
+                : {}),
+            ...(extra.scalarReturn
+                ? {
+                      returnValue: (expression: ts.Expression | undefined) =>
+                          expression === undefined
+                              ? ""
+                              : lowerer.expression(expression),
+                  }
+                : {}),
+        });
+        return declaration
+            .body!.statements.flatMap((statement) =>
+                lowerer.statement(statement, "    "),
+            )
+            .join("\n");
+    }
+
+    /** The `x`, `y`, `z`, `w` of a pinned returned quaternion literal. */
+    private quatFields(
+        expression: ts.Expression | undefined,
+        at: ts.Node,
+        lowerer: PinnedNumericLowerer,
+    ): string[] {
+        if (!expression || !ts.isObjectLiteralExpression(expression)) {
+            return this.context.contractError(
+                at,
+                "Expected a pinned quaternion object literal.",
+            );
+        }
+        return this.objectFields(
+            expression,
+            ["x", "y", "z", "w"],
+            lowerer,
+            at,
+        );
+    }
+
+    /** One named member of a pinned returned object literal. */
+    private returnedMember(
+        expression: ts.Expression | undefined,
+        member: string,
+        at: ts.Node,
+    ): ts.ObjectLiteralExpression {
+        if (!expression || !ts.isObjectLiteralExpression(expression)) {
+            return this.context.contractError(
+                at,
+                `Expected a returned object literal carrying '${member}'.`,
+            );
+        }
+        for (const property of expression.properties) {
+            if (
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name) &&
+                property.name.text === member &&
+                ts.isObjectLiteralExpression(property.initializer)
+            ) {
+                return property.initializer;
+            }
+        }
+        return this.context.contractError(
+            at,
+            `Expected the returned literal to carry '${member}'.`,
+        );
+    }
+
+
+    /**
+     * The two statements this port asserts instead of emitting: the copy
+     * the pinned bake opens with, and the handover it closes with.
+     *
+     * The pin owns the retained buffer (`mesh.splatsData`) and reseats it
+     * through `updateData`, which also rebuilds the geometry. Here the
+     * caller owns the rows and rebuilds, so the emitted body writes them in
+     * place. That is the same end state only while the pin's own body still
+     * copies the retained buffer and hands exactly that copy back, so both
+     * halves are checked rather than trusted.
+     */
+    private assertBakeBufferBoundary(
+        declaration: ts.FunctionDeclaration,
+    ): void {
+        const statements = declaration.body!.statements;
+        const first = statements[0];
+        const last = statements[statements.length - 1];
+        const opensWithCopy =
+            first !== undefined &&
+            ts.isVariableStatement(first) &&
+            first.declarationList.declarations.length === 1 &&
+            first.declarationList.declarations[0]!.initializer !== undefined &&
+            this.context.expressionMatchesShape(
+                first.declarationList.declarations[0]!.initializer!,
+                "mesh.splatsData",
+            );
+        if (!opensWithCopy) {
+            this.context.contractError(
+                declaration,
+                "Expected the bake to open by reading mesh.splatsData: the " +
+                    "emitted body rewrites the caller's rows in place, and " +
+                    "that is what makes the two the same buffer.",
+            );
+        }
+        const closesWithHandover =
+            last !== undefined &&
+            ts.isExpressionStatement(last) &&
+            ts.isCallExpression(last.expression) &&
+            this.context.expressionMatchesShape(
+                last.expression.expression,
+                "mesh.updateData",
+            );
+        if (!closesWithHandover) {
+            this.context.contractError(
+                declaration,
+                "Expected the bake to close with mesh.updateData(...): the " +
+                    "caller performs the geometry rebuild that call would.",
+            );
+        }
+    }
+
+    /**
+     * `mat4Decompose`, specialized to the rotation its one caller reads,
+     * with the two math helpers it calls folded beside it.
+     *
+     * The specialization is checked rather than assumed: the adapter that
+     * reads it is asserted below to take `.rotation` and nothing else, so a
+     * pin that starts reading the scale or the translation fails generation
+     * instead of silently losing them.
+     */
+    private lowerDecomposeRotation(): string {
+        const determinant = this.declaration(
+            DETERMINANT_MODULE,
+            "mat4Determinant3",
+        );
+        const basis = this.declaration(
+            QUAT_BASIS_MODULE,
+            "_quatFromRotationBasis",
+        );
+        const decompose = this.declaration(DECOMPOSE_MODULE, "mat4Decompose");
+
+        const determinantBody = this.foldNumericFunction(
+            determinant.file,
+            determinant.declaration,
+            new Map<string, PinnedBinding>([
+                ["m", { cpp: "m", type: "f32-view" }],
+            ]),
+            { scalarReturn: true },
+        );
+        const basisBody = this.foldNumericFunction(
+            basis.file,
+            basis.declaration,
+            this.scalarParameters(basis.declaration),
+            {
+                booleanAnd: true,
+                returnValue: (expression, lowerer): string =>
+                    `PinnedQuat{${this.quatFields(
+                        expression,
+                        basis.declaration,
+                        lowerer,
+                    ).join(", ")}}`,
+            },
+        );
+        const decomposeBody = this.foldNumericFunction(
+            decompose.file,
+            decompose.declaration,
+            new Map<string, PinnedBinding>([
+                ["m", { cpp: "m", type: "f32-view" }],
+            ]),
+            {
+                calls: new Map<
+                    string,
+                    (args: readonly string[]) => string
+                >([
+                    [
+                        "mat4Determinant3",
+                        (a) => `pinned_mat4_determinant3(${a[0]})`,
+                    ],
+                    [
+                        "_quatFromRotationBasis",
+                        (a) =>
+                            `pinned_quat_from_rotation_basis(${a.join(", ")})`,
+                    ],
+                ]),
+                recordCalls: new Map([
+                    ["_quatFromRotationBasis", ["x", "y", "z", "w"]],
+                ]),
+                returnValue: (expression, lowerer): string =>
+                    `PinnedQuat{${this.quatFields(
+                        this.returnedMember(
+                            expression,
+                            "rotation",
+                            decompose.declaration,
+                        ),
+                        decompose.declaration,
+                        lowerer,
+                    ).join(", ")}}`,
+            },
+        );
+
+        const parameters = this.parameterList(basis.declaration);
+        return `/** The pin's own \`{x, y, z, w}\`, as its math helpers return one. */
+struct PinnedQuat {
+    double x;
+    double y;
+    double z;
+    double w;
+};
+
+double pinned_mat4_determinant3(const std::array<float, 16>& m) {
+${determinantBody}
+}
+
+PinnedQuat pinned_quat_from_rotation_basis(
+${parameters}) {
+${basisBody}
+}
+
+// mat4Decompose, specialized to the rotation its one caller reads. What
+// licenses dropping the translation and the scale is the assertion on that
+// caller's own body, not this signature.
+PinnedQuat pinned_mat4_decompose_rotation(const std::array<float, 16>& m) {
+${decomposeBody}
+}`;
+    }
+
+    /** A pinned function's parameters, each bound as a plain f64 scalar. */
+    private scalarParameters(
+        declaration: ts.FunctionDeclaration,
+    ): Map<string, PinnedBinding> {
+        return new Map(
+            declaration.parameters.map(
+                (parameter): [string, PinnedBinding] => [
+                    this.parameterName(declaration, parameter),
+                    {
+                        cpp: this.parameterName(declaration, parameter),
+                        type: "scalar",
+                    },
+                ],
+            ),
+        );
+    }
+
+    /** One pinned parameter's name, refusing a destructured one. */
+    private parameterName(
+        declaration: ts.FunctionDeclaration,
+        parameter: ts.ParameterDeclaration,
+    ): string {
+        if (!ts.isIdentifier(parameter.name)) {
+            return this.context.contractError(
+                declaration,
+                "Expected named pinned parameters.",
+            );
+        }
+        return parameter.name.text;
+    }
+
+    /** The pinned parameters as a C++ double parameter list. */
+    private parameterList(declaration: ts.FunctionDeclaration): string {
+        return declaration.parameters
+            .map(
+                (parameter) =>
+                    `    double ${this.parameterName(declaration, parameter)}`,
+            )
+            .join(",\n");
+    }
+
+    /**
+     * The bake module's own three helpers, each folded from its own body.
+     *
+     * `mat4ToRotationQuat` is the one restated line in the chain: its body
+     * is a decompose and a four-component spread, and this port folds the
+     * decompose to the rotation alone. Both halves of that are asserted, so
+     * the restatement cannot outlive the shape it stands for.
+     */
+    private lowerBakeHelpers(): string {
+        const coord = this.declaration(BAKE_MODULE, "mat4TransformCoord");
+        const multiply = this.declaration(BAKE_MODULE, "quatMultiply");
+        const rotation = this.declaration(BAKE_MODULE, "mat4ToRotationQuat");
+        this.assertDecomposeAdapter(rotation.declaration);
+
+        const tupleReturn =
+            (declaration: ts.FunctionDeclaration, arity: number) =>
+            (
+                expression: ts.Expression | undefined,
+                lowerer: PinnedNumericLowerer,
+            ): string => {
+                const unwrapped = expression
+                    ? this.context.unwrapExpression(expression)
+                    : undefined;
+                if (
+                    !unwrapped ||
+                    !ts.isArrayLiteralExpression(unwrapped) ||
+                    unwrapped.elements.length !== arity
+                ) {
+                    return this.context.contractError(
+                        declaration,
+                        `Expected a ${arity}-element pinned tuple return.`,
+                    );
+                }
+                return `std::array<double, ${arity}>{${unwrapped.elements
+                    .map((element) => lowerer.expression(element))
+                    .join(", ")}}`;
+            };
+
+        const coordBody = this.foldNumericFunction(
+            coord.file,
+            coord.declaration,
+            this.helperBindings(coord.declaration),
+            { returnValue: tupleReturn(coord.declaration, 3) },
+        );
+        const multiplyBody = this.foldNumericFunction(
+            multiply.file,
+            multiply.declaration,
+            this.helperBindings(multiply.declaration),
+            { returnValue: tupleReturn(multiply.declaration, 4) },
+        );
+
+        return `std::array<double, 3> pinned_mat4_transform_coord(
+    const std::array<float, 16>& m,
+    double x,
+    double y,
+    double z) {
+${coordBody}
+}
+
+std::array<double, 4> pinned_mat4_to_rotation_quat(
+    const std::array<float, 16>& m) {
+    const PinnedQuat q = pinned_mat4_decompose_rotation(m);
+    return std::array<double, 4>{q.x, q.y, q.z, q.w};
+}
+
+std::array<double, 4> pinned_quat_multiply(
+${this.parameterList(multiply.declaration)}) {
+${multiplyBody}
+}`;
+    }
+
+    /**
+     * A bake helper's parameters: a leading matrix as a view, everything
+     * else a scalar. Which is which comes from the pinned signature's own
+     * first parameter name, so a renamed one fails rather than binding a
+     * double where the body indexes.
+     */
+    private helperBindings(
+        declaration: ts.FunctionDeclaration,
+    ): Map<string, PinnedBinding> {
+        return new Map(
+            declaration.parameters.map(
+                (parameter, index): [string, PinnedBinding] => {
+                    const name = this.parameterName(declaration, parameter);
+                    return [
+                        name,
+                        {
+                            cpp: name,
+                            type:
+                                index === 0 && name === "m"
+                                    ? "f32-view"
+                                    : "scalar",
+                        },
+                    ];
+                },
+            ),
+        );
+    }
+
+    /**
+     * `mat4ToRotationQuat` reads the decomposition's rotation and nothing
+     * else, and spreads exactly its four components in x/y/z/w order.
+     *
+     * This is what licenses `pinned_mat4_decompose_rotation` returning the
+     * rotation alone, and the four-component body written out beside it.
+     */
+    private assertDecomposeAdapter(
+        declaration: ts.FunctionDeclaration,
+    ): void {
+        const statements = declaration.body!.statements;
+        const memberReads = this.context.findNodes(
+            declaration,
+            (node): node is ts.PropertyAccessExpression =>
+                ts.isPropertyAccessExpression(node) &&
+                ts.isCallExpression(
+                    this.context.unwrapExpression(node.expression),
+                ),
+        );
+        if (
+            statements.length !== 2 ||
+            memberReads.length !== 1 ||
+            memberReads[0]!.name.text !== "rotation" ||
+            !this.context.hasCall(declaration, "mat4Decompose")
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected mat4ToRotationQuat to read only the " +
+                    "decomposition's rotation; this port folds " +
+                    "mat4Decompose to that member alone.",
+            );
+        }
+        const returned = statements[1];
+        const tuple =
+            returned !== undefined &&
+            ts.isReturnStatement(returned) &&
+            returned.expression !== undefined
+                ? this.context.unwrapExpression(returned.expression)
+                : undefined;
+        const components =
+            tuple && ts.isArrayLiteralExpression(tuple)
+                ? tuple.elements.map((element) =>
+                      ts.isPropertyAccessExpression(element)
+                          ? element.name.text
+                          : "",
+                  )
+                : [];
+        if (components.join(",") !== "x,y,z,w") {
+            this.context.contractError(
+                declaration,
+                "Expected mat4ToRotationQuat to return [q.x, q.y, q.z, q.w].",
+            );
+        }
+    }
+
+    /**
+     * The TRS `bakeCurrentTransformIntoVertices` leaves behind, emitted
+     * from its own assignments rather than from a reading of them.
+     *
+     * The pin writes position, `rotationQuaternion` and scaling and leaves
+     * `rotation` alone -- because upstream's `rotation` is an Euler PROXY
+     * over that quaternion (`createEulerProxy`, scene-node.ts) rather than
+     * storage of its own, so clearing the quaternion clears both. This port
+     * keeps the two as separate record lanes, so the emitted reset clears
+     * the Euler lane as well: leaving it set would compose the rotation a
+     * second time through `build_splat_world`'s Euler arm.
+     */
+    private lowerBakeReset(): string {
+        const { file, declaration } = this.declaration(
+            BAKE_MODULE,
+            "bakeCurrentTransformIntoVertices",
+        );
+        const lanes: ReadonlyMap<string, string> = new Map([
+            ["position", "position"],
+            ["rotationQuaternion", "rotation_quaternion"],
+            ["scaling", "scaling"],
+        ]);
+        const writes: string[] = [];
+        for (const statement of declaration.body!.statements) {
+            if (
+                !ts.isExpressionStatement(statement) ||
+                !ts.isBinaryExpression(statement.expression) ||
+                statement.expression.operatorToken.kind !==
+                    ts.SyntaxKind.EqualsToken ||
+                !ts.isPropertyAccessExpression(statement.expression.left)
+            ) {
+                continue;
+            }
+            const target = statement.expression.left;
+            const owner = target.expression;
+            if (
+                !ts.isPropertyAccessExpression(owner) ||
+                owner.expression.getText(file) !== "mesh"
+            ) {
+                continue;
+            }
+            const lane = lanes.get(owner.name.text);
+            if (lane === undefined) {
+                this.context.contractError(
+                    statement,
+                    `The bake resets '${owner.name.text}', which this ` +
+                        "record has no lane for.",
+                );
+            }
+            writes.push(
+                `    mesh.${lane}.${target.name.text} = ` +
+                    `${this.context
+                        .numericValue(statement.expression.right, file)
+                        .toFixed(1)}f;`,
+            );
+        }
+        if (writes.length !== 10) {
+            this.context.contractError(
+                declaration,
+                "Expected the bake to reset three position lanes, four " +
+                    "quaternion lanes and three scaling lanes.",
+            );
+        }
+        return `void reset_splat_transform(SplatMeshRecord& mesh) {
+${writes.join("\n")}
+    // Upstream's \`rotation\` is an Euler proxy over the quaternion above,
+    // so clearing that quaternion is what clears it there. This record
+    // keeps the two apart and \`build_splat_world\` prefers the quaternion
+    // only while one is set, so the Euler lane is cleared with it.
+    mesh.rotation = Vec3{0.0f, 0.0f, 0.0f};
+    mesh.has_rotation_quaternion = true;
+}`;
+    }
+
+
+    /**
+     * `bakeTransformIntoVertices` — the pin's own transform bake, folded
+     * from its own declaration.
+     *
+     * It is arithmetic over the 32-byte row layout, exactly like the
+     * geometry build beside it, so it folds for the same reason: the shape
+     * is the contract. What it needs that no other splat fold does is a
+     * MUTABLE view — the pin copies the row buffer and then rewrites each
+     * splat's position, scale and packed quaternion through a `U8` and an
+     * `F32` over those same bytes.
+     */
+    public lowerBake(): LoweredSource {
+        const symbolName = "bakeTransformIntoVertices";
+        const { file, declaration } = this.declaration(
+            BAKE_MODULE,
+            symbolName,
+        );
+        const bakeRowLength = this.pinnedNumber(BAKE_MODULE, "ROW_LENGTH");
+        if (bakeRowLength !== this.rowLength()) {
+            this.context.contractError(
+                declaration,
+                "The bake's ROW_LENGTH no longer matches the geometry " +
+                    "build's; both read one row layout.",
+            );
+        }
+        this.assertBakeBufferBoundary(declaration);
+
+        const decompose = this.lowerDecomposeRotation();
+        const helpers = this.lowerBakeHelpers();
+        const reset = this.lowerBakeReset();
+
+        const bindings = new Map<string, PinnedBinding>([
+            // The copy the pin writes through. The caller already owns it,
+            // so both of the pin's views alias the caller's bytes and every
+            // store lands where the caller will read it.
+            [
+                "newBuffer",
+                {
+                    cpp: "rows.data()",
+                    bytesCpp: "rows.size()",
+                    type: "u8-view",
+                    mutable: true,
+                },
+            ],
+            // The module constant the stride comes from, read from the pin
+            // rather than repeated as a literal.
+            [
+                "ROW_LENGTH",
+                {
+                    cpp: "static_cast<double>(splat_row_length)",
+                    type: "scalar",
+                },
+            ],
+            // `new F32(transform)` copies, so the local the body indexes is
+            // a copy of the caller's matrix at the pin's own width.
+            ["transform", { cpp: "transform", type: "f32" }],
+        ]);
+        const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: new Map<string, (args: readonly string[]) => string>([
+                ...MATH_CALLS,
+                [
+                    "mat4TransformCoord",
+                    (a) => `pinned_mat4_transform_coord(${a.join(", ")})`,
+                ],
+                [
+                    "mat4ToRotationQuat",
+                    (a) => `pinned_mat4_to_rotation_quat(${a[0]})`,
+                ],
+                [
+                    "quatMultiply",
+                    (a) => `pinned_quat_multiply(${a.join(", ")})`,
+                ],
+            ]),
+            tupleCalls: new Set([
+                "mat4TransformCoord",
+                "mat4ToRotationQuat",
+                "quatMultiply",
+            ]),
+        });
+        // The body minus the two statements the boundary check covers: the
+        // opening copy and the closing handover.
+        const statements = declaration.body!.statements.slice(1, -1);
+        const body = statements
+            .flatMap((statement) => lowerer.statement(statement, "    "))
+            .join("\n");
+
+        return {
+            modulePath: BAKE_MODULE,
+            symbolName,
+            header: `#pragma once
+
+#include <bblite/runtime.hpp>
+
+#include <array>
+#include <cstdint>
+#include <vector>
+
+namespace bbl::upstream {
+
+/**
+ * Rewrites every splat row so the cloud renders identically under an
+ * identity transform.
+ *
+ * The pin copies the retained buffer and hands the copy to \`updateData\`;
+ * this rewrites the caller's rows in place and leaves the geometry rebuild
+ * to the caller, which is the same end state (splat-lowerer.ts says why).
+ */
+void bake_splat_transform(
+    std::vector<std::uint8_t>& rows,
+    const std::array<float, 16>& transform);
+
+/** The TRS \`bakeCurrentTransformIntoVertices\` leaves behind. */
+void reset_splat_transform(SplatMeshRecord& mesh);
+
+} // namespace bbl::upstream
+`,
+            source: `// ${this.context.provenance(BAKE_MODULE, symbolName)}
+#include <bblite/js_data.hpp>
+#include <bblite/upstream/splat_bake.hpp>
+#include <bblite/upstream/splat_geometry.hpp>
+#include <bblite/upstream/splat_sort.hpp>
+
+#include <cmath>
+#include <initializer_list>
+#include <stdexcept>
+
+namespace bbl::upstream {
+
+namespace {
+
+// The same Math.hypot adaptation the geometry fold records: the spec leaves
+// it implementation-approximated, so this is the plain root of the sum of
+// squares.
+double pinned_hypot(std::initializer_list<double> values) {
+    double sum = 0.0;
+    for (double value : values) sum += value * value;
+    return std::sqrt(sum);
+}
+
+${decompose}
+
+${helpers}
+
+} // namespace
+
+void bake_splat_transform(
+    std::vector<std::uint8_t>& rows,
+    const std::array<float, 16>& transform) {
+${body}
+}
+
+${reset}
+
+} // namespace bbl::upstream
+
+namespace bbl {
+
+void bake_current_transform_into_vertices(
+    Engine& engine,
+    SplatMeshHandle splat) {
+    SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
+    if (mesh.rows.empty()) {
+        throw std::runtime_error(
+            "bakeCurrentTransformIntoVertices needs the cloud's rows, which "
+            "the loader retains only for a scene that reaches this call.");
+    }
+    // \`mesh.worldMatrix\` — the same composition every other consumer of a
+    // cloud's world reads, re-derived rather than cached.
+    const std::array<float, 16> world = upstream::build_splat_world(mesh);
+    upstream::bake_splat_transform(mesh.rows, world);
+    // The rebuild \`updateData\` performs, including its own vertex-count
+    // guard: the pin throws rather than uploading a differently sized cloud.
+    upstream::SplatGeometry geometry =
+        upstream::build_splat_geometry(mesh.rows);
+    if (static_cast<std::uint32_t>(geometry.vertexCount) !=
+        mesh.vertex_count) {
+        throw std::runtime_error("GS vertex count mismatch");
+    }
+    upstream::apply_splat_geometry(mesh, geometry);
+    upstream::reset_splat_transform(mesh);
 }
 
 } // namespace bbl

@@ -1204,6 +1204,7 @@ inline void typed_array_set(
     return value - floored >= 0.5 ? floored + 1.0 : floored;
 }
 
+
 // Deterministic Math.random: mulberry32 over a pinned seed. The browser
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).
