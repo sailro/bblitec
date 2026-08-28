@@ -82,531 +82,368 @@ Generated shaders preserve upstream markers for:
 - GridMaterial object-space derivatives, major/minor lines, hard/cosine line
   paths, max-line composition, and transparent opacity
 
-The custom-material WGSL pipeline reflects uniform layout, binding order,
-attributes, varyings, stages, and entry points; PAL shader creation consumes
-the reflected uniform-buffer counts. Pinned Tint emits the target-selected
-HLSL or MSL from the specialized WGSL; register normalization and DXC produce
-the selected SDL-compatible DXIL or SPIR-V artifact.
-The project-owned `audit-shader-frame-graph` differential gate is pixel-exact
-against pinned Babylon Lite and verifies that alpha-card and circular-cutout
-materials retain their pipelines and uniforms when a frame-graph render task
-mirrors the scene. It is regression coverage, not upstream corpus coverage.
-GridMaterial WGSL is built by evaluating the pinned template functions at the
-reached option sets, with scene 213 gating its dynamic native specialization.
-Ground and skybox fragments are lifted from the pinned modules' own string
-literals, gated by Scenes 1 and 8.
-The shared material vertex stage is generated WGSL, and Standard draws run
-both stages of the pin's own composed variants — `standard_variants.hpp`
-plus the deployed `variant-std-*` files — gated by scenes 145 and 273.
-The PBR body itself is Babylon's own, on every draw. Generation composes one
-fragment per renderable feature set through the pinned composer — the stages
-under `upstream/pbr-variants/` are its output byte for byte, gated by a test
-that matches them against the browser's captured fragments — and both
-backends execute them for the whole corpus: every extension arm, all three
-light modes, tone mapping, fog, tangent frames, skins and morphs, thin
-instances, transmission with the pin's own linear passes and refraction grab,
-the geometry-output MRT arms, and the no-color depth views. Each variant
-carries the pin's own per-variant material UBO, mirrored field for field with
-a static_assert per offset, and filled by writers lowered from the pin's
+### Where a shader comes from
+
+Nothing here transcribes a formula. Each family names where its text is
+composed and which scene gates it; [status](status.md) carries the numbers.
+
+| Family | Origin | Gate |
+| --- | --- | --- |
+| PBR colour and geometry variants | the pin's own composer, one fragment per renderable feature set | the whole corpus |
+| Standard variants | the same composer, `variant-std-*` | 145, 273 |
+| Shared material vertex stage | generated WGSL | — |
+| Ground, skybox | lifted from the pinned modules' string literals | 1, 8 |
+| GridMaterial | the pinned template functions evaluated at the reached option set | 213 |
+| Custom material | the entry file's WGSL through the typed shader IR | 159-163 |
+
+The custom-material pipeline reflects uniform layout, binding order,
+attributes, varyings, stages and entry points, and PAL shader creation
+consumes the reflected uniform-buffer counts. Pinned Tint emits the
+target-selected HLSL or MSL; register normalization and DXC produce the
+SDL-compatible DXIL or SPIR-V.
+
+Each composed variant carries the pin's own material UBO, mirrored field for
+field with a `static_assert` per offset and filled by writers lowered from
 `_writeMaterialData` and each extension's `writeUbo`. The transcribed PBR
-fragment is deleted; a PBR draw that resolves no variant is an error naming
-its mesh and material, never a fallback.
+fragment is deleted: a draw resolving no variant is an error naming its mesh
+and material, never a fallback.
 
-The layer helpers arrive the same way. `visibility_Kelemen`,
-`getR0RemappedForClearCoat`, `ccSchlick`,
+The layer helpers arrive inside those fragments under the pin's own names —
+`visibility_Kelemen`, `getR0RemappedForClearCoat`, `ccSchlick`,
 `normalDistributionFunction_CharlieSheen`, `visibility_Ashikhmin`, and the
-whole `iri_*` thin-film stack with its `IRI_XYZ_TO_REC709` matrix are not
-transcribed anywhere: they reach the deployed stages inside the pin's own
-composed fragments, under the pin's own names. There is deliberately no
-transcribed fallback — a fallback is the copy that drifts — so a helper the
-pin renames or drops fails generation, through the composition itself or a
-marker assertion naming it, instead of becoming a shading bias.
+`iri_*` thin-film stack with its `IRI_XYZ_TO_REC709` matrix. There is
+deliberately no transcribed fallback, because a fallback is the copy that
+drifts, so a helper the pin renames or drops fails generation instead of
+becoming a shading bias.
 
-The same composer is used as a cross-check on the emitted set. Generation
-runs every glTF material the scene loads through the pin's own
-`_computePbrMaterialFeatures` and refuses to emit a variant set missing an
-arm one of them composes, naming the material and the arm
-(`src/pinned-material-arms.ts` `assertArmsCovered`). The variants are
-per renderable already; the check is what keeps a missed arm a generation
-error instead of the small systematic shading bias it would otherwise
-render as, which is the failure mode every entry in the layer section below
-shares.
+The composer is also the cross-check on the emitted set:
+`assertArmsCovered` (`src/pinned-material-arms.ts`) runs every glTF material
+through `_computePbrMaterialFeatures` and refuses a variant set missing an arm
+one of them composes, naming the material and the arm. That is what keeps a
+missed arm a generation error rather than the small systematic shading bias it
+would otherwise render as — the failure mode every entry below shares.
 
-HDR environments preserve mip zero and use the pinned WebGPU 1024-sample GGX
-prefilter for higher mips. The generated package records the pinned module,
-shader, source commit, and sample count.
-`EXT_lights_image_based` likewise materializes Babylon Lite's 256-square,
-1024-sample BRDF integration directly as RGBA16F and uploads decoded RGBD
-cubemap faces with the same half-float quantization as WebGPU.
+### Numeric width
 
-Transmission uses an opaque scene-color copy, dielectric Fresnel
-`((ior-1)/(ior+1))²`, and Beer-Lambert volume attenuation
-`exp(log(color)/distance*thickness)`. Scenes 30, 33, 176, and 212 gate the
-dependency chain. With 4x
-MSAA, PAL resolves and stores the opaque color attachment for the copy, then
-reloads the preserved multisample color and depth attachments before
-transmissive draws resume.
-`KHR_materials_dispersion` reuses that path and splits the refracted ray into
-per-RGB indices with Babylon's `spread = 0.04 * (20/dispersion) * (ior-1)`;
-Scene 212 gates it.
+One rule, in five places: **a value is held at the pin's own JavaScript-number
+width, and each `static_cast<float>` is a store the pin performs.** Rounding
+early is not a rounding-sized error.
 
-Clearcoat, sheen, and iridescence are metadata-driven PBR layers selected by
-`extensionsUsed` and composed into each material's own pinned variant:
+- **Lanes.** A tuple element or static record property outlives the expression
+  that filled it, so its width belongs to its sink: `castNumber` writes the
+  folded static value at each sink's own width. Scene 206's box translations
+  reached the double `MeshRecord::position` as `5000002.5` — the float32 ULP
+  at five million is half a unit — measuring 0.828 against 0.000 written wide.
+  A number in an ordinary expression position is consumed where it is written.
+- **Camera scalars.** `alpha`, `beta`, `radius`, `target`, `position`, `fov`,
+  `nearPlane` and `farPlane` are JavaScript numbers upstream, so `CameraRecord`
+  keeps `double`/`Vec3d` and the chain reproduces the pinned stores in order:
+  `camera_world_matrix`, `build_view_matrix`, `mat4PerspectiveLHToRef`,
+  `mat4MultiplyInto`. `Math.PI / 2` has `cos = 6.1e-17` as a double and
+  `-4.4e-8` as its float32 neighbour, which moves the view matrix's second row.
+- **A spot cone.** The pinned factory computes `Math.cos(angle * 0.5)` in
+  JavaScript numbers and only its light-UBO store rounds, so the native factory
+  keeps the half-angle product double; rounding at the call boundary moves the
+  hard `cosAngle >= cosHalfAngle` edge.
+- **The procedural builders.** `create-sphere.ts`, `create-ground.ts` and
+  `create-torus.ts` run the whole vertex chain in JavaScript numbers and round
+  only at a `Float32Array` store; the emitted chain uses `pi_double` and builds
+  each position from the unrounded normal. A float chain measures 0.004 with a
+  33-byte peak against the pin's 0.002. The rule starts at the call site, since
+  the pin halves a diameter before the chain rounds. `create-box.ts` and
+  `create-plane.ts` need no care: their vertices are literals scaled by a
+  halving, the last operation before the store.
+- **Node TRS and world matrices** compose in double and round once per
+  component at the store, which is what makes native glTF instance matrices
+  bit-identical to the browser's uploaded thin-instance buffers.
 
-- clearcoat adds a GGX/Kelemen direct lobe plus a Jones analytical IBL lobe and
-  attenuates the base layer by `1 - F(ccF0) * intensity`; the glTF loader
-  disables Babylon's base-F0 remap, so intensity zero degenerates exactly to
-  the base composition (Scene 28), while a coat created in scene code keeps it
-  (Scene 19) — see the fork below
-- sheen uses the Charlie distribution with Ashikhmin visibility, samples the
-  BRDF LUT blue channel at sheen roughness, and scales the base layer by
-  `1 - maxSheenColor * brdf.b` (Scene 29)
-- iridescence evaluates Babylon's thin-film airy summation in XYZ and blends
-  the result into base F0 by the iridescence intensity (Scene 178 from the
-  asset, Scene 177 from `setPbrIridescence`, where an omitted intensity is the
-  writer's own default 1 rather than the glTF loader's `iridescenceFactor ?? 0`)
-
-Each layer's per-material forks — the coat's base-F0 remap, the sheen model —
-compose different variants rather than one fragment with a uniform, exactly
-as the sections below record.
-Texture-less PBR factors follow Babylon's factor-texture bake:
-`uploadBaseColorFactorTexture` and `uploadOrmFactorTexture` write the
-factors into 1x1 8-bit texels (base color through `linearToSrgbByte`,
-metallic/roughness as linear bytes) and leave the shader uniforms at
-their defaults, so the browser shades with the quantized values.
-Native mirrors each path at its exact precision boundary:
-metallic/roughness quantize on the record (`round(f * 255) / 255` —
-the unorm decode is that division, so the white fallback times the
-quantized uniform is bit-equal to the baked texel), while the base
-color bakes the pinned sRGB bytes into the fallback texel itself with
-the shader uniform reverted to white, because the hardware sRGB
-decode of those bytes is the reference — a CPU transcription of the
-IEC formula measurably disagrees with the GPU's table; scene 255
-gates the texel-level port. The record keeps the raw alpha for the
-pinned blend semantics.
-**The base-colour slot's encoding is its texture's, not its family's.**
-`loadTexture2D` picks `rgba8unorm-srgb` or `rgba8unorm` from its caller's
-own `srgb` option and the format then lives on the `Texture2D`, so the
-material samples what the scene loaded: the glTF loader passes true for this
-slot, the texture-less factor bake writes an sRGB texel, a
-`createSolidTexture2D` texel is linear and sampled without decode, and a
-scene that decodes its own albedo in the fragment (`setPbrGammaAlbedo`,
-whose extension contributes `pow(rgb, 2.2)` and nothing else) loads the
-linear one. The record carries that choice as one lane rather than the slot
-assuming an image is sRGB, which is what lets those five cases share one
-rule; Scene 22 gates the linear-image arm and every glTF scene the sRGB one.
-
-An **animated** base color factor inverts that bake. `whiteFallback` in
-`animation-pointer-basecolor.ts` swaps the factor for `[1,1,1,1]` before
-the upload whenever a `KHR_animation_pointer` channel drives it and the
-material has no base color image, and hands the real factor back to be
-carried as a UBO field for the pointer writer to overwrite. Baking it as
-well applies the factor twice — the authored value in the texel and the
-animated value in the uniform, against the browser's uniform alone; Scene
-253 gates it. Because materials are built before animations are read, the
-answer is gathered in a pre-pass, as upstream gathers it.
-Environment horizon occlusion applies only to normal-mapped materials:
-the pinned `ibl-fragment` composes `eho = 1.0` without a normal map,
-and each material's composed variant carries whichever arm its features
-produce, so the factor follows the material by construction. Scene 247's
-metallic teapots gate this; applying the polynomial unconditionally
-darkens silhouette speculars there by one MSAA sample step across the
-instance field.
-Node TRS and world-matrix composition run in double precision and
-round once per component at the float32 store, matching JavaScript's
-number semantics in the pinned `mat4ComposeInto` and matrix multiply;
-this makes native glTF instance matrices bit-identical to the
-browser's uploaded thin-instance buffers.
-
-**The pin fills two spare scene-block lanes with the canvas size, and so does
-this port.** `_packSceneUniforms` writes `eng.canvas.width` into
-`vFogColor.w` and `eng.canvas.height` into `_envPad0` on every scene, in the
-base pack rather than through a contributor. Nothing in the material families
-reads either, which is why the two lanes went unwritten here until a node
-graph's `ScreenSizeBlock` read them back through the pin's own
-`vec2(scene.vFogColor.w, scene._envPad0)`.
-
-**A lane's width belongs to its sink, not to the expression that filled
-it.** A tuple element or a static record property outlives the expression
-that produced it: it is stored and read back later, by a sink the producing
-position cannot see. Its text is compiled once, at the default float width,
-so a lane carrying only text hands a `double` sink a value already rounded.
-So a number lane carries whatever static value generation can fold, and
-`castNumber` writes that value at each sink's own width — the static number
-IS the pin's JavaScript double, and a float sink then performs the one
-rounding the pinned `Float32Array` store performs. The magnitude is not
-rounding-sized where the pin's own width is: scene 206 writes its box
-translations as `[OFFSET, 0.65, OFFSET + 2.45]` tuples, whose lanes reached
-the double `MeshRecord::position` as `5000002.5` — the float32 ULP at five
-million is half a unit — and the scene measured 0.828 full MAD against
-0.000 with the lanes written wide. Only lanes take this: a number in an
-ordinary expression position is consumed where it is written, already at the
-width that position asked for.
-
-**The camera's scalars are doubles, and each float32 store in the chain is
-one the pin performs.** `alpha`, `beta`, `radius`, `target`, `position`,
-`fov`, `nearPlane` and `farPlane` are plain JavaScript numbers upstream,
-which `src/camera/camera.ts` reads into the view and projection writers at
-that precision before storing into the `allocateMat4()` `Float32Array`
-caches. `CameraRecord` keeps them as `double` and `Vec3d`, and the chain
-reproduces the pinned stores in order: `camera_world_matrix`
-(`mat4LookAtWorldLHToRef` over the eye `arc-rotate.ts` composes),
-`build_view_matrix` (`getViewMatrix`, reading that float32 world matrix
-back), `mat4PerspectiveLHToRef`, `mat4MultiplyInto`. A float record would
-round one store early, and that is not a rounding-sized difference:
-`Math.PI / 2` has `cos = 6.1e-17` as a double and `-4.4e-8` as its float32
-neighbour, which moves the whole second row of the view matrix.
-
-**A scene-code spot cone also crosses its factory boundary as a double.** The
-pinned factory computes `Math.cos(angle * 0.5)` from JavaScript numbers and
-only its `Float32Array` light-UBO store rounds the result. The native factory
-therefore keeps `angle` and the half-angle product as doubles, then assigns the
-cosine to the float light record once; rounding the angle at the call boundary
-would move the hard `cosAngle >= cosHalfAngle` edge by one ULP for some cones.
-
-**The procedural mesh builders are doubles, and each float32 store is one
-the pin performs.** The same rule as the camera's, one layer down.
-`create-sphere.ts`, `create-ground.ts` and `create-torus.ts` run their
-whole vertex chain in JavaScript numbers -- the normalized step, the angle,
-`Math.sin`/`Math.cos`, and the radius product -- and round only where they
-store into a `Float32Array`. `factory-lowerer.ts` emits that chain in
-`double` with `pi_double`, converts at each store, and builds the position
-from the unrounded normal rather than from the one it just stored.
-A float chain reads as harmless and is not: the sphere's normals move a few
-ulps, which a rougher material absorbs and a mirror-metal one does not.
-Scene 23 measured 0.004 with a 33-byte peak on the float chain and 0.002
-with every pixel inside one byte on the pin's.
-
-The rule starts at the call site, not at the loop: `SphereOptions`,
-`GroundOptions` and `TorusOptions` carry their scalars as `double` and
-`compileSphereOptions` and friends emit them at that precision, because the
-pin halves a diameter as a JavaScript number before the chain rounds. A float
-option would make `rx` a float32 neighbour of the pin's `diameterX / 2` --
-scenes 116 and 162 pass `1.6` and `0.45`, which are not representable.
-
-`create-box.ts` and `create-plane.ts` need no such care: their vertices are
-literals scaled by a halving, which is the last operation before the store and
-so rounds to the same float either way.
+Two conversions are the pin's rule rather than C's: `Math.round` rounds halves
+toward +Infinity (`bbl::js::round_js`), and `Math.hypot` is
+implementation-approximated by the spec, so `bbl::js::hypot_js` is the plain
+root of the sum of squares — recorded as `splat-hypot-approximation`.
 
 **The RGBD decode's result type is the pin's storage type.**
-`src/loader-env/rgbd-decode.ts` decodes `.env` faces and the BRDF LUT into a
-`texture_storage_2d<rgba16float, write>`, so a half *is* the decode's result,
-not a packing step a caller may skip. `decode_rgbd` returns halves for that
-reason, and both backends upload the same halves on every path — LUT and cube
-alike: a float32 upload would carry more precision than the pin has, and a
-silent backend delta besides.
+`rgbd-decode.ts` decodes `.env` faces and the BRDF LUT into a
+`texture_storage_2d<rgba16float, write>`, so a half *is* the result rather than
+a packing step a caller may skip. Both backends upload halves on every path;
+a float32 upload would carry more precision than the pin has.
 
-**A scene's reference pose can be a query string, and both sides read the
-same one.** A corpus scene that branches on `?seekTime=` reads
-`window.location.search` through `URLSearchParams`, and the branch decides
-whether the scene animates at all. `parity.referenceSearch` in the registry
-is that query: the reference page is navigated with it, and the compiler
-folds `window.location.search` to the same text, so `params.get` and
-`params.has` answer from the pin's own parser and the native scene keeps
-the branch the reference took. A scene the pin serves bare leaves it unset,
-and the query reads as empty. `reference/exact-corpus-manifest.json` records
-it beside the module digest, because a navigation parameter is not module
-text and two goldens captured at different poses would otherwise share a
-provenance.
+### The reference pose
 
-**The reached slice renders under one depth convention, and it is the
-pin's.** `src/engine/render-target.ts` declares `REVERSE_DEPTH_COMPARE =
-"greater-equal"`, `mat4PerspectiveLHToRef` maps `near -> 1` and `far -> 0`,
-and every family this port reaches takes that pair as its default: PBR,
-Standard, node, shader materials, the geometry tasks, the background ground
-and the solid skybox. Both backends carry it on every pipeline and clear
-depth to zero, so the composed view-projection is equal to the browser's
-uploaded matrix in all sixteen elements.
+**A scene's pose can be a query string, and both sides read the same one.** A
+corpus scene branching on `?seekTime=` reads `window.location.search`, and the
+branch decides whether it animates at all. `parity.referenceSearch` is that
+query: the reference page is navigated with it and the compiler folds the same
+text, so `params.get`/`params.has` answer from the pin's own parser.
+`reference/exact-corpus-manifest.json` records it beside the module digest,
+because a navigation parameter is not module text and two goldens captured at
+different poses would otherwise share a provenance.
 
-The compare is not typed here. `pinned-depth-state.ts` reads the pin's own
-declaration and emits `upstream::pinned_depth_compare`, failing generation on
-a spelling this runtime has no enumerator for — the contract
-`pinned-blend-table.ts` holds for the pin's blend factors. The same module
-anchors the projection half of the convention beside the clear value: the
-projection writers are translated whole from their pinned ASTs, and their
-reverse-Z depth rows are shape-asserted so a remapped depth range fails
-generation by name rather than lowering faithfully while the consumers keyed
-to a far plane of 0 go stale. Each backend translates the enumerator to its
-own API.
+### Depth
 
-Two arms of the library sit outside the slice and name their own compare: the
-pin's shadow targets render standard-Z `less-equal`, and a `ShaderMaterial`
-may pass `depthCompare` (its default is `"greater-equal"`; a scene naming one
-refuses at compilation today). The first of those is reached — the shadow
-contract below carries it.
+**The reached slice renders under one convention, and it is the pin's.**
+`render-target.ts` declares `REVERSE_DEPTH_COMPARE = "greater-equal"` and
+`mat4PerspectiveLHToRef` maps `near -> 1`, `far -> 0`. Every family takes that
+pair — PBR, Standard, node, shader materials, geometry tasks, background ground
+and solid skybox — and both backends clear depth to zero, so the composed
+view-projection equals the browser's uploaded matrix in all sixteen elements.
 
-`FragDepthBlock` composes because of it: the block hands a graph
-`@builtin(frag_depth)`, so the value it returns is a depth in that
-convention, and a renderer ordering depth the other way would occlude by its
-inverse. Scene 84 measures the block at 0.000 on both backends.
+The compare is not typed here: `pinned-depth-state.ts` reads the pin's own
+declaration and emits `upstream::pinned_depth_compare`, failing generation on a
+spelling this runtime has no enumerator for — the contract
+`pinned-blend-table.ts` holds for blend factors. The same module anchors the
+projection half beside the clear value, shape-asserting the reverse-Z rows so a
+remapped range fails by name rather than leaving consumers keyed to a far plane
+of 0 stale.
 
-**A shadow map is the pin's one standard-Z target, and its bias reaches one
-of the two matrices.** `createShadowRenderTarget` names `dFormat:
-"depth32float"`, `_depthCompare: "less-equal"` and `_depthClearValue: 1` at
-one sample, so a caster pass is the one place this port clears depth to the
-far value 1 and compares the other way. The compare and the clear are
-*emitted* from that declaration as `shadow_map_depth_compare` and
-`shadow_map_depth_clear`, beside the `pinned_depth_state.hpp` pair they are
-the exception to and for the same reason — a PAL constant would agree with
-the pin only until it moved. The format and the sample count are checked
-there instead of emitted: both decide which texture a backend creates rather
-than a value it uploads, and a pin naming another of either fails generation
-by name.
-`renderPcfShadowMap` then packs the *unbiased* view-projection into
-`sg._lightMatrix` — what the receiver samples with — and hands
-`biasViewProjection`'s copy to the shadow camera, which is what the caster
-renders through. Baking Babylon's clip-space linear bias (halved for WebGPU's
-[0, 1] range, added into each column's z row) into both would shift the
-comparison twice, so the two matrices stay apart on the record. The
-light-space basis, the spot volume from `light.angle`, the 4x4 multiply and
-the bias are each lowered from their own pinned declarations; the cone angle
-itself is written wherever `cos_half_angle` is, so the two can never disagree.
-Scene 18 measures 0.000 on both backends with every pixel of the foreground
-exact.
+Two arms name their own compare: shadow targets render standard-Z `less-equal`
+(below), and a `ShaderMaterial` may pass `depthCompare` — unreached, and a
+scene naming one refuses. `FragDepthBlock` composes *because* of the
+convention: the block hands a graph `@builtin(frag_depth)`, so a renderer
+ordering depth the other way would occlude by its inverse.
 
-**A shadow receiver is a composed variant, not a uniform lane.**
+**A depth convention cannot move a coverage mask, but it can move a varying,
+through the near-plane clipper.** A triangle straddling the eye plane gets new
+vertices whose attributes interpolate from clip space, `z` included, so a
+differing `z` row shifts the interpolated varying across the whole clipped
+triangle. Scene 7's solid skybox is the case — its cube is centred on the eye —
+and why `build_solid_skybox_scene_uniforms` builds its own view-projection
+rather than binding the frame's: the pinned vertex stage offsets the cube by
+the eye, and the clip row reaching its dither seed has to be exact.
+
+### Shadows
+
+**A shadow map is the pin's one standard-Z target, and its bias reaches one of
+two matrices.** `createShadowRenderTarget` names `dFormat: "depth32float"`,
+`_depthCompare: "less-equal"` and `_depthClearValue: 1` at one sample, so a
+caster pass is the one place this port clears depth to 1 and compares the other
+way. The compare and the clear are *emitted* from that declaration
+(`shadow_map_depth_compare`, `shadow_map_depth_clear`) for the reason the
+`pinned_depth_state.hpp` pair they are the exception to is: a PAL constant
+agrees with the pin only until it moves. The format and sample count are
+checked rather than emitted, since both decide which texture a backend creates.
+
+`renderPcfShadowMap` packs the *unbiased* view-projection into `sg._lightMatrix`
+— what the receiver samples with — and hands `biasViewProjection`'s copy to the
+shadow camera, which is what the caster renders through. Babylon's clip-space
+linear bias (halved for WebGPU's [0, 1] range, added into each column's z row)
+in both would shift the comparison twice, so the two stay apart on the record.
+The light-space basis, the spot volume from `light.angle`, the 4x4 multiply and
+the bias are each lowered from their own declarations, and the cone angle is
+written wherever `cos_half_angle` is.
+
+**A receiver is a composed variant, not a uniform lane.**
 `_computeMeshFeatures(mesh, receiveShadows)` turns `mesh.receiveShadows &&
 hasSomeShadows` into `MSH_RECEIVE_SHADOWS`, and `rebuildSingle` splices
-`createStdShadowFragment(slots)` after the vertex-colour fragment and before
-the thin-instance one — so the receiver's varyings, its group-2 bindings and
-its nine-tap comparison filter are all named after each light's index in
-`scene.lights`. Generation composes exactly that, which is what makes the
-receiver stage byte-identical to the browser's. The depth-only view of the
-same mesh drops the bit, because `rebuildSingle` derives `receiveShadows` as
-`!shadowOutput && ...`, and both the composition and the runtime selector
-strip it for a no-colour material.
+`createStdShadowFragment(slots)` after the vertex-colour fragment and before the
+thin-instance one — so the varyings, the group-2 bindings and the nine-tap
+comparison filter are named after each light's index in `scene.lights`. The
+depth-only view of the same mesh drops the bit, because `rebuildSingle` derives
+`receiveShadows` as `!shadowOutput && ...`.
 
-The receiver's group 2 costs SDL_GPU a uniform slot it does not have: scene,
-lights, mesh and mat spend the four the backend allows before `shadowInfo_N`
-arrives. It takes the same treatment the geometry tasks' `gp` block already
-takes — demoted to a read-only storage buffer for the SDL-facing artifacts
-alone, with the `.native.wgsl` Dawn consumes keeping the pin's uniform
-declaration. The layouts agree because every member of the block is
-16-byte-aligned (a mat4 and two vec4s), which is the same argument that
-licenses the `gp` demotion.
+That group 2 costs SDL_GPU a uniform slot it does not have — scene, lights,
+mesh and mat spend all four before `shadowInfo_N` arrives — so it takes the
+geometry tasks' `gp` treatment: demoted to a read-only storage buffer for the
+SDL-facing artifacts alone, while the `.native.wgsl` Dawn consumes keeps the
+pin's uniform declaration. The layouts agree because every member is
+16-byte-aligned, which is the argument that licenses the `gp` demotion too.
 
-**A depth convention cannot move a coverage mask, but it can move a
-varying — through the near-plane clipper.** Unclipped geometry is
-unaffected. A triangle that straddles the eye plane is another matter: the
-clipper generates new vertices and interpolates their attributes from clip
-space, `z` included, so a differing `z` row would shift the interpolated
-varying in its last bits across the whole clipped triangle. Scene 7's solid
-skybox is where that would show — its cube is centred on the eye, so its
-side faces straddle the eye plane — and it is why
-`build_solid_skybox_scene_uniforms` still builds its own view-projection
-rather than binding the frame's: the pinned vertex stage offsets the cube by
-the eye itself, and the clip row that reaches its dither seed has to be
-exact rather than merely equivalent.
+### Background
 
-**The pinned background dither reproduces on both backends, and which
-fragment carries it is a pinned fork.** `WGSL_DITHER` seeds
-`fract(sin(dot(worldPosition.xy, k)) * K)` on the interpolated world
-position, whose low bits follow the barycentrics, so it reproduces only
-where the composed view-projection agrees with the pinned engine bit for
-bit. It is the whole of the background residual on a scene whose
-background is otherwise flat: Scene 6 measures 0.314 background
-attribution without it and 0.000 with it, on SDL_GPU as well as Dawn —
-offline DXC compiles the hash to the same result the browser's compiler
-does.
+**The pinned dither reproduces on both backends, and which fragment carries it
+is a pinned fork.** `WGSL_DITHER` seeds `fract(sin(dot(worldPosition.xy, k)) *
+K)` on the interpolated world position, whose low bits follow the barycentrics,
+so it reproduces only where the composed view-projection agrees with the pinned
+engine bit for bit. On a scene whose background is otherwise flat it is the
+whole residual: scene 6 attributes 0.314 to the background without it.
 
-The fork is upstream's. `background-ground.ts` and
-`background-dds-skybox.ts` prefix `WGSL_DITHER` (behind their shared
-`enableNoise`, whose default is `true` and which no corpus scene sets),
-`background-solid-skybox.ts` prefixes it unconditionally, and
-`background-hdr-skybox.ts` — the arm an environment cubemap skybox takes
-— composes none at all. One generated fragment serves the DDS and
-environment skyboxes, so each PAL picks the dithered variant except when
-`skybox_uses_environment`. Dithering the environment arm is not a small
-error: it puts ±1 on roughly half the background pixels of Scenes 8 and
-21, which is 0.129 to 0.343 and 0.330 to 0.537 full MAD.
+The fork is upstream's. `background-ground.ts` and `background-dds-skybox.ts`
+prefix it behind their shared `enableNoise` (default `true`, unset by every
+corpus scene), `background-solid-skybox.ts` prefixes it unconditionally, and
+`background-hdr-skybox.ts` — the environment-cubemap arm — composes none. One
+generated fragment serves the DDS and environment skyboxes, so each PAL picks
+the dithered variant except under `skybox_uses_environment`. Dithering the
+environment arm puts ±1 on roughly half the background pixels of scenes 8 and
+21: 0.129 to 0.343 and 0.330 to 0.537 full MAD.
 
-**The solid-colour skybox is a third arm and carries its own pair of
-stages, taken from the pinned package rather than composed here.** A scene
-that loads an `.env` environment and names no DDS or `.env` skybox — and
-does not pass `skipSkybox` — reaches `buildSolidSkyboxRenderable`, a cube
-shaded from the scene clear colour with the dither added unconditionally
-and no image processing at all. Its vertex stage is the one arm that is
-not root-positioned: `(mesh.world * vec4(pos, 0)) + scene.vEyePosition`
-drops the world translation through `w = 0` and follows the camera, so
-the dither seed is `pos + eye` rather than the DDS arm's
-`pos + rootPosition`. Both stages ship as `?raw` string literals with no
-source-map entry, so generation reads them out of the packaged module and
-re-emits the pin's own struct members and statement bodies; only the
-`@group`/`@binding` declarations are re-addressed, because SDL_GPU fixes
-vertex uniforms at register space 1 and fragment uniforms at space 3
-where the pin binds at WebGPU groups 0 and 1. The native mesh block is
-the pin's 96-byte layout field for field, which is why a render capture
-pairs against the browser's own upload. Scenes 7 and 146 reach it.
+**The solid-colour skybox is a third arm with its own pair of stages, taken
+from the pinned package rather than composed.** A scene loading an `.env`
+environment that names no DDS or `.env` skybox and passes no `skipSkybox`
+reaches `buildSolidSkyboxRenderable`: a cube shaded from the clear colour, the
+dither unconditional, no image processing. Its vertex stage is the one arm that
+is not root-positioned — `(mesh.world * vec4(pos, 0)) + scene.vEyePosition`
+drops the world translation through `w = 0` and follows the camera, so the
+dither seed is `pos + eye` rather than the DDS arm's `pos + rootPosition`. Both
+stages ship as `?raw` literals with no source-map entry, so generation reads
+them out of the packaged module and re-emits the pin's struct members and
+statement bodies; only the `@group`/`@binding` declarations are re-addressed,
+because SDL_GPU fixes vertex uniforms at space 1 and fragment at space 3 where
+the pin binds WebGPU groups 0 and 1. The native mesh block is the pin's 96-byte
+layout field for field.
+
+**The background cube culls back faces; only the image skybox does not.** The
+DDS, HDR and solid skyboxes build through `createDefaultPipelineDescriptor`,
+whose `_cullMode` default is `"back"`; `skybox-cubemap.ts` passes `"none"`
+explicitly, so `loadSkybox` keeps it. It is invisible from inside — each ray
+meets one face and the near plane clips the rest — and from outside an unculled
+cube rasterizes entry and exit faces, and since the skybox writes no depth the
+later face in index order wins. The last two in that order are `+Y` and `-Y`,
+so it renders a hard-edged quadrilateral of `-Y` over a `+Y` surround. No gated
+pose reaches it; scene 14 at `cam.beta = 0.55` does.
+
+### glTF material inputs
+
 **Every texture slot samples the UV set its own `textureInfo` names.**
-`assemblePbrPropsExt` folds the six of them into one `_uv2Mask` — base
-colour 1, ORM 2, normal 4, emissive 8, spec-gloss 16, occlusion 32 — and
-`createPbrTemplateExt` decodes that mask into the fragment's own
-`input.uv`/`input.uv2` reads, gated on the mesh actually carrying
-TEXCOORD_1. Generation executes both, so the selection is the pin's rather
-than a re-derived one, and it is composed into the stage rather than uploaded:
-the loader carries no texCoord at all for the five slots a UV set alone
-resolves. `KHR_texture_transform.texCoord` overrides the slot's own, which is
-the extension's own rule and one the executed `wrapTexture` applies. A
-`texCoord` of 2 or more needs nothing: `wrapTexCoord` stamps only 1, so the
-executed mask leaves that slot's bit clear and both sides sample UV0.
+`assemblePbrPropsExt` folds the six into one `_uv2Mask` — base colour 1, ORM 2,
+normal 4, emissive 8, spec-gloss 16, occlusion 32 — and `createPbrTemplateExt`
+decodes it into the fragment's own `input.uv`/`input.uv2` reads, gated on the
+mesh carrying TEXCOORD_1. Generation executes both, so the selection is the
+pin's and is composed into the stage rather than uploaded: the loader carries
+no texCoord for the five slots a UV set alone resolves.
+`KHR_texture_transform.texCoord` overrides the slot's own. A `texCoord` of 2 or
+more needs nothing, since `wrapTexCoord` stamps only 1 and both sides sample
+UV0.
 
-glTF occlusion is the slot that cannot be resolved by a UV set alone, and it
-follows Babylon's `buildDefaultPbrTexturesExt` contract arm for arm. An
-`occlusionTexture` on TEXCOORD_1 without a metallic-roughness image keeps the
-factor-driven ORM slot and binds the occlusion image through a dedicated
-texture pair sampled at uv2 (the pinned `occlusionOverride` replaces the ORM
-red channel). A TEXCOORD_0 occlusion image without a metallic-roughness image
-becomes the ORM texture itself, at the *occlusion* slot's own transform, with
-the glTF metallic and roughness factors reverting to the engine defaults of
-1.0 — exactly as `assemblePbrPropsExt` passes them only alongside a
-metallic-roughness image. Beside a metallic-roughness texture that shares its
-image, occlusion gets a second carrier whenever the two can be sampled apart:
-on TEXCOORD_1 through the uv2 pair, or — `occlusionNeedsSplit`, a distinct
-texture object or a `KHR_texture_transform` of its own — through the
-orm-unpack split, which samples `ormTexture` a second time at `occlUV` so an
-animated occlusion transform stays independent of the metallic-roughness one.
-The record therefore carries `occlusion_transform` apart from
-`orm_transform`; the two agree wherever a material gives both slots the same
-transform, which is every corpus material that reaches them.
+Occlusion is the slot a UV set cannot resolve alone, and follows
+`buildDefaultPbrTexturesExt` arm for arm:
 
-Two shapes stay refused, each because upstream renders them no better. Distinct
-occlusion and metallic-roughness *images* composite on a canvas upstream
-(`gltf-ext-orm.ts`). And occlusion on TEXCOORD_1 naming the **same texture
-object** as the metallic-roughness slot sets uv2 mask bit 32 from the texCoord
-while building no carrier for it, so the composed fragment declares an
-occlusion binding with no texture behind it — a WebGPU validation failure whose
-golden is a black canvas, measured on a fixture before the refusal was written.
-Occlusion is also the one slot where a `texCoord` of 2 or more is refused
-rather than mirrored: `assemblePbrPropsExt` records the value while
-`wrapTexCoord` leaves the mask bit clear, so upstream's occlusion reaches
-neither the dedicated pair nor the split and shades from a factor texel. No
-corpus asset authors one.
+| Asset shape | What binds |
+| --- | --- |
+| TEXCOORD_1 occlusion, no metallic-roughness image | the factor-driven ORM slot stays; the image binds through a dedicated uv2 pair (`occlusionOverride` replaces the ORM red channel) |
+| TEXCOORD_0 occlusion, no metallic-roughness image | the occlusion image becomes the ORM texture at the *occlusion* slot's transform, metallic and roughness reverting to 1.0 |
+| beside a metallic-roughness texture sharing its image | a second carrier whenever the two can be sampled apart — the uv2 pair, or `occlusionNeedsSplit` (a distinct texture object or its own transform) sampling `ormTexture` again at `occlUV` |
 
-Scene 243 gates the uv2 pair through MorphStressTest's baked-AO platform, scene
-29 the orm-unpack split, and the glTF UV-sets gate all seven arms at once.
+The record therefore carries `occlusion_transform` apart from `orm_transform`;
+they agree wherever a material gives both slots the same transform, which is
+every corpus material reaching them. Two shapes stay refused because upstream
+renders them no better: distinct occlusion and metallic-roughness *images*
+composite on a canvas upstream, and occlusion on TEXCOORD_1 naming the **same
+texture object** as metallic-roughness sets mask bit 32 while building no
+carrier, so the fragment declares a binding with no texture behind it — a
+WebGPU validation failure. Occlusion is also the one slot refusing a `texCoord`
+of 2 or more rather than mirroring it: `assemblePbrPropsExt` records the value
+while `wrapTexCoord` leaves the bit clear, so upstream shades from a factor
+texel. Gated by scene 243 (uv2 pair), scene 29 (orm-unpack split) and the
+glTF UV-sets gate (all seven arms).
+
 A scene-code material has no separate occlusion image and samples `orm.r` when
-its resolved `occlusionStrength` is nonzero. `createPbrMaterial` is
-`{...props}`, and `_computePbrMaterialFeatures` owns the
-`(mat.occlusionStrength ?? 1) > 0` gate; generation carries the option into
-both that pinned feature input and the native material record, defaulting it to
-one only when absent. The glTF `_occlusionImage ? 1 : 0` rule belongs to the
-loader's own input builder and does not reach the scene-code path. The pin's
-internal `_metallicF0Factor` creation property likewise stays distinct from
-the public base `reflectance`: a reached non-default is recorded and writes
-both native `metallic_f0_factor` and the writer's fallback `specular_weight`,
-but stays dormant in shader composition until the later
-`setPbrMetallicReflectance` call registers the reflectance extension.
-That setter preserves a computed scene colour as native arithmetic, moves its
-two optional file images into dedicated material slots, and composes the pin's
-metallic-reflectance, reflectance, and alpha-only feature bits per material.
-Both images use linear texture views because Babylon's reflectance fragment
-applies its own `pow(rgb, 2.2)` decode; their alpha channels remain linear.
-Registration is process-global in the pin, so even an empty setter call makes
-a non-default creation-time F0 on another material participate in composition;
-the same applies when the registering call came from a previously loaded glTF
-dielectric rather than from scene code. Repeated scene setter calls accumulate
-their conditionally supplied fields exactly as the pinned material object does.
-Scene 26 adds the other scene-code PBR composition inputs without a parallel
-shader implementation: `enableSpecularAA` reaches the pin's own derivative
-roughness branch, while `setPbrSubsurface` is replayed through the pin's setter
-with static translucency intensity, colour, diffusion distance, thickness
-range, and one linear thickness image. The generated UBO writer is lowered
-from `writeSubsurfaceUBO`, and both backends bind the same thickness slot. At
-the pin's `?seekTime=3` pose, SDL_GPU measures 0.000107 full/region MAD and
-Dawn 0.000104; their cross-backend MAD is 0.000003 and every pixel is within
-one byte.
-`KHR_materials_variants` is folded to the one selection a scene makes.
-`selectVariant` restores every original material and then applies the chosen
-variant's mapped entries, so with one static selection the end state is a
-per-primitive material index — which generation resolves and the loader
-applies, reading the variant order and the per-primitive mappings out of the
-document and taking only the chosen name from the scene. The pin's run-time
-variant table has no reached mutation to serve, so every shape the fold cannot
-represent refuses at generation rather than compiling to a state the pin never
-reaches: `getVariantNames` and `resetVariant` are unlowered, a second
-differing selection on one asset is refused, a selection on a second asset is
-refused because one name is compiled in for the whole scene, and a selection
-made from a frame callback is refused because it would fold a per-frame
-reassignment into frame zero. An asset carrying the extension that no scene
-selects on renders identically on both sides, because the pin reassigns
-nothing until `selectVariant` runs. Scene 27 gates it.
-A glTF file's animations are one group each, carrying the name, duration and
-frame rate `src/animation/animation-group.ts` gives them, and upstream starts
-only the first (`isPlaying: clipIndex === 0`) with each looping over its own
-length. Two consequences are not guessable from the file. A stopped group
-writes nothing at all — upstream's `tickAnimationCore` returns early for one,
-so holding its channels at time zero is different: where two clips animate the
-same target, a zero write would overwrite the playing clip's value. And a seek
-reaches only groups that are not stopped, because the pin's own tick returns
-early for one. The project-owned animation-groups gate measures both,
-selecting a clip upstream did not start.
+its resolved `occlusionStrength` is nonzero: `_computePbrMaterialFeatures` owns
+the `(mat.occlusionStrength ?? 1) > 0` gate, and generation carries the option
+into both the pinned feature input and the native record. The glTF
+`_occlusionImage ? 1 : 0` rule belongs to the loader's input builder and does
+not reach scene code. The pin's internal `_metallicF0Factor` stays distinct
+from the public `reflectance`: a reached non-default writes both
+`metallic_f0_factor` and the writer's fallback `specular_weight`, but stays
+dormant in composition until `setPbrMetallicReflectance` registers the
+reflectance extension. Registration is process-global in the pin, so even an
+empty setter call makes a non-default creation-time F0 on another material
+participate — likewise when the registering call came from a previously loaded
+glTF dielectric. Repeated setter calls accumulate their conditionally supplied
+fields exactly as the pinned material object does.
 
-**A container's entities are the pin's entity walk, and nothing else.**
-`addToScene(scene, container)` recurses over `container.entities`, then does
-four more things to the container itself: it pushes the file's animation
-groups onto `scene.animationGroups`, appends the per-frame tick that
-advances them, takes the file's camera when the scene has none, and takes
-its clear colour. A scene iterating `entities` reaches only the first half,
-which is what makes the shape worth writing: those scenes drive the same
-clips from an `AnimationManager` of their own, and a scene tick would
-double-advance them. The pin seeds a glTF container with its root node and
-lets each loader feature append its own entities, so adding them one by one
-adds the loader's meshes and its lights — which is what the generated call
-adds in one step, the entity value being accepted by `addToScene` alone.
-That iteration value deliberately represents the complete entity walk. An
-indexed value is different: only static `entities[0]` on a glTF container
-lowers, as an opaque imported-root identity, because the pin guarantees the
-synthetic transform root at index zero before features append lights or other
-entities. A dynamic/nonzero index and every `.babylon` container refuse rather
-than conflating one root with the complete walk. Scenes 152 and 157 measure the
-iteration contract; compiler regressions pin the indexed boundary.
-
-**A manager owns animation time for the groups attached to it, and the
-measured seek has to reach it.** Upstream has no seek — the reference
-harness writes `currentTime` on each group the registry names and pauses it,
-and whoever drives the group applies the pose on its next tick. Native
-mirrors that shape rather than the call: a scene registering with an engine
-contributes one seeker per manager it created, beside the seeker each
-loaded asset already carries.
-
-**The weighted property mixer buckets by the pair the pinned binding
-resolved.** `resolvePropertyBinding` returns the object a dotted path landed
-on and the final property name, and the mixer keys its accumulator on that
-pair — so `position` and `position.x` are different buckets even on one
-mesh, since one resolves to the mesh and the other to its position. A
-lowered track carries a mesh handle and a closed path enumerator, and
-distinct paths resolve to distinct pairs, so the two key the same buckets.
-Weights are summed and never normalized, which is upstream's stated choice:
-two groups at 0.25 and 0.75 write the weighted sum, and a single group at
-0.5 writes half its own value. Scene 155 measures the first.
-
-**The weighted glTF mixer is the same shape one level down, and its
-partial-weight rotation blends against the rest pose.** Each contributing
-clip's translation and scale accumulate as weighted sums — zeroed on the
-first write to a node, so the rest pose is replaced rather than added to —
-while rotations accumulate by incremental slerp at `weight / (accumulated +
-weight)`, which is what makes the result independent of clip order. A node
-whose weights sum below one then slerps from its rest rotation toward the
-accumulated one by that sum, and one at or above it is renormalized. The
-pose that follows — local matrices, the topological world walk, the skin
-palettes — is the same pass a single-clip tick runs, so only the
-accumulation is the mixer's. Scene 157 measures walk and run at half weight
-each.
-
-**How large a skin stays on the GPU follows its palette's transport.** A
-mesh whose palette rides the pinned per-bone texture leaves the uniform
-array's bone lanes at the identity — the stage that would read them is not
-the stage drawing it. Scene 157's Xbot is 67 joints and measures byte-exact
-on both backends. See
-[Architecture](architecture.md#animation-and-deformation) for the two
-transports and the refusal between them.
-A scene's `setPbr*` options reach composition through the pin's own setters,
-the way the loader half already runs `setPbrEmissive`: each stamps its props
-under the field name its extension's `detect` reads, so the composed arm set
-follows from the pinned setter rather than from a field name restated here.
+**A scene's `setPbr*` options reach composition through the pin's own
+setters**, the way the loader half already runs `setPbrEmissive`: each stamps
+its props under the field name its extension's `detect` reads, so the composed
+arm set follows from the pinned setter rather than a field name restated here.
 That is what an extension arm depends on — the emissive layer composes on the
 presence of `_emissiveColor` alone, carrying no texture and no capability
 define.
+
+**`KHR_materials_variants` folds to the one selection a scene makes.**
+`selectVariant` restores every original material then applies the chosen
+variant's mapped entries, so one static selection ends at a per-primitive
+material index, which generation resolves and the loader applies. The pin's
+run-time variant table has no reached mutation to serve, so every shape the
+fold cannot represent refuses: `getVariantNames` and `resetVariant` are
+unlowered, a second differing selection or a selection on a second asset is
+refused (one name is compiled in for the whole scene), and one made from a
+frame callback would fold a per-frame reassignment into frame zero. An asset
+carrying the extension that no scene selects on renders identically, because
+the pin reassigns nothing until `selectVariant` runs. Gated by scene 27.
+
+### Animation
+
+A glTF file's animations are one group each, carrying the name, duration and
+frame rate `animation-group.ts` gives them; upstream starts only the first
+(`isPlaying: clipIndex === 0`), each looping over its own length. Two
+consequences are not guessable from the file: a **stopped group writes nothing
+at all** — `tickAnimationCore` returns early, so holding its channels at time
+zero would overwrite a playing clip's value on a shared target — and **a seek
+reaches only groups that are not stopped**, for the same early return.
+
+**A container's entities are the pin's entity walk, and nothing else.**
+`addToScene(scene, container)` recurses over `container.entities`, then does
+four more things to the container: pushes the file's animation groups onto
+`scene.animationGroups`, appends the per-frame tick that advances them, takes
+the file's camera when the scene has none, and takes its clear colour. A scene
+iterating `entities` reaches only the first half — which is the point, because
+those scenes drive the same clips from an `AnimationManager` of their own and a
+scene tick would double-advance them. Only static `entities[0]` on a glTF
+container lowers, as an opaque imported-root identity, because the pin
+guarantees the synthetic transform root at index zero; a dynamic or nonzero
+index and every `.babylon` container refuse rather than conflating one root
+with the complete walk.
+
+**A manager owns animation time for the groups attached to it, and the measured
+seek has to reach it.** Upstream has no seek: the harness writes `currentTime`
+on each named group and pauses it, and whoever drives the group applies the
+pose on its next tick. Native mirrors the shape rather than the call — a scene
+registering with an engine contributes one seeker per manager it created,
+beside the seeker each loaded asset already carries.
+
+**The weighted property mixer buckets by the pair the pinned binding resolved.**
+`resolvePropertyBinding` returns the object a dotted path landed on and the
+final property name, and the mixer keys its accumulator on that pair — so
+`position` and `position.x` are different buckets on one mesh. Weights are
+summed and never normalized, which is upstream's stated choice: two groups at
+0.25 and 0.75 write the weighted sum, and a single group at 0.5 writes half its
+own value.
+
+**The weighted glTF mixer is the same shape one level down, and its
+partial-weight rotation blends against the rest pose.** Translation and scale
+accumulate as weighted sums, zeroed on the first write to a node so the rest
+pose is replaced rather than added to; rotations accumulate by incremental
+slerp at `weight / (accumulated + weight)`, which makes the result independent
+of clip order. A node whose weights sum below one slerps from its rest rotation
+toward the accumulated one by that sum; at or above one it is renormalized. The
+pose that follows is the same pass a single-clip tick runs.
+
+**A group's `speedRatio` scales the future, not the past.** Upstream
+accumulates `time += (deltaMs / 1000) * speedRatio`, so a write moves what
+follows and leaves the pose already reached alone. The scene's master-clock
+fan-out derives a clip time rather than accumulating one, so the writer
+re-anchors: it records the clip time and the master clock at the write, and the
+derived time is that base plus the scaled span since. At the default ratio with
+no write this is the elapsed clock it always was. A **seek** is the deliberate
+exception — the harness pins a pose by writing `currentTime`, which no ratio
+scales — so the native seek takes the clock as the clip time and leaves the
+ratio to the tick. No seek-pinned gate can therefore observe a ratio.
+
+**An `AnimationGroupMask` resolves at the write, where the pin resolves it
+lazily.** `animationGroupMaskRetainsTarget` retains a name when listing it and
+including agree, and `resolveAnimationMask` turns that into a per-node skip
+flag; the generated writer runs the same rule over the asset's own node names.
+A masked channel is skipped and the node keeps the rest TRS the controller
+resets to, which the generated pose pass restores for masked nodes alone since
+every other animated node is overwritten by its own track. The names and mode
+fold because they are constants in every reachable shape — the pin's
+re-resolution exists to notice a `names` array that moves, which a compiled
+scene cannot do. `group.mask` refuses anything but a
+`createAnimationGroupMask` value, and a mode outside the enum fails by name.
+
+`goToFrame`'s third argument is the pin's `engine`, and its only effect is the
+guard `engine || !group._stopped || !group._gltfMixer`: a glTF group always
+carries the mixer, so what is left is that a stopped group is posed when the
+caller passed an engine and skipped when it did not. The native call takes that
+as a boolean.
+
+**How large a skin stays on the GPU follows its palette's transport.** A mesh
+whose palette rides the pinned per-bone texture leaves the uniform array's bone
+lanes at the identity, because the stage that would read them is not the stage
+drawing it. [Architecture](architecture.md#animation-and-deformation) carries
+the two transports and the refusal between them.
+### Transmission and draw order
+
 The generated material records preserve Babylon's distinction between volume
 attenuation, thickness-based refraction depth, and glTF-only IOR-to-F0
 mapping; direct `createPbrMaterial` refraction options do not implicitly enable
@@ -643,6 +480,8 @@ moment the stamps disagree. Transparent draws sort by the pinned view-space
 depth of each mesh's world translation, lowered from
 `sortTransparentBindings`' own distance assignment and comparator.
 
+### Environment and background
+
 Requested generated grounds render by default. Their mesh is translated to the
 computed scene root while Babylon Lite's fade calculation deliberately keeps
 `backgroundCenter` at the world origin; Scenes 1, 6, 13, and 14 gate that
@@ -655,25 +494,11 @@ neither and skipping neither gets the solid-colour cube. Grounds and
 DDS/HDR/solid-colour skyboxes can be disabled independently with
 `BBLITE_GROUND=0` and `BBLITE_BACKGROUND=0`.
 
-**The background skybox cube culls back faces; only the image skybox does
-not.** The DDS, HDR, and solid background skyboxes build their pipeline through
-the pinned `createDefaultPipelineDescriptor`, whose `_cullMode` default is
-`"back"`, and none of them overrides it; `skybox-cubemap.ts` is the one that
-passes `_cullMode: "none"` explicitly, so the `loadSkybox` image skybox keeps
-it. The distinction only becomes visible once the camera leaves the cube. From
-inside, each ray meets exactly one face and the near plane clips the rest, so
-an unculled cube renders identically; from outside, the entry and the exit face
-are both rasterized, and because the skybox writes no depth the later face in
-index order wins rather than the nearer one. The two faces last in that order
-are `+Y` and `-Y`, so an unculled cube renders a hard-edged quadrilateral of
-`-Y` — the projection of the plane through the cube centre — over a `+Y`
-surround, where the pinned cube shows one continuous sky. No gated pose
-reaches it, because every gated camera sits inside its own skybox; Scene 14 at
-`cam.beta = 0.55` puts the camera above the cube and reproduces it.
-
 Embedded image-based lights evaluate SH unclamped. Environment rotation
 affects SH and cubemap lookup directions, while horizon occlusion
 intentionally uses the unrotated reflection vector.
+
+### Deformation and instancing
 
 glTF animation uses pinned LINEAR quaternion interpolation and deterministic
 time seeking, plus CUBICSPLINE quaternion/translation interpolation where
@@ -685,40 +510,7 @@ generation asserts that selection against the pin's own branch rather than
 restating it. `track_key_at` already returns exactly those two keys, so the
 generated `sample_step_*` arm is a choice between its own pair.
 
-**A group's `speedRatio` scales the future, not the past.** Upstream
-accumulates `time += (deltaMs / 1000) * speedRatio`, so a write moves what
-follows it and leaves the pose already reached alone. The scene's master-clock
-fan-out derives a clip time rather than accumulating one, so the writer
-re-anchors: it records the clip time and the master clock at the write, and the
-derived time is that base plus the scaled span since. At the default ratio of
-one, with no write, this is the elapsed clock it always was — byte-identical
-for every scene that never sets a ratio. A **seek** is the deliberate
-exception: the browser capture harness pins a pose by writing the group's own
-`currentTime` and pausing it, which no ratio scales, so the native seek takes
-the clock as the clip time and leaves the ratio to the tick. That also means no
-seek-pinned gate can observe a ratio — every pinning mechanism upstream
-exposes writes the clip time directly — so what the glTF STEP gate measures
-about it is that carrying one does not disturb the pose the harness pinned.
-
-**An `AnimationGroupMask` resolves at the write, where the pin resolves it
-lazily.** `animationGroupMaskRetainsTarget` retains a name when listing it and
-including agree, and `resolveAnimationMask` turns that into a skip flag per
-node; the generated writer runs the same rule over the asset's own node names
-and stores the same flags. A masked channel is skipped, and the node keeps the
-rest TRS the pin's controller resets to before walking a clip — which the
-generated pose pass restores for the masked nodes alone, since every other
-animated node is overwritten by its own track. The names and the mode are
-folded because they are constants in every reachable shape; the pin's own
-re-resolution exists to notice a `names` array that moves, which a compiled
-scene cannot do. `group.mask` is refused for anything but a
-`createAnimationGroupMask` value, and a mode other than the enum's two members
-fails by name. Scene 251 gates it over Xbot's walk.
-
-`goToFrame`'s third argument is the pin's `engine`, and its only effect is
-the guard `engine || !group._stopped || !group._gltfMixer`: a glTF group
-always carries the mixer, so what is left is that a stopped group is posed when
-the caller passed an engine and skipped when it did not. The native call takes
-that as a boolean rather than the engine itself, which it already has. Morph position/normal deltas are applied before recursive skinning;
+Morph position/normal deltas are applied before recursive skinning;
 generated joint palettes and morph weights drive the deformation stage.
 Every morphed mesh uses Babylon's pinned uncapped storage-buffer path
 (`morph-fragment-core.ts`) — the pin's one morph mechanism, compiled in for
@@ -748,7 +540,7 @@ by `build_instance_parent_world` and the clone offset added after it, and
 with the mode on the recorded parent alone is handed to
 `mesh_world_eye_relative`, which composes the record's TRS once and subtracts
 the eye in double before the single float store. Composing the TRS in both
-would apply it twice. Scene 204 measures 0.000 on both backends.
+would apply it twice.
 
 **A coloured thin-instance pool composes the Standard family's own colour
 slot.** `_computeMeshFeatures` sets `MSH_HAS_INSTANCE_COLOR` from
@@ -817,9 +609,10 @@ mirror-metal anisotropic material, Scene 15 gates ground, and Scene 162 gates
 torus on both native backends. Scene 252 remains the StandardMaterial morph
 contract gate.
 
-Scene 151 gates directional-plus-hemispheric Standard lighting and is
-pixel-exact. The supported light-count boundary is recorded in
-[Features](features.md#lights).
+Scene 151 gates directional-plus-hemispheric Standard lighting; the
+light-count boundary is in [features](features.md#lights).
+
+### Lights
 
 **Standard lighting is the pin's own loop over the pin's own entries.** The
 composed Standard fragment declares `array<LightEntry, MAX_LIGHTS>` and walks
@@ -831,7 +624,9 @@ data. The entries are filled by writers lowered from each pinned light's own
 world matrix (`local_matrix_from_direction`): the spot exponent lands in
 `vLightSpecular.w`, its cone cosine in `vLightDirection.w`, and a hemispheric
 light's ground colour reuses `vLightDirection`, exactly where the pin puts
-them. Scene 15 is the spot parity gate, byte-identical across both backends.
+them. Scene 15 is the spot gate.
+
+### Textures
 
 **An image texture asks for anisotropic filtering only when nothing in its
 chain is nearest.** `loadTexture2D` builds its sampler with
@@ -887,6 +682,8 @@ so a slot that bakes the texture into a fallback and a slot that uploads it
 read the same bytes, and neither PAL knows the formula. Scenes 6, 21 and 76
 reach it through three different consumers.
 
+### Composed programs
+
 **A fullscreen effect is the pin's own vertex stage around the caller's
 fragment, and the pass state is checked rather than restated.**
 `createEffectWrapper` builds one shader module as the default vertex stage,
@@ -906,8 +703,7 @@ and colour on both the renderer and the task. The
 `EffectBindingLayout` array is the authority on group 0 — the pin reflects
 nothing out of the WGSL — so it travels whole into the generated table, with a
 sampler's `textureBinding` fallback ("the texture it names, or the first
-texture slot") resolved once at generation. Scenes 74, 75 and 76 measure the
-three shapes byte-exact on both backends.
+texture slot") resolved once at generation. Gated by scenes 74, 75 and 76.
 
 **A line system is a mesh and a shader material, and both halves come from
 the pin.** `create-line-system.ts` flattens the polylines at load and hands
@@ -927,8 +723,7 @@ bookkeeping the port carries on the material instead, and
 `mesh.hasVertexAlpha` is read only by the Standard family, which no line
 mesh reaches. The variant's *identity* is the permutation rather than the
 name, because the pin names every line material `"LineMaterial"` while
-composing a different program per flag set. Scenes 278 and 279 measure both
-at 0.000 on both backends.
+composing a different program per flag set. Gated by scenes 278 and 279.
 
 **A line-list on a multisampled target needs D3D12's multisampled line
 rule.** SDL's D3D12 backend hardcodes
@@ -939,6 +734,8 @@ backends have no such switch. The vendored overlay port
 (`native/vcpkg-overlay-ports/sdl3`) carries the one-line fix beside
 libsdl-org/SDL#15838; the isolating measurement and the triangle-edge A/B are
 in [backends](backends.md#measured-contracts).
+
+### Gaussian splats
 
 **A Gaussian-splat shader plugin is spliced by the pin's own splicer, and
 that splicer is executed rather than restated.** `loadSplat(scene, url,
@@ -999,10 +796,9 @@ and clearing the quaternion clears the rotation. This port keeps the two as
 record lanes, with `build_splat_world` preferring the quaternion only while
 one is set -- so the emitted reset clears the Euler lane as well. Leaving it
 would compose the rotation a second time, which is the one way a faithful
-per-statement port of that function renders wrong. Scene 125 measures the
-whole chain at 0.000 on both backends; its remaining max of two bytes is the
-multisampled splat band, which the two backends also differ from each other
-by.
+per-statement port of that function renders wrong. Gated by scene 125, whose
+remaining max of two bytes is the multisampled splat band — the two backends
+differ from each other by the same amount.
 
 **A linear-depth material is folded from the pinned factory that builds
 it.** `render/linear-depth-material.ts` is one `createShaderMaterial` call
@@ -1091,8 +887,7 @@ refuses at the pin's own `if (!format) throw` rather than at an upload that
 cannot name what it was handed. Both PALs then translate the pin's own WebGPU
 format name, upload the block-padded copy extent the pin computes for each
 level (a 2x2 tail mip still occupies one 4x4 block), and generate no mips.
-Scene 25 measures byte-exact on both backends, including at a grazing camera
-that samples the whole chain.
+Gated by scene 25, at a grazing camera that samples the whole chain.
 
 **A Basis file is transcoded by the pin's own loader and packaged as KTX1.**
 `basis-loader.ts` injects the Binomial transcoder from a CDN with a `<script>`
@@ -1101,10 +896,9 @@ device question — so generation runs the pinned loader in headless Chromium
 and bakes what it uploaded. It is written back as a KTX1 container because
 the port already reads one: the transcoded chain is exactly what `parseKtx1`
 returns, and the GL enum it is stored under is the pin's own table read
-backwards. Recorded per scene as `executed-basis-transcode`, with the drawn
-atlas's tradeoff. Scene 36's Mustang transcodes to `bc7-rgba-unorm` at
-768x512 with one level, which is what an instrumented capture shows the
-browser uploading, and measures byte-exact on both backends.
+backwards. Recorded per scene as `executed-basis-transcode`, with the drawn atlas's
+tradeoff. Scene 36's Mustang transcodes to `bc7-rgba-unorm` at 768x512 with
+one level, which is what the browser uploads.
 
 **A texture-object `invertY` is a UV-block flip, and the two compressed
 loaders disagree about it.** `Texture2D.invertY` states that the texel data
@@ -1208,6 +1002,8 @@ number then rides `MaterialRecord::plugin_signature_index` and the generated
 `standard_material_features` shifts it back in at the same position, because
 the Standard variant selector's key is that derived word.
 
+### Node materials
+
 **A node material is compiled by the pin, not re-emitted here.** A Babylon NME
 document is a graph, and `material/node/node-emitter.ts` turns it into WGSL
 through one emitter per block class — over a hundred of them, which are
@@ -1248,6 +1044,8 @@ ECMAScript engines cannot disagree about it, so there is no adaptation to
 record — and a module reaching past plain data fails at its own import rather
 than being executed against a shim.
 
+### Node particles
+
 **A node-particle simulation is executed and its state baked; everything
 that draws that state is folded.** `particle/node/npe-build.ts` walks a graph
 and dynamically imports one evaluator per block class, each installing
@@ -1284,8 +1082,7 @@ bake driver takes each registered system's state, calls
 sync reads. Generation refuses a registration whose columns moved, and refuses
 one whose `updateSpeed` is not zero — the two together are what make the
 per-frame callback provably the identity for any ratio, since
-`scaledUpdateSpeed = updateSpeed * ratio`. Scenes 283 and 284 register frozen
-sets and measure byte-exact on both backends.
+`scaledUpdateSpeed = updateSpeed * ratio`. Gated by scenes 283 and 284.
 
 **The exact particle blends are a second mapping, and both are read as data.**
 `particle-billboard.ts`'s own `blendForMode` maps three modes to public
@@ -1327,15 +1124,10 @@ driver and emit nothing native. The guard's message does not travel with it —
 the corpus writes it as a template over the very count it rejects, and the
 driver knows that count, so it reports the real one.
 
-**`Math.round` is JavaScript's rule, not C's.** The two disagree on every
-negative tie: ECMA-262 rounds halves toward +Infinity, so `Math.round(-0.5)`
-is `-0`, while `std::round` rounds away from zero and gives `-1`.
-`bbl::js::round_js` carries the spec's own rule, written as
-`floor(x) + (x - floor(x) >= 0.5)` rather than `floor(x + 0.5)` because that
-addition is not exact at large magnitudes. The five integer-valued one-argument
-functions also fold at generation over a constant argument, where the folded
-value and the emitted call agree exactly; the transcendental ones deliberately
-do not, because V8 and a native maths library need not.
+The five integer-valued one-argument `Math` functions fold at generation over
+a constant argument, where the folded value and the emitted call agree
+exactly; the transcendental ones deliberately do not, because V8 and a native
+maths library need not.
 
 **A particle graph's texture is a `loadTexture2D`, not a `loadSpriteAtlas`.**
 `ParticleTextureSourceBlock` loads through `loadTexture2D` with `invertY`
@@ -1356,6 +1148,8 @@ driver therefore replays the scene's own camera construction, and a flow-map
 build whose camera is not a static arc-rotate construction refuses rather
 than simulating with the update disabled. Scene 280 measures 1.555 full MAD
 without the camera and 0.000 with it.
+
+### Sprites
 
 **A sprite atlas that is drawn rather than fetched is executed, not
 reimplemented.** `lab/lite/src/_shared/sprite-atlas-image.ts` builds its
@@ -1446,6 +1240,8 @@ layers to four, gives one late layer an additive blend, and disposes the
 renderer registered *first*. With the synchronisation removed both backends
 fault (`0xC0000005`); with the clear owner read once at startup the frame
 paints the disposed renderer's colour.
+
+### Environment packaging
 
 **A skybox size of zero asks the loader for the pinned default.** The
 generated loader resolves an unset `skyboxSize` to `createDefaultEnvironment`'s
@@ -1986,8 +1782,7 @@ path, which composes `normalize(cross(dpdx(worldPos), dpdy(worldPos)))` into
 the fragment. World position interpolates linearly across a triangle, so that
 expression is constant over the face; the native loader folds it by
 un-indexing the primitive and baking the face normal into the three vertices
-each triangle then owns. Scenes 240, 246, 255, 259 and the track-clamp gate
-measure the fold byte-exact on both backends.
+each triangle then owns. Gated by scenes 240, 246, 255, 259 and the track-clamp gate.
 Triangle-strip primitives (glTF mode 5) expand to the triangle list they
 describe as the loader builds the index run: primitive `i` is
 `(i, i+1, i+2)` with odd `i` swapped, the expansion every WebGPU, Vulkan and
