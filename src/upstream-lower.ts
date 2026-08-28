@@ -279,6 +279,12 @@ export interface UpstreamEmitOptions {
      */
     postProcessShaders: readonly ComposedPostProcess[];
     /**
+     * The two modules a GPU pick draws through, composed by running the
+     * pin's own builders. `cloud` is absent when no Gaussian cloud can be
+     * picked, which is the same condition that loaded one.
+     */
+    pickingShaders?: { mesh: string; cloud?: string };
+    /**
      * What each reached composite's own factory built, in reach order. Its
      * passes are numbered after every plain pass, so one table indexes both.
      */
@@ -438,6 +444,15 @@ const SHADER_FAMILIES = {
     node: { vertex: "vs_main", fragment: "fs_main", pinnedBindings: true },
     /** The pin's Gaussian-splat module. */
     splat: { vertex: "vs", fragment: "fs", pinnedBindings: true },
+    /**
+     * The two modules a GPU pick draws through: the mesh candidates', and
+     * the Gaussian cloud's. Both are the pin's own compositions and both
+     * name their stages the way its splat module does, but they are their
+     * own family because they bind their own groups -- a pick has no
+     * material and no scene block, only the sheared view projection and
+     * the per-candidate id.
+     */
+    picking: { vertex: "vs", fragment: "fs", pinnedBindings: true },
     /**
      * A fullscreen effect: the pin's own vertex stage concatenated with the
      * caller's fragment, in one module carrying both entry points.
@@ -1906,6 +1921,51 @@ ${shadow.blurFragmentWgsl}`,
                 new PickingLowerer(context).lower(),
                 generated,
             );
+            // Both modules carry both stages, so each is written once per
+            // stage suffix and the toolchain compiles it at the entry point
+            // the family declares -- the same shape a post-process module
+            // takes. A cloud module is emitted only where a cloud can be
+            // picked; the pin registers that contributor from
+            // `attachGaussianSplattingMesh`, so the feature that loaded the
+            // cloud is what decides.
+            const pickingProvenance = context.provenance(
+                "src/picking/picking-shader.ts",
+                "pickingShaderSource",
+            );
+            const cloudPickingProvenance = context.provenance(
+                "src/picking/gs-picking-pipeline.ts",
+                "buildPickingWgsl",
+            );
+            const meshPickingWgsl = options.pickingShaders?.mesh;
+            if (meshPickingWgsl === undefined) {
+                throw new Error(
+                    "A scene reaching picking:gpu must arrive with the " +
+                        "pin's composed picking module.",
+                );
+            }
+            const cloudPickingWgsl = options.pickingShaders?.cloud;
+            for (const stage of ["vert", "frag"] as const) {
+                composedShaders.push({
+                    output: `upstream/shaders/picking.${stage}.native.wgsl`,
+                    data: `// ${pickingProvenance}\n${meshPickingWgsl}`,
+                    family: "picking",
+                });
+                if (cloudPickingWgsl !== undefined) {
+                    composedShaders.push({
+                        output:
+                            `upstream/shaders/picking-splat.${stage}` +
+                            ".native.wgsl",
+                        data:
+                            `// ${cloudPickingProvenance}\n` +
+                            cloudPickingWgsl,
+                        family: "picking",
+                    });
+                }
+            }
+            generated.push({
+                modulePath: "src/picking/picking-shader.ts",
+                symbolName: "pickingShaderSource",
+            });
         }
 
         // The pin grows MAX_LIGHTS at run time when an asset carries more
