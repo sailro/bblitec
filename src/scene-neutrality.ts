@@ -41,6 +41,7 @@ import { join } from "node:path";
  * | 126 | SDL_GPU | differ, worst MAD 0.000081, max 2 | byte-identical |
  * | 128 | Dawn | differ, worst MAD 0.000035, max 1 | byte-identical |
  * | 128 | SDL_GPU | differ, worst MAD 0.000007, max 1 | byte-identical |
+ * | 14 | SDL_GPU | differ, worst MAD 0.000002, max 1 | byte-identical |
  *
  * Scene 128 joined on 2026-08-27, found the way an entry should be: a
  * neutrality run over a change that could not reach it reported a moved
@@ -48,12 +49,18 @@ import { join } from "node:path";
  * is what makes the entry cheap -- its published row is 0.000 and the
  * wobble spans 4e-5.
  *
- * Scene 9 is measured bit-stable on SDL_GPU across four runs and is
- * deliberately absent from that column: the wobble is per scene AND per
- * backend, not a property of either alone.
+ * Scene 14 joined the same way on the 1.25.0 bump: a run over a whitespace
+ * change to the pin's composed fragment reported one moved channel-byte,
+ * and the pair above says why. It is narrower still -- one byte on one
+ * pixel, 1.1e-6 of a MAD column published at 0.012.
+ *
+ * Scenes 9 and 14 are measured bit-stable on the backend each is absent
+ * from -- 9 on SDL_GPU across four runs, 14 on Dawn across three -- because
+ * the wobble is per scene AND per backend, not a property of either alone.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
+    ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
     ["scene126", new Set(["dawn", "sdl_gpu"])],

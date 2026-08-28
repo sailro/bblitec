@@ -686,24 +686,22 @@ export class PinnedShaderText {
     /**
      * The initializer of a module-scope `const` the evaluated module
      * declares, or undefined when it declares no such name.
+     *
+     * The scan is the context's, so a name this evaluator resolves and a
+     * name a lowerer folds are the same question asked once. What stays
+     * here is the deliberate half: only the evaluated module's own top
+     * level is consulted, never the module it imports a name FROM — an
+     * unbound import is a permutation this evaluator does not serve, and it
+     * refuses by that name rather than reaching for a value.
      */
     private moduleConstant(
         name: string,
         modulePath: string,
     ): ts.Expression | undefined {
-        const file = this.context.sourceFile(modulePath);
-        for (const statement of file.statements) {
-            if (!ts.isVariableStatement(statement)) continue;
-            for (const binding of statement.declarationList.declarations) {
-                if (
-                    ts.isIdentifier(binding.name) &&
-                    binding.name.text === name
-                ) {
-                    return binding.initializer;
-                }
-            }
-        }
-        return undefined;
+        return this.context.moduleScopeConstant(
+            this.context.sourceFile(modulePath),
+            name,
+        );
     }
 
     /**

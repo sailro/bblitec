@@ -270,7 +270,7 @@ re-synced: cross-check the changed file list against `src\scene-registry.ts`.
 
 ### 2. Move the pin
 
-Four files carry the pin and all four move together:
+Five files carry a pin, and four of them move together:
 
 | File | What it holds |
 | --- | --- |
@@ -278,6 +278,15 @@ Four files carry the pin and all four move together:
 | `upstream\babylon-lite-scenes.json` | its *own* `version` and `sourceVersion`, beside the corpus digests |
 | `package.json` + lock | the dependency, via `npm install` |
 | `README.md` | the only prose copy of the pair |
+| `upstream\babylon-lite-goldens.json` | a **per-application** `sourceVersion` and every golden application's file digests |
+
+The fifth is the one to check rather than edit. A golden application's source
+graph is pinned to the commit it was *copied from*, not to the npm release, so
+a bump moves it only when the demo's own files moved with it — `npm test`
+answers that by digest. Its files may also come from outside the upstream
+repository entirely: doom reads a Freedoom IWAD that upstream gitignores and
+downloads from a pinned, checksum-verified release, so those three rows carry
+an `origin` URL instead of resting on the application's `sourceVersion`.
 
 **`sourceVersion` is the commit the published package embeds, not the release
 tag's object.** Read it from the package rather than from git — an annotated
@@ -334,6 +343,20 @@ pins the registered scenes only.
   builds, and the first frame dies with `resolves no composed variant`. Ask
   what else relocated code depends on, and satisfy it where the derivation
   happens rather than where the composition does.
+
+- **A renamed key in an untyped options object.** The quietest kind, because
+  nothing fails at all. Where this port hands a pinned factory a bag of
+  options — `createPbrComposer`'s dependency object is the standing one, typed
+  `Record<string, unknown>` on this side because its members are pinned
+  values — a member the pin *renames* is dropped on the floor: the old key is
+  ignored and the new one destructures to its parameter default. 1.25.0 folded
+  `_toneMappingHelpers`/`_toneMappingCall` into one `_tm` record, and every
+  composed PBR fragment came out with no tone mapping *and no exposure*, which
+  no assertion, no test and no generation step could see. The fix is the
+  general one: check the supplied key SET against the pinned interface's own
+  members (`assertComposerDependencies` in `src\pinned-pbr-variants.ts`), so
+  an added, removed or renamed dependency fails naming it. When a bump adds a
+  bag like that, give it the same check rather than trusting the values.
 
 ### Read the release notes, not only the log
 
@@ -1075,12 +1098,13 @@ compares `report-differential.json` only — a single-backend sweep produces
 nothing it can compare.
 `status:verify` performs the published half of the same comparison.
 
-It already knows the movements that are not findings: scenes 9, 37, 120, 126
-and 128 do not render bit-identically from one run to the next, so those cells
-move for any change and for no change alike. They are reported as expected wobble and
+It already knows the movements that are not findings: scenes 9, 14, 37, 120,
+126 and 128 do not render bit-identically from one run to the next, so those
+cells move for any change and for no change alike. They are reported as expected wobble and
 excluded from the exit status; every other moved cell is real. The whitelist
-is per scene AND per backend — scene 9's wobble is Dawn-only, scenes 37 and
-120 wobble on both — because the mover is multisampling
+is per scene AND per backend — scene 9's wobble is Dawn-only, scene 14's is
+SDL_GPU-only, scenes 37 and 120 wobble on both — because the mover is
+multisampling
 ([debugging](debugging.md#2-which-side-is-it-on) carries the measured
 mechanism and the magnitudes). A cross-backend cell moves when either side
 does, so one wobbling backend excuses it; each scene's own

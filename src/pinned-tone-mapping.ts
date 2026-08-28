@@ -16,8 +16,15 @@
  */
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
-/** The two halves of a pinned `ToneMapping` the composer takes. */
+/**
+ * A pinned `ToneMapping`, carried whole because the composer takes it whole.
+ *
+ * `id` reaches no composed text today -- the pin keys its own pipeline cache
+ * by it -- but the record is the pin's unit, and splitting it was what let
+ * the composer's dependency key move here without anything noticing.
+ */
 export interface PinnedToneMapping {
+    id: string;
     helpersWGSL: string;
     callWGSL: string;
 }
@@ -66,5 +73,8 @@ export async function pinnedToneMapping(
                 `'${importedName}'.`,
         );
     }
-    return { helpersWGSL: record.helpersWGSL, callWGSL: record.callWGSL };
+    // The record itself, not a projection of it: a field the pin adds is
+    // what "carried whole" means, and re-listing the three here would drop
+    // it by the same mechanism that dropped the composer's tone mapping.
+    return record;
 }

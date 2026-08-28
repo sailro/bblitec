@@ -97,10 +97,10 @@ export async function pinnedSceneArms(
             multiLight.MULTI_LIGHT_STRUCTS() + multiLight.COMPUTE_PBR_LIGHT,
         multiLightLoop: multiLight.getMultiLightLoop(),
     };
-    const tone = {
-        toneMappingHelpers: toneMapping.helpersWGSL,
-        toneMappingCall: toneMapping.callWGSL,
-    };
+    // The whole record, because the composer takes the whole record: a tone
+    // mapping is a value upstream, and splitting it here is what let its
+    // dependency key move without anything noticing.
+    const tone = { toneMapping };
     const singles = await Promise.all(
         request.lightKinds.map(async (type) => {
             const module = await importPinnedModule<{

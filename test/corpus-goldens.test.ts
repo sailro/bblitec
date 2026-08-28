@@ -6,6 +6,12 @@ import test from "node:test";
 
 interface GoldenFile {
     upstreamPath: string;
+    /** Where a file that is NOT from the application's own repository came
+     *  from. Doom's IWAD and its two Freedoom licence files are the reached
+     *  case: upstream gitignores them and downloads a pinned, checksum-verified
+     *  Freedoom release instead, so the application's `sourceVersion` says
+     *  nothing about their bytes and this names the release that does. */
+    origin?: string;
     source: string;
     sha256: string;
 }
@@ -48,6 +54,13 @@ test("keeps external golden applications byte-identical to their manifests", () 
                 `${application.id} repeats '${file.source}'.`,
             );
             paths.add(file.source);
+            if (file.origin !== undefined) {
+                assert.match(
+                    file.origin,
+                    /^https:\/\//,
+                    `${file.upstreamPath} names an origin that is not a URL.`,
+                );
+            }
             assert.equal(
                 sha256(file.source),
                 file.sha256,

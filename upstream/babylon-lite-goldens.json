@@ -101,6 +101,196 @@
           "sha256": "37dfcc92690d13b83a88e3cdfb12c6980eb7b4af4246403721ade5f5c4397725"
         }
       ]
+    },
+    {
+      "id": "doom",
+      "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
+      "sourceVersion": "286525f8041dd9adc72b2c9962e8bff4d9aeb764",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/doom.ts",
+      "reference": {
+        "source": "reference/doom/babylon-lite-golden.png",
+        "sha256": "64f82c7228a00bab99c927e3b3c2d67235550f9738e1107eb99e2f44a0a72602"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom.ts",
+          "sha256": "9a7fd94d78da00b84fb9fd60569b0c4527d9fb8a275b779bdc21331cf8b22698"
+        },
+        {
+          "upstreamPath": "freedoom-0.13.0/COPYING.txt",
+          "origin": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/COPYING.txt",
+          "sha256": "7c62f2c520769c798774f416637eec4921e5f0aafdac1245ae7c8a8cf65fe102"
+        },
+        {
+          "upstreamPath": "freedoom-0.13.0/CREDITS.txt",
+          "origin": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/CREDITS.txt",
+          "sha256": "72364333d295c598d75ef9553d3b3661ad0b60e27271c87b7637c74b2f46918a"
+        },
+        {
+          "upstreamPath": "lab/public/doom/README.md",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/README.md",
+          "sha256": "a7905040e1f1236e82977551cd938e12ff556b03e406c6551088cf3b6e8eae7e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/combat/attack.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/combat/attack.ts",
+          "sha256": "abbab19b91dcf7c0a5cd8d8fbb87dc30327cb6e1940e1d33f1fbfba7fb4828d0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/doom-level.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/doom-level.ts",
+          "sha256": "fca38a9a78fd62c1478d7cce96bfc34c30adab7ada4f170b9d44e0290fbfe8b1"
+        },
+        {
+          "upstreamPath": "freedoom-0.13.0/freedoom1.wad",
+          "origin": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/freedoom1.wad",
+          "sha256": "7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/geometry/bsp.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/geometry/bsp.ts",
+          "sha256": "109c5ed558b8ed54ca611a2bb8765c95b0be2aa4207475ac1e2d244ca955cd1f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/geometry/build-level-geometry.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/geometry/build-level-geometry.ts",
+          "sha256": "a3ba6b7d5cafcd6594d5649153f63fb83811d4fec20de990fdfe9fc2371818b4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/geometry/dynamic-geometry.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/geometry/dynamic-geometry.ts",
+          "sha256": "190d3413f9424c920764db539df40e67bba4065186152dc88b395601b71c956b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/hud/hud.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/hud/hud.ts",
+          "sha256": "c3047ce893012abe48fc121152f8227e9387fc3d516046457bae27fe20031c21"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/mobj/actions.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/mobj/actions.ts",
+          "sha256": "bf4cfa7a0fd84986010f5b384bf055b6ea6b3ddda35e2630ef366ccb45840bad"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/mobj/info.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/mobj/info.ts",
+          "sha256": "ec30ae399f29a8e9825576d88171d02bf205a47dd7580f777cc136112205fa0b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/mobj/mobj.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/mobj/mobj.ts",
+          "sha256": "fc14d0930087a508984441ba71025737c026c94b768f598c6e245ac504546e9e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/mobj/states.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/mobj/states.ts",
+          "sha256": "20d0775adfc67c7ef746f3fbdd2b3c292ed06a2c61a281757491b7138bd0cdf8"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/mobj/think.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/mobj/think.ts",
+          "sha256": "b5fe9aec51913dba950058c10527d5c0398b14c5b4a60ee95cd5523b14418e56"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/mobj/world.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/mobj/world.ts",
+          "sha256": "5860154d7bc248134f0e364deb9d8df4d9cfffce45fa86c96731729962c2ba8c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/physics/collision.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/physics/collision.ts",
+          "sha256": "8951fab0d9f9ecd1710e89f42cc72cc012647855cced93c421e08e67b150ccc6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/player/player.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/player/player.ts",
+          "sha256": "eb12bef53a81aece02b252596656f5bbc235ce2ca07d2e166f9278ae7c74d486"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/render/doom-material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/doom-material.ts",
+          "sha256": "43f0b6142e198446f99059cf326ec6e5daa12ffcee9f0d73faeb8e76fbc6fe74"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/render/sky.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/sky.ts",
+          "sha256": "8650eabc7a1856eb8616efff4176934d618e6956f3c1e3f0ae5161a36b2897aa"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/render/sprite-render.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/sprite-render.ts",
+          "sha256": "e6cfc3dcc76a1228c51b4d10fa7f700b54ea597d0d591b6951c479c8421c10c2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/render/sprites.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/sprites.ts",
+          "sha256": "2d2f108fbb79b752bb1893de9f42f16d9071488c4f1537283547dfac3457b3a2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/render/texture-cache.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/texture-cache.ts",
+          "sha256": "0748e564e0ca436860168cb5a8908d386bd85dbd84d5a9ce39482981f416129a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/render/weapon-view.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/weapon-view.ts",
+          "sha256": "9fa857950f6f7ec93415b06a5913b01af72dece0f6eaf88ae7f227b4e2d7e865"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/sound/sound.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/sound/sound.ts",
+          "sha256": "57c9f1052cf229c60ada487e674260b3221ec296b5b70db83fbf167c9ffeda71"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/specials/special-types.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/specials/special-types.ts",
+          "sha256": "edcb251851232892822f7045f6f723099d7fac6f57937ea1589c815eeae5d5a1"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/specials/specials.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/specials/specials.ts",
+          "sha256": "9834e0f321bff1c16d076a33d2391fc9474af373bc85226573c6e2c4cc1c0e42"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/wad/bsp-query.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/wad/bsp-query.ts",
+          "sha256": "8299c2f23e6871faa02bc36c11ea0243579fd13c1b926da4ad96ecf2002778b0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/wad/graphics.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/wad/graphics.ts",
+          "sha256": "094ada6bfef69e7967d7f7155f5d87d5830cbdc04de28ca72148bf074f5c76cd"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/wad/map.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/wad/map.ts",
+          "sha256": "d90ddd61db9c8cfb62082fd6980a169d9e87e234422fe50356dbc8c320068ac4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/wad/palette.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/wad/palette.ts",
+          "sha256": "66120cfc9e98c4e0d9a94f65509a31b450fed0d7a861f80f39d0dc611083dbd9"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/doom/wad/wad-file.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/doom/wad/wad-file.ts",
+          "sha256": "6dd91f0362921df05cf04de926cd4436060b9344eec1dd8697e3d8d50e4801ae"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        }
+      ]
     }
   ]
 }
