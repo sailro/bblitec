@@ -1916,6 +1916,28 @@ ${shadow.blurFragmentWgsl}`,
             );
         }
         if (features.includes("picking:gpu")) {
+            // Refused where the whole feature list is known rather than at
+            // the `createGpuPicker` call site: a thin-instanced mesh may be
+            // created after the picker, so no single call site can see it.
+            // The pin composes the instance stream into the id through
+            // `picking-advanced-pipeline.ts`, which this port does not
+            // build, so a pick would answer with the wrong node rather
+            // than fail.
+            const thinInstanceFeature = [
+                "mesh:thin-instances",
+                "mesh:thin-instances-dynamic",
+            ].find((feature) => features.includes(feature));
+            if (thinInstanceFeature !== undefined) {
+                throw new Error(
+                    "GPU picking and thin instances compose only through " +
+                        "the pin's advanced picking pipeline, which this " +
+                        "port does not build." +
+                        refusalReachedFrom(
+                            options.featureSites,
+                            thinInstanceFeature,
+                        ),
+                );
+            }
             this.writeSource(
                 "upstream/src/picking.cpp",
                 new PickingLowerer(context).lower(),

@@ -1381,6 +1381,12 @@ comparison the two pipelines disagree on. The upload is idempotent
 (`splat_sort_dirty` answers no when neither the world nor the view moved),
 so the pick performs it and the frame's own upload then finds nothing to do.
 
+**The answer is an identity, not a name.** `PickingInfo` stores the
+collection and the index the pick resolved to, and `pickedMesh.name` reads
+through them at the read site -- upstream's `pickedMesh` is a live node
+reference, and this branch makes `splat.name` writable, so a name captured
+at pick time would go stale exactly as the alpha-mode lane did.
+
 Scene 129 measures the whole chain because the pick decides a visible thing:
 the scene removes its ground unless the pick resolved to the cloud, so a
 miss is 12.866 MAD and the gate cannot pass without the pass actually

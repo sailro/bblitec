@@ -185,9 +185,17 @@ enum class PickedNodeKind : std::uint8_t {
  */
 struct PickingInfo {
     bool hit = false;
-    /** The hit node's name, empty when nothing was hit. */
-    std::string picked_name;
+    /**
+     * WHICH node was hit. Upstream `pickedMesh` is a live reference and
+     * `.name` reads it at the moment the scene asks, so the identity is
+     * what the pick resolves and the name is read through it -- a scene
+     * that picks, renames the node and then reads would otherwise get the
+     * name the node had at pick time.
+     */
+    PickedNodeKind picked_kind = PickedNodeKind::none;
+    std::uint32_t picked_index = invalid_handle;
 };
+
 
 /**
  * The picker's own state. The GPU resources it owns live with the renderer
@@ -3186,6 +3194,10 @@ void defer_callback(Engine& engine, std::function<void()> callback);
 
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
+/** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
+[[nodiscard]] std::string picked_node_name(
+    const Engine& engine,
+    const PickingInfo& info);
 /** `pickAsync(picker, x, y)`, resolved before the call returns. */
 PickingInfo gpu_pick(
     Engine& engine,

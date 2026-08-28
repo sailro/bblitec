@@ -50,6 +50,12 @@ interface PropertyRead {
     record?: readonly [collection: string, field: string];
     field?: string;
     helper?: string;
+    /**
+     * The helper's first argument is the owning engine. A read whose
+     * answer lives in a record the value only NAMES -- a pick result's
+     * node, say -- needs the collection as well as the value.
+     */
+    helperTakesEngine?: true;
     retag?: true;
     barrier?: true;
     /**
@@ -498,7 +504,8 @@ const propertyRules: readonly PropertyRule[] = [
         property: "name",
         value: "data",
         dataType: { kind: "string" },
-        field: "picked_name",
+        helper: "bbl::picked_node_name",
+        helperTakesEngine: true,
     },
     {
         // The pinned Mesh name — see MeshRecord::name for who fills it.
@@ -677,10 +684,13 @@ export function readProperty(
         );
     }
     if (rule.helper) {
+        const engine = rule.helperTakesEngine
+            ? `${context.requireEngine(owner, expression)}, `
+            : "";
         return read(
             rule.helperArgument
-                ? `${rule.helper}(${owner.cpp}, ${rule.helperArgument})`
-                : `${rule.helper}(${owner.cpp})`,
+                ? `${rule.helper}(${engine}${owner.cpp}, ${rule.helperArgument})`
+                : `${rule.helper}(${engine}${owner.cpp})`,
         );
     }
     if (rule.barrier) {

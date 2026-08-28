@@ -988,7 +988,6 @@ struct PickRange {
  * ever stop agreeing.
  */
 inline PickingInfo resolve_pick_result(
-    const Engine& engine,
     const std::vector<PickRange>& ranges,
     std::uint32_t pick_id) {
     if (pick_id == 0) return PickingInfo{};
@@ -996,9 +995,8 @@ inline PickingInfo resolve_pick_result(
         if (range.id != pick_id) continue;
         PickingInfo info;
         info.hit = true;
-        info.picked_name = range.kind == PickedNodeKind::mesh
-            ? engine.meshes[range.index].name
-            : engine.splat_meshes[range.index].name;
+        info.picked_kind = range.kind;
+        info.picked_index = range.index;
         return info;
     }
     throw std::runtime_error(

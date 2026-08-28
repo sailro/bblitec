@@ -91,6 +91,24 @@ PickingInfo gpu_pick(
     return engine.pick_hook(picker, x, y);
 }
 
+// The name a pick resolved to, read where the scene asks for it rather
+// than captured at pick time: upstream \`pickedMesh\` is a live node
+// reference, so a scene that renames the node between the pick and the
+// read sees the new name.
+std::string picked_node_name(
+    const Engine& engine,
+    const PickingInfo& info) {
+    switch (info.picked_kind) {
+        case PickedNodeKind::mesh:
+            return engine.meshes[info.picked_index].name;
+        case PickedNodeKind::splat_mesh:
+            return engine.splat_meshes[info.picked_index].name;
+        case PickedNodeKind::none:
+            break;
+    }
+    return {};
+}
+
 // The backend owns the resources, so it frees them through the same hook
 // it installed; the record only stops answering.
 void dispose_picker(Engine& engine, GpuPickerHandle picker) {

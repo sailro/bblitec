@@ -8796,7 +8796,7 @@ bool run_dawn_engine(Engine& engine) {
     // boundary; a pick taken before this point reports a miss, exactly as
     // the pin's `pickAsync` does for a scene with no camera.
     engine.pick_hook =
-        [&state, &engine, &scene](
+        [&state, &engine, &scene, &render_plan](
             GpuPickerHandle, double x, double y) -> PickingInfo {
         if (scene.camera.value >= engine.cameras.size()) {
             return PickingInfo{};
@@ -8861,16 +8861,22 @@ bool run_dawn_engine(Engine& engine) {
         // because WebGPU forbids a queue write between draws inside one.
         std::vector<PickRange> ranges;
         std::vector<DawnPickMeshUniforms> blocks;
+        // Which plan item each block belongs to. Indices rather than
+        // pointers: the same function pushes into `state.splat_passes`
+        // below, and a raw pointer into a growing vector is the shape of
+        // the bloom-composite crash.
+        std::vector<std::size_t> drawn_items;
         std::uint32_t next_id = 1;
-        for (const MeshHandle handle : scene.meshes) {
-            if (handle.value >= state.meshes.size()) continue;
-            const DawnMesh& mesh = state.meshes[handle.value];
+        // The RENDER PLAN, not `scene.meshes`: `state.meshes` is indexed
+        // by plan item and the plan skips a mesh with no geometry, so the
+        // two agree only while nothing has been skipped or removed.
+        for (std::size_t item_index = 0;
+             item_index < render_plan.items.size() &&
+             item_index < state.meshes.size();
+             ++item_index) {
+            const MeshHandle handle = render_plan.items[item_index].mesh;
+            const DawnMesh& mesh = state.meshes[item_index];
             if (!mesh.vertices || !mesh.indices) continue;
-            if (engine.meshes[handle.value].thin_instanced) {
-                throw std::runtime_error(
-                    "Picking a thin-instanced mesh needs the pin's "
-                    "advanced picking pipeline.");
-            }
             DawnPickMeshUniforms block{};
             // Identity: these vertices are baked to world here, where the
             // pin keeps them local and multiplies by the node's world.
@@ -8881,6 +8887,7 @@ bool run_dawn_engine(Engine& engine) {
                 0.0f, 0.0f, 0.0f, 1.0f};
             block.pick_id = next_id;
             blocks.push_back(block);
+            drawn_items.push_back(item_index);
             ranges.push_back(
                 {next_id, PickedNodeKind::mesh, handle.value});
             ++next_id;
@@ -9064,10 +9071,8 @@ bool run_dawn_engine(Engine& engine) {
         wgpuRenderPassEncoderSetPipeline(pass, state.pick_mesh_pipeline);
         wgpuRenderPassEncoderSetBindGroup(
             pass, 0, state.pick_scene_group, 0, nullptr);
-        // `ranges` already names every mesh drawn, in the order their
-        // blocks were written, so the candidate list is the draw list.
         for (std::size_t index = 0; index < blocks.size(); ++index) {
-            const DawnMesh& mesh = state.meshes[ranges[index].index];
+            const DawnMesh& mesh = state.meshes[drawn_items[index]];
             const std::uint32_t offset = static_cast<std::uint32_t>(
                 index * sizeof(DawnPickMeshUniforms));
             wgpuRenderPassEncoderSetBindGroup(
@@ -9172,7 +9177,7 @@ bool run_dawn_engine(Engine& engine) {
             decode_pick_id(static_cast<const std::uint8_t*>(mapped));
         wgpuBufferUnmap(state.pick_targets.staging);
 
-        return resolve_pick_result(engine, ranges, pick_id);
+        return resolve_pick_result(ranges, pick_id);
     };
 #endif
 

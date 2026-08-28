@@ -1110,11 +1110,11 @@ pipeline compares GREATER over a depth buffer cleared to 0, this renderer's
 reverse-Z; the cloud pipeline compares LESS, which is what its own pinned
 pipeline declares and is kept rather than reconciled.
 
-`PickingInfo` carries what was hit and nothing more: `hit` and
-`pickedMesh.name`, where the name is resolved at pick time because a mesh
-and a cloud live in different collections here and upstream's one object
-reference has no equivalent. Every other member refuses at the read site
-rather than returning a value this port cannot fill.
+`PickingInfo` carries WHICH node was hit -- the collection and the index --
+and `pickedMesh.name` reads through that pair where the scene asks for it,
+because upstream `pickedMesh` is a live node reference and a scene may
+rename the node between the pick and the read. Every other member refuses
+at the read site rather than returning a value this port cannot fill.
 [fidelity](fidelity.md#picking-contract) carries the two contracts the port
 owns, and the family's remaining arms are in `TODO.md`.
 
