@@ -16,14 +16,10 @@ at runtime; SDL_GPU is the default. There is no third option: bblitec
 requires a GPU, and a backend that cannot bring a device up throws
 rather than degrading into something else.
 
-Keeping both is deliberate: two independent compiler and API stacks
-that must agree pixel-for-pixel are a differential diagnostic no
-single backend provides. When a scene diverges from the golden,
-diffing the backends against each other isolates the cause
-immediately — agreement to one LSB puts the divergence on the CPU
-side (inputs, loaders, uniforms), disagreement puts it on the GPU
-side (state, compilation, rasterization). That comparison is how a
-residual is attributed.
+Keeping both is the differential diagnostic: when a scene diverges from its
+golden, agreement between the backends to one LSB puts the cause on the CPU
+side (inputs, loaders, uniforms) and disagreement puts it on the GPU side
+(state, compilation, rasterization). That is how a residual is attributed.
 
 ## Building and running
 
@@ -135,30 +131,25 @@ present):
 | SDL_GPU | 0.127 ms | 0.085 ms |
 | Dawn | 0.208 ms | 0.141 ms |
 
-Dawn's ~60% higher CPU cost at this (sub-millisecond) scale comes from
-always-on validation and robustness — which must stay on, since the
-browser reference runs with both — and uniform-buffer writes (per frame
-for mesh state, per draw for material blocks) where SDL_GPU uses push
-constants. Neither backend is close to being a
-frame-budget concern for the corpus.
+Dawn's ~60% higher CPU cost at this sub-millisecond scale comes from always-on
+validation and robustness — which must stay on, since the browser reference
+runs with both — and from uniform-buffer writes where SDL_GPU uses push
+constants (per frame for mesh state, per draw for material blocks). Neither is
+near a frame-budget concern for the corpus.
 
-**Portability.** Dawn the library targets D3D12, Vulkan, and Metal;
-bblitec's integration is Windows-only today by configuration, not
-architecture — the platform-specific surface is one
-`WGPUSurfaceSourceWindowsHWND` branch, one `backendType = D3D12`
-adapter selection, the DXC DLL deployment, and the per-OS library
-build. Its shader story needs **zero per-platform
-work**: the generated WGSL feeds Dawn directly and Dawn's internal
-Tint emits HLSL, SPIR-V, or MSL itself. SDL_GPU inverts that: the
-API layer is portable, but each target needs the offline shader
-pipeline (DXIL today; SPIR-V still recompiles normalized Tint HLSL
-through DXC as a stopgap; MSL untested). Neither backend is validated
-on a non-Windows machine, and the goldens are Chrome on D3D12 — Dawn
-on Vulkan/Metal shares the front-end but not the backend codegen, so
-structural bit-parity there would need same-platform references.
-`scene -- process` therefore defaults to D3D12 on Windows, Metal on macOS,
-and Vulkan elsewhere. `--shader all` is reserved for an explicit portability
-sweep; it is not paid on every development build.
+**Portability.** Dawn targets D3D12, Vulkan and Metal; bblitec's integration
+is Windows-only by configuration, not architecture — one
+`WGPUSurfaceSourceWindowsHWND` branch, one `backendType = D3D12` adapter
+selection, the DXC DLL deployment, and the per-OS library build. Its shader
+story needs **zero per-platform work**: generated WGSL feeds Dawn directly and
+Dawn's internal Tint emits HLSL, SPIR-V or MSL. SDL_GPU inverts that — a
+portable API layer, but each target needs the offline shader pipeline (DXIL
+today; SPIR-V still recompiles normalized Tint HLSL through DXC as a stopgap;
+MSL untested). Neither backend is validated off Windows, and the goldens are
+Chrome on D3D12, so structural bit-parity on Vulkan or Metal would need
+same-platform references. `scene -- process` defaults to D3D12 on Windows,
+Metal on macOS, Vulkan elsewhere; `--shader all` is reserved for an explicit
+portability sweep.
 
 **Validation strictness.** WebGPU validates what D3D12 through
 SDL_GPU tolerates: a depth-stencil pipeline drawing into a depth-less
@@ -186,16 +177,14 @@ comparison numbers. A backend that does not implement a flag refuses it rather
 than rendering something else, because a silent no-op reads as a backend delta
 and the differential would attribute it to the GPU stack.
 
-The vertex, deformation, texture and diagnostic payloads live there too: vertex
-packing, morph deltas and weights, image decode with the pinned `invertY` flip,
-RGBD decode, half-float conversion in both directions, cluster numbering, and
-the alpha packing the diagnostic shaders read. Pipeline construction, bind
-groups, pass encoding and swapchain handling stay per backend — those API
-sequences are the mutually validating surface, and merging them would remove the
-diagnostic value of having two.
+The vertex, deformation, texture and diagnostic payloads live there too:
+vertex packing, morph deltas and weights, image decode with the pinned
+`invertY` flip, RGBD decode, half-float conversion both ways, cluster
+numbering, and the alpha packing the diagnostic shaders read. Pipeline
+construction, bind groups, pass encoding and swapchain handling stay per
+backend — those API sequences are the mutually validating surface.
 
-Nothing else is shared, and in particular nothing is shared *between* the
-backends beyond that file. Each backend owns its own device mechanics in a
+Nothing else crosses between the backends. Each owns its device mechanics in a
 header only its own translation units include —
 `pal_sdl_gpu_shared.hpp` (shader loading, buffer and texture upload, sampler
 construction, PNG readback) and `pal_dawn_shared.hpp` (instance, surface,
@@ -244,25 +233,22 @@ Regression guards, each measured rather than assumed:
   systemic -1 LSB on lit surfaces (scenes 259/248) plus larger filter
   and discard deltas (248/249); DXC carries none of it.
 - **A multisampled target needs D3D12's `MultisampleEnable`, and only Dawn
-  set it.** Dawn derives it from the pipeline's sample count; SDL's D3D12
-  backend hardcoded `FALSE`. The measurement that named it, on lines:
-  SDL_GPU at 4x was pixel-identical to SDL_GPU at one sample and to Dawn at
-  one sample, so nothing about the scene, the shaders or the uniforms was in
-  question. The vendored overlay port carries the one-line fix beside
-  libsdl-org/SDL#15838, and scenes 278 and 279 measure 0.000 on both
+  set it.** Dawn derives it from the pipeline's sample count; SDL's D3D12 backend
+  hardcoded `FALSE`. On lines, SDL_GPU at 4x was pixel-identical to SDL_GPU at
+  one sample and to Dawn at one sample, isolating the flag from the scene, the
+  shaders and the uniforms. The vendored overlay port carries the one-line fix
+  beside libsdl-org/SDL#15838; scenes 278 and 279 measure 0.000 on both
   backends with it.
   **It reaches more than lines here, which the flag's own documentation says
   it should not.** Microsoft's `D3D12_RASTERIZER_DESC` page states that above
   feature level 10.1 the setting "has no effect on points and triangles with
   regard to MSAA and impacts only the selection of the line-rendering
-  algorithm" — and then recommends setting it `TRUE` on MSAA targets anyway.
-  Two line-free scenes were A/B measured against a rebuild of SDL with the
-  patch dropped and nothing else changed: scene 8 is 0.000/0.000 with it and
-  0.001/0.001 without, scene 14 is 0.012/0.006 with it and 0.013/0.009
-  without. So this port takes the flag as affecting triangle edges too on
-  the measured device (RTX 4090, driver 32.0.16.1088), reports the pair
-  upstream, and treats the doc's claim as the thing that did not hold rather
-  than the numbers.
+  algorithm" — then recommends setting it `TRUE` on MSAA targets anyway. Two
+  line-free scenes, A/B against a rebuild of SDL with the patch dropped: scene
+  8 is 0.000/0.000 with it and 0.001/0.001 without, scene 14 is 0.012/0.006
+  with it and 0.013/0.009 without. This port therefore takes the flag as
+  affecting triangle edges too on the measured device (RTX 4090, driver
+  32.0.16.1088) and reports the pair upstream.
 - **The `.env` RGBD cubemap Y-flip is pinned behavior**, not an SDL
   adaptation: upstream `uploadCubemapRGBD` documents "BJS uploads
   cubemap faces with invertY=true"; uploading unflipped costs scene 1
@@ -297,13 +283,11 @@ Regression guards, each measured rather than assumed:
   match adds rows and moves none.
 - **Scene 33's backend delta is the scene-colour grab.** SDL_GPU runs
   the pinned per-sample image-processing fragment at 4x through the
-  vendored SDL patch, leaving the foreground step (0.010 versus 0.007)
-  to the grab alone. The single-sample run identifies which of the two
-  a delta belongs to: at one sample the per-sample-versus-resolved
-  distinction disappears, so a delta that collapses there is the
-  image-processing pass. Scene 1 answers the complementary question —
-  its delta is 0.000/0.001 at *both* sample counts, so what remains
-  there is not multisampling.
+  vendored SDL patch, leaving the foreground step (0.010 versus 0.007) to the
+  grab alone. A single-sample run separates the two: the per-sample-versus-
+  resolved distinction disappears there, so a delta that collapses is the
+  image-processing pass. Scene 1's delta is 0.000/0.001 at *both* sample
+  counts, so what remains there is not multisampling.
 - **The single-sample diagnostic reaches the frame-graph scenes too.**
   At one sample a resolve step becomes a copy on both backends
   (scenes 116, 145 and 146): with nothing to average, the resolve of a
@@ -311,193 +295,164 @@ Regression guards, each measured rather than assumed:
 
 ## Dawn backend architecture (`native/src/pal_dawn.cpp`)
 
-The backend reuses every semantic layer the SDL_GPU backend uses:
-`upstream::build_render_plan`, `build_view_projection`,
-`build_pbr_uniforms`,
+Every semantic layer is shared with SDL_GPU: `upstream::build_render_plan`,
+`build_view_projection`, `build_pbr_uniforms`,
 `build_background_plan/uniforms`, `build_skybox_plan/uniforms`,
 `sort_transparent_draws`, the generated
-`upstream::inverse_image_processed_channel` (the pin's own linear-frame
-clear-color inverse, translated whole from its declaration), and the
-shared vertex packing and decode helpers in
-`native/src/pal_gpu_shared.hpp` (`GpuVertex`, `transformed_vertices`,
-`decode_rgbd`, `float_to_half`, `build_deformation_uniforms`).
-Only the GPU API layer differs:
+`upstream::inverse_image_processed_channel` (the pin's linear-frame clear-colour
+inverse, translated whole from its declaration), and the vertex packing and
+decode helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
+`transformed_vertices`, `decode_rgbd`, `float_to_half`,
+`build_deformation_uniforms`). Only the GPU API layer differs.
 
-- **Shaders**: the generated `*.native.wgsl` files are read from the
-  snapshot shader directory and handed to
-  `wgpuDeviceCreateShaderModule` unchanged — no DXC invocation, no
-  register normalization, no shader cache. The WGSL `@group` scheme maps
-  natively: group 1 = vertex uniform (`viewProjection`), group 2 =
-  texture/sampler pairs at bindings `2n`/`2n+1` in the SDL slot order,
-  group 3 = fragment uniform, group 0 = vertex storage buffers (morph).
-- **Pipelines**: created lazily per `upstream::RenderPipelineKind`,
-  additionally keyed by sample count and depth presence for
-  render-task targets. Every mesh pipeline outside the composed
-  material variants — grid, custom shader variants, the diagnostics,
-  depth-only — shares one explicit superset pipeline layout — WebGPU
-  permits layout bindings a shader ignores — so mesh bind groups stay
-  interchangeable across those pipelines; the composed variants build
-  a layout per variant (below). Blend for transparent:
-  color SrcAlpha/OneMinusSrcAlpha, alpha One/OneMinusSrcAlpha, with
-  depth writes off (opaque: writes on). The compare is the pin's own
-  `REVERSE_DEPTH_COMPARE`, lowered once into
-  `upstream::pinned_depth_compare` and translated per backend, so it is
-  the same on every pipeline. Anything unimplemented throws — explicit
-  failure, never approximation.
-- **Uniforms**: WebGPU has no push constants; every block SDL_GPU
-  pushes arrives through `wgpuQueueWriteBuffer` instead. The two
-  per-mesh vertex-stage blocks (deformation, instance parent world)
-  are rewritten once per frame by the single mesh-sync pass over the
-  plan's items — the same walk and skip logic as the SDL_GPU loop —
-  and the per-draw mesh and material blocks are written with their
-  draws before submission, each draw owning buffers sized to its
-  blocks. A Standard draw's blocks and bind group are keyed by
-  *material*, not by mesh: the pin's own plan gives a per-pass material
-  override (`addMesh(mesh, { material })`) the mesh's existing item, so
-  both draws arrive as one mesh, and — because every queue write lands
-  before the frame submits — one buffer per mesh would let the override
-  poison the main pass. SDL_GPU pushes the block per draw and needs no
-  such key. Scene 110 measures both. The PBR and node families still key
-  theirs by mesh; no reached scene overrides one in a colour pass.
-- **Deformation/instancing/storage morph**: the shared `GpuVertex`
-  deformation layout (16 attributes/200 bytes; the composed variants
-  append an integer joint-index lane — 216 bytes) feeds locations
-  8-15; the shared
-  `build_deformation_uniforms` writes a per-mesh uniform at group 1
-  binding 1 each frame. Instancing adds the per-instance
-  matrix-column vertex buffer (slot 1, locations 16-19, which needs
-  `maxVertexAttributes` raised to 20 at device creation — the
-  SDL-specialized layout exceeds the WebGPU default of 16) plus the
-  parent-world uniform at the next group-1 binding. Storage morphing
-  binds the flat 6-float delta buffer and 16-byte-header weights
-  buffer at group 0 bindings 0/1 with 4-byte/16-byte zero fallbacks;
-  weights rewrite in place when `morph_weights_version` changes.
-- **Pinned material variants**: both backends execute Babylon's own
-  composed stages for every PBR and Standard draw
-  (`variant-*.native.wgsl` and `variant-std-*.native.wgsl`, entered at
-  `main` in both stages, the pin's text unchanged). Selection is shared
-  in `pal_gpu_shared.hpp`: `pinned_variant_for_draw` keys a PBR draw
-  per renderable, light mode, tone flag and geometry task;
-  `standard_variant_for_draw` keys a Standard draw on the pin's own
-  feature word (the generated `standard_material_features`), the
-  per-renderable mesh bits and the geometry task — light count and
-  per-mesh light lists are UBO data the Standard fragments loop over,
-  not composition keys. A draw that
-  resolves no variant is an error naming its mesh and material — the
-  transcribed material pipelines are deleted. The pin's scheme is group 0 = scene +
-  lights, group 1 = mesh block, material block, then that variant's own
-  densely numbered textures — the same index names a different texture
-  in two variants, so Dawn builds a bind-group layout per variant from
-  the generated binding table, and SDL_GPU gets the addressing from
-  `Remap-PinnedVariantRegisters` in `tools/compile-shaders.ps1`, which
-  moves each register class into the SDL spaces and publishes the
-  result as a `.slots` sidecar. Every compiled stage has one, not only
-  the pinned variants: the normalizer this repository's own specialized
-  stages go through publishes the same file, because they raise the same
-  question the moment a stage's contents depend on scene code — a custom
-  sprite fragment declares its layer block and its `fx` block, and which
-  of them survives is the caller's WGSL to decide. A shader material's
-  stages are the same case and bind the same way: the caller's own WGSL
-  decides which of its declared sampler pairs the compiled stage keeps,
-  so SDL_GPU reads the sidecar and resolves each surviving register back
-  to the slot `setShaderTexture` stored, while Dawn compiles the deployed
-  WGSL and takes the declared order. A stage whose emitted HLSL exceeds
-  SDL_GPU's four uniform buffers — a composed geometry fragment of
-  either family spends all four on scene, lights, mesh and mat before
-  the tasks' `gp` block, which a second light is enough to reach — is
-  recompiled with `gp` demoted to a read-only storage buffer (an `r`
-  row in the sidecar; the SDL PAL binds the task's params buffer
-  against it and declares it in the stage's root signature, or D3D12
-  refuses the pipeline for an SRV range it does not bind), while Dawn
-  keeps the pin's uniform declaration in the `.native.wgsl` it
-  consumes. The PAL binds by that file, never by
-  the WGSL: a stage can declare a block it never reads — the unlit
-  fragment declares its mesh block for `mli()`, and a custom sprite body
-  that owns its own alpha reads neither block it is offered — and Tint
-  strips it, so the source over-counts. The compaction that follows is
-  dense, so a dropped block takes its slot with it and everything behind
-  it shifts. The pass that assigned the slots is the only authority on
-  them, which is why the Tint reflection cross-check asserts that every
-  binding Tint kept was declared, and not the reverse. Vertex convention (the glTF family's
-  X-mirror): an unskinned pinned
-  draw reads the unmirrored buffer with `diag(-1,1,1,1)` in the mesh
-  block; a skinned draw reads the mirrored buffer with the identity,
-  because the palette is the mirror-conjugated `jointWorld * IBM` and
-  either other pairing applies the mirror twice. A thin-instanced or
-  LOCAL_POSITION draw instead takes the real node world
-  (`pinned_draw_world` carries the whole chain), the instance stream
-  holds the matrix bytes paired with that pinned vertex convention (the
-  mirror conjugation of the runtime record), and the LOCAL_POSITION arm binds
-  the vertex's raw local lanes. The Standard family carries no glTF
-  mirror: its draws ride the identity world, the thin-instance arm the
-  pin's own `mesh.world * instanceWorld` with the recorded parent TRS,
-  and a LOCAL_POSITION geometry arm the recorded node world over the
-  raw local lanes.
-- **Shadows**: the caster pass is a depth-only render task over the
-  generator's own `depth32float` map, rendered from the light's biased
-  view-projection through the composed no-colour variants, at standard-Z
-  (`less-equal`, cleared to 1) and one sample. A receiving draw binds the
-  pin's group 2 — the map, the comparison sampler and the receiver block —
-  built once per frame graph and shared across receivers, which is the
-  cache `rebuildSingle` keys by the layout for the same reason. Dawn builds
-  that layout from the generator count (three bindings per light, in
-  `scene.lights` order) rather than by reflection, since
-  `createShadowFragment` fixes the shape; SDL_GPU binds it from the
-  `.slots` sidecar like every other composed stage, where the receiver
-  block appears as an `r` row because the demotion moved it out of the
-  four-uniform cap.
-- **Frame graph**: tasks replace the main pass exactly like the SDL
-  task loop. Color render tasks draw their
-  `build_render_task_draw_lists` lists into render targets with
-  pipelines selected by sample count and depth presence; depth-only
-  tasks draw the explicit no-color meshes with depth writes on;
-  geometry tasks bind one MRT per attachment (`geometry_clear_color`
-  clears, optional output target last, resolve on multisample) —
-  Standard and PBR draws both go through their pin-composed MRT
-  variants, which render under the same convention and the same frame
-  matrix as everything else (the gpUniforms block per task — demoted to a
-  fragment storage buffer on SDL_GPU where a fifth uniform block would
-  exceed the stage cap, and stored rather than discarded when a later
-  render task borrows the task's depth); copy tasks either resolve in an empty pass or run the
-  generated fullscreen blit with the integer `resolve_copy_viewport`
-  viewport+scissor, and a swapchain copy records its source as the
-  capture texture. Sampled depth attachments copy into an r32float
-  texture after their task (float32-filterable is requested like the
-  pinned engine) so standard emissive slots read them exactly like
-  SDL's D3D12 depth SRVs (r = depth, g/b = 0, a = 1), through the
-  nearest sampler. Device limits are derived from the task records at
-  creation: `maxColorAttachmentBytesPerSample` from the WebGPU
-  render-target byte costs (the entry's `requiredLimits` option is
-  compile-time erased), `maxVertexAttributes` 20 under instancing.
-- **Transmission**: the frame renders in linear rgba16float 4x MSAA
-  with the inverse-image-processed clear, keeping the multisampled
-  texture. At the first transmissive draw the pass breaks exactly like
-  the pinned render task: the scene color grabs straight from the
-  multisampled attachment through the pinned sample-averaging manual
-  bilinear blit into the 1024x1024 rgba16float refraction texture
-  (full chain minus the fixed 4-mip LOD bias, blit-generated mips),
-  then the pass resumes loading color and depth. The scene-color slot
-  binds that texture through the pinned repeat trilinear anisotropic-4
-  sampler. The final pass applies exposure, optional tonemap, gamma,
-  and contrast per MSAA sample and averages — the pin's own
-  image-processing stages, deployed as
-  `image-processing-samples.*.native.wgsl`.
-- **Frame**: 4x MSAA color (surface format) resolving into the surface
-  texture, `depth24plus-stencil8` (the browser's format — not the SDL
-  backend's D32), stage-driven draw order (skybox → opaque →
-  transparent → ground). The surface is configured
-  `RenderAttachment | CopySrc`; capture copies the resolved surface
-  texture into a mapped buffer (256-aligned rows) and saves via
-  SDL_image. The frame loop honors `BBLITE_MAX_FRAMES`,
-  `BBLITE_SCREENSHOT(_FRAME)`, `BBLITE_TEST_PASS`,
-  `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_BENCHMARK_FRAMES`, and the
-  capture grace period. Runtime mesh appends wait for submitted work,
-  rebuild the mesh set from a fresh render plan, and defer capture one
-  frame like the SDL backend.
-- **Device**: futures API with `TimedWaitAny`; the `use_dxc` adapter
-  toggle is chained to the adapter request; validation and robustness
-  stay at defaults (the browser has both on); uncaptured device errors
-  are captured and thrown at frame end.
+- **Shaders**: `*.native.wgsl` goes from the snapshot shader directory to
+  `wgpuDeviceCreateShaderModule` unchanged — no DXC, no register
+  normalization, no shader cache. The `@group` scheme maps natively: 0 = vertex
+  storage buffers (morph), 1 = vertex uniform (`viewProjection`), 2 =
+  texture/sampler pairs at bindings `2n`/`2n+1` in SDL slot order, 3 = fragment
+  uniform.
+- **Pipelines**: lazy per `upstream::RenderPipelineKind`, keyed also by sample
+  count and depth presence for render-task targets. Mesh pipelines outside the
+  composed variants (grid, custom shader variants, diagnostics, depth-only)
+  share one explicit superset layout — WebGPU permits bindings a shader ignores
+  — so their bind groups stay interchangeable; composed variants build a layout
+  per variant. Transparent blend is colour SrcAlpha/OneMinusSrcAlpha, alpha
+  One/OneMinusSrcAlpha, depth writes off (opaque: on). The compare is the pin's
+  `REVERSE_DEPTH_COMPARE`, lowered once into `upstream::pinned_depth_compare`.
+  Anything unimplemented throws.
+- **Uniforms**: WebGPU has no push constants, so every block SDL_GPU pushes
+  arrives through `wgpuQueueWriteBuffer`. The two per-mesh vertex blocks
+  (deformation, instance parent world) are rewritten once per frame by a
+  mesh-sync pass over the plan's items — the SDL loop's walk and skip logic —
+  and per-draw mesh and material blocks are written with their draws, each
+  owning buffers sized to its blocks. A Standard draw keys blocks and bind
+  group by *material*, not mesh: a per-pass material override
+  (`addMesh(mesh, { material })`) reuses the mesh's item, so both draws arrive
+  as one mesh, and since every queue write lands before submission a per-mesh
+  buffer would let the override poison the main pass. SDL_GPU pushes per draw
+  and needs no key. Scene 110 measures both. PBR and node families key by mesh;
+  no reached scene overrides one in a colour pass.
+- **Deformation, instancing, storage morph**: the shared `GpuVertex`
+  deformation layout (16 attributes / 200 bytes; composed variants append an
+  integer joint-index lane, 216) feeds locations 8-15, with
+  `build_deformation_uniforms` writing a per-mesh uniform at group 1 binding 1
+  each frame. Instancing adds the per-instance matrix-column vertex buffer
+  (slot 1, locations 16-19), which needs `maxVertexAttributes` raised to 20 at
+  device creation since the SDL-specialized layout exceeds WebGPU's default 16,
+  plus the parent-world uniform at the next group-1 binding. Storage morphing
+  binds the flat 6-float delta buffer and 16-byte-header weights buffer at
+  group 0 bindings 0/1 with 4- and 16-byte zero fallbacks; weights rewrite in
+  place when `morph_weights_version` changes.
+- **Pinned material variants**: both backends execute Babylon's composed stages
+  for every PBR and Standard draw (`variant-*.native.wgsl`,
+  `variant-std-*.native.wgsl`, entered at `main`, text unchanged). Selection is
+  shared in `pal_gpu_shared.hpp`: `pinned_variant_for_draw` keys a PBR draw per
+  renderable, light mode, tone flag and geometry task;
+  `standard_variant_for_draw` keys a Standard draw on the pin's feature word
+  (the generated `standard_material_features`), the per-renderable mesh bits and
+  the geometry task — light count and per-mesh light lists are UBO data the
+  fragments loop over, not composition keys. A draw resolving no variant is an
+  error naming its mesh and material; the transcribed material pipelines are
+  deleted.
+
+  The pin's scheme is group 0 = scene and lights, group 1 = mesh block,
+  material block, then that variant's densely numbered textures. One index
+  names a different texture in two variants, so Dawn builds a bind-group layout
+  per variant from the generated binding table, and SDL_GPU takes its
+  addressing from `Remap-PinnedVariantRegisters` in
+  `tools/compile-shaders.ps1`, which moves each register class into the SDL
+  spaces and publishes a `.slots` sidecar.
+
+  Every compiled stage has a sidecar, not only the pinned variants: this
+  repository's own specialized stages go through a normalizer that publishes
+  the same file, because a stage's contents depend on scene code the moment
+  the caller's WGSL decides which declarations survive — a custom sprite
+  fragment declares both a layer block and an `fx` block, and a shader
+  material's stages are the same case. SDL_GPU resolves each surviving register
+  back to the slot `setShaderTexture` stored; Dawn compiles the deployed WGSL
+  and takes the declared order. A stage whose emitted HLSL exceeds SDL_GPU's
+  four uniform buffers — a composed geometry fragment of either family spends
+  all four on scene, lights, mesh and mat before the tasks' `gp` block, which a
+  second light reaches — is recompiled with `gp` demoted to a read-only storage
+  buffer (an `r` row; the SDL PAL binds the task's params buffer against it and
+  declares it in the root signature, or D3D12 refuses the pipeline for an
+  unbound SRV range), while Dawn keeps the pin's uniform declaration.
+
+  The PAL binds by the sidecar, never by the WGSL. A stage may declare a block
+  it never reads — the unlit fragment declares its mesh block for `mli()`, and
+  a custom sprite body owning its alpha reads neither block it is offered — and
+  Tint strips it, so the source over-counts; the compaction that follows is
+  dense, so a dropped block takes its slot and everything behind it shifts. The
+  assigning pass is the only authority, which is why the Tint reflection
+  cross-check asserts that every binding Tint kept was declared, and not the
+  reverse.
+
+  Vertex convention, the glTF family's X-mirror: an unskinned pinned draw reads
+  the unmirrored buffer with `diag(-1,1,1,1)` in the mesh block; a skinned draw
+  reads the mirrored buffer with the identity, because the palette is the
+  mirror-conjugated `jointWorld * IBM` and either other pairing mirrors twice.
+  A thin-instanced or LOCAL_POSITION draw takes the real node world
+  (`pinned_draw_world` carries the chain), the instance stream holding matrix
+  bytes paired with that convention and the LOCAL_POSITION arm binding the
+  vertex's raw local lanes. The Standard family carries no mirror: identity
+  world, the thin-instance arm the pin's `mesh.world * instanceWorld` with the
+  recorded parent TRS, the LOCAL_POSITION geometry arm the recorded node world
+  over raw local lanes.
+- **Shadows**: the caster pass is a depth-only render task over the generator's
+  `depth32float` map, rendered from the light's biased view-projection through
+  the composed no-colour variants at standard-Z (`less-equal`, cleared to 1)
+  and one sample. A receiving draw binds the pin's group 2 — map, comparison
+  sampler, receiver block — built once per frame graph and shared across
+  receivers, the cache `rebuildSingle` keys by layout. Dawn builds that layout
+  from the generator count (three bindings per light, in `scene.lights` order)
+  rather than by reflection, since `createShadowFragment` fixes the shape;
+  SDL_GPU binds it from the sidecar, where the receiver block is an `r` row
+  because the demotion moved it past the four-uniform cap.
+- **Frame graph**: tasks replace the main pass exactly as the SDL task loop
+  does. Colour render tasks draw their `build_render_task_draw_lists` lists
+  into render targets with pipelines selected by sample count and depth
+  presence; depth-only tasks draw the explicit no-colour meshes with depth
+  writes on; geometry tasks bind one MRT per attachment
+  (`geometry_clear_color` clears, optional output target last, resolve on
+  multisample), Standard and PBR draws going through their pin-composed MRT
+  variants under the same convention and frame matrix as everything else — the
+  `gp` block per task, demoted to a fragment storage buffer on SDL_GPU, and
+  stored rather than discarded when a later task borrows the depth. Copy tasks
+  either resolve in an empty pass or run the generated fullscreen blit with the
+  integer `resolve_copy_viewport` viewport and scissor; a swapchain copy
+  records its source as the capture texture. Sampled depth attachments copy
+  into an r32float texture after their task (float32-filterable is requested as
+  the pinned engine requests it) so standard emissive slots read them exactly
+  like SDL's D3D12 depth SRVs — r = depth, g/b = 0, a = 1 — through the nearest
+  sampler. Device limits derive from the task records at creation:
+  `maxColorAttachmentBytesPerSample` from the WebGPU render-target byte costs
+  (the entry's `requiredLimits` option is compile-time erased),
+  `maxVertexAttributes` 20 under instancing.
+- **Transmission**: the frame renders in linear rgba16float 4x MSAA with the
+  inverse-image-processed clear, keeping the multisampled texture. At the first
+  transmissive draw the pass breaks exactly as the pinned render task breaks:
+  the scene colour grabs from the multisampled attachment through the pinned
+  sample-averaging manual bilinear blit into the 1024x1024 rgba16float
+  refraction texture (full chain minus the fixed 4-mip LOD bias,
+  blit-generated mips), then the pass resumes loading colour and depth. The
+  scene-colour slot binds that texture through the pinned repeat trilinear
+  anisotropic-4 sampler. The final pass applies exposure, optional tonemap,
+  gamma and contrast per MSAA sample and averages — the pin's own
+  image-processing stages, deployed as `image-processing-samples.*.native.wgsl`.
+- **Frame**: 4x MSAA colour (surface format) resolving into the surface
+  texture, `depth24plus-stencil8` (the browser's format, not SDL's D32),
+  stage-driven draw order (skybox, opaque, transparent, ground). The surface is
+  configured `RenderAttachment | CopySrc`; capture copies the resolved surface
+  texture into a mapped buffer (256-aligned rows) and saves via SDL_image. The
+  loop honours `BBLITE_MAX_FRAMES`, `BBLITE_SCREENSHOT(_FRAME)`,
+  `BBLITE_TEST_PASS`, `BBLITE_ANIMATION_SEEK_SECONDS`,
+  `BBLITE_BENCHMARK_FRAMES` and the capture grace period. Runtime mesh appends
+  wait for submitted work, rebuild the mesh set from a fresh render plan, and
+  defer capture one frame like the SDL backend.
+- **Device**: futures API with `TimedWaitAny`; the `use_dxc` adapter toggle is
+  chained to the adapter request; validation and robustness stay at defaults
+  (the browser has both on); uncaptured device errors are captured and thrown
+  at frame end.
 
 ## Ported pinned contracts
 
