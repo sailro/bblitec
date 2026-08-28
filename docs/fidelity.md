@@ -1363,9 +1363,8 @@ fallback, and every component widens from its stored float into the
 JavaScript-number double the pin computes in. Everything else is the pin's
 expression — the four scale terms, the scaled extents, the centre the sphere
 and box cases share, and the segment a capsule and a cylinder span. The last
-of those is what the move changed: both used to take a fixed `{0,0,0}` to
-`{0,1,0}` unit segment and a largest-extent radius, and both now run from the
-mesh's own scaled Y range at `extents.x * 0.5`. `physics-lowerer.ts` asserts
+A capsule and a cylinder span the mesh's own scaled Y range at
+`extents.x * 0.5`. `physics-lowerer.ts` asserts
 every remaining restated rule against the declaration that states it,
 including the *order* of the four phases, which no single expression would
 catch, and `setPhysicsShapeMaterial`'s static-friction default, which is what

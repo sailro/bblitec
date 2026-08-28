@@ -80,27 +80,9 @@ the generated engine's window title and size, default 1280x720 — and
 `--id-diagnostics` for the attribution buffers. The scene command supplies
 the title and attribution flag from the registry and leaves the size at its
 default, which is what every golden is captured at.
-`diff` captures both renderers and reports where they disagree; `compose`
-checks our material feature derivation by composing each material through
-Babylon Lite's own pipeline and comparing the whole fragment against the
-captured one. `measure` prints a PNG's non-background bounding box, pixel
-count and mean RGB (`--background r,g,b` overrides the top-left-pixel
-default) — the measure-the-PNG rule as a command, for any render or probe
-image. `parity --without ground|background` re-runs the native side with
-one element suppressed against the unchanged golden (artifacts suffixed
-`-without-<element>`, no threshold gate) — the residual-attribution
-bisection. `capture --seek-bracket` captures the browser at the seek and
-at ±1 frame and prints the one-frame motion scale a residual should be
-judged against. `stability` renders the native side N times and prints
-every run against the first *and* against the golden — both always,
-because run-to-run agreement alone hides a stable-but-wrong image.
-`stability` also takes `--seek <t>`: at a non-registry pose the golden
-columns are suppressed (two poses measure nothing) and artifacts gain a
-`-seek<t>` suffix so experiments never clobber registry-pose evidence.
-`diagnose` walks the diagnosis ladder for one scene — parity
-`--differential`, then `diff`, then `compose` over one shared capture —
-and prints each rung's verdict in order (`--backend`, `--seek` and
-`--gpu-debug` pass through).
+`diff`, `compose`, `measure`, `stability`, `geometry`, `probe-variants`,
+`uniforms` and `diagnose` are the diagnosis ladder: which one answers which
+question, and the flags each takes, are in [debugging](debugging.md#the-ladder).
 `clean --orphans` deletes build trees and `generated/` entries no registry
 scene owns; `--all` additionally removes owned build trees.
 `validate` chains compile, shaders, build, parity and the status check
@@ -108,12 +90,7 @@ with one summary line per stage, preserving every artifact on failure. A retry
 resumes the compile and shader stages only when their input fingerprint and
 on-disk outputs still match the completed stage; changed or missing inputs run
 the stage again.
-See [debugging](debugging.md) for the ladder they sit in.
-`geometry` captures each existing geometry-output copy task full-screen in
-Babylon Lite and native without changing the curated scene source; its
-native outputs and report carry the same `-gpu`/`-dawn` filename token as
-parity's, and it takes `--backend` and `--seek` (the latter with
-`--recapture-reference`) under the same rules.
+
 
 HDR scene compilation launches headless Chromium to run the pinned
 1024-sample GGX compute shader, a node-particle scene launches it to run
@@ -1104,23 +1081,11 @@ compares `report-differential.json` only — a single-backend sweep produces
 nothing it can compare.
 `status:verify` performs the published half of the same comparison.
 
-It already knows the movements that are not findings: scenes 9, 14, 37, 120,
-126 and 128 do not render bit-identically from one run to the next, so those
-cells move for any change and for no change alike. They are reported as expected wobble and
-excluded from the exit status; every other moved cell is real. The whitelist
-is per scene AND per backend — scene 9's wobble is Dawn-only, scene 14's is
-SDL_GPU-only, scenes 37 and 120 wobble on both — because the mover is
-multisampling
-([debugging](debugging.md#2-which-side-is-it-on) carries the measured
-mechanism and the magnitudes). A cross-backend cell moves when either side
-does, so one wobbling backend excuses it; each scene's own
-`goldenVersusSdlGpu` cells stay compared regardless.
-
-Nothing else is on that list, and the entry fee is a measurement rather than a
-surprising neutrality run: `scene -- stability <id> --backend <b>` has to show
-the re-runs differing and `--single-sample` has to show them stop. A whitelist
-entry excuses those cells permanently, so it hides any regression smaller than
-the wobble.
+It already knows the cells that move for any change and for no change alike —
+the multisampled run-to-run wobble, whitelisted per scene AND per backend and
+excluded from the exit status; every other moved cell is real. The measured
+mechanism, the magnitudes and the entry fee for a new whitelist row are in
+[debugging](debugging.md#2-which-side-is-it-on).
 
 There is no hosted CI. During iteration, run only the smallest relevant tests,
 generation steps, affected native builds, and scene parity gates. Do not repeat

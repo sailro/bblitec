@@ -693,18 +693,20 @@ disagrees with its geometry.
 ### Lights
 
 Directional, hemispheric, point, and spot lights with diffuse and specular
-colors. Standard surfaces shade through the pin's own composed fragment,
-which declares `array<LightEntry, MAX_LIGHTS>` and walks
-`min(mesh.lc, MAX_LIGHTS)` of it — light count, kind dispatch, and the
-per-mesh light sets an asset names are all run-time UBO data, written by the
-pin's own per-kind light writers. `MAX_LIGHTS` is the pin's frozen 16; an
-asset carrying more punctual light nodes refuses at generation where
-upstream would grow the constant. Spot cones shade under the pinned
+colours. Light count, kind dispatch and the per-mesh light sets an asset names
+are run-time UBO data rather than composition keys; the pin's own loop over its
+own entries is in [fidelity](fidelity.md#lights). Spot cones shade under the
 cosine-and-exponent falloff on Standard surfaces and the physical falloff in
 the PBR extra lights. PBR carries two analytic slots in single-light mode;
-under multi-light the second analytic slot is deliberately empty and every
-light past the primary is walked by the pin's own `min(mesh.lc, MAX_LIGHTS)`
-loop over the same lights buffer.
+under multi-light the second is deliberately empty and every light past the
+primary is walked over the same lights buffer.
+
+A scene-code spot light carries its colours and intensity; its `angle`,
+`exponent` and `range` setters fail explicitly. A point or directional light's
+`position`, and a spot light's `position` and `direction`, are settable after
+creation through the pin's own `ObservableVec3` semantics — whole-vector and
+reached point component writes both rebuild that kind's local matrix, and
+vectors no reached scene writes fail by name.
 
 ### Materials and material state
 
@@ -1524,6 +1526,9 @@ build error with a source location, not a silently different image.
 
 ### Rejected at generation
 
+**Each family section above ends with its own refusals, by name.** What follows
+is the boundaries that belong to no single family.
+
 - one statically analyzable entry file and one engine; selected TypeScript
   expressions, assignments, callbacks, and intrinsics
 - no arbitrary object graphs or run-time module loading. Observable imported
@@ -1537,95 +1542,22 @@ build error with a source location, not a silently different image.
   typed-array spans. Aliases that cannot remain safe across container resizing
   reject later use; `new Array` elements zero-initialize; and `Math.random` is
   the pinned seeded sequence — each adaptation is recorded in `fidelity.json`
-- no networking. Physics is reached, behind a substituted solver
-  ([below](#physics)), and a Web Audio prototype is reached behind a
-  substituted engine ([fidelity](fidelity.md#audio-contract)) — the
-  reached slice is the Lite engine's lifecycle plus a caller-built node
-  graph, and the sound, bus, spatial, streaming and analyzer families all
-  refuse by name
-- property animation covers LINEAR/STEP scalar and vector tracks, quaternion
-  slerp, group ranges/looping/speed, and deterministic seeking for the reached
-  mesh `position`, `position.x`, `scaling`, and `rotationQuaternion` paths
-- glTF animation covers LINEAR/CUBICSPLINE rotation, translation, and scale
-  plus LINEAR morph weights, one addressable group per declared animation.
-  glTF STEP channels, a group's speed ratio, weight and mask, and broader
-  property targets remain unsupported
-- direct `createMorphTargets` covers one target attached to one mesh
-- a spot light created in scene code carries its colors and intensity; its
-  `angle`, `exponent`, and `range` setters fail explicitly
-- a point or directional light's `position`, and a spot light's `position`
-  and `direction`, are settable after creation through the pin's own
-  `ObservableVec3` semantics. Whole-vector and reached point component writes
-  both rebuild that kind's local matrix; vectors no reached scene writes stay
-  unlowered and fail by name
+- no networking. Physics is reached behind a substituted solver
+  ([above](#physics)) and a Web Audio prototype behind a substituted engine
+  ([fidelity](fidelity.md#audio-contract))
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
-- PBR material extensions cover clearcoat, sheen, iridescence, anisotropy,
-  Scene 26's translucency plus linear thickness map, dispersion, and the
-  spec-gloss workflow replacement with one shared UV
-  transform. Anisotropy carries the layer's own parameters; its per-layer
-  texture and its UV transform are not reached, and the pinned writer's own
-  early return drops that arm from the emitted writer rather than leaving it
-  to a run-time branch. Specular textures remain unsupported, and an asset
-  carrying an extension the pinned loader implements that this port does not
-  fails at generation naming it
-- a compressed texture is a KTX1 container or a Basis file loaded from scene
-  code. Neither loader's sampler options are lowered, because the reached
-  calls pass none; a `loadKtxTexture2D` whose suffixes are not an array
-  literal, or whose listed suffixes name no block-compression format, fails
-  at generation, as does a KTX file whose `glInternalFormat` is outside that
-  table. KTX2 — the container `KHR_texture_basisu` redirects a glTF texture
-  to — needs the pin's second decoder and is unreached
-- custom shader variants are bounded by the supported WGSL subset and the
-  `world`, `view`, `projection`, `viewProjection` and `worldViewProjection`
-  system uniforms, which head a stage's block in declaration order — `view`
-  and `projection` are the two factors of the product the pass already
-  built, carried beside it so the three cannot come from two cameras. The
-  pin's other four (`worldView`,
-  `cameraPosition`, `screenSize`, `alphaCutoff`), matrix-valued custom
-  uniforms, and a stage reading both a
-  system and a custom uniform all remain unsupported. A sampler is named by a
-  string and binds a 2D float texture, loaded by `loadTexture2D`, in the
-  fragment stage: a typed `ShaderSamplerDecl`, a depth or comparison
-  sampler, a `2d-array` view, a sampler the vertex stage reads (SDL_GPU
-  gives a vertex texture its own register space), a fifth sampler (the
-  fifth pair of the shared mesh texture group is the reflection cube) and
-  a texture from anywhere but `loadTexture2D` all fail by name, as do
-  storage buffers
-- a material plugin declares a `name` and a `getCustomCode` returning literal
-  WGSL per injection point, both folded from the scene's own declaration. Its
-  uniform, sampler and texture hooks — `getUniforms`, `writeUbo`,
-  `getSamplers`, `bindTextures`, `getActiveTextures` — plus `priority`,
-  `isEnabled` and `defines` each refuse at the member that declares them, as
-  does a plugin on a material family neither of the pin's two bridges reads
-  ([above](#material-plugins))
-- a node material graph is taken inline; a snippet id fetches it from the
-  snippet server at page load and fails. The graph itself is read as a JSON
-  literal or executed as the module that builds it, and every block outside
-  the reached slice — morph targets, shadows, clip planes, the
-  mesh-attribute test and alpha blending — refuses at generation naming the
-  block that reached it. An executed graph module may import its own relative
-  siblings, which is how the corpus composes one document out of another; a
-  package import refuses, because that is the boundary keeping the route to
-  plain data
-- shadows cover the pinned PCF spot, PCF directional and ESM directional
-  generators over all three material families' receivers
-  ([above](#shadows) carries the split). The cascaded generator, an imported
-  mesh as caster or receiver, a computed `receiveShadows`, a PBR caster
-  through the ESM generator, and every generator option past each factory's
-  own reached set each fail at generation naming what they reached
-- an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
-  (16) fails, where upstream grows the constant at run time
 - a scene-code mesh or PBR material created before a later glTF load fails,
   because it would interleave the variant table's creation-order key
 - an orthographic camera composed with an environment skybox or ground fails,
   because those build their own perspective view-projection
+- an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`
+  (16) fails, where upstream grows the constant at run time
 - a skin larger than the transcribed vertex stage's 64-matrix bone palette,
   in a scene composing no pinned skeleton variant, fails naming the joint
-  count and the transport. Deformation runs on the GPU or not at all, so
-  the palette is a bound rather than a slow path; the generated loader
-  keeps the same check as the `BBLITE_ASSET_DIR` defense
+  count and the transport. Deformation runs on the GPU or not at all, so the
+  palette is a bound rather than a slow path
 
 ### Refused at run time
 
