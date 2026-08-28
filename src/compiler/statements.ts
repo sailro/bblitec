@@ -1733,27 +1733,6 @@ export class StatementLowerer {
             );
             return;
         }
-        // A statement whose CALLEE is browser-only produces nothing native,
-        // and its arguments go with it -- the same rule the assignment path
-        // already applies to a browser-only left-hand side, which is what
-        // erases a `canvas.dataset` write together with everything it
-        // formats. `console.log` of a formatted pick result is that shape:
-        // reporting, not scene state. The platform-listener and
-        // instrumentation gates run first, so a call this runtime does
-        // serve never reaches here.
-        if (
-            ts.isCallExpression(unwrapped) &&
-            (ts.isPropertyAccessExpression(unwrapped.expression) ||
-                ts.isElementAccessExpression(unwrapped.expression)) &&
-            context.isBrowserOnlyExpression(
-                unwrapped.expression.expression,
-            )
-        ) {
-            context.eraseBrowserInstrumentation(
-                unwrapped.pos,
-            );
-            return;
-        }
         if (ts.isCallExpression(unwrapped)) {
             const value = context.compileValue(unwrapped);
             if (

@@ -1765,6 +1765,35 @@ export class ExpressionLowerer {
                 }
             }
         }
+        // `Number.prototype.toFixed` over a value the static evaluator
+        // could not fold. The folded arm is the one the pin's own shader
+        // formatters take; this is the run-time twin, and both round the
+        // same way because `bbl::js::to_fixed` writes the spec's
+        // ties-away-from-zero step rather than leaving it to the C
+        // library's round-half-to-even.
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "toFixed"
+        ) {
+            const value = this.compileValue(callee.expression);
+            if (value.kind === "number") {
+                this.context.expectArgumentCount(call, 0, 1);
+                const digits = call.arguments[0]
+                    ? this.context.compileNumber(
+                          call.arguments[0],
+                          "double",
+                      )
+                    : "0";
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp:
+                        `bbl::js::to_fixed(${value.cpp}, ` +
+                        `static_cast<int>(${digits}))`,
+                    dataType: { kind: "string" },
+                };
+            }
+        }
         if (
             ts.isArrowFunction(callee) ||
             ts.isFunctionExpression(callee)

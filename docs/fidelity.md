@@ -1350,6 +1350,42 @@ native pipelines. Tint discard statements are lowered to `clip(-1.0)` to avoid
 a D3D12 command-list failure in multisampled pipelines while preserving
 fragment-kill semantics.
 
+## Picking contract
+
+A pick renders rather than intersects, so what it answers is the renderer's
+and both backends run the pin's own two modules. Two facts are this port's,
+and both come from where a transform lives.
+
+**A mesh's pick block carries the identity, because its vertices are already
+world-space.** `transformed_vertices` bakes the node's world matrix into the
+buffer the renderer draws, where the pin keeps vertices local and multiplies
+by `mesh.worldMatrix` in the pick vertex stage. The browser's own
+`pick-mesh-ubo` shows the pair: scene 129's sphere block holds
+`(0, 0.5, -1)` against local vertices, and the identity against baked ones
+puts the same positions in front of the same shader. A thin-instanced or
+floating-origin mesh keeps LOCAL vertices precisely because its transform
+travels as a matrix, so neither takes this arm; both refuse rather than
+picking geometry at the wrong place. The position stream is the renderer's
+interleaved buffer read at its own pitch rather than a second position-only
+upload -- the pin binds `gpu.positionBuffer`, and these are the same numbers.
+
+**The pick brings each cloud's sort current before it opens its pass.**
+Upstream the scene awaits `splat.firstSortReady` before it picks. Here the
+statements after `startEngine` are the browser's continuation and arrive on
+the deferred queue, which `advance_frame` drains BEFORE the frame's splat
+upload -- so the GPU-side order buffer is still unwritten, the cloud samples
+its data textures at garbage indices, and it covers no pixel at all. The
+symptom is not a wrong depth but an absent fragment: disabling the cloud
+depth test entirely changes nothing, which is what separates this from the
+comparison the two pipelines disagree on. The upload is idempotent
+(`splat_sort_dirty` answers no when neither the world nor the view moved),
+so the pick performs it and the frame's own upload then finds nothing to do.
+
+Scene 129 measures the whole chain because the pick decides a visible thing:
+the scene removes its ground unless the pick resolved to the cloud, so a
+miss is 12.866 MAD and the gate cannot pass without the pass actually
+running.
+
 ## Physics contract
 
 **The pinned physics layer is generated; the solver under it is not the

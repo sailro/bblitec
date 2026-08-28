@@ -884,6 +884,96 @@ inline Vec3 normalize_vec3(Vec3 value) {
         : Vec3{};
 }
 
+#if BBLITE_HAS_PICKING
+// GPU picking's backend-independent half: the two shears the pin computes
+// per pick, and the id encoding both attachments agree on. The pin puts
+// these in `picking/gpu-picker.ts` and `picking/gs-picking-pipeline.ts`;
+// each is lowered from its own body, and both backends read the same one.
+
+/** The pin's `SceneUniforms`: the sheared VP, then the sampled pixel. */
+struct PickSceneUniforms {
+    std::array<float, 16> view_projection{};
+    std::array<float, 2> fragment_coord{};
+    std::array<float, 2> _pad{};
+};
+
+/** The pin's `MeshUniforms`: the world matrix, then the id. */
+struct PickMeshUniforms {
+    std::array<float, 16> world{};
+    std::uint32_t pick_id = 0;
+    std::array<std::uint32_t, 3> _pad{};
+};
+
+/**
+ * `computePickVP`, lowered from its own body.
+ *
+ * The shear maps the sampled point to the one pixel the target has: each
+ * column's x and y are scaled by the viewport extent and offset by the
+ * sample's NDC, so the sample lands at the origin of a 1x1 clip volume.
+ */
+inline void compute_pick_view_projection(
+    std::array<float, 20>& out,
+    const std::array<float, 16>& vp,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height) {
+    const double ndc_x = 2.0 * sample_x / width - 1.0;
+    const double ndc_y = 1.0 - 2.0 * sample_y / height;
+    for (int column = 0; column < 4; ++column) {
+        const int base = column * 4;
+        const double w3 = static_cast<double>(vp[base + 3]);
+        out[static_cast<std::size_t>(base)] = static_cast<float>(
+            width * (static_cast<double>(vp[base]) - ndc_x * w3));
+        out[static_cast<std::size_t>(base) + 1] = static_cast<float>(
+            height * (static_cast<double>(vp[base + 1]) - ndc_y * w3));
+        out[static_cast<std::size_t>(base) + 2] = vp[base + 2];
+        out[static_cast<std::size_t>(base) + 3] = vp[base + 3];
+    }
+}
+
+/**
+ * `computeGsPickMatrix`, lowered from its own body.
+ *
+ * The cloud's vertex stage already produced clip space, so its shear is a
+ * post-multiply rather than a replacement projection: scale by the viewport
+ * and translate by the sample's NDC.
+ */
+inline void compute_cloud_pick_matrix(
+    std::array<float, 16>& out,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height) {
+    const double ndc_x = 2.0 * sample_x / width - 1.0;
+    const double ndc_y = 1.0 - 2.0 * sample_y / height;
+    out = {};
+    out[0] = static_cast<float>(width);
+    out[5] = static_cast<float>(height);
+    out[10] = 1.0f;
+    out[12] = static_cast<float>(-ndc_x * width);
+    out[13] = static_cast<float>(-ndc_y * height);
+    out[15] = 1.0f;
+}
+
+/** `encodeIdToColor`: the id's three bytes as unit floats. */
+inline std::array<float, 3> encode_pick_id_to_color(std::uint32_t id) {
+    return {
+        static_cast<float>((id >> 16) & 0xFFu) / 255.0f,
+        static_cast<float>((id >> 8) & 0xFFu) / 255.0f,
+        static_cast<float>(id & 0xFFu) / 255.0f,
+    };
+}
+
+/** The colour attachment's three bytes back into the id they encode. */
+inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
+    return (static_cast<std::uint32_t>(texel[0]) << 16) |
+           (static_cast<std::uint32_t>(texel[1]) << 8) |
+           static_cast<std::uint32_t>(texel[2]);
+}
+
+#endif
+
 inline std::vector<GpuVertex> transformed_vertices(
     const ModelGeometry& geometry,
     const MeshRecord& mesh) {
