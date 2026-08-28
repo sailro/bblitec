@@ -5912,16 +5912,24 @@ class Compiler
      * queue `advance_frame` drains.
      */
     private engineStartMark:
-        | { index: number; engine: string }
+        | { index: number; engine: string; node: ts.Node }
         | undefined;
 
-    public markEngineStart(engineCpp: string): void {
-        // The first `startEngine` owns the continuation. A second one is a
-        // restart the reached slice does not write, and taking the later
-        // mark would strand the first one's statements.
-        this.engineStartMark ??= {
+    public markEngineStart(
+        engineCpp: string,
+        node: ts.Node,
+    ): void {
+        if (this.engineStartMark) {
+            this.fail(
+                node,
+                "A second startEngine is a restart this runtime does not " +
+                    "lower; the first one already owns the continuation.",
+            );
+        }
+        this.engineStartMark = {
             index: this.body.length,
             engine: engineCpp,
+            node,
         };
     }
 
@@ -5937,25 +5945,49 @@ class Compiler
         if (!mark) {
             return;
         }
-        const index = this.body.findIndex(
-            (line, position) =>
-                position >= mark.index &&
-                line.includes("bbl::start_engine("),
-        );
-        if (index < 0) {
+        let index = mark.index;
+        while (
+            index < this.body.length &&
+            !this.body[index]!.includes("bbl::start_engine(")
+        ) {
+            index += 1;
+        }
+        if (index >= this.body.length) {
             return;
         }
         const tail = this.body.splice(index + 1);
         if (tail.length === 0) {
             return;
         }
-        const startLine = this.body.pop()!;
-        const indent = "        ";
-        this.body.push(
+        // The continuation has to be a run of statements at the call's own
+        // depth. A `startEngine` inside a block would leave that block's
+        // closing brace in the tail at a shallower indent, and moving it
+        // into the lambda would emit unbalanced C++ -- so the shape is
+        // checked here, where the emitted lines say what it is, rather
+        // than guessed from the lowering scope.
+        const depth = (line: string): number =>
+            line.length - line.trimStart().length;
+        const startDepth = depth(this.body[index]!);
+        const escapes = tail.find(
+            (line) =>
+                line.trim().length > 0 && depth(line) < startDepth,
+        );
+        if (escapes !== undefined) {
+            this.fail(
+                mark.node,
+                "startEngine is lowered at the entry body's top level " +
+                    "alone: the statements after it become the frame " +
+                    "conductor's deferred callback, and a block that " +
+                    "closes after it has no boundary for one.",
+            );
+        }
+        const indent = " ".repeat(startDepth);
+        this.body.splice(
+            index,
+            0,
             `${indent}bbl::defer_callback(${mark.engine}, [&]() {`,
             ...tail.map((line) => `    ${line}`),
             `${indent}});`,
-            startLine,
         );
     }
 

@@ -39,11 +39,6 @@ import type {
 } from "./user-functions.js";
 
 /**
- * Calls in an argument are evaluated before their enclosing call. Stop at a
- * nested function boundary because creating a callback does not execute its
- * body.
- */
-/**
  * Number formatters the language owns rather than the scene.
  *
  * What `containsEvaluatedCall` is really asking is "could dropping this
@@ -60,6 +55,11 @@ const PURE_NUMBER_FORMATTERS = new Set([
     "toExponential",
 ]);
 
+/**
+ * Calls in an argument are evaluated before their enclosing call. Stop at a
+ * nested function boundary because creating a callback does not execute its
+ * body.
+ */
 function containsEvaluatedCall(node: ts.Node): boolean {
     if (ts.isFunctionLike(node)) {
         return false;

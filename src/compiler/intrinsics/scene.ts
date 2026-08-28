@@ -27,7 +27,7 @@ export interface SceneIntrinsicContext
      * the browser's own continuation -- are hoisted into the conductor's
      * deferred queue rather than emitted after a call that never returns.
      */
-    markEngineStart(engineCpp: string): void;
+    markEngineStart(engineCpp: string, node: ts.Node): void;
     /** The `scene.lights` slot the next added light fills. */
     nextSceneLightIndex(kind?: LightKind): number;
     requireEngine(value: Value, node: ts.Node): string;
@@ -349,6 +349,7 @@ export function compileSceneIntrinsic(
             // deferred queue.
             context.markEngineStart(
                 engine.engineCpp ?? engine.cpp,
+                call,
             );
             return {
                 kind: "void",
