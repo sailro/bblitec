@@ -393,6 +393,20 @@ export interface AssignmentContext extends DeterministicRandomContext {
     reachFeature(feature: Feature, site: ts.Node): void;
     /** `mesh.receiveShadows = true`, by scene-mesh index. */
     recordShadowReceiver(sceneMeshIndex: number): void;
+    propertyName(name: ts.PropertyName): string | undefined;
+    probeStaticArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression | undefined;
+    compileStaticString(expression: ts.Expression): string;
+    /** `material.plugins = [...]` on the scene PBR material the write names. */
+    recordScenePbrPlugins(
+        plugins: readonly MaterialPluginManifest[],
+        index: number | undefined,
+    ): void;
+    /** The same, on a Standard material: its signature index, from one. */
+    recordStandardMaterialPlugins(
+        plugins: readonly MaterialPluginManifest[],
+    ): number;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -1066,6 +1080,59 @@ export function emitPropertyAssignment(
             return;
         }
 
+        // `material.plugins = [plugin]` is the pin's per-instance attach, and
+        // the whole of it is composition input: both bridges read the list
+        // to build one `ShaderFragment` and to number a signature, and that
+        // number rides the host material's feature bits so every compose and
+        // pipeline cache rebuilds on a plugin change.
+        //
+        // Which half of that reaches the runtime differs by family, because
+        // the two variant selectors are keyed differently. A PBR draw
+        // resolves its variant by MATERIAL INDEX, so the composed row for
+        // this material already carries the plugin and nothing has to travel
+        // on the record. A Standard draw resolves by the feature word
+        // `standard_material_features` derives from the record, so the index
+        // has to be there -- which is exactly what `registerStdPlugins`
+        // pre-bakes into `_renderFeatures` upstream, for the same reason.
+        if (target.kind === "material" && property === "plugins") {
+            requireSimpleAssignment(context, expression, "material plugins");
+            const plugins = foldMaterialPluginList(
+                context,
+                expression.right,
+            );
+            if (target.scenePbrMaterialIndex !== undefined) {
+                context.recordScenePbrPlugins(
+                    plugins,
+                    target.scenePbrMaterialIndex,
+                );
+                return;
+            }
+            if (!target.standardMaterial) {
+                context.fail(
+                    left.expression,
+                    "Material plugins attach to a PBR or a Standard " +
+                        "material: the pin's two bridges are the only " +
+                        "readers, and its Standard one filters on the " +
+                        "material's own group builder, so a plugin on any " +
+                        "other family composes nothing upstream either.",
+                );
+            }
+            // The record lane is its own reach, separate from the
+            // opt-in: upstream a `plugins` array on a material is always
+            // legal and is simply inert until `enableMaterialPlugins`
+            // registers the bridges, so the write has to compile either way
+            // -- gating the setter's definition on the opt-in instead would
+            // leave this call undefined for a scene that never made it.
+            context.reachFeature("material:plugin-index", expression);
+            context.emit(
+                `bbl::set_material_plugins(` +
+                    `${context.requireEngine(target, expression)}, ` +
+                    `${target.cpp}, static_cast<std::uint8_t>(` +
+                    `${context.recordStandardMaterialPlugins(plugins)}));`,
+            );
+            return;
+        }
+
         if (
             target.kind === "light" &&
             property === "shadowGenerator"
@@ -1129,6 +1196,12 @@ export function emitPropertyAssignment(
             if (material.scenePbrMaterialIndex !== undefined) {
                 target.scenePbrMaterialIndex =
                     material.scenePbrMaterialIndex;
+            }
+            // The family travels the same way, and for the same reason: a
+            // write on `box.material` has to resolve which of the pin's two
+            // bridges would read it.
+            if (material.standardMaterial) {
+                target.standardMaterial = true;
             }
             // The pair the caster list resolves against. Upstream reads
             // `mesh.material` when the shadow pass builds, so a scene may
@@ -1813,6 +1886,8 @@ import { cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
+import { foldMaterialPluginList } from "./material-plugin.js";
+import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type {
     CompiledNodeParticles,
     Feature,

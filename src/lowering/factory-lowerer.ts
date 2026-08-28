@@ -1,4 +1,4 @@
 export {
     FactoryLowerer,
-    StandardTextureSetters,
+    StandardMaterialSetters,
 } from "./factory/material-factories.js";

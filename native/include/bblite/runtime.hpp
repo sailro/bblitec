@@ -1474,6 +1474,20 @@ struct MaterialRecord {
     // (`_hasUvTx`), read back by `stdUvTransformExt._meshFeatures` and
     // therefore part of the composed variant key.
     bool has_uv_transform = false;
+    // `material.plugins = [...]` on a STANDARD material: the per-signature
+    // index the pin's own `registerStdPlugins` pre-bakes into the material's
+    // cached `_renderFeatures`, from one, zero for a material carrying none.
+    // Standard's feature computation is not extension-extensible, which is
+    // why upstream bakes it and why it has to ride the record here — the
+    // Standard variant key is the word `standard_material_features` derives.
+    // The PBR family needs no such lane: its selector keys by material
+    // index, so the composed row already carries the plugin.
+    //
+    // A byte, because the pin's own `PLUGIN_INDEX_MASK` reserves seven bits
+    // for it: a wider field lands after the bool run below and pushes the
+    // whole tail across an alignment boundary, costing eight bytes per
+    // material rather than none. Generation refuses a mask this cannot hold.
+    std::uint8_t plugin_signature_index = 0;
     bool double_sided = false;
     // The pin's opacityFromRGB (createStandardMaterial default false; the
     // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
@@ -2495,6 +2509,10 @@ void set_standard_diffuse_file_texture(
 void enable_material_uv_transform(
     Engine& engine,
     MaterialHandle material);
+void set_material_plugins(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint8_t signature_index);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);

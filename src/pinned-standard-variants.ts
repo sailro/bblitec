@@ -72,6 +72,11 @@ import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    type MaterialPluginManifest,
+    pinnedPluginBakeShift,
+    standardPluginFeatureBits,
+} from "./pinned-material-plugins.js";
 
 /** The material fields the pin's Standard feature derivation reads. */
 export interface PinnedStandardMaterialInput {
@@ -100,6 +105,10 @@ export interface PinnedStandardMaterialInput {
     /** `enableMaterialUvTransform(material)` marked this material, which is
      *  what `stdUvTransformExt._meshFeatures` reads. */
     _hasUvTx?: boolean;
+    /** `material.plugins = [...]`: the compiler's own 1-based index for the
+     *  list, which is the one the pin's Standard bridge baked and the one the
+     *  material record carries. The bits come from that bake. */
+    pluginIndex?: number;
     [key: string]: unknown;
 }
 
@@ -295,11 +304,16 @@ export async function pinnedStandardMaterialFeatures(
             material: PinnedStandardMaterialInput,
         ) => number;
     }>("material/standard/standard-material.js");
+    // The plugin bridge's index is a *bake*, not a detection: Standard's
+    // feature computation is not extension-extensible, so `registerStdPlugins`
+    // writes `_computeStandardMaterialFeatures(mat) | (idx << SHIFT)` into
+    // the material's cached `_renderFeatures` and `rebuildSingle` reads that
+    // word back. This is the same OR over the same two halves.
     return materialModule._computeStandardMaterialFeatures({
         ...pinnedOptInSlots(material),
         backFaceCulling: material.backFaceCulling ?? true,
         alpha: material.alpha ?? 1,
-    });
+    }) | await standardPluginFeatureBits(material.pluginIndex);
 }
 
 /**
@@ -950,6 +964,7 @@ const standardFeatureRecordSources: Readonly<
 function lowerStandardFeatureDerivation(
     context: LoweringContext,
     uvTransform: boolean,
+    plugins: boolean,
 ): string {
     const modulePath = "src/material/standard/standard-material.ts";
     const { file, declaration } = context.functionDeclaration(
@@ -1251,6 +1266,26 @@ function lowerStandardFeatureDerivation(
         scope = previousScope;
         flagModule = previousModule;
     };
+    /**
+     * The plugin bridge's own pre-bake, as the line it adds.
+     *
+     * The pin's own bake is `_computeStandardMaterialFeatures(mat) | (idx
+     * << PLUGIN_INDEX_SHIFT)`, and `pinnedPluginBakeShift` asserts that
+     * expression's shape before handing back the shift — so this is the
+     * pin's line with the record's field in place of its `idx`, no mask
+     * included, because the pin masks on read-back rather than on the bake.
+     * `registerPluginBridges` checks the list count against
+     * `PLUGIN_INDEX_MASK` once, which is where an overflowing index would
+     * matter rather than in every draw.
+     */
+    const lowerPluginIndex = (indent: string): void => {
+        lines.push(
+            `${indent}// std-plugin-bridge.ts registerStdPlugins`,
+            `${indent}features |= ` +
+                `static_cast<std::uint32_t>(material.plugin_signature_index)` +
+                ` << ${pinnedPluginBakeShift(context)}u;`,
+        );
+    };
     const lowerStatements = (
         statements: readonly ts.Statement[],
         indent: string,
@@ -1312,6 +1347,13 @@ function lowerStandardFeatureDerivation(
                         lowerMeshFeatures(module, name, indent);
                     }
                 }
+                // The plugin bridge contributes through neither hook: its
+                // index is a BAKE, written into the material's cached
+                // `_renderFeatures` beside this function's own result
+                // because Standard's derivation cannot be extended. The
+                // record carries that index, so the OR lands here — the
+                // same position in the same word.
+                if (plugins) lowerPluginIndex(indent);
                 continue;
             }
             if (
@@ -1417,6 +1459,17 @@ export interface StandardSceneCompositionInput {
     /** `material:standard-uv-transform` reached: scene code marked a
      *  hand-built material with `enableMaterialUvTransform`. */
     uvTransform: boolean;
+    /**
+     * The `MaterialPlugin` lists a Standard material carries, in the
+     * compiler's own numbering order.
+     *
+     * The pin bakes each list's signature index into the material's feature
+     * word rather than deriving it, so a plugin material composes its own
+     * variant and the generated derivation ORs the same bits back out of
+     * the record.
+     */
+    standardMaterialPlugins:
+        readonly (readonly MaterialPluginManifest[])[];
     /** `mesh:thin-instances*` reached: pools can attach to scene meshes. */
     thinInstances: boolean;
     /** `mesh:thin-instance-colors` reached: a pool can carry per-instance
@@ -1567,6 +1620,8 @@ function sceneCodeMaterialInputs(
         diffusePixelsTexture: boolean;
         diffuseFileTexture: boolean;
         uvTransform: boolean;
+        standardMaterialPlugins:
+            readonly (readonly MaterialPluginManifest[])[];
     },
 ): PinnedStandardMaterialInput[] {
     const inputs: PinnedStandardMaterialInput[] = [];
@@ -1591,13 +1646,23 @@ function sceneCodeMaterialInputs(
             ? [false, true]
             : [false];
     const uvTransformArms = options.uvTransform ? [false, true] : [false];
+    // A plugin list is a composition key like any other, but unlike the
+    // boolean arms above it is a *value* the scene wrote, so the sweep
+    // carries the lists themselves. The unattached arm always exists: a
+    // scene may build a second Standard material and leave it plain, and
+    // the ESM caster and no-colour views of a plugin material take the
+    // pin's own bake either way.
+    const pluginArms: (number | undefined)[] = [
+        undefined,
+        ...options.standardMaterialPlugins.map((_, index) => index + 1),
+    ];
     for (const disableLighting of [false, true]) {
         for (const doubleSided of [false, true]) {
             for (const alphaBlend of [false, true]) {
                 for (const emissive of emissiveArms) {
                     for (const diffuse of diffuseArms) {
                         for (const uvTransform of uvTransformArms) {
-                            inputs.push({
+                            const base: PinnedStandardMaterialInput = {
                                 ...(disableLighting
                                     ? { disableLighting: true }
                                     : {}),
@@ -1613,7 +1678,13 @@ function sceneCodeMaterialInputs(
                                     }),
                                 ...(diffuse ? { diffuseTexture: {} } : {}),
                                 ...(uvTransform ? { _hasUvTx: true } : {}),
-                            });
+                            };
+                            for (const pluginIndex of pluginArms) {
+                                inputs.push({
+                                    ...base,
+                                    ...(pluginIndex ? { pluginIndex } : {}),
+                                });
+                            }
                         }
                     }
                 }
@@ -1655,6 +1726,7 @@ export async function composeSceneStandardVariants(
                 diffusePixelsTexture: input.diffusePixelsTexture,
                 diffuseFileTexture: input.diffuseFileTexture,
                 uvTransform: input.uvTransform,
+                standardMaterialPlugins: input.standardMaterialPlugins,
             }),
         );
     }
@@ -1681,16 +1753,10 @@ export async function composeSceneStandardVariants(
     // here and that is exact -- `lowerStandardFeatureDerivation` refuses a
     // `_meshFeatures` hook that reads it, so no registered hook can depend
     // on the mesh word.
-    const featureValues: number[] = [];
-    for (const material of materialInputs) {
-        const features = await pinnedStandardRenderableFeatures(material, 0);
-        if (!featureValues.includes(features)) {
-            featureValues.push(features);
-        }
-    }
-    // Keep one representative input per feature value: composition depends
-    // only on the derived word (and the options), so the first input with a
-    // value stands for every material sharing it.
+    // One representative input per feature value, in first-seen order:
+    // composition depends only on the derived word (and the options), so the
+    // first input with a value stands for every material sharing it, and the
+    // Map's own key order is the value list the rest of this function walks.
     const representative = new Map<number, PinnedStandardMaterialInput>();
     for (const material of materialInputs) {
         const features = await pinnedStandardRenderableFeatures(material, 0);
@@ -1698,6 +1764,7 @@ export async function composeSceneStandardVariants(
             representative.set(features, material);
         }
     }
+    const featureValues = [...representative.keys()];
     // The mesh half: `.babylon` renderables carry no composition-relevant
     // bits (zero rows), scene meshes their own recorded sets, plus the
     // runtime-attachable pool and deformation arms.
@@ -1909,6 +1976,9 @@ export interface PinnedStandardSupportOptions {
      *  own `enableMaterialUvTransform(material)`, so the derived feature word
      *  has to carry the extension's mesh-phase bit. */
     uvTransform: boolean;
+    /** `material:plugins` reached: a Standard material may carry a plugin
+     *  signature index, which the derived word has to shift back in. */
+    plugins: boolean;
     /** Mesh-feature bits per runtime mesh handle, creation-ordered across
      *  every loaded asset's renderables and the scene-code meshes. */
     renderableMeshFeatures: readonly number[];
@@ -1946,6 +2016,7 @@ export function pinnedStandardSupportBlock(
     const derivation = lowerStandardFeatureDerivation(
         context,
         options.uvTransform,
+        options.plugins,
     );
     // The mesh-phase extension's own uniform block, emitted only for a scene
     // that reached the pin's enabler -- the same gate the derivation line

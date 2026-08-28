@@ -62,6 +62,8 @@ export const featureSources: Record<Feature, string[]> = {
     "material:standard-diffuse-pixels-texture": [],
     "material:standard-diffuse-file-texture": [],
     "material:standard-uv-transform": [],
+    "material:plugins": [],
+    "material:plugin-index": [],
     "material:standard-emissive-render-texture": [],
     "material:standard-emissive-file-texture": [],
     "material:standard-vertex-colors": [],

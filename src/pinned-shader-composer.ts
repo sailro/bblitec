@@ -239,14 +239,27 @@ export function splitWgslStatements(body: string): string[] {
         .filter((piece) => piece.length > 0);
 }
 
-/** Import a module from the pinned package by its `lib`-relative path. */
+const pinnedModules = new Map<string, Promise<unknown>>();
+
+/**
+ * Import a module from the pinned package by its `lib`-relative path.
+ *
+ * Memoized like the augmented import below, and for the same reason: Node
+ * dedupes the `import()` itself, but not the root join and the file-URL
+ * build that produce its argument — and generation asks for the same handful
+ * of pinned modules once per material it derives. `pinnedLibraryRoot()` is
+ * already process-cached, so a path's URL cannot change under the memo.
+ */
 export async function importPinnedModule<T>(
     relativePath: string,
 ): Promise<T> {
-    const url = pathToFileURL(
-        join(pinnedLibraryRoot(), relativePath),
-    ).href;
-    return (await import(url)) as T;
+    const cached = pinnedModules.get(relativePath);
+    if (cached) return (await cached) as T;
+    const pending = import(
+        pathToFileURL(join(pinnedLibraryRoot(), relativePath)).href
+    );
+    pinnedModules.set(relativePath, pending);
+    return (await pending) as T;
 }
 
 const augmentedModules = new Map<string, Promise<unknown>>();

@@ -357,7 +357,7 @@ export class LoweringContext {
     }
 
     public objectInitializer(
-        declaration: ts.FunctionDeclaration,
+        declaration: ts.Node,
         variableName: string,
     ): ts.ObjectLiteralExpression {
         let object: ts.ObjectLiteralExpression | undefined;

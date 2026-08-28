@@ -1703,11 +1703,12 @@ ${composed.wgsl}`,
                 uvTransform: features.includes(
                     "material:standard-uv-transform",
                 ),
+                plugins: features.includes("material:plugin-index"),
             };
             if (Object.values(setters).some(Boolean)) {
                 this.writeSource(
                     "upstream/src/material_texture_setters.cpp",
-                    factories.lowerStandardTextureSetters(setters),
+                    factories.lowerStandardMaterialSetters(setters),
                     generated,
                 );
             }
@@ -1999,6 +2000,7 @@ ${shadow.blurFragmentWgsl}`,
                     uvTransform: features.includes(
                         "material:standard-uv-transform",
                     ),
+                    plugins: features.includes("material:plugins"),
                     renderableMeshFeatures:
                         options.standardRenderableMeshFeatures ?? [],
                     runtimeMeshFeatures:

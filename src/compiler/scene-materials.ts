@@ -7,6 +7,10 @@ import type {
     ScenePbrSheenManifest,
     ScenePbrSubsurfaceManifest,
 } from "./types.js";
+import {
+    materialPluginListKey,
+    type MaterialPluginManifest,
+} from "../pinned-material-plugins.js";
 
 /**
  * A no-colour view of one scene PBR material, at the runtime handle it will
@@ -53,11 +57,46 @@ export function pbrEsmShadowView(
  */
 export class SceneMaterialRecorder {
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
+    public readonly standardMaterialPlugins: MaterialPluginManifest[][] = [];
+    private readonly pluginIndexByKey = new Map<string, number>();
     private sceneMaterialCount = 0;
 
     /** The final creation count across families, for the manifest. */
     public get count(): number {
         return this.sceneMaterialCount;
+    }
+
+    /** Stamps a plugin list on the scene PBR material the write names. */
+    public recordScenePbrPlugins(
+        plugins: readonly MaterialPluginManifest[],
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter("material.plugins", index).plugins =
+            plugins;
+    }
+
+    /**
+     * The signature index a Standard material's plugin list carries, from
+     * one, assigning it on first use.
+     *
+     * `registerStdPlugins` keys a per-signature cache and hands out
+     * `++counter` on a miss while walking the scene's meshes, and it skips
+     * every material that is not Standard — so the numbering is first-seen
+     * order over Standard materials alone. This is that counter, kept here
+     * because the generated material record has to carry the index before
+     * any pinned module is loaded; composition then feeds the pin the same
+     * lists in the same order and refuses if it disagreed.
+     */
+    public recordStandardMaterialPlugins(
+        plugins: readonly MaterialPluginManifest[],
+    ): number {
+        const key = materialPluginListKey(plugins);
+        const existing = this.pluginIndexByKey.get(key);
+        if (existing !== undefined) return existing;
+        this.standardMaterialPlugins.push([...plugins]);
+        const index = this.standardMaterialPlugins.length;
+        this.pluginIndexByKey.set(key, index);
+        return index;
     }
 
     /**

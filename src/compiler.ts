@@ -185,6 +185,7 @@ import type {
     Value,
     ValueKind,
 } from "./compiler/types.js";
+import type { MaterialPluginManifest } from "./pinned-material-plugins.js";
 export type {
     CompileAsset,
     CompileOptions,
@@ -530,6 +531,8 @@ class Compiler
                             : {}),
                     }),
                 ),
+                standardMaterialPlugins:
+                    this.sceneMaterials.standardMaterialPlugins,
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMeshes: this.sceneMeshes,
                 sceneLightKinds: this.sceneLightKinds,
@@ -4145,6 +4148,19 @@ class Compiler
 
     public recordScenePbrGammaAlbedo(index: number | undefined): void {
         this.sceneMaterials.recordScenePbrGammaAlbedo(index);
+    }
+
+    public recordScenePbrPlugins(
+        plugins: readonly MaterialPluginManifest[],
+        index: number | undefined,
+    ): void {
+        this.sceneMaterials.recordScenePbrPlugins(plugins, index);
+    }
+
+    public recordStandardMaterialPlugins(
+        plugins: readonly MaterialPluginManifest[],
+    ): number {
+        return this.sceneMaterials.recordStandardMaterialPlugins(plugins);
     }
 
     public recordScenePbrSheen(

@@ -1,0 +1,114 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "a Standard `material.plugins` write emitted a call to `set_material_plugins` while the definition and its translation unit were gated on the opt-in feature, so a scene attaching plugins without `enableMaterialPlugins` would not link \u2014 upstream has two facts there and this port had collapsed them onto one; the write now reaches its own `material:plugin-index` while the opt-in keeps registering the bridges",
+      "applied": true
+    },
+    {
+      "summary": "the emitted Standard derivation masked the signature index where the pin's own bake does not (it masks on read-back), and the doc claimed a mask assertion that did not exist; the line is now the pin's unmasked OR, its shape asserted against `registerStdPlugins` through `pinnedPluginBakeShift`, with the index bound checked once at registration instead of per draw",
+      "applied": true
+    },
+    {
+      "summary": "`Value.standardMaterial` answered the material-family question only on a `createStandardMaterial` result and joined neither propagation path, so `box.material.plugins = [...]` refused wrongly; it now rides the mesh assignment and the `mesh.material` read beside `scenePbrMaterialIndex`",
+      "applied": true
+    },
+    {
+      "summary": "the composed plugin list travelled to composition as a JSON key that was re-stringified to recover an index the caller already held; the Standard input carries the compiler's own 1-based index and the bridge registration returns bits by position",
+      "applied": true
+    },
+    {
+      "summary": "`standardPluginIndexShift` and `standardPluginIndexMask` hand-parsed a pinned constant twice; both now go through `LoweringContext.numericValue` over `variableInitializer`, the spelling `camera-lowerer.ts` already uses, which also removes the import cycle a `pinnedNumericConstant` import would have created",
+      "applied": true
+    },
+    {
+      "summary": "the pinned injection-point tables were read with hand-rolled object-literal and guarded-walk code; `LoweringContext.objectInitializer` (its parameter widened to `ts.Node`), `propertyName`, `findNodes` and `contractError` replace all four spellings",
+      "applied": true
+    },
+    {
+      "summary": "the plugin fold re-implemented the static array probe and the string/template literal fold; `probeStaticArrayLiteral` and `compileStaticString` replace both, the latter a strict superset that also accepts a const binding and a literal concatenation",
+      "applied": true
+    },
+    {
+      "summary": "the plugin member name was read as an identifier in one place and through the full property-name rule in another, so a string-keyed `getUniforms` skipped its own by-name refusal; both now use `propertyName`",
+      "applied": true
+    },
+    {
+      "summary": "`importPinnedModule` rebuilt the library root join and the file URL on every call, which the material derivation makes once per material; memoizing it the way `importPinnedModuleWithExports` already memoizes its augmented imports measured 7.9x on `pinnedStandardRenderableFeatures`",
+      "applied": true
+    },
+    {
+      "summary": "`composeSceneStandardVariants` walked `materialInputs` twice with the same call to build a value list and a representative map; the map's own key order is that list, so the second walk is gone",
+      "applied": true
+    },
+    {
+      "summary": "the sweep's new plugin arm reindented an invariant object literal into a seventh loop level; the literal is hoisted and the arm spreads it",
+      "applied": true
+    },
+    {
+      "summary": "`resetMaterialPluginBridges` had no caller anywhere in the repository",
+      "applied": true
+    },
+    {
+      "summary": "`onlyReturn` took a context parameter it discarded with a `void` statement",
+      "applied": true
+    },
+    {
+      "summary": "`standardPluginFeatureBits` returned zero silently for an unregistered list on one branch and threw a named error for the same fact on another; one path remains",
+      "applied": true
+    },
+    {
+      "summary": "the recorder re-stringified every stored plugin list on every lookup; it keys a Map, as the pinned bridge's own `_sigToIndex` does",
+      "applied": true
+    },
+    {
+      "summary": "`pinnedPlugins` and an inline `list.map(pinnedPlugin)` were two spellings of one map inside the same module",
+      "applied": true
+    },
+    {
+      "summary": "one array was renamed at four of five hops (`standardMaterialPlugins`, `standardLists`, `lists`, `pluginLists`); it is `standardMaterialPlugins` at every hop",
+      "applied": true
+    },
+    {
+      "summary": "`guardExcludes` carried an `===` arm no corpus scene reaches, in a module whose whole discipline is refusing the unreached by name; it refuses by shape instead",
+      "applied": true
+    },
+    {
+      "summary": "`StandardTextureSetters` and `lowerStandardTextureSetters` had already stopped being about textures when `uvTransform` joined them, and the plugin index was the second; renamed to `StandardMaterialSetters` with both doc comments refreshed",
+      "applied": true
+    },
+    {
+      "summary": "`MaterialRecord::plugin_signature_index` as a `uint32_t` grew the record by 8 bytes where a byte in the existing padding hole is free; the field is a `std::uint8_t`, sized to the pin's own 7-bit PLUGIN_INDEX_MASK, and generation refuses a mask that would not fit it",
+      "applied": true
+    },
+    {
+      "summary": "the plugin sweep arm doubles scene 217's composed Standard variant set, and one of the two added pairs is unselectable because its only Standard material carries the plugin",
+      "applied": false,
+      "blockedBy": "the compiler keeps no count of Standard materials that took a `plugins` write against the Standard materials it created, which is the measurement that would prove the unattached sweep arm unselectable",
+      "filedIn": "TODO.md, under 'Extend the material-plugin slice past what scene 217 measures'"
+    },
+    {
+      "summary": "`getCustomCode` is folded by a bespoke walker where `src/lowering/pinned-shader-text.ts` is already a general bounded evaluator for a TypeScript function returning shader text, and routing through it would widen the accepted slice for free",
+      "applied": false,
+      "blockedBy": "`PinnedShaderText` is bound to pinned modules by (modulePath, symbolName) and fails through `contractError`, which carries a pinned source location; folding scene code through it needs a supplied-declaration entry point and an injectable failure sink, neither of which exists",
+      "filedIn": "TODO.md, under 'Extend the material-plugin slice past what scene 217 measures'"
+    },
+    {
+      "summary": "a general `materialFamily` lane on `Value` would replace the boolean marker and also stop grid and shader materials silently taking Standard-only record writes through `enableMaterialUvTransform` and the texture setters",
+      "applied": false,
+      "blockedBy": "naming the family at all five material creation sites, and refusing on it at every Standard-only record write, is a lane that does not exist yet; the propagation half this change needed is applied",
+      "filedIn": "TODO.md, under 'Extend the material-plugin slice past what scene 217 measures'"
+    },
+    {
+      "summary": "the distinct-list-to-index registry (`recordStandardMaterialPlugins`) and the single-statement-of-a-branch read (`onlyReturn`) each exist in three to five places across the repository with no shared helper to call",
+      "applied": false,
+      "blockedBy": "there is no shared home to call: the three registry copies key differently (module path, shader name, plugin key), so the shared form needs a key-function parameter and is an extraction across five unrelated modules",
+      "filedIn": "TODO.md, under 'Extend the material-plugin slice past what scene 217 measures'"
+    }
+  ]
+}
