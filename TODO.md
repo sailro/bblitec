@@ -348,7 +348,21 @@ platform boundary.
     rather than getting a zero.
   - a second cloud in one pick: the shear and the id colour are single
     buffers on Dawn, and a second would need the dynamic-offset treatment
-    the mesh blocks already get.
+    the mesh blocks already get. It throws from the pass rather than
+    refusing at generation because no per-scene cloud count exists to
+    refuse on -- `splatShaderModule` is singular and the manifest records
+    fragments, not call sites.
+  - a frame yield inside a hoisted continuation. `startEngine`'s
+    continuation runs on the deferred queue, which `advance_frame` drains
+    BEFORE the frame's uploads, so `await new Promise(rAF)` inside it is
+    erased on a claim that is no longer true and both PALs compensate by
+    bringing each cloud's sort current inside the pick
+    ([fidelity](docs/fidelity.md#picking-contract)). The fix is for a
+    yield inside a deferred body to re-queue to the next frame --
+    `run_deferred_callbacks` already moves the queue out before draining,
+    so the boundary exists -- which makes `firstSortReady`'s barrier
+    truthful by construction and deletes both compensations, including
+    Dawn's copy of the frame loop's lazy splat-pass creation.
 - [ ] Collapse the rotation record onto the pin's one-lane model. Upstream
   `rotation` is an Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
   `scene/scene-node.ts`), so `composeTrsLocalMatrix` reads the quaternion
