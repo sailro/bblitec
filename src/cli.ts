@@ -920,7 +920,13 @@ async function main(): Promise<void> {
             result.manifest.features.includes("mesh:morph-targets"),
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
-        nodeVisibility: specializationFeatures.nodeVisibility,
+        // Both halves of the same lane: an asset's KHR_node_visibility
+        // materializes the cascade at load, and scene code writes the same
+        // per-mesh boolean directly. Either reaches the render-plan skip
+        // and the camera-bounds skip that read it.
+        nodeVisibility: specializationFeatures.nodeVisibility ||
+            result.manifest.features.includes("mesh:visible"),
+        gltfNodeVisibility: specializationFeatures.nodeVisibility,
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),

@@ -748,6 +748,40 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene writing both flags compiles: 102, 103
+        // and 118 reach the pair, each behind physics or billboard picking.
+        id: "regression-mesh-flags",
+        name: "Regression - Mesh Visible and Pickable",
+        source: "examples/regression-mesh-flags.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Mesh Visible and Pickable",
+        buildDirectory:
+            "native/build-regression-mesh-flags-release",
+        parity: {
+            // The pick runs on the setTimeout-0 continuation, which
+            // `finish_frame` drains at the END of a frame -- after that
+            // frame's capture check. So frame 0 can be captured before the
+            // drain this scene registers exists, and the pick's marker never
+            // reaches the picture. Holding the native capture past the
+            // continuation is what makes the gate deterministic rather than
+            // a race it wins most of the time.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "8",
+            },
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-mesh-flags/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-mesh-flags",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         // Retires when a corpus scene writing a material property over
         // `scene.meshes` compiles: 166 and 179 both do, each behind the
         // clustered light container.
@@ -1535,6 +1569,31 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.005,
             maxForegroundMad: 0.04,
             dawnThresholds: { maxFullMad: 0.005, maxForegroundMad: 0.035 },
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene43",
+        name: "Scene 43 - Parametric Proximity Path",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene43.ts",
+        title: "Babylon Lite Native - Parametric Proximity Path",
+        parity: {
+            // The scene animates a ball around a 480-frame circle and is
+            // only deterministic at a named frame, which its own
+            // `?captureFrame=` branch stops the engine on. 120 is the
+            // quarter turn; both sides read the same query, so the pose is
+            // the scene's own rather than whichever frame a harness
+            // happened to reach.
+            referenceSearch: "?captureFrame=120",
+            // The browser stops itself on that frame; the native driver has
+            // to be told to hold its capture until the same one, or it
+            // screenshots frame 0 and measures a different quarter turn.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "120",
+            },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.004,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },

@@ -64,6 +64,7 @@ function emitOptions(
         morphStorage: false,
         nonTrianglePrimitives: false,
         nodeVisibility: false,
+        gltfNodeVisibility: false,
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,

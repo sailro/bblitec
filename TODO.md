@@ -328,9 +328,6 @@ platform boundary.
   - a thin-instanced, VAT or morph/skeleton candidate: the first two need
     the advanced pipeline's instance-composed id, the third the deform
     projection `deform-picking-projection.ts` builds.
-  - `mesh.pickable`, the pin's own opt-out. No reached scene writes it, so
-    `MeshRecord` carries no lane rather than one that is always true; scene
-    118 is the scene that writes it.
   - `PickingInfo.pickedPoint`, `distance` and `ray`. The pin derives the
     first two from `mat4Invert(vp)` over the sampled NDC and the depth
     attachment, which this port reads back but does not yet consume; the
@@ -879,11 +876,12 @@ earlier compiler error.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
     an aggregate `radius`/`extents` (42, 45, and both want more besides --
-    `cloneTransformNode` and `applyPhysicsBodyForce`); `createTube` (43);
+    `cloneTransformNode` and `applyPhysicsBodyForce`);
     a Color3 shape (44); an unresolved variable (46);
     `createGroundFromHeightMap` (47); `createPhysicsBody` (48); a
     four-argument call (49); `setPhysicsBodyCollisionEventsEnabled` (100);
-    `createPhysicsShape` (101, 102); `mesh.pickable` (103); an unsupported
+    `createPhysicsShape` (101, 102); a `new Map` with no concrete type
+    arguments (103); an unsupported
     constructor expression (104, 105); `PhysicsMotionType` read as a value
     into an array (106); and engine options (209, behind large-world
     rendering).

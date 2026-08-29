@@ -1050,11 +1050,20 @@ struct MeshRecord {
     // default only when this field was never assigned.
     bool has_render_order = false;
     double render_order = 0.0;
-    // glTF KHR_node_visibility, materialized per mesh the way the pinned
+    // Self-visibility (scene-node.ts `visible?: boolean`, undefined = true).
+    // No PICK path consults it -- `gpu-picker.ts` filters on `pickable`
+    // alone -- which is the mirror of `pickable` below, and why the render
+    // plan keeps a hidden mesh and only its draw lists drop one.
+    // Written by scene code and by glTF KHR_node_visibility, which
+    // materializes the cascade per mesh the way the pinned
     // `setSubtreeVisible` materializes it per node: the extension cascades
     // through the subtree at set time so the render path and the camera
     // bounds only test one boolean.
     bool visible = true;
+    // mesh.ts `pickable?: boolean`, undefined = pickable. Read only by the
+    // generated `pick_candidate`, which both backends' pick passes ask; no
+    // draw path consults it, because a non-pickable mesh still renders.
+    bool pickable = true;
     std::vector<std::array<float, 16>> bone_matrices;
     std::array<float, 16> instance_parent_matrix{
         1.0f, 0.0f, 0.0f, 0.0f,

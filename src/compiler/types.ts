@@ -1500,6 +1500,8 @@ export type Feature =
     | "mesh:ground-heightmap"
     | "mesh:lines"
     | "mesh:morph-targets"
+    | "mesh:visible"
+    | "mesh:pickable"
     | "mesh:transform-node"
     | "mesh:mirrored"
     | "mesh:plane"

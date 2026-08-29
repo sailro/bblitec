@@ -6399,10 +6399,6 @@ bool run_gpu_engine(Engine& engine) {
             // skipped or removed. Walking the plan is also what makes
             // this scene's own `removeFromScene` visible to a later pick,
             // since `rematch_render_meshes` rebuilds both together.
-            //
-            // The pin also tests `mesh.pickable !== false`; no reached
-            // scene writes that flag, so the record carries no lane for
-            // it rather than one that is always true.
             for (std::size_t item_index = 0;
                  item_index < render_plan.items.size() &&
                  item_index < state.meshes.size();
@@ -6411,6 +6407,13 @@ bool run_gpu_engine(Engine& engine) {
                     render_plan.items[item_index].mesh;
                 const GpuMesh& gpu = state.meshes[item_index];
                 if (!gpu.vertices || !gpu.indices) continue;
+                // A mesh the pin's picker would not take never enters the
+                // pass, so it can neither answer a pick nor occlude one
+                // behind it. The predicate is generated, and it reads the
+                // live record rather than the plan's snapshot of it.
+                if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+                    continue;
+                }
                 PickMeshUniforms mesh_uniforms{};
                 // Identity: these vertices are already world-space here
                 // (`transformed_vertices`), where the pin keeps them
@@ -8073,6 +8076,15 @@ bool run_gpu_engine(Engine& engine) {
                                     if (
                                         material.double_sided !=
                                         (sided_mode == 1)) {
+                                        continue;
+                                    }
+                                    // geometry-renderer-task.ts skips a hidden mesh at the draw
+                                    // itself. This path consumes no draw list -- it walks the task's
+                                    // own meshes and resolves each against the plan -- so it cannot
+                                    // inherit append_draw's answer and asks the same predicate.
+                                    if (!upstream::mesh_draws(
+                                            engine.meshes[
+                                                entry.mesh.value])) {
                                         continue;
                                     }
                                     const std::size_t mesh_index =

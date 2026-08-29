@@ -62,6 +62,36 @@ export class BrowserErasure {
     }
 
     /**
+     * The browser global this expression names, written any of the ways that
+     * reach the same object: bare (`setTimeout`, `location`), or as a member
+     * of `window` or `globalThis`. A scene that picks one spelling must fold
+     * the same as one that picks another -- an unrecognized `location.search`
+     * would read as an empty query and silently take the scene's
+     * unparameterised branch.
+     *
+     * Returns the identifier naming the global, so a caller compares its
+     * text. `isDefaultBrowserGlobal` is what keeps a lexical shadow from
+     * being mistaken for the global, and `globalThis` an accepted host.
+     */
+    private browserGlobalNamed(
+        expression: ts.Expression,
+    ): ts.MemberName | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            return this.isDefaultBrowserGlobal(unwrapped)
+                ? unwrapped
+                : undefined;
+        }
+        return ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            (unwrapped.expression.text === "window" ||
+                unwrapped.expression.text === "globalThis") &&
+            this.isDefaultBrowserGlobal(unwrapped.expression)
+            ? unwrapped.name
+            : undefined;
+    }
+
+    /**
      * `setTimeout(callback, 0)` -- bare or through `window`.
      *
      * Every other `window.*` call erases, because the browser service
@@ -82,20 +112,9 @@ export class BrowserErasure {
     public isDeferredCallbackCall(
         call: ts.CallExpression,
     ): boolean {
-        const callee = this.context.unwrap(call.expression);
-        const name = ts.isPropertyAccessExpression(callee)
-            ? (ts.isIdentifier(callee.expression) &&
-                    callee.expression.text === "window" &&
-                    this.context.isDefaultLibraryIdentifier(
-                        callee.expression,
-                    )
-                  ? callee.name
-                  : undefined)
-            : ts.isIdentifier(callee) &&
-                this.context.isDefaultLibraryIdentifier(callee)
-              ? callee
-              : undefined;
-        return name?.text === "setTimeout";
+        return (
+            this.browserGlobalNamed(call.expression)?.text === "setTimeout"
+        );
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
@@ -390,17 +409,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "search" &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
-            unwrapped.expression.name.text === "location" &&
-            ts.isIdentifier(
-                unwrapped.expression.expression,
-            ) &&
-            unwrapped.expression.expression.text === "window" &&
-            this.context.isDefaultLibraryIdentifier(
-                unwrapped.expression.expression,
-            )
+            this.browserGlobalNamed(unwrapped.expression)?.text === "location"
         ) {
             return {
                 kind: "string",

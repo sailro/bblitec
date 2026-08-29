@@ -8855,12 +8855,6 @@ bool run_dawn_engine(Engine& engine) {
         const double aspect = width / height;
         const std::array<float, 16> view_projection =
             upstream::build_view_projection(camera, aspect);
-        const std::array<float, 16> pick_view =
-            upstream::build_view_matrix(
-                upstream::camera_world_matrix(camera));
-        const std::array<float, 16> pick_projection =
-            upstream::build_scene_projection(camera, aspect);
-
         ensure_dawn_pick_targets(state.device, state.pick_targets);
         if (!state.pick_mesh_pipeline) {
             state.pick_scene_layout =
@@ -8921,6 +8915,13 @@ bool run_dawn_engine(Engine& engine) {
             const MeshHandle handle = render_plan.items[item_index].mesh;
             const DawnMesh& mesh = state.meshes[item_index];
             if (!mesh.vertices || !mesh.indices) continue;
+            // A mesh the pin's picker would not take never enters the
+            // pass, so it can neither answer a pick nor occlude one
+            // behind it. The predicate is generated, and it reads the
+            // live record rather than the plan's snapshot of it.
+            if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+                continue;
+            }
             DawnPickMeshUniforms block{};
             // Identity: these vertices are baked to world here, where the
             // pin keeps them local and multiplies by the node's world.
@@ -8992,6 +8993,14 @@ bool run_dawn_engine(Engine& engine) {
                     handle));
             }
         }
+        // The cloud pass wants the two matrices unmultiplied, where every
+        // other pick draw wants the product. Declared here, with their only
+        // consumer, so a picking scene that reaches no splat still compiles.
+        const std::array<float, 16> pick_view =
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera));
+        const std::array<float, 16> pick_projection =
+            upstream::build_scene_projection(camera, aspect);
         for (DawnSplatPass& splat : state.splat_passes) {
             upload_dawn_splat_pass(
                 state.queue,
@@ -9371,7 +9380,20 @@ bool run_dawn_engine(Engine& engine) {
             DawnMesh& dawn_mesh = state.meshes[index];
             // Grid and shader-variant vertex stages own no
             // deformation or instancing uniforms.
+            // Both writes below are unconditional -- bone palettes and
+            // parent worlds carry no version -- so they would run every
+            // frame for a mesh that never draws. SDL pushes the same two
+            // per DRAW and so pays nothing for one; this loop was hoisted
+            // to once per plan item, which widened it. The plan keeps a
+            // hidden mesh so the pick pass can see it, so the sync asks
+            // the same predicate the draw lists ask.
+            //
+            // Sound because visibility can only reach the draw lists
+            // through a mesh_membership_version bump, and the rebuild that
+            // bump triggers runs earlier in this same frame -- so the
+            // frame a mesh starts drawing is a frame this loop writes it.
             const bool mesh_uniform_item =
+                upstream::mesh_draws(mesh) &&
                 item.material_kind !=
                     upstream::RenderMaterialKind::grid &&
                 item.material_kind !=
@@ -11116,6 +11138,14 @@ bool run_dawn_engine(Engine& engine) {
                             if (
                                 material.double_sided !=
                                 (sided_mode == 1)) {
+                                continue;
+                            }
+                            // geometry-renderer-task.ts skips a hidden mesh at the draw
+                            // itself. This path consumes no draw list -- it walks the task's
+                            // own meshes and resolves each against the plan -- so it cannot
+                            // inherit append_draw's answer and asks the same predicate.
+                            if (!upstream::mesh_draws(
+                                    engine.meshes[entry.mesh.value])) {
                                 continue;
                             }
                             std::size_t mesh_index =

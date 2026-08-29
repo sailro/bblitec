@@ -1184,6 +1184,16 @@ pipeline compares GREATER over a depth buffer cleared to 0, this renderer's
 reverse-Z; the cloud pipeline compares LESS, which is what its own pinned
 pipeline declares and is kept rather than reconciled.
 
+`mesh.pickable = false` keeps a mesh out of the pass entirely, so it can
+neither answer a pick nor occlude one behind it. The predicate is generated
+beside the light-set one and reads the mesh RECORD: upstream re-walks
+`scene.meshes` on every `pickAsync`, so a flag written after the scene's last
+membership change still reaches the next pick. The pass itself walks the
+render plan, which is what agrees with each backend's own mesh vector, and the
+plan keeps an invisible mesh: `gpu-picker.ts` filters on `pickable` alone and
+never tests visibility, so a hidden mesh is a pick candidate here as it is
+upstream. `visible` is tested one level down, where the draw lists are built.
+
 `PickingInfo` carries WHICH node was hit -- the collection and the index --
 and `pickedMesh.name` reads through that pair where the scene asks for it,
 because upstream `pickedMesh` is a live node reference and a scene may

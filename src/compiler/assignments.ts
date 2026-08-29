@@ -21,15 +21,17 @@ export interface DirectPropertyAssignment {
  * value is a colour or a flag rather than an accumulating number.
  */
 interface RecordFieldAssignment {
-    kind: "material" | "camera-ortho";
+    kind: "material" | "camera-ortho" | "mesh";
     property: string;
-    collection: "materials" | "cameras";
+    collection: "materials" | "cameras" | "meshes";
     /** The record field, or the pair a two-element source writes. */
     field: string | readonly [string, string];
     value: "color3" | "number" | "boolean" | "number2";
     simpleOnly?: boolean;
     /** Stored as the logical inverse of what the source assigns. */
     invert?: boolean;
+    /** A generated helper this write makes reachable. */
+    feature?: Feature;
 }
 
 /**
@@ -142,6 +144,33 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         collection: "cameras",
         field: "ortho_half_height",
         value: "number",
+    },
+    {
+        // scene-node.ts `visible` and mesh.ts `pickable`: the two optional
+        // booleans a node carries for "skip me", both `undefined = true`, so
+        // the records' default-true lanes already answer an unwritten flag
+        // and each write is a plain field store. Neither cascades -- the pin
+        // materializes visibility over a subtree only through
+        // `setSubtreeVisible`, which is the loader's entry point, not this
+        // one. The features they reach are what turn their readers on:
+        // `visible` shares the renderer and camera skips with an asset's
+        // KHR_node_visibility, and `pickable` emits the picker's predicate.
+        kind: "mesh",
+        property: "visible",
+        collection: "meshes",
+        field: "visible",
+        value: "boolean",
+        simpleOnly: true,
+        feature: "mesh:visible",
+    },
+    {
+        kind: "mesh",
+        property: "pickable",
+        collection: "meshes",
+        field: "pickable",
+        value: "boolean",
+        simpleOnly: true,
+        feature: "mesh:pickable",
     },
 ];
 
@@ -1643,6 +1672,9 @@ export function emitPropertyAssignment(
                 candidate.property === property,
         );
         if (recordField) {
+            if (recordField.feature) {
+                context.reachFeature(recordField.feature, expression);
+            }
             if (recordField.simpleOnly) {
                 requireSimpleAssignment(
                     context,
