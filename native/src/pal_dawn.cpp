@@ -5328,7 +5328,11 @@ WGPURenderPipeline standard_variant_pipeline(
     descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
+    // The winding is the kind's under the mirrored-mesh opt-in: the pin
+    // installs a Standard primitive resolver precisely because this family
+    // has none of its own, and a mirrored mesh drawn counter-clockwise
+    // renders inside-out.
+    descriptor.primitive.frontFace = traits.front;
     descriptor.primitive.cullMode = traits.cull;
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     apply_pass_depth_state(depth_stencil, shadow_pass);
@@ -7699,8 +7703,8 @@ bool run_dawn_engine(Engine& engine) {
             upstream::RenderMaterialKind::shader;
         const std::vector<GpuVertex> vertices =
             shader_material
-                ? local_vertices(geometry)
-                : transformed_vertices(geometry, mesh_record);
+                ? local_vertices(engine, geometry)
+                : transformed_vertices(engine, geometry, mesh_record);
         DawnMesh mesh;
         if (shader_material) {
             mesh.shared_geometry = find_shared_shader_geometry(
@@ -9482,6 +9486,7 @@ bool run_dawn_engine(Engine& engine) {
             }
             const std::vector<GpuVertex> vertices =
                 transformed_vertices(
+                    engine,
                     engine.geometries[item.geometry],
                     mesh);
             wgpuQueueWriteBuffer(
@@ -9772,6 +9777,7 @@ bool run_dawn_engine(Engine& engine) {
                                         draw.item.shader_variant);
                             const std::array<float, 16> shader_world =
                                 shader_draw_world(
+                                    engine,
                                     engine.meshes[
                                         draw.item.mesh.value]);
                             const std::array<float, 16> shader_wvp =
@@ -11854,7 +11860,8 @@ bool run_dawn_engine(Engine& engine) {
         if (readback) wgpuBufferRelease(readback);
 
         const bool capture_ready =
-            frame >= screenshot_frame && !topology_updated;
+            frame >= screenshot_frame && !topology_updated &&
+            captures.drains_resolved();
         if (
             capture_ready && !captures.id_buffer_saved &&
             !id_buffer_path.empty()) {

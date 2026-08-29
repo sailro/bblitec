@@ -349,9 +349,12 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
         plan.source,
         /return left\.sort_distance > right\.sort_distance \|\|\s*\r?\n\s*\(left\.sort_distance == right\.sort_distance &&\s*\r?\n\s*left\.item\.order < right\.item\.order\);/,
     );
-    // The clockwise pipeline arms exist only under cull-none: the loader
-    // stamps clockwise_front_face only for double-sided mirrored
-    // materials and rewinds single-sided mirrored indices instead.
+    // The PBR clockwise pipeline arms exist only under cull-none: the
+    // loader stamps clockwise_front_face only for double-sided mirrored
+    // materials and rewinds single-sided mirrored indices instead. The
+    // Standard family's own arms are the mirrored-mesh opt-in's, and they
+    // cover both cull modes -- there is no loader there to rewind, which
+    // is exactly why the pin installs a primitive resolver for it.
     assert.ok(
         !plan.header.includes("pbr_opaque_back_clockwise") &&
             !plan.header.includes("pbr_transparent_back_clockwise"),

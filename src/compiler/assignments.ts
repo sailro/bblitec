@@ -1611,6 +1611,32 @@ export function emitPropertyAssignment(
             return;
         }
 
+        if (target.kind === "mesh" && property === "parent") {
+            // `IParentable.parent`: the write that drives the transform
+            // math. Upstream it leaves `children` alone -- the traversal
+            // list is `push`ed separately -- so this stores the link and
+            // nothing else, and the world composes through it lazily the
+            // way `createWorldMatrixState` composes it.
+            requireSimpleAssignment(
+                context,
+                expression,
+                "mesh parent",
+            );
+            const parent = context.compileValue(expression.right);
+            context.expectKind(
+                parent,
+                "transform-node",
+                expression.right,
+            );
+            context.expectSameEngine(target, parent, expression);
+            context.emit(
+                `bbl::set_mesh_parent(` +
+                    `${context.requireEngine(target, expression)}, ` +
+                    `${target.cpp}, ${parent.cpp});`,
+            );
+            return;
+        }
+
         const recordField = recordFieldAssignments.find(
             (candidate) =>
                 candidate.kind === target.kind &&

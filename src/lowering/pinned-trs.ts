@@ -102,6 +102,13 @@ function pinnedStoreOffset(
 
 export function pinnedTrsComposition(
     context: LoweringContext,
+    /**
+     * The record the composition reads its TRS out of. A transform node
+     * carries the same lanes a mesh does, because upstream they are one
+     * type: `TransformNode` is a pure alias for `SceneNode`, and
+     * `createTransformNode` delegates to `createSceneNode`.
+     */
+    record = "mesh",
 ): PinnedTrsComposition {
     const euler = context.functionDeclaration(
         "src/math/quat-euler.ts",
@@ -112,9 +119,9 @@ export function pinnedTrsComposition(
     // pair table serves this emission and the quaternion products'
     // rename below.
     const rotationRename = new Map<string, string>([
-        ["rx", "static_cast<double>(mesh.rotation.x)"],
-        ["ry", "static_cast<double>(mesh.rotation.y)"],
-        ["rz", "static_cast<double>(mesh.rotation.z)"],
+        ["rx", `static_cast<double>(${record}.rotation.x)`],
+        ["ry", `static_cast<double>(${record}.rotation.y)`],
+        ["rz", `static_cast<double>(${record}.rotation.z)`],
     ]);
     const eulerLocalNames: readonly (readonly [string, string])[] = [
         ["cx", "cx"],
@@ -210,9 +217,9 @@ export function pinnedTrsComposition(
         ["sz", "scale_z"],
     ]);
     const translationStores = new Map<string, string>([
-        ["tx", "mesh.position.x"],
-        ["ty", "mesh.position.y"],
-        ["tz", "mesh.position.z"],
+        ["tx", `${record}.position.x`],
+        ["ty", `${record}.position.y`],
+        ["tz", `${record}.position.z`],
     ]);
     const stores = context.pinnedElementStores(
         compose.declaration,
@@ -262,21 +269,21 @@ export function pinnedTrsComposition(
     double qy = 0.0;
     double qz = 0.0;
     double qw = 1.0;
-    if (mesh.has_rotation_quaternion) {
-        qx = mesh.rotation_quaternion.x;
-        qy = mesh.rotation_quaternion.y;
-        qz = mesh.rotation_quaternion.z;
-        qw = mesh.rotation_quaternion.w;
+    if (${record}.has_rotation_quaternion) {
+        qx = ${record}.rotation_quaternion.x;
+        qy = ${record}.rotation_quaternion.y;
+        qz = ${record}.rotation_quaternion.z;
+        qw = ${record}.rotation_quaternion.w;
     } else if (
-        mesh.rotation.x != 0.0f ||
-        mesh.rotation.y != 0.0f ||
-        mesh.rotation.z != 0.0f) {
+        ${record}.rotation.x != 0.0f ||
+        ${record}.rotation.y != 0.0f ||
+        ${record}.rotation.z != 0.0f) {
 ${halfAngleLocals}\
 ${quaternionProducts}\
     }
-    const double scale_x = mesh.scaling.x;
-    const double scale_y = mesh.scaling.y;
-    const double scale_z = mesh.scaling.z;
+    const double scale_x = ${record}.scaling.x;
+    const double scale_y = ${record}.scaling.y;
+    const double scale_z = ${record}.scaling.z;
 ${basisLocals}\
     std::array<double, 16> local{};
 ${basisStores}`;

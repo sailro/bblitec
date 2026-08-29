@@ -2609,8 +2609,11 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
                     .c_str());
         }
     }
-    // The same shared decode the PBR sibling reads; standard kinds carry
-    // no clockwise arm, so only the blend and cull facts are consumed.
+    // The same shared decode the PBR sibling reads. The winding is part
+    // of it under the mirrored-mesh opt-in: std-mirrored-support.ts
+    // installs a Standard primitive resolver precisely because this
+    // family has no winding of its own, and a mirrored mesh drawn
+    // counter-clockwise renders inside-out.
     const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
     const bool transparent = traits.transparent;
     SDL_GPUColorTargetDescription color_target{};
@@ -2642,7 +2645,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = gpu_cull_mode(traits.cull);
     info.rasterizer_state.front_face =
-        SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+        gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
     apply_pass_depth_state(info, state, shadow_pass);
     info.depth_stencil_state.enable_depth_write =
@@ -6514,8 +6517,8 @@ bool run_gpu_engine(Engine& engine) {
                 upstream::RenderMaterialKind::shader;
             const std::vector<GpuVertex> vertices =
                 shader_material
-                    ? local_vertices(geometry)
-                    : transformed_vertices(geometry, mesh_record);
+                    ? local_vertices(engine, geometry)
+                    : transformed_vertices(engine, geometry, mesh_record);
             const auto upload_mesh_buffer = [&, buffer_uploads](
                                                 SDL_GPUBufferUsageFlags usage,
                                                 const void* data,
@@ -7028,6 +7031,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
                 const std::vector<GpuVertex> vertices =
                     transformed_vertices(
+                        engine,
                         engine.geometries[item.geometry],
                         mesh);
                 frame_buffer_uploads.update(
@@ -7170,7 +7174,8 @@ bool run_gpu_engine(Engine& engine) {
 #endif
             const bool capture_ready =
                 frame >= screenshot_frame &&
-                !topology_updated;
+                !topology_updated &&
+                captures.drains_resolved();
             const bool capture_frame =
                 capture_ready &&
                 !captures.screenshot_saved &&
@@ -7700,6 +7705,7 @@ bool run_gpu_engine(Engine& engine) {
                                 }
                                 const std::array<float, 16> shader_world =
                                     shader_draw_world(
+                                        engine,
                                         engine.meshes[
                                             draw_item.mesh.value]);
                                 const std::array<float, 16> shader_wvp =
@@ -9175,6 +9181,7 @@ bool run_gpu_engine(Engine& engine) {
                         }
                         const std::array<float, 16> shader_world =
                             shader_draw_world(
+                                engine,
                                 engine.meshes[item.mesh.value]);
                         const std::array<float, 16> shader_wvp =
                             shader_world_view_projection(

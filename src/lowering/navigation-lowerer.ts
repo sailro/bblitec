@@ -38,7 +38,6 @@ import ts from "typescript";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { pinnedTrsComposition } from "./pinned-trs.js";
 
 /**
  * `recastConfigDefaults` from the installed `@recast-navigation/core`,
@@ -227,7 +226,6 @@ export class NavigationLowerer {
             "isIdentity ? mat4Identity() : mat4Compose(position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w, scaling.x, scaling.y, scaling.z)",
             "the unparented local world matrix",
         );
-        const trs = pinnedTrsComposition(this.context);
 
         // _createNavMeshFromMerged: the dispatch this emission mirrors.
         const { declaration: fromMerged } =
@@ -503,6 +501,10 @@ Vec3d get_agent_position(
 `,
             source: `// ${this.context.provenance(modulePath, symbolName, "createNavigationPluginAsync, createDebugNavMeshGeometry, raycast")}
 #include <bblite/upstream/navigation.hpp>
+// The merge composes each caster's own world through the one emitted
+// composition every consumer reads, so a mesh that gained a transform-node
+// parent follows it here too.
+#include <bblite/upstream/renderer_plan.hpp>
 
 #include <array>
 #include <cmath>
@@ -517,18 +519,6 @@ bbl::pal::NavigationHandle create_navigation_plugin() {
 }
 
 // src/scene/world-matrix-state.ts composeTrsLocalMatrix +
-// src/math/mat4-compose-into.ts mat4ComposeInto: a scene-code mesh has
-// no parent, so its worldMatrix IS its local TRS -- composed in
-// JavaScript double precision and stored to f32 exactly like the pinned
-// Float32Array world matrix. src/math/quat-euler.ts eulerToQuat
-// converts Euler records the way the pinned Euler proxy writes the
-// quaternion source of truth (non-zero Euler angles inherit the
-// recorded std::sin/cos-versus-V8 ULP caveat).
-std::array<float, 16> nav_mesh_world(const MeshRecord& mesh) {
-${trs.composeWorldBody}\
-    return world;
-}
-
 // _mergeMeshes: the pin multiplies each mesh's CPU positions through
 // its worldMatrix and reverses the winding (i, i+2, i+1) over a running
 // vertex base. What differs here is only where that world already is,
@@ -595,7 +585,7 @@ void create_nav_mesh(
                 merged.positions.push_back(vertex.position.z);
             }
         } else {
-            const std::array<float, 16> wm = nav_mesh_world(mesh);
+            const std::array<float, 16> wm = upstream::mesh_world_matrix(engine, mesh);
             for (const ModelVertex& vertex : geometry.vertices) {
                 const double x = vertex.position.x;
                 const double y = vertex.position.y;

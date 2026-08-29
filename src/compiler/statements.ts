@@ -129,6 +129,10 @@ export interface StatementLoweringContext {
     ): ts.Expression | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
     isFrameYield(expression: ts.Expression): boolean;
+    frameDrainCondition(
+        expression: ts.Expression,
+    ): ts.Expression | undefined;
+    requireDefaultEngine(node: ts.Node): string;
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
     ): boolean;
@@ -1760,6 +1764,12 @@ export class StatementLowerer {
         }
         if (
             ts.isCallExpression(unwrapped) &&
+            this.emitTransformNodeChildPush(context, unwrapped)
+        ) {
+            return;
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
             this.emitTaskMethodCall(context, unwrapped)
         ) {
             return;
@@ -1792,6 +1802,21 @@ export class StatementLowerer {
                         : `${value.cpp};`,
                 );
             }
+            return;
+        }
+        const drain = context.frameDrainCondition(unwrapped);
+        if (drain) {
+            // A bounded multi-frame wait, which the single-frame yield
+            // below deliberately refuses to stand in for. The condition is
+            // the scene's own and it holds off the capture, because
+            // upstream it holds off `canvas.dataset.ready` and the harness
+            // screenshots on that.
+            context.emit(
+                `bbl::defer_capture_until(` +
+                    `${context.requireDefaultEngine(unwrapped)}, ` +
+                    `[&]() { return ` +
+                    `${context.compileCondition(drain)}; });`,
+            );
             return;
         }
         if (context.isFrameYield(unwrapped)) {
@@ -1891,6 +1916,54 @@ export class StatementLowerer {
                 owner,
                 target,
             );
+        }
+        if (target.kind === "transform-node") {
+            // A node's TRS lanes are the same ObservableVec3/ObservableQuat
+            // a mesh's are -- upstream a TransformNode IS a SceneNode -- so
+            // each write moves the field and marks the node's local matrix
+            // dirty. The version bump is what a child re-bakes against.
+            const property = owner.name.text;
+            const setters: Readonly<Record<string, {
+                entry: string;
+                components: number;
+                wide: boolean;
+            }>> = {
+                position: {
+                    entry: "set_transform_node_position",
+                    components: 3,
+                    wide: true,
+                },
+                scaling: {
+                    entry: "set_transform_node_scaling",
+                    components: 3,
+                    wide: false,
+                },
+                rotationQuaternion: {
+                    entry: "set_transform_node_rotation_quaternion",
+                    components: 4,
+                    wide: false,
+                },
+            };
+            const setter = setters[property];
+            if (!setter) return false;
+            const type = setter.wide
+                ? "bbl::Vec3d"
+                : setter.components === 4
+                  ? "bbl::Vec4"
+                  : "bbl::Vec3";
+            const vector = `${type}{${this.setCallComponents(
+                context,
+                call,
+                setter.components,
+                `${property}.set`,
+                setter.wide ? "double" : undefined,
+            ).join(", ")}}`;
+            context.emit(
+                `bbl::${setter.entry}(` +
+                    `${context.requireEngine(target, call)}, ` +
+                    `${target.cpp}, ${vector});`,
+            );
+            return true;
         }
         if (target.kind !== "mesh") {
             return false;
@@ -2024,6 +2097,10 @@ export class StatementLowerer {
         call: ts.CallExpression,
         arity: number,
         label: string,
+        // A translation is a JavaScript number upstream and reaches a
+        // matrix column, so its lane is double where a rotation's and a
+        // scale's are float.
+        precision?: "float" | "double",
     ): string[] {
         if (
             call.arguments.length === 1 &&
@@ -2052,8 +2129,48 @@ export class StatementLowerer {
             );
         }
         return call.arguments.map((argument) =>
-            context.compileNumber(argument),
+            context.compileNumber(argument, precision),
         );
+    }
+
+    /**
+     * `node.children.push(child)`, the traversal half of a reparent.
+     *
+     * The pin keeps the two halves apart and says so: a direct
+     * `child.parent = node` write "drives the transform math but does not
+     * touch `children`", and `setParent` is what syncs both. So a scene
+     * that writes the link and pushes the child is performing two
+     * operations, and this is the second -- the list `collectMeshes`, the
+     * visibility cascade and cloning walk.
+     */
+    private emitTransformNodeChildPush(
+        context: StatementLoweringContext,
+        call: ts.CallExpression,
+    ): boolean {
+        if (
+            !ts.isPropertyAccessExpression(call.expression) ||
+            call.expression.name.text !== "push" ||
+            !ts.isPropertyAccessExpression(call.expression.expression) ||
+            call.expression.expression.name.text !== "children"
+        ) {
+            return false;
+        }
+        const node = context.compileValue(
+            call.expression.expression.expression,
+        );
+        if (node.kind !== "transform-node") {
+            return false;
+        }
+        context.expectArgumentCount(call, 1, 1);
+        const child = context.compileValue(call.arguments[0]!);
+        context.expectKind(child, "mesh", call.arguments[0]!);
+        context.expectSameEngine(node, child, call);
+        context.emit(
+            `bbl::push_transform_node_child(` +
+                `${context.requireEngine(node, call)}, ` +
+                `${node.cpp}, ${child.cpp});`,
+        );
+        return true;
     }
 
     private emitTaskMethodCall(

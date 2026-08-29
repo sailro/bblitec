@@ -65,6 +65,7 @@ Primary source ownership:
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
 | `src/compiler/property-animation.ts` | compile-time clip/track/key lowering and group options |
+| `src/pinned-mesh-defaults.ts` | a pinned factory's own defaults: the `??` a builder resolves an option through, and `createTransformNode`'s parameter initializers |
 | `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
 | `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
 | `src/executed-module-assets.ts` | assets a scene module produces rather than fetches — a drawn canvas2D atlas, a computed pixel buffer — run in headless Chromium and baked |

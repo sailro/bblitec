@@ -1283,6 +1283,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene270",
+        name: "Scene 270 - Mirrored Standard Meshes",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene270.ts",
+        title: "Babylon Lite Native - Mirrored Standard Meshes",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [38, 41, 56],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene30",
         name: "Scene 30 - Volume Testing",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene30.ts",

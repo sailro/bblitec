@@ -103,3 +103,84 @@ export function pinnedMeshOptionFlag(
             "port does not read as a flag.",
     );
 }
+
+/**
+ * `createTransformNode`'s own parameter defaults.
+ *
+ * A different read from the `??` one above, and the same question: the
+ * factory takes a name and ten optional numbers — the TRS triple, the
+ * rotation as a quaternion — so what an unparameterised node composes is
+ * decided by the pinned declaration's own parameter initializers
+ * (`createTransformNode(name, px = 0, ..., qw = 1, sx = 1, sy = 1, sz = 1)`).
+ * Reading them means a pin that retunes one regenerates, and a pin that
+ * reorders the list fails naming the parameter it no longer has.
+ */
+const transformNodeModule = "src/scene/transform-node.ts";
+const transformNodeFactory = "createTransformNode";
+
+/** The parameter list, in the pin's own order after the leading name. */
+const transformParameters = [
+    "px",
+    "py",
+    "pz",
+    "qx",
+    "qy",
+    "qz",
+    "qw",
+    "sx",
+    "sy",
+    "sz",
+] as const;
+
+export type TransformNodeParameter =
+    (typeof transformParameters)[number];
+
+let transformDefaults:
+    | ReadonlyMap<TransformNodeParameter, number>
+    | undefined;
+
+export function transformNodeDefaults(): ReadonlyMap<
+    TransformNodeParameter,
+    number
+> {
+    if (transformDefaults) return transformDefaults;
+    const context = reader();
+    const { file, declaration } = context.functionDeclaration(
+        transformNodeModule,
+        transformNodeFactory,
+    );
+    const name = declaration.parameters[0];
+    if (
+        !name ||
+        !ts.isIdentifier(name.name) ||
+        name.name.text !== "name"
+    ) {
+        context.contractError(
+            name ?? declaration,
+            "Expected createTransformNode to take a name first.",
+        );
+    }
+    const defaults = new Map<TransformNodeParameter, number>();
+    for (const [index, parameter] of transformParameters.entries()) {
+        const declared = declaration.parameters[index + 1];
+        const initializer = declared?.initializer;
+        if (
+            !declared ||
+            !ts.isIdentifier(declared.name) ||
+            declared.name.text !== parameter ||
+            initializer === undefined
+        ) {
+            return context.contractError(
+                declared ?? declaration,
+                `Expected createTransformNode parameter '${parameter}' ` +
+                    "with a default.",
+            );
+        }
+        defaults.set(
+            parameter,
+            context.numericValue(initializer, file),
+        );
+    }
+    transformDefaults = defaults;
+    return defaults;
+}

@@ -1,4 +1,7 @@
 import ts from "typescript";
+
+
+
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -6,7 +9,11 @@ import {
     type ObjectValidationContext,
 } from "../option-helpers.js";
 import { GROUND_OPTION_DEFAULTS } from "./mesh-options.js";
-import { doubleLiteral } from "../../cpp-literals.js";
+import {
+    transformNodeDefaults,
+    type TransformNodeParameter,
+} from "../../pinned-mesh-defaults.js";
+import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
 import {
     pinnedMeshOptionDefault,
     pinnedMeshOptionFlag,
@@ -34,6 +41,7 @@ export interface MeshIntrinsicContext
         faceSize?: number,
     ): CompileAsset;
     cppString(value: string): string;
+    requireDefaultEngine(node: ts.Node): string;
     compilePlaneOptions(
         expression: ts.Expression,
     ): [string, string];
@@ -426,6 +434,60 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::flush_thin_instances(${context.requireEngine(mesh, call)}, ` +
                     `${mesh.cpp})`,
+            };
+        }
+
+        case "createTransformNode": {
+            // src/scene/transform-node.ts: a SceneNode with a TRS. Every
+            // argument past the name is optional and the pin gives each a
+            // default, so an omitted one is read off the pinned
+            // declaration rather than restated here.
+            // The pin's factory takes no engine: a node is plain data
+            // upstream, as a light is. This port keeps one record
+            // collection per engine, so the node resolves the scene's
+            // engine the way every light factory does.
+            context.expectArgumentCount(call, 1, 11);
+            const engine = context.requireDefaultEngine(call);
+            const defaults = transformNodeDefaults();
+            const argument = (
+                index: number,
+                parameter: TransformNodeParameter,
+                precision: "float" | "double",
+            ): string => {
+                const supplied = call.arguments[index];
+                return supplied
+                    ? context.compileNumber(supplied, precision)
+                    : precision === "double"
+                      ? doubleLiteral(defaults.get(parameter)!)
+                      : floatLiteral(defaults.get(parameter)!);
+            };
+            // The position is a JavaScript number upstream and reaches a
+            // matrix column, so it keeps the pin's width the way a mesh's
+            // own translation does.
+            const position =
+                `bbl::Vec3d{${argument(1, "px", "double")}, ` +
+                `${argument(2, "py", "double")}, ` +
+                `${argument(3, "pz", "double")}}`;
+            const rotation =
+                `bbl::Vec4{${argument(4, "qx", "float")}, ` +
+                `${argument(5, "qy", "float")}, ` +
+                `${argument(6, "qz", "float")}, ` +
+                `${argument(7, "qw", "float")}}`;
+            const scaling =
+                `bbl::Vec3{${argument(8, "sx", "float")}, ` +
+                `${argument(9, "sy", "float")}, ` +
+                `${argument(10, "sz", "float")}}`;
+            context.reachFeature("mesh:transform-node", call);
+            return {
+                kind: "transform-node",
+                cpp:
+                    `bbl::create_transform_node(${engine}, ` +
+                    `${context.cppString(
+                        context.compileStringLiteral(
+                            call.arguments[0]!,
+                        ),
+                    )}, ${position}, ${rotation}, ${scaling})`,
+                engineCpp: engine,
             };
         }
 

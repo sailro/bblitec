@@ -722,6 +722,43 @@ precedence: vertex colours, instance colours, their product, or the
 and `setLineMaterialColor` refuse by name, as does a line system whose
 material's vertex-colour setting disagrees with its geometry.
 
+### Scene hierarchy
+
+`createTransformNode` is a scene-graph node with a TRS and children, and a
+mesh assigned `mesh.parent = node` composes its world through it —
+`world = parent.worldMatrix * local`, walked to the root, exactly as
+`createWorldMatrixState` resolves it. Upstream a `TransformNode` is a pure
+alias for `SceneNode`, so a node's local matrix is the same
+`composeTrsLocalMatrix` a mesh's is and one emitted composition serves both.
+
+Two halves stay apart because the pin keeps them apart: writing
+`child.parent` registers the child for invalidation and drives the
+transform math, while `node.children.push(child)` fills the traversal list
+and nothing else. An in-engine hierarchy is push-based upstream — a TRS
+write reaches `markLocalDirty`, which recurses into the children the
+parent setter registered — so this port pushes at the same setters: each
+bumps the transform version of every mesh under the node, which is what
+every re-bake already keys on. (The pin's version snapshot is its
+*foreign*-parent fallback, for a host it cannot tag; a mesh under a
+transform node is tagged on both ends and never takes it.)
+
+`enableMirroredMeshes(scene)` is the opt-in that adds winding reversal from
+the live world determinant. The Standard pipeline has none of its own
+upstream, which is why the pin installs a primitive resolver for it, and
+this port composes the family's clockwise arms only under the same opt-in.
+A mesh mirrored before its renderable was built carries the winding from
+the first frame; one mirrored later flips its pipeline through a plan
+rebuild, which is where this port chooses a front face. The opt-in seeds
+every mesh present and then appends its watcher to the scene's own
+before-render list, exactly as `installMirroredMeshSupport` does, so the
+frame position is the pin's rather than a rule spelled in each backend. The PBR family
+gets no back-culled twin: the glTF loader rewinds a single-sided mirrored
+primitive's indices at load instead.
+
+`setParent`, a matrix-declared node's reparent, and a recursive
+`SceneNode.children` walk are not reached; scene 269 is the scene behind
+them ([TODO](../TODO.md)).
+
 ### Lights
 
 Directional, hemispheric, point, and spot lights with diffuse and specular

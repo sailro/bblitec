@@ -752,7 +752,17 @@ export class BrowserErasure {
      * Promise`, because a multi-frame wait or one that resolves on some
      * other condition is NOT this and must keep refusing.
      */
-    public isFrameYield(expression: ts.Expression): boolean {
+    /**
+     * The `new Promise((resolve) => ...)` head both frame waits share.
+     *
+     * Their shapes diverge only after it -- one is a bare
+     * `requestAnimationFrame` call, the other a block that re-arms until a
+     * condition holds -- so the executor test lives here and a pin that
+     * moved the Promise form moves one place.
+     */
+    private promiseExecutor(
+        expression: ts.Expression,
+    ): { resolveName: string; body: ts.ConciseBody } | undefined {
         const unwrapped = this.context.unwrap(expression);
         if (
             !ts.isNewExpression(unwrapped) ||
@@ -760,7 +770,7 @@ export class BrowserErasure {
             unwrapped.expression.text !== "Promise" ||
             unwrapped.arguments?.length !== 1
         ) {
-            return false;
+            return undefined;
         }
         const executor = unwrapped.arguments[0]!;
         if (
@@ -768,9 +778,18 @@ export class BrowserErasure {
             executor.parameters.length !== 1 ||
             !ts.isIdentifier(executor.parameters[0]!.name)
         ) {
-            return false;
+            return undefined;
         }
-        const resolveName = executor.parameters[0]!.name.text;
+        return {
+            resolveName: executor.parameters[0]!.name.text,
+            body: executor.body,
+        };
+    }
+
+    public isFrameYield(expression: ts.Expression): boolean {
+        const executor = this.promiseExecutor(expression);
+        if (!executor) return false;
+        const resolveName = executor.resolveName;
         const raf = this.context.unwrap(
             executor.body as ts.Expression,
         );
@@ -798,6 +817,107 @@ export class BrowserErasure {
             resolveCall.expression.text === resolveName &&
             resolveCall.arguments.length === 0
         );
+    }
+
+    /**
+     * The bounded multi-frame drain a scene uses to let its own pipeline
+     * rebuilds settle before it flags the canvas ready:
+     *
+     * ```
+     * await new Promise<void>((resolve) => {
+     *     const wait = (): void =>
+     *         (cond ? resolve() : void requestAnimationFrame(wait));
+     *     wait();
+     * });
+     * ```
+     *
+     * This is NOT the single-frame yield above and must not be erased: the
+     * condition is the scene's own, and what the wait buys is that the
+     * frames it names have actually drawn. The port keeps the condition
+     * and defers the capture behind it, which is the native reading of
+     * "set `dataset.ready` after this resolves" -- the harness waits on
+     * that flag, so a capture taken earlier is a different frame.
+     *
+     * Returns the condition, or undefined when the shape is anything else.
+     */
+    public frameDrainCondition(
+        expression: ts.Expression,
+    ): ts.Expression | undefined {
+        const executor = this.promiseExecutor(expression);
+        if (
+            !executor ||
+            !ts.isBlock(executor.body) ||
+            executor.body.statements.length !== 2
+        ) {
+            return undefined;
+        }
+        const resolveName = executor.resolveName;
+        const [declaration, invocation] = executor.body.statements;
+        if (
+            !declaration ||
+            !ts.isVariableStatement(declaration) ||
+            declaration.declarationList.declarations.length !== 1
+        ) {
+            return undefined;
+        }
+        const declared = declaration.declarationList.declarations[0]!;
+        if (
+            !ts.isIdentifier(declared.name) ||
+            !declared.initializer ||
+            !ts.isArrowFunction(declared.initializer) ||
+            declared.initializer.parameters.length !== 0
+        ) {
+            return undefined;
+        }
+        const waitName = declared.name.text;
+        // The body is `cond ? resolve() : void requestAnimationFrame(wait)`.
+        const body = this.context.unwrap(
+            declared.initializer.body as ts.Expression,
+        );
+        if (!ts.isConditionalExpression(body)) return undefined;
+        const resolved = this.context.unwrap(body.whenTrue);
+        if (
+            !ts.isCallExpression(resolved) ||
+            !ts.isIdentifier(resolved.expression) ||
+            resolved.expression.text !== resolveName ||
+            resolved.arguments.length !== 0
+        ) {
+            return undefined;
+        }
+        // `void f()` is how both drain scenes discard the scheduling
+        // call's result inside a conditional expression, and the only way
+        // any corpus scene spells it. Another spelling falls through to
+        // the refusal, which is what a matcher whose whole justification
+        // is refusing to over-match should do.
+        let scheduled = this.context.unwrap(body.whenFalse);
+        if (ts.isVoidExpression(scheduled)) {
+            scheduled = this.context.unwrap(scheduled.expression);
+        }
+        if (
+            !ts.isCallExpression(scheduled) ||
+            !ts.isIdentifier(scheduled.expression) ||
+            scheduled.expression.text !== "requestAnimationFrame" ||
+            scheduled.arguments.length !== 1 ||
+            !ts.isIdentifier(scheduled.arguments[0]!) ||
+            (scheduled.arguments[0] as ts.Identifier).text !== waitName
+        ) {
+            return undefined;
+        }
+        // The executor's second statement primes the loop with `wait()`.
+        const primed =
+            invocation && ts.isExpressionStatement(invocation)
+                ? this.context.unwrap(invocation.expression)
+                : undefined;
+        if (
+            !primed ||
+            !ts.isCallExpression(primed) ||
+            !ts.isIdentifier(primed.expression) ||
+            primed.expression.text !== waitName ||
+            primed.arguments.length !== 0
+        ) {
+            return undefined;
+        }
+        return body.condition;
     }
 
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {

@@ -484,6 +484,17 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
             return "standard_transparent_back";
         case upstream::RenderPipelineKind::standard_transparent_none:
             return "standard_transparent_none";
+        case upstream::RenderPipelineKind::standard_opaque_back_clockwise:
+            return "standard_opaque_back_clockwise";
+        case upstream::RenderPipelineKind::standard_opaque_none_clockwise:
+            return "standard_opaque_none_clockwise";
+        case upstream::RenderPipelineKind::
+            standard_transparent_back_clockwise:
+            return "standard_transparent_back_clockwise";
+        case upstream::RenderPipelineKind::
+            standard_transparent_none_clockwise:
+            return "standard_transparent_none_clockwise";
+
         case upstream::RenderPipelineKind::grid_opaque_back:
             return "grid_opaque_back";
         case upstream::RenderPipelineKind::grid_opaque_none:
@@ -967,7 +978,9 @@ inline void write_draw_uniforms(
                 const MaterialRecord& material =
                     engine.materials[draw.item.material.value];
                 const std::array<float, 16> shader_world =
-                    shader_draw_world(engine.meshes[draw.item.mesh.value]);
+                    shader_draw_world(
+                        engine,
+                        engine.meshes[draw.item.mesh.value]);
                 const std::array<float, 16> shader_wvp =
                     shader_world_view_projection(
                         pass_matrices.view_projection, shader_world);

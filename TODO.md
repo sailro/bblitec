@@ -75,24 +75,23 @@ act on it — not what was tried.
 
 ## P1 — Runtime and validation
 
-- [ ] Delete the PAL's own copy of the pinned TRS composition. `rotate_mesh`
-  (`native/src/pal_gpu_shared.hpp`) rotates a vector by the mesh's quaternion
-  or Euler triple, and `shader_draw_world` beside it rotates three scaled
-  basis vectors and appends the translation — which is `mat4ComposeInto`,
-  re-derived in float. `src/lowering/pinned-trs.ts` already lowers that
-  composition term by term from the pin's own AST and refuses on drift, and
-  this same header already calls two of its emissions
-  (`upstream::mesh_world_eye_relative`, `upstream::build_instance_parent_world`);
-  the copy asserts nothing. What unblocks it is a MEASUREMENT, not a
-  capability: the emitted composition accumulates in JavaScript-number width
-  and narrows once, where the copy computes per vertex in float with
-  float-overload `std::sin`/`std::cos` on the Euler arm, so every mesh with a
-  non-identity rotation moves in its low bits. That is convergence toward the
-  pin, but the generated tree grows a function per scene so the cheap
-  neutrality proof does not apply — it needs the full `scenes:process` plus
-  `scenes:parity --differential` matrix and a recapture decision for anything
-  that moves past its gate. `shader_draw_world` alone is the smaller half and
-  moves only ShaderMaterial scenes.
+- [ ] Fold the hand-typed matrix-times-vector and determinant copies onto
+  one emitted pair. `transform_position`/`transform_direction`
+  (`native/src/pal_gpu_shared.hpp`) are term-identical to
+  `transform_point_raw`/`transform_direction_raw` in
+  `src/lowering/templates/gltf-loader-cpp.ts` and to `transform_point`/
+  `transform_direction` in `babylon-loader-cpp.ts`, and that loader also
+  hand-types `linear_determinant` where `lowerMat4Determinant3` now folds
+  the pin's own `mat4Determinant3` — expanded along a different cofactor
+  row, so the load-time and run-time answers to "is this mesh mirrored" do
+  not even round alike. NOT a case for lowering the pin's
+  `transformCoordinatesToRef`/`transformNormalToRef`: those lower to
+  DOUBLE, and the reference for the vertex bake is the WGSL stage, which is
+  float. What unblocks it is a decision plus a measurement: the two copies
+  take a loader-local `Matrix` where the PAL's take
+  `std::array<float, 16>`, so one signature has to serve three call sites
+  across the generated/PAL boundary, and the byte diff over every glTF and
+  `.babylon` scene is what says the fold moved nothing.
 
 - [ ] Drop the vendored SDL patches once upstream ships them.
   `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the manifest's
@@ -828,7 +827,20 @@ platform boundary.
     `createParticleSprite2DBridge` / `syncParticleSprite2DBridge` /
     `disposeNodeParticleSet2DBinding` entry points, none of which a corpus
     scene reaches: the two that do go through the managed registrars.
-- [ ] Scenes 269, 270: support transform nodes.
+- [ ] Scene 269: support `setParent`. Scene 270 ships, so the transform
+  node itself, a mesh's `parent` link, `children.push`, the node's own
+  ObservableVec3/Quat setters, the parent-chain world and the mirrored-mesh
+  opt-in are all reached. What 269 adds is the reparent: `setParent`
+  snapshots the child's world, sets the link, then writes the local TRS
+  back through `mat4Decompose` (already lowered, for the splat bake) so the
+  reflection in a mirrored glTF root survives, and it syncs both
+  `children` arrays. Beside it sit a recursive `findNode` walk over
+  `SceneNode.children` and a matrix-declared glTF node, whose
+  `_localMatrix` `setParent` clears so the decomposed TRS takes over. The
+  interaction to measure first is the loader's own winding pass: it rewinds
+  a single-sided mirrored primitive's INDICES at load, where the
+  mirrored-mesh opt-in flips the pipeline, and a mesh reaching both would
+  flip twice.
 - [ ] Scene 261: support the reached `box.material` assignment; temporal
   anti-aliasing sits behind it.
 - [ ] Scene 275: support `loadFont`.

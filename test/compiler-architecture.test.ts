@@ -817,7 +817,7 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
     for (const backend of [sdl, dawn]) {
         assert.match(
             backend,
-            /shader_material\s*\?\s*local_vertices\(geometry\)/,
+            /shader_material\s*\?\s*local_vertices\(engine, geometry\)/,
         );
         assert.match(backend, /shared_shader_geometries/);
         assert.match(backend, /shared_geometry->users/);
@@ -832,7 +832,7 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
             /item\.material_kind ==\s*upstream::RenderMaterialKind::shader[\s\S]{0,300}transform_version = mesh\.transform_version;[\s\S]{0,80}continue;/,
         );
     }
-    assert.match(capture, /shader_draw_world\(engine\.meshes\[/);
+    assert.match(capture, /shader_draw_world\(\s*engine,\s*engine\.meshes\[/);
     assert.match(capture, /shader_world_view\(\s*pass_matrices\.view/);
     assert.match(
         capture,

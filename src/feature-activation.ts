@@ -470,6 +470,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/morph/create-morph-targets.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:mirrored": {
+        provenance: "src/mesh/enable-mirrored-meshes.ts",
+        consumers: CMAKE,
+    },
+    "mesh:transform-node": {
+        provenance: "src/scene/transform-node.ts",
+        consumers: CMAKE,
+    },
     "mesh:plane": {
         provenance: "src/mesh/create-plane.ts",
         consumers: CMAKE,
