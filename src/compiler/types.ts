@@ -1251,12 +1251,14 @@ export interface Value {
         readonly include: boolean;
     };
     /**
-     * For a handle a search produced: the native boolean saying whether
-     * the search matched. Upstream's `find` returns `undefined` when
-     * nothing does, and a scene tests that before using the result, so
-     * the flag is what a truthiness test on this value reads. A find the
-     * materialized asset resolved at generation carries the constant
-     * `"true"`, which is what folds the scene's own not-found guard away.
+     * For a handle that may be absent: the native boolean saying whether
+     * it is there. A search produces one — upstream's `find` returns
+     * `undefined` when nothing matched — and so does a record slot
+     * nothing filled, which carries `invalid_handle`. Either way the flag
+     * is what a scene's own guard reads, through `if`, `??` or a null
+     * comparison. A find the materialized asset resolved at generation
+     * carries the constant `"true"`, which is what folds the scene's own
+     * not-found guard away.
      */
     optionalFoundCpp?: string;
     /** JavaScript truthiness when it differs from mere optional presence. */

@@ -1,10 +1,19 @@
-// Regression gate: a light's position and direction written after creation.
+// Regression gate: a light's properties written after creation.
 //
 // A light vector upstream is an `ObservableVec3`, so `set(x, y, z)` moves the
 // field and marks the light's local matrix dirty; the next read rebuilds it.
 // The spot here is created at the origin shining straight up — away from the
 // ground entirely — and only the setters put it over the plane, so the cone in
 // the golden is the whole proof that both writes landed.
+//
+// The cone's own three scalars are written the same way. `range` and
+// `exponent` are plain number fields on the pinned spot; `angle` is the one
+// accessor in the light family, and its setter recomputes the cone cosine the
+// UBO writer packs. Each is created at a value that renders nothing usable —
+// a cone so wide it is a flood light, an exponent that flattens the falloff,
+// an unbounded range — so the shaded ellipse in the golden is what the three
+// writes produced. Scenes 202 and 203 corpus-measure the `range` write; the
+// other two have no corpus scene, since none writes a cone after creation.
 //
 // What the golden measures is the field write: the pinned per-frame light
 // writers rebuild a light's world matrix from `position` and `direction`
@@ -51,6 +60,9 @@ async function main(): Promise<void> {
     spot.direction.set(0, -1, 0);
     spot.diffuse = [1, 0, 0];
     spot.specular = [0, 1, 0];
+    spot.angle = Math.PI / 5;
+    spot.exponent = 2;
+    spot.range = 6;
     addToScene(scene, spot);
 
     // A directional light packs its world matrix column 2, so its position

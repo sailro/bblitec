@@ -4,7 +4,10 @@ import {
     PinnedNumericLowerer,
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    pinnedMathSpelling,
+    pinnedNumericMathCalls,
+} from "./pinned-operators.js";
 
 interface HemisphericDefaults {
     diffuseColor: [number, number, number];
@@ -63,6 +66,62 @@ void set_${kind}_light_${vector}(
 }
 `)
             .join("");
+    }
+
+    /**
+     * The spot cone's stored pair, and the entry point that writes it after
+     * creation.
+     *
+     * `createSpotLight` defines `angle` with `Object.defineProperty`, and its
+     * setter recomputes `_cosHalfAngle` — the value `_writeLightUbo` actually
+     * packs — from the same `Math.cos(v * <factor>)` the factory evaluates at
+     * creation. The record keeps both (a spot shadow projection reads the
+     * angle itself), so the two are stored together or they disagree the
+     * first time a scene moves the cone. `refresh_spot_light_cone` is that
+     * store, emitted once and called by the factory and the setter alike —
+     * the shape `refresh_spot_light_matrix` already takes for the vector
+     * writes — so the pinned factor reaches the output in one place.
+     */
+    private spotConeSetter(
+        declaration: ts.FunctionDeclaration,
+        coneHalfFactor: number,
+    ): string {
+        const install = this.context.callExpression(
+            declaration,
+            "defineProperty",
+        );
+        const name = install.arguments[1];
+        if (
+            !name ||
+            !ts.isStringLiteralLike(name) ||
+            name.text !== "angle"
+        ) {
+            this.context.contractError(
+                name ?? install,
+                "Expected the spot light to define an 'angle' accessor.",
+            );
+        }
+        this.context.expectShapeCount(
+            declaration,
+            `_cosHalfAngle = Math.cos(v * ${coneHalfFactor})`,
+            "spot angle setter cone cosine",
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "_angle = v",
+            "spot angle setter angle store",
+        );
+        return `
+// The pinned cone pair, re-run on every angle write the same way the local
+// matrix is re-run on every vector write: the factory computes the cosine
+// while the angle is still a JavaScript number and only its UBO store
+// rounds, so the product stays double up to the single narrowing here.
+void refresh_spot_light_cone(LightRecord& light, double angle) {
+    light.angle = angle;
+    light.cos_half_angle = static_cast<float>(${pinnedMathSpelling("cos")}(
+        angle * ${this.context.doubleLiteral(coneHalfFactor)}));
+}
+`;
     }
 
     /**
@@ -619,7 +678,7 @@ void refresh_spot_light_matrix(LightRecord& light) {
         light.position.z,
         light.local_matrix);
 }
-
+${this.spotConeSetter(declaration, coneHalfFactor)}
 } // namespace
 
 LightHandle create_spot_light(
@@ -635,9 +694,7 @@ LightHandle create_spot_light(
     light.direction = direction;
     light.intensity = intensity;
     light.exponent = exponent;
-    light.cos_half_angle = static_cast<float>(
-        std::cos(angle * ${this.context.doubleLiteral(coneHalfFactor)}));
-    light.angle = angle;
+    refresh_spot_light_cone(light, angle);
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
     light.range = std::numeric_limits<float>::max();
@@ -648,6 +705,13 @@ LightHandle create_spot_light(
 }
 
 ${this.lightVectorSetters(modulePath, symbolName, "spot", ["position", "direction"])}
+void set_spot_light_angle(
+    Engine& engine,
+    LightHandle light,
+    double angle) {
+    refresh_spot_light_cone(engine.lights[light.value], angle);
+}
+
 } // namespace bbl
 `,
         };

@@ -295,8 +295,10 @@ graphs.
 Property animation and glTF animation share deterministic scene-level seeking
 but have separate generated runtimes:
 
-- property clips/groups target reached mesh paths such as `position`,
-  `position.x`, `scaling`, and `rotationQuaternion`
+- property clips/groups bind a dotted path against a mesh or a camera: one
+  of the record lanes this port holds (`position`, `scaling`,
+  `rotationQuaternion`, an ArcRotate camera's `alpha`), or one component of
+  a lane wide enough to have components
 - glTF loading evaluates node hierarchies, animation channels, skins, inverse
   bind matrices, and morph weights from materialized asset metadata
 - `EXT_mesh_gpu_instancing` keeps extension T/R/S matrices local and composes

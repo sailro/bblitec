@@ -712,8 +712,12 @@ the PBR extra lights. PBR carries two analytic slots in single-light mode;
 under multi-light the second is deliberately empty and every light past the
 primary is walked over the same lights buffer.
 
-A scene-code spot light carries its colours and intensity; its `angle`,
-`exponent` and `range` setters fail explicitly. A point or directional light's
+A scene-code spot light's colours, intensity and cone are all settable after
+creation. `range` and `exponent` are plain number fields on the pinned light,
+so each write is one record store; `angle` is the family's one accessor, whose
+setter recomputes the cone cosine `_writeLightUbo` packs, so the write goes
+through an emitted entry point that stores the pair from the pin's own
+`Math.cos(angle * 0.5)`. A point or directional light's
 `position`, and a spot light's `position` and `direction`, are settable after
 creation through the pin's own `ObservableVec3` semantics — whole-vector and
 reached point component writes both rebuild that kind's local matrix, and
@@ -729,7 +733,10 @@ behind `enableStandardVertexColors`, the opt-in `setPbrUnlit`, `setPbrSkybox`,
 translucency/thickness shape, plus scene-local custom shader variants driven
 through their reflected uniform offsets. Scene-code PBR also carries the
 static `enableSpecularAA` and `usePhysicalLightFalloff` creation options into
-the pin's derivative roughness arm and its punctual falloff lane. A setter
+the pin's derivative roughness arm and its punctual falloff lane, the second
+of which is also writable afterwards — it selects a punctual arm per draw and
+composes nothing, so a write is the same record store the option fills, on a
+material a scene may have read back off a mesh. A setter
 stamps the material the call names, so a scene carrying several scene-code
 materials reaches each independently.
 
@@ -915,8 +922,10 @@ which is why the reached slice adds no native binding at all.
 ### Animation playback
 
 Deterministic scene-level seeking over two separate runtimes: property
-animation clips and groups over position, `position.x`, scaling and
-quaternion paths with LINEAR/STEP tracks, ranges, looping and speed ratios;
+animation clips and groups over the paths that resolve against a mesh's
+`position`, `scaling` and `rotationQuaternion` or a camera's `alpha` — the
+lane itself, or one of its `x`/`y`/`z`/`w` components — with LINEAR/STEP
+tracks, ranges, looping and speed ratios;
 and glTF LINEAR/STEP/CUBICSPLINE transform channels with LINEAR or STEP morph
 weights.
 A glTF file's animations arrive as one group each, in the document's order,

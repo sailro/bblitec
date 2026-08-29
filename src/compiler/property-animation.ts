@@ -36,42 +36,68 @@ export interface PropertyAnimationContext {
     fail(node: ts.Node, message: string): never;
 }
 
-/**
- * The reached property paths, each with the native track enumerator it
- * lowers to and how many components its keys carry.
- *
- * Upstream reads a track's stride off its first key value
- * (`getTrackStride`) because a path is any dotted string there; here the
- * path is one of a closed set resolved at compile time, so the count is
- * a property of the path. Both consumers read this one table: key
- * validation below, and the emitted mixer's bucket width, which the
- * animation lowerer generates from it.
- */
 export type PropertyAnimationTargetKind = "mesh" | "camera";
 
-export const propertyAnimationPaths: ReadonlyMap<
+export interface PropertyAnimationLane {
+    /** The native `PropertyAnimationPath` enumerator this lane lowers to. */
+    native: string;
+    /** How wide the lane's value is: the pin's stride for its whole-lane path. */
+    components: number;
+    /** The record the pinned walk lands on, and the field it names there. */
+    target: PropertyAnimationTargetKind;
+    field: string;
+    /** The native type a whole-lane store constructs, for a lane above one. */
+    vector?: string;
+    /**
+     * A record flag the pinned property setter selects beside the store.
+     * `mesh.rotationQuaternion` is the mesh's rotation whichever way it was
+     * written, so a component write selects the lane as much as a
+     * whole-vector one does.
+     */
+    selects?: string;
+}
+
+/**
+ * The animatable LANES, each a property of a record this port holds.
+ *
+ * A path is any dotted string upstream: `resolvePropertyBinding` walks it,
+ * lands on an object and a final property name, and `createPropertyWriter`
+ * then writes either the whole value (through its `set`, or component by
+ * component) or the one number the path named. Which paths exist is
+ * therefore decided by which properties the target object has, not by a
+ * list — so this table names the record fields rather than the paths, and
+ * `resolvePropertyAnimationPath` derives the paths the pin would resolve
+ * against them: the lane itself, plus one per component in the pin's own
+ * `"xyzw"` order for a lane wide enough to have them.
+ *
+ * One lane, one row: which paths resolve, how wide each is, and what a
+ * write stores are all facts about the same lane, so the lowerer generates
+ * its writer arms and its bucket widths from this table rather than from a
+ * second one it would then have to check against this.
+ */
+export const propertyAnimationLanes: ReadonlyMap<
     string,
-    {
-        native: string;
-        components: number;
-        target: PropertyAnimationTargetKind;
-    }
+    PropertyAnimationLane
 > = new Map([
     [
         "position",
-        { native: "position", components: 3, target: "mesh" },
-    ],
-    [
-        "position.x",
         {
-            native: "position_x",
-            components: 1,
+            native: "position",
+            components: 3,
             target: "mesh",
+            field: "position",
+            vector: "Vec3d",
         },
     ],
     [
         "scaling",
-        { native: "scaling", components: 3, target: "mesh" },
+        {
+            native: "scaling",
+            components: 3,
+            target: "mesh",
+            field: "scaling",
+            vector: "Vec3",
+        },
     ],
     [
         "rotationQuaternion",
@@ -79,6 +105,9 @@ export const propertyAnimationPaths: ReadonlyMap<
             native: "rotation_quaternion",
             components: 4,
             target: "mesh",
+            field: "rotation_quaternion",
+            vector: "Vec4",
+            selects: "has_rotation_quaternion",
         },
     ],
     [
@@ -87,9 +116,82 @@ export const propertyAnimationPaths: ReadonlyMap<
             native: "camera_alpha",
             components: 1,
             target: "camera",
+            field: "alpha",
         },
     ],
 ]);
+
+/** The pin's component order, from `createPropertyWriter`'s own `"xyzw"`. */
+const propertyAnimationComponents = ["x", "y", "z", "w"] as const;
+
+/**
+ * The component paths a lane offers, in the pin's own order.
+ *
+ * A one-wide lane offers none: the pinned walk would reach a number and
+ * `asRecord` refuses it. Stated once because both halves consume it — the
+ * resolver decides which paths exist, and the lowerer emits one writer arm
+ * per component — and a lane whose two halves disagreed would compile a
+ * path the generated switch has no arm for.
+ */
+export function laneComponents(
+    lane: PropertyAnimationLane,
+): readonly string[] {
+    return lane.components === 1
+        ? []
+        : propertyAnimationComponents.slice(0, lane.components);
+}
+
+export interface ResolvedPropertyAnimationPath {
+    lane: PropertyAnimationLane;
+    /** The native `PropertyAnimationComponent` enumerator. */
+    component: string;
+    /** The pin's stride for this path: the lane's width, or one. */
+    stride: number;
+    /** The pin's own `quaternion` derivation for this path. */
+    quaternion: boolean;
+}
+
+/**
+ * One path, resolved the way `resolvePropertyBinding` resolves it: the
+ * whole lane, or one component of it.
+ *
+ * The walk splits on every dot upstream; no lane name contains one, so a
+ * path of more than two parts has no lane to land on and resolves to
+ * nothing here exactly as it throws there.
+ */
+export function resolvePropertyAnimationPath(
+    path: string,
+): ResolvedPropertyAnimationPath | undefined {
+    const whole = propertyAnimationLanes.get(path);
+    if (whole) {
+        return {
+            lane: whole,
+            component: "whole_lane",
+            stride: whole.components,
+            // `createPropertyAnimationClip`: the path itself, or a path
+            // ending in it, is the rotation channel.
+            quaternion: path === "rotationQuaternion",
+        };
+    }
+    const separator = path.lastIndexOf(".");
+    if (separator < 0) return undefined;
+    const lane = propertyAnimationLanes.get(path.slice(0, separator));
+    const component = path.slice(separator + 1);
+    if (!lane || !laneComponents(lane).includes(component)) {
+        return undefined;
+    }
+    return {
+        lane,
+        component,
+        stride: 1,
+        // The pin's second arm, `path.endsWith(".rotationQuaternion")`,
+        // needs a lane whose own value carries a nested rotation
+        // quaternion. Every lane above is a number or a number tuple, so
+        // that arm has nothing to land on and a component path is never
+        // the rotation channel.
+        quaternion: false,
+    };
+}
 
 export function compilePropertyAnimationClip(
     context: PropertyAnimationContext,
@@ -157,14 +259,40 @@ export function compilePropertyAnimationClip(
             );
         }
         const path = context.compileStaticString(pathExpression);
-        const pathInfo = propertyAnimationPaths.get(path);
-        if (!pathInfo) {
+        const binding = resolvePropertyAnimationPath(path);
+        if (!binding) {
             context.fail(
                 pathExpression,
                 `Unsupported property animation path '${path}'.`,
             );
         }
-        targets.add(pathInfo.target);
+        targets.add(binding.lane.target);
+        // `createPropertyAnimationClip` derives the rotation channel as
+        // `track.quaternion === true || <the two path arms>`, and
+        // `evaluateSampler` then slerps on it whatever the stride is —
+        // reading four components out of a three-wide output, which is a
+        // read past the key this port's own four-wide key cannot
+        // reproduce. So an explicit opt-in that the path does not already
+        // imply refuses rather than lerping something the pin slerps.
+        const quaternionExpression = context.objectProperty(
+            track,
+            "quaternion",
+        );
+        if (
+            quaternionExpression &&
+            !binding.quaternion &&
+            // Anything but a settled `false` is an opt-in this port cannot
+            // honour, a value it cannot settle included: both must refuse,
+            // because silently dropping the option is what leaves the two
+            // sides interpolating differently.
+            context.compileBoolean(quaternionExpression) !== "false"
+        ) {
+            context.fail(
+                quaternionExpression,
+                `Property animation track '${path}' is ${binding.stride} ` +
+                    "component(s) wide; the pinned slerp reads four.",
+            );
+        }
         const interpolationExpression =
             context.objectProperty(track, "interpolation");
         const interpolation = interpolationExpression
@@ -211,11 +339,11 @@ export function compilePropertyAnimationClip(
             const value = compilePropertyAnimationKeyValue(
                 context,
                 valueExpression,
-                pathInfo.components,
+                binding.stride,
             );
             return `bbl::PropertyAnimationKey{${time}, ${value}}`;
         });
-        return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${pathInfo.native}, bbl::PropertyAnimationInterpolation::${interpolation}, {${compiledKeys.join(", ")}}}`;
+        return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${binding.lane.native}, bbl::PropertyAnimationComponent::${binding.component}, bbl::PropertyAnimationInterpolation::${interpolation}, ${binding.quaternion}, {${compiledKeys.join(", ")}}}`;
     });
     if (targets.size > 1) {
         // Upstream resolves each path against the one object the group

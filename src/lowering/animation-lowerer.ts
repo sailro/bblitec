@@ -1,9 +1,64 @@
 import ts from "typescript";
-import { propertyAnimationPaths } from "../compiler/property-animation.js";
+import {
+    laneComponents,
+    propertyAnimationLanes,
+} from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
+
+    /**
+     * The `write_track_value` arms for one record, generated from the lane
+     * table: the whole-lane store the pin performs through the value's own
+     * `set`, and one arm per component for a lane wide enough to have them.
+     */
+    private propertyWriterArms(
+        record: "mesh" | "camera",
+        indent: string,
+    ): string {
+        const lines: string[] = [];
+        for (const lane of propertyAnimationLanes.values()) {
+            if (lane.target !== record) continue;
+            const target = `${record}.${lane.field}`;
+            const components = laneComponents(lane);
+            const whole = components.length === 0
+                ? `${target} = value[0];`
+                : `${target} = ${lane.vector}{${
+                      components
+                          .map((_unused, index) => `value[${index}]`)
+                          .join(", ")
+                  }};`;
+            lines.push(`case PropertyAnimationPath::${lane.native}:`);
+            // A lane with no component paths takes the store directly: the
+            // resolver can never name one, so a switch over them would be a
+            // branch with nothing to select.
+            if (components.length === 0) {
+                lines.push(`    ${whole}`);
+            } else {
+                lines.push(
+                    "    switch (component) {",
+                    "        case PropertyAnimationComponent::whole_lane:",
+                    `            ${whole}`,
+                    "            break;",
+                    ...components.flatMap((component) => [
+                        `        case PropertyAnimationComponent::${component}:`,
+                        `            ${target}.${component} = value[0];`,
+                        "            break;",
+                    ]),
+                    "        default:",
+                    "            throw std::runtime_error(",
+                    '                "Property animation path names no such component.");',
+                    "    }",
+                );
+            }
+            if (lane.selects) {
+                lines.push(`    ${record}.${lane.selects} = true;`);
+            }
+            lines.push("    break;");
+        }
+        return lines.map((line) => `${indent}${line}`).join("\n");
+    }
 
     /**
      * The glTF animation-group operations, lowered from the pin's own
@@ -1023,25 +1078,33 @@ void set_animation_additive_from_frame(
  )}
  *
  * The bucket key is the pin's (target object, property name) pair: a
- * lowered track resolves that pair from its mesh and its path, and
- * distinct paths resolve to distinct pairs, so the mesh handle and the
- * path name the same bucket the pin's binding would.
+ * lowered track resolves that pair from its target, its lane and the
+ * component of it the path named -- "position" resolves to the mesh and
+ * the name "position", while "position.x" resolves to the position vector
+ * and the name "x" --
+ * so the triple names the same bucket the pin's binding would. The pin
+ * also carries the track's writer and rotation flag onto the bucket it
+ * finds; the writer is the same generated one here, and the flag follows
+ * from the same triple.
  */
 PropertyAnimationBucket& track_bucket(
     std::vector<PropertyAnimationBucket>& buckets,
     PropertyAnimationTarget target,
-    PropertyAnimationPath path) {
+    const PropertyAnimationTrack& track) {
     for (PropertyAnimationBucket& candidate : buckets) {
         if (
             candidate.target.kind == target.kind &&
             candidate.target.index == target.index &&
-            candidate.property == path) {
+            candidate.property == track.path &&
+            candidate.component == track.component) {
             return candidate;
         }
     }
     PropertyAnimationBucket bucket;
     bucket.target = target;
-    bucket.property = path;
+    bucket.property = track.path;
+    bucket.component = track.component;
+    bucket.quaternion = track.quaternion;
     buckets.push_back(bucket);
     return buckets.back();
 }
@@ -1054,9 +1117,9 @@ void accumulate_weighted_track(
     float weight) {
     bucket.active = true;
     double sign = 1.0;
-    if (
-        bucket.property ==
-        PropertyAnimationPath::rotation_quaternion) {
+    const std::size_t arity =
+        track_stride(bucket.property, bucket.component);
+    if (bucket.quaternion && arity == 4) {
         if (!bucket.has_reference) {
             bucket.reference = sample;
             bucket.has_reference = true;
@@ -1069,7 +1132,6 @@ void accumulate_weighted_track(
             sign = dot < 0.0 ? -1.0 : 1.0;
         }
     }
-    const std::size_t arity = track_arity(bucket.property);
     for (std::size_t index = 0; index < arity; ++index) {
         bucket.values[index] = static_cast<float>(
             static_cast<double>(bucket.values[index]) +
@@ -1151,7 +1213,7 @@ bool update_weighted_property_animations(
             track_bucket(
                 manager.buckets,
                 group->target,
-                track.path).contested = true;
+                track).contested = true;
             contested = true;
         }
     }
@@ -1169,12 +1231,13 @@ bool update_weighted_property_animations(
             PropertyAnimationBucket& bucket = track_bucket(
                 manager.buckets,
                 group->target,
-                track.path);
+                track);
             if (!bucket.contested) {
                 write_track_value(
                     engine,
                     group->target,
                     track.path,
+                    track.component,
                     sample);
                 continue;
             }
@@ -1184,14 +1247,15 @@ bool update_weighted_property_animations(
     for (PropertyAnimationBucket& bucket : manager.buckets) {
         if (!bucket.active) continue;
         if (
-            bucket.property ==
-            PropertyAnimationPath::rotation_quaternion) {
+            bucket.quaternion &&
+            track_stride(bucket.property, bucket.component) == 4) {
             normalize_blended_quaternion(bucket.values);
         }
         write_track_value(
             engine,
             bucket.target,
             bucket.property,
+            bucket.component,
             bucket.values);
     }
     return true;
@@ -1681,17 +1745,22 @@ void enable_animation_blending(
             "Animation seek conversion",
         );
 
-        // A bucket is as wide as its path's key values, which the same
-        // table the clip lowerer validates keys against already states.
+        // A bucket is as wide as the pin's stride for its path: the lane's
+        // own width where the path names the lane, and one where it names
+        // a component of it. Both come out of the same lane table the clip
+        // lowerer resolves paths and validates keys against.
         const trackArity = blending
             ? `
-constexpr std::size_t track_arity(PropertyAnimationPath path) {
+constexpr std::size_t track_stride(
+    PropertyAnimationPath path,
+    PropertyAnimationComponent component) {
+    if (component != PropertyAnimationComponent::whole_lane) return 1;
     switch (path) {
-${[...propertyAnimationPaths.values()]
+${[...propertyAnimationLanes.values()]
     .map(
-        (info) =>
-            `        case PropertyAnimationPath::${info.native}:\n` +
-            `            return ${info.components};`,
+        (lane) =>
+            `        case PropertyAnimationPath::${lane.native}:\n` +
+            `            return ${lane.components};`,
     )
     .join("\n")}
     }
@@ -1929,9 +1998,10 @@ std::array<float, 4> evaluate_track(
         span > 0.0f
             ? (time - track.keys[left].time) / span
             : 0.0f;
-    if (
-        track.path ==
-        PropertyAnimationPath::rotation_quaternion) {
+    // evaluateSampler slerps on the track's own rotation flag, which the
+    // clip derived from its path -- so a path naming one component of a
+    // quaternion lerps that number, as it does upstream.
+    if (track.quaternion) {
         return slerp_quaternion(
             track.keys[left].value,
             track.keys[right].value,
@@ -1950,14 +2020,16 @@ std::array<float, 4> evaluate_track(
 }
 
 ${weightHelpers}/**
- * The pinned binding's writer: one property, one path, on the object the
- * clip was bound to. A mesh transform also marks the mesh, which is what
- * the pinned setters do through their own observable vectors.
+ * The pinned binding's writer: one lane, on the object the clip was bound
+ * to, whole or by the component the path named. A mesh transform also
+ * marks the mesh, which is what the pinned setters do through their own
+ * observable vectors.
  */
 void write_track_value(
     Engine& engine,
     PropertyAnimationTarget target,
     PropertyAnimationPath path,
+    PropertyAnimationComponent component,
     const std::array<float, 4>& value) {
     if (target.kind == PropertyAnimationTargetKind::camera) {
         if (target.index >= engine.cameras.size()) {
@@ -1966,9 +2038,7 @@ void write_track_value(
         }
         CameraRecord& camera = engine.cameras[target.index];
         switch (path) {
-            case PropertyAnimationPath::camera_alpha:
-                camera.alpha = value[0];
-                break;
+${this.propertyWriterArms("camera", "            ")}
             default:
                 throw std::runtime_error(
                     "Property animation path does not belong to a camera.");
@@ -1981,22 +2051,7 @@ void write_track_value(
     }
     MeshRecord& mesh = engine.meshes[target.index];
     switch (path) {
-        case PropertyAnimationPath::position:
-            mesh.position = Vec3d{
-                value[0], value[1], value[2]};
-            break;
-        case PropertyAnimationPath::position_x:
-            mesh.position.x = value[0];
-            break;
-        case PropertyAnimationPath::scaling:
-            mesh.scaling = Vec3{
-                value[0], value[1], value[2]};
-            break;
-        case PropertyAnimationPath::rotation_quaternion:
-            mesh.rotation_quaternion = Vec4{
-                value[0], value[1], value[2], value[3]};
-            mesh.has_rotation_quaternion = true;
-            break;
+${this.propertyWriterArms("mesh", "        ")}
         default:
             throw std::runtime_error(
                 "Property animation path does not belong to a mesh.");
@@ -2017,6 +2072,7 @@ void apply_group(
             engine,
             group->target,
             track.path,
+            track.component,
             evaluate_track(track, group->current_time));
     }
 }
