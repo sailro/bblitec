@@ -1051,6 +1051,9 @@ struct MeshRecord {
     bool has_render_order = false;
     double render_order = 0.0;
     // Self-visibility (scene-node.ts `visible?: boolean`, undefined = true).
+    // No PICK path consults it -- `gpu-picker.ts` filters on `pickable`
+    // alone -- which is the mirror of `pickable` below, and why the render
+    // plan keeps a hidden mesh and only its draw lists drop one.
     // Written by scene code and by glTF KHR_node_visibility, which
     // materializes the cascade per mesh the way the pinned
     // `setSubtreeVisible` materializes it per node: the extension cascades

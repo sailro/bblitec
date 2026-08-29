@@ -8078,6 +8078,15 @@ bool run_gpu_engine(Engine& engine) {
                                         (sided_mode == 1)) {
                                         continue;
                                     }
+                                    // geometry-renderer-task.ts skips a hidden mesh at the draw
+                                    // itself. This path consumes no draw list -- it walks the task's
+                                    // own meshes and resolves each against the plan -- so it cannot
+                                    // inherit append_draw's answer and asks the same predicate.
+                                    if (!upstream::mesh_draws(
+                                            engine.meshes[
+                                                entry.mesh.value])) {
+                                        continue;
+                                    }
                                     const std::size_t mesh_index =
                                         gpu_mesh_index(entry.mesh);
                                     if (

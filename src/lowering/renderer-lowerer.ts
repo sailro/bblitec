@@ -1368,7 +1368,12 @@ ${options.picking
 // reaches the next pick. A copy taken when the plan was built would freeze it.
 bool pick_candidate(const MeshRecord& mesh);
 `
-    : ""}// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
+    : ""}// scene-node.ts visible: undefined or true draws, false skips. One
+// definition, because the draw-list seam and both backends' depth-only task
+// path ask it -- that path consumes no draw list, so it cannot inherit the
+// seam's answer.
+bool mesh_draws(const MeshRecord& mesh);
+// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
 // includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
 // not. One definition, because both the Standard slot writer and the pinned
 // per-draw mesh block need the same per-mesh light set.
@@ -1643,7 +1648,15 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
 void append_draw(
     RenderDrawLists& result,
     std::uint32_t item_index,
-    const RenderItem& item) {
+    const RenderItem& item,
+    const Engine& engine) {
+    // Tested HERE rather than where the plan is built, because the pin tests
+    // it per draw and never when choosing pick candidates: see pick_candidate
+    // above. Dropping a hidden mesh from the plan would hide it from the pick
+    // pass, which walks the plan.
+    if (!mesh_draws(engine.meshes[item.mesh.value])) {
+        return;
+    }
     RenderDrawCommand command;
     command.item_index = item_index;
     command.item = item;
@@ -1749,7 +1762,8 @@ RenderDrawLists build_render_draw_lists(
             bind_render_item(
                 items[index],
                 engine,
-                items[index].material));
+                items[index].material),
+            engine);
     }
     order_draw_lists(result);
     return result;
@@ -1776,7 +1790,8 @@ RenderDrawLists build_render_task_draw_lists(
             append_draw(
                 result,
                 static_cast<std::uint32_t>(index),
-                item);
+                item,
+                engine);
         }
         order_draw_lists(result);
         return result;
@@ -1808,7 +1823,8 @@ RenderDrawLists build_render_task_draw_lists(
         append_draw(
             result,
             item_index,
-            bind_render_item(*found, engine, entry.material));
+            bind_render_item(*found, engine, entry.material),
+            engine);
     }
     order_draw_lists(result);
     return result;
@@ -1904,14 +1920,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         const MeshRecord& mesh = engine.meshes[handle.value];
         if (mesh.geometry >= engine.geometries.size()) {
             continue;
-        }${options.nodeVisibility ? `
-        // scene-node.ts visible, written by scene code and materialized
-        // per mesh by the KHR_node_visibility loader and the animation
-        // pointer, exactly as the pinned setSubtreeVisible materializes it
-        // per node.
-        if (!mesh.visible) {
-            continue;
-        }` : ""}
+        }
         RenderItem item;
         item.mesh = handle;
         item.geometry = mesh.geometry;
@@ -2189,7 +2198,14 @@ bool pick_candidate(const MeshRecord& mesh) {
 }
 
 `
-    : ""}// src/render/lights-ubo.ts affectsMesh.
+    : ""}// scene-node.ts visible, written by scene code and materialized per mesh by
+// the KHR_node_visibility loader and the animation pointer, exactly as the
+// pinned setSubtreeVisible materializes it per node.
+bool mesh_draws(const MeshRecord& mesh) {
+    return mesh.visible;
+}
+
+// src/render/lights-ubo.ts affectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
     std::uint32_t mesh_index) {

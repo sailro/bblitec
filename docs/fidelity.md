@@ -749,12 +749,13 @@ and bundle invalidation stays O(1). The pin's renderables test
 `mesh.visible === false` inside `draw`, which for an opaque mesh runs when
 the cached render bundle is RECORDED; `render-task.ts` re-records only on
 `scene._renderableVersion`, the visibility epoch, or an empty bundle list.
-This port records no bundles and caches the render plan on the same rule --
-`build_render_plan` skips an invisible mesh and both backends rebuild it on
-`mesh_membership_version` -- so for an OPAQUE mesh the two defer identically.
-The `regression-mesh-flags` gate measures both ends of that: a mesh hidden
-before the plan is built shows the one behind it, and a mesh hidden two
-frames after the scene's last membership change stays drawn on both sides.
+This port records no bundles and caches the draw lists on the same rule --
+`append_draw` drops an invisible mesh and both backends rebuild the plan and
+its lists on `mesh_membership_version` -- so for an OPAQUE mesh the two defer
+identically. The `regression-mesh-flags` gate measures both ends of that: a
+mesh hidden before the draw lists are built shows the one behind it, and a
+mesh hidden two frames after the scene's last membership change stays drawn
+on both sides.
 `setMeshVisible` is the pin's entry point for a write that must take effect
 at once, and it is not reached yet.
 
@@ -762,11 +763,16 @@ The deferral is the opaque bucket's alone, and this port applies it wider.
 `drawList` tests `mesh.visible === false` too, and `render-task.ts` calls it
 on `_directBindings` and `_transparentBindings` every frame, OUTSIDE the
 bundle-record branch -- so upstream a transparent or direct-bound mesh
-re-reads the flag each frame and a bare write lands on the next one. Folding
-`visible` into plan membership gives every bucket the opaque rate. No
-measured scene writes the flag on a transparent mesh, and the fix is to test
-it where the draw lists are walked rather than where the plan is built, which
-would give both of the pin's rates from one mechanism; `TODO.md` carries it.
+re-reads the flag each frame and a bare write lands on the next one. Here the
+test sits in `append_draw`, the seam every draw-list builder funnels through,
+so it runs when the draw lists are built and every bucket inherits the plan
+cache's rate. No measured scene writes the flag on a transparent mesh.
+
+Where the test sits is load-bearing for a reason the pin does not have: this
+port's pick pass walks the render plan, because that is the list each
+backend's own mesh vector is indexed by. Testing `visible` at plan MEMBERSHIP
+would drop a hidden mesh from that list, and upstream a hidden mesh is still
+a pick candidate -- see [features](features.md#picking).
 
 **A bounded multi-frame drain holds the capture, it does not erase.** The
 single-frame `await new Promise(r => requestAnimationFrame(() => r()))` is

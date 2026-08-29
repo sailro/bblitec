@@ -328,15 +328,6 @@ platform boundary.
   - a thin-instanced, VAT or morph/skeleton candidate: the first two need
     the advanced pipeline's instance-composed id, the third the deform
     projection `deform-picking-projection.ts` builds.
-  - a mesh the plan dropped. The pass walks the render plan, which skips an
-    invisible mesh, so this port cannot pick one where `gpu-picker.ts` can --
-    it never tests visibility. Both this and the transparent-bucket half of
-    the `visible` deferral ([fidelity](docs/fidelity.md#scene-hierarchy)) come
-    from one choice: `visible` is folded into plan MEMBERSHIP, where the pin
-    tests it per draw and lets only the opaque bundle cache defer it. Testing
-    it where the draw lists are walked gives both of the pin's rates from one
-    mechanism, keeps an invisible mesh pickable, and makes `visible = true`
-    restore a mesh without waiting for a membership change.
   - `PickingInfo.pickedPoint`, `distance` and `ray`. The pin derives the
     first two from `mat4Invert(vp)` over the sampled NDC and the depth
     attachment, which this port reads back but does not yet consume; the

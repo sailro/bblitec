@@ -9380,7 +9380,20 @@ bool run_dawn_engine(Engine& engine) {
             DawnMesh& dawn_mesh = state.meshes[index];
             // Grid and shader-variant vertex stages own no
             // deformation or instancing uniforms.
+            // Both writes below are unconditional -- bone palettes and
+            // parent worlds carry no version -- so they would run every
+            // frame for a mesh that never draws. SDL pushes the same two
+            // per DRAW and so pays nothing for one; this loop was hoisted
+            // to once per plan item, which widened it. The plan keeps a
+            // hidden mesh so the pick pass can see it, so the sync asks
+            // the same predicate the draw lists ask.
+            //
+            // Sound because visibility can only reach the draw lists
+            // through a mesh_membership_version bump, and the rebuild that
+            // bump triggers runs earlier in this same frame -- so the
+            // frame a mesh starts drawing is a frame this loop writes it.
             const bool mesh_uniform_item =
+                upstream::mesh_draws(mesh) &&
                 item.material_kind !=
                     upstream::RenderMaterialKind::grid &&
                 item.material_kind !=
@@ -11125,6 +11138,14 @@ bool run_dawn_engine(Engine& engine) {
                             if (
                                 material.double_sided !=
                                 (sided_mode == 1)) {
+                                continue;
+                            }
+                            // geometry-renderer-task.ts skips a hidden mesh at the draw
+                            // itself. This path consumes no draw list -- it walks the task's
+                            // own meshes and resolves each against the plan -- so it cannot
+                            // inherit append_draw's answer and asks the same predicate.
+                            if (!upstream::mesh_draws(
+                                    engine.meshes[entry.mesh.value])) {
                                 continue;
                             }
                             std::size_t mesh_index =
