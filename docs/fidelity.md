@@ -514,22 +514,36 @@ entity walk reaches only the first half of `addToScene`). Measured on scene
 99's Xbot: 0.816 full MAD against the browser with the channel evaluation and
 0.000 without it.
 
-**A bone override is applied in two phases, and only the second survives a
-clip.** `applyOverridesToTRS` writes the translation, rotation and scale bits
+**A bone override is applied in two phases, and this slice reaches the second
+alone.** `applyOverridesToTRS` writes the translation, rotation and scale bits
 into the working pose *before* channel evaluation, so a clip that animates the
 same bone wins; it writes the hidden bit *after* it, which is what keeps
 `setBoneVisible` in force on a rig that bakes a constant scale track onto every
-bone. The generated bake takes a working pose of its own rather than walking
-the live node TRS, exactly as `skeleton-pose.ts` exists apart from
-`skeleton-updater.ts` upstream: the bake moves the skins and nothing else, and
-it answers with no animation running. The four mask bits, the two phases' order,
-`setBoneVisible`'s two arms, the first-name-wins map and the unnamed-joint
-fallback are each read from the declaration that states them
-(`src/lowering/gltf/bone-control.ts`), because the two copies of the pose math
-agree only while those do. Reaching the feature at `enableBoneControl` is the
-pin's own boundary -- it installs the builder hook, so a scene calling it after
-a load gets skeletons for nothing upstream and would get them for everything
-here, which refuses instead. Gated by scene 99.
+bone. `setBoneVisible` is the one lowered mutator, so no override this port can
+build carries a transform bit — the emitted bake applies the hidden phase only,
+and `BoneOverride` carries the mask without the lanes the refused setters would
+fill. The bake takes a working pose of its own rather than walking the live node
+TRS, exactly as `skeleton-pose.ts` exists apart from `skeleton-updater.ts`
+upstream: it writes palettes and nothing else, as `writeBoneTextures` does, and
+it answers with no animation running. The hidden bit, the pin's own bake order,
+`setBoneVisible`'s two arms, the first-name-wins map, the per-node skin grouping
+and the unnamed-joint fallback are each read from the declaration that states
+them (`src/lowering/gltf/bone-control.ts`), because the two copies of the pose
+math agree only while those do.
+
+Writing palettes alone leaves one quantity behind, and it is unobservable: a
+primitive with no authored normals carries CPU face normals the pose pass
+recomputes (this port's own fold, [architecture](architecture.md#animation-and-deformation)),
+and a bake does not. The vertices a hide moves are exactly those weighted to the
+collapsed sub-tree, whose triangles degenerate to a point, so the normals that
+go stale belong to triangles that cover no pixel; every other vertex keeps the
+pose the seed gave it.
+
+Reaching the feature at `enableBoneControl` is the pin's own boundary -- it
+installs the builder hook, so only the loads after it carry skeletons. One
+generated loader serves every load here, so an asset loaded before the enable
+would get skeletons this port cannot withhold from it, and that order refuses
+rather than building them quietly. Gated by scene 99.
 
 **How large a skin stays on the GPU follows its palette's transport.** A mesh
 whose palette rides the pinned per-bone texture leaves the uniform array's bone

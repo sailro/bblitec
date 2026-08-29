@@ -635,15 +635,16 @@ test("emits the opt-in bone-control chunk only when it is reached", () => {
         source,
         /asset\.bone_overrides\.assign\(\s*animation_runtime->nodes\.size\(\), BoneOverride\{\}\)/,
     );
-    // The bake resets to the authored rest pose, applies the transform
-    // overrides, then the hidden phase, then composes the palettes. The
-    // mask bits come from the pin's own guards, so they are asserted as
-    // the values that module declares rather than as literals typed here.
+    // The bake resets to the authored rest pose, applies the one override
+    // phase this slice reaches, then composes the palettes. The hidden bit
+    // comes from the pin's own guard, so it is asserted as the value that
+    // module declares rather than as a literal typed here — and the three
+    // transform bits are absent, because no lowered setter can set one.
     assert.match(
         source,
         /translation\[index\] = node\.rest_translation;/,
     );
-    assert.match(source, /entry\.mask & 1u[\s\S]*?entry\.mask & 2u[\s\S]*?entry\.mask & 4u/);
+    assert.doesNotMatch(source, /mask &\s*(1|2|4)u/);
     assert.match(
         source,
         /mask &\s*8u\) != 0u\) \{\s*scaling\[index\] = Vec3\{0\.0f, 0\.0f, 0\.0f\};/,

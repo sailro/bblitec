@@ -1992,16 +1992,18 @@ struct AnimationGroupRecord {
 
 /**
  * One bone's local-transform override, the pin's own `BoneOverride`
- * (`src/skeleton/bone-control.ts`). `mask` bits: 1 = translation,
- * 2 = rotation, 4 = scale, 8 = hidden. Bits 1/2/4 are applied before
- * channel evaluation so animation wins; bit 8 is applied after it so
- * visibility does.
+ * (`src/skeleton/bone-control.ts`), at the slice this port reaches.
+ *
+ * Upstream the mask carries four bits and the record carries the
+ * translation, rotation and scale each of the first three replaces.
+ * `setBoneVisible` is the one lowered mutator here, so no override this
+ * port can build carries anything but the hidden bit -- the lanes arrive
+ * with the setters that fill them. The mask itself stays, because the
+ * pin's own show arm is written on it: clear the bit, and drop the
+ * override once the mask is empty.
  */
 struct BoneOverride {
     std::uint32_t mask = 0;
-    Vec3 translation{};
-    Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
-    Vec3 scaling{1.0f, 1.0f, 1.0f};
 };
 
 /**
@@ -2014,7 +2016,6 @@ struct BoneOverride {
 struct BoneRecord {
     std::string name;
     std::uint32_t node_index = 0;
-    std::uint32_t skeleton = invalid_handle;
 };
 
 /**
@@ -2109,13 +2110,11 @@ struct AssetRecord {
      * `_overrides` map by node index for the same reason, since a single
      * skin is often split across meshes and an override may reach across
      * skins through the hierarchy. A zero mask is an absent entry, which is
-     * exactly what the pin's own `delete` leaves behind, and the map's
-     * insertion order is unobservable here because each entry writes only
-     * its own node's slots.
+     * exactly what the pin's own `delete` leaves behind, and a dense table
+     * is what makes its `size() > 0` gate structural: the bake walks these
+     * nodes either way.
      */
     std::vector<BoneOverride> bone_overrides;
-    /** How many of them carry a mask, the pin's own `_overrides.size()`. */
-    std::size_t bone_override_count = 0;
     /**
      * The pin's eager bake: recompute this file's node hierarchy from rest
      * plus overrides and refresh every skinned mesh's palette. Filled only

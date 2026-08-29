@@ -3,7 +3,6 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 // template through gltf/loader.ts, so a value import of the barrel here
 // would be a runtime cycle.
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
-import type { LoweredBoneControl } from "../gltf/bone-control.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -149,11 +148,12 @@ export interface GltfLoaderLoweredSegments {
     gltfCameraLoading: string;
     gltfCameraPoseRefresh: string;
     /**
-     * The opt-in bone-control facts, or undefined when the scene never
-     * reached `enableBoneControl`: the four override mask bits and the
-     * name an unnamed joint takes, each read from the pinned chunk.
+     * The opt-in bone-control chunk: the skeleton build with its eager
+     * bake, and the two entry points a scene reaches it through. Empty
+     * strings when the scene never reached `enableBoneControl`.
      */
-    boneControl: LoweredBoneControl | undefined;
+    boneControlLoading: string;
+    boneControlEntryPoints: string;
     /**
      * The pinned primitive-mesh fallback-name prefix
      * (`gltf_mesh_` in `<mesh name> || gltf_mesh_<i>`), read from both
@@ -276,11 +276,8 @@ export function gltfLoaderCpp(
         materialSpecular = false,
         selectedMaterialVariant = "",
         gltfCameras = false,
+        boneControl = false,
     } = options;
-    // The opt-in bone-control chunk, present only for a scene that
-    // reached `enableBoneControl` -- one source for both the record
-    // fields its bake reads and the bake itself.
-    const boneControl = lowered.boneControl;
     // The scene selected a variant, so the loader resolves each mapped
     // primitive's material. `JSON.stringify` is the C++ string literal: the
     // name is asset-declared text, and every other interpolated literal in
@@ -5126,191 +5123,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             animation_runtime->clips[clip].additive_reference_time =
                 reference_time;
         };` : ""}${animationBlending ? `
-        asset.animation_blend = apply_blended_animation;` : ""}${boneControl ? `
-        // src/skeleton/bone-control.ts#buildSkeletons. One Skeleton per
-        // NODE carrying both a skin and mesh primitives, which is the
-        // pin's own extractSkinGroups grouping: a skin instanced twice is
-        // two skeletons, a mesh split into primitives is one. A scene that
-        // never reached enableBoneControl emits a loader with none of this
-        // in it, which is the boundary the pin draws with its two null
-        // hooks in bone-control-hooks.ts.
-        const std::uint32_t asset_index =
-            static_cast<std::uint32_t>(engine.assets.size());
-        std::vector<std::pair<std::size_t, std::size_t>> skin_groups;
-        for (const AnimatedMeshBinding& binding :
-             animation_runtime->meshes) {
-            if (
-                binding.skin >=
-                animation_runtime->skins.size()) {
-                continue;
-            }
-            const auto grouped = std::find_if(
-                skin_groups.begin(),
-                skin_groups.end(),
-                [&binding](
-                    const std::pair<std::size_t, std::size_t>& group) {
-                    return group.first == binding.node;
-                });
-            if (grouped != skin_groups.end()) continue;
-            skin_groups.emplace_back(binding.node, binding.skin);
-        }
-        for (const std::pair<std::size_t, std::size_t>& group :
-             skin_groups) {
-            const SkinRuntime& skin =
-                animation_runtime->skins[group.second];
-            const std::uint32_t skeleton_index =
-                static_cast<std::uint32_t>(engine.skeletons.size());
-            SkeletonRecord skeleton;
-            skeleton.asset = asset_index;
-            for (const std::size_t joint : skin.joints) {
-                // The pin coalesces the joint node's name on ABSENCE, so
-                // an authored empty name is kept and only a missing one
-                // takes the interpolated fallback.
-                const std::string fallback =
-                    ${boneControl ? JSON.stringify(boneControl.unnamedBonePrefix) : ""} + std::to_string(joint);
-                BoneRecord bone;
-                bone.name = joint < node_json.size()
-                    ? string_or(
-                          node_json[joint].as_object(),
-                          "name",
-                          fallback)
-                    : fallback;
-                bone.node_index = static_cast<std::uint32_t>(joint);
-                bone.skeleton = skeleton_index;
-                engine.bones.push_back(std::move(bone));
-                skeleton.bones.push_back(BoneHandle{
-                    static_cast<std::uint32_t>(
-                        engine.bones.size() - 1)});
-            }
-            engine.skeletons.push_back(std::move(skeleton));
-            asset.skeletons.push_back(SkeletonHandle{skeleton_index});
-        }
-        // The override map is asset-wide upstream and keyed by node index,
-        // because one skin is often split across meshes and an override
-        // may reach across skins through the hierarchy. One slot per node
-        // says the same thing.
-        asset.bone_overrides.assign(
-            animation_runtime->nodes.size(), BoneOverride{});
-        // The eager bake: rest pose, both override phases, the node worlds
-        // and the palettes. It composes a working pose of its own rather
-        // than walking the live node TRS, exactly as upstream keeps
-        // skeleton-pose.ts apart from the animation tick -- so a bake
-        // moves the skins and nothing else, and it answers with no
-        // animation running at all.
-        asset.bake_skeletons =
-            [animation_runtime, &engine, asset_index]() {
-            const AssetRecord& owner = engine.assets[asset_index];
-            const std::size_t node_count =
-                animation_runtime->nodes.size();
-            // resetTRS
-            std::vector<Vec3> translation(node_count);
-            std::vector<Vec4> rotation(node_count);
-            std::vector<Vec3> scaling(node_count);
-            for (std::size_t index = 0; index < node_count; ++index) {
-                const AnimatedNode& node =
-                    animation_runtime->nodes[index];
-                translation[index] = node.rest_translation;
-                rotation[index] = node.rest_rotation;
-                scaling[index] = node.rest_scale;
-            }
-            if (owner.bone_override_count > 0) {
-                const std::size_t overridden = std::min(
-                    node_count,
-                    owner.bone_overrides.size());
-                // applyOverridesToTRS, transform phase: the lanes a clip
-                // would overwrite, which is why the pin writes them before
-                // channel evaluation.
-                for (
-                    std::size_t index = 0;
-                    index < overridden;
-                    ++index) {
-                    const BoneOverride& entry =
-                        owner.bone_overrides[index];
-                    if ((entry.mask & ${boneControl ? boneControl.maskTranslation : 0}u) != 0u) {
-                        translation[index] = entry.translation;
-                    }
-                    if ((entry.mask & ${boneControl ? boneControl.maskRotation : 0}u) != 0u) {
-                        rotation[index] = entry.rotation;
-                    }
-                    if ((entry.mask & ${boneControl ? boneControl.maskScale : 0}u) != 0u) {
-                        scaling[index] = entry.scaling;
-                    }
-                }
-                // ...and the hidden phase after it, which is what keeps a
-                // hidden bone hidden while a clip animates its scale --
-                // every Mixamo rig bakes a constant scale track onto every
-                // bone, so the two phases are not interchangeable.
-                for (
-                    std::size_t index = 0;
-                    index < overridden;
-                    ++index) {
-                    if (
-                        (owner.bone_overrides[index].mask &
-                         ${boneControl ? boneControl.maskHidden : 0}u) != 0u) {
-                        scaling[index] = Vec3{0.0f, 0.0f, 0.0f};
-                    }
-                }
-            }
-            // computeNodeWorldMatrices, over that working pose. The root
-            // flip stays folded into native_matrix at the palette, which
-            // is where every other node world in this loader carries it.
-            std::vector<Matrix> world(node_count);
-            std::vector<bool> computed(node_count, false);
-            std::vector<bool> computing(node_count, false);
-            std::function<const Matrix&(std::size_t)> bake_world =
-                [&](std::size_t index) -> const Matrix& {
-                if (computed[index]) return world[index];
-                if (computing[index]) {
-                    throw std::runtime_error(
-                        "glTF node hierarchy contains a cycle.");
-                }
-                computing[index] = true;
-                const AnimatedNode& node =
-                    animation_runtime->nodes[index];
-                const Matrix local = node.has_matrix
-                    ? node.matrix
-                    : trs_matrix(
-                          translation[index],
-                          rotation[index],
-                          scaling[index]);
-                world[index] = node.parent >= 0
-                    ? multiply_matrix(
-                          bake_world(
-                              static_cast<std::size_t>(node.parent)),
-                          local)
-                    : local;
-                computing[index] = false;
-                computed[index] = true;
-                return world[index];
-            };
-            // writeBoneTextures: the same joint-world times inverse-bind
-            // product the pose pass composes, in the same convention --
-            // the mesh world is conjugated into the palette here, which is
-            // what native_matrix applies.
-            for (const AnimatedMeshBinding& binding :
-                 animation_runtime->meshes) {
-                if (
-                    binding.skin >=
-                    animation_runtime->skins.size()) {
-                    continue;
-                }
-                const SkinRuntime& skin =
-                    animation_runtime->skins[binding.skin];
-                MeshRecord& mesh_record =
-                    engine.meshes.at(binding.mesh);
-                mesh_record.bone_matrices.clear();
-                for (
-                    std::size_t joint = 0;
-                    joint < skin.joints.size();
-                    ++joint) {
-                    mesh_record.bone_matrices.push_back(
-                        native_matrix(
-                            multiply_matrix(
-                                bake_world(skin.joints[joint]),
-                                skin.inverse_bind_matrices[joint])));
-                }
-            }
-        };` : ""}
+        asset.animation_blend = apply_blended_animation;` : ""}${lowered.boneControlLoading}
     }${boneControl ? `
     // The pin builds a Skeleton per skin whatever the file animates. Here
     // the joint list, the inverse bind matrices and the rest hierarchy all
@@ -5327,65 +5140,6 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
-${boneControl ? `
-// src/skeleton/bone-control.ts#getBoneByName, which is one
-// skeleton._byName.get(name). The map keeps the FIRST bone carrying a
-// name, so the linear walk in joint order answers the same question; a
-// miss is the invalid handle, which is the undefined the pin returns.
-BoneHandle get_bone_by_name(
-    Engine& engine,
-    SkeletonHandle skeleton,
-    const std::string& name) {
-    if (skeleton.value >= engine.skeletons.size()) return BoneHandle{};
-    for (const BoneHandle bone :
-         engine.skeletons[skeleton.value].bones) {
-        if (
-            bone.value < engine.bones.size() &&
-            engine.bones[bone.value].name == name) {
-            return bone;
-        }
-    }
-    return BoneHandle{};
-}
-
-// src/skeleton/bone-control.ts#setBoneVisible. Hiding ensures the override
-// and sets the hidden bit; showing clears it, drops an override the clear
-// emptied, and re-bakes only when there was one to clear. Visibility is not
-// a transform override animation can overwrite -- the bake applies it after
-// channel evaluation -- which is what makes it survive a rig that bakes a
-// constant scale track onto every bone.
-void set_bone_visible(
-    Engine& engine,
-    SkeletonHandle skeleton,
-    BoneHandle bone,
-    bool visible) {
-    if (
-        skeleton.value >= engine.skeletons.size() ||
-        bone.value >= engine.bones.size()) {
-        return;
-    }
-    const std::uint32_t asset =
-        engine.skeletons[skeleton.value].asset;
-    if (asset >= engine.assets.size()) return;
-    AssetRecord& owner = engine.assets[asset];
-    const std::uint32_t node = engine.bones[bone.value].node_index;
-    if (node >= owner.bone_overrides.size()) return;
-    BoneOverride& entry = owner.bone_overrides[node];
-    if (!visible) {
-        if (entry.mask == 0u) ++owner.bone_override_count;
-        entry.mask |= ${boneControl ? boneControl.maskHidden : 0}u;
-        if (owner.bake_skeletons) owner.bake_skeletons();
-        return;
-    }
-    if ((entry.mask & ${boneControl ? boneControl.maskHidden : 0}u) == 0u) return;
-    entry.mask &= ~static_cast<std::uint32_t>(${boneControl ? boneControl.maskHidden : 0}u);
-    if (entry.mask == 0u) {
-        entry = BoneOverride{};
-        --owner.bone_override_count;
-    }
-    if (owner.bake_skeletons) owner.bake_skeletons();
-}
-` : ""}
-} // namespace bbl
+${lowered.boneControlEntryPoints}} // namespace bbl
 `;
 }

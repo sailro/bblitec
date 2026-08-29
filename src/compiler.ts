@@ -6720,17 +6720,20 @@ class Compiler
     }
 
     /**
-     * Whether a feature has already been reached at this point in the
-     * lowering walk.
+     * Whether a glTF has already been loaded at this point in the walk.
      *
-     * Reach order is the scene's own statement order, so this answers a
-     * question about *when* a call was made — which is what an opt-in the
-     * pin requires before a later call needs. `enableBoneControl` is the
-     * one such surface: upstream it installs a builder hook, so only the
-     * loads after it carry skeletons.
+     * The one question this compiler asks of the reached-feature set
+     * *during* the walk rather than after it, and it is deliberately
+     * narrow: the set is otherwise an accumulate-only inventory, and a
+     * general "has this been reached yet" query would make every consumer
+     * order-sensitive. `enableBoneControl` needs it because upstream the
+     * call installs a builder hook, so only the loads after it carry
+     * skeletons — and this port emits ONE loader for every load, so it
+     * cannot give two assets different builders and refuses the order
+     * instead.
      */
-    public featureReached(feature: Feature): boolean {
-        return this.features.has(feature);
+    public gltfAlreadyLoaded(): boolean {
+        return this.features.has("loader:gltf");
     }
 
     public ensureDefaultRenderTask(

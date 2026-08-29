@@ -214,6 +214,16 @@ const handleCollections: readonly HandleCollectionRead[] = [
   },
 ];
 
+/**
+ * The `T | undefined` test for a handle: a slot nothing filled and a
+ * search that matched nothing are one shape here, and both report it by
+ * carrying `invalid_handle`. Spelled once, because a second spelling
+ * composes differently under `??` and `!`.
+ */
+export function handleFoundCpp(cpp: string): string {
+  return `(${cpp}.value != bbl::invalid_handle)`;
+}
+
 /** Whether any handle owner can expose a collection with this source name. */
 export function isHandleCollectionProperty(property: string): boolean {
   return handleCollections.some((candidate) => candidate.property === property);
@@ -813,7 +823,7 @@ export function readProperty(
     ...(rule.impure ? { impure: true as const } : {}),
     ...(rule.optionalHandle
       ? {
-          optionalFoundCpp: `(${cpp}.value != bbl::invalid_handle)`,
+          optionalFoundCpp: handleFoundCpp(cpp),
         }
       : {}),
     ...(rule.optionalFound

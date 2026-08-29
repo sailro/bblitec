@@ -16,7 +16,6 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { resizingArrayMethods } from "./data-methods.js";
-import { isHandleCollectionProperty } from "./properties.js";
 
 /**
  * The one-argument `Math` members scene code may call, each a `<cmath>`
@@ -121,20 +120,6 @@ function resizedNames(file: ts.SourceFile): ReadonlySet<string> {
 /** Whether nothing in the entry source can change `name`'s length. */
 export function isNeverResized(name: ts.Identifier): boolean {
     return !resizedNames(name.getSourceFile()).has(name.text);
-}
-
-/**
- * Whether an expression names one of the engine handle collections
- * `properties.ts` publishes. Only the property NAME is asked, because
- * that is what the collection path checks before it compiles an owner at
- * all -- deciding on the owner would mean compiling it here to find out.
- */
-function namesHandleCollection(expression: ts.Expression): boolean {
-    return (
-        (ts.isPropertyAccessExpression(expression) ||
-            ts.isPropertyAccessChain(expression)) &&
-        isHandleCollectionProperty(expression.name.text)
-    );
 }
 
 export interface DataLoweringContext {
@@ -562,7 +547,8 @@ export class DataLowerer {
                           unwrapped.expression,
                       )
                     : undefined) ??
-                (unwrapped.questionDotToken
+                (unwrapped.questionDotToken &&
+                !this.namesHandleCollection(unwrapped.expression)
                     ? this.context.compileValue(
                           unwrapped.expression,
                       )
@@ -591,16 +577,8 @@ export class DataLowerer {
                     unwrapped.expression,
                     mode,
                 ) ??
-                // An optional index whose owner is a handle collection
-                // belongs to the collection path, not to this one: the
-                // members are engine handles the loader created, and
-                // compiling the owner here would ask the data model for a
-                // value it has no type for. `container.skeletons?.[0]` is
-                // the reached shape.
                 (unwrapped.questionDotToken &&
-                !namesHandleCollection(
-                    this.context.unwrap(unwrapped.expression),
-                )
+                !this.namesHandleCollection(unwrapped.expression)
                     ? this.context.compileValue(
                           unwrapped.expression,
                       )
@@ -1612,6 +1590,41 @@ export class DataLowerer {
      * source tests the result for truthiness; a trailing `!` deliberately
      * takes the ordinary direct-index path instead.
      */
+    /**
+     * Whether an expression reads a collection of engine handles, which
+     * belongs to the handle-collection path rather than to this one.
+     *
+     * Both optional forms -- `container.skeletons?.[0]` and the property
+     * read one level up -- carry an escape hatch that compiles the owner
+     * when the data path cannot; for a handle collection that asks the
+     * data model for a value it has no type for, and throws before the
+     * collection path is reached. The declared type is what answers:
+     * `data-types.ts` already maps every pinned handle type, so a further
+     * collection needs no row here.
+     */
+    private namesHandleCollection(
+        expression: ts.Expression,
+    ): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            !ts.isPropertyAccessExpression(unwrapped) &&
+            !ts.isPropertyAccessChain(unwrapped)
+        ) {
+            return false;
+        }
+        const element = this.context.checker.getIndexTypeOfType(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(unwrapped),
+            ),
+            ts.IndexKind.Number,
+        );
+        return (
+            element !== undefined &&
+            this.context.dataTypes.fromTsType(element, unwrapped)
+                ?.kind === "handle"
+        );
+    }
+
     public compileGuardableElementAccess(
         access: ts.ElementAccessExpression,
     ): Value | undefined {
@@ -4383,12 +4396,29 @@ export class DataLowerer {
                 // expression a second time, which for an intrinsic that
                 // emits a temporary means calling it twice -- so the
                 // already-compiled value is handed on instead.
+                //
+                // A handle that reports its own miss (a search, or a slot
+                // nothing filled) carries that as its found flag, and the
+                // optional is where a miss becomes absence: wrapping it
+                // unconditionally would make `undefined` read as a present
+                // invalid handle, which every guard downstream would then
+                // answer the wrong way.
                 if (
                     optional &&
                     dataType.inner.kind === "handle" &&
                     optional.kind === dataType.inner.handle
                 ) {
-                    return optional.cpp;
+                    if (optional.optionalFoundCpp === undefined) {
+                        return optional.cpp;
+                    }
+                    const cppType =
+                        this.context.dataTypes.cppType(dataType);
+                    this.context.reachJsData();
+                    return (
+                        `(${optional.optionalFoundCpp}` +
+                        ` ? ${cppType}{${optional.cpp}}` +
+                        ` : ${cppType}{std::nullopt})`
+                    );
                 }
                 return this.compileForSink(
                     unwrapped,
