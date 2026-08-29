@@ -745,6 +745,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 managedAnimationGroups: features.includes(
                     "animation:managed-groups",
                 ),
+                transformNodes: features.includes("mesh:transform-node"),
+                mirroredMeshes: features.includes("mesh:mirrored"),
             }),
             generated,
         );
@@ -1438,6 +1440,12 @@ ${wgsl}`,
                     punctualLights:
                         options.punctualLights,
                     nodeVisibility: options.nodeVisibility,
+                    mirroredMeshes: features.includes(
+                        "mesh:mirrored",
+                    ),
+                    transformNodes: features.includes(
+                        "mesh:transform-node",
+                    ),
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),

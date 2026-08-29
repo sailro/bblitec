@@ -1,0 +1,84 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "the eager per-frame `refresh_parented_meshes` re-derived a mechanism the pin does not have: its version snapshot is the FOREIGN-parent fallback only, and an in-engine hierarchy invalidates by push (`markLocalDirty` -> `invalidate()` recursing into children the parent setter registered). The node setters now push, `set_mesh_parent` registers the child as `_addChild` does, and `parent_chain_version`, `refresh_parented_meshes`, `MeshRecord::parent_transform_version` and both PAL call sites are deleted. It had already diverged: the pass ran AFTER the vertex re-bake in SDL and BEFORE it in Dawn",
+      "applied": true
+    },
+    {
+      "summary": "the mirrored-mesh watcher was called from four hand-written PAL blocks, one of which asserted in a comment that it matched the other backend's frame position. `installMirroredMeshSupport` is scene state upstream -- it seeds, then pushes onto `scene._beforeRender` -- so the generated opt-in does both and neither backend now contains a single mirrored-mesh line",
+      "applied": true
+    },
+    {
+      "summary": "the transform-node composition was emitted unconditionally: every generated scene carried 79 lines of unreachable C++, including a second full copy of `composeTrsLocalMatrix`, gated by nothing even though the feature that owns it existed",
+      "applied": true
+    },
+    {
+      "summary": "`nav_mesh_world` became a byte-identical duplicate of the now-unconditional `mesh_local_matrix`, and its comment (\"a scene-code mesh has no parent, so its worldMatrix IS its local TRS\") became false the moment a mesh could carry one; the navigation merge now reads `upstream::mesh_world_matrix`, so a parented caster follows its parent there too",
+      "applied": true
+    },
+    {
+      "summary": "`formatDefault` resurrected the integer-based literal rule that `cpp-literals.ts` documents as retired (it emits `1e+21.0f`, and loses the sign of `-0`), in a file already importing `doubleLiteral` eight lines below it",
+      "applied": true
+    },
+    {
+      "summary": "the transform-node `.set` path hand-rolled the arity check and component compile that `setCallComponents` already does for the light and mesh paths, silently dropping the `...tuple` spread form both of those accept",
+      "applied": true
+    },
+    {
+      "summary": "`src/compiler/transform-node.ts` opened a second per-process `LoweringContext` and defaults cache when `src/pinned-mesh-defaults.ts` is that home; the reader moved there and the file is gone",
+      "applied": true
+    },
+    {
+      "summary": "`frameDrainCondition` restated `isFrameYield`'s Promise-executor prologue verbatim; one `promiseExecutor` head now serves both, and the drain's `!f()` arm -- which matches no corpus spelling -- is dropped, since a matcher justified by refusing to over-match should not over-match",
+      "applied": true
+    },
+    {
+      "summary": "`engine_capture_ready` was a free function AND-ed into two of the eight frame loops, directly below the `CaptureGate` whose own comment says a rule spelled per-loop diverges; it is a `drains_resolved()` member now, so every loop that hands the gate an engine gets the rule",
+      "applied": true
+    },
+    {
+      "summary": "`mat4Determinant3` gained a second independent fold beside the one `pinned-mat4-decompose.ts` already owns under the same C++ name; one exported `lowerMat4Determinant3` serves both",
+      "applied": true
+    },
+    {
+      "summary": "`assertRenderPlanPins` gained two options it never reads, while the TRS pin assertions it does make stayed behind `gpuInstancing` after the composition became unconditional -- the emission moved to the general altitude and its contract stayed at the narrow one",
+      "applied": true
+    },
+    {
+      "summary": "`authored_sign` held its default in every configuration this change compiles (its only writer is the glTF loader, and no registered mirrored scene loads glTF), and `mirrored_sign` was a tri-state whose only irreducible content was \"never seen\"; both collapse to `mirrored_seen` beside the sign already in `clockwise_front_face`",
+      "applied": true
+    },
+    {
+      "summary": "`scene.mirrored_meshes` was tested at four call sites where the callee already takes the scene, `TransformNodeHandle::operator==` was copied from `MeshHandle` and used by nothing, and `compileCondition` was declared twice on one interface",
+      "applied": true
+    },
+    {
+      "summary": "the two new CMake defines lost their only readers when the PAL blocks went, so both feature gates now live where they belong -- at generation",
+      "applied": true
+    },
+    {
+      "summary": "`transform_position`/`transform_direction` are a third and fourth hand-typed copy of two multiplies the loader templates already spell, and `babylon-loader-cpp.ts` hand-types `linear_determinant` where the pin's `mat4Determinant3` is now folded -- along a different cofactor row, so load-time and run-time mirroring answers do not round alike",
+      "applied": false,
+      "blockedBy": "a decision plus an unmade measurement, and NOT the obvious fix: lowering the pin's own transformCoordinatesToRef/transformNormalToRef would emit double, where the reference for this bake is the float WGSL vertex stage, so it would make the port less faithful. The copies also take different types -- a loader-local Matrix against std::array<float,16> -- so one signature has to serve three sites across the generated/PAL boundary, and the byte diff over every glTF and .babylon scene is what says the fold moved nothing.",
+      "filedIn": "TODO.md, P1 - Runtime and validation, 'Fold the hand-typed matrix-times-vector and determinant copies onto one emitted pair'"
+    },
+    {
+      "summary": "`MeshRecord::outer_position` is a one-level translation-only pseudo-parent for a cloned imported root, folded by hand into `mesh_world_matrix` -- a special case of the general parent mechanism this change just built, where the pin's own `cloneTransformNode` reparents with a real link",
+      "applied": false,
+      "blockedBy": "a capability move rather than a cleanup, ~1-2 days: it touches asset import, mesh cloning, the camera AABB and the floating-origin eye-relative world, and the last two are byte-preservation seams, so it needs a full process-all plus differential sweep and a moved-camera check on the clone scenes. Nothing is wrong today; the special case is correct, just narrower than the mechanism beside it.",
+      "filedIn": "not filed - recorded here; it becomes worth doing when a second scene parents an imported root"
+    },
+    {
+      "summary": "the feature is `mesh:transform-node` with provenance `src/scene/transform-node.ts` while a `scene:` namespace exists, and `createTransformNode` is lowered in `intrinsics/mesh.ts` while `enableMirroredMeshes` -- whose pinned module IS `src/mesh/enable-mirrored-meshes.ts` -- is lowered in `intrinsics/scene.ts`; the two sit in each other's modules",
+      "applied": false,
+      "blockedBy": "renaming a feature key reaches features.cmake and every scene's activation manifest, so it needs the generated-tree byte diff to prove it moved nothing else. Cosmetic against the rest of this change, and worth doing on its own rather than inside it.",
+      "filedIn": "not filed - no behaviour depends on it; recorded here"
+    }
+  ]
+}

@@ -5322,6 +5322,12 @@ class Compiler
         return this.browserErasure.isFrameYield(expression);
     }
 
+    public frameDrainCondition(
+        expression: ts.Expression,
+    ): ts.Expression | undefined {
+        return this.browserErasure.frameDrainCondition(expression);
+    }
+
     public lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined {

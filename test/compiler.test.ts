@@ -7276,22 +7276,26 @@ test("refuses a frame yield inside a loop as the multi-frame wait it is", () => 
     );
 });
 
-test("refuses a promise that resolves on a frame count rather than the next frame", () => {
+test("defers the capture behind a promise that resolves on a frame count", () => {
     // Scenes 269 and 270 verbatim: the executor's body is a block that
-    // re-arms `requestAnimationFrame` until a counter passes.
-    assert.throws(
-        () =>
-            compileSource(
-                frameYieldScene(
-                    `    let frame = 0;
+    // re-arms `requestAnimationFrame` until a counter passes. This is NOT
+    // the single-frame yield above and is not erased -- the condition is
+    // the scene's own, and upstream it gates `canvas.dataset.ready`, which
+    // is the flag the harness screenshots on. So the port keeps it and
+    // holds the capture behind it.
+    const result = compileSource(
+        frameYieldScene(
+            `    let frame = 0;
     await new Promise<void>((resolve) => {
         const wait = (): void => (frame > 4 ? resolve() : requestAnimationFrame(wait));
         wait();
     });`,
-                ),
-                frameYieldFile,
-            ),
-        /Unsupported expression statement: NewExpression/,
+        ),
+        frameYieldFile,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::defer_capture_until\([^;]*\[&\]\(\) \{ return [^;]*> 4\.0; \}\);/,
     );
 });
 

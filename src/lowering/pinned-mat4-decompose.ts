@@ -46,13 +46,19 @@ export const PINNED_DECOMPOSE_ROTATION = "pinned_mat4_decompose_rotation";
  * `Math.hypot` reaches `bbl::js::hypot_js`, the shared home for that
  * recorded adaptation.
  */
-export function lowerMat4DecomposeRotation(context: LoweringContext): string {
-    const calls = new Map<string, (args: readonly string[]) => string>([
-        ...pinnedNumericMathCalls(),
-        ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
-    ]);
-
-    const determinant = lowerPinnedFunction(
+/**
+ * `mat4Determinant3`, lowered from its own declaration.
+ *
+ * One home because two callers want the same scalar triple product: this
+ * module's decomposition, and the mirrored-mesh watcher, which reads the
+ * sign of a mesh's world basis. A second fold of one pinned function is
+ * two answers to "is this mirrored" waiting to disagree.
+ */
+export function lowerMat4Determinant3(
+    context: LoweringContext,
+    calls?: ReadonlyMap<string, (args: readonly string[]) => string>,
+): string {
+    return lowerPinnedFunction(
         context,
         DETERMINANT_MODULE,
         "mat4Determinant3",
@@ -60,9 +66,18 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
         {
             cppName: "pinned_mat4_determinant3",
             returns: "double",
-            calls,
+            ...(calls ? { calls } : {}),
         },
     );
+}
+
+export function lowerMat4DecomposeRotation(context: LoweringContext): string {
+    const calls = new Map<string, (args: readonly string[]) => string>([
+        ...pinnedNumericMathCalls(),
+        ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
+    ]);
+
+    const determinant = lowerMat4Determinant3(context, calls);
 
     const basis = lowerPinnedFunction(
         context,

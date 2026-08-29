@@ -814,73 +814,37 @@ inline DeformationUniforms build_deformation_uniforms(
 }
 #endif
 
-inline Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
-    // The pinned Euler proxy converts through eulerToQuat's intrinsic
-    // XYZ order (src/math/quat-euler.ts), which applies Z, then Y,
-    // then X to a vector; single-axis rotations are unaffected by the
-    // ordering.
-    const float sin_z = std::sin(rotation.z);
-    const float cos_z = std::cos(rotation.z);
-    value = Vec3{
-        value.x * cos_z - value.y * sin_z,
-        value.x * sin_z + value.y * cos_z,
-        value.z,
-    };
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
-    value = Vec3{
-        value.x * cos_y + value.z * sin_y,
-        value.y,
-        -value.x * sin_y + value.z * cos_y,
-    };
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
+/** `world * vec4(value, 1)`, the pin's own vertex-stage position multiply. */
+inline Vec3 transform_position(
+    const std::array<float, 16>& world,
+    Vec3 value) {
     return Vec3{
-        value.x,
-        value.y * cos_x - value.z * sin_x,
-        value.y * sin_x + value.z * cos_x,
+        world[0] * value.x + world[4] * value.y + world[8] * value.z +
+            world[12],
+        world[1] * value.x + world[5] * value.y + world[9] * value.z +
+            world[13],
+        world[2] * value.x + world[6] * value.y + world[10] * value.z +
+            world[14],
     };
 }
 
 /**
- * The rotation `mat4ComposeInto` builds, applied to one vector.
- *
- * The basis is the pin's own — its three columns are `dst[0..2]`,
- * `dst[4..6]` and `dst[8..10]` with the scale factored out — so a
- * quaternion that is not unit length composes exactly what the pinned
- * matrix composes: a rotation carrying the quaternion's own squared norm.
- * A normalized rotation agrees with it for every unit quaternion and
- * disagrees for the rest, which is what a property clip writing one
- * component of `rotationQuaternion` produces, since `evaluateSampler`
- * lerps a single component rather than slerping the four.
+ * `world * vec4(value, 0)`, which is what both pinned templates apply to a
+ * normal and a tangent alike — `pbr-template.ts` writes
+ * `(finalWorld * vec4<f32>(normalize(normal), 0.0)).xyz` and
+ * `standard-template.ts` the `mat3x3` of the same three columns. Neither
+ * divides by the scale: the pin transforms a normal by the plain world
+ * basis rather than by an inverse transpose, and a port that divided
+ * agreed with it only where a normal lines up with a scaling axis.
  */
-inline Vec3 rotate_quaternion(Vec3 value, const Vec4& quaternion) {
-    const float xx = quaternion.x * quaternion.x;
-    const float yy = quaternion.y * quaternion.y;
-    const float zz = quaternion.z * quaternion.z;
-    const float xy = quaternion.x * quaternion.y;
-    const float xz = quaternion.x * quaternion.z;
-    const float yz = quaternion.y * quaternion.z;
-    const float wx = quaternion.w * quaternion.x;
-    const float wy = quaternion.w * quaternion.y;
-    const float wz = quaternion.w * quaternion.z;
+inline Vec3 transform_direction(
+    const std::array<float, 16>& world,
+    Vec3 value) {
     return Vec3{
-        (1.0f - 2.0f * (yy + zz)) * value.x +
-            2.0f * (xy - wz) * value.y +
-            2.0f * (xz + wy) * value.z,
-        2.0f * (xy + wz) * value.x +
-            (1.0f - 2.0f * (xx + zz)) * value.y +
-            2.0f * (yz - wx) * value.z,
-        2.0f * (xz - wy) * value.x +
-            2.0f * (yz + wx) * value.y +
-            (1.0f - 2.0f * (xx + yy)) * value.z,
+        world[0] * value.x + world[4] * value.y + world[8] * value.z,
+        world[1] * value.x + world[5] * value.y + world[9] * value.z,
+        world[2] * value.x + world[6] * value.y + world[10] * value.z,
     };
-}
-
-inline Vec3 rotate_mesh(Vec3 value, const MeshRecord& mesh) {
-    return mesh.has_rotation_quaternion
-        ? rotate_quaternion(value, mesh.rotation_quaternion)
-        : rotate_euler(value, mesh.rotation);
 }
 
 inline Vec3 normalize_vec3(Vec3 value) {
@@ -1034,7 +998,14 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
 
 #endif
 
+// The CPU vertex bake and the shader draw world compose a mesh's world
+// through the pin's own `upstream::mesh_local_matrix`, which the render
+// plan emits — so both belong to a scene that HAS a mesh renderer. A
+// sprite-only, effect-only or scene-less program includes no render plan
+// (see the guarded include at the top of this file) and calls neither.
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 inline std::vector<GpuVertex> transformed_vertices(
+    const Engine& engine,
     const ModelGeometry& geometry,
     const MeshRecord& mesh) {
     // Thin-instanced meshes keep local-space vertices: the pinned vertex
@@ -1062,6 +1033,10 @@ inline std::vector<GpuVertex> transformed_vertices(
                     geometry.vertices.size()
             ? geometry.bind_vertices
             : geometry.vertices;
+    // One composition per mesh: the record and its parent chain decide it,
+    // so it sits above the loop rather than being rebuilt per vertex.
+    const std::array<float, 16> world =
+        upstream::mesh_world_matrix(engine, trs);
     std::vector<GpuVertex> result;
     result.reserve(source_vertices.size());
     for (
@@ -1074,41 +1049,24 @@ inline std::vector<GpuVertex> transformed_vertices(
             mesh.gpu_deformation && geometry.flat_normals
                 ? geometry.vertices[vertex_index]
                 : vertex;
-        Vec3 position{
-            vertex.position.x * trs.scaling.x,
-            vertex.position.y * trs.scaling.y,
-            vertex.position.z * trs.scaling.z,
-        };
-        position = rotate_mesh(position, trs);
-        // Rounded where the pin's own store is: without the high-precision
-        // matrix `allocateMat4()` is a Float32Array, so the pin's GPU
-        // multiply sees the narrowed translation and adding the record's
-        // double here would round in a place the pin does not.
-        position.x += static_cast<float>(trs.position.x);
-        position.y += static_cast<float>(trs.position.y);
-        position.z += static_cast<float>(trs.position.z);
+        // The pin's own vertex stage, performed here because this port bakes
+        // a scene-code mesh's world into the buffer it draws: the matrix is
+        // float32 exactly as `allocateMat4()` leaves it, so this multiply is
+        // the arithmetic the GPU would have run on the same bytes.
+        const Vec3 position =
+            transform_position(world, vertex.position);
         const Vec3 normal = normalize_vec3(
-            rotate_mesh(
-                Vec3{
-                    trs.scaling.x != 0.0f
-                        ? normal_vertex.normal.x / trs.scaling.x
-                        : 0.0f,
-                    trs.scaling.y != 0.0f
-                        ? normal_vertex.normal.y / trs.scaling.y
-                        : 0.0f,
-                    trs.scaling.z != 0.0f
-                        ? normal_vertex.normal.z / trs.scaling.z
-                        : 0.0f,
-                },
-                trs));
+            transform_direction(world, normal_vertex.normal));
+        // `T_local` is the tangent's xyz; its `w` is the handedness the
+        // bitangent reads and travels unchanged.
         const Vec3 tangent = normalize_vec3(
-            rotate_mesh(
+            transform_direction(
+                world,
                 Vec3{
-                    vertex.tangent.x * trs.scaling.x,
-                    vertex.tangent.y * trs.scaling.y,
-                    vertex.tangent.z * trs.scaling.z,
-                },
-                trs));
+                    vertex.tangent.x,
+                    vertex.tangent.y,
+                    vertex.tangent.z,
+                }));
         result.push_back(GpuVertex{
             {position.x, position.y, position.z},
             {normal.x, normal.y, normal.z},
@@ -1240,10 +1198,12 @@ inline std::vector<GpuVertex> transformed_vertices(
  *  bound per draw. Keeping these immutable avoids rebaking and re-uploading
  *  a whole vertex buffer for every transform-only animation step. */
 inline std::vector<GpuVertex> local_vertices(
+    const Engine& engine,
     const ModelGeometry& geometry) {
     static const MeshRecord identity_transform{};
-    return transformed_vertices(geometry, identity_transform);
+    return transformed_vertices(engine, geometry, identity_transform);
 }
+#endif
 
 /** Find an exact immutable shader-geometry upload in a backend cache. */
 template <typename SharedGeometry>
@@ -1323,31 +1283,26 @@ inline void release_all_shared(
 /**
  * The ordinary mesh TRS as a column-major world matrix.
  *
- * Its basis vectors go through the same rotation helpers the historical CPU
- * vertex bake uses, so moving the transform into a shader uniform changes the
- * storage location rather than the scene meaning.
+ * The same composition the CPU vertex bake reads, so moving a transform into
+ * a shader uniform changes the storage location rather than the scene
+ * meaning -- and, like the bake, it belongs to a scene that has a mesh
+ * renderer to emit that composition.
  */
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 inline std::array<float, 16> shader_draw_world(
+    const Engine& engine,
     const MeshRecord& mesh) {
-    const Vec3 x = rotate_mesh(
-        Vec3{mesh.scaling.x, 0.0f, 0.0f},
-        mesh);
-    const Vec3 y = rotate_mesh(
-        Vec3{0.0f, mesh.scaling.y, 0.0f},
-        mesh);
-    const Vec3 z = rotate_mesh(
-        Vec3{0.0f, 0.0f, mesh.scaling.z},
-        mesh);
-    return {
-        x.x, x.y, x.z, 0.0f,
-        y.x, y.y, y.z, 0.0f,
-        z.x, z.y, z.z, 0.0f,
-        static_cast<float>(mesh.position.x + mesh.outer_position.x),
-        static_cast<float>(mesh.position.y + mesh.outer_position.y),
-        static_cast<float>(mesh.position.z + mesh.outer_position.z),
-        1.0f,
-    };
+    std::array<float, 16> world =
+        upstream::mesh_world_matrix(engine, mesh);
+    // A cloned imported root's outer scene-node translation, applied by
+    // the draw world rather than baked: the clone shares its source's
+    // skeleton and morph resources, so it cannot travel in the vertices.
+    world[12] += mesh.outer_position.x;
+    world[13] += mesh.outer_position.y;
+    world[14] += mesh.outer_position.z;
+    return world;
 }
+#endif
 
 /** The pin's projection-view product times one mesh world, preserving its
  *  explicit four-term accumulation order and float32 store boundary. */
@@ -3836,6 +3791,16 @@ inline RenderPipelineKindTraits pipeline_kind_traits(
             return {Family::standard, true, Cull::back, false};
         case Kind::standard_transparent_none:
             return {Family::standard, true, Cull::none, false};
+        // The mirrored-mesh opt-in's own arms: same family, same blend and
+        // cull, clockwise front face.
+        case Kind::standard_opaque_back_clockwise:
+            return {Family::standard, false, Cull::back, true};
+        case Kind::standard_opaque_none_clockwise:
+            return {Family::standard, false, Cull::none, true};
+        case Kind::standard_transparent_back_clockwise:
+            return {Family::standard, true, Cull::back, true};
+        case Kind::standard_transparent_none_clockwise:
+            return {Family::standard, true, Cull::none, true};
         case Kind::grid_opaque_back:
             return {Family::grid, false, Cull::back, false};
         case Kind::grid_opaque_none:
@@ -4439,6 +4404,23 @@ public:
      */
     [[nodiscard]] bool engine_stopped() const {
         return engine_ != nullptr && engine_->stopped;
+    }
+
+    /**
+     * Whether every bounded multi-frame drain the scene declared has
+     * resolved. A scene that declares none is ready from frame zero.
+     *
+     * It lives here for the reason `engine_stopped` does: the condition
+     * belongs to the run rather than to one renderer, and every loop that
+     * hands this gate an engine gets the same answer.
+     */
+    [[nodiscard]] bool drains_resolved() const {
+        if (engine_ == nullptr) return true;
+        for (const std::function<bool()>& ready :
+             engine_->capture_ready) {
+            if (!ready || !ready()) return false;
+        }
+        return true;
     }
 
     /** Whether the loop should run another frame. */

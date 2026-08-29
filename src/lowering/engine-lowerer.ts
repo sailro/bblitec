@@ -88,6 +88,16 @@ void stop_engine(Engine& engine) {
     engine.stopped = true;
 }
 
+// The native reading of a bounded multi-frame drain: the scene's own
+// condition, recorded for the frame loops to consult before they capture.
+// Upstream the wait sits in front of the canvas ready flag, which is what
+// the harness screenshots on.
+void defer_capture_until(
+    Engine& engine,
+    std::function<bool()> ready) {
+    engine.capture_ready.push_back(std::move(ready));
+}
+
 std::string asset_path(const std::string& relative_path) {
     const std::string override = pal::environment_variable("BBLITE_ASSET_DIR");
     const std::string root = override.empty()

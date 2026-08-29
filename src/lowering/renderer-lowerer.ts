@@ -63,6 +63,7 @@ import {
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
+import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import {
     lowerMat4MultiplyWriterCpp,
     lowerPinnedFunction,
@@ -535,6 +536,10 @@ export class RendererLowerer {
         gpuInstancing?: boolean;
         punctualLights?: boolean;
         nodeVisibility?: boolean;
+        /** The scene reaches `enableMirroredMeshes`. */
+        mirroredMeshes?: boolean;
+        /** The scene reaches `createTransformNode`. */
+        transformNodes?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -579,14 +584,23 @@ export class RendererLowerer {
             // contract, asserted here so a pin retune fails generation.
             assertPinnedFogInfosOrder();
         }
-        // The mesh TRS composition, which two emissions interpolate: a
-        // thin-instanced pool's parent world and the eye-relative world a
-        // floating-origin draw carries. A scene reaching neither composes
-        // no mesh world here, so the derivation is skipped.
+        // The mesh TRS composition, which every emission below interpolates:
+        // the mesh's own local matrix, a thin-instanced pool's parent world,
+        // and the eye-relative world a floating-origin draw carries. It is
+        // unconditional because the CPU vertex bake reads the first of those
+        // on every scene that draws a mesh at all.
         const meshTrs: PinnedTrsComposition =
-            options.gpuInstancing || options.floatingOrigin
-                ? pinnedTrsComposition(this.context)
-                : { composeLocalBody: "", composeWorldBody: "" };
+            pinnedTrsComposition(this.context);
+        // The same composition over a transform node's own record, which
+        // carries the same lanes because upstream it is the same type.
+        const nodeTrs: PinnedTrsComposition =
+            pinnedTrsComposition(this.context, "node");
+        // src/math/mat4-determinant3.ts, the scalar triple product the
+        // mirrored-mesh predicate reads. Lowered rather than typed: it is
+        // the one expression that decides a winding.
+        const mirrorDeterminant = options.mirroredMeshes
+            ? lowerMat4Determinant3(this.context)
+            : "";
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -656,6 +670,8 @@ export class RendererLowerer {
                 shaderVariantTable,
                 shaderVariantEntries,
                 meshTrs,
+                nodeTrs,
+                mirrorDeterminant,
                 secondAnalyticLightFill,
                 backgroundGeometry,
                 perspectiveWriter,
@@ -671,7 +687,6 @@ export class RendererLowerer {
      * an orthographic scene refuses environment backgrounds.
      */
     private assertRenderPlanPins(options: {
-        gpuInstancing?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
     }): void {
@@ -681,24 +696,24 @@ export class RendererLowerer {
                 symbol,
             );
         }
-        if (options.gpuInstancing) {
-            // The instance parent-world helper is translated from these
-            // pinned modules; assert they still carry the composed symbols.
-            // (mat4MultiplyInto needs no entry: the multiply writer
-            // resolves its declaration on every plan.)
-            this.context.functionDeclaration(
-                "src/math/mat4-compose-into.ts",
-                "mat4ComposeInto",
-            );
-            this.context.functionDeclaration(
-                "src/math/quat-euler.ts",
-                "eulerToQuat",
-            );
-            this.context.functionDeclaration(
-                "src/scene/world-matrix-state.ts",
-                "composeTrsLocalMatrix",
-            );
-        }
+        // The mesh world is composed from these on EVERY plan now -- the
+        // CPU vertex bake reads it for any scene that draws a mesh -- so
+        // the assertion is unconditional too. It used to sit behind
+        // `gpuInstancing`, which was the only consumer at the time.
+        // (mat4MultiplyInto needs no entry: the multiply writer resolves
+        // its declaration on every plan.)
+        this.context.functionDeclaration(
+            "src/math/mat4-compose-into.ts",
+            "mat4ComposeInto",
+        );
+        this.context.functionDeclaration(
+            "src/math/quat-euler.ts",
+            "eulerToQuat",
+        );
+        this.context.functionDeclaration(
+            "src/scene/world-matrix-state.ts",
+            "composeTrsLocalMatrix",
+        );
         if (options.orthographicCamera && options.background) {
             // Environment backgrounds build their own view-projection,
             // which still writes the perspective form; an orthographic
@@ -919,6 +934,9 @@ export class RendererLowerer {
             imageSkybox?: boolean;
             gpuInstancing?: boolean;
             floatingOrigin?: boolean;
+            mirroredMeshes?: boolean;
+            /** The scene reaches `createTransformNode`. */
+            transformNodes?: boolean;
         },
         systemMatrixEnumerators: string,
     ): string {
@@ -978,6 +996,22 @@ enum class RenderPipelineKind {
     standard_opaque_none,
     standard_transparent_back,
     standard_transparent_none,
+    // The Standard family's winding arms, which exist only under the
+    // mirrored-mesh opt-in: std-mirrored-support.ts installs a primitive
+    // resolver whose frontFace follows the mesh's world determinant,
+    // because the Standard pipeline has none of its own. A back-culled
+    // mirrored mesh needs one as much as a double-sided one -- it is the
+    // culled case that renders inside-out.
+    //
+    // The PBR family gets no back-culled twin: its mirrored meshes come
+    // from the glTF loader, which rewinds a single-sided mirrored
+    // primitive's INDICES at load and stamps its clockwise front face only
+    // for the double-sided pair above. A cw pipeline there would flip a
+    // geometry that is already flipped.
+    standard_opaque_back_clockwise,
+    standard_opaque_none_clockwise,
+    standard_transparent_back_clockwise,
+    standard_transparent_none_clockwise,
     grid_opaque_back,
     grid_opaque_none,
     grid_transparent_back,
@@ -1268,6 +1302,35 @@ std::array<float, 16> build_view_matrix(
 std::array<float, 16> build_skybox_view_projection(
     const CameraRecord& camera,
     double aspect);
+// One mesh's local matrix, from the pin's own composeTrsLocalMatrix.
+//
+// Both the CPU vertex bake and the shader draw world go through this rather
+// than rotating basis vectors by the record's quaternion or Euler triple: a
+// parent's transform composes as a matrix product, and a negative scale
+// above a rotation is not expressible as the child's own scale-rotate pair.
+std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
+// One mesh's world matrix: its own composition under its parent chain.
+//
+// world-matrix-state.ts resolves a node's world as parent.worldMatrix
+// times local, recursively, so a mesh under a transform
+// node reaches the vertex stage through that product. A mesh with no
+// parent is its own local matrix, which is every mesh the port drew before
+// the hierarchy existed.
+std::array<float, 16> mesh_world_matrix(
+    const Engine& engine,
+    const MeshRecord& mesh);
+
+${options.mirroredMeshes
+    ? `// The mirrored-mesh watcher, run once per frame on an opted-in scene.
+//
+// std-mirrored-support.ts compares each mesh's live world determinant
+// against the sign its renderable was built at and enqueues a material
+// swap when the sign flips, because frontFace is baked into the pipeline
+// object. Returns whether any mesh flipped, which is this port's
+// equivalent of that queue: the caller rebuilds the render plan, which is
+// where a pipeline is chosen.
+bool refresh_mirrored_meshes(Scene& scene, Engine& engine);`
+    : ""}\
 ${options.floatingOrigin
     ? `// A mesh's own world matrix, eye-relative.
 //
@@ -1345,6 +1408,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             solidSkybox?: boolean;
             imageSkybox?: boolean;
             floatingOrigin?: boolean;
+            mirroredMeshes?: boolean;
+            /** The scene reaches `createTransformNode`. */
+            transformNodes?: boolean;
         },
         inputs: {
             viewMatrixBody: string;
@@ -1352,6 +1418,8 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantTable: { readonly length: number };
             shaderVariantEntries: string;
             meshTrs: PinnedTrsComposition;
+            nodeTrs: PinnedTrsComposition;
+            mirrorDeterminant: string;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1372,6 +1440,8 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantTable,
             shaderVariantEntries,
             meshTrs,
+            nodeTrs,
+            mirrorDeterminant,
             secondAnalyticLightFill,
             backgroundGeometry,
             perspectiveWriter,
@@ -1511,12 +1581,24 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
                 : RenderPipelineKind::pbr_opaque_none;
         case RenderMaterialKind::standard:
             if (transparent) {
-                return double_sided
-                    ? RenderPipelineKind::standard_transparent_none
+                if (double_sided) {
+                    return item.clockwise_front_face
+                        ? RenderPipelineKind::
+                              standard_transparent_none_clockwise
+                        : RenderPipelineKind::standard_transparent_none;
+                }
+                return item.clockwise_front_face
+                    ? RenderPipelineKind::
+                          standard_transparent_back_clockwise
                     : RenderPipelineKind::standard_transparent_back;
             }
-            return double_sided
-                ? RenderPipelineKind::standard_opaque_none
+            if (double_sided) {
+                return item.clockwise_front_face
+                    ? RenderPipelineKind::standard_opaque_none_clockwise
+                    : RenderPipelineKind::standard_opaque_none;
+            }
+            return item.clockwise_front_face
+                ? RenderPipelineKind::standard_opaque_back_clockwise
                 : RenderPipelineKind::standard_opaque_back;
         case RenderMaterialKind::grid:
             if (transparent) {
@@ -1906,6 +1988,102 @@ std::array<float, 16> build_skybox_view_projection(
     view[13] = 0.0f;
     view[14] = 0.0f;
     return multiply_into(build_projection(camera, aspect), view);
+}
+
+// The same composition over a transform node, which upstream is the same
+// call: TransformNode is a pure alias for SceneNode, so its local matrix
+// is composeTrsLocalMatrix(position, rotationQuaternion, scaling) exactly
+// as a mesh's is.
+std::array<float, 16> transform_node_local_matrix(
+    const TransformNodeRecord& node) {
+${nodeTrs.composeWorldBody}    return world;
+}
+
+// world-matrix-state.ts: a node's world is its parent's world times its own
+// local, walked to the root. Nothing is cached — this port re-derives per
+// frame where the pin keeps a version-stamped cache, which is the same
+// answer for a scene that reads it once per bake.
+std::array<float, 16> transform_node_world(
+    const Engine& engine,
+    TransformNodeHandle node) {
+    if (node.value >= engine.transform_nodes.size()) {
+        return std::array<float, 16>{
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f};
+    }
+    const TransformNodeRecord& record =
+        engine.transform_nodes[node.value];
+    const std::array<float, 16> local =
+        transform_node_local_matrix(record);
+    if (record.parent.value >= engine.transform_nodes.size()) {
+        return local;
+    }
+    return multiply_into(
+        transform_node_world(engine, record.parent),
+        local);
+}
+
+std::array<float, 16> mesh_world_matrix(
+    const Engine& engine,
+    const MeshRecord& mesh) {
+    std::array<float, 16> local = mesh_local_matrix(mesh);
+    // The clone offset is deliberately NOT folded here. A cloned imported
+    // root's outer translation is applied by the draw world AFTER
+    // deformation -- the clone shares its source's skeleton and morph
+    // resources, so the bake that produces those vertices must not carry
+    // it. The CPU vertex bake and the navigation merge read this matrix
+    // and neither wants it; the shader draw world adds it, as it always
+    // did.
+    if (mesh.parent.value >= engine.transform_nodes.size()) {
+        return local;
+    }
+    return multiply_into(
+        transform_node_world(engine, mesh.parent),
+        local);
+}
+
+${options.mirroredMeshes
+    ? `${mirrorDeterminant}
+
+bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
+    bool flipped = false;
+    for (const MeshHandle handle : scene.meshes) {
+        if (handle.value >= engine.meshes.size()) continue;
+        MeshRecord& mesh = engine.meshes[handle.value];
+        // The pin's own predicate: a mesh is mirrored when its live world
+        // determinant disagrees with the sign its geometry was authored
+        // for, and every mesh this opt-in reaches is procedural, authored
+        // at +1. A glTF mesh sits under the loader's RH->LH root and is
+        // authored at -1 -- but the loader has already rewound a
+        // single-sided mirrored primitive's INDICES by then, so a scene
+        // reaching both would flip twice. No registered scene does; the
+        // one that would is 269, and TODO.md names the measurement.
+        const bool mirrored =
+            pinned_mat4_determinant3(mesh_world_matrix(engine, mesh)) < 0.0;
+        if (mesh.mirrored_seen && mesh.clockwise_front_face == mirrored) {
+            continue;
+        }
+        // The winding itself is not the watcher's: the pin's mesh-feature
+        // hook sets it from the live determinant every time a renderable
+        // composes, so a mesh mirrored BEFORE its renderable was built
+        // carries it from the first frame. What the watcher adds is the
+        // rebuild, and only a mesh it has already seen can have flipped.
+        const bool seen = mesh.mirrored_seen;
+        mesh.clockwise_front_face = mirrored;
+        mesh.mirrored_seen = true;
+        if (seen) flipped = true;
+    }
+    return flipped;
+}
+`
+    : ""}// src/scene/world-matrix-state.ts composeTrsLocalMatrix, translated whole:
+// the pin composes in JavaScript-number width and stores once into its
+// allocateMat4() Float32Array, so the locals here are double and the
+// narrowing is the single store loop at the end.
+std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
+${meshTrs.composeWorldBody}    return world;
 }
 
 ${options.floatingOrigin

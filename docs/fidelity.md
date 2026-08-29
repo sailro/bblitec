@@ -687,6 +687,67 @@ contract gate.
 Scene 151 gates directional-plus-hemispheric Standard lighting; the
 light-count boundary is in [features](features.md#lights).
 
+### Scene hierarchy
+
+**A mesh's world is the pin's own composition, and its parent is a matrix
+product.** `composeTrsLocalMatrix` builds a node's local matrix and
+`createWorldMatrixState` resolves its world as `parent.worldMatrix * local`;
+both are lowered from their own declarations, so the PAL rotates nothing
+itself. It used to: `rotate_mesh` turned the record's quaternion or Euler
+triple into three rotated basis vectors, which is `mat4ComposeInto`
+re-derived in float and agreed only while a mesh's transform was its own —
+a negative scale above a rotation is not expressible as the child's own
+scale-rotate pair.
+
+**The pin transforms a normal by the plain world basis.** `pbr-template.ts`
+writes `(finalWorld * vec4<f32>(normalize(normal), 0.0)).xyz` and
+`standard-template.ts` the `mat3x3` of the same three columns; neither
+divides by the scale, so neither applies an inverse transpose. A port that
+divided agreed for a uniform scale, and for a normal that lines up with a
+scaling axis — which is every non-uniformly scaled scene-code mesh the
+corpus draws, all of them boxes. Scene 270 is where the two part.
+
+**A parent's move is pushed at the setter, because that is where the pin
+pushes it.** `createWorldMatrixState` carries a version snapshot, but its
+own header says that path is the *foreign*-parent fallback: every
+in-engine host is tagged, and a tagged hierarchy invalidates by
+`markLocalDirty` → `invalidate()` recursing into the children the parent
+setter registered. So the port registers a child at `mesh.parent = node` —
+the pin's `_addChild` trigger, not `children.push`, which upstream may
+never be called — and each of the node's TRS setters bumps the transform
+version of every mesh beneath it. That is the same version every re-bake
+already keys on, and it is the shape
+`set_asset_root_position_component` was already written in.
+
+**The mirrored-mesh watcher is scene state, not a frame-loop step.**
+`installMirroredMeshSupport` seeds the signs its renderables are about to
+be built with and then pushes its watcher onto `scene._beforeRender`. The
+generated opt-in does both, so the two backends contain no mirrored-mesh
+code at all and the frame position — after this frame's callbacks, before
+the rebuild it can raise — follows from where the callback sits rather
+than from a comment in each loop saying the other one matches.
+
+**Mirrored winding is an opt-in, and the two families reach it
+differently.** `std-mirrored-support.ts` installs a Standard primitive
+resolver precisely because that family has no winding of its own, plus a
+per-scene watcher that rebuilds when a determinant sign flips. This port
+composes the Standard clockwise pipeline arms under the same opt-in and
+runs the watcher in the frame position the pin gives it — after the
+frame's callbacks, before the swap queue drains, which here means the
+render plan, since a front face is chosen when a pipeline is. The PBR
+family takes no back-culled twin: its mirrored meshes come from the glTF
+loader, which rewinds a single-sided mirrored primitive's indices at load
+and stamps a clockwise face only for the double-sided pair. Gated by
+scene 270.
+
+**A bounded multi-frame drain holds the capture, it does not erase.** The
+single-frame `await new Promise(r => requestAnimationFrame(() => r()))` is
+erased, because the work it waits for has already happened by the next
+statement. A drain that re-arms until a counter passes is a different
+claim: the condition is the scene's own, and upstream it gates
+`canvas.dataset.ready`, which is the flag the harness screenshots on. So
+the condition is kept and every frame loop consults it before capturing.
+
 ### Lights
 
 **The pin fills two spare scene-block lanes with the canvas size, and so does

@@ -106,6 +106,10 @@ struct CameraHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct TransformNodeHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 struct AssetHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -924,6 +928,45 @@ struct ModelGeometry {
     Vec3 world_bounds_max{};
 };
 
+/**
+ * A scene-graph node with a TRS and children, the port's `TransformNode`.
+ *
+ * Upstream it is not its own type at all: `TransformNode` is a pure alias
+ * for `SceneNode`, and `createTransformNode` delegates to
+ * `createSceneNode`, so a node carries exactly the transform lanes a mesh
+ * carries and composes its local matrix through the same
+ * `composeTrsLocalMatrix`. The field names match `MeshRecord` for that
+ * reason: one emitted composition serves both.
+ */
+struct TransformNodeRecord {
+    std::string name;
+    Vec3d position{};
+    Vec3 rotation{};
+    Vec4 rotation_quaternion{0.0f, 0.0f, 0.0f, 1.0f};
+    bool has_rotation_quaternion = false;
+    Vec3 scaling{1.0f, 1.0f, 1.0f};
+    /** The node this one hangs under, or none — `IParentable.parent`. */
+    TransformNodeHandle parent{};
+    /**
+     * The traversal list `node.children` holds. Upstream a direct
+     * `child.parent = node` write drives the transform math and leaves
+     * `children` alone, so the two are recorded apart here as well.
+     */
+    std::vector<MeshHandle> children;
+    /**
+     * What the parent SETTER registered, which is the pin's own
+     * `_addChild`: the list `invalidate()` recurses into when this node's
+     * transform is marked dirty. Kept apart from `children` because
+     * upstream keeps them apart -- a scene may write the link without
+     * ever pushing the traversal entry, and the transform must still
+     * follow.
+     */
+    std::vector<MeshHandle> parented_meshes;
+    std::vector<TransformNodeHandle> parented_nodes;
+    /** Bumped by every transform write, which is what re-bakes a child. */
+    std::uint64_t transform_version = 0;
+};
+
 struct MeshRecord {
     /**
      * The pinned Mesh name: the factory literal (`"sphere"`, `"box"`, …),
@@ -956,6 +999,12 @@ struct MeshRecord {
     bool has_bounds_max_override = false;
     Vec3 bounds_min_override{};
     Vec3 bounds_max_override{};
+    /**
+     * `IParentable.parent`: the node whose world matrix this mesh composes
+     * under. Upstream any entity may parent to any other; the reached
+     * slice is a mesh under a transform node.
+     */
+    TransformNodeHandle parent{};
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     // A clone shares its source mesh's pinned shader composition. Generated
@@ -981,6 +1030,17 @@ struct MeshRecord {
      */
     bool pinned_bone_palette = false;
     bool clockwise_front_face = false;
+    /**
+     * Whether the mirrored-mesh watcher has seen this mesh, which is what
+     * separates "its sign flipped" from "it was just added": the sign
+     * itself is `clockwise_front_face` beside it.
+     *
+     * The pin keeps this per SCENE, because one mesh may belong to several
+     * and a shared record would let the first scene's rebuild hide the flip
+     * from the others. No reached scene shares a mesh, so it rides the
+     * record here; a scene that did would need the per-scene map.
+     */
+    bool mirrored_seen = false;
     // Whether the loader stored this mesh's vertices through the native X
     // mirror. Babylon composes its own vertex stage against unmirrored data and
     // carries the mirror in the mesh block's world matrix, so a PAL binding
@@ -2022,6 +2082,12 @@ struct Engine {
      */
     bool stopped = false;
     /**
+     * The scene's own capture-readiness conditions, from a bounded
+     * multi-frame drain. Every one must hold before a frame loop takes the
+     * capture it was asked for.
+     */
+    std::vector<std::function<bool()>> capture_ready;
+    /**
      * `setTimeout(callback, 0)`: callbacks queued to run once, after the
      * frame that queued them.
      *
@@ -2091,6 +2157,7 @@ struct Engine {
     std::vector<MeshRecord> meshes;
     std::vector<MaterialRecord> materials;
     std::vector<LightRecord> lights;
+    std::vector<TransformNodeRecord> transform_nodes;
     std::vector<CameraRecord> cameras;
     std::vector<ModelGeometry> geometries;
     std::vector<std::array<TextureData, 6>> reflection_cubes;
@@ -2177,6 +2244,13 @@ struct EnvironmentState {
 
 struct Scene {
     Engine* engine = nullptr;
+    /**
+     * `enableMirroredMeshes` opted this scene into runtime winding
+     * tracking. The pipeline-side half is installed process-wide upstream
+     * and is compiled in here by the same feature, so what this flag
+     * carries is only the per-scene watcher.
+     */
+    bool mirrored_meshes = false;
     Color4 clear_color{};
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
@@ -2741,6 +2815,49 @@ LightHandle create_spot_light(
 // lowered; the rest refuse at compile time (src/compiler/assignments.ts).
 void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_directional_light_position(Engine& engine, LightHandle light, Vec3 position);
+// src/scene/transform-node.ts createTransformNode: a SceneNode with the
+// pinned factory's own TRS defaults. Its setters take the same shape the
+// light vector setters take -- the field write plus the version bump a
+// child re-bakes against -- because upstream both are ObservableVec3 writes
+// on a node whose world matrix is lazily recomposed.
+TransformNodeHandle create_transform_node(
+    Engine& engine,
+    std::string name,
+    Vec3d position,
+    Vec4 rotation_quaternion,
+    Vec3 scaling);
+void set_transform_node_position(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3d position);
+void set_transform_node_scaling(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 scaling);
+void set_transform_node_rotation_quaternion(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec4 rotation);
+// `child.parent = node` drives the transform math; `node.children.push`
+// only fills the traversal list. Upstream keeps them apart in exactly this
+// way, so each is its own entry point.
+// src/mesh/enable-mirrored-meshes.ts: the opt-in that installs winding
+// reversal from the live world determinant, for the meshes the glTF
+// loader's own load-time pass cannot see.
+void enable_mirrored_meshes(Scene& scene);
+// A bounded multi-frame drain: the scene's own condition, which the frame
+// loops consult before they capture. Upstream the wait sits in front of
+// `canvas.dataset.ready`, and the harness screenshots on that flag -- so a
+// capture taken before the condition holds is a different frame.
+void defer_capture_until(Engine& engine, std::function<bool()> ready);
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle mesh,
+    TransformNodeHandle parent);
+void push_transform_node_child(
+    Engine& engine,
+    TransformNodeHandle node,
+    MeshHandle child);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // The spot cone angle is an accessor upstream rather than a field: its setter

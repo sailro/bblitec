@@ -265,6 +265,24 @@ export function compileSceneIntrinsic(
             };
         }
 
+        case "enableMirroredMeshes": {
+            // src/mesh/enable-mirrored-meshes.ts: the opt-in that reaches
+            // the winding resolution through a dynamic import, so a scene
+            // that never calls it composes none of it. Awaited upstream
+            // because that import is; the awaited value is void.
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            context.reachFeature("mesh:mirrored", call);
+            return {
+                kind: "void",
+                cpp: `bbl::enable_mirrored_meshes(${scene.cpp})`,
+                ...(scene.engineCpp
+                    ? { engineCpp: scene.engineCpp }
+                    : {}),
+            };
+        }
+
         case "setFog": {
             context.expectArgumentCount(call, 2, 2);
             const scene =

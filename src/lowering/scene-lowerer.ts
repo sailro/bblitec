@@ -7,7 +7,11 @@ export class SceneLowerer {
     public lowerCore(
         options: {
             fog?: boolean;
+            /** The scene reaches `enableMirroredMeshes`. */
+            mirroredMeshes?: boolean;
             managedAnimationGroups?: boolean;
+            /** The scene reaches `createTransformNode`. */
+            transformNodes?: boolean;
         } = {},
     ): LoweredSource {
         const modulePath = "src/scene/scene-core.ts";
@@ -287,6 +291,144 @@ export class SceneLowerer {
             }
         }
         const value = (input: number): string => this.context.floatLiteral(input);
+        // src/scene/transform-node.ts createTransformNode and the
+        // ObservableVec3/ObservableQuat setters a scene writes on the node
+        // it made. Each setter is the field write plus the version bump a
+        // child re-bakes against, which is what `markLocalDirty` does
+        // upstream; the world itself is composed lazily in the render plan,
+        // as `createWorldMatrixState` composes it there.
+        const transformNodeSource = options.transformNodes
+            ? `
+// ${this.context.provenance("src/scene/transform-node.ts", "createTransformNode")}
+TransformNodeHandle create_transform_node(
+    Engine& engine,
+    std::string name,
+    Vec3d position,
+    Vec4 rotation_quaternion,
+    Vec3 scaling) {
+    TransformNodeRecord node;
+    node.name = std::move(name);
+    node.position = position;
+    node.rotation_quaternion = rotation_quaternion;
+    // The pin stores the quaternion unconditionally; the record's Euler
+    // lane exists only so one composition serves nodes and meshes alike,
+    // and a node never writes it.
+    node.has_rotation_quaternion = true;
+    node.scaling = scaling;
+    engine.transform_nodes.push_back(std::move(node));
+    return TransformNodeHandle{
+        static_cast<std::uint32_t>(engine.transform_nodes.size() - 1)};
+}
+
+// world-matrix-state.ts invalidate(): a node's own dirty mark recurses
+// into the children registered on it, and it is PUSHED at the write rather
+// than polled. The pin's version snapshot is its foreign-parent fallback
+// alone -- an in-engine hierarchy is tagged on both ends and takes this
+// path -- so a mesh under a node is invalidated here, bumping the same
+// transform version every re-bake already keys on.
+void mark_transform_node_dirty(
+    Engine& engine,
+    TransformNodeHandle node) {
+    if (node.value >= engine.transform_nodes.size()) return;
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        if (child.value < engine.meshes.size()) {
+            ++engine.meshes[child.value].transform_version;
+        }
+    }
+    for (const TransformNodeHandle child : record.parented_nodes) {
+        mark_transform_node_dirty(engine, child);
+    }
+}
+
+void set_transform_node_position(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3d position) {
+    engine.transform_nodes[node.value].position = position;
+    mark_transform_node_dirty(engine, node);
+}
+
+void set_transform_node_scaling(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 scaling) {
+    engine.transform_nodes[node.value].scaling = scaling;
+    mark_transform_node_dirty(engine, node);
+}
+
+void set_transform_node_rotation_quaternion(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec4 rotation) {
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    record.rotation_quaternion = rotation;
+    record.has_rotation_quaternion = true;
+    mark_transform_node_dirty(engine, node);
+}
+
+// The parent SETTER is the pin's own _addChild trigger: it registers the
+// child for invalidation, where the children array is only the traversal
+// list. Registering here rather than at that array's push is what makes a
+// scene which writes the link and never pushes still follow its parent.
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle mesh,
+    TransformNodeHandle parent) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    record.parent = parent;
+    ++record.transform_version;
+    if (parent.value < engine.transform_nodes.size()) {
+        engine.transform_nodes[parent.value]
+            .parented_meshes.push_back(mesh);
+    }
+}
+
+void push_transform_node_child(
+    Engine& engine,
+    TransformNodeHandle node,
+    MeshHandle child) {
+    engine.transform_nodes[node.value].children.push_back(child);
+}
+`
+            : "";
+        // src/mesh/enable-mirrored-meshes.ts is one statement: it awaits
+        // the support module and installs it on the scene. The
+        // pipeline-side half of that install is a compile-time question
+        // here -- a scene that never opts in composes no winding
+        // resolution at all -- so what remains at run time is the flag the
+        // per-frame watcher reads.
+        const mirroredSource = options.mirroredMeshes
+            ? `
+// ${this.context.provenance("src/mesh/enable-mirrored-meshes.ts", "enableMirroredMeshes")}
+void enable_mirrored_meshes(Scene& scene) {
+    require_scene_engine(scene);
+    scene.mirrored_meshes = true;
+    // installMirroredMeshSupport seeds every mesh present now -- the signs
+    // their renderables are about to be built with, since registerScene
+    // follows this call -- and then APPENDS its watcher to the scene's own
+    // before-render list, so it observes the transforms this frame's
+    // callbacks produced. Both halves are the pin's, and pushing the
+    // watcher here rather than calling it from a frame loop is what keeps
+    // the frame position the pin's rather than a comment's.
+    Engine& engine = *scene.engine;
+    static_cast<void>(
+        upstream::refresh_mirrored_meshes(scene, engine));
+    Scene* const watched = &scene;
+    scene.before_render.push_back([watched](float) {
+        Engine& owner = *watched->engine;
+        if (upstream::refresh_mirrored_meshes(*watched, owner)) {
+            // frontFace is baked into the pipeline object, so a flip goes
+            // through a rebuild. The pin raises enqueueMaterialSwap for
+            // it; here the render plan is where a pipeline is
+            // chosen, and its membership version is what rebuilds it.
+            ++watched->mesh_membership_version;
+        }
+    });
+}
+`
+            : "";
         const fogSource = options.fog
             ? `
 // ${this.context.provenance(fogModulePath, `${fogName}, writeFogUbo`)}
@@ -371,7 +513,12 @@ void set_scene_fog(
             header: "",
             source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
-
+${options.mirroredMeshes
+    ? `// The mirrored-mesh watcher this scene installs calls the render
+// plan's own determinant pass; a scene that never opts in includes
+// neither.
+#include <bblite/upstream/renderer_plan.hpp>`
+    : ""}
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -652,7 +799,7 @@ void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
-${fogSource}
+${fogSource}${transformNodeSource}${mirroredSource}
 } // namespace bbl
 `,
         };
