@@ -1073,6 +1073,20 @@ export function isNodeParticleValue(kind: ValueKind): boolean {
     );
 }
 
+export type FrameCallbackSignature =
+    | "delta"
+    | "timestamp"
+    | "interval"
+    | "void";
+
+/** One symbol binding in the compiler's lexical scope stack. */
+export interface VariableBinding {
+    name: string;
+    value: Value;
+    /** The native storage belongs to an application frame callback. */
+    frameLocal?: boolean;
+}
+
 export interface Value {
     kind: ValueKind;
     cpp: string;
@@ -1400,10 +1414,7 @@ export interface Value {
      * getter of the record runs. This is the closure the source wrote.
      */
     recordScopes?: ReadonlyArray<
-        Map<
-            ts.Symbol,
-            { name: string; value: Value; frameLocal?: boolean }
-        >
+        Map<ts.Symbol, VariableBinding>
     >;
     defaultRenderTask?: boolean;
     defaultRenderTaskEmitted?: boolean;

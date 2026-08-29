@@ -27,8 +27,10 @@ import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompiledNodeParticles,
     Feature,
+    FrameCallbackSignature,
     Value,
     ValueKind,
+    VariableBinding,
 } from "./types.js";
 import type {
     HandleCollections,
@@ -109,10 +111,7 @@ export interface ExpressionContext
     readonly nativeFunctions: NativeFunctionLowerer;
     readonly symbols: CompilerSymbols;
     readonly variableScopes: ReadonlyArray<
-        Map<
-            ts.Symbol,
-            { name: string; value: Value; frameLocal?: boolean }
-        >
+        Map<ts.Symbol, VariableBinding>
     >;
     unwrap(expression: ts.Expression): ts.Expression;
     expectArgumentCount(
@@ -178,7 +177,7 @@ export interface ExpressionContext
     isDeferredCallbackCall(call: ts.CallExpression): boolean;
     compileFrameCallback(
         expression: ts.Expression,
-        signature?: "delta" | "timestamp" | "interval" | "void",
+        signature?: FrameCallbackSignature,
     ): string;
     requireDefaultEngine(node: ts.Node): string;
     evaluateBrowserValue(

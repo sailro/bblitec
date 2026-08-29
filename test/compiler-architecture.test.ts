@@ -704,6 +704,15 @@ test("runs post-start RAF callbacks only after the engine render", () => {
     assert.match(runtime, /double animation_frame_timestamp_ms = 0\.0;/);
     assert.match(
         shared,
+        /inline void run_animation_frame_callbacks\(Engine& engine\)/,
+    );
+    assert.equal(
+        (shared.match(/run_animation_frame_callbacks\(engine\);/g) ?? [])
+            .length,
+        3,
+    );
+    assert.match(
+        shared,
         /inline void finish_frame\(Engine& engine\)[\s\S]{0,900}post_render_animation_frame_callbacks/,
     );
     assert.match(shared, /post_render_animation_frame_callbacks_armed = true/);

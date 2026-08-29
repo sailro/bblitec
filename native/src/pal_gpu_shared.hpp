@@ -4280,16 +4280,14 @@ inline std::vector<float> shader_stage_block_floats(
 }
 #endif
 
-/**
- * Which requested captures have landed, and whether the loop may stop.
- *
- * A measured run ends when the frame budget is spent, except that a
- * capture can still be outstanding: a topology update defers it by a
- * frame, and a null swapchain acquisition advances scene callbacks
- * without consuming one. Both backends therefore extend the loop by a
- * bounded grace period, and both used to carry their own copy of the
- * rule -- including the comment saying it matched the other one.
- */
+/** Give every pre-render application RAF callback this turn's one timestamp. */
+inline void run_animation_frame_callbacks(Engine& engine) {
+    engine.animation_frame_timestamp_ms = performance_milliseconds();
+    for (const auto& callback : engine.animation_frame_callbacks) {
+        callback(engine.animation_frame_timestamp_ms);
+    }
+}
+
 /**
  * Everything a frame does before anything is drawn, for every loop that
  * has a scene: resolve the delta, run application RAF callbacks registered
@@ -4320,10 +4318,7 @@ inline std::vector<float> shader_stage_block_floats(
         frame_delta_ms > 0.0f
             ? frame_delta_ms
             : scene.fixed_delta_ms);
-    engine.animation_frame_timestamp_ms = performance_milliseconds();
-    for (const auto& callback : engine.animation_frame_callbacks) {
-        callback(engine.animation_frame_timestamp_ms);
-    }
+    run_animation_frame_callbacks(engine);
     for (const auto& callback : scene.before_render) {
         callback(delta_ms);
     }
@@ -4344,10 +4339,7 @@ inline std::vector<float> shader_stage_block_floats(
         return 0.0f;
     }
     const float delta_ms = frame_clock.advance(frame_delta_ms);
-    engine.animation_frame_timestamp_ms = performance_milliseconds();
-    for (const auto& callback : engine.animation_frame_callbacks) {
-        callback(engine.animation_frame_timestamp_ms);
-    }
+    run_animation_frame_callbacks(engine);
     return delta_ms;
 }
 
@@ -4359,10 +4351,7 @@ inline std::vector<float> shader_stage_block_floats(
     float frame_delta_ms) {
     if (engine.stopped) return 0.0f;
     const float delta_ms = frame_clock.advance(frame_delta_ms);
-    engine.animation_frame_timestamp_ms = performance_milliseconds();
-    for (const auto& callback : engine.animation_frame_callbacks) {
-        callback(engine.animation_frame_timestamp_ms);
-    }
+    run_animation_frame_callbacks(engine);
     for (const auto& callback : context.updates) {
         callback(delta_ms);
     }
@@ -4391,6 +4380,16 @@ inline void finish_frame(Engine& engine) {
     run_interval_callbacks(engine);
 }
 
+/**
+ * Which requested captures have landed, and whether the loop may stop.
+ *
+ * A measured run ends when the frame budget is spent, except that a
+ * capture can still be outstanding: a topology update defers it by a
+ * frame, and a null swapchain acquisition advances scene callbacks
+ * without consuming one. Both backends therefore extend the loop by a
+ * bounded grace period, and both used to carry their own copy of the
+ * rule -- including the comment saying it matched the other one.
+ */
 class CaptureGate {
 public:
     CaptureGate(

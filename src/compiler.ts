@@ -201,8 +201,10 @@ import type {
     SplatFragmentManifest,
     SpriteCustomShaderManifest,
     EffectManifest,
+    FrameCallbackSignature,
     Value,
     ValueKind,
+    VariableBinding,
 } from "./compiler/types.js";
 import type { MaterialPluginManifest } from "./pinned-material-plugins.js";
 export type {
@@ -343,10 +345,7 @@ class Compiler
     >();
     private readonly sourceCppNames = new Set<string>();
     public readonly variableScopes: Array<
-        Map<
-            ts.Symbol,
-            { name: string; value: Value; frameLocal?: boolean }
-        >
+        Map<ts.Symbol, VariableBinding>
     > = [new Map()];
     private readonly cppNamePrefixes: string[] = [""];
     private readonly features = new Set<Feature>(["core"]);
@@ -3507,7 +3506,7 @@ class Compiler
      */
     public compileFrameCallback(
         expression: ts.Expression,
-        signature: "delta" | "timestamp" | "interval" | "void" = "delta",
+        signature: FrameCallbackSignature = "delta",
     ): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
@@ -3616,7 +3615,7 @@ class Compiler
 
     private compileNamedFrameCallback(
         identifier: ts.Identifier,
-        signature: "delta" | "timestamp" | "interval",
+        signature: Exclude<FrameCallbackSignature, "void">,
     ): string {
         const start = this.body.length;
         const previousIndent = this.indentLevel;
