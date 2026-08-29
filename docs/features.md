@@ -1050,6 +1050,23 @@ none, whose positions stay GPU-skinned.
 [Architecture](architecture.md#animation-and-deformation) carries both
 mechanisms.
 
+A skeleton is also addressable, behind an opt-in. `enableBoneControl()`
+installs the pin's own builder hook, so a glTF loaded *after* it surfaces
+one `Skeleton` per skin instance on `container.skeletons`, each carrying its
+joints in the skin's own order; `getBoneByName` resolves the first bone of a
+name and `setBoneVisible` collapses that bone's sub-tree to zero scale --
+the Babylon "hide a node of a skinned model" workflow. Hiding is not a
+transform override an animation can overwrite: the bake applies it after
+channel evaluation, where the translation, rotation and scale bits are
+applied before it. Every override re-bakes the whole file's skins from its
+REST hierarchy, which is what makes the feature answer with no animation
+running at all. A scene calling the opt-in after a load refuses, because
+upstream only builds skeletons for the loads that follow it, and so does
+every setter past the two the reached slice names
+(`setBonePosition`, `setBoneRotationQuaternion`, `setBoneScaling`,
+`setBonePoseDeferred`, `setBoneWorldPoseDeferred`, `bakeSkeleton`,
+`clearBoneOverride`).
+
 A thin-instanced mesh may also carry a per-instance RGBA stream
 (`setThinInstanceColors`), which a material declaring
 `useThinInstanceColors` reads as the lane the pin's own thin-instance module

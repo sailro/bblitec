@@ -54,6 +54,10 @@ import {
     type SceneIntrinsicContext,
 } from "./scene.js";
 import {
+    compileSkeletonIntrinsic,
+    type SkeletonIntrinsicContext,
+} from "./skeleton.js";
+import {
     compileShadowIntrinsic,
     type ShadowIntrinsicContext,
 } from "./shadow.js";
@@ -88,6 +92,7 @@ export interface IntrinsicContext
         PickingIntrinsicContext,
         SceneIntrinsicContext,
         ShadowIntrinsicContext,
+        SkeletonIntrinsicContext,
         SpriteIntrinsicContext,
         EffectIntrinsicContext {}
 
@@ -105,6 +110,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileLineIntrinsic,
     compileSceneIntrinsic,
     compileShadowIntrinsic,
+    compileSkeletonIntrinsic,
     compileAnimationIntrinsic,
     compileMaterialIntrinsic,
     compileAssetIntrinsic,

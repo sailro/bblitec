@@ -501,6 +501,36 @@ carries the mixer, so what is left is that a stopped group is posed when the
 caller passed an engine and skipped when it did not. The native call takes that
 as a boolean.
 
+**The pose before the first tick is the file's REST hierarchy, not the first
+clip at time zero.** `gltf-feature-skeleton.ts` seeds each skin's bone texture
+with `computeBoneTextureData`, which composes `invMeshWorld * jointWorld * IBM`
+over the authored node TRS, and nothing evaluates a channel until a tick runs.
+This port therefore runs its pose pass alone at load -- the node TRS there is
+still the authored one -- rather than evaluating clip zero. The two agree for
+every scene whose clips tick, because the first tick overwrites the seed; they
+part for a scene that never ticks, which is what an entity-by-entity
+`addToScene` produces (the pin appends the tick to the container, and the
+entity walk reaches only the first half of `addToScene`). Measured on scene
+99's Xbot: 0.816 full MAD against the browser with the channel evaluation and
+0.000 without it.
+
+**A bone override is applied in two phases, and only the second survives a
+clip.** `applyOverridesToTRS` writes the translation, rotation and scale bits
+into the working pose *before* channel evaluation, so a clip that animates the
+same bone wins; it writes the hidden bit *after* it, which is what keeps
+`setBoneVisible` in force on a rig that bakes a constant scale track onto every
+bone. The generated bake takes a working pose of its own rather than walking
+the live node TRS, exactly as `skeleton-pose.ts` exists apart from
+`skeleton-updater.ts` upstream: the bake moves the skins and nothing else, and
+it answers with no animation running. The four mask bits, the two phases' order,
+`setBoneVisible`'s two arms, the first-name-wins map and the unnamed-joint
+fallback are each read from the declaration that states them
+(`src/lowering/gltf/bone-control.ts`), because the two copies of the pose math
+agree only while those do. Reaching the feature at `enableBoneControl` is the
+pin's own boundary -- it installs the builder hook, so a scene calling it after
+a load gets skeletons for nothing upstream and would get them for everything
+here, which refuses instead. Gated by scene 99.
+
 **How large a skin stays on the GPU follows its palette's transport.** A mesh
 whose palette rides the pinned per-bone texture leaves the uniform array's bone
 lanes at the identity, because the stage that would read them is not the stage

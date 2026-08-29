@@ -24,6 +24,7 @@ import {
     lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
+import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerPunctualLightsCpp } from "./punctual-lights.js";
 import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
@@ -66,6 +67,13 @@ export interface GltfLoaderOptions {
     selectedMaterialVariant?: string;
     /** The scene reached `enableGltfCameras` (the `_camera` feature). */
     gltfCameras?: boolean;
+    /**
+     * The scene reached `enableBoneControl`, so the loader builds the
+     * skeletons the pin's own opt-in chunk builds and carries its eager
+     * bake. Every other scene emits a loader with none of it.
+     */
+    boneControl?: boolean;
+
 }
 
 export class GltfLowerer {
@@ -723,6 +731,16 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                   parserFile,
               )
             : { parentWriter: "", loading: "", poseRefresh: "" };
+        const boneControl = options.boneControl
+            ? lowerBoneControl(
+                  this.context.sourceFile(
+                      "src/skeleton/bone-control.ts",
+                  ),
+                  this.context.sourceFile(
+                      "src/skeleton/skeleton-pose.ts",
+                  ),
+              )
+            : undefined;
         const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(
             this.context.sourceFile("src/loader-gltf/load-gltf.ts"),
             this.context.sourceFile("src/loader-gltf/gltf-share.ts"),
@@ -756,6 +774,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,
+                    boneControl,
                     gltfMeshNamePrefix,
                 },
                 options,

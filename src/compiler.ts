@@ -6719,6 +6719,20 @@ class Compiler
         }
     }
 
+    /**
+     * Whether a feature has already been reached at this point in the
+     * lowering walk.
+     *
+     * Reach order is the scene's own statement order, so this answers a
+     * question about *when* a call was made — which is what an opt-in the
+     * pin requires before a later call needs. `enableBoneControl` is the
+     * one such surface: upstream it installs a builder hook, so only the
+     * loads after it carry skeletons.
+     */
+    public featureReached(feature: Feature): boolean {
+        return this.features.has(feature);
+    }
+
     public ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,

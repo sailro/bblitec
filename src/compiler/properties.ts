@@ -202,6 +202,16 @@ const handleCollections: readonly HandleCollectionRead[] = [
     record: ["assets", "cameras"],
     temporaryLabel: "asset_camera",
   },
+  {
+    // `AssetContainer.skeletons` — one per glTF skin instance, filled
+    // only by the opt-in bone-control chunk, so a scene that never
+    // called `enableBoneControl` reads the empty vector upstream leaves
+    // and here alike.
+    owner: "asset",
+    property: "skeletons",
+    record: ["assets", "skeletons"],
+    temporaryLabel: "asset_skeleton",
+  },
 ];
 
 /** Whether any handle owner can expose a collection with this source name. */

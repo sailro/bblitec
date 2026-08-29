@@ -153,6 +153,19 @@ struct BillboardSystemHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/**
+ * One skeleton the opt-in bone-control chunk built, one per glTF skin
+ * instance (`AssetContainer.skeletons`).
+ */
+struct SkeletonHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+/** One joint of a skeleton, addressed by name through `getBoneByName`. */
+struct BoneHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 struct EffectWrapperHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -1977,6 +1990,45 @@ struct AnimationGroupRecord {
     float weight = 1.0f;
 };
 
+/**
+ * One bone's local-transform override, the pin's own `BoneOverride`
+ * (`src/skeleton/bone-control.ts`). `mask` bits: 1 = translation,
+ * 2 = rotation, 4 = scale, 8 = hidden. Bits 1/2/4 are applied before
+ * channel evaluation so animation wins; bit 8 is applied after it so
+ * visibility does.
+ */
+struct BoneOverride {
+    std::uint32_t mask = 0;
+    Vec3 translation{};
+    Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
+    Vec3 scaling{1.0f, 1.0f, 1.0f};
+};
+
+/**
+ * One joint node of a skeleton, in the skin's own `joints` order.
+ *
+ * `name` is the glTF node's name, or the pin's `bone_<nodeIndex>`
+ * fallback; `node_index` is the key every override is stored under, which
+ * is what makes an override reach across skins through the hierarchy.
+ */
+struct BoneRecord {
+    std::string name;
+    std::uint32_t node_index = 0;
+    std::uint32_t skeleton = invalid_handle;
+};
+
+/**
+ * A skinned model's skeleton -- one per glTF skin instance, surfaced on
+ * `AssetContainer.skeletons` once the scene reached `enableBoneControl`.
+ *
+ * The overrides themselves live on the owning asset, because upstream's
+ * map is asset-wide and one bake refreshes every skinned mesh of the file.
+ */
+struct SkeletonRecord {
+    std::uint32_t asset = invalid_handle;
+    std::vector<BoneHandle> bones;
+};
+
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
@@ -2047,6 +2099,29 @@ struct AssetRecord {
     // `group._additive = { referenceTime }`); filled by the generated
     // loader only when the additive mixer is compiled in.
     std::function<void(std::size_t, float)> set_clip_additive;
+    /**
+     * `AssetContainer.skeletons`: the skeletons the opt-in bone-control
+     * chunk built for this file, empty for every other scene.
+     */
+    std::vector<SkeletonHandle> skeletons;
+    /**
+     * The asset-wide overrides, one slot per glTF node -- the pin keys its
+     * `_overrides` map by node index for the same reason, since a single
+     * skin is often split across meshes and an override may reach across
+     * skins through the hierarchy. A zero mask is an absent entry, which is
+     * exactly what the pin's own `delete` leaves behind, and the map's
+     * insertion order is unobservable here because each entry writes only
+     * its own node's slots.
+     */
+    std::vector<BoneOverride> bone_overrides;
+    /** How many of them carry a mask, the pin's own `_overrides.size()`. */
+    std::size_t bone_override_count = 0;
+    /**
+     * The pin's eager bake: recompute this file's node hierarchy from rest
+     * plus overrides and refresh every skinned mesh's palette. Filled only
+     * by a loader compiled with bone control.
+     */
+    std::function<void()> bake_skeletons;
 };
 
 /**
@@ -2204,6 +2279,8 @@ struct Engine {
     std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
     std::vector<AnimationGroupRecord> animation_groups;
+    std::vector<SkeletonRecord> skeletons;
+    std::vector<BoneRecord> bones;
     std::vector<RenderTargetRecord> render_targets;
     std::vector<FrameTaskRecord> frame_tasks;
     RenderTargetHandle swapchain_target{};
@@ -2638,6 +2715,21 @@ void update_line_system(
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors);
 AssetHandle load_gltf(Engine& engine, const std::string& path);
+// The opt-in bone-control surface (`src/skeleton/bone-control.ts`), defined
+// by a generated glTF loader compiled with it. `getBoneByName` answers from
+// the skeleton's own name map -- the first joint carrying the name, in joint
+// order -- and reports a miss as an invalid handle, which is the `undefined`
+// the pin returns. `setBoneVisible` writes the asset-wide override and
+// re-bakes, so it works with no animation at all.
+BoneHandle get_bone_by_name(
+    Engine& engine,
+    SkeletonHandle skeleton,
+    const std::string& name);
+void set_bone_visible(
+    Engine& engine,
+    SkeletonHandle skeleton,
+    BoneHandle bone,
+    bool visible);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
 void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);

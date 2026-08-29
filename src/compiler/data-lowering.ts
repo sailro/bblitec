@@ -16,6 +16,7 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { resizingArrayMethods } from "./data-methods.js";
+import { isHandleCollectionProperty } from "./properties.js";
 
 /**
  * The one-argument `Math` members scene code may call, each a `<cmath>`
@@ -120,6 +121,20 @@ function resizedNames(file: ts.SourceFile): ReadonlySet<string> {
 /** Whether nothing in the entry source can change `name`'s length. */
 export function isNeverResized(name: ts.Identifier): boolean {
     return !resizedNames(name.getSourceFile()).has(name.text);
+}
+
+/**
+ * Whether an expression names one of the engine handle collections
+ * `properties.ts` publishes. Only the property NAME is asked, because
+ * that is what the collection path checks before it compiles an owner at
+ * all -- deciding on the owner would mean compiling it here to find out.
+ */
+function namesHandleCollection(expression: ts.Expression): boolean {
+    return (
+        (ts.isPropertyAccessExpression(expression) ||
+            ts.isPropertyAccessChain(expression)) &&
+        isHandleCollectionProperty(expression.name.text)
+    );
 }
 
 export interface DataLoweringContext {
@@ -576,7 +591,16 @@ export class DataLowerer {
                     unwrapped.expression,
                     mode,
                 ) ??
-                (unwrapped.questionDotToken
+                // An optional index whose owner is a handle collection
+                // belongs to the collection path, not to this one: the
+                // members are engine handles the loader created, and
+                // compiling the owner here would ask the data model for a
+                // value it has no type for. `container.skeletons?.[0]` is
+                // the reached shape.
+                (unwrapped.questionDotToken &&
+                !namesHandleCollection(
+                    this.context.unwrap(unwrapped.expression),
+                )
                     ? this.context.compileValue(
                           unwrapped.expression,
                       )
@@ -4057,6 +4081,11 @@ export class DataLowerer {
             const condition = this.context.compileCondition(
                 unwrapped.condition,
             );
+            if (dataType.kind === "optional") {
+                // The selected value is wrapped in `bbl::js::Nullable`
+                // below, which is the data runtime's own type.
+                this.context.reachJsData();
+            }
             const compileBranch = (
                 branch: ts.Expression,
             ): { cpp: string; lines: string[] } => {
@@ -4346,6 +4375,18 @@ export class DataLowerer {
                         optional.dataType,
                         dataType,
                     )
+                ) {
+                    return optional.cpp;
+                }
+                // A handle the expression already produced IS the value
+                // the inner sink takes. Falling through would compile the
+                // expression a second time, which for an intrinsic that
+                // emits a temporary means calling it twice -- so the
+                // already-compiled value is handed on instead.
+                if (
+                    optional &&
+                    dataType.inner.kind === "handle" &&
+                    optional.kind === dataType.inner.handle
                 ) {
                     return optional.cpp;
                 }
