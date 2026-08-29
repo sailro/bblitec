@@ -425,6 +425,12 @@ struct RenderTaskOptions {
     bool canvas_size = false;
     bool auto_mirror = true;
     /**
+     * This is the compiler-owned default scene pass. Unlike an arbitrary
+     * render task, it must retain the scene renderer's non-mesh stages
+     * (skyboxes before the mirrored draw lists and ground after them).
+     */
+    bool scene_stages = false;
+    /**
      * A depth attachment owned by another task, bound instead of the target's
      * own — `geometry_depth` when the scene named one, and the default
      * `render_target` when it did not. The pin marks such a target eager, so

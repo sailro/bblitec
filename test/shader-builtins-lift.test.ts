@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
+    backgroundDdsSkyboxVertexWgsl,
     backgroundGroundFragmentWgsl,
     backgroundSkyboxFragmentWgsl,
     readPinnedBackgroundGroundSource,
@@ -110,7 +111,18 @@ test("lifts the pinned ground fragment with both dither arms", () => {
 
 test("the DDS skybox file carries the pin's single high-contrast arm", () => {
     const pinned = readPinnedBackgroundSkyboxSource(pinnedPackageRoot());
+    const vertex = backgroundDdsSkyboxVertexWgsl("p", pinned);
     const dds = backgroundSkyboxFragmentWgsl("p", pinned, true);
+
+    assert.ok(vertex.includes("let c=(uniforms.world*vec4<f32>(b,1.0)).xyz;"));
+    assert.ok(
+        vertex.includes(
+            "a.clipPos=uniforms.viewProjection*vec4<f32>(c,1.0);",
+        ),
+    );
+    assert.match(vertex, /@location\(0\) positionUVW: vec3<f32>/);
+    assert.match(vertex, /@location\(1\) positionW: vec3<f32>/);
+    assert.doesNotMatch(vertex, /(?:mesh|scene)\.\w+/);
 
     // D8: the pinned DDS fragment folds contrast through the high arm only;
     // a reappearing low arm means the lift regressed to a merged fragment.
@@ -123,8 +135,9 @@ test("the DDS skybox file carries the pin's single high-contrast arm", () => {
     assert.ok(dds.includes("a=1.0-exp2(-1.590579*a);"));
     assert.ok(dds.includes("a=saturate(a);"));
     assert.ok(
-        dds.includes("a=a+vec3<f32>(dither(b.worldPosition.xy,0.5));"),
+        dds.includes("a=a+vec3<f32>(dither(b.positionW.xy,0.5));"),
     );
+    assert.ok(dds.includes("var e=normalize(b.positionUVW);"));
     assert.ok(dds.includes("a*=uniforms.primaryColorExposure.rgb;"));
 
     // Binding contract.

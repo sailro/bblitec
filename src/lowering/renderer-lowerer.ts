@@ -44,6 +44,7 @@ import {
     imageProcessingMultisampledFragmentWgsl,
 } from "../shader-builtins-utility.js";
 import {
+    backgroundDdsSkyboxVertexWgsl,
     backgroundGroundFragmentWgsl,
     backgroundSkyboxFragmentWgsl,
     readPinnedBackgroundGroundSource,
@@ -1201,6 +1202,14 @@ struct SkyboxPlan {
     std::array<std::uint32_t, 36> indices{};
 };
 
+// background-dds-skybox.ts keeps the cube local and applies rootPosition in
+// its vertex-stage mesh.world. Preserving that store boundary matters because
+// the fragment hashes the interpolated world position for dither.
+struct SkyboxVertexUniforms {
+    std::array<float, 16> view_projection{};
+    std::array<float, 16> world{};
+};
+
 struct SkyboxUniforms {
     std::array<float, 4> primary_color_exposure{};
     std::array<float, 4> background_center{};
@@ -1393,6 +1402,9 @@ BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
     const CameraRecord& camera);
 SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
+SkyboxVertexUniforms build_skybox_vertex_uniforms(
+    const EnvironmentState& environment,
+    const std::array<float, 16>& view_projection);
 SkyboxUniforms build_skybox_uniforms(
     const EnvironmentState& environment,
     bool linear_image_processing);
@@ -2497,16 +2509,9 @@ BackgroundUniforms build_background_uniforms(
 
 SkyboxPlan build_skybox_plan(const EnvironmentState& environment) {
     const float half = environment.skybox_size * 0.5f;
-    const Vec3 center = environment.skybox_uses_environment
-        ? Vec3{}
-        : environment.skybox_position;
     const auto vertex = [&](float x, float y, float z) {
         return ModelVertex{
-            Vec3{
-                center.x + x,
-                center.y + y,
-                center.z + z,
-            },
+            Vec3{x, y, z},
             Vec3{0.0f, 1.0f, 0.0f},
             Vec4{1.0f, 0.0f, 0.0f, 1.0f},
             Vec2{},
@@ -2519,6 +2524,21 @@ ${backgroundGeometry.skyboxVertexRows}
     result.indices = {
 ${backgroundGeometry.skyboxIndexRows}
     };
+    return result;
+}
+
+SkyboxVertexUniforms build_skybox_vertex_uniforms(
+    const EnvironmentState& environment,
+    const std::array<float, 16>& view_projection) {
+    SkyboxVertexUniforms result;
+    result.view_projection = view_projection;
+    result.world[0] = 1.0f;
+    result.world[5] = 1.0f;
+    result.world[10] = 1.0f;
+    result.world[15] = 1.0f;
+    result.world[12] = environment.skybox_position.x;
+    result.world[13] = environment.skybox_position.y;
+    result.world[14] = environment.skybox_position.z;
     return result;
 }
 
@@ -2781,6 +2801,14 @@ ${pinnedFogInfosPacking()}    };
             // dither for it — and the dithered file is the DDS fragment,
             // whose image-processing block is the pin's own single
             // high-contrast arm.
+            result.push({
+                output:
+                    "upstream/shaders/background-skybox-dds.vert.native.wgsl",
+                data: backgroundDdsSkyboxVertexWgsl(
+                    skyboxProvenance,
+                    pinnedSkybox,
+                ),
+            });
             result.push({
                 output:
                     "upstream/shaders/background-skybox.frag.native.wgsl",

@@ -1438,6 +1438,13 @@ left eye is the reached case — which gives that task its own copy of the pin's
 per-pass scene block and nothing else, since a second camera moves the
 view-projection and the eye position and no other value in it.
 
+When shadow registration materializes the scene's otherwise implicit default
+render into a colour task, that compiler-owned task retains the complete scene
+stage contract: environment, solid, and image skyboxes run before its mesh
+lists, and the background ground runs after transparent meshes. Explicit
+application render tasks remain list-only, as their configured mesh lists
+require.
+
 A `FrameGraphContext` is the scene-less ownership form: it registers directly
 on the engine, runs its `update(deltaMs)` callback, and executes only the tasks
 added to its graph. Its SDL_GPU and Dawn drivers contain no scene, camera,

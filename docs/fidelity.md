@@ -249,6 +249,22 @@ the dithered variant except under `skybox_uses_environment`. Dithering the
 environment arm puts ±1 on roughly half the background pixels of scenes 8 and
 21: 0.129 to 0.343 and 0.330 to 0.537 full MAD.
 
+**The DDS arm keeps the pin's vertex-stage ownership boundary.** Its cube
+positions remain local, `mesh.world` carries the environment root position,
+and the scene view-projection remains the other uniform. CPU-baking that
+translation before the generic material vertex stage preserves the visible
+geometry but changes the low interpolated `positionW` bits that the dither
+hashes, producing an unrelated noise pattern over the whole sky. The pinned
+DDS vertex body and both of its varyings are therefore lifted beside the
+fragment and used by both PALs.
+
+**Deferred environment sizing observes the live scene.** The pin first uses an
+ArcRotate camera's nonzero `upperRadiusLimit` for both ground and skybox size;
+otherwise it expands each mesh's local bounds through its current float32 world
+matrix before taking the scene diagonal. Native preserves both branches,
+including meshes and parent transforms created after environment loading, so
+the cube size and root position feeding that same dither match the browser.
+
 **The solid-colour skybox is a third arm with its own pair of stages, taken
 from the pinned package rather than composed.** A scene loading an `.env`
 environment that names no DDS or `.env` skybox and passes no `skipSkybox`
@@ -2016,6 +2032,12 @@ handed and make no camera the scene's, which lets scene 142 render its right
 eye through the scene camera and its left through a task's own. A task with its
 own camera carries its own copy of the per-pass scene block; a second camera
 moves the view-projection and the eye position, nothing else.
+
+The render task the compiler creates to materialize the implicit scene pass is
+not an application list-only task. It replays the scene's skybox sub-order
+before opaque and transparent lists and the ground stage after them. Keeping
+that distinction prevents enabling a shadow task from silently replacing a
+complete scene render with only its mesh draw lists.
 
 Frame-graph depth targets select a supported D32/D24 sampled depth format,
 matching the `depth32float` geometry-target contract. Scenes 145 and 146 gate

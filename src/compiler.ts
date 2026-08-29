@@ -6781,7 +6781,7 @@ class Compiler
             `bbl::RenderTaskOptions{"default-render-task", ` +
             `${target}, ` +
             `${scene.cpp}.clear_color, true, ` +
-            `bbl::CameraHandle{}, false, true, true});\n` +
+            `bbl::CameraHandle{}, false, true, true, true});\n` +
             `        bbl::add_task(${scene.cpp}, ${renderTask});\n` +
             `        auto ${resolveTask} = bbl::create_copy_to_texture_task(${engine}, ${scene.cpp}, ` +
             `bbl::CopyTaskOptions{"default-resolve", ` +

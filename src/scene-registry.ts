@@ -2808,8 +2808,8 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Break Meshes",
         parity: {
-            maxFullMad: 0.6,
-            maxForegroundMad: 0.01,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             nativeEnvironment: adHocCaptureEnvironment(),

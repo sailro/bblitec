@@ -103,8 +103,8 @@ test("registers unique generated scene targets", () => {
         "180",
     );
     assert.equal(getScene("platformer").parity?.maxFullMad, 0.05);
-    assert.equal(getScene("break-meshes").parity?.maxFullMad, 0.6);
-    assert.equal(getScene("break-meshes").parity?.maxForegroundMad, 0.01);
+    assert.equal(getScene("break-meshes").parity?.maxFullMad, 0.001);
+    assert.equal(getScene("break-meshes").parity?.maxForegroundMad, 0.001);
     assert.equal(
         getScene("tetris").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "181",
