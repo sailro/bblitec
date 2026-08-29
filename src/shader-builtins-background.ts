@@ -142,6 +142,8 @@ export function readPinnedBackgroundGroundSource(
 }
 
 export interface PinnedBackgroundSkyboxSource {
+    /** `background-dds-skybox.ts`'s own `ddsSkyboxVertSrc`. */
+    ddsVertex: string;
     /** `background-dds-skybox.ts`'s own `ddsSkyboxFragSrc`. */
     ddsFragment: string;
     /** `background-hdr-skybox.ts`'s own `skyboxHdrFragSrc`. */
@@ -152,15 +154,20 @@ export interface PinnedBackgroundSkyboxSource {
 export function readPinnedBackgroundSkyboxSource(
     packageRoot: string,
 ): PinnedBackgroundSkyboxSource {
+    const ddsModule = readFileSync(
+        resolve(
+            packageRoot,
+            "lib/material/pbr/background-dds-skybox.js",
+        ),
+        "utf8",
+    );
     return {
+        ddsVertex: extractPackagedStringLiteral(
+            ddsModule,
+            "ddsSkyboxVertSrc",
+        ),
         ddsFragment: extractPackagedStringLiteral(
-            readFileSync(
-                resolve(
-                    packageRoot,
-                    "lib/material/pbr/background-dds-skybox.js",
-                ),
-                "utf8",
-            ),
+            ddsModule,
             "ddsSkyboxFragSrc",
         ),
         hdrFragment: extractPackagedStringLiteral(
@@ -351,6 +358,100 @@ ${formatStatements(body)}
 }
 
 /**
+ * The DDS vertex stage itself, with only its two uniform owners folded into
+ * one native block. Keeping the pin's two varyings is significant: its dither
+ * hashes interpolated world position, so baking the translation into CPU
+ * vertices changes low interpolation bits and produces unrelated noise.
+ */
+export function backgroundDdsSkyboxVertexWgsl(
+    provenance: string,
+    pinned: PinnedBackgroundSkyboxSource,
+): string {
+    const source = pinned.ddsVertex;
+    const declaration =
+        /^struct (\w+)\{world:mat4x4<f32>\}@group\(1\) @binding\(0\) var<uniform> mesh:(\w+);/.exec(
+            source,
+        );
+    if (!declaration || declaration[1] !== declaration[2]) {
+        backgroundLiftError("DDS skybox vertex mesh uniform block");
+    }
+    const varying =
+        /struct (\w+)\{@builtin\(position\) clipPos:vec4<f32>,@location\(0\) positionUVW:vec3<f32>,@location\(1\) positionW:vec3<f32>\}/.exec(
+            source,
+        );
+    if (!varying) {
+        backgroundLiftError("DDS skybox vertex varying block");
+    }
+    const entry =
+        /@vertex fn main\(@location\(0\) (\w+):vec3<f32>\)->(\w+)\{([\s\S]*)\}$/.exec(
+            source,
+        );
+    if (!entry || entry[2] !== varying[1]) {
+        backgroundLiftError("DDS skybox vertex entry point");
+    }
+    const body = rehome(
+        entry[3]!,
+        [
+            [`var a:${varying[1]};`, "var a: VertexOutput;"],
+            ["mesh.world", "uniforms.world"],
+            ["scene.viewProjection", "uniforms.viewProjection"],
+        ],
+        "DDS skybox vertex",
+    );
+    assertFullyRehomed(body, "DDS skybox vertex");
+    return `// ${provenance}
+struct SkyboxVertexUniforms {
+    viewProjection: mat4x4<f32>,
+    world: mat4x4<f32>,
+}
+@group(1) @binding(0) var<uniform> uniforms: SkyboxVertexUniforms;
+
+struct VertexOutput {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) positionUVW: vec3<f32>,
+    @location(1) positionW: vec3<f32>,
+}
+
+@vertex
+fn mainVertex(@location(0) ${entry[1]}: vec3<f32>) -> VertexOutput {
+${formatStatements(body)}
+}
+`;
+}
+
+function ddsSkyboxShell(
+    provenance: string,
+    pinned: PinnedBackgroundSkyboxSource,
+    taken: TakenBackgroundFragment,
+    body: string,
+): string {
+    return `// ${provenance}
+${pinned.dither.dither.trim()}
+
+@group(2) @binding(0) var ${taken.texture}: texture_cube<f32>;
+@group(2) @binding(1) var ${taken.sampler}: sampler;
+
+struct SkyboxUniforms {
+    primaryColorExposure: vec4<f32>,
+    backgroundCenter: vec4<f32>,
+    imageParameters: vec4<f32>,
+}
+@group(3) @binding(0) var<uniform> uniforms: SkyboxUniforms;
+
+struct FragmentInput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) positionUVW: vec3<f32>,
+    @location(1) positionW: vec3<f32>,
+}
+
+@fragment
+fn mainFragment(${taken.parameter}: FragmentInput) -> @location(0) vec4<f32> {
+${formatStatements(body)}
+}
+`;
+}
+
+/**
  * The direction re-homing both skybox arms share: the pin's `positionUVW` is
  * the cube's local corner, but the shared model vertex stage carries world
  * position, so the plan's `backgroundCenter` subtracts the cube's translation
@@ -400,18 +501,11 @@ function ddsSkyboxFragmentWgsl(
             ["mesh.exposureLinear", "uniforms.primaryColorExposure.a"],
             ["mesh.contrast", "uniforms.imageParameters.x"],
             ["scene.vImageInfos.w", "uniforms.imageParameters.z"],
-            skyboxDirection(taken.parameter),
-            [`${taken.parameter}.positionW`, `${taken.parameter}.worldPosition`],
         ],
         "DDS skybox fragment",
     );
     assertFullyRehomed(body, "DDS skybox fragment");
-    return skyboxShell(
-        provenance,
-        `${pinned.dither.dither.trim()}\n\n`,
-        taken,
-        body,
-    );
+    return ddsSkyboxShell(provenance, pinned, taken, body);
 }
 
 /**

@@ -238,6 +238,10 @@ test("environment sizing constants flow slot by slot", () => {
         /options\.skybox_size : 20\.0f;/,
     );
     assert.match(adapter.source, /double ground_size = 15\.0;/);
+    assert.match(
+        adapter.source,
+        /\*camera\.upper_radius_limit \*\s*2\.0/,
+    );
     assert.match(adapter.source, /diagonal \* 2\.0;/);
     assert.match(adapter.source, /ground_size \*= 1\.1;/);
     assert.match(adapter.source, /skybox_size \*= 1\.5;/);
@@ -252,6 +256,21 @@ test("environment sizing constants flow slot by slot", () => {
     assert.match(
         adapter.source,
         /bounds_min\[2\] \+ dz \* 0\.5/,
+    );
+    // The deferred builder sees the scene as it exists at registration,
+    // including procedural meshes and their live parented transforms. The
+    // pin expands each local box through mesh.worldMatrix at that point.
+    assert.match(
+        adapter.source,
+        /upstream::mesh_world_matrix\(\*scene\.engine, mesh\)/,
+    );
+    assert.match(
+        adapter.source,
+        /world\[12 \+ row\]/,
+    );
+    assert.match(
+        adapter.source,
+        /world\[column \* 4 \+ row\]/,
     );
 });
 

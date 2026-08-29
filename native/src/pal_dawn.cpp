@@ -771,6 +771,7 @@ WGPUBuffer esm_caster_params_buffer(
     WGPUBindGroup ground_texture_group = nullptr;
     WGPUBindGroup ground_material_group = nullptr;
     bool ground_enabled = false;
+    WGPUShaderModule skybox_vertex_module = nullptr;
     WGPUShaderModule skybox_module = nullptr;
     WGPURenderPipeline skybox_pipeline = nullptr;
     WGPUBuffer skybox_vertices = nullptr;
@@ -1448,6 +1449,9 @@ WGPUBuffer esm_caster_params_buffer(
         if (skybox_vertices) wgpuBufferRelease(skybox_vertices);
         if (skybox_pipeline) wgpuRenderPipelineRelease(skybox_pipeline);
         if (skybox_module) wgpuShaderModuleRelease(skybox_module);
+        if (skybox_vertex_module) {
+            wgpuShaderModuleRelease(skybox_vertex_module);
+        }
         if (ground_material_group) wgpuBindGroupRelease(ground_material_group);
         if (ground_texture_group) wgpuBindGroupRelease(ground_texture_group);
         if (ground_scene_group) wgpuBindGroupRelease(ground_scene_group);
@@ -8151,6 +8155,8 @@ bool run_dawn_engine(Engine& engine) {
     rebuild_meshes();
 
     if (use_skybox) {
+        const bool pinned_dds_skybox =
+            !scene.environment.skybox_uses_environment;
         // Which arm of the pinned skybox this is decides whether it
         // dithers at all: background-dds-skybox.ts prefixes WGSL_DITHER,
         // while background-hdr-skybox.ts -- the arm an environment
@@ -8162,6 +8168,11 @@ bool run_dawn_engine(Engine& engine) {
         // composed view-projection agrees with the pinned engine bit for
         // bit. Both backends select the same variant from this same
         // environment-arm rule.
+        if (pinned_dds_skybox) {
+            state.skybox_vertex_module = load_wgsl_module(
+                state,
+                "background-skybox-dds.vert");
+        }
         state.skybox_module = load_wgsl_module(
             state,
             scene.environment.skybox_uses_environment
@@ -8281,12 +8292,27 @@ bool run_dawn_engine(Engine& engine) {
 #else
         constexpr std::uint32_t skybox_vertex_buffer_count = 1;
 #endif
+        WGPUVertexAttribute dds_position_attribute{};
+        dds_position_attribute.format = WGPUVertexFormat_Float32x3;
+        dds_position_attribute.offset = 0;
+        dds_position_attribute.shaderLocation = 0;
+        WGPUVertexBufferLayout dds_vertex_layout{};
+        dds_vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+        dds_vertex_layout.arrayStride = sizeof(GpuVertex);
+        dds_vertex_layout.attributeCount = 1;
+        dds_vertex_layout.attributes = &dds_position_attribute;
         WGPURenderPipelineDescriptor descriptor =
             WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.vertex.module = state.vertex_module;
+        descriptor.vertex.module = pinned_dds_skybox
+            ? state.skybox_vertex_module
+            : state.vertex_module;
         descriptor.vertex.entryPoint = string_view("mainVertex");
-        descriptor.vertex.bufferCount = skybox_vertex_buffer_count;
-        descriptor.vertex.buffers = vertex_layouts.data();
+        descriptor.vertex.bufferCount = pinned_dds_skybox
+            ? 1
+            : skybox_vertex_buffer_count;
+        descriptor.vertex.buffers = pinned_dds_skybox
+            ? &dds_vertex_layout
+            : vertex_layouts.data();
         descriptor.primitive.topology =
             WGPUPrimitiveTopology_TriangleList;
         descriptor.primitive.frontFace = WGPUFrontFace_CCW;
@@ -8323,7 +8349,9 @@ bool run_dawn_engine(Engine& engine) {
             state,
             WGPUBufferUsage_Uniform,
             nullptr,
-            64);
+            pinned_dds_skybox
+                ? sizeof(upstream::SkyboxVertexUniforms)
+                : 64);
         state.skybox_uniforms = create_buffer(
             state,
             WGPUBufferUsage_Uniform,
@@ -8336,29 +8364,35 @@ bool run_dawn_engine(Engine& engine) {
         scene_entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
         scene_entries[0].binding = 0;
         scene_entries[0].buffer = state.skybox_matrix;
-        scene_entries[0].size = 64;
+        scene_entries[0].size = pinned_dds_skybox
+            ? sizeof(upstream::SkyboxVertexUniforms)
+            : 64;
         std::uint32_t scene_entry_count = 1;
 #if BBLITE_GPU_DEFORMATION
-        ensure_background_deformation_uniforms(state);
-        scene_entries[scene_entry_count] =
-            WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entries[scene_entry_count].binding = 1;
-        scene_entries[scene_entry_count].buffer =
-            state.background_deformation_uniforms;
-        scene_entries[scene_entry_count].size =
-            sizeof(DeformationUniforms);
-        ++scene_entry_count;
+        if (!pinned_dds_skybox) {
+            ensure_background_deformation_uniforms(state);
+            scene_entries[scene_entry_count] =
+                WGPU_BIND_GROUP_ENTRY_INIT;
+            scene_entries[scene_entry_count].binding = 1;
+            scene_entries[scene_entry_count].buffer =
+                state.background_deformation_uniforms;
+            scene_entries[scene_entry_count].size =
+                sizeof(DeformationUniforms);
+            ++scene_entry_count;
+        }
 #endif
 #if BBLITE_GPU_INSTANCING
-        ensure_background_instance_resources(state);
-        scene_entries[scene_entry_count] =
-            WGPU_BIND_GROUP_ENTRY_INIT;
-        scene_entries[scene_entry_count].binding =
-            instance_uniform_binding;
-        scene_entries[scene_entry_count].buffer =
-            state.background_instance_uniform;
-        scene_entries[scene_entry_count].size = 64;
-        ++scene_entry_count;
+        if (!pinned_dds_skybox) {
+            ensure_background_instance_resources(state);
+            scene_entries[scene_entry_count] =
+                WGPU_BIND_GROUP_ENTRY_INIT;
+            scene_entries[scene_entry_count].binding =
+                instance_uniform_binding;
+            scene_entries[scene_entry_count].buffer =
+                state.background_instance_uniform;
+            scene_entries[scene_entry_count].size = 64;
+            ++scene_entry_count;
+        }
 #endif
         WGPUBindGroupDescriptor scene_descriptor =
             WGPU_BIND_GROUP_DESCRIPTOR_INIT;
@@ -8369,7 +8403,7 @@ bool run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateBindGroup(state.device, &scene_descriptor);
         wgpuBindGroupLayoutRelease(scene_layout);
 #if BBLITE_GPU_MORPH_STORAGE
-        {
+        if (!pinned_dds_skybox) {
             WGPUBindGroupLayout morph_layout =
                 wgpuRenderPipelineGetBindGroupLayout(
                     state.skybox_pipeline, 0);
@@ -10060,14 +10094,25 @@ bool run_dawn_engine(Engine& engine) {
                 upstream::build_skybox_view_projection(
                     camera,
                     static_cast<float>(width) / height);
-            wgpuQueueWriteBuffer(
-                state.queue,
-                state.skybox_matrix,
-                0,
-                scene.environment.skybox_uses_environment
-                    ? skybox_view_projection.data()
-                    : matrix.data(),
-                64);
+            if (scene.environment.skybox_uses_environment) {
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    state.skybox_matrix,
+                    0,
+                    skybox_view_projection.data(),
+                    sizeof(skybox_view_projection));
+            } else {
+                const upstream::SkyboxVertexUniforms vertex_uniforms =
+                    upstream::build_skybox_vertex_uniforms(
+                        scene.environment,
+                        matrix);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    state.skybox_matrix,
+                    0,
+                    &vertex_uniforms,
+                    sizeof(vertex_uniforms));
+            }
             const upstream::SkyboxUniforms skybox =
                 upstream::build_skybox_uniforms(
                     scene.environment,
@@ -10810,8 +10855,10 @@ bool run_dawn_engine(Engine& engine) {
             wgpuRenderPassEncoderSetPipeline(pass, state.skybox_pipeline);
             bound_pipeline = state.skybox_pipeline;
 #if BBLITE_GPU_MORPH_STORAGE
-            wgpuRenderPassEncoderSetBindGroup(
-                pass, 0, state.skybox_morph_group, 0, nullptr);
+            if (scene.environment.skybox_uses_environment) {
+                wgpuRenderPassEncoderSetBindGroup(
+                    pass, 0, state.skybox_morph_group, 0, nullptr);
+            }
 #endif
             wgpuRenderPassEncoderSetBindGroup(
                 pass, 1, state.skybox_scene_group, 0, nullptr);
@@ -10822,12 +10869,14 @@ bool run_dawn_engine(Engine& engine) {
             wgpuRenderPassEncoderSetVertexBuffer(
                 pass, 0, state.skybox_vertices, 0, WGPU_WHOLE_SIZE);
 #if BBLITE_GPU_INSTANCING
-            wgpuRenderPassEncoderSetVertexBuffer(
-                pass,
-                1,
-                state.background_instances,
-                0,
-                WGPU_WHOLE_SIZE);
+            if (scene.environment.skybox_uses_environment) {
+                wgpuRenderPassEncoderSetVertexBuffer(
+                    pass,
+                    1,
+                    state.background_instances,
+                    0,
+                    WGPU_WHOLE_SIZE);
+            }
 #endif
             wgpuRenderPassEncoderSetIndexBuffer(
                 pass,
@@ -11397,6 +11446,176 @@ bool run_dawn_engine(Engine& engine) {
                 WGPURenderPipeline bound_pipeline = nullptr;
                 const bool pass_has_depth = borrowed_depth_view ||
                     (target_record.has_depth && target.depth);
+                if (task.render.scene_stages) {
+                    if (
+                        task.render.has_camera ||
+                        samples != state.sample_count ||
+                        !pass_has_depth) {
+                        throw std::runtime_error(
+                            "Compiler-owned scene stages require the "
+                            "default camera, sample count, and depth target.");
+                    }
+                    // A materialized default task replaces the ordinary
+                    // scene pass. Its draw lists contain meshes only, so
+                    // replay the scene renderer's skybox sub-order before
+                    // those lists rather than silently degrading to clear.
+                    for (const SkyboxLayer layer : skybox_stage_order) {
+                        if (layer == SkyboxLayer::environment) {
+                            if (!state.skybox_enabled) continue;
+                            wgpuRenderPassEncoderSetPipeline(
+                                task_pass,
+                                state.skybox_pipeline);
+                            bound_pipeline = state.skybox_pipeline;
+#if BBLITE_GPU_MORPH_STORAGE
+                            if (scene.environment.skybox_uses_environment) {
+                                wgpuRenderPassEncoderSetBindGroup(
+                                    task_pass,
+                                    0,
+                                    state.skybox_morph_group,
+                                    0,
+                                    nullptr);
+                            }
+#endif
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                1,
+                                state.skybox_scene_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                2,
+                                state.skybox_texture_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                3,
+                                state.skybox_material_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetVertexBuffer(
+                                task_pass,
+                                0,
+                                state.skybox_vertices,
+                                0,
+                                WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+                            if (scene.environment.skybox_uses_environment) {
+                                wgpuRenderPassEncoderSetVertexBuffer(
+                                    task_pass,
+                                    1,
+                                    state.background_instances,
+                                    0,
+                                    WGPU_WHOLE_SIZE);
+                            }
+#endif
+                            wgpuRenderPassEncoderSetIndexBuffer(
+                                task_pass,
+                                state.skybox_indices,
+                                WGPUIndexFormat_Uint32,
+                                0,
+                                WGPU_WHOLE_SIZE);
+                            wgpuRenderPassEncoderDrawIndexed(
+                                task_pass,
+                                36,
+                                1,
+                                0,
+                                0,
+                                0);
+                            continue;
+                        }
+#if BBLITE_SOLID_SKYBOX
+                        if (layer == SkyboxLayer::solid) {
+                            if (!state.solid_skybox_enabled) continue;
+                            wgpuRenderPassEncoderSetPipeline(
+                                task_pass,
+                                state.solid_skybox_pipeline);
+                            bound_pipeline =
+                                state.solid_skybox_pipeline;
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                1,
+                                state.solid_skybox_scene_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                3,
+                                state.solid_skybox_material_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetVertexBuffer(
+                                task_pass,
+                                0,
+                                state.solid_skybox_vertices,
+                                0,
+                                WGPU_WHOLE_SIZE);
+                            wgpuRenderPassEncoderSetIndexBuffer(
+                                task_pass,
+                                state.solid_skybox_indices,
+                                WGPUIndexFormat_Uint32,
+                                0,
+                                WGPU_WHOLE_SIZE);
+                            wgpuRenderPassEncoderDrawIndexed(
+                                task_pass,
+                                36,
+                                1,
+                                0,
+                                0,
+                                0);
+                            continue;
+                        }
+#endif
+#if BBLITE_IMAGE_SKYBOX
+                        if (layer == SkyboxLayer::image) {
+                            if (!state.image_skybox_enabled) continue;
+                            wgpuRenderPassEncoderSetPipeline(
+                                task_pass,
+                                state.image_skybox_pipeline);
+                            bound_pipeline =
+                                state.image_skybox_pipeline;
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                1,
+                                state.image_skybox_scene_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                2,
+                                state.image_skybox_texture_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                task_pass,
+                                3,
+                                state.image_skybox_material_group,
+                                0,
+                                nullptr);
+                            wgpuRenderPassEncoderSetVertexBuffer(
+                                task_pass,
+                                0,
+                                state.image_skybox_vertices,
+                                0,
+                                WGPU_WHOLE_SIZE);
+                            wgpuRenderPassEncoderSetIndexBuffer(
+                                task_pass,
+                                state.image_skybox_indices,
+                                WGPUIndexFormat_Uint32,
+                                0,
+                                WGPU_WHOLE_SIZE);
+                            wgpuRenderPassEncoderDrawIndexed(
+                                task_pass,
+                                36,
+                                1,
+                                0,
+                                0,
+                                0);
+                        }
+#endif
+                    }
+                }
                 draw_list_into(
                     task_pass,
                     render_task.draw_lists.opaque,
@@ -11411,6 +11630,66 @@ bool run_dawn_engine(Engine& engine) {
                     bound_pipeline,
                     pass_has_depth,
                     render_task.pinned_frame_group);
+                if (task.render.scene_stages && state.ground_enabled) {
+                    // Ground is the final scene stage, after transparent
+                    // meshes, exactly as in the non-frame-graph pass.
+                    wgpuRenderPassEncoderSetPipeline(
+                        task_pass,
+                        state.ground_pipeline);
+#if BBLITE_GPU_MORPH_STORAGE
+                    wgpuRenderPassEncoderSetBindGroup(
+                        task_pass,
+                        0,
+                        state.ground_morph_group,
+                        0,
+                        nullptr);
+#endif
+                    wgpuRenderPassEncoderSetBindGroup(
+                        task_pass,
+                        1,
+                        state.ground_scene_group,
+                        0,
+                        nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(
+                        task_pass,
+                        2,
+                        state.ground_texture_group,
+                        0,
+                        nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(
+                        task_pass,
+                        3,
+                        state.ground_material_group,
+                        0,
+                        nullptr);
+                    wgpuRenderPassEncoderSetVertexBuffer(
+                        task_pass,
+                        0,
+                        state.ground_vertices,
+                        0,
+                        WGPU_WHOLE_SIZE);
+#if BBLITE_GPU_INSTANCING
+                    wgpuRenderPassEncoderSetVertexBuffer(
+                        task_pass,
+                        1,
+                        state.background_instances,
+                        0,
+                        WGPU_WHOLE_SIZE);
+#endif
+                    wgpuRenderPassEncoderSetIndexBuffer(
+                        task_pass,
+                        state.ground_indices,
+                        WGPUIndexFormat_Uint32,
+                        0,
+                        WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderDrawIndexed(
+                        task_pass,
+                        6,
+                        1,
+                        0,
+                        0,
+                        0);
+                }
                 wgpuRenderPassEncoderEnd(task_pass);
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;

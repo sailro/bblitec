@@ -1679,6 +1679,41 @@
           "sha256": "db8107657047f41010caa9eb0e571388b8c7f4c647f71f80666632af4ca6a218"
         }
       ]
+    },
+    {
+      "id": "break-meshes",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/break-meshes.ts",
+      "reference": {
+        "source": "reference/break-meshes/babylon-lite-golden.png",
+        "sha256": "c08a381761cb781fbda47bb01757f815ddaa792bf2e15950694eca4b5878449c"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/break-meshes.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/break-meshes.ts",
+          "sha256": "62b07f18f3cc169431c2c2c21c43e5204151953f3bb8ff2cf865ee0dbeb7d743"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/break-mesh.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/break-mesh.ts",
+          "sha256": "4ddf502f91525bfd05ef773c4381fae0ab564caa8fea32eb17b21323603b744d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        }
+      ]
     }
   ]
 }

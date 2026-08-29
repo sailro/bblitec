@@ -178,7 +178,7 @@ export function compileRenderTaskOptions(
     }
     return `bbl::RenderTaskOptions{${context.cppString(
         nameExpression ? context.compileStringLiteral(nameExpression) : "render-task",
-    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, ${depth}, ${resolve.cpp}}`;
+    )}, ${target.cpp}, ${clearColor ? context.compileColor4(clearColor) : "bbl::Color4{}"}, ${clear ? context.compileBoolean(clear) : "true"}, ${camera?.cpp ?? "bbl::CameraHandle{}"}, ${camera ? "true" : "false"}, ${canvasSize ? context.compileBoolean(canvasSize) : "false"}, ${autoMirror ? context.compileBoolean(autoMirror) : "true"}, false, ${depth}, ${resolve.cpp}}`;
 }
 
 export function compileGeometryTaskOptions(

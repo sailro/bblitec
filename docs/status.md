@@ -213,6 +213,7 @@ parity scene intentionally does not.
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.477 / 0.464 | 0.477 / 0.464 | multi-module game, WAD parsing, dynamic world geometry, billboard and 2D sprite systems, input, collision, animation, and buffered audio |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.078 / 0.149 | 0.078 / 0.149 | scene-less frame graph, mutable timed state, uniform effect rendering, an offscreen target, and bloom without the scene/PBR renderer |
 | Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | 0.013 / 0.013 | 0.010 / 0.010 | multi-module game loop, mutable sprite pools, XML atlases, UV-scrolled parallax, custom sprite shaders, dynamic offscreen render targets, CRT composition, keyboard input, synthesized SFX, recurring look-ahead music scheduling, and live resize/maximize projection. Browser and native run the same registration-ordered 60 Hz frame 180, including the engine-render/application-RAF phase boundary; interactive RAF timestamps retain JavaScript-number precision |
+| Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | deterministic seeded boombox placement, glTF/PBR/IBL, GPU picking, runtime Voronoi fracture meshes and parenting, ESM directional shadows, convex-hull physics, mass and motion transitions, and impulses |
 
 ## Project-owned differential gates
 

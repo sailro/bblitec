@@ -2424,6 +2424,14 @@ inline PinnedVariantKey pinned_variant_key(
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::pinned_msh_has_thin_instances;
         }
+        const std::size_t receive_shadows =
+            static_cast<std::size_t>(
+                upstream::pinned_msh_receive_shadows);
+        if (record.receives_shadows) {
+            key.mesh_features |= receive_shadows;
+        } else {
+            key.mesh_features &= ~receive_shadows;
+        }
     }
     // The light mode, walked the way `writeMeshLightSelection` walks it: how
     // many of the scene's lights affect this mesh decides which arm the pin
@@ -2712,6 +2720,14 @@ inline StandardVariantKey standard_variant_key(
                 key.mesh_features |=
                     upstream::std_msh_has_instance_color;
             }
+        }
+        const std::size_t receive_shadows =
+            static_cast<std::size_t>(
+                upstream::pinned_msh_receive_shadows);
+        if (record.receives_shadows) {
+            key.mesh_features |= receive_shadows;
+        } else {
+            key.mesh_features &= ~receive_shadows;
         }
     }
     // `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`,

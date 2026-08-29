@@ -6910,6 +6910,11 @@ test("compiles Babylon Lite scene 116 no-color depth views", () => {
         result.cpp,
         /RenderTaskOptions\{"standard-shadow-depth"[\s\S]*v_standardDepthCamera, true, true/,
     );
+    assert.match(
+        result.cpp,
+        /RenderTaskOptions\{"default-render-task"[\s\S]*CameraHandle\{\}, false, true, true, true\}/,
+        "the compiler-owned default task must retain the scene background stages",
+    );
     assert.ok(
         result.manifest.generatedSources.includes(
             "upstream/src/material_views.cpp",

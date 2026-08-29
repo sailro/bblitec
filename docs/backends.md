@@ -434,7 +434,9 @@ decode helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
 - **Frame graph**: tasks replace the main pass exactly as the SDL task loop
   does. Colour render tasks draw their `build_render_task_draw_lists` lists
   into render targets with pipelines selected by sample count and depth
-  presence; depth-only tasks draw the explicit no-colour meshes with depth
+  presence. A compiler-owned default colour task also replays the scene
+  renderer's skybox order before those lists and ground after them; an
+  application-created task remains list-only. Depth-only tasks draw the explicit no-colour meshes with depth
   writes on; geometry tasks bind one MRT per attachment
   (`geometry_clear_color` clears, optional output target last, resolve on
   multisample), Standard and PBR draws going through their pin-composed MRT
@@ -547,8 +549,10 @@ regression appears:
   `build_skybox_plan`; cull back (the pinned
   `createDefaultPipelineDescriptor` default the background skyboxes take, as
   against the `"none"` the image skybox asks for), blend off, depth writes off; the
-  vertex matrix is `build_skybox_view_projection` when
-  `skybox_uses_environment`, else the scene view-projection;
+  environment-cubemap arm uses `build_skybox_view_projection`, while the DDS
+  arm takes the pinned dedicated vertex stage with the local cube, scene
+  view-projection, and root-position world matrix kept as separate shader
+  inputs so its world-position dither seed retains the pin's interpolation;
   `SkyboxUniforms` from `build_skybox_uniforms(environment,
   transmission_enabled)`.
 - **Ground**: quad from `build_background_plan`, `pbr.vert` +

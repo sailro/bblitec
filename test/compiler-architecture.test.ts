@@ -690,6 +690,26 @@ test("reports zero delta on the fixed clock's first frame", () => {
     );
 });
 
+test("selects live shadow-receiver variants for runtime meshes", () => {
+    const shared = source("native/src/pal_gpu_shared.hpp");
+
+    // Runtime-created meshes have no generated feature-table entry. Both
+    // composed material families must therefore select this dynamic bit from
+    // the live mesh record instead of silently choosing a non-shadow variant.
+    assert.equal(
+        (shared.match(/if \(record\.receives_shadows\) \{/g) ?? []).length,
+        2,
+    );
+    assert.equal(
+        (shared.match(/key\.mesh_features \|= receive_shadows;/g) ?? []).length,
+        2,
+    );
+    assert.equal(
+        (shared.match(/key\.mesh_features &= ~receive_shadows;/g) ?? []).length,
+        2,
+    );
+});
+
 test("runs post-start RAF callbacks only after the engine render", () => {
     const runtime = source("native/include/bblite/runtime.hpp");
     const shared = source("native/src/pal_gpu_shared.hpp");

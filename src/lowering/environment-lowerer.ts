@@ -397,6 +397,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/env_parse.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
 
 #include <algorithm>
 #include <array>
@@ -409,16 +410,18 @@ namespace bbl {
 
 namespace {
 
-// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh, for the world matrix
-// a loader-baked static primitive presents: identity rotation and no
-// translation, so every coefficient is 0 or 1 and the abs-radius reduces to
-// the extent. The centre/extent round-trip is kept rather than shortcut to
-// min/max because it is what the pin evaluates, and it is exact in double.
+// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Bounds remain local
+// and the pin takes them through the mesh's live float32 world matrix before
+// sizing the deferred environment. Keeping that transform is essential for
+// procedural meshes added after loadEnvironment (including invisible shadow
+// anchors), and the centre/abs-coefficient-radius arithmetic stays in the
+// JavaScript-number width the pin evaluates it at.
 void expand_world_aabb_for_box(
     std::array<double, 3>& minimum,
     std::array<double, 3>& maximum,
     const Vec3& box_min,
-    const Vec3& box_max) {
+    const Vec3& box_max,
+    const std::array<float, 16>& world) {
     const std::array<double, 3> low{box_min.x, box_min.y, box_min.z};
     const std::array<double, 3> high{box_max.x, box_max.y, box_max.z};
     std::array<double, 3> center{};
@@ -428,8 +431,14 @@ void expand_world_aabb_for_box(
         extent[axis] = (high[axis] - low[axis]) * 0.5;
     }
     for (int row = 0; row < 3; ++row) {
-        const double transformed_center = center[row];
-        const double transformed_radius = extent[row];
+        double transformed_center = world[12 + row];
+        double transformed_radius = 0.0;
+        for (int column = 0; column < 3; ++column) {
+            const double coefficient = world[column * 4 + row];
+            transformed_center += coefficient * center[column];
+            transformed_radius +=
+                std::abs(coefficient) * extent[column];
+        }
         minimum[row] = std::min(
             minimum[row],
             transformed_center - transformed_radius);
@@ -537,11 +546,14 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
                 }
                 const ModelGeometry& geometry =
                     scene.engine->geometries[mesh.geometry];
+                const std::array<float, 16> world =
+                    upstream::mesh_world_matrix(*scene.engine, mesh);
                 expand_world_aabb_for_box(
                     bounds_min,
                     bounds_max,
                     geometry.bounds_min,
-                    geometry.bounds_max);
+                    geometry.bounds_max,
+                    world);
             }
             scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
             scene.environment.skybox_size =
@@ -557,6 +569,20 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
             double ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
             double skybox_size =
                 static_cast<double>(requested_skybox_size);
+            if (
+                scene.camera.value < scene.engine->cameras.size() &&
+                scene.engine->cameras[scene.camera.value].kind ==
+                    CameraKind::arc_rotate) {
+                const CameraRecord& camera =
+                    scene.engine->cameras[scene.camera.value];
+                if (
+                    camera.upper_radius_limit &&
+                    *camera.upper_radius_limit != 0.0) {
+                    ground_size = *camera.upper_radius_limit *
+                        ${this.context.doubleLiteral(sceneSize.cameraRadiusScale)};
+                    skybox_size = ground_size;
+                }
+            }
             if (diagonal > ground_size) {
                 ground_size = diagonal * ${this.context.doubleLiteral(sceneSize.diagonalScale)};
                 skybox_size = ground_size;
@@ -958,6 +984,7 @@ void load_hdr_environment(
     private readSceneSizeContract(): {
         groundDefault: number;
         skyboxDefault: number;
+        cameraRadiusScale: number;
         diagonalScale: number;
         groundScale: number;
         skyboxScale: number;
@@ -1059,15 +1086,11 @@ void load_hdr_environment(
                 "Scene-size defaults no longer agree between the empty and sized paths.",
             );
         }
-        // The diagonal and its override arm, paired with the emitted
-        // deferred builder line by line. The pin carries a second arm that
-        // doubles the camera's upperRadiusLimit instead; it has no emitted
-        // counterpart and none is needed: setCameraLimits is the pin's only
-        // writer of that property and is outside the compiled surface, so
-        // the probe `"upperRadiusLimit" in cam` is false in every generated
-        // scene. The filter below selects the diagonal arm by its
-        // multiplicand, not by position, so that stays true if the pin
-        // reorders them.
+        // The camera-limit and diagonal override arms, paired with the
+        // emitted deferred builder line by line. The camera's
+        // upperRadiusLimit wins first, exactly as in the pin; the diagonal
+        // may then widen it. Select each arm by its multiplicand rather than
+        // by position so a harmless source reorder does not confuse them.
         for (const [name, expected] of [
             ["dx", "maxX - minX"],
             ["dy", "maxY - minY"],
@@ -1090,6 +1113,92 @@ void load_hdr_environment(
             declaration,
             (node): node is ts.BinaryExpression =>
                 ts.isBinaryExpression(node),
+        );
+        const cam = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                declaration,
+                "cam",
+            ),
+        );
+        if (
+            !ts.isPropertyAccessExpression(cam) ||
+            !ts.isIdentifier(cam.expression) ||
+            cam.expression.text !== "scene" ||
+            cam.name.text !== "camera"
+        ) {
+            this.context.contractError(
+                cam,
+                "Expected scene sizing to inspect scene.camera.",
+            );
+        }
+        const cameraGuards = assignments.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.InKeyword &&
+                ts.isStringLiteral(expression.left) &&
+                expression.left.text === "upperRadiusLimit" &&
+                ts.isIdentifier(expression.right) &&
+                expression.right.text === "cam",
+        );
+        if (cameraGuards.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one arc-rotate upperRadiusLimit guard.",
+            );
+        }
+        const cameraOverrides = assignments.filter(
+            (expression) => {
+                if (
+                    expression.operatorToken.kind !==
+                        ts.SyntaxKind.EqualsToken ||
+                    !ts.isIdentifier(expression.left) ||
+                    expression.left.text !== "groundSize"
+                ) {
+                    return false;
+                }
+                const product = this.context.unwrapExpression(
+                    expression.right,
+                );
+                if (
+                    !ts.isBinaryExpression(product) ||
+                    product.operatorToken.kind !==
+                        ts.SyntaxKind.AsteriskToken ||
+                    !ts.isNumericLiteral(product.right)
+                ) {
+                    return false;
+                }
+                const limit = this.context.unwrapExpression(
+                    product.left,
+                );
+                return (
+                    ts.isPropertyAccessExpression(limit) &&
+                    limit.name.text === "upperRadiusLimit" &&
+                    ts.isIdentifier(
+                        this.context.unwrapExpression(
+                            limit.expression,
+                        ),
+                    ) &&
+                    (
+                        this.context.unwrapExpression(
+                            limit.expression,
+                        ) as ts.Identifier
+                    ).text === "cam"
+                );
+            },
+        );
+        if (cameraOverrides.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one camera-radius-driven ground override.",
+            );
+        }
+        const cameraRadiusScale = this.context.numericValue(
+            (
+                this.context.unwrapExpression(
+                    cameraOverrides[0]!.right,
+                ) as ts.BinaryExpression
+            ).right,
+            file,
         );
         const diagonalGuards = assignments.filter(
             (expression) =>
@@ -1297,6 +1406,7 @@ void load_hdr_environment(
         return {
             groundDefault,
             skyboxDefault,
+            cameraRadiusScale,
             diagonalScale,
             groundScale,
             skyboxScale,
