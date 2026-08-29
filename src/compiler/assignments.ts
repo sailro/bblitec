@@ -119,6 +119,20 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         invert: true,
     },
     {
+        // The pin's default-true `usePhysicalLightFalloff`, which
+        // `_writeMaterialData` reads as `=== false ? 0 : 1` into the
+        // material UBO's falloff-mode lane. Every composed punctual arm
+        // carries both falloffs and selects on that lane, so the property
+        // composes nothing and a write after creation is one store — the
+        // same lane `createPbrMaterial`'s own option fills.
+        kind: "material",
+        property: "usePhysicalLightFalloff",
+        collection: "materials",
+        field: "use_physical_light_falloff",
+        value: "boolean",
+        simpleOnly: true,
+    },
+    {
         // src/camera/orthographic.ts: the bounds stay live, and its setter
         // only stores the extent and invalidates the projection cache. The
         // native projection is rebuilt from the record every frame, so
@@ -263,6 +277,19 @@ const lightRangeProperty: DirectPropertyAssignment = {
     supportsCompound: true,
 };
 
+/**
+ * The spot cone's falloff exponent. `spot-light.ts` declares it as a plain
+ * number on the object it hands to `applyWorldMatrixAccessors`, and its own
+ * `_writeLightUbo` packs it into `vLightSpecular.w`, so a write is one store
+ * with nothing to re-derive — unlike `angle` below.
+ */
+const lightExponentProperty: DirectPropertyAssignment = {
+    collection: "lights",
+    nativeProperty: "exponent",
+    valueKind: "number",
+    supportsCompound: true,
+};
+
 const lightProperties: Readonly<
     Record<
         LightKind,
@@ -286,10 +313,10 @@ const lightProperties: Readonly<
         },
     },
     // The three positional kinds carry the same colour pair; the two whose
-    // pinned writer packs an attenuation range carry that too. `angle` and
-    // `exponent` are settable upstream and are not written by any reached
-    // scene, so they stay unlowered and fail explicitly rather than being
-    // accepted and ignored.
+    // pinned writer packs an attenuation range carry that too, and the spot
+    // adds the cone exponent its own writer packs. Its `angle` is not here:
+    // upstream that one is an accessor rather than a field, so it lowers
+    // through `lightScalarSetters` below.
     point: {
         ...positionalLightProperties,
         range: lightRangeProperty,
@@ -297,6 +324,7 @@ const lightProperties: Readonly<
     spot: {
         ...positionalLightProperties,
         range: lightRangeProperty,
+        exponent: lightExponentProperty,
     },
 };
 
@@ -341,6 +369,38 @@ export function lightVectorSetter(
     }
     return lightVectors[owner.lightKind].includes(vector)
         ? `set_${owner.lightKind}_light_${vector}`
+        : undefined;
+}
+
+/**
+ * The light scalars whose write is more than one record store, and the
+ * emitted entry point each takes.
+ *
+ * A spot's `angle` is the one such property in the pinned light family: the
+ * factory installs it with `Object.defineProperty`, and its setter recomputes
+ * the `_cosHalfAngle` the UBO writer actually packs. The record holds both
+ * (`LightRecord::angle` beside `cos_half_angle`, because a spot shadow
+ * projection reads the angle itself), so a write that stored one of them
+ * would leave the pair disagreeing. `LightLowerer` emits the setter from the
+ * pin's own `Math.cos(angle * 0.5)` for the same reason the factory does.
+ */
+const lightScalars: Readonly<Record<LightKind, readonly string[]>> = {
+    hemispheric: [],
+    directional: [],
+    point: [],
+    spot: ["angle"],
+};
+
+/** The emitted entry point for `light.<scalar> = ...`, if there is one. */
+export function lightScalarSetter(
+    owner: Value,
+    property: string,
+): string | undefined {
+    if (owner.kind !== "light" || !owner.lightKind) {
+        return undefined;
+    }
+    return lightScalars[owner.lightKind].includes(property)
+        ? `set_${owner.lightKind}_light_${property}`
         : undefined;
 }
 
@@ -1647,6 +1707,25 @@ export function emitPropertyAssignment(
                 );
                 return;
             }
+        }
+
+        const scalarSetter = lightScalarSetter(target, property);
+        if (scalarSetter) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                `light ${property}`,
+            );
+            // The pin recomputes the cone cosine from the JavaScript-number
+            // angle and rounds only at its own UBO store, so the value stays
+            // double across this boundary exactly as it does at creation.
+            context.emit(
+                `bbl::${scalarSetter}(` +
+                    `${context.requireEngine(target, expression)}, ` +
+                    `${target.cpp}, ` +
+                    `${context.compileNumber(expression.right, "double")});`,
+            );
+            return;
         }
 
         const direct = directPropertyAssignment(

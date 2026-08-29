@@ -271,11 +271,24 @@ test("flows the pinned light matrices and spot cone into the factories", () => {
     const lowerer = lightLowerer;
     // The spot half-angle factor flows from the pinned _cosHalfAngle
     // initializer (src/light/spot-light.ts), and stays a double until the
-    // generated factory assigns the result to its float UBO field.
+    // one store assigns the result to its float UBO field. That store is
+    // emitted once, beside the local-matrix refresh and for the same
+    // reason: the factory and the angle setter both perform it, and a pin
+    // that retuned the factor must reach both.
     const spot = lowerer.lowerSpotFactory();
     assert.match(
         spot.source,
-        /double angle,[\s\S]*light\.cos_half_angle = static_cast<float>\(\s*std::cos\(angle \* 0\.5\)\);/,
+        /void refresh_spot_light_cone\(LightRecord& light, double angle\) \{\s*light\.angle = angle;\s*light\.cos_half_angle = static_cast<float>\(std::cos\(\s*angle \* 0\.5\)\);/,
+    );
+    assert.equal(
+        spot.source.split("light.cos_half_angle").length - 1,
+        1,
+        "The pinned cone store belongs to one emitted helper.",
+    );
+    assert.match(spot.source, /double angle,[\s\S]*refresh_spot_light_cone\(light, angle\);/);
+    assert.match(
+        spot.source,
+        /void set_spot_light_angle\([\s\S]*refresh_spot_light_cone\(\s*engine\.lights\[light\.value\], angle\);/,
     );
     // The point-light identity diagonal and translation column flow
     // from the pinned factory's own m[...] stores

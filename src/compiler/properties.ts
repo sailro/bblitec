@@ -73,6 +73,16 @@ interface PropertyRead {
      */
     carriesShadowGenerator?: true;
     /**
+     * The pinned property is `T | undefined`, so a scene may guard on it.
+     * The native handle says the same thing by carrying `invalid_handle`
+     * when nothing filled the slot, which is exactly the question
+     * `optionalFoundCpp` answers for a handle a search produced — a slot
+     * nothing assigned and a search that matched nothing are one shape, so
+     * the read publishes that field and every guard the model already
+     * serves through it (`if`, `??`, a null comparison) answers.
+     */
+    optionalHandle?: true;
+    /**
      * Carries the owner's `isDepthTexture` and `renderTextureSource` onto
      * the value read, for a read that names the owner's own attachment.
      */
@@ -447,6 +457,10 @@ const propertyRules: readonly PropertyRule[] = [
         value: "material",
         record: ["meshes", "material"],
         carriesScenePbrMaterial: true,
+        // `Mesh.material` is optional upstream, and a scene walking
+        // `scene.meshes` guards on it before writing a material property,
+        // because a mesh the loader built without one has none.
+        optionalHandle: true,
     },
     {
         // The corpus creates a generator, assigns it to its light, and then
@@ -658,6 +672,12 @@ export function readProperty(
               }
             : {}),
         ...(rule.impure ? { impure: true as const } : {}),
+        ...(rule.optionalHandle
+            ? {
+                  optionalFoundCpp:
+                      `(${cpp}.value != bbl::invalid_handle)`,
+              }
+            : {}),
         ...(rule.carriesRenderTextureAspect
             ? {
                   ...(owner.isDepthTexture

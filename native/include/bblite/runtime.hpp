@@ -233,12 +233,35 @@ enum class MaterialAlphaMode {
     blend,
 };
 
+/**
+ * The record lane a property clip animates.
+ *
+ * Upstream a path is any dotted string, resolved by
+ * `resolvePropertyBinding` against the object the group was bound to: the
+ * walk ends on an owner and a final property name, and the writer stores
+ * either the whole value or the one component the path named. So a lane is
+ * what the port enumerates and a component is carried beside it — the same
+ * split the pin makes, rather than one enumerator per spelled path.
+ */
 enum class PropertyAnimationPath {
     position,
-    position_x,
     scaling,
     rotation_quaternion,
     camera_alpha,
+};
+
+/**
+ * Which part of its lane a track writes. `whole_lane` is the path that
+ * names the lane itself, which `createPropertyWriter` stores through the
+ * value's own `set`; the rest name one component, in the pin's own
+ * `"xyzw"` order.
+ */
+enum class PropertyAnimationComponent {
+    whole_lane,
+    x,
+    y,
+    z,
+    w,
 };
 
 /**
@@ -1313,8 +1336,16 @@ struct PropertyAnimationKey {
 
 struct PropertyAnimationTrack {
     PropertyAnimationPath path = PropertyAnimationPath::position;
+    PropertyAnimationComponent component =
+        PropertyAnimationComponent::whole_lane;
     PropertyAnimationInterpolation interpolation =
         PropertyAnimationInterpolation::linear;
+    /**
+     * `createPropertyAnimationClip`'s own rotation-channel derivation,
+     * which is what `evaluateSampler` slerps on — the path decides it
+     * there too, but the flag is what the evaluator reads.
+     */
+    bool quaternion = false;
     std::vector<PropertyAnimationKey> keys;
 };
 
@@ -1344,15 +1375,22 @@ using PropertyAnimationGroup =
 /**
  * One blended property, the pin's own weighted-mixer bucket. Upstream
  * keys it by the (object, property name) pair each runtime track
- * resolved; a lowered track names the same pair as its mesh and its
- * path, since distinct paths resolve to distinct pairs. How wide the
- * bucket is and whether it holds a quaternion follow from that path.
+ * resolved; a lowered track names the same pair as its target, its lane
+ * and the component of it the path selected — `position` lands on the
+ * mesh while `position.x` lands on the position vector, so the two are
+ * distinct pairs there and distinct keys here. How wide the bucket is
+ * follows from the same triple, which is why the pin's mismatched-arity
+ * throw has nothing to catch on this side.
  */
 struct PropertyAnimationBucket {
     PropertyAnimationTarget target{};
     PropertyAnimationPath property =
         PropertyAnimationPath::position;
+    PropertyAnimationComponent component =
+        PropertyAnimationComponent::whole_lane;
     std::array<float, 4> values{};
+    /** The track's own rotation-channel flag, as the pin's bucket keeps it. */
+    bool quaternion = false;
     bool contested = false;
     bool active = false;
     bool has_reference = false;
@@ -2652,6 +2690,10 @@ void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_directional_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
+// The spot cone angle is an accessor upstream rather than a field: its setter
+// recomputes the cone cosine `_writeLightUbo` packs. The record holds both, so
+// this entry point writes the pair from the pin's own half-angle expression.
+void set_spot_light_angle(Engine& engine, LightHandle light, double angle);
 CameraHandle create_arc_rotate_camera(Engine& engine, double alpha, double beta, double radius, Vec3d target);
 CameraHandle create_free_camera(Engine& engine, Vec3d position, Vec3d target);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);

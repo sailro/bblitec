@@ -835,32 +835,38 @@ inline Vec3 rotate_euler(Vec3 value, const Vec3& rotation) {
     };
 }
 
+/**
+ * The rotation `mat4ComposeInto` builds, applied to one vector.
+ *
+ * The basis is the pin's own — its three columns are `dst[0..2]`,
+ * `dst[4..6]` and `dst[8..10]` with the scale factored out — so a
+ * quaternion that is not unit length composes exactly what the pinned
+ * matrix composes: a rotation carrying the quaternion's own squared norm.
+ * A normalized rotation agrees with it for every unit quaternion and
+ * disagrees for the rest, which is what a property clip writing one
+ * component of `rotationQuaternion` produces, since `evaluateSampler`
+ * lerps a single component rather than slerping the four.
+ */
 inline Vec3 rotate_quaternion(Vec3 value, const Vec4& quaternion) {
-    const float length = std::sqrt(
-        quaternion.x * quaternion.x +
-        quaternion.y * quaternion.y +
-        quaternion.z * quaternion.z +
-        quaternion.w * quaternion.w);
-    if (length <= 0.000001f) return value;
-    const float x = quaternion.x / length;
-    const float y = quaternion.y / length;
-    const float z = quaternion.z / length;
-    const float w = quaternion.w / length;
-    const Vec3 doubled_cross{
-        2.0f * (y * value.z - z * value.y),
-        2.0f * (z * value.x - x * value.z),
-        2.0f * (x * value.y - y * value.x),
-    };
+    const float xx = quaternion.x * quaternion.x;
+    const float yy = quaternion.y * quaternion.y;
+    const float zz = quaternion.z * quaternion.z;
+    const float xy = quaternion.x * quaternion.y;
+    const float xz = quaternion.x * quaternion.z;
+    const float yz = quaternion.y * quaternion.z;
+    const float wx = quaternion.w * quaternion.x;
+    const float wy = quaternion.w * quaternion.y;
+    const float wz = quaternion.w * quaternion.z;
     return Vec3{
-        value.x +
-            w * doubled_cross.x +
-            (y * doubled_cross.z - z * doubled_cross.y),
-        value.y +
-            w * doubled_cross.y +
-            (z * doubled_cross.x - x * doubled_cross.z),
-        value.z +
-            w * doubled_cross.z +
-            (x * doubled_cross.y - y * doubled_cross.x),
+        (1.0f - 2.0f * (yy + zz)) * value.x +
+            2.0f * (xy - wz) * value.y +
+            2.0f * (xz + wy) * value.z,
+        2.0f * (xy + wz) * value.x +
+            (1.0f - 2.0f * (xx + zz)) * value.y +
+            2.0f * (yz - wx) * value.z,
+        2.0f * (xz - wy) * value.x +
+            2.0f * (yz + wx) * value.y +
+            (1.0f - 2.0f * (xx + yy)) * value.z,
     };
 }
 

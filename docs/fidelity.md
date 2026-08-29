@@ -423,10 +423,42 @@ pose on its next tick. Native mirrors the shape rather than the call — a scene
 registering with an engine contributes one seeker per manager it created,
 beside the seeker each loaded asset already carries.
 
+**A property path is a lane plus a component, because that is what the pinned
+walk produces.** `resolvePropertyBinding` splits the dotted path, walks to an
+owner and a final property name, and `createPropertyWriter` then stores either
+the whole value — through the value's own `set` — or the one number the last
+part named. So which paths exist follows from which properties the bound
+object has, not from a list: this port enumerates the record LANES its own
+mesh and camera records hold (`position`, `scaling`, `rotationQuaternion`,
+`alpha`) and derives from each the path that names the lane plus one per
+component in the pin's own `"xyzw"` order. A lane of one component offers no
+component path for the same reason `alpha.x` throws upstream — the walk
+reaches a number and `asRecord` refuses it — and a path of more than two parts
+finds no lane to land on. `regression-property-animation-paths` gates the
+component half.
+
+**A component of a rotation quaternion is lerped, and what it composes is not
+a unit quaternion.** `evaluateSampler` slerps on the track's own `quaternion`
+flag, which `createPropertyAnimationClip` sets from the path that names the
+quaternion itself — so a track on `rotationQuaternion.y` interpolates one
+number like any other. `mat4ComposeInto` then builds its basis from the four
+components with no normalization at all, which makes the composed matrix a
+rotation carrying the quaternion's squared norm. This port's CPU vertex bake
+takes that basis directly (`rotate_quaternion`, `pal_gpu_shared.hpp`); a
+normalized rotation agrees with it for every unit quaternion, which is why
+the divergence only appeared once a component path could write a non-unit one.
+An explicit `quaternion: true` on a track the path does not already make one
+refuses at generation, because the pinned slerp would then read four
+components out of a narrower key.
+
 **The weighted property mixer buckets by the pair the pinned binding resolved.**
 `resolvePropertyBinding` returns the object a dotted path landed on and the
 final property name, and the mixer keys its accumulator on that pair — so
-`position` and `position.x` are different buckets on one mesh. Weights are
+`position` and `position.x` are different buckets on one mesh, the first
+keyed on the mesh and the second on its position vector. The native bucket is
+the (target, lane, component) triple those resolve to, which also makes the
+pin's mismatched-arity throw unreachable here: the width follows from the
+triple. Weights are
 summed and never normalized, which is upstream's stated choice: two groups at
 0.25 and 0.75 write the weighted sum, and a single group at 0.5 writes half its
 own value.

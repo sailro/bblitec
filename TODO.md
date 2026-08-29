@@ -55,45 +55,17 @@ act on it — not what was tried.
 
 ### Property animation
 
-- [ ] Generalize property bindings beyond mesh `position`, `position.x`,
-  `scaling`, and `rotationQuaternion`.
-- [ ] Generalize animation targets beyond meshes while retaining typed
-  compile-time path validation.
 - [ ] Support multiple direct morph targets and reusable target data. The
   corpus's five direct `createMorphTargets` calls each use one position target
-  with nullable normals, so no corpus gate covers the broader surface.
-
-### Material extensions
-
-- [ ] Close the primary-slot directional specular residual: a directional light
-  in the first analytic slot under mid/low roughness renders its specular
-  highlight a few percent dim (sphere, roughness 0.35, max channel delta 10-15
-  at the highlight, independent of `directIntensity`). No gated scene reaches
-  it. Diff the primary directional block against the pinned
-  `singlelight-directional-wgsl.ts` term by term.
-
-- [ ] Extend scene-code spot lights past the reached colour pair: the pinned
-  light also exposes `angle`, `exponent`, and `range` as settable properties,
-  whose setters fail explicitly.
-- [ ] Carry `usePhysicalLightFalloff` past the creation option. Scenes 179 and
-  166 both write it; 166 stops one step earlier, on the `if (mesh.material)`
-  truthiness test that guards the write. Scene 179
-  writes it as a property on a loader-returned material
-  (`mat.usePhysicalLightFalloff = true` over `scene.meshes`), where scenes 22,
-  141, 215 and 217 all pass it to `createPbrMaterial`; the lane is a plain
-  record field, so what the assignment needs is the material-property writer
-  reaching it, not a new contract.
-- [ ] Extend `setPbrGammaAlbedo` past the one material scene 22 decodes. The
-  setter itself is the whole port — the pin's extension contributes one
-  feature bit and the base template's own decode block — but only a
-  scene-code material reaches it here, because the glTF loader never stamps
-  `_gammaAlbedo`. No corpus scene asks for more.
-- [ ] Extend Standard vertex colors past RGB: the pinned
-  `std-vertex-color-fragment.ts` also consumes `vColor.a` under the
-  `mesh.hasVertexAlpha` opt-in (output alpha, the vertex-alpha alpha test, the
-  transparent-phase source-over blend). Composition already takes the
-  `vertexAlpha` flag; the compiler always passes false because the
-  `hasVertexAlpha` setter is not lowered.
+  with nullable normals attached to one mesh, so no corpus gate covers the
+  broader surface and the one-target fold is what the sweep supports. What the
+  fold does not cover, and what a scene reaching it would force: a second
+  target (the deltas buffer is laid out per target and the storage-morph path
+  is already uncapped, so this is the compiler's list plus the emitted
+  `attach_morph_target`), and one `MorphTargets` value attached to a second
+  mesh — upstream both meshes then share ONE weights buffer, so
+  `setMorphTargetWeights` moves both, where this port resolves the value to
+  the single mesh it was attached to and refuses the second.
 
 ### Packed native assets
 
@@ -102,6 +74,25 @@ act on it — not what was tried.
 - [ ] Measure startup, runtime, and size tradeoffs.
 
 ## P1 — Runtime and validation
+
+- [ ] Delete the PAL's own copy of the pinned TRS composition. `rotate_mesh`
+  (`native/src/pal_gpu_shared.hpp`) rotates a vector by the mesh's quaternion
+  or Euler triple, and `shader_draw_world` beside it rotates three scaled
+  basis vectors and appends the translation — which is `mat4ComposeInto`,
+  re-derived in float. `src/lowering/pinned-trs.ts` already lowers that
+  composition term by term from the pin's own AST and refuses on drift, and
+  this same header already calls two of its emissions
+  (`upstream::mesh_world_eye_relative`, `upstream::build_instance_parent_world`);
+  the copy asserts nothing. What unblocks it is a MEASUREMENT, not a
+  capability: the emitted composition accumulates in JavaScript-number width
+  and narrows once, where the copy computes per vertex in float with
+  float-overload `std::sin`/`std::cos` on the Euler arm, so every mesh with a
+  non-identity rotation moves in its low bits. That is convergence toward the
+  pin, but the generated tree grows a function per scene so the cheap
+  neutrality proof does not apply — it needs the full `scenes:process` plus
+  `scenes:parity --differential` matrix and a recapture decision for anything
+  that moves past its gate. `shader_draw_world` alone is the smaller half and
+  moves only ShaderMaterial scenes.
 
 - [ ] Drop the vendored SDL patches once upstream ships them.
   `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the manifest's
@@ -794,7 +785,18 @@ platform boundary.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
-  `scene231-skin` module, and `mesh.hasVertexAlpha`.
+  `scene231-skin` module, and `mesh.hasVertexAlpha` — the one corpus scene
+  that reaches vertex ALPHA at all. The pinned
+  `std-vertex-color-fragment.ts` consumes `vColor.a` under that opt-in
+  (output alpha, the vertex-alpha alpha test), and `rebuildSingle` derives
+  `!shadowOutput && mesh.hasVertexAlpha && (hasVertexColor ||
+  tiFragment._alphaBlend)` into `MATERIAL_ALPHA_BLEND | VERTEX_ALPHA` on the
+  MATERIAL feature word. Composition already takes the `vertexAlpha` flag and
+  `standard_variant_key` already ORs mesh-driven bits at the draw, so those
+  two halves are a bit each; what is not yet there is the third — the blend
+  bit moves the mesh into the transparent phase with depth writes off, and
+  the port's render plan buckets a Standard draw by its material's alpha
+  mode rather than by a per-mesh word.
 - [ ] Scene 300 is the last node-particle scene, and its whole remaining
   chain is one mechanism plus two fixture shapes:
   - an **executed atlas URL flowing into a graph**.

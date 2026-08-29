@@ -711,6 +711,62 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene names a component path other than
+        // `position.x`; none does today, so this is the only thing that
+        // measures the rest of the pin's own path surface.
+        id: "regression-property-animation-paths",
+        name: "Regression - Property Animation Paths",
+        source: "examples/regression-property-animation-paths.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Property Animation Paths",
+        buildDirectory:
+            "native/build-regression-property-animation-paths-release",
+        parity: {
+            referenceTimeSeconds: 1.3,
+            referenceAnimationGroups: [
+                "drifting",
+                "stretching",
+                "turning",
+            ],
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-property-animation-paths/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-property-animation-paths",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        // Retires when a corpus scene writing a material property over
+        // `scene.meshes` compiles: 166 and 179 both do, each behind the
+        // clustered light container.
+        id: "regression-material-falloff",
+        name: "Regression - Material Falloff Write",
+        source: "examples/regression-material-falloff.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Material Falloff Write",
+        buildDirectory:
+            "native/build-regression-material-falloff-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-material-falloff/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-material-falloff",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-compiler-state",
         name: "Regression - Compiler State",
         source: "examples/regression-compiler-state.ts",
