@@ -2,303 +2,272 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 
 export class SceneLowerer {
-    public constructor(private readonly context: LoweringContext) {}
+  public constructor(private readonly context: LoweringContext) {}
 
-    public lowerCore(
-        options: {
-            fog?: boolean;
-            /** The scene reaches `enableMirroredMeshes`. */
-            mirroredMeshes?: boolean;
-            managedAnimationGroups?: boolean;
-            /** The scene reaches `createTransformNode`. */
-            transformNodes?: boolean;
-        } = {},
-    ): LoweredSource {
-        const modulePath = "src/scene/scene-core.ts";
-        const createName = "createSceneContext";
-        const addName = "addToScene";
-        const beforeName = "onBeforeRender";
-        const registerName = "registerScene";
-        const fogModulePath = "src/scene/scene-ubo-extras.ts";
-        const fogName = "setFog";
-        const { file, declaration } = this.context.functionDeclaration(modulePath, createName);
-        const scene = this.context.objectInitializer(declaration, "ctxLocal");
-        const clearExpression = this.context.propertyInitializer(scene, "clearColor");
-        if (!ts.isObjectLiteralExpression(clearExpression)) {
-            throw new Error("Upstream scene clearColor is not an object literal.");
+  public lowerCore(
+    options: {
+      fog?: boolean;
+      /** The scene reaches `enableMirroredMeshes`. */
+      mirroredMeshes?: boolean;
+      parenting?: boolean;
+      geometryAccess?: boolean;
+      managedAnimationGroups?: boolean;
+      /** The scene reaches `createTransformNode`. */
+      transformNodes?: boolean;
+    } = {},
+  ): LoweredSource {
+    const modulePath = "src/scene/scene-core.ts";
+    const createName = "createSceneContext";
+    const addName = "addToScene";
+    const beforeName = "onBeforeRender";
+    const registerName = "registerScene";
+    const fogModulePath = "src/scene/scene-ubo-extras.ts";
+    const fogName = "setFog";
+    const { file, declaration } = this.context.functionDeclaration(
+      modulePath,
+      createName,
+    );
+    const scene = this.context.objectInitializer(declaration, "ctxLocal");
+    const clearExpression = this.context.propertyInitializer(
+      scene,
+      "clearColor",
+    );
+    if (!ts.isObjectLiteralExpression(clearExpression)) {
+      throw new Error("Upstream scene clearColor is not an object literal.");
+    }
+    const clear = (name: string): number =>
+      this.context.numericValue(
+        this.context.propertyInitializer(clearExpression, name),
+        file,
+      );
+    const { declaration: addToScene } = this.context.functionDeclaration(
+      modulePath,
+      addName,
+    );
+    const transformNodeModulePath = "src/scene/transform-node.ts";
+    const { declaration: cloneTransformNode } =
+      this.context.functionDeclaration(
+        transformNodeModulePath,
+        "cloneTransformNode",
+      );
+    if (
+      !this.context.hasNode(
+        cloneTransformNode,
+        (node) =>
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+          ts.isStringLiteral(node.left) &&
+          node.left.text === "_gpu" &&
+          ts.isIdentifier(node.right) &&
+          node.right.text === "src",
+      ) ||
+      !this.context.hasNode(
+        cloneTransformNode,
+        (node) =>
+          ts.isForOfStatement(node) &&
+          this.context.propertyPath(node.expression)?.join(".") ===
+            "src.children",
+      ) ||
+      !this.context.hasCall(cloneTransformNode, "cloneTransformNode")
+    ) {
+      this.context.contractError(
+        cloneTransformNode,
+        "Expected cloneTransformNode to route meshes and recursively clone children.",
+      );
+    }
+    const { declaration: cloneMeshNode } = this.context.functionDeclaration(
+      transformNodeModulePath,
+      "cloneMeshNode",
+    );
+    if (
+      !this.context.hasNode(
+        cloneMeshNode,
+        (node) =>
+          ts.isPropertyAssignment(node) &&
+          this.context.propertyName(node.name) === "_gpu" &&
+          this.context.propertyPath(node.initializer)?.join(".") ===
+            "mesh._gpu",
+      ) ||
+      !this.context.hasCall(cloneMeshNode, "retain")
+    ) {
+      this.context.contractError(
+        cloneMeshNode,
+        "Expected mesh clones to retain and share their GPU-backed resources.",
+      );
+    }
+    // The pinned clone naming: `mesh.name + "_clone"`. The suffix
+    // flows into the emitted record copy so a scene searching by name
+    // never matches a clone under the source's own name.
+    const cloneSuffixes = this.context
+      .findNodes(
+        cloneMeshNode,
+        (node): node is ts.BinaryExpression =>
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+          this.context.propertyPath(node.left)?.join(".") === "mesh.name" &&
+          ts.isStringLiteral(this.context.unwrapExpression(node.right)),
+      )
+      .map(
+        (concat) =>
+          (this.context.unwrapExpression(concat.right) as ts.StringLiteral)
+            .text,
+      );
+    if (cloneSuffixes.length !== 1) {
+      this.context.contractError(
+        cloneMeshNode,
+        "Expected one pinned clone-name suffix.",
+      );
+    }
+    const cloneSuffix = cloneSuffixes[0]!;
+    for (const property of ["entities", "_gpu", "material", "lightType"]) {
+      if (
+        !this.context.hasNode(
+          addToScene,
+          (node) =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+            ts.isStringLiteral(node.left) &&
+            node.left.text === property &&
+            ts.isIdentifier(node.right) &&
+            node.right.text === "entity",
+        )
+      ) {
+        this.context.contractError(
+          addToScene,
+          `Expected '${property}' entity routing.`,
+        );
+      }
+    }
+    const { declaration: onBeforeRender } = this.context.functionDeclaration(
+      modulePath,
+      beforeName,
+    );
+    if (
+      !this.context.hasNode(
+        onBeforeRender,
+        (node) =>
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "unshift" &&
+          ts.isPropertyAccessExpression(node.expression.expression) &&
+          node.expression.expression.name.text === "_beforeRender" &&
+          node.arguments.length === 1 &&
+          ts.isIdentifier(node.arguments[0]!) &&
+          node.arguments[0].text === "cb",
+      )
+    ) {
+      this.context.contractError(
+        onBeforeRender,
+        "Expected before-render callbacks to be prepended.",
+      );
+    }
+    const { declaration: registerScene } = this.context.functionDeclaration(
+      modulePath,
+      registerName,
+    );
+    if (!this.context.hasCall(registerScene, "isRenderingContextRegistered")) {
+      this.context.contractError(
+        registerScene,
+        "Expected idempotent rendering-context registration.",
+      );
+    }
+    if (options.fog) {
+      const { declaration: setFog } = this.context.functionDeclaration(
+        fogModulePath,
+        fogName,
+      );
+      if (
+        !this.context.hasNode(
+          setFog,
+          (node) =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            this.context.propertyPath(node.left)?.join(".") === "scene.fog" &&
+            ts.isIdentifier(node.right) &&
+            node.right.text === "config",
+        )
+      ) {
+        this.context.contractError(
+          setFog,
+          "Expected setFog to store the fog config on the scene.",
+        );
+      }
+      if (
+        !this.context.hasCall(
+          setFog,
+          // 1.23 renamed this from `registerContributor`; the body
+          // is the same store-then-register pair.
+          "_registerSceneUboContributor",
+        )
+      ) {
+        this.context.contractError(
+          setFog,
+          "Expected setFog to register the fog scene-uniform contributor.",
+        );
+      }
+      // The fog UBO writer's field inventory, paired with the
+      // emitted `set_scene_fog` stores: the generated Scene
+      // carries exactly the fields the pinned writer consumes
+      // (mode, start, end, density, color), so a pin that grows
+      // the fog slice fails generation instead of rendering with a
+      // silently missing term. The writer's float offsets (80-86
+      // in the browser scene UBO) are deliberately NOT asserted:
+      // nothing in the generated tree uses them — fog reaches the
+      // native shaders through named uniform-struct fields packed
+      // by the renderer lowerer, and the WGSL component reads come
+      // from the pin's own WGSL_FOG, lifted verbatim by
+      // shader-builtins-utility.ts fogFactorWgsl(), so they track
+      // the pin without a copy here.
+      const { declaration: writeFogUbo } = this.context.functionDeclaration(
+        fogModulePath,
+        "writeFogUbo",
+      );
+      const fogReads = new Set<string>();
+      for (const access of this.context.findNodes(
+        writeFogUbo,
+        (node): node is ts.PropertyAccessExpression =>
+          ts.isPropertyAccessExpression(node),
+      )) {
+        const path = this.context.propertyPath(access);
+        if (path && path.length === 2 && path[0] === "fog") {
+          fogReads.add(path[1]!);
         }
-        const clear = (name: string): number =>
-            this.context.numericValue(this.context.propertyInitializer(clearExpression, name), file);
-        const { declaration: addToScene } =
-            this.context.functionDeclaration(
-                modulePath,
-                addName,
-            );
-        const transformNodeModulePath =
-            "src/scene/transform-node.ts";
-        const { declaration: cloneTransformNode } =
-            this.context.functionDeclaration(
-                transformNodeModulePath,
-                "cloneTransformNode",
-            );
-        if (
-            !this.context.hasNode(
-                cloneTransformNode,
-                (node) =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.InKeyword &&
-                    ts.isStringLiteral(node.left) &&
-                    node.left.text === "_gpu" &&
-                    ts.isIdentifier(node.right) &&
-                    node.right.text === "src",
-            ) ||
-            !this.context.hasNode(
-                cloneTransformNode,
-                (node) =>
-                    ts.isForOfStatement(node) &&
-                    this.context
-                        .propertyPath(node.expression)
-                        ?.join(".") === "src.children",
-            ) ||
-            !this.context.hasCall(
-                cloneTransformNode,
-                "cloneTransformNode",
-            )
-        ) {
-            this.context.contractError(
-                cloneTransformNode,
-                "Expected cloneTransformNode to route meshes and recursively clone children.",
-            );
-        }
-        const { declaration: cloneMeshNode } =
-            this.context.functionDeclaration(
-                transformNodeModulePath,
-                "cloneMeshNode",
-            );
-        if (
-            !this.context.hasNode(
-                cloneMeshNode,
-                (node) =>
-                    ts.isPropertyAssignment(node) &&
-                    this.context.propertyName(node.name) ===
-                        "_gpu" &&
-                    this.context
-                        .propertyPath(node.initializer)
-                        ?.join(".") === "mesh._gpu",
-            ) ||
-            !this.context.hasCall(cloneMeshNode, "retain")
-        ) {
-            this.context.contractError(
-                cloneMeshNode,
-                "Expected mesh clones to retain and share their GPU-backed resources.",
-            );
-        }
-        // The pinned clone naming: `mesh.name + "_clone"`. The suffix
-        // flows into the emitted record copy so a scene searching by name
-        // never matches a clone under the source's own name.
-        const cloneSuffixes = this.context
-            .findNodes(
-                cloneMeshNode,
-                (node): node is ts.BinaryExpression =>
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.PlusToken &&
-                    this.context
-                        .propertyPath(node.left)
-                        ?.join(".") === "mesh.name" &&
-                    ts.isStringLiteral(
-                        this.context.unwrapExpression(node.right),
-                    ),
-            )
-            .map(
-                (concat) =>
-                    (
-                        this.context.unwrapExpression(
-                            concat.right,
-                        ) as ts.StringLiteral
-                    ).text,
-            );
-        if (cloneSuffixes.length !== 1) {
-            this.context.contractError(
-                cloneMeshNode,
-                "Expected one pinned clone-name suffix.",
-            );
-        }
-        const cloneSuffix = cloneSuffixes[0]!;
-        for (const property of [
-            "entities",
-            "_gpu",
-            "material",
-            "lightType",
-        ]) {
-            if (
-                !this.context.hasNode(
-                    addToScene,
-                    (node) =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.InKeyword &&
-                        ts.isStringLiteral(node.left) &&
-                        node.left.text === property &&
-                        ts.isIdentifier(node.right) &&
-                        node.right.text === "entity",
-                )
-            ) {
-                this.context.contractError(
-                    addToScene,
-                    `Expected '${property}' entity routing.`,
-                );
-            }
-        }
-        const { declaration: onBeforeRender } =
-            this.context.functionDeclaration(
-                modulePath,
-                beforeName,
-            );
-        if (
-            !this.context.hasNode(
-                onBeforeRender,
-                (node) =>
-                    ts.isCallExpression(node) &&
-                    ts.isPropertyAccessExpression(
-                        node.expression,
-                    ) &&
-                    node.expression.name.text === "unshift" &&
-                    ts.isPropertyAccessExpression(
-                        node.expression.expression,
-                    ) &&
-                    node.expression.expression.name.text ===
-                        "_beforeRender" &&
-                    node.arguments.length === 1 &&
-                    ts.isIdentifier(node.arguments[0]!) &&
-                    node.arguments[0].text === "cb",
-            )
-        ) {
-            this.context.contractError(
-                onBeforeRender,
-                "Expected before-render callbacks to be prepended.",
-            );
-        }
-        const { declaration: registerScene } =
-            this.context.functionDeclaration(
-                modulePath,
-                registerName,
-            );
-        if (
-            !this.context.hasCall(
-                registerScene,
-                "isRenderingContextRegistered",
-            )
-        ) {
-            this.context.contractError(
-                registerScene,
-                "Expected idempotent rendering-context registration.",
-            );
-        }
-        if (options.fog) {
-            const { declaration: setFog } =
-                this.context.functionDeclaration(
-                    fogModulePath,
-                    fogName,
-                );
-            if (
-                !this.context.hasNode(
-                    setFog,
-                    (node) =>
-                        ts.isBinaryExpression(node) &&
-                        node.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken &&
-                        this.context
-                            .propertyPath(node.left)
-                            ?.join(".") === "scene.fog" &&
-                        ts.isIdentifier(node.right) &&
-                        node.right.text === "config",
-                )
-            ) {
-                this.context.contractError(
-                    setFog,
-                    "Expected setFog to store the fog config on the scene.",
-                );
-            }
-            if (
-                !this.context.hasCall(
-                    setFog,
-                    // 1.23 renamed this from `registerContributor`; the body
-                    // is the same store-then-register pair.
-                    "_registerSceneUboContributor",
-                )
-            ) {
-                this.context.contractError(
-                    setFog,
-                    "Expected setFog to register the fog scene-uniform contributor.",
-                );
-            }
-            // The fog UBO writer's field inventory, paired with the
-            // emitted `set_scene_fog` stores: the generated Scene
-            // carries exactly the fields the pinned writer consumes
-            // (mode, start, end, density, color), so a pin that grows
-            // the fog slice fails generation instead of rendering with a
-            // silently missing term. The writer's float offsets (80-86
-            // in the browser scene UBO) are deliberately NOT asserted:
-            // nothing in the generated tree uses them — fog reaches the
-            // native shaders through named uniform-struct fields packed
-            // by the renderer lowerer, and the WGSL component reads come
-            // from the pin's own WGSL_FOG, lifted verbatim by
-            // shader-builtins-utility.ts fogFactorWgsl(), so they track
-            // the pin without a copy here.
-            const { declaration: writeFogUbo } =
-                this.context.functionDeclaration(
-                    fogModulePath,
-                    "writeFogUbo",
-                );
-            const fogReads = new Set<string>();
-            for (const access of this.context.findNodes(
-                writeFogUbo,
-                (
-                    node,
-                ): node is ts.PropertyAccessExpression =>
-                    ts.isPropertyAccessExpression(node),
-            )) {
-                const path = this.context.propertyPath(access);
-                if (
-                    path &&
-                    path.length === 2 &&
-                    path[0] === "fog"
-                ) {
-                    fogReads.add(path[1]!);
-                }
-            }
-            const expectedFogFields = [
-                "mode",
-                "start",
-                "end",
-                "density",
-                "color",
-            ];
-            if (
-                fogReads.size !== expectedFogFields.length ||
-                expectedFogFields.some(
-                    (name) => !fogReads.has(name),
-                )
-            ) {
-                this.context.contractError(
-                    writeFogUbo,
-                    `Expected the fog UBO writer to consume exactly ` +
-                        `{${expectedFogFields.join(", ")}}, found ` +
-                        `{${[...fogReads].sort().join(", ")}}.`,
-                );
-            }
-        }
-        const value = (input: number): string => this.context.floatLiteral(input);
-        // src/scene/transform-node.ts createTransformNode and the
-        // ObservableVec3/ObservableQuat setters a scene writes on the node
-        // it made. Each setter is the field write plus the version bump a
-        // child re-bakes against, which is what `markLocalDirty` does
-        // upstream; the world itself is composed lazily in the render plan,
-        // as `createWorldMatrixState` composes it there.
-        const transformNodeSource = options.transformNodes
-            ? `
+      }
+      const expectedFogFields = ["mode", "start", "end", "density", "color"];
+      if (
+        fogReads.size !== expectedFogFields.length ||
+        expectedFogFields.some((name) => !fogReads.has(name))
+      ) {
+        this.context.contractError(
+          writeFogUbo,
+          `Expected the fog UBO writer to consume exactly ` +
+            `{${expectedFogFields.join(", ")}}, found ` +
+            `{${[...fogReads].sort().join(", ")}}.`,
+        );
+      }
+    }
+    const value = (input: number): string => this.context.floatLiteral(input);
+    const meshDirtySource =
+      options.parenting && !options.transformNodes
+        ? `
+void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) return;
+    MeshRecord& record = engine.meshes[mesh.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_dirty(engine, child);
+    }
+}
+`
+        : "";
+    // src/scene/transform-node.ts createTransformNode and the
+    // ObservableVec3/ObservableQuat setters a scene writes on the node
+    // it made. Each setter is the field write plus the version bump a
+    // child re-bakes against, which is what `markLocalDirty` does
+    // upstream; the world itself is composed lazily in the render plan,
+    // as `createWorldMatrixState` composes it there.
+    const transformNodeSource = options.transformNodes
+      ? `
 // ${this.context.provenance("src/scene/transform-node.ts", "createTransformNode")}
 TransformNodeHandle create_transform_node(
     Engine& engine,
@@ -326,6 +295,15 @@ TransformNodeHandle create_transform_node(
 // alone -- an in-engine hierarchy is tagged on both ends and takes this
 // path -- so a mesh under a node is invalidated here, bumping the same
 // transform version every re-bake already keys on.
+void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) return;
+    MeshRecord& record = engine.meshes[mesh.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_dirty(engine, child);
+    }
+}
+
 void mark_transform_node_dirty(
     Engine& engine,
     TransformNodeHandle node) {
@@ -333,9 +311,7 @@ void mark_transform_node_dirty(
     TransformNodeRecord& record = engine.transform_nodes[node.value];
     ++record.transform_version;
     for (const MeshHandle child : record.parented_meshes) {
-        if (child.value < engine.meshes.size()) {
-            ++engine.meshes[child.value].transform_version;
-        }
+        mark_mesh_dirty(engine, child);
     }
     for (const TransformNodeHandle child : record.parented_nodes) {
         mark_transform_node_dirty(engine, child);
@@ -372,16 +348,41 @@ void set_transform_node_rotation_quaternion(
 // child for invalidation, where the children array is only the traversal
 // list. Registering here rather than at that array's push is what makes a
 // scene which writes the link and never pushes still follow its parent.
-void set_mesh_parent(
+void set_mesh_transform_parent(
     Engine& engine,
     MeshHandle mesh,
     TransformNodeHandle parent) {
     MeshRecord& record = engine.meshes[mesh.value];
-    record.parent = parent;
-    ++record.transform_version;
+    if (
+        record.transform_parent.value == parent.value &&
+        record.parent.value >= engine.meshes.size()) {
+        return;
+    }
+    if (record.transform_parent.value < engine.transform_nodes.size()) {
+        std::vector<MeshHandle>& old_children =
+            engine.transform_nodes[record.transform_parent.value]
+                .parented_meshes;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), mesh),
+            old_children.end());
+    }
+    if (record.parent.value < engine.meshes.size()) {
+        std::vector<MeshHandle>& old_children =
+            engine.meshes[record.parent.value].parented_meshes;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), mesh),
+            old_children.end());
+    }
+    record.parent = MeshHandle{};
+    record.transform_parent = parent;
+    mark_mesh_dirty(engine, mesh);
     if (parent.value < engine.transform_nodes.size()) {
-        engine.transform_nodes[parent.value]
-            .parented_meshes.push_back(mesh);
+        std::vector<MeshHandle>& new_children =
+            engine.transform_nodes[parent.value].parented_meshes;
+        if (std::find(new_children.begin(), new_children.end(), mesh) ==
+            new_children.end()) {
+            new_children.push_back(mesh);
+        }
     }
 }
 
@@ -392,15 +393,15 @@ void push_transform_node_child(
     engine.transform_nodes[node.value].children.push_back(child);
 }
 `
-            : "";
-        // src/mesh/enable-mirrored-meshes.ts is one statement: it awaits
-        // the support module and installs it on the scene. The
-        // pipeline-side half of that install is a compile-time question
-        // here -- a scene that never opts in composes no winding
-        // resolution at all -- so what remains at run time is the flag the
-        // per-frame watcher reads.
-        const mirroredSource = options.mirroredMeshes
-            ? `
+      : "";
+    // src/mesh/enable-mirrored-meshes.ts is one statement: it awaits
+    // the support module and installs it on the scene. The
+    // pipeline-side half of that install is a compile-time question
+    // here -- a scene that never opts in composes no winding
+    // resolution at all -- so what remains at run time is the flag the
+    // per-frame watcher reads.
+    const mirroredSource = options.mirroredMeshes
+      ? `
 // ${this.context.provenance("src/mesh/enable-mirrored-meshes.ts", "enableMirroredMeshes")}
 void enable_mirrored_meshes(Scene& scene) {
     require_scene_engine(scene);
@@ -428,9 +429,149 @@ void enable_mirrored_meshes(Scene& scene) {
     });
 }
 `
-            : "";
-        const fogSource = options.fog
-            ? `
+      : "";
+    const parentingSource = options.parenting
+      ? `
+// ${this.context.provenance("src/scene/set-parent.ts", "setParent")}
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle child,
+    MeshHandle parent) {
+    MeshRecord& child_record = engine.meshes.at(child.value);
+    if (
+        child_record.parent == parent &&
+        child_record.transform_parent.value >= engine.transform_nodes.size()) {
+        return;
+    }
+    if (child_record.transform_parent.value < engine.transform_nodes.size()) {
+        std::vector<MeshHandle>& old_registered =
+            engine.transform_nodes[child_record.transform_parent.value]
+                .parented_meshes;
+        old_registered.erase(
+            std::remove(old_registered.begin(), old_registered.end(), child),
+            old_registered.end());
+    }
+    if (child_record.parent.value < engine.meshes.size()) {
+        MeshRecord& old_parent = engine.meshes[child_record.parent.value];
+        std::vector<MeshHandle>& old_children = old_parent.children;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), child),
+            old_children.end());
+        std::vector<MeshHandle>& old_registered = old_parent.parented_meshes;
+        old_registered.erase(
+            std::remove(old_registered.begin(), old_registered.end(), child),
+            old_registered.end());
+    }
+    child_record.transform_parent = TransformNodeHandle{};
+    child_record.parent = parent;
+    if (parent.value < engine.meshes.size()) {
+        MeshRecord& new_parent = engine.meshes[parent.value];
+        std::vector<MeshHandle>& new_children = new_parent.children;
+        if (std::find(new_children.begin(), new_children.end(), child) ==
+            new_children.end()) {
+            new_children.push_back(child);
+        }
+        std::vector<MeshHandle>& new_registered = new_parent.parented_meshes;
+        if (std::find(new_registered.begin(), new_registered.end(), child) ==
+            new_registered.end()) {
+            new_registered.push_back(child);
+        }
+    }
+    mark_mesh_dirty(engine, child);
+}
+`
+      : "";
+    const geometryAccessSource = options.geometryAccess
+      ? `
+// src/mesh/mesh.ts retained CPU arrays. The native geometry record retains
+// every lane the pin exposes, and these copies preserve typed-array value
+// semantics for scene code that only reads them.
+std::vector<float> mesh_cpu_positions(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const ModelGeometry& geometry =
+        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
+    js::F32Array result;
+    result.reserve(geometry.vertices.size() * 3);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.push_back(vertex.position.x);
+        result.push_back(vertex.position.y);
+        result.push_back(vertex.position.z);
+    }
+    return result;
+}
+
+std::vector<float> mesh_cpu_normals(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const ModelGeometry& geometry =
+        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
+    js::F32Array result;
+    result.reserve(geometry.vertices.size() * 3);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.push_back(vertex.normal.x);
+        result.push_back(vertex.normal.y);
+        result.push_back(vertex.normal.z);
+    }
+    return result;
+}
+
+std::vector<float> mesh_cpu_uvs(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const ModelGeometry& geometry =
+        engine.geometries.at(engine.meshes.at(mesh.value).geometry);
+    js::F32Array result;
+    result.reserve(geometry.vertices.size() * 2);
+    for (const ModelVertex& vertex : geometry.vertices) {
+        result.push_back(vertex.uv.x);
+        result.push_back(vertex.uv.y);
+    }
+    return result;
+}
+
+std::vector<std::uint32_t> mesh_cpu_indices(
+    const Engine& engine,
+    MeshHandle mesh) {
+    return engine.geometries.at(
+        engine.meshes.at(mesh.value).geometry).indices;
+}
+
+js::Array<double> mesh_world_matrix_array(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const std::array<float, 16> world =
+        upstream::mesh_world_matrix(engine, engine.meshes.at(mesh.value));
+    return js::Array<double>(world.begin(), world.end());
+}
+
+js::Array<double> mesh_bound_min_array(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const MeshRecord& record = engine.meshes.at(mesh.value);
+    Vec3 bounds{};
+    if (record.geometry < engine.geometries.size()) {
+        bounds = engine.geometries[record.geometry].bounds_min;
+    }
+    if (record.has_bounds_min_override) bounds = record.bounds_min_override;
+    return {bounds.x, bounds.y, bounds.z};
+}
+
+js::Array<double> mesh_bound_max_array(
+    const Engine& engine,
+    MeshHandle mesh) {
+    const MeshRecord& record = engine.meshes.at(mesh.value);
+    Vec3 bounds{};
+    if (record.geometry < engine.geometries.size()) {
+        bounds = engine.geometries[record.geometry].bounds_max;
+    }
+    if (record.has_bounds_max_override) bounds = record.bounds_max_override;
+    return {bounds.x, bounds.y, bounds.z};
+}
+`
+      : "";
+    const fogSource = options.fog
+      ? `
 // ${this.context.provenance(fogModulePath, `${fogName}, writeFogUbo`)}
 void set_scene_fog(
     Scene& scene,
@@ -447,50 +588,49 @@ void set_scene_fog(
     scene.fog_color = color;
 }
 `
-            : "";
-        // The emitted removal is the pinned mesh arm — removeFromScene
-        // dispatches a mesh to removeMeshFromScene, whose scene-list
-        // splice plus mutation mark is what the native erase and
-        // membership bump mirror. Anchored on the splice pair itself
-        // rather than only on the dispatcher's existence, so a
-        // restructured mesh arm refuses generation instead of leaving the
-        // native erase mirroring a branch the pin no longer has.
-        this.context.functionDeclaration(
-            "src/scene/scene-remove.ts",
-            "removeFromScene",
-        );
-        const { declaration: meshRemoval } =
-            this.context.functionDeclaration(
-                "src/scene/scene-remove.ts",
-                "removeMeshFromScene",
-            );
-        const meshSplices = this.context.findNodes(
-            meshRemoval,
-            (node): node is ts.CallExpression =>
-                ts.isCallExpression(node) &&
-                this.context.propertyPath(node.expression)?.join(".") ===
-                    "scene.meshes.splice",
-        );
-        if (meshSplices.length !== 1) {
-            this.context.contractError(
-                meshRemoval,
-                "Pinned removeMeshFromScene no longer splices " +
-                    "scene.meshes exactly once.",
-            );
-        }
-        this.context.assertExpressionShape(
-            this.context.variableInitializer(meshRemoval, "mi2"),
-            "scene.meshes.indexOf(mesh)",
-            "Pinned mesh-removal index",
-        );
-        // A manager created with this engine owns animation time for the
-        // groups attached to it, and a scene it drives has no other way to
-        // reach them: the measured seek walks the scene's seekers, so a
-        // registering scene contributes one per manager. Not a pinned
-        // step -- upstream seeks by calling goToFrame on the groups
-        // themselves, which is what this reproduces.
-        const managerSeek = options.managedAnimationGroups
-            ? `
+      : "";
+    // The emitted removal is the pinned mesh arm — removeFromScene
+    // dispatches a mesh to removeMeshFromScene, whose scene-list
+    // splice plus mutation mark is what the native erase and
+    // membership bump mirror. Anchored on the splice pair itself
+    // rather than only on the dispatcher's existence, so a
+    // restructured mesh arm refuses generation instead of leaving the
+    // native erase mirroring a branch the pin no longer has.
+    this.context.functionDeclaration(
+      "src/scene/scene-remove.ts",
+      "removeFromScene",
+    );
+    const { declaration: meshRemoval } = this.context.functionDeclaration(
+      "src/scene/scene-remove.ts",
+      "removeMeshFromScene",
+    );
+    const meshSplices = this.context.findNodes(
+      meshRemoval,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        this.context.propertyPath(node.expression)?.join(".") ===
+          "scene.meshes.splice",
+    );
+    if (meshSplices.length !== 1) {
+      this.context.contractError(
+        meshRemoval,
+        "Pinned removeMeshFromScene no longer splices " +
+          "scene.meshes exactly once.",
+      );
+    }
+    this.context.assertExpressionShape(
+      this.context.variableInitializer(meshRemoval, "mi2"),
+      "scene.meshes.indexOf(mesh)",
+      "Pinned mesh-removal index",
+    );
+    // A manager created with this engine owns animation time for the
+    // groups attached to it, and a scene it drives has no other way to
+    // reach them: the measured seek walks the scene's seekers, so a
+    // registering scene contributes one per manager. Not a pinned
+    // step -- upstream seeks by calling goToFrame on the groups
+    // themselves, which is what this reproduces.
+    const managerSeek = options.managedAnimationGroups
+      ? `
     if (!scene.seeks_animation_managers) {
         scene.seeks_animation_managers = true;
         Engine* engine = scene.engine;
@@ -506,19 +646,22 @@ void set_scene_fog(
                 }
             });
     }`
-            : "";
-        return {
-            modulePath,
-            symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
-            header: "",
-            source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
+      : "";
+    return {
+      modulePath,
+      symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
+      header: "",
+      source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
-${options.mirroredMeshes
+${options.geometryAccess ? "#include <bblite/js_data.hpp>" : ""}
+${
+  options.mirroredMeshes || options.geometryAccess
     ? `// The mirrored-mesh watcher this scene installs calls the render
 // plan's own determinant pass; a scene that never opts in includes
-// neither.
+// neither. Geometry access also reads the plan's emitted world matrix.
 #include <bblite/upstream/renderer_plan.hpp>`
-    : ""}
+    : ""
+}
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -799,9 +942,9 @@ void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
-${fogSource}${transformNodeSource}${mirroredSource}
+${fogSource}${meshDirtySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
 } // namespace bbl
 `,
-        };
-    }
+    };
+  }
 }

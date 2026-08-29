@@ -238,7 +238,14 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
         /mesh\.position = Vec3d\{\s*transform\.position\[0\],/,
     );
     assert.match(lowered.source, /mesh\.rotation_quaternion = Vec4\{/);
-    assert.match(lowered.source, /\+\+mesh\.transform_version;/);
+    assert.match(
+        lowered.source,
+        /mark_physics_mesh_dirty\(engine, body\.node\);/,
+    );
+    assert.match(
+        lowered.source,
+        /void mark_physics_mesh_dirty[\s\S]*?\+\+record\.transform_version;[\s\S]*?mark_physics_mesh_dirty\(engine, child\);/,
+    );
 });
 
 test("no solver is named in generated code", () => {

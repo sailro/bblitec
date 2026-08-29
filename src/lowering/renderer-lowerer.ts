@@ -2063,12 +2063,17 @@ std::array<float, 16> mesh_world_matrix(
     // it. The CPU vertex bake and the navigation merge read this matrix
     // and neither wants it; the shader draw world adds it, as it always
     // did.
-    if (mesh.parent.value >= engine.transform_nodes.size()) {
-        return local;
+    if (mesh.parent.value < engine.meshes.size()) {
+        return multiply_into(
+            mesh_world_matrix(engine, engine.meshes[mesh.parent.value]),
+            local);
     }
-    return multiply_into(
-        transform_node_world(engine, mesh.parent),
-        local);
+    if (mesh.transform_parent.value < engine.transform_nodes.size()) {
+        return multiply_into(
+            transform_node_world(engine, mesh.transform_parent),
+            local);
+    }
+    return local;
 }
 
 ${options.mirroredMeshes

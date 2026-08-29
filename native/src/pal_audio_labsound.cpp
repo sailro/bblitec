@@ -152,7 +152,8 @@ ContextRecord& require_context(std::uint32_t id)
 {
     auto found = contexts().find(id);
     if (found == contexts().end()) {
-        throw std::runtime_error("Invalid audio context handle.");
+        throw std::runtime_error(
+            "Invalid audio context handle " + std::to_string(id) + ".");
     }
     return found->second;
 }

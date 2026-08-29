@@ -28,7 +28,13 @@ export function pbrNoColorView(
     source: ScenePbrMaterialManifest,
     materialsBefore: number,
 ): ScenePbrMaterialManifest {
-    return { ...source, materialsBefore, noColorView: true };
+    return {
+        ...source,
+        materialsBefore,
+        sourceMaterialsBefore:
+            source.sourceMaterialsBefore ?? source.materialsBefore,
+        noColorView: true,
+    };
 }
 
 /**
@@ -45,7 +51,13 @@ export function pbrEsmShadowView(
     source: ScenePbrMaterialManifest,
     materialsBefore: number,
 ): ScenePbrMaterialManifest {
-    return { ...source, materialsBefore, esmShadowView: true };
+    return {
+        ...source,
+        materialsBefore,
+        sourceMaterialsBefore:
+            source.sourceMaterialsBefore ?? source.materialsBefore,
+        esmShadowView: true,
+    };
 }
 
 /**

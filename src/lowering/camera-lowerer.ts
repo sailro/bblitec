@@ -777,9 +777,8 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& mesh = engine.meshes[handle.value];${nodeVisibility ? `
-        // The pinned framing pass skips \`visible === false\` meshes, so
-        // KHR_node_visibility moves the default camera as well as the draw
-        // list.
+        // The pinned framing pass skips \`visible === false\` meshes, whether
+        // scene source wrote the field or KHR_node_visibility materialized it.
         if (!mesh.visible) continue;` : ""}
         Vec3 local_min{};
         Vec3 local_max{};
@@ -1243,6 +1242,48 @@ void apply_free_camera_inertia(CameraRecord& camera);
 
 namespace bbl {
 
+void clamp_camera_to_limits(CameraRecord& camera) {
+    if (camera.lower_radius_limit && camera.radius < *camera.lower_radius_limit) {
+        camera.radius = *camera.lower_radius_limit;
+        camera.inertial_radius_offset = 0.0;
+    } else if (camera.upper_radius_limit && camera.radius > *camera.upper_radius_limit) {
+        camera.radius = *camera.upper_radius_limit;
+        camera.inertial_radius_offset = 0.0;
+    }
+    if (camera.lower_beta_limit && camera.beta < *camera.lower_beta_limit) {
+        camera.beta = *camera.lower_beta_limit;
+        camera.inertial_beta_offset = 0.0;
+    } else if (camera.upper_beta_limit && camera.beta > *camera.upper_beta_limit) {
+        camera.beta = *camera.upper_beta_limit;
+        camera.inertial_beta_offset = 0.0;
+    }
+    if (camera.lower_alpha_limit && camera.alpha < *camera.lower_alpha_limit) {
+        camera.alpha = *camera.lower_alpha_limit;
+        camera.inertial_alpha_offset = 0.0;
+    } else if (camera.upper_alpha_limit && camera.alpha > *camera.upper_alpha_limit) {
+        camera.alpha = *camera.upper_alpha_limit;
+        camera.inertial_alpha_offset = 0.0;
+    }
+}
+
+void set_camera_limits(
+    Engine& engine,
+    CameraHandle handle,
+    std::uint32_t present_mask,
+    const std::array<double, 6>& limits) {
+    if (handle.value >= engine.cameras.size()) {
+        throw std::runtime_error("Invalid camera handle.");
+    }
+    CameraRecord& camera = engine.cameras[handle.value];
+    if ((present_mask & (1u << 0u)) != 0u) camera.lower_alpha_limit = limits[0];
+    if ((present_mask & (1u << 1u)) != 0u) camera.upper_alpha_limit = limits[1];
+    if ((present_mask & (1u << 2u)) != 0u) camera.lower_beta_limit = limits[2];
+    if ((present_mask & (1u << 3u)) != 0u) camera.upper_beta_limit = limits[3];
+    if ((present_mask & (1u << 4u)) != 0u) camera.lower_radius_limit = limits[4];
+    if ((present_mask & (1u << 5u)) != 0u) camera.upper_radius_limit = limits[5];
+    clamp_camera_to_limits(camera);
+}
+
 // Both attach hooks register input on the camera they are handed and
 // nothing else: the pinned attachControl/attachFreeControl install canvas
 // listeners and push an inertia hook onto scene._beforeRender, and neither
@@ -1275,6 +1316,7 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
         camera.beta += camera.inertial_beta_offset;
         constexpr double epsilon = ${dvalue(betaClampEpsilon)};
         camera.beta = std::max(epsilon, std::min(pi_double - epsilon, camera.beta));
+        bbl::clamp_camera_to_limits(camera);
         camera.inertial_alpha_offset *= camera.inertia;
         camera.inertial_beta_offset *= camera.inertia;
         if (std::abs(camera.inertial_alpha_offset) < rotation_epsilon) camera.inertial_alpha_offset = 0.0;
@@ -1284,6 +1326,7 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
     if (camera.inertial_radius_offset != 0.0) {
         camera.radius -= camera.inertial_radius_offset;
         camera.radius = std::max(${dvalue(radiusFloor)}, camera.radius);
+        bbl::clamp_camera_to_limits(camera);
         camera.inertial_radius_offset *= camera.inertia;
         if (std::abs(camera.inertial_radius_offset) < radius_epsilon) camera.inertial_radius_offset = 0.0;
     }

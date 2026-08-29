@@ -245,6 +245,31 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
     );
 });
 
+test("copies an empty nullable audio resource without dereferencing it", () => {
+    const result = compileSource(`
+        import { createAudioEngineAsync } from "@babylonjs/lite";
+
+        let context: BaseAudioContext | null = null;
+        function tick(): void {
+            const current = context;
+            if (!current) return;
+            current.createGain();
+        }
+        tick();
+        const audio = await createAudioEngineAsync();
+        context = audio.audioContext;
+    `);
+
+    assert.match(
+        result.cpp,
+        /std::optional<bbl::pal::AudioContextHandle> v_(?:fn\d+_)?current = v_context;/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /std::optional<bbl::pal::AudioContextHandle> v_(?:fn\d+_)?current = \(\*v_context\);/,
+    );
+});
+
 test("lowers a light vector set to its own kind's entry point", () => {
     const result = compileSource(`
         import {
@@ -1171,6 +1196,74 @@ test("lowers nested Array.from length allocations", () => {
     assert.match(result.cpp, /\.push_back\(7\.0\);/);
 });
 
+test("stores homogeneous object tuples with JavaScript array identity", () => {
+    const result = compileSource(`
+        interface Point { x: number }
+        const point: Point = { x: 1 };
+        const edges: [Point, Point][][] = Array.from(
+            { length: 2 },
+            () => [],
+        );
+        edges[0]!.push([point, point]);
+        edges[0]![0]![1]!.x = 4;
+    `);
+
+    assert.match(result.cpp, /bbl::js::Array<bbl::js::Array<bbl::js::Array<bblscene::Point>>>/);
+    assert.match(result.cpp, /\.push_back\(bbl::js::Array<bblscene::Point>\{/);
+});
+
+test("marks object tuple elements as references before emitting their users", () => {
+    const result = compileSource(`
+        interface Point { x: number }
+        const points: [Point, Point] = [
+            { x: Math.random() },
+            { x: Math.random() },
+        ];
+        const index = Math.floor(Math.random() * 2);
+        const selected = points[index]!;
+        const x = selected.x;
+        const later: Point[] = [];
+        later.push({ x: 3 });
+    `);
+
+    assert.match(result.cpp, /using Point = std::shared_ptr<PointData>;/);
+    assert.match(result.cpp, /v_selected->x/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bblscene::Point>\{std::make_shared<bblscene::PointData>/,
+    );
+});
+
+test("materializes an inferred array before a runtime element read", () => {
+    const result = compileSource(`
+        interface Point { x: number }
+        const source: Point[] = [{ x: 1 }, { x: 2 }, { x: 3 }];
+        const i = Math.floor(Math.random() * 3);
+        const triplet = [source[0]!, source[1]!, source[2]!];
+        const selected = triplet[i]!;
+        selected.x = 9;
+    `);
+
+    assert.match(result.cpp, /bbl::js::Array<bblscene::Point> v_triplet/);
+    assert.match(result.cpp, /v_triplet\[bbl::js::array_index\(v_i\)\]/);
+    assert.equal((result.cpp.match(/bbl::js::random_js\(\)/g) ?? []).length, 1);
+});
+
+test("rebinds a vector from a helper proven to return a fresh array", () => {
+    const result = compileSource(`
+        function clipped(input: number[]): number[] {
+            const out: number[] = [];
+            if (input.length === 0) return out;
+            out.push(input[0]!);
+            return out;
+        }
+        let poly: number[] = [1, 2, 3];
+        poly = clipped(poly);
+    `);
+
+    assert.match(result.cpp, /v_poly = bblscene::clipped\(v_poly\);/);
+});
+
 test("folds string-literal comparisons in specialized callbacks", () => {
     const result = compileSource(`
         const classify = (kind: "coin" | "flower"): number =>
@@ -1286,6 +1379,17 @@ test("returns the value of chained numeric field assignments", () => {
     `);
 
     assert.match(result.cpp, /v_box\.w = \(v_box\.h = 42\.0\);/);
+});
+
+test("returns the value of chained scalar-local assignments", () => {
+    const result = compileSource(`
+        let x = 1;
+        let y = 2;
+        let z = 3;
+        x = y = z = 0;
+    `);
+
+    assert.match(result.cpp, /v_x = \(v_y = \(v_z = 0\.0\)\);/);
 });
 
 test("spreads a native partial struct into a wider struct", () => {
@@ -1869,6 +1973,38 @@ test("materializes a constructor-assigned resource field once", () => {
     );
 });
 
+test("copies inlined handle parameters before a factory can reallocate their owner", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+
+        function build(engine: EngineContext, material: Material): Mesh {
+            const mesh = createBox(engine, 1);
+            mesh.material = material;
+            return mesh;
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const source = createBox(engine, 1);
+            source.material = createStandardMaterial();
+            build(engine, source.material);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_fn\d+_material = v_engine\.meshes\[v_source\.value\]\.material;/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /auto&& v_fn\d+_material = v_engine\.meshes\[v_source\.value\]\.material;/,
+    );
+});
+
 test("gives constructor-assigned resource fields distinct native storage", () => {
     const result = compileSource(`
         import {
@@ -2334,6 +2470,31 @@ test("seeds Math.random deterministically and records the adaptation", () => {
                 id === "deterministic-seeded-random",
         ),
     );
+});
+
+test("lowers Math.imul through its exact wrapped 32-bit semantics", () => {
+    const result = compileSource(`
+        function step(state: number): number {
+            return Math.imul(state ^ (state >>> 15), state | 1);
+        }
+        const next = step(-1);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::math_imul\(bbl::js::bitwise_xor\([^,]+, bbl::js::shift_right_unsigned\([^)]*\)\), bbl::js::bitwise_or\([^)]*\)\)/,
+    );
+});
+
+test("lowers Array.every with JavaScript empty-array and early-exit semantics", () => {
+    const result = compileSource(`
+        const points: [number, number][] = [[0, 0], [3, 4]];
+        const distant = points.every(([x, y]) => Math.hypot(x, y) >= 0);
+    `);
+
+    assert.match(result.cpp, /bool \w*_every_result_\d+ = true;/);
+    assert.match(result.cpp, /if \(!\(std::hypot\([^)]*\) >= 0\.0\)\) \{/);
+    assert.match(result.cpp, /\w*_every_result_\d+ = false;\s+break;/);
 });
 
 test("lowers typed arrays with storage-exact reads and writes", () => {
@@ -3754,6 +3915,73 @@ test("keeps an inferred static handle list available to render composition", () 
     assert.doesNotMatch(result.cpp, /Array<bbl::MeshHandle> v_casters/);
 });
 
+test("updates a shadow task from a runtime subset of its composed casters", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createDirectionalLight,
+            createEngine,
+            createPcfDirectionalShadowGenerator,
+            createSceneContext,
+            onBeforeRender,
+            setShadowTaskCasterMeshes,
+            type Mesh,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const light = createDirectionalLight([-1, -2, -1], 1);
+            const mesh = createBox(engine, 1);
+            addToScene(scene, light);
+            addToScene(scene, mesh);
+            const shadow = createPcfDirectionalShadowGenerator(engine, light);
+            setShadowTaskCasterMeshes(shadow, [mesh]);
+            let include = true;
+            onBeforeRender(scene, () => {
+                const next: Mesh[] = [];
+                if (include) next.push(mesh);
+                setShadowTaskCasterMeshes(shadow, next);
+                include = !include;
+            });
+        }
+        void main();
+    `);
+
+    assert.equal(result.manifest.shadowGenerators[0]?.casters.length, 1);
+    assert.match(result.cpp, /array_to_vector\(v_next\)/);
+});
+
+test("compares handles read from runtime arrays by object identity", () => {
+    const result = compileSource(`
+        import { createBox, createEngine, type Mesh } from "babylon-lite";
+        async function main() {
+            const engine = await createEngine({});
+            const mesh = createBox(engine, 1);
+            const meshes: Mesh[] = [mesh];
+            const same = meshes.some((entry, index) => entry !== meshes[index]);
+            if (same) mesh.position.y = 1;
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /\.value != .*\.value/);
+});
+
+test("rebinds JavaScript arrays through their shared native identity", () => {
+    const result = compileSource(`
+        let current: number[] = [1];
+        const alias = current;
+        const next: number[] = [2];
+        current = next;
+        alias.push(3);
+    `);
+
+    assert.match(result.cpp, /v_current = v_next;/);
+    assert.match(result.cpp, /v_alias\.push_back\(3\.0\)/);
+});
+
 test("asks the pin's cone-tip question of the option the scene named", () => {
     // `createCylinderData` clamps a zero diameter for its ring maths and
     // asks `options.diameterTop === 0` separately, of the NAMED option. So
@@ -4576,6 +4804,156 @@ test("exposes only the pinned glTF container root entity", () => {
     );
 });
 
+test("exposes getContainerMeshes through the asset's flattened mesh collection", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            getContainerMeshes,
+            loadGltf,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const container = await loadGltf(engine, "model.glb");
+            const meshes = getContainerMeshes(container);
+            const rebuilt = createBox(engine, 1);
+            for (const mesh of meshes) {
+                mesh.position.x = 1;
+                rebuilt.material = mesh.material;
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /engine\.assets\[v_container\.value\]\.meshes/);
+    assert.match(result.cpp, /for \(const bbl::MeshHandle/);
+    assert.equal(result.manifest.sceneMeshes[0]?.assetPbrMaterial, true);
+});
+
+test("lowers setParent for mesh attachment and detachment", () => {
+    const result = compileSource(`
+        import { createEngine, createBox, setParent } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const parent = createBox(engine, 1);
+            const child = createBox(engine, 1);
+            setParent(child, parent);
+            setParent(child, null);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::set_mesh_parent\([^;]+v_parent\);/);
+    assert.match(result.cpp, /bbl::set_mesh_parent\([^;]+bbl::MeshHandle\{\}\);/);
+});
+
+test("reads mesh.parent as the nullable handle setParent owns", () => {
+    const result = compileSource(`
+        import { createEngine, createSphere, setParent, type Mesh } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const root = createSphere(engine, { diameter: 1 });
+            const child = createSphere(engine, { diameter: 0.5 });
+            setParent(child, root);
+            let current: Mesh | null = child;
+            current = current.parent;
+            if (child.parent === null) child.position.y = 1;
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /\.parent\.value != bbl::invalid_handle/);
+    assert.match(
+        result.cpp,
+        /if \([^\n]*\.parent\.value != bbl::invalid_handle[^\n]*\) \{[\s\S]{0,180}v_current = [^;]*\.parent;[\s\S]{0,100}v_current\.reset\(\);/,
+    );
+});
+
+test("reads the live local bounds retained with mesh geometry", () => {
+    const result = compileSource(`
+        import { createEngine, createSphere } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const mesh = createSphere(engine, { diameter: 1 });
+            const minimum = mesh.boundMin ?? [-0.5, -0.5, -0.5];
+            const maximum = mesh.boundMax ?? [0.5, 0.5, 0.5];
+            mesh.position.x = minimum[0]! + maximum[0]!;
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /mesh_bound_min_array/);
+    assert.match(result.cpp, /mesh_bound_max_array/);
+});
+
+test("stores mesh visibility in the live mesh record", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const anchor = createBox(engine, 0.05);
+            anchor.visible = false;
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /\.meshes\[v_anchor\.value\]\.visible = false;/);
+    assert.ok(result.manifest.features.includes("mesh:visible"));
+});
+
+test("stores and fills a nullable mesh local", () => {
+    const result = compileSource(`
+        import { createEngine, createSphere, type Mesh } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            let mesh: Mesh | null = null;
+            mesh = createSphere(engine, { diameter: 1 });
+            if (mesh) mesh.position.y = 2;
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /std::optional<bbl::MeshHandle> v_mesh;/);
+    assert.match(result.cpp, /v_mesh = bbl::create_sphere/);
+});
+
+test("retains a static false through a readonly receiveShadows parameter", () => {
+    const result = compileSource(`
+        import { createEngine, createSphere, type Mesh } from "@babylonjs/lite";
+        function configure(mesh: Mesh, receive: boolean): void {
+            mesh.receiveShadows = receive;
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const mesh = createSphere(engine, { diameter: 1 });
+            configure(mesh, false);
+        }
+        void main();
+    `);
+
+    assert.doesNotMatch(result.cpp, /receives_shadows = true/);
+});
+
+test("lowers setCameraLimits with the fields present in the pinned options record", () => {
+    const result = compileSource(`
+        import { createEngine, createArcRotateCamera, setCameraLimits } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const camera = createArcRotateCamera(0, 1, 5, [0, 0, 0]);
+            setCameraLimits(camera, {
+                upperBetaLimit: 1.7,
+                lowerRadiusLimit: 2,
+                upperRadiusLimit: 20,
+            });
+        }
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::set_camera_limits\([^,]+, [^,]+, 56u, std::array<double, 6>\{0\.0, 0\.0, 0\.0, 1\.7, 2\.0, 20\.0\}\)/,
+    );
+});
+
 test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {
     const sourcePath =
         "corpus/babylon-lite/lab/lite/src/lite/scene12.ts";
@@ -4913,6 +5291,28 @@ test("erases imported browser helpers with only browser and static inputs", () =
     );
 });
 
+test("erases decoder-base setup rooted at import.meta.url", () => {
+    const result = compileSource(
+        `
+            import { createEngine } from "@babylonjs/lite";
+            import { configureDemoDecoderBases } from "./fixtures/compiler-modules/demo-decoder-base.js";
+
+            async function main() {
+                await configureDemoDecoderBases(import.meta.url);
+                await createEngine({});
+            }
+        `,
+        { fileName: "test/compiler-multi-file-entry.ts" },
+    );
+
+    assert.doesNotMatch(result.cpp, /import|setDracoBaseUrl|setMeshoptBaseUrl/);
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
 test("erases browser-only try-catch setup", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -4986,6 +5386,28 @@ test("lowers platform listeners through generic engine callbacks", () => {
     assert.match(result.cpp, /\.code/);
     assert.match(result.cpp, /\.repeat/);
     assert.doesNotMatch(result.cpp, /addEventListener|preventDefault|document\.hidden/);
+});
+
+test("maps canvas pointer offsets to its platform-relative coordinates", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            await createEngine(canvas);
+            canvas.addEventListener("pointerdown", (event) => {
+                const state = event.offsetX + event.clientX + event.offsetY + event.clientY + event.button;
+                canvas.dataset.pointerState = \`\${state}\`;
+            });
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::on_mouse_down/);
+    assert.equal((result.cpp.match(/\.client_x/g) ?? []).length, 2);
+    assert.equal((result.cpp.match(/\.client_y/g) ?? []).length, 2);
+    assert.match(result.cpp, /\.button/);
+    assert.doesNotMatch(result.cpp, /offset[XY]/);
+    assert.match(result.cpp, /\[\[maybe_unused\]\] double v_fn\d+_state/);
 });
 
 test("keeps callback-local declarations inside platform listeners", () => {

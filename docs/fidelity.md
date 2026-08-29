@@ -1550,6 +1550,13 @@ through them at the read site -- upstream's `pickedMesh` is a live node
 reference, and this branch makes `splat.name` writable, so a name captured
 at pick time would go stale exactly as the alpha-mode lane did.
 
+**The sampled depth is also the picked point.** The basic picker already
+writes clip depth beside the id. Both backends read that lane and run the
+pin's `mat4Invert(vp)` reconstruction over the sampled NDC, producing the
+same world-space `pickedPoint` the browser exposes. `ray` is intentionally
+null in the pin for a non-detailed pick, so a scene's nullish fallback is the
+faithful result rather than a missing native ray.
+
 Scene 129 measures the whole chain because the pick decides a visible thing:
 the scene removes its ground unless the pick resolved to the cloud, so a
 miss is 12.866 MAD and the gate cannot pass without the pass actually
@@ -1715,12 +1722,43 @@ time, and a shape's centre offset is unknown when the transform is written.
 the recorded transform, preserving the pin's order above them. Without the
 first the sphere never falls; without the second it rests 0.04 high.
 
+**A convex hull keeps its physical frame, not only its vertices.** Havok's
+`HP_Shape_BuildMassProperties` returns a centre of mass, inertia and
+principal-axis orientation. Bullet's fast convex hull leaves its body frame
+at the authored origin, so the PAL triangulates the hull once for
+`calculatePrincipalAxisTransform`, stores that tuple, and retains the fast
+collision hull in the resulting frame. The break-meshes probe compares all
+fourteen cells of one boombox: centre, inertia and orientation agree with the
+Havok tuple to the hull builders' float tolerance. Discarding the frame put
+every shard's centre at the boombox pivot and turned one downward impulse
+into the wrong torque.
+
+**Havok's reached body defaults cross the seam.** A fresh reference world
+reports maximum linear/angular speeds `200/100`; a fresh body reports linear
+and angular damping `0/0.1`. Bullet has no finite speed limit and defaults
+both damping channels to zero, so the PAL clamps every impulse and post-step
+contact result and installs the reference damping when a body is created.
+The clicked shard consequently reads exactly `24/100` immediately after the
+impulse rather than the previous `24/187.6`.
+
+**Resting contact is graded as a trajectory, too.** With the same seeded
+boombox, picked point and downward impulse, Havok has fourteen moving pieces
+after its first step, two at step 150, one at 180--210 and zero at 240.
+Bullet's contact jitter otherwise leaves pieces moving until roughly step
+450. The PAL therefore stabilizes only a dynamic body which is already in a
+contact manifold and remains inside the measured late-motion envelope for a
+quarter second; free bodies are never touched, and ordinary Bullet island
+activation wakes a stabilized body on a later collision or impulse. The
+native trace now has two movers at step 150, one at 210 and zero at 243. This
+is an explicit solver-equivalence shim, not a changed demo impulse or global
+damping knob.
+
 **Havok's combine modes are applied, not approximated.** The pin passes
 `MaterialCombine.MINIMUM` for friction and `MAXIMUM` for restitution, where
 Bullet's default is the product, so both rules run on the contact manifold
 callback.
 
-Three more equivalences are documented where they happen: the step is pinned
+The remaining equivalences are documented where they happen: the step is pinned
 to a single sub-step (`stepSimulation(seconds, 0, seconds)`), a kinematic
 `SetTargetQTransform` maps to `set_transform` (no corpus scene exercises an
 ACTION prestep), and a material whose static and dynamic friction differ

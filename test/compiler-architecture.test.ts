@@ -867,9 +867,73 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
         );
         assert.match(
             backend,
-            /if \(composed_material\) \{[\s\S]{0,160}material_texture_slots/,
+            /if \(composed_material\) \{[\s\S]{0,4000}material_texture_slots/,
         );
     }
+});
+
+test("shares composed material textures and keeps physics geometry local", () => {
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const physics = source("src/lowering/physics-lowerer.ts");
+
+    assert.match(runtime, /bool gpu_world_transform = false;/);
+    assert.match(
+        physics,
+        /void mark_physics_gpu_world[\s\S]*?record\.gpu_world_transform = true;[\s\S]*?mark_physics_gpu_world\(engine, child\);/,
+    );
+    assert.match(
+        shared,
+        /mesh\.thin_instanced \|\| mesh\.gpu_world_transform[\s\S]{0,100}\? identity_transform/,
+    );
+    assert.match(
+        shared,
+        /if \(record\.gpu_world_transform\)[\s\S]{0,220}upstream::mesh_world_matrix\(engine, record\)/,
+    );
+    assert.match(
+        shared,
+        /#if defined\(BBLITE_HAS_PBR_RENDERER\) && BBLITE_HAS_PBR_RENDERER\s+if \(record\.gpu_world_transform\)/,
+    );
+
+    for (const backend of [
+        source("native/src/pal_sdl_gpu.cpp"),
+        source("native/src/pal_dawn.cpp"),
+    ]) {
+        assert.match(backend, /SharedComposedMaterialTextures/);
+        assert.match(backend, /shared_composed_material_textures/);
+        assert.match(backend, /shared_composed_textures->users/);
+        assert.match(backend, /prune_shared_composed_material_textures/);
+        assert.match(
+            backend,
+            /gpu_world_transform[\s\S]{0,300}transform_version = mesh\.transform_version;[\s\S]{0,100}continue;/,
+        );
+    }
+});
+
+test("keeps reached Havok body defaults and convex mass frames in the Bullet PAL", () => {
+    const contract = source("native/include/bblite/pal_physics.hpp");
+    const bullet = source("native/src/pal_physics_bullet.cpp");
+
+    assert.match(
+        contract,
+        /std::array<double, 4> inertia_orientation\{0\.0, 0\.0, 0\.0, 1\.0\};/,
+    );
+    assert.match(bullet, /calculatePrincipalAxisTransform/);
+    assert.match(
+        bullet,
+        /world \*= entry\.node_from_body;[\s\S]{0,160}setWorldTransform/,
+    );
+    assert.match(bullet, /default_max_linear_speed = btScalar\(200\)/);
+    assert.match(bullet, /default_max_angular_speed = btScalar\(100\)/);
+    assert.match(bullet, /default_angular_damping = btScalar\(0\.1\)/);
+    assert.match(
+        bullet,
+        /applyImpulse\([\s\S]{0,100}clamp_body_velocity/,
+    );
+    assert.match(
+        bullet,
+        /stabilize_contacting_bodies[\s\S]{0,4500}ISLAND_SLEEPING/,
+    );
 });
 
 test("releases Dawn mesh dependents before their owned resources", () => {

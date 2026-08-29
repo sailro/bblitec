@@ -5,6 +5,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +13,10 @@
 namespace bbl {
 
 namespace js {
+template <typename T>
+class Array;
+template <typename T>
+class Nullable;
 class U8Array;
 }
 
@@ -83,6 +88,8 @@ struct PlatformKeyboardEvent {
 /** Browser-neutral mouse-button data delivered by the platform event loop. */
 struct PlatformMouseEvent {
     double button = 0.0;
+    double client_x = 0.0;
+    double client_y = 0.0;
 };
 
 struct MeshHandle {
@@ -184,13 +191,9 @@ enum class PickedNodeKind : std::uint8_t {
 /**
  * The pin's `PickingInfo`, at the slice this port resolves.
  *
- * WHAT WAS HIT, and nothing more. `pickedPoint` and `distance` are the
- * pin's `mat4Invert(vp)` applied to the sampled NDC and the depth
- * attachment's value; `ray`, `bu`, `bv` and `thinInstanceIndex` belong to
- * the detailed and advanced pipelines. None is declared here, because a
- * field this port cannot fill is worse than one a scene cannot read: the
- * property table serves `hit` and `pickedMesh.name`, and every other member
- * refuses by name at the read site.
+ * WHAT WAS HIT plus the basic pipeline's reconstructed world point. `ray`,
+ * `bu`, `bv` and `thinInstanceIndex` belong to the detailed and advanced
+ * pipelines and remain outside this record.
  */
 struct PickingInfo {
     bool hit = false;
@@ -203,6 +206,7 @@ struct PickingInfo {
      */
     PickedNodeKind picked_kind = PickedNodeKind::none;
     std::uint32_t picked_index = invalid_handle;
+    std::optional<std::array<double, 3>> picked_point{};
 };
 
 
@@ -1004,7 +1008,24 @@ struct MeshRecord {
      * under. Upstream any entity may parent to any other; the reached
      * slice is a mesh under a transform node.
      */
-    TransformNodeHandle parent{};
+    TransformNodeHandle transform_parent{};
+    /**
+     * The mesh parent installed by `setParent`, plus the public traversal
+     * list that function keeps in sync. Mesh and transform-node handles live
+     * in different native tables, so retaining both identities avoids an
+     * ambiguous integer handle while covering the pin's shared SceneNode
+     * parent surface.
+     */
+    MeshHandle parent{};
+    std::vector<MeshHandle> children;
+    /** The world-matrix state's private child registry for dirty pushes. */
+    std::vector<MeshHandle> parented_meshes;
+    /**
+     * Runtime simulation moves this hierarchy every frame. Its immutable
+     * local vertices stay on the GPU and the renderer supplies the live
+     * world matrix per draw instead of rebaking and re-uploading them.
+     */
+    bool gpu_world_transform = false;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
     // A clone shares its source mesh's pinned shader composition. Generated
@@ -1659,6 +1680,8 @@ struct MaterialRecord {
     float occlusion_strength = 1.0f;
     bool unlit = false;
     bool no_color = false;
+    /** Original material copied into a no-colour/ESM view. */
+    MaterialHandle source_material{};
     /**
      * An ESM caster view: `createStandardEsmShadowMaterialView` clears the
      * blend bit and sets `ESM_SHADOW_OUTPUT`, so this view writes the
@@ -1909,6 +1932,12 @@ struct CameraRecord {
     double inertial_radius_offset = 0.0;
     double inertial_panning_x = 0.0;
     double inertial_panning_y = 0.0;
+    std::optional<double> lower_alpha_limit;
+    std::optional<double> upper_alpha_limit;
+    std::optional<double> lower_beta_limit;
+    std::optional<double> upper_beta_limit;
+    std::optional<double> lower_radius_limit;
+    std::optional<double> upper_radius_limit;
     bool controls_enabled = false;
     // Orthographic projection state (src/camera/orthographic.ts). The
     // four clip planes stay derived from the half-extent, which is the
@@ -2067,6 +2096,9 @@ struct ShadowGeneratorRecord {
     std::vector<MeshHandle> caster_meshes;
     /** The depth-only render task the task state built for this map. */
     TaskHandle task{};
+    /** Source/view pairs retained while a dynamic caster list is filtered. */
+    std::vector<MaterialHandle> caster_material_sources;
+    std::vector<MaterialHandle> caster_material_views;
     /** ESM only: the two lanes the receiver block packs. */
     double depth_scale = 0.0;
     double frustum_edge_falloff = 0.0;
@@ -2859,7 +2891,7 @@ void enable_mirrored_meshes(Scene& scene);
 // `canvas.dataset.ready`, and the harness screenshots on that flag -- so a
 // capture taken before the condition holds is a different frame.
 void defer_capture_until(Engine& engine, std::function<bool()> ready);
-void set_mesh_parent(
+void set_mesh_transform_parent(
     Engine& engine,
     MeshHandle mesh,
     TransformNodeHandle parent);
@@ -3109,6 +3141,11 @@ void set_animation_additive_from_frame(
     AnimationGroupHandle group,
     float reference_frame);
 void attach_control(Engine& engine, CameraHandle camera);
+void set_camera_limits(
+    Engine& engine,
+    CameraHandle camera,
+    std::uint32_t present_mask,
+    const std::array<double, 6>& limits);
 void attach_free_control(Engine& engine, CameraHandle camera);
 struct LoadSpriteAtlasOptions {
     float grid_width_px = 0.0f;
@@ -3450,12 +3487,53 @@ double set_interval(
 /** Browser `clearInterval`. */
 void clear_interval(Engine& engine, double id);
 
+/** src/scene/set-parent.ts setParent for the reached mesh hierarchy. */
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle child,
+    MeshHandle parent);
+[[nodiscard]] std::vector<float> mesh_cpu_positions(
+    const Engine& engine,
+    MeshHandle mesh);
+[[nodiscard]] std::vector<float> mesh_cpu_normals(
+    const Engine& engine,
+    MeshHandle mesh);
+[[nodiscard]] std::vector<float> mesh_cpu_uvs(
+    const Engine& engine,
+    MeshHandle mesh);
+[[nodiscard]] std::vector<std::uint32_t> mesh_cpu_indices(
+    const Engine& engine,
+    MeshHandle mesh);
+[[nodiscard]] js::Array<double> mesh_world_matrix_array(
+    const Engine& engine,
+    MeshHandle mesh);
+[[nodiscard]] js::Array<double> mesh_bound_min_array(
+    const Engine& engine,
+    MeshHandle mesh);
+[[nodiscard]] js::Array<double> mesh_bound_max_array(
+    const Engine& engine,
+    MeshHandle mesh);
+
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
 /** `PickingInfo.pickedMesh.name`, read where the scene asks for it. */
 [[nodiscard]] std::string picked_node_name(
     const Engine& engine,
     const PickingInfo& info);
+/** A picked scene node asserted to the pinned `Mesh` type. */
+[[nodiscard]] MeshHandle picked_mesh(const PickingInfo& info);
+/** The basic pick's nullable world point in the plain-data model. */
+[[nodiscard]] js::Nullable<std::array<double, 3>> picked_point(
+    const PickingInfo& info);
+/** Populate basic picking's world-space `pickedPoint` from its depth lane. */
+void populate_picked_point(
+    PickingInfo& info,
+    const std::array<float, 16>& view_projection,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height,
+    float depth);
 /** `pickAsync(picker, x, y)`, resolved before the call returns. */
 PickingInfo gpu_pick(
     Engine& engine,

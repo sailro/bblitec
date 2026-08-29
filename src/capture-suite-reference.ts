@@ -68,6 +68,18 @@ function mimeType(path: string): string {
     }
 }
 
+/** The path a requested browser asset has under the pinned lab/public tree. */
+export function pinnedLabPublicAssetPath(requestPath: string): string {
+    const relative = requestPath.replace(/^\/+/, "");
+    // Physics demos resolve this file beside their bundled demo module, but
+    // the pinned lab publishes the shared binary once at public root. The
+    // source-relative parity URL therefore needs the same bundler relocation.
+    return relative.endsWith("/HavokPhysics.wasm") ||
+        relative === "HavokPhysics.wasm"
+        ? "HavokPhysics.wasm"
+        : relative;
+}
+
 export type SuiteSourceTransform = (source: string) => string;
 
 /**
@@ -359,10 +371,12 @@ ${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></scrip
                     return;
                 }
                 const pin = upstreamSource().readUpstreamPin();
+                const publicAsset =
+                    pinnedLabPublicAssetPath(relative);
                 const assetUrl =
                     "https://raw.githubusercontent.com/" +
                     `BabylonJS/Babylon-Lite/${pin.sourceVersion}` +
-                    `/lab/public/${relative}`;
+                    `/lab/public/${publicAsset}`;
                 let fetched: Response;
                 try {
                     fetched = await fetch(assetUrl, {

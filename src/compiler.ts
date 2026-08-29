@@ -121,6 +121,7 @@ import {
 import {
     DataTypeRegistry,
     doubleLiteral as dataDoubleLiteral,
+    isHandleKind,
     passesByReference,
     type DataIterationElement,
     type DataType,
@@ -823,6 +824,12 @@ class Compiler
                 cppType: "bbl::SpriteRendererHandle",
             };
         }
+        if (name === "Mesh") {
+            return {
+                kind: "mesh",
+                cppType: "bbl::MeshHandle",
+            };
+        }
         if (name?.endsWith("Node")) {
             return {
                 kind: "audio-node",
@@ -1051,7 +1058,35 @@ class Compiler
         }
 
         const value = this.compileValue(declaration.initializer);
-        if (value.impure) {
+        if (
+            nullableResource &&
+            value.kind === nullableResource.kind
+        ) {
+            // Copy nullable resource STORAGE, not its present-value spelling.
+            // A bound nullable resource exposes `(*storage)` for code that a
+            // source guard has narrowed, but `const current = context` must
+            // preserve an empty `context` as an empty `current`. Dereferencing
+            // here engaged the copy with an indeterminate handle before the
+            // copied source guard could run.
+            const initializerCpp =
+                value.optionalStorageCpp ?? value.cpp;
+            this.emit(
+                `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`,
+            );
+            this.defineVariable(declaration.name, {
+                ...value,
+                cpp: `(*${cppName})`,
+                optionalFoundCpp: `${cppName}.has_value()`,
+                optionalStorageCpp: cppName,
+            });
+            return;
+        }
+        if (
+            value.impure ||
+            this.expressionHasObservableEvaluation(
+                declaration.initializer,
+            )
+        ) {
             // A `const` bound to a clock is a snapshot of it, so later
             // uses must read the native local rather than fold back to
             // the initializer and call the clock again. Same removal a
@@ -1139,6 +1174,7 @@ class Compiler
                     this.dataTypes,
                     narrowed.dataType,
                 ) &&
+                !narrowed.freshData &&
                 (ts.isIdentifier(initializer) ||
                     ts.isElementAccessExpression(initializer) ||
                     ts.isPropertyAccessExpression(
@@ -1189,7 +1225,7 @@ class Compiler
             } else {
                 this.dataLowerer.registerLocal(
                     cppName,
-                    constructs || referenceStruct
+                    constructs || referenceStruct || narrowed.freshData
                         ? "owned"
                         : "copy",
                 );
@@ -1250,6 +1286,31 @@ class Compiler
             }
             this.defaultEngineCpp = cppName;
         }
+    }
+
+    /**
+     * Whether re-expanding a scalar initializer could evaluate source work a
+     * second time. Calls are conservatively snapshots: even a currently pure
+     * helper can close over mutable state, and JavaScript evaluates it once at
+     * the declaration rather than again at every numeric sink.
+     */
+    private expressionHasObservableEvaluation(node: ts.Node): boolean {
+        let found = false;
+        const visit = (candidate: ts.Node): void => {
+            if (found) return;
+            if (
+                ts.isCallExpression(candidate) ||
+                ts.isNewExpression(candidate) ||
+                ts.isAwaitExpression(candidate) ||
+                ts.isTaggedTemplateExpression(candidate)
+            ) {
+                found = true;
+                return;
+            }
+            ts.forEachChild(candidate, visit);
+        };
+        visit(node);
+        return found;
     }
 
     /** Emits a self-recursive local data callback as a capturing C++ lambda. */
@@ -1514,6 +1575,27 @@ class Compiler
             );
             if (symbol) this.staticConstants.delete(symbol);
         }
+        const staticHandleElementType =
+            annotated.kind === "vector" &&
+            annotated.element.kind === "handle"
+                ? annotated.element
+                : undefined;
+        const staticHandleEntries =
+            staticHandleElementType &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.every(
+                (element) =>
+                    ts.isIdentifier(element) ||
+                    ts.isSpreadElement(element),
+            )
+            ? this.handleCollections.staticHandleList(initializer)
+            : undefined;
+        const staticHandleElements = staticHandleEntries?.every(
+            ({ value }) =>
+                value.kind === staticHandleElementType?.handle,
+        )
+            ? staticHandleEntries.map(({ value }) => value)
+            : undefined;
         this.reachJsData();
         const spreadTarget =
             annotated.kind === "struct"
@@ -1535,8 +1617,12 @@ class Compiler
                 spreadTarget,
             );
         } else {
+            const initializerCpp = this.dataLowerer.compileForSink(
+                declaration.initializer,
+                annotated,
+            );
             this.emit(
-                `${this.dataTypes.cppType(annotated)} ${cppName} = ${this.dataLowerer.compileForSink(declaration.initializer, annotated)};`,
+                `${this.dataTypes.cppType(annotated)} ${cppName} = ${initializerCpp};`,
             );
         }
         if (
@@ -1564,6 +1650,7 @@ class Compiler
             kind: "data",
             cpp: cppName,
             dataType: annotated,
+            ...(staticHandleElements ? { staticHandleElements } : {}),
         });
         return true;
     }
@@ -1594,6 +1681,24 @@ class Compiler
             let mutated = false;
             const visit = (node: ts.Node): void => {
                 if (mutated) return;
+                if (
+                    ts.isElementAccessExpression(node) &&
+                    namesAlias(this.unwrap(node.expression)) &&
+                    node.argumentExpression
+                ) {
+                    const index = this.resolveStaticExpression(
+                        node.argumentExpression,
+                    );
+                    if (
+                        !ts.isNumericLiteral(index) ||
+                        !Number.isInteger(Number(index.text))
+                    ) {
+                        // A runtime index needs actual array storage even
+                        // when the inferred literal is never resized.
+                        mutated = true;
+                        return;
+                    }
+                }
                 if (
                     ts.isVariableDeclaration(node) &&
                     ts.isIdentifier(node.name) &&
@@ -2209,6 +2314,26 @@ class Compiler
     }
 
     public compilePropertyAccess(expression: ts.PropertyAccessExpression): Value {
+        if (
+            expression.questionDotToken &&
+            expression.name.text === "direction" &&
+            ts.isPropertyAccessExpression(
+                this.unwrap(expression.expression),
+            )
+        ) {
+            const ray = this.unwrap(
+                expression.expression,
+            ) as ts.PropertyAccessExpression;
+            if (ray.name.text === "ray") {
+                const pick = this.compileValue(ray.expression);
+                if (pick.kind === "picking-info") {
+                    // `pickAsync` is only lowered in its pinned BASIC mode.
+                    // Upstream sets `info.ray = null` in that mode, so the
+                    // optional access is exactly the nullish left operand.
+                    return { kind: "json-null", cpp: "std::nullopt" };
+                }
+            }
+        }
         const ownerExpression = this.unwrap(
             expression.expression,
         );
@@ -2280,6 +2405,12 @@ class Compiler
         // itself unsupported fails naming the sub-path that failed.
         const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
+        if (owner.kind === "picking-info" && property === "ray") {
+            // Basic GPU picks publish a null ray; only the detailed pipeline
+            // carries one. Keeping that null in the value model lets the
+            // source's optional chain and fallback lower unchanged.
+            return { kind: "json-null", cpp: "std::nullopt" };
+        }
         if (owner.kind === "platform-keyboard-event") {
             if (property === "repeat") {
                 return {
@@ -2309,10 +2440,21 @@ class Compiler
             );
         }
         if (owner.kind === "platform-mouse-event") {
-            if (property === "button") {
+            if (
+                property === "button" ||
+                property === "clientX" ||
+                property === "clientY" ||
+                property === "offsetX" ||
+                property === "offsetY"
+            ) {
                 return {
                     kind: "number",
-                    cpp: `${owner.cpp}.button`,
+                    cpp:
+                        property === "button"
+                            ? `${owner.cpp}.button`
+                            : property === "clientX" || property === "offsetX"
+                              ? `${owner.cpp}.client_x`
+                              : `${owner.cpp}.client_y`,
                     dataType: { kind: "number" },
                 };
             }
@@ -2320,6 +2462,18 @@ class Compiler
                 expression.name,
                 `Platform mouse events do not expose '${property}'.`,
             );
+        }
+        if (
+            owner.kind === "browser" &&
+            owner.browserValue?.kind === "dom-rect" &&
+            (property === "left" || property === "top")
+        ) {
+            return {
+                kind: "number",
+                cpp: "0.0",
+                staticNumber: 0,
+                dataType: { kind: "number" },
+            };
         }
         const fetchedProperty = staticFetchProperty(
             owner,
@@ -2933,10 +3087,17 @@ class Compiler
             ?.declarations?.find(ts.isFunctionDeclaration);
         if (!declaration?.body) return false;
         const resultType = this.checker.getTypeAtLocation(call);
-        if ((resultType.flags & ts.TypeFlags.Object) !== 0) {
+        // An async browser setup helper exposes `Promise<void>` at the call
+        // site, but its observable result after the surrounding `await` is
+        // still void. Inspect the promised value rather than rejecting the
+        // Promise object's own `then`/`catch` surface as native application
+        // data.
+        const observableResult =
+            this.checker.getAwaitedType(resultType) ?? resultType;
+        if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
             const resultDeclarations = [
-                ...(resultType.symbol?.declarations ?? []),
-                ...(resultType.aliasSymbol?.declarations ?? []),
+                ...(observableResult.symbol?.declarations ?? []),
+                ...(observableResult.aliasSymbol?.declarations ?? []),
             ];
             const directlyDom = resultDeclarations.some((result) =>
                 /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
@@ -2944,7 +3105,7 @@ class Compiler
                 ),
             );
             if (!directlyDom) {
-                const carriesNativeData = resultType
+                const carriesNativeData = observableResult
                     .getProperties()
                     .some((property) => {
                         const declaration = property.valueDeclaration ??
@@ -2975,14 +3136,8 @@ class Compiler
         const hasBrowserInput = call.arguments.some((argument) =>
             this.isBrowserOnlyExpression(argument),
         );
-        const signature = this.checker.getSignatureFromDeclaration(
-            declaration,
-        );
         const returnsVoid =
-            signature !== undefined &&
-            (this.checker.getReturnTypeOfSignature(signature).flags &
-                ts.TypeFlags.Void) !==
-                0;
+            (observableResult.flags & ts.TypeFlags.Void) !== 0;
         if (
             !hasBrowserInput ||
             (!returnsVoid &&
@@ -4691,7 +4846,19 @@ class Compiler
                 `Nullable ${target.kind} assignment received ${value.kind}.`,
             );
         }
-        this.emit(`${storage} = ${value.cpp};`);
+        if (value.optionalFoundCpp !== undefined) {
+            // A nullable handle property is represented by the invalid native
+            // handle, while local nullable storage is std::optional. Do not
+            // engage that optional with the sentinel: the next guarded read
+            // would then index a collection with invalid_handle.
+            this.emit(`if (${value.optionalFoundCpp}) {`);
+            this.emit(`    ${storage} = ${value.cpp};`);
+            this.emit("} else {");
+            this.emit(`    ${storage}.reset();`);
+            this.emit("}");
+        } else {
+            this.emit(`${storage} = ${value.cpp};`);
+        }
         if (value.audioContextCpp !== undefined) {
             target.audioContextCpp =
                 value.audioContextCpp;
@@ -4784,6 +4951,16 @@ class Compiler
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined {
         return this.handleCollections.iterationTarget(
+            expression,
+        );
+    }
+
+    public assetMeshCollection(
+        owner: Value,
+        expression: ts.Expression,
+    ): Value {
+        return this.handleCollections.assetMeshCollection(
+            owner,
             expression,
         );
     }
@@ -5056,6 +5233,15 @@ class Compiler
             ts.isIdentifier(callee) &&
             this.isDefaultLibraryIdentifier(callee)
         ) {
+            if (callee.text === "isFinite") {
+                this.expectArgumentCount(call, 1, 1);
+                return {
+                    kind: "boolean",
+                    cpp:
+                        `std::isfinite(` +
+                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                };
+            }
             if (callee.text === "setInterval") {
                 this.expectArgumentCount(call, 2, 2);
                 const engine = this.requireDefaultEngine(call);
@@ -5179,13 +5365,20 @@ class Compiler
         if (
             !ts.isPropertyAccessExpression(callee) ||
             callee.name.text !== "addEventListener" ||
-            !ts.isIdentifier(callee.expression) ||
-            !this.isDefaultLibraryIdentifier(callee.expression)
+            !ts.isIdentifier(callee.expression)
         ) {
             return false;
         }
-        const target = callee.expression.text;
-        if (target !== "window" && target !== "document") {
+        const target = this.isDefaultLibraryIdentifier(callee.expression)
+            ? callee.expression.text
+            : this.isCanvasElement(callee.expression)
+              ? "canvas"
+              : undefined;
+        if (
+            target !== "window" &&
+            target !== "document" &&
+            target !== "canvas"
+        ) {
             return false;
         }
         if (call.arguments.length < 2 || call.arguments.length > 3) {
@@ -5252,8 +5445,11 @@ class Compiler
             return true;
         }
         if (
-            target === "window" &&
-            (event === "mousedown" || event === "mouseup")
+            (target === "window" || target === "canvas") &&
+            (event === "mousedown" ||
+                event === "mouseup" ||
+                event === "pointerdown" ||
+                event === "pointerup")
         ) {
             const parameter =
                 this.allocateTemporaryCppName("mouse_event");
@@ -5271,7 +5467,7 @@ class Compiler
                 once,
             );
             this.emit(
-                `bbl::on_mouse_${event === "mousedown" ? "down" : "up"}(${engine}, ${lambda});`,
+                `bbl::on_mouse_${event === "mousedown" || event === "pointerdown" ? "down" : "up"}(${engine}, ${lambda});`,
             );
             return true;
         }
@@ -5287,6 +5483,24 @@ class Compiler
             return true;
         }
         return false;
+    }
+
+    private isCanvasElement(expression: ts.Expression): boolean {
+        const type = this.checker.getTypeAtLocation(expression);
+        const members =
+            (type.flags & ts.TypeFlags.Union) !== 0
+                ? (type as ts.UnionType).types
+                : [type];
+        const canvases = new Set([
+            "HTMLCanvasElement",
+            "OffscreenCanvas",
+        ]);
+        return (
+            members.length > 0 &&
+            members.every((member) =>
+                canvases.has(member.getSymbol()?.getName() ?? ""),
+            )
+        );
     }
 
     private readonly hoistedCallbackBindings = new Set<ts.Symbol>();
@@ -5888,9 +6102,12 @@ class Compiler
      * declarations (the pinned value model copies path-bound locals),
      * JavaScript object arguments alias, and the native-function path
      * already passes struct/vector/typed-array parameters by reference
-     * — so the inline path binds through a forwarding reference:
+     * — so the inline path binds those through a forwarding reference:
      * lvalue arguments alias the caller's binding (writes through the
-     * parameter mutate it) while temporaries stay owned.
+     * parameter mutate it) while temporaries stay owned. Resource handles
+     * are JavaScript references but native value IDs, so they must be copied;
+     * forwarding a property-backed handle could retain a reference into an
+     * engine vector that a later factory call reallocates.
      */
     public bindParameterValue(
         identifier: ts.Identifier,
@@ -6015,6 +6232,11 @@ class Compiler
         const reference =
             value.kind === "engine" ||
             value.kind === "scene";
+        const copiesHandle =
+            parameter &&
+            (this.dataLowerer.dataTypeAt(identifier)?.kind ===
+                "handle" ||
+                isHandleKind(value.kind));
         const nativeType = reference
             ? "auto&"
             : value.kind === "number"
@@ -6024,7 +6246,7 @@ class Compiler
                 : value.kind === "data" &&
                     value.dataType?.kind === "string"
                   ? "std::string"
-                : parameter
+                : parameter && !copiesHandle
                   ? "auto&&"
                   : "auto";
         const initializerCpp =
@@ -6365,6 +6587,16 @@ class Compiler
         this.scenePbrMaterialsWithUnknownMesh.add(materialIndex);
     }
 
+    public recordSceneMeshAssetPbrMaterial(meshIndex: number): void {
+        const mesh = this.sceneMeshes[meshIndex];
+        if (!mesh) {
+            throw new Error(
+                `Scene mesh ${meshIndex} was not recorded before its asset material assignment.`,
+            );
+        }
+        mesh.assetPbrMaterial = true;
+    }
+
     public recordShadowCasters(
         generatorIndex: number,
         casters: readonly ShadowCasterManifest[],
@@ -6376,6 +6608,24 @@ class Compiler
             );
         }
         generator.casters = [...casters];
+    }
+
+    public shadowGeneratorHasRecordedCasters(generatorIndex: number): boolean {
+        const generator = this.shadowGenerators[generatorIndex];
+        return Boolean(
+            generator &&
+                (generator.casters.length > 0 || generator.dynamicCasters),
+        );
+    }
+
+    public recordDynamicShadowCasters(generatorIndex: number): void {
+        const generator = this.shadowGenerators[generatorIndex];
+        if (!generator) {
+            throw new Error(
+                `Shadow generator ${generatorIndex} was never recorded.`,
+            );
+        }
+        generator.dynamicCasters = true;
     }
 
     /**

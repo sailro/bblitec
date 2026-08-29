@@ -327,11 +327,12 @@ platform boundary.
   - a thin-instanced, VAT or morph/skeleton candidate: the first two need
     the advanced pipeline's instance-composed id, the third the deform
     projection `deform-picking-projection.ts` builds.
-  - `PickingInfo.pickedPoint`, `distance` and `ray`. The pin derives the
-    first two from `mat4Invert(vp)` over the sampled NDC and the depth
-    attachment, which this port reads back but does not yet consume; the
-    record declares neither, so a scene reading one refuses at the property
-    rather than getting a zero.
+  - `PickingInfo.distance` and detailed picking's `ray`. Basic
+    `pickedPoint` is reached: both backends consume the sampled depth and run
+    the pin's inverse-VP reconstruction. The pin derives `distance` from that
+    point and the camera origin; the native record does not yet declare it,
+    so a scene reading it refuses at the property rather than getting a zero.
+    A non-detailed pick has a null `ray` upstream and needs no native ray.
   - a second cloud in one pick: the shear and the id colour are single
     buffers on Dawn, and a second would need the dynamic-offset treatment
     the mesh blocks already get. It throws from the pass rather than

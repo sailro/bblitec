@@ -108,6 +108,7 @@ namespace {
 
 struct SharedShaderGeometry;
 struct SharedShaderMaterialTextures;
+struct SharedComposedMaterialTextures;
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
@@ -229,9 +230,14 @@ struct GpuMesh {
     // every other material family.
     std::vector<SDL_GPUTextureSamplerBinding> shader_textures;
     SharedShaderMaterialTextures* shared_shader_textures = nullptr;
+    // PBR and Standard texture slots belong to their material. Fractured
+    // meshes can contribute hundreds of render items that all retain the
+    // same material; each mesh borrows this one backend upload.
+    SharedComposedMaterialTextures* shared_composed_textures = nullptr;
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
     std::uint64_t transform_version = 0;
+    bool gpu_world_transform = false;
 };
 
 /** One exact local-space shader geometry shared by every matching draw. */
@@ -246,6 +252,14 @@ struct SharedShaderGeometry {
 /** Texture/sampler pairs belong to a shader material, not to each mesh. */
 struct SharedShaderMaterialTextures {
     MaterialHandle material{};
+    std::vector<SDL_GPUTextureSamplerBinding> bindings;
+    std::size_t users = 0;
+};
+
+/** Generated PBR/Standard texture-slot bindings owned once per material. */
+struct SharedComposedMaterialTextures {
+    MaterialHandle material{};
+    bool standard_material = false;
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
     std::size_t users = 0;
 };
@@ -843,6 +857,8 @@ struct GpuState {
         shared_shader_geometries;
     std::vector<std::unique_ptr<SharedShaderMaterialTextures>>
         shared_shader_material_textures;
+    std::vector<std::unique_ptr<SharedComposedMaterialTextures>>
+        shared_composed_material_textures;
     std::vector<GpuRenderTarget> render_targets;
     std::vector<GpuGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -4091,17 +4107,23 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         SDL_ReleaseGPUBuffer(state.device, mesh.morph_weights);
     }
 #endif
-    // One release per generated texture-slot row, which is exactly the set
-    // the upload loop created.
-    for (
-        const upstream::MaterialTextureSlot& slot_row :
-        upstream::material_texture_slots) {
-        if (slot_row.slot == upstream::material_texture_no_slot) continue;
-        const GpuMeshSlotMembers members =
-            mesh_slot_members(slot_row.source);
-        if (members.texture == nullptr) continue;
-        SDL_ReleaseGPUTexture(state.device, mesh.*members.texture);
-        SDL_ReleaseGPUSampler(state.device, mesh.*members.sampler);
+    if (mesh.shared_composed_textures) {
+        release_shared_user(
+            mesh.shared_composed_textures,
+            "Composed material texture reference count underflow.");
+    } else {
+        // Non-shared fallback for families that own generated slots without
+        // entering the composed-material cache.
+        for (
+            const upstream::MaterialTextureSlot& slot_row :
+            upstream::material_texture_slots) {
+            if (slot_row.slot == upstream::material_texture_no_slot) continue;
+            const GpuMeshSlotMembers members =
+                mesh_slot_members(slot_row.source);
+            if (members.texture == nullptr) continue;
+            SDL_ReleaseGPUTexture(state.device, mesh.*members.texture);
+            SDL_ReleaseGPUSampler(state.device, mesh.*members.sampler);
+        }
     }
     // The shader material's own pairs, which the upload loop created
     // outside the slot table.
@@ -4127,6 +4149,16 @@ void prune_shared_shader_material_textures(GpuState& state) {
     prune_unused_shared(
         state.shared_shader_material_textures,
         [&](SharedShaderMaterialTextures& textures) {
+            release_sprite_fragment_textures(
+                state.device,
+                textures.bindings);
+        });
+}
+
+void prune_shared_composed_material_textures(GpuState& state) {
+    prune_unused_shared(
+        state.shared_composed_material_textures,
+        [&](SharedComposedMaterialTextures& textures) {
             release_sprite_fragment_textures(
                 state.device,
                 textures.bindings);
@@ -4178,6 +4210,13 @@ void release(GpuState& state) {
     release_all_shared(
         state.shared_shader_material_textures,
         [&](SharedShaderMaterialTextures& textures) {
+            release_sprite_fragment_textures(
+                state.device,
+                textures.bindings);
+        });
+    release_all_shared(
+        state.shared_composed_material_textures,
+        [&](SharedComposedMaterialTextures& textures) {
             release_sprite_fragment_textures(
                 state.device,
                 textures.bindings);
@@ -5008,6 +5047,21 @@ inline void record_cloud_pick_draw(
 
 bool run_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
+    const bool cpu_profile =
+        environment_variable("BBLITE_CPU_PROFILE") == "1";
+    const double cpu_startup_start = monotonic_milliseconds();
+    double cpu_startup_previous = cpu_startup_start;
+    const auto cpu_startup_mark = [&](const char* phase) {
+        if (!cpu_profile) return;
+        const double now = monotonic_milliseconds();
+        std::fprintf(
+            stderr,
+            "[cpu][sdl-startup] phase=%s phase_ms=%.3f elapsed_ms=%.3f\n",
+            phase,
+            now - cpu_startup_previous,
+            now - cpu_startup_start);
+        cpu_startup_previous = now;
+    };
     reject_unsupported_frame_options(
         frame_options,
         "SDL_GPU",
@@ -5033,6 +5087,7 @@ bool run_gpu_engine(Engine& engine) {
     const std::string& copy_task_filter =
         frame_options.copy_task_filter;
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
+    cpu_startup_mark("sdl-init");
 
     GpuState state;
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
@@ -5137,6 +5192,7 @@ bool run_gpu_engine(Engine& engine) {
         if (!SDL_SetGPUAllowedFramesInFlight(state.device, 3)) {
             gpu_error("SDL_SetGPUAllowedFramesInFlight");
         }
+        cpu_startup_mark("window-device");
 
         SDL_GPUShader* vertex_shader =
             load_shader(
@@ -6154,6 +6210,7 @@ bool run_gpu_engine(Engine& engine) {
             }
         }
 #endif
+        cpu_startup_mark("shaders-pipelines");
         state.environment = upload_environment(state.device, scene.environment);
         state.brdf_lut = upload_brdf_lut(state.device, scene.environment);
         if (use_standard_material) {
@@ -6283,6 +6340,7 @@ bool run_gpu_engine(Engine& engine) {
         }
 #endif
 
+        cpu_startup_mark("environment-background");
         upstream::RenderPlan render_plan =
             upstream::build_render_plan(scene, engine);
         // Every item's kind and variant against the generated tables
@@ -6290,6 +6348,7 @@ bool run_gpu_engine(Engine& engine) {
         // backend runs, so a plan the build cannot draw fails here
         // rather than at (or past) the draw.
         validate_render_plan_items(render_plan);
+        cpu_startup_mark("render-plan");
 #if BBLITE_HAS_PICKING
         // The pick pass. Installed once the mesh buffers and the cloud
         // textures exist, because that is what it draws; a pick taken
@@ -6415,14 +6474,15 @@ bool run_gpu_engine(Engine& engine) {
                     continue;
                 }
                 PickMeshUniforms mesh_uniforms{};
-                // Identity: these vertices are already world-space here
-                // (`transformed_vertices`), where the pin keeps them
-                // local and multiplies by the node's world matrix.
-                mesh_uniforms.world = {
-                    1.0f, 0.0f, 0.0f, 0.0f,
-                    0.0f, 1.0f, 0.0f, 0.0f,
-                    0.0f, 0.0f, 1.0f, 0.0f,
-                    0.0f, 0.0f, 0.0f, 1.0f};
+                const MeshRecord& pick_mesh =
+                    engine.meshes[handle.value];
+                mesh_uniforms.world = pick_mesh.gpu_world_transform
+                    ? shader_draw_world(engine, pick_mesh)
+                    : std::array<float, 16>{
+                          1.0f, 0.0f, 0.0f, 0.0f,
+                          0.0f, 1.0f, 0.0f, 0.0f,
+                          0.0f, 0.0f, 1.0f, 0.0f,
+                          0.0f, 0.0f, 0.0f, 1.0f};
                 mesh_uniforms.pick_id = next_id;
                 SDL_PushGPUVertexUniformData(
                     command,
@@ -6484,6 +6544,9 @@ bool run_gpu_engine(Engine& engine) {
             region.texture = state.pick_targets.color;
             destination.offset = 0;
             SDL_DownloadFromGPUTexture(copy, &region, &destination);
+            region.texture = state.pick_targets.depth_color;
+            destination.offset = 256;
+            SDL_DownloadFromGPUTexture(copy, &region, &destination);
             SDL_EndGPUCopyPass(copy);
 
             SDL_GPUFence* fence =
@@ -6502,10 +6565,22 @@ bool run_gpu_engine(Engine& engine) {
                     state.device, state.pick_targets.staging, false));
             if (!mapped) gpu_error("SDL_MapGPUTransferBuffer pick");
             const std::uint32_t pick_id = decode_pick_id(mapped);
+            float pick_depth = 1.0f;
+            std::memcpy(
+                &pick_depth, mapped + 256, sizeof(pick_depth));
             SDL_UnmapGPUTransferBuffer(
                 state.device, state.pick_targets.staging);
 
-            return resolve_pick_result(ranges, pick_id);
+            PickingInfo info = resolve_pick_result(ranges, pick_id);
+            populate_picked_point(
+                info,
+                view_projection,
+                x,
+                y,
+                width,
+                height,
+                pick_depth);
+            return info;
         };
 #endif
         const auto upload_render_item =
@@ -6672,6 +6747,8 @@ bool run_gpu_engine(Engine& engine) {
                 geometry.indices.size());
             gpu_mesh.transform_version =
                 mesh_record.transform_version;
+            gpu_mesh.gpu_world_transform =
+                mesh_record.gpu_world_transform;
             const bool standard_material =
                 item.material_kind == upstream::RenderMaterialKind::standard;
             const MaterialRecord* material = nullptr;
@@ -6690,16 +6767,73 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_mesh.reflection =
                     state.reflection_fallback;
             }
-            // One upload per generated texture-slot row: which record
-            // field fills the slot, its sRGB view and its fallback texel
-            // are the table's, resolved through the shared helpers; this
-            // backend keeps the upload mechanics and the enum→member
-            // residue in `mesh_slot_members`.
+            // One backend upload per MATERIAL, then one borrowed pointer per
+            // render item. Which record field fills a slot, its sRGB view
+            // and fallback texel remain the generated table's. The cache is
+            // essential for fractured meshes: their hundreds of pieces
+            // intentionally share a very small material set.
             const bool composed_material =
                 item.material_kind == upstream::RenderMaterialKind::pbr ||
                 item.material_kind ==
                     upstream::RenderMaterialKind::standard;
             if (composed_material) {
+                const auto found = std::find_if(
+                    state.shared_composed_material_textures.begin(),
+                    state.shared_composed_material_textures.end(),
+                    [&](const auto& candidate) {
+                        return candidate->material.value ==
+                                item.material.value &&
+                            candidate->standard_material == standard_material;
+                    });
+                if (
+                    found !=
+                    state.shared_composed_material_textures.end()) {
+                    gpu_mesh.shared_composed_textures = found->get();
+                } else {
+                    auto created =
+                        std::make_unique<SharedComposedMaterialTextures>();
+                    created->material = item.material;
+                    created->standard_material = standard_material;
+                    for (
+                        const upstream::MaterialTextureSlot& slot_row :
+                        upstream::material_texture_slots) {
+                        if (
+                            slot_row.slot ==
+                            upstream::material_texture_no_slot) {
+                            continue;
+                        }
+                        const TextureData* data = material
+                            ? material_slot_texture(
+                                  *material,
+                                  slot_row.source,
+                                  standard_material)
+                            : nullptr;
+                        const TextureData empty{};
+                        created->bindings.push_back({
+                            upload_texture(
+                                state.device,
+                                data ? *data : empty,
+                                material_slot_srgb(
+                                    slot_row.srgb,
+                                    material,
+                                    standard_material),
+                                material_slot_fallback(
+                                    slot_row.fallback,
+                                    material,
+                                    standard_material)),
+                            create_texture_sampler(
+                                state.device,
+                                data
+                                    ? data->sampler
+                                    : TextureSamplerState{}),
+                        });
+                    }
+                    gpu_mesh.shared_composed_textures = created.get();
+                    state.shared_composed_material_textures.push_back(
+                        std::move(created));
+                }
+
+                std::size_t binding_index = 0;
                 for (
                     const upstream::MaterialTextureSlot& slot_row :
                     upstream::material_texture_slots) {
@@ -6714,28 +6848,19 @@ bool run_gpu_engine(Engine& engine) {
                         gpu_error(
                             "generated texture slot has no SDL_GPU member.");
                     }
-                    const TextureData* data = material
-                        ? material_slot_texture(
-                              *material,
-                              slot_row.source,
-                              standard_material)
-                        : nullptr;
-                    const TextureData empty{};
-                    gpu_mesh.*members.texture = upload_texture(
-                        state.device,
-                        data ? *data : empty,
-                        material_slot_srgb(
-                            slot_row.srgb,
-                            material,
-                            standard_material),
-                        material_slot_fallback(
-                            slot_row.fallback,
-                            material,
-                            standard_material));
-                    gpu_mesh.*members.sampler = create_texture_sampler(
-                        state.device,
-                        data ? data->sampler : TextureSamplerState{});
+                    if (
+                        binding_index >=
+                        gpu_mesh.shared_composed_textures->bindings.size()) {
+                        gpu_error(
+                            "shared material texture binding shortfall.");
+                    }
+                    const SDL_GPUTextureSamplerBinding& binding =
+                        gpu_mesh.shared_composed_textures
+                            ->bindings[binding_index++];
+                    gpu_mesh.*members.texture = binding.texture;
+                    gpu_mesh.*members.sampler = binding.sampler;
                 }
+                ++gpu_mesh.shared_composed_textures->users;
             }
             // A shader material's own samplers sit outside the generated
             // slot table: the caller named them, so they bind as fragment
@@ -6834,6 +6959,7 @@ bool run_gpu_engine(Engine& engine) {
         for (const upstream::RenderItem& item : render_plan.items) {
             state.meshes.push_back(upload_render_item(item));
         }
+        cpu_startup_mark("mesh-uploads");
         std::vector<upstream::RenderDrawLists> task_draw_lists(
             engine.frame_tasks.size());
         const auto rebuild_task_draw_lists = [&] {
@@ -6849,6 +6975,7 @@ bool run_gpu_engine(Engine& engine) {
             }
         };
         rebuild_task_draw_lists();
+        cpu_startup_mark("draw-lists-ready");
         std::uint64_t synced_mesh_membership_version =
             scene.mesh_membership_version;
         std::uint32_t synced_material_family_mask =
@@ -6916,6 +7043,7 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_CancelGPUCommandBuffer(command);
                 continue;
             }
+            const double acquired = monotonic_milliseconds();
             // Only an animated billboard pass reads it, so the frame's own
             // delta is unused in a build that reaches no billboards.
             [[maybe_unused]] const float delta_ms =
@@ -6924,6 +7052,9 @@ bool run_gpu_engine(Engine& engine) {
                     scene,
                     frame_clock,
                     frame_options.frame_delta_ms);
+            const double updated = monotonic_milliseconds();
+            std::size_t profile_transformed_meshes = 0;
+            std::size_t profile_transformed_vertices = 0;
             trace_dynamic_frame(engine, delta_ms, frame);
             GpuBufferUploadBatch frame_buffer_uploads(state.device);
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
@@ -7020,15 +7151,28 @@ bool run_gpu_engine(Engine& engine) {
                         mesh.transform_version;
                     continue;
                 }
-                if (gpu_mesh.transform_version == mesh.transform_version) {
+                if (
+                    gpu_mesh.transform_version == mesh.transform_version &&
+                    gpu_mesh.gpu_world_transform ==
+                        mesh.gpu_world_transform) {
                     continue;
                 }
+                // Shader geometry stays local. Its transform version is
+                // consumed by the per-draw world/WVP uniform below, so a
+                // transform-only animation requires no buffer upload.
                 if (
                     item.material_kind ==
                     upstream::RenderMaterialKind::shader) {
-                    // Shader geometry stays local. Its transform version is
-                    // consumed by the per-draw world/WVP uniform below, so a
-                    // transform-only animation requires no buffer upload.
+                    gpu_mesh.gpu_world_transform =
+                        mesh.gpu_world_transform;
+                    gpu_mesh.transform_version = mesh.transform_version;
+                    continue;
+                }
+                if (
+                    mesh.gpu_world_transform &&
+                    gpu_mesh.gpu_world_transform) {
+                    // Runtime simulation changes only the draw world. The
+                    // local vertex buffers uploaded for this mode are stable.
                     gpu_mesh.transform_version = mesh.transform_version;
                     continue;
                 }
@@ -7037,6 +7181,8 @@ bool run_gpu_engine(Engine& engine) {
                         engine,
                         engine.geometries[item.geometry],
                         mesh);
+                ++profile_transformed_meshes;
+                profile_transformed_vertices += vertices.size();
                 frame_buffer_uploads.update(
                     gpu_mesh.vertices,
                     vertices.data(),
@@ -7055,6 +7201,8 @@ bool run_gpu_engine(Engine& engine) {
 #endif
                 gpu_mesh.transform_version =
                     mesh.transform_version;
+                gpu_mesh.gpu_world_transform =
+                    mesh.gpu_world_transform;
             }
             bool topology_updated = false;
             if (
@@ -7104,6 +7252,7 @@ bool run_gpu_engine(Engine& engine) {
                         });
                 prune_shared_shader_geometries(state);
                 prune_shared_shader_material_textures(state);
+                prune_shared_composed_material_textures(state);
                 state.meshes = std::move(updated_meshes);
                 render_plan = std::move(updated_plan);
                 rebuild_task_draw_lists();
@@ -7131,6 +7280,7 @@ bool run_gpu_engine(Engine& engine) {
                 topology_updated = true;
             }
             frame_buffer_uploads.submit();
+            const double uploaded = monotonic_milliseconds();
             update_camera(camera);
             trace_camera_state(camera, camera_trace_state, frame);
             upstream::sort_transparent_draws(
@@ -9663,11 +9813,37 @@ bool run_gpu_engine(Engine& engine) {
                 captures.cluster_buffer_saved = true;
             }
             finish_frame(engine);
+            ++frame;
             const double end = monotonic_milliseconds();
-            if (benchmark && frame >= warmup) {
+            const long completed_frame = frame - 1;
+            if (cpu_profile && completed_frame % 30 == 0) {
+                std::size_t draw_commands =
+                    render_plan.draw_lists.opaque.commands.size() +
+                    render_plan.draw_lists.transparent.commands.size();
+                for (const upstream::RenderDrawLists& lists : task_draw_lists) {
+                    draw_commands += lists.opaque.commands.size() +
+                        lists.transparent.commands.size();
+                }
+                std::fprintf(
+                    stderr,
+                    "[cpu][frame] frame=%ld total_ms=%.3f acquire_ms=%.3f "
+                    "update_ms=%.3f upload_ms=%.3f encode_submit_ms=%.3f "
+                    "render_items=%zu draw_commands=%zu transformed_meshes=%zu "
+                    "transformed_vertices=%zu\n",
+                    completed_frame,
+                    end - start,
+                    acquired - start,
+                    updated - acquired,
+                    uploaded - updated,
+                    end - uploaded,
+                    render_plan.items.size(),
+                    draw_commands,
+                    profile_transformed_meshes,
+                    profile_transformed_vertices);
+            }
+            if (benchmark && completed_frame >= warmup) {
                 samples.push_back(end - start);
             }
-            ++frame;
         }
         report_benchmark(
             samples,

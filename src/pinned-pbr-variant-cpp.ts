@@ -1489,7 +1489,13 @@ export function pinnedPbrVariantsHeader(
         );
         for (const selector of variant.selectors) {
             selectors.push(
-                `    {${selector.materialIndex}, ${selector.meshFeatures}, ` +
+                `    {${selector.materialIndex}, ${
+                    selector.materialView === "no-color"
+                        ? 1
+                        : selector.materialView === "esm-shadow"
+                          ? 2
+                          : 0
+                }, ${selector.meshFeatures}, ` +
                     `${selector.lightMode}, ` +
                     `"${selector.singleLightType}", ` +
                     `${selector.toneMapping ? "true" : "false"}, ` +
@@ -1763,6 +1769,8 @@ ${table.join("\n")}
 // same mesh under one light and under three.
 struct PbrVariantSelector {
     std::uint32_t material_index;
+    /** 0 colour, 1 no-colour depth, 2 ESM exponential depth. */
+    std::uint32_t material_view;
     std::uint32_t mesh_features;
     std::uint32_t light_mode;
     std::string_view single_light_type;
@@ -1878,6 +1886,7 @@ inline std::string_view pinned_single_light_type(const LightRecord& light) {
 /** The variant a renderable composes, or \`npos\` when none was emitted. */
 inline std::size_t pbr_variant_for(
     std::uint32_t material_index,
+    std::uint32_t material_view,
     std::uint32_t mesh_features,
     std::uint32_t light_mode,
     std::string_view single_light_type,
@@ -1886,6 +1895,7 @@ inline std::size_t pbr_variant_for(
     for (const PbrVariantSelector& selector : pbr_variant_selectors) {
         if (
             selector.material_index == material_index &&
+            selector.material_view == material_view &&
             selector.mesh_features == mesh_features &&
             selector.light_mode == light_mode &&
             selector.single_light_type == single_light_type &&

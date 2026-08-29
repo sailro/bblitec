@@ -755,6 +755,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             "upstream/src/scene_core.cpp",
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
+                parenting: features.includes("mesh:parenting"),
+                geometryAccess: features.includes("mesh:geometry-access"),
                 managedAnimationGroups: features.includes(
                     "animation:managed-groups",
                 ),

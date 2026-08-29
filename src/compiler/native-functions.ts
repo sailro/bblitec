@@ -92,13 +92,15 @@ export function captureDataFunctionBody(
                 const cppType = context.dataTypes.cppType(
                     parameter.type,
                 );
-                context.defineVariable(
-                    parameter.name,
-                    context.dataLowerer.leafValue(
+                context.defineVariable(parameter.name, {
+                    ...context.dataLowerer.leafValue(
                         cppName,
                         parameter.type,
                     ),
-                );
+                    ...(parameter.readOnly
+                        ? { readOnly: true as const }
+                        : {}),
+                });
                 if (
                     parameter.type.kind !== "number" &&
                     parameter.type.kind !== "boolean"

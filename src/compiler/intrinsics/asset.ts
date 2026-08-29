@@ -84,6 +84,10 @@ export interface AssetIntrinsicContext
         fragments: readonly SplatFragmentManifest[],
         node: ts.Node,
     ): void;
+    assetMeshCollection(
+        owner: Value,
+        expression: ts.Expression,
+    ): Value;
 }
 
 /**
@@ -229,6 +233,12 @@ export function compileAssetIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "getContainerMeshes": {
+            context.expectArgumentCount(call, 1, 1);
+            const container = context.compileValue(call.arguments[0]!);
+            return context.assetMeshCollection(container, call);
+        }
+
         case "loadGltf": {
             context.expectArgumentCount(call, 2, 2);
             const engine =

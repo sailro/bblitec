@@ -26,6 +26,7 @@ export interface CameraIntrinsicContext
     ): ts.Expression | undefined;
     requireEngine(value: Value, node: ts.Node): string;
     requireDefaultEngine(node: ts.Node): string;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -225,6 +226,47 @@ export function compileCameraIntrinsic(
                     `bbl::enable_orthographic_camera(` +
                     `${engine}, ${camera.cpp}, ${halfHeight})`,
                 engineCpp: engine,
+            };
+        }
+
+        case "setCameraLimits": {
+            context.expectArgumentCount(call, 2, 3);
+            const camera = context.compileValue(call.arguments[0]!);
+            context.expectKind(camera, "camera", call.arguments[0]!);
+            if (camera.cameraKind && camera.cameraKind !== "arc-rotate") {
+                context.fail(
+                    call.arguments[0]!,
+                    "setCameraLimits requires an ArcRotateCamera.",
+                );
+            }
+            const limits = context.expectObjectLiteral(call.arguments[1]!);
+            const fields = [
+                "lowerAlphaLimit",
+                "upperAlphaLimit",
+                "lowerBetaLimit",
+                "upperBetaLimit",
+                "lowerRadiusLimit",
+                "upperRadiusLimit",
+            ] as const;
+            let presentMask = 0;
+            const values = fields.map((field, index) => {
+                const value = context.objectProperty(limits, field);
+                if (!value) return "0.0";
+                presentMask |= 1 << index;
+                return context.compileNumber(value, "double");
+            });
+            if (call.arguments[2]) {
+                const scene = context.compileValue(call.arguments[2]);
+                context.expectKind(scene, "scene", call.arguments[2]);
+                context.expectSameEngine(camera, scene, call);
+            }
+            context.reachFeature("camera:arc-rotate", call);
+            const engine = context.requireEngine(camera, call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_camera_limits(${engine}, ${camera.cpp}, ` +
+                    `${presentMask}u, std::array<double, 6>{${values.join(", ")}})`,
             };
         }
 

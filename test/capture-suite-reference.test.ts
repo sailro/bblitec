@@ -10,7 +10,21 @@ import test from "node:test";
 import {
     createSuiteSceneServer,
     fixedAnimationFrameScript,
+    pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
+
+test("relocates the shared Havok binary to pinned lab/public root", () => {
+    assert.equal(
+        pinnedLabPublicAssetPath(
+            "/corpus/babylon-lite/lab/lite/src/demos/HavokPhysics.wasm",
+        ),
+        "HavokPhysics.wasm",
+    );
+    assert.equal(
+        pinnedLabPublicAssetPath("/textures/environment.env"),
+        "textures/environment.env",
+    );
+});
 
 test("builds a registration-ordered fixed browser RAF clock", () => {
     const script = fixedAnimationFrameScript(180);

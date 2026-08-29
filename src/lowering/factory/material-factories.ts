@@ -1622,6 +1622,10 @@ MaterialHandle create_no_color_material_view(
     }
     MaterialRecord view = source_record;
     view.no_color = true;
+    view.source_material =
+        source_record.source_material.value == invalid_handle
+            ? source
+            : source_record.source_material;
     engine.materials.push_back(std::move(view));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
@@ -1675,6 +1679,10 @@ MaterialHandle create_esm_shadow_material_view(
     }
     MaterialRecord view = source_record;
     view.esm_shadow = true;
+    view.source_material =
+        source_record.source_material.value == invalid_handle
+            ? source
+            : source_record.source_material;
     view.esm_shadow_generator = generator;
     engine.materials.push_back(std::move(view));
     return MaterialHandle{

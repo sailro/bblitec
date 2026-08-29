@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <limits>
 #include <list>
 #include <memory>
@@ -210,7 +211,10 @@ class DataView {
 template <typename T>
 class Array {
   public:
-    using Storage = std::vector<T>;
+    using Storage = std::conditional_t<
+        std::is_same_v<T, bool>,
+        std::deque<T>,
+        std::vector<T>>;
     using value_type = T;
     using iterator = typename Storage::iterator;
     using const_iterator = typename Storage::const_iterator;
@@ -228,8 +232,12 @@ class Array {
 
     [[nodiscard]] std::size_t size() const { return values_->size(); }
     [[nodiscard]] bool empty() const { return values_->empty(); }
-    [[nodiscard]] T* data() { return values_->data(); }
-    [[nodiscard]] const T* data() const { return values_->data(); }
+    [[nodiscard]] T* data() requires (!std::is_same_v<T, bool>) {
+        return values_->data();
+    }
+    [[nodiscard]] const T* data() const requires (!std::is_same_v<T, bool>) {
+        return values_->data();
+    }
     [[nodiscard]] iterator begin() { return values_->begin(); }
     [[nodiscard]] iterator end() { return values_->end(); }
     [[nodiscard]] const_iterator begin() const { return values_->begin(); }
@@ -245,7 +253,13 @@ class Array {
     void push_back(const T& value) { values_->push_back(value); }
     void push_back(T&& value) { values_->push_back(std::move(value)); }
     void pop_back() { values_->pop_back(); }
-    void reserve(std::size_t count) { values_->reserve(count); }
+    void reserve(std::size_t count) {
+        if constexpr (!std::is_same_v<T, bool>) {
+            values_->reserve(count);
+        } else {
+            static_cast<void>(count);
+        }
+    }
     void resize(std::size_t count) { values_->resize(count); }
     void clear() { values_->clear(); }
     iterator erase(iterator position) { return values_->erase(position); }
@@ -573,6 +587,17 @@ class InsertionOrderedIterator {
 };
 
 /** Insertion-ordered JavaScript Map and Set containers. */
+template <typename T>
+struct ValueHash {
+    [[nodiscard]] std::size_t operator()(const T& value) const noexcept {
+        if constexpr (requires { value.value; }) {
+            return std::hash<decltype(value.value)>{}(value.value);
+        } else {
+            return std::hash<T>{}(value);
+        }
+    }
+};
+
 template <typename K, typename V>
 class Map {
   public:
@@ -665,7 +690,8 @@ class Map {
     struct Storage : OrderedStorage {
         std::unordered_map<
             K,
-            typename OrderedStorage::Slots::iterator>
+            typename OrderedStorage::Slots::iterator,
+            ValueHash<K>>
             index;
     };
 
@@ -757,7 +783,8 @@ class Set {
     struct Storage : OrderedStorage {
         std::unordered_map<
             T,
-            typename OrderedStorage::Slots::iterator>
+            typename OrderedStorage::Slots::iterator,
+            ValueHash<T>>
             index;
     };
 
@@ -1133,6 +1160,15 @@ template <typename T>
         : missing_array_value<T>;
 }
 
+template <typename T, std::size_t Extent>
+[[nodiscard]] inline const T& array_at_or_default(
+    std::span<T, Extent> values,
+    double index) {
+    return array_has_index(values, index)
+        ? values[array_index(index)]
+        : missing_array_value<std::remove_const_t<T>>;
+}
+
 // JavaScript `%` (remainder keeps the dividend sign, like std::fmod).
 [[nodiscard]] inline double remainder_js(double left, double right) {
     return std::fmod(left, right);
@@ -1171,6 +1207,14 @@ using U32Array = std::vector<std::uint32_t>;
         ? static_cast<std::int32_t>(value)
         : static_cast<std::int32_t>(
               static_cast<std::int64_t>(value) - 0x100000000ll);
+}
+
+// ECMAScript Math.imul: multiply the two ToUint32 values modulo 2^32,
+// then expose the low word as a signed 32-bit JavaScript number. Unsigned
+// multiplication gives the specified wrap without relying on signed overflow.
+[[nodiscard]] inline double math_imul(double left, double right) {
+    return static_cast<double>(uint32_as_int32(
+        to_uint32(left) * to_uint32(right)));
 }
 
 [[nodiscard]] inline double bitwise_not(double value) {

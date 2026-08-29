@@ -79,7 +79,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
-| [Physics](#physics) | Run | rigid bodies, primitive shapes, one fixed step per frame — over a substituted solver |
+| [Physics](#physics) | Run | rigid bodies, primitive and convex-hull shapes, one fixed step per frame — over a substituted solver |
 | [Shadows](#shadows) | Compile → Run | the receiver fragment composed per shadow-casting light at generation; the caster pass, the map and the comparison sampling at run time |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
@@ -566,7 +566,8 @@ Free cameras additionally take `WASD`/arrows plus `Space`/`Shift`.
 Application window listeners use the same event bridge in scene, sprite,
 effect, and frame-graph executables. SDL scancodes become DOM-compatible
 `KeyboardEvent.code`/`key` pairs (`Space`/`" "` included), pointer button
-events and visibility changes reach their registered callbacks, and no
+events expose canvas-relative `clientX`/`clientY` and `offsetX`/`offsetY`
+coordinates, visibility changes reach their registered callbacks, and no
 scene-less driver may silently consume those events as window management.
 
 ### Asset loading and upload
@@ -1197,8 +1198,11 @@ upstream. `visible` is tested one level down, where the draw lists are built.
 `PickingInfo` carries WHICH node was hit -- the collection and the index --
 and `pickedMesh.name` reads through that pair where the scene asks for it,
 because upstream `pickedMesh` is a live node reference and a scene may
-rename the node between the pick and the read. Every other member refuses
-at the read site rather than returning a value this port cannot fill.
+rename the node between the pick and the read. Basic picking also consumes
+the depth attachment to reconstruct `pickedPoint` by the pin's inverse-VP
+formula. A non-detailed pick deliberately has a null `ray` upstream; the
+remaining unsupported members refuse at the read site rather than returning
+a value this port cannot fill.
 [fidelity](fidelity.md#picking-contract) carries the two contracts the port
 owns, and the family's remaining arms are in `TODO.md`.
 
@@ -1220,11 +1224,13 @@ comparison at rest rather than against a threshold driven toward zero.
 [fidelity](fidelity.md#physics-contract) carries the substitution's why, what
 stays lowered from the pinned declarations, and every measurement.
 
-The reached slice: `createHavokWorld` with an explicit or defaulted gravity,
-`createPhysicsAggregate` over the four primitive shapes
+The reached slice: `createHavokWorld` with an explicit or defaulted gravity;
+`createPhysicsAggregate` over the four primitive shapes that
 `createPrimitivePhysicsShapeHandle` builds without a mesh (sphere, box,
-capsule, cylinder) with `mass`, `friction` and `restitution`, and
-`onPhysicsAfterStep`. The step registers at the *front* of the scene's
+capsule, cylinder), plus mesh-derived convex hulls with child geometry;
+`mass`, `friction`, `restitution`, fixed-timestep writes, motion-type and mass
+changes, world-space impulses, and `onPhysicsAfterStep`. The step registers at
+the *front* of the scene's
 before-render list, as the pin's `unshift` puts it, so a scene reading a
 pose in its own callback reads this frame's rather than the previous
 frame's. A body's integrated position and rotation are written onto the same
@@ -1243,10 +1249,9 @@ census, and the real-delay scenes that refuse are in
 [fidelity](fidelity.md#physics-contract).
 
 Everything else in the pinned physics layer refuses at generation naming
-what it reached: mesh and convex-hull shapes (the pin's own mesh
-accumulator), containers, heightfields, constraints, queries, triggers,
-collision events, the character controller, the debug viewer, floating
-origin, and every body control past creation.
+what it reached: triangle-mesh shapes, containers, heightfields, constraints,
+queries, triggers, collision events, the character controller, the debug
+viewer, floating origin, and the body controls not listed above.
 
 ### Shadows
 

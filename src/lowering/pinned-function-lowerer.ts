@@ -245,6 +245,104 @@ ${body}
 }`;
 }
 
+/** The pinned full 4x4 inverse, including its f32 allocation boundary. */
+export function lowerMat4InvertCpp(context: LoweringContext): string {
+    const module = "src/math/mat4-invert.ts";
+    const symbol = "mat4Invert";
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        symbol,
+    );
+    if (
+        declaration.parameters.length !== 1 ||
+        !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        declaration.parameters[0]!.name.text !== "input" ||
+        declaration.parameters[0]!.type?.getText(file) !== "Mat4"
+    ) {
+        context.contractError(
+            declaration,
+            "Expected pinned mat4Invert to take (input: Mat4).",
+        );
+    }
+    const outDeclaration = declaration.body!.statements
+        .filter(ts.isVariableStatement)
+        .flatMap((statement) => [
+            ...statement.declarationList.declarations,
+        ])
+        .find(
+            (candidate) =>
+                ts.isIdentifier(candidate.name) &&
+                candidate.name.text === "out",
+        );
+    const outInitializer = outDeclaration?.initializer
+        ? context.unwrapExpression(outDeclaration.initializer)
+        : undefined;
+    if (
+        !outInitializer ||
+        !ts.isCallExpression(outInitializer) ||
+        !ts.isIdentifier(outInitializer.expression) ||
+        outInitializer.expression.text !== "allocateMat4" ||
+        outInitializer.arguments.length !== 0
+    ) {
+        context.contractError(
+            outDeclaration ?? declaration,
+            "Expected pinned mat4Invert to allocate `out` with allocateMat4().",
+        );
+    }
+    const lowerer = new PinnedNumericLowerer(file, {
+        // `out` is supplied as caller storage so the translator skips the
+        // pin's const OBJECT binding while preserving writes to its typed
+        // array contents. The storage is f32 because allocateMat4() is.
+        bindings: new Map([
+            ["input", { cpp: "input", type: "f32" as const }],
+            ["m", { cpp: "input", type: "f32" as const }],
+            ["out", { cpp: "out", type: "f32" as const }],
+        ]),
+        calls: new Map([
+            [
+                "Math.abs",
+                (args: readonly string[]) => {
+                    if (args.length !== 1) {
+                        return context.contractError(
+                            declaration,
+                            "Expected pinned mat4Invert Math.abs to take one argument.",
+                        );
+                    }
+                    return `std::abs(${args[0]})`;
+                },
+            ],
+        ]),
+        returnValue: (expression) => {
+            const returned = expression
+                ? context.unwrapExpression(expression)
+                : undefined;
+            if (returned?.kind === ts.SyntaxKind.NullKeyword) {
+                return "std::nullopt";
+            }
+            if (
+                returned &&
+                ts.isIdentifier(returned) &&
+                returned.text === "out"
+            ) {
+                return "out";
+            }
+            return context.contractError(
+                returned ?? declaration,
+                "Expected pinned mat4Invert to return null or out.",
+            );
+        },
+    });
+    const body = declaration.body!.statements
+        .flatMap((statement) => lowerer.statement(statement, "    "))
+        .join("\n");
+    return `// ${context.provenance(module, symbol)}
+std::optional<std::array<float, 16>> mat4_invert(
+    const std::array<float, 16>& input) {
+    std::array<float, 16> out{};
+${body}
+}`;
+}
+
 /** A pinned function of scalars (and at most a Mat4Storage target), as C++. */
 export function lowerPinnedFunction(
     context: LoweringContext,

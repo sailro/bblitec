@@ -534,6 +534,8 @@ export function assertArmsCovered(
 export interface PinnedRenderableVariant {
     materialIndex: number;
     materialName: string;
+    /** The source record's render view; absent is its ordinary colour view. */
+    materialView?: "no-color" | "esm-shadow";
     /** The pin's `MSH_*` bits for the primitive this material is drawn on. */
     meshFeatures: number;
     lightMode: 0 | 1 | 2;
@@ -577,6 +579,10 @@ export async function composeRenderableVariants(
         linearImageProcessing?: boolean;
         /** The `KHR_materials_variants` this scene selected on the asset. */
         selectedVariant?: string;
+        /** Compose a caster view keyed by the source material handle. */
+        materialView?: "no-color" | "esm-shadow";
+        /** Attribute sets a runtime-created mesh can carry this material on. */
+        meshFeatureSets?: readonly number[];
     } = {},
     geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
@@ -608,16 +614,32 @@ export async function composeRenderableVariants(
         // A material no primitive references still composes, at the attribute
         // set a primitive would have to have: scene code can assign it to a
         // mesh the asset does not, and a missing variant is a missing draw.
-        for (const meshFeatures of featureSets.get(subject.index) ?? [0]) {
+        for (const meshFeatures of
+            scene.meshFeatureSets ?? featureSets.get(subject.index) ?? [0]) {
             for (const arm of arms) {
+                const materialViewOptions = scene.materialView === "no-color"
+                    ? {
+                        passFeatures2: (
+                            await importPinnedModule<{
+                                PBR2_NO_COLOR_OUTPUT: number;
+                            }>("material/pbr/pbr-flag-bits.js")
+                        ).PBR2_NO_COLOR_OUTPUT,
+                    }
+                    : scene.materialView === "esm-shadow"
+                      ? { esmShadowView: true as const }
+                      : {};
                 const variant = await composePinnedPbrVariant(subject.input, {
                     ...arm.options,
+                    ...materialViewOptions,
                     meshFeatures,
                     uv2Mask: subject.uv2Mask,
                 });
                 variants.push({
                     materialIndex: materialIndexBase + subject.index,
                     materialName: subject.name,
+                    ...(scene.materialView
+                        ? { materialView: scene.materialView }
+                        : {}),
                     meshFeatures,
                     lightMode: arm.lightMode,
                     singleLightType: arm.singleLightType,
@@ -1064,10 +1086,17 @@ export async function composeScenePbrVariants(
             });
             variants.push({
                 materialIndex:
-                    materialIndexBase + material.materialsBefore,
+                    materialIndexBase +
+                    (material.sourceMaterialsBefore ??
+                        material.materialsBefore),
                 materialName: `scene-material-${
                     materialIndexBase + material.materialsBefore
                 }`,
+                ...(material.noColorView
+                    ? { materialView: "no-color" as const }
+                    : material.esmShadowView
+                      ? { materialView: "esm-shadow" as const }
+                      : {}),
                 meshFeatures,
                 lightMode: arm.lightMode,
                 singleLightType: arm.singleLightType,

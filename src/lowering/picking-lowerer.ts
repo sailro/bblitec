@@ -1,4 +1,5 @@
 import { LoweredSource, LoweringContext } from "./context.js";
+import { lowerMat4InvertCpp } from "./pinned-function-lowerer.js";
 
 /**
  * The runtime half of GPU picking.
@@ -35,18 +36,23 @@ export class PickingLowerer {
         ]) {
             this.context.functionDeclaration(modulePath, name);
         }
+        const mat4Invert = lowerMat4InvertCpp(this.context);
         return {
             modulePath,
             symbolName: "pickAsync",
             header: "",
             source: `// ${this.context.provenance(modulePath, "pickAsync")}
 #include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
 
+#include <cmath>
 #include <stdexcept>
 
 namespace bbl {
 
 namespace {
+
+${mat4Invert}
 
 GpuPickerRecord& picker_record(
     Engine& engine,
@@ -107,6 +113,49 @@ std::string picked_node_name(
             break;
     }
     return {};
+}
+
+MeshHandle picked_mesh(const PickingInfo& info) {
+    return info.picked_kind == PickedNodeKind::mesh
+        ? MeshHandle{info.picked_index}
+        : MeshHandle{};
+}
+
+js::Nullable<std::array<double, 3>> picked_point(
+    const PickingInfo& info) {
+    return info.picked_point
+        ? js::Nullable<std::array<double, 3>>{*info.picked_point}
+        : js::Nullable<std::array<double, 3>>{};
+}
+
+// The basic picker still reconstructs \`pickedPoint\`; only \`ray\` is gated by
+// the detailed flag. This is the pinned readback formula over its original
+// (un-sheared) view projection, sampled NDC and r32float depth attachment.
+void populate_picked_point(
+    PickingInfo& info,
+    const std::array<float, 16>& view_projection,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height,
+    float depth) {
+    if (!info.hit) return;
+    const auto inverse = mat4_invert(view_projection);
+    if (!inverse) return;
+    const double ndc_x = 2.0 * sample_x / width - 1.0;
+    const double ndc_y = 1.0 - 2.0 * sample_y / height;
+    const auto& inv = *inverse;
+    const double wx = inv[0] * ndc_x + inv[4] * ndc_y +
+        inv[8] * depth + inv[12];
+    const double wy = inv[1] * ndc_x + inv[5] * ndc_y +
+        inv[9] * depth + inv[13];
+    const double wz = inv[2] * ndc_x + inv[6] * ndc_y +
+        inv[10] * depth + inv[14];
+    const double ww = inv[3] * ndc_x + inv[7] * ndc_y +
+        inv[11] * depth + inv[15];
+    const double inverse_w = 1.0 / ww;
+    info.picked_point = std::array<double, 3>{
+        wx * inverse_w, wy * inverse_w, wz * inverse_w};
 }
 
 // The backend owns the resources, so it frees them through the same hook

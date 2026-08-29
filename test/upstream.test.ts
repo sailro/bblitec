@@ -30,6 +30,7 @@ import {
 } from "../src/shader-material-programs.js";
 import { dawnUtilityShaders } from "../src/upstream-lower.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
+import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
@@ -125,6 +126,40 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     assert.match(
         lowered.source,
         /clone\.clone_mesh_animation = clone_animation;/,
+    );
+});
+
+test("compares transform-node parent handles by their stored ids", () => {
+    const lowered = new SceneLowerer(
+        new LoweringContext(),
+    ).lowerCore({ transformNodes: true });
+    assert.match(
+        lowered.source,
+        /record\.transform_parent\.value == parent\.value/,
+    );
+});
+
+test("omits the ESM selector local from a PCF-only caster view", () => {
+    const pcf = shadowFactorySource(
+        new LoweringContext(),
+        ["shadow:pcf"],
+    ).source;
+    const casterView = pcf.slice(
+        pcf.indexOf("MaterialHandle shadow_caster_view"),
+        pcf.indexOf("void refresh_shadow_task_meshes"),
+    );
+    assert.doesNotMatch(casterView, /const bool esm/);
+
+    const esm = shadowFactorySource(
+        new LoweringContext(),
+        ["shadow:esm"],
+    ).source;
+    assert.match(
+        esm.slice(
+            esm.indexOf("MaterialHandle shadow_caster_view"),
+            esm.indexOf("void refresh_shadow_task_meshes"),
+        ),
+        /const bool esm =\s*generator\.filter == ShadowFilter::esm_directional/,
     );
 });
 
