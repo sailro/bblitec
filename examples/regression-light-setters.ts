@@ -21,13 +21,12 @@
 // performs is what the CPU raster path reads, and `test/upstream.test.ts` is
 // what holds the setters to it.
 //
-// Scenes 4 and 22 now ship and both write `light.position.set` at scene
-// scope, so the position half is corpus-measured. The DIRECTION half is not:
-// scene 4's `spot.direction.set` sits inside an `onBeforeRender` behind an
-// `orbitingSpot` toggle a button turns on, so the shipped golden compiles
-// that write without ever running it. This gate retires when a corpus scene
-// renders a cone the direction setter moved -- 141, 207 and 223 each reach
-// one, and each is blocked on another contract.
+// Scenes 4, 22, 141 and 207 now measure post-creation light positions, and
+// Scenes 202 and 203 measure range. The DIRECTION half is still absent from a
+// golden: Scene 4's `spot.direction.set` sits behind the interactive
+// `orbitingSpot` toggle, while 141 and 207 take direction from construction.
+// This gate retires when a corpus scene visibly executes the direction,
+// angle and exponent writes.
 
 import {
     addToScene,

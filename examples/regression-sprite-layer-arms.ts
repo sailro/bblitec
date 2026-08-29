@@ -1,8 +1,7 @@
-// Project-owned gate for the Sprite2D layer and renderer arms that no
-// corpus scene reaches. Upstream's own demos do — doom's status bar and
-// freeciv's minimap are both built on this path — but the corpus scenes only
-// ever add sprites and never touch one again, so without this gate the five
-// entry points below are unmeasured.
+// Project-owned gate for the residual Sprite2D layer and renderer arms.
+// Registered Doom and Platformer exercise ordinary indexed updates, clears
+// and renderer disposal, but not every partial-update preservation rule or a
+// renderer whose layer list changes after its GPU records already exist.
 //
 // What it measures, in two halves:
 //
@@ -15,8 +14,9 @@
 //     endpoints, which is what lets a frame change keep a mirrored sprite
 //     mirrored. Each sprite in the top row isolates one of them.
 //   * `clearSprite2DLayer`, `addSpriteRendererLayer`,
-//     `removeSpriteRendererLayer` and `disposeSpriteRenderer` — the four that
-//     move a list rather than a sprite.
+//     `removeSpriteRendererLayer` and `disposeSpriteRenderer` — the complete
+//     list-mutation sequence, including the add/remove arms the demos do not
+//     reach after registration.
 //
 // The second half runs from a zero-delay `setTimeout` on purpose. Each
 // backend builds one GPU record per layer, and that happens once before the
