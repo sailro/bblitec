@@ -1035,6 +1035,65 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene drives a crowd without depending on
+        // wall-clock time: 171 and 174 both reach the calls, and both
+        // register frozen because their step takes the frame delta.
+        id: "regression-nav-crowd",
+        name: "Regression - Navigation Crowd Step",
+        source: "examples/regression-nav-crowd.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Navigation Crowd Step",
+        buildDirectory:
+            "native/build-regression-nav-crowd-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-nav-crowd/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-nav-crowd",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene171",
+        name: "Scene 171 - Navigation Crowd Path",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene171.ts",
+        title: "Babylon Lite Native - Navigation Crowd Path",
+        parity: {
+            // The scene's own frozen pose; `regression-nav-crowd` carries
+            // why, and measures the crowd this folds away.
+            referenceSearch: "?freeze=1",
+            // 0.013 / 0.028 on both backends, every region pixel within
+            // one count -- scene 175's floor over a wider overlay: the
+            // navmesh build runs the same pinned recastnavigation commit
+            // on both sides, so the debug triangulation is identical and
+            // what is left is the blended overlay's rounding.
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene174",
+        name: "Scene 174 - Navigation Off-Mesh Connections",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene174.ts",
+        title: "Babylon Lite Native - Navigation Off-Mesh Connections",
+        parity: {
+            referenceSearch: "?freeze=1",
+            // 0.006 / 0.023, the same floor and the same reason as 175.
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene175",
         name: "Scene 175 - Navigation Raycast",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene175.ts",

@@ -48,6 +48,24 @@ struct NavVec3 {
 };
 
 /**
+ * One off-mesh connection, as `OffMeshConnection` carries it.
+ *
+ * `area`, `flags` and `userId` are optional upstream with defaults the
+ * wrapper's `setOffMeshConnections` applies -- 0, 1, and `1000 + index`
+ * respectively. The index-dependent one is why the default is resolved
+ * where the array is packed rather than at the write site.
+ */
+struct NavOffMeshConnection {
+    NavVec3 start;
+    NavVec3 end;
+    float radius = 0.0f;
+    bool bidirectional = false;
+    std::optional<double> area;
+    std::optional<double> flags;
+    std::optional<double> user_id;
+};
+
+/**
  * The build parameters a reached `createNavMesh` may carry. Absent
  * fields take the wrapper's `recastConfigDefaults` inside the build,
  * exactly as its `{...defaults, ...cfg}` spread does.
@@ -66,6 +84,8 @@ struct NavMeshBuildParams {
     std::optional<double> max_verts_per_poly;
     std::optional<double> detail_sample_dist;
     std::optional<double> detail_sample_max_error;
+    /** Baked into the navmesh as teleport segments; empty means none. */
+    std::vector<NavOffMeshConnection> off_mesh_connections;
 };
 
 /** One merged-geometry source: world-space positions, reversed winding
@@ -136,6 +156,12 @@ NavVec3 navigation_closest_point(
     NavigationHandle plugin,
     float x, float y, float z);
 
+/** `computePath`: the corridor between two snapped points, straightened. */
+std::vector<NavVec3> navigation_compute_path(
+    NavigationHandle plugin,
+    NavVec3 start,
+    NavVec3 end);
+
 /**
  * `new Crowd(navMesh, { maxAgents, maxAgentRadius })`: `dtAllocCrowd`
  * followed by `init`, over the plugin's own navmesh.
@@ -178,5 +204,18 @@ int navigation_add_agent(
 std::optional<NavVec3> navigation_agent_position(
     NavCrowdHandle crowd,
     int index);
+
+/** `agentGoto`: snap the destination, then move toward that polygon.
+ *  False when the crowd holds no agent at that index -- the `?.` the
+ *  pinned `agentGoto` reads through, reported rather than decided here. */
+bool navigation_agent_goto(
+    NavCrowdHandle crowd,
+    int index,
+    NavVec3 destination);
+
+/** `updateNavCrowd`: advance the crowd simulation. */
+void navigation_update_crowd(
+    NavCrowdHandle crowd,
+    float delta_seconds);
 
 } // namespace bbl::pal

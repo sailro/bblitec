@@ -485,6 +485,17 @@ NavRaycastResult nav_raycast(
 Vec3d nav_closest_point(
     bbl::pal::NavigationHandle plugin,
     Vec3d position);
+std::vector<Vec3d> nav_compute_path(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d start,
+    Vec3d end);
+void agent_goto(
+    bbl::pal::NavCrowdHandle crowd,
+    double index,
+    Vec3d destination);
+void update_nav_crowd(
+    bbl::pal::NavCrowdHandle crowd,
+    double delta_seconds);
 bbl::pal::NavCrowdHandle create_nav_crowd(
     bbl::pal::NavigationHandle plugin,
     double max_agents,
@@ -667,6 +678,40 @@ Vec3d nav_closest_point(
     return Vec3d{point.x, point.y, point.z};
 }
 
+// computePath: the pin SNAPS both endpoints through its own
+// findClosestPoint before handing them to the query, whose own
+// computePath then resolves a polygon for each again. Both steps are the
+// pin's, and the first is not redundant -- not because the half-extents
+// differ (both are the same +-1) but because findClosestPoint is
+// findNearestPoly PLUS closestPointOnPoly, so it projects an endpoint
+// onto its polygon before the corridor search sees it. A failed query is
+// an EMPTY path here, which is what the pin returns when its own result
+// is not a success.
+std::vector<Vec3d> nav_compute_path(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d start,
+    Vec3d end) {
+    const Vec3d start_snap = nav_closest_point(plugin, start);
+    const Vec3d end_snap = nav_closest_point(plugin, end);
+    const std::vector<bbl::pal::NavVec3> path =
+        bbl::pal::navigation_compute_path(
+            plugin,
+            bbl::pal::NavVec3{
+                static_cast<float>(start_snap.x),
+                static_cast<float>(start_snap.y),
+                static_cast<float>(start_snap.z)},
+            bbl::pal::NavVec3{
+                static_cast<float>(end_snap.x),
+                static_cast<float>(end_snap.y),
+                static_cast<float>(end_snap.z)});
+    std::vector<Vec3d> out;
+    out.reserve(path.size());
+    for (const bbl::pal::NavVec3& point : path) {
+        out.push_back(Vec3d{point.x, point.y, point.z});
+    }
+    return out;
+}
+
 bbl::pal::NavCrowdHandle create_nav_crowd(
     bbl::pal::NavigationHandle plugin,
     double max_agents,
@@ -687,6 +732,32 @@ double add_agent(
         static_cast<float>(position.y),
         static_cast<float>(position.z),
         params));
+}
+
+// agentGoto: the pin reads through an optional chain, so an index the
+// crowd holds no agent at is a silent no-op rather than a throw. The PAL
+// reports that absence; deciding what it MEANS is the pin's, and lives
+// here beside get_agent_position's own reading of the same chain.
+void agent_goto(
+    bbl::pal::NavCrowdHandle crowd,
+    double index,
+    Vec3d destination) {
+    static_cast<void>(bbl::pal::navigation_agent_goto(
+        crowd,
+        static_cast<int>(index),
+        bbl::pal::NavVec3{
+            static_cast<float>(destination.x),
+            static_cast<float>(destination.y),
+            static_cast<float>(destination.z)}));
+}
+
+// updateNavCrowd: one dtCrowd step at the delta the scene passes.
+void update_nav_crowd(
+    bbl::pal::NavCrowdHandle crowd,
+    double delta_seconds) {
+    bbl::pal::navigation_update_crowd(
+        crowd,
+        static_cast<float>(delta_seconds));
 }
 
 // getAgentPosition: the pin reads through an optional chain and answers

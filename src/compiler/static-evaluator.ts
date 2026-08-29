@@ -1049,6 +1049,168 @@ export class StaticEvaluator {
         return undefined;
     }
 
+    /**
+     * The literal a `const` binding was declared with, when that is all it
+     * is.
+     *
+     * The pre-pass collects module-scope declarations; a bag or list a
+     * function names before passing it -- `const agentParams = {...}`
+     * inside `main()` -- is the same spelling one scope down, and refusing
+     * it refuses a spelling rather than a feature. Read off the SYMBOL's
+     * own declaration rather than a second pre-pass, because the checker
+     * can hand back distinct symbol instances for a declaration name and a
+     * use of it, and a map keyed by identity then misses.
+     *
+     * Deliberately narrow, on three counts:
+     *   - `const` only, so no later assignment reseated the binding.
+     *   - an object literal only. Resolution hands the INITIALIZER to the
+     *     use site, so a `const n = expensive()` would move the call and
+     *     two use sites would run it twice; a literal has no such body.
+     *   - and only one nothing writes through; see `isWrittenThrough`.
+     */
+    private constLiteralInitializer(
+        symbol: ts.Symbol,
+    ): ts.Expression | undefined {
+        const declarations = symbol.declarations ?? [];
+        if (declarations.length !== 1) {
+            return undefined;
+        }
+        const declaration = declarations[0]!;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+        ) {
+            return undefined;
+        }
+        // Top-level declarations belong to the pre-pass, which also
+        // REMOVES them once a materialized module's storage supersedes the
+        // initializer. Answering for one here would restore exactly what
+        // that removal took away, so this fallback only ever adds scopes
+        // the pre-pass does not walk.
+        const statement = declaration.parent.parent;
+        if (
+            !ts.isVariableStatement(statement) ||
+            ts.isSourceFile(statement.parent)
+        ) {
+            return undefined;
+        }
+        const initializer = declaration.initializer;
+        // The object-literal test comes FIRST on purpose: it settles all
+        // but a handful of candidates, and the scan behind it walks a whole
+        // function body. Measured over the corpus, the scan runs four times.
+        if (
+            !initializer ||
+            !ts.isObjectLiteralExpression(initializer) ||
+            this.isWrittenThrough(declaration)
+        ) {
+            return undefined;
+        }
+        return initializer;
+    }
+
+    /**
+     * Whether anything in the binding's scope writes through it.
+     *
+     * `const` freezes the BINDING, not the object: `const p = {n: 1}`
+     * followed by `p.n = 2`, `p.n++`, `delete p.n` or `reset(p)` all leave
+     * the initializer stale, and answering it would hand back the declared
+     * contents rather than the current ones.
+     *
+     * The compiler's own `inferredObjectIsMutated` looks like the right
+     * thing to call and is NOT: it answers "is this object's identity
+     * observable", so it counts storing anything reachable from the name
+     * into a container -- `scaling.set(params.radius * 2, ...)` marks
+     * `params` mutated, because `set` is a storing method and the alias
+     * test scans the whole argument subtree. That is correct for reference
+     * storage and wrong for this question.
+     *
+     * The call arm below is the load-bearing one: this compiler inlines
+     * every reached function and binds an object parameter by reference,
+     * so a bag handed to scene-local code can come back changed. A bag
+     * handed to an INTRINSIC cannot -- those declare no body to inline --
+     * which is what makes `addAgent(crowd, spawn, params)` still foldable.
+     */
+    private isWrittenThrough(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const name = ts.isIdentifier(declaration.name)
+            ? declaration.name.text
+            : undefined;
+        if (name === undefined) {
+            return true;
+        }
+        let scope: ts.Node = declaration;
+        while (scope.parent && !ts.isFunctionLike(scope)) {
+            scope = scope.parent;
+        }
+        const namesBinding = (node: ts.Node): boolean =>
+            ts.isIdentifier(node) && node.text === name;
+        const throughBinding = (node: ts.Node): boolean =>
+            (ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)) &&
+            namesBinding(node.expression);
+        let written = false;
+        const visit = (node: ts.Node): void => {
+            if (written) {
+                return;
+            }
+            const parent = node.parent;
+            if (throughBinding(node)) {
+                const assigned =
+                    ts.isBinaryExpression(parent) &&
+                    parent.left === node &&
+                    parent.operatorToken.kind >=
+                        ts.SyntaxKind.FirstAssignment &&
+                    parent.operatorToken.kind <=
+                        ts.SyntaxKind.LastAssignment;
+                const stepped =
+                    (ts.isPrefixUnaryExpression(parent) ||
+                        ts.isPostfixUnaryExpression(parent)) &&
+                    (parent.operator ===
+                        ts.SyntaxKind.PlusPlusToken ||
+                        parent.operator ===
+                            ts.SyntaxKind.MinusMinusToken);
+                const deleted =
+                    ts.isDeleteExpression(parent);
+                const called =
+                    ts.isCallExpression(parent) &&
+                    parent.expression === node;
+                if (assigned || stepped || deleted || called) {
+                    written = true;
+                    return;
+                }
+            }
+            if (
+                ts.isCallExpression(node) &&
+                node.arguments.some(namesBinding) &&
+                this.callReachesABody(node)
+            ) {
+                written = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(scope, visit);
+        return written;
+    }
+
+    /**
+     * Whether a call could run scene-local code over its arguments.
+     *
+     * An intrinsic resolves to a declaration in a `.d.ts`, which has no
+     * body for the inliner to reach; anything declared in source does.
+     */
+    private callReachesABody(call: ts.CallExpression): boolean {
+        const declaration = this.checker
+            .getResolvedSignature(call)
+            ?.declaration;
+        return (
+            declaration !== undefined &&
+            !declaration.getSourceFile().isDeclarationFile
+        );
+    }
+
     public resolveStaticExpression(
         expression: ts.Expression,
         resolving: ReadonlySet<ts.Symbol> = new Set(),
@@ -1080,7 +1242,8 @@ export class StaticEvaluator {
             return unwrapped;
         }
         const initializer =
-            this.staticConstants.get(symbol);
+            this.staticConstants.get(symbol) ??
+            this.constLiteralInitializer(symbol);
         if (!initializer) {
             return unwrapped;
         }
