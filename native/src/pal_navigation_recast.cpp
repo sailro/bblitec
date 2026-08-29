@@ -72,6 +72,16 @@ NavCrowdState& crowd_state(NavCrowdHandle handle) {
 /** `NavMeshQuery.defaultQueryHalfExtents`. */
 constexpr float default_query_half_extents[3] = {1.0f, 1.0f, 1.0f};
 
+/** `new QueryFilter()`: Detour's own include-everything defaults, which
+ *  the wrapper never narrows. Stated once so a future exclude reaches
+ *  every query rather than the ones someone remembered. */
+dtQueryFilter include_all_filter() {
+    dtQueryFilter filter;
+    filter.setIncludeFlags(0xffff);
+    filter.setExcludeFlags(0);
+    return filter;
+}
+
 /** recastConfigDefaults, verbatim. */
 struct ResolvedBuildConfig {
     float cs = 0.2f;
@@ -300,6 +310,56 @@ void navigation_create_solo_nav_mesh(
     create_params.ch = config.ch;
     create_params.buildBvTree = true;
 
+    // `setOffMeshConnections` in the wrapper, packed the same way: start
+    // xyz then end xyz per connection, `bidirectional` as the direction
+    // bit, and the three optional fields taking the defaults the header
+    // states -- the last of which is why they resolve here rather than at
+    // the write site, since only this loop knows the index.
+    //
+    // The vectors outlive `dtCreateNavMeshData` below, which copies them.
+    std::vector<float> off_mesh_verts;
+    std::vector<float> off_mesh_radii;
+    std::vector<unsigned char> off_mesh_dir;
+    std::vector<unsigned char> off_mesh_areas;
+    std::vector<unsigned short> off_mesh_flags;
+    std::vector<unsigned int> off_mesh_user_ids;
+    if (!params.off_mesh_connections.empty()) {
+        const std::size_t count = params.off_mesh_connections.size();
+        off_mesh_verts.reserve(count * 6);
+        off_mesh_radii.reserve(count);
+        off_mesh_dir.reserve(count);
+        off_mesh_areas.reserve(count);
+        off_mesh_flags.reserve(count);
+        off_mesh_user_ids.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            const NavOffMeshConnection& connection =
+                params.off_mesh_connections[index];
+            off_mesh_verts.push_back(connection.start.x);
+            off_mesh_verts.push_back(connection.start.y);
+            off_mesh_verts.push_back(connection.start.z);
+            off_mesh_verts.push_back(connection.end.x);
+            off_mesh_verts.push_back(connection.end.y);
+            off_mesh_verts.push_back(connection.end.z);
+            off_mesh_radii.push_back(connection.radius);
+            off_mesh_dir.push_back(
+                connection.bidirectional ? 1u : 0u);
+            off_mesh_areas.push_back(static_cast<unsigned char>(
+                connection.area.value_or(0.0)));
+            off_mesh_flags.push_back(static_cast<unsigned short>(
+                connection.flags.value_or(1.0)));
+            off_mesh_user_ids.push_back(static_cast<unsigned int>(
+                connection.user_id.value_or(
+                    1000.0 + static_cast<double>(index))));
+        }
+        create_params.offMeshConVerts = off_mesh_verts.data();
+        create_params.offMeshConRad = off_mesh_radii.data();
+        create_params.offMeshConDir = off_mesh_dir.data();
+        create_params.offMeshConAreas = off_mesh_areas.data();
+        create_params.offMeshConFlags = off_mesh_flags.data();
+        create_params.offMeshConUserID = off_mesh_user_ids.data();
+        create_params.offMeshConCount = static_cast<int>(count);
+    }
+
     unsigned char* nav_data = nullptr;
     int nav_data_size = 0;
     if (!dtCreateNavMeshData(&create_params, &nav_data,
@@ -327,8 +387,7 @@ void navigation_create_solo_nav_mesh(
             "createNavMesh failed: Failed to initialize navmesh query");
     }
     state.query.reset(query);
-    state.filter.setIncludeFlags(0xffff);
-    state.filter.setExcludeFlags(0);
+    state.filter = include_all_filter();
 }
 
 NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
@@ -502,6 +561,87 @@ NavVec3 navigation_closest_point(
     return point;
 }
 
+// NavMeshQuery::computePath, whole: the wrapper resolves a polygon for
+// each endpoint, walks the polygon corridor, and only then straightens it.
+//
+// The step that is easy to drop is the fourth. When `findPath` cannot
+// reach the goal it returns a PARTIAL corridor, and the wrapper detects
+// that by comparing the corridor's last polygon against the end polygon;
+// where they differ the straight path must be run to the closest point ON
+// that last polygon, not to the caller's end. Straightening to an
+// unreachable goal instead walks the path off the mesh.
+std::vector<NavVec3> navigation_compute_path(
+    NavigationHandle plugin,
+    NavVec3 start,
+    NavVec3 end) {
+    NavigationPluginState& state = plugin_state(plugin);
+    if (!state.nav_mesh || !state.query) {
+        throw std::runtime_error(
+            "No navmesh generated. Call createNavMesh first.");
+    }
+    const float start_position[3] = {start.x, start.y, start.z};
+    const float end_position[3] = {end.x, end.y, end.z};
+
+    dtPolyRef start_ref = 0;
+    dtPolyRef end_ref = 0;
+    if (dtStatusFailed(state.query->findNearestPoly(
+            start_position, default_query_half_extents, &state.filter,
+            &start_ref, nullptr)) ||
+        dtStatusFailed(state.query->findNearestPoly(
+            end_position, default_query_half_extents, &state.filter,
+            &end_ref, nullptr))) {
+        return {};
+    }
+
+    // `maxPathPolys` and `maxStraightPathPoints` both default to 256 in
+    // the wrapper, and nothing reached overrides either.
+    constexpr int max_path_polys = 256;
+    constexpr int max_straight_path_points = 256;
+    std::vector<dtPolyRef> polys(
+        static_cast<std::size_t>(max_path_polys));
+    int poly_count = 0;
+    if (dtStatusFailed(state.query->findPath(
+            start_ref, end_ref, start_position, end_position,
+            &state.filter, polys.data(), &poly_count,
+            max_path_polys)) ||
+        poly_count <= 0) {
+        return {};
+    }
+
+    float straight_end[3] = {end.x, end.y, end.z};
+    const dtPolyRef last_poly =
+        polys[static_cast<std::size_t>(poly_count - 1)];
+    if (last_poly != end_ref) {
+        bool over_poly = false;
+        if (dtStatusFailed(state.query->closestPointOnPoly(
+                last_poly, end_position, straight_end, &over_poly))) {
+            return {};
+        }
+    }
+
+    std::vector<float> straight(
+        static_cast<std::size_t>(max_straight_path_points) * 3);
+    int straight_count = 0;
+    // The flag and polygon-reference outputs are `[opt]` in Detour's own
+    // header and nothing here reads them; the wrapper allocates both only
+    // because its binding hands back buffers it then destroys.
+    if (dtStatusFailed(state.query->findStraightPath(
+            start_position, straight_end, polys.data(), poly_count,
+            straight.data(), nullptr, nullptr, &straight_count,
+            max_straight_path_points))) {
+        return {};
+    }
+
+    std::vector<NavVec3> path;
+    path.reserve(static_cast<std::size_t>(straight_count));
+    for (int index = 0; index < straight_count; ++index) {
+        const std::size_t base = static_cast<std::size_t>(index) * 3;
+        path.push_back(NavVec3{straight[base], straight[base + 1],
+                               straight[base + 2]});
+    }
+    return path;
+}
+
 // new Crowd(navMesh, { maxAgents, maxAgentRadius }): allocCrowd then
 // init over the plugin's navmesh. dtCrowd builds its own query and
 // filters; the wrapper changes neither.
@@ -566,6 +706,48 @@ std::optional<NavVec3> navigation_agent_position(
         return std::nullopt;
     }
     return NavVec3{agent->npos[0], agent->npos[1], agent->npos[2]};
+}
+
+// CrowdAgent.requestMoveTarget: the destination is snapped
+// to a polygon FIRST and the crowd is given that polygon's reference
+// alongside the snapped point. Handing dtCrowd the raw world position
+// with a stale reference is what makes an agent refuse to move.
+//
+// The query is the CROWD's own (getNavMeshQuery), which is what the
+// wrapper builds its navMeshQuery from, at the same +-1 half-extents
+// and an include-all filter.
+//
+// Absence is REPORTED, not decided: the pin's `?.` is Babylon behaviour
+// and belongs beside `get_agent_position`'s, in generated code.
+bool navigation_agent_goto(
+    NavCrowdHandle crowd,
+    int index,
+    NavVec3 destination) {
+    NavCrowdState& state = crowd_state(crowd);
+    const dtCrowdAgent* agent = state.crowd->getAgent(index);
+    if (!agent || !agent->active) {
+        return false;
+    }
+    const dtNavMeshQuery* query = state.crowd->getNavMeshQuery();
+    const dtQueryFilter filter = include_all_filter();
+    const float position[3] = {
+        destination.x, destination.y, destination.z};
+    dtPolyRef nearest_ref = 0;
+    float nearest_point[3] = {0.0f, 0.0f, 0.0f};
+    if (dtStatusFailed(query->findNearestPoly(
+            position, default_query_half_extents, &filter,
+            &nearest_ref, nearest_point)) ||
+        nearest_ref == 0) {
+        return true;
+    }
+    state.crowd->requestMoveTarget(index, nearest_ref, nearest_point);
+    return true;
+}
+
+// updateNavCrowd -> Crowd.update: dtCrowd's own step. The pin passes the
+// delta straight through and does no sub-stepping, so neither does this.
+void navigation_update_crowd(NavCrowdHandle crowd, float delta_seconds) {
+    crowd_state(crowd).crowd->update(delta_seconds, nullptr);
 }
 
 } // namespace bbl::pal

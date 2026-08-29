@@ -36,6 +36,14 @@ export interface NavigationIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileBoolean(expression: ts.Expression): string;
+    emitDataVectorOfStructs(
+        node: ts.Node,
+        sourceCpp: string,
+        fieldValues: (
+            element: string,
+        ) => Readonly<Record<string, string>>,
+    ): Value;
     allocateTemporaryCppName(label: string): string;
     emit(line: string): void;
     requireEngine(value: Value, node: ts.Node): string;
@@ -74,6 +82,79 @@ const NAV_MESH_PARAM_NAMES = [
     "expectedLayersPerTile",
     "offMeshConnections",
 ];
+
+/**
+ * `offMeshConnections`, packed the way the wrapper's own
+ * `setOffMeshConnections` packs it.
+ *
+ * The three optional fields stay EMPTY here. Their defaults are the PAL
+ * header's contract, and one of them depends on the position in the array,
+ * so resolving any of them at the write site would put a default in two
+ * places and only one of them would know the index.
+ */
+function emitOffMeshConnections(
+    context: NavigationIntrinsicContext,
+    options: ts.ObjectLiteralExpression,
+    parameters: string,
+): void {
+    const value = context.objectProperty(
+        options,
+        "offMeshConnections",
+    );
+    if (!value) {
+        return;
+    }
+    for (const element of context
+        .expectStaticArrayLiteral(value)
+        .elements) {
+        const connection = context.expectObjectLiteral(element);
+        const required = (name: string): ts.Expression => {
+            const found = context.objectProperty(connection, name);
+            if (!found) {
+                context.fail(
+                    connection,
+                    `An off-mesh connection names ${name}.`,
+                );
+            }
+            return found;
+        };
+        // `compileVec3` answers a whole `bbl::Vec3`, and `NavVec3` is the
+        // PAL's own three floats -- it exists so the navigation header
+        // depends on no engine type. So each endpoint lands in a temporary
+        // and its members are copied across, rather than the expression
+        // being spelled three times.
+        const endpoint = (name: string): string => {
+            const temporary =
+                context.allocateTemporaryCppName("nav_offmesh");
+            context.emit(
+                `const bbl::Vec3 ${temporary} = ` +
+                    `${context.compileVec3(required(name))};`,
+            );
+            return (
+                `bbl::pal::NavVec3{${temporary}.x, ` +
+                `${temporary}.y, ${temporary}.z}`
+            );
+        };
+        const fields = [
+            endpoint("startPosition"),
+            endpoint("endPosition"),
+            context.compileNumber(required("radius"), "float"),
+            context.compileBoolean(required("bidirectional")),
+        ];
+        for (const optional of ["area", "flags", "userId"]) {
+            const found = context.objectProperty(connection, optional);
+            fields.push(
+                found
+                    ? `std::optional<double>{${context.compileNumber(found, "double")}}`
+                    : "std::nullopt",
+            );
+        }
+        context.emit(
+            `${parameters}.off_mesh_connections.push_back(` +
+                `bbl::pal::NavOffMeshConnection{${fields.join(", ")}});`,
+        );
+    }
+}
 
 export function compileNavigationIntrinsic(
     context: NavigationIntrinsicContext,
@@ -139,6 +220,7 @@ export function compileNavigationIntrinsic(
                     );
                 }
             }
+            emitOffMeshConnections(context, options, parameters);
             return {
                 kind: "void",
                 cpp:
@@ -148,6 +230,87 @@ export function compileNavigationIntrinsic(
                         .map((mesh) => mesh.cpp)
                         .join(", ")}}, ` +
                     `${parameters})`,
+            };
+        }
+
+        case "computePath": {
+            context.expectArgumentCount(call, 3, 3);
+            const plugin = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                plugin,
+                "navigation",
+                call.arguments[0]!,
+            );
+            const start = context.compileVec3(
+                call.arguments[1]!,
+                "double",
+            );
+            const end = context.compileVec3(
+                call.arguments[2]!,
+                "double",
+            );
+            const path = context.allocateTemporaryCppName("nav_path");
+            context.emit(
+                `const std::vector<bbl::Vec3d> ${path} = ` +
+                    `bbl::upstream::nav_compute_path(` +
+                    `${plugin.cpp}, ${start}, ${end});`,
+            );
+            // The element struct is the scene's own `Vec3`, so its fields
+            // are filled by name rather than by position -- the pinned
+            // interface declares x, y, z, but the generated order is the
+            // registry's to decide.
+            return context.emitDataVectorOfStructs(
+                call,
+                path,
+                (point) => ({
+                    x: `${point}.x`,
+                    y: `${point}.y`,
+                    z: `${point}.z`,
+                }),
+            );
+        }
+
+        case "agentGoto": {
+            context.expectArgumentCount(call, 3, 3);
+            const crowd = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                crowd,
+                "navigation-crowd",
+                call.arguments[0]!,
+            );
+            const index = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const destination = context.compileVec3(
+                call.arguments[2]!,
+                "double",
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::upstream::agent_goto(` +
+                    `${crowd.cpp}, ${index}, ${destination})`,
+            };
+        }
+
+        case "updateNavCrowd": {
+            context.expectArgumentCount(call, 2, 2);
+            const crowd = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                crowd,
+                "navigation-crowd",
+                call.arguments[0]!,
+            );
+            const delta = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::upstream::update_nav_crowd(` +
+                    `${crowd.cpp}, ${delta})`,
             };
         }
 
@@ -463,18 +626,18 @@ function validateNavMeshParams(
             );
         }
     }
-    for (const unsupported of [
-        "doNotReverseIndices",
-        "expectedLayersPerTile",
-        "offMeshConnections",
-    ] as const) {
-        if (context.objectProperty(options, unsupported)) {
-            context.fail(
-                options,
-                `createNavMesh's ${unsupported} is not lowered; the ` +
-                    "reached merge carries the pin's reversed winding " +
-                    "and no off-mesh connections.",
-            );
-        }
+    if (context.objectProperty(options, "doNotReverseIndices")) {
+        context.fail(
+            options,
+            "createNavMesh's doNotReverseIndices is not lowered; the " +
+                "reached merge carries the pin's reversed winding.",
+        );
+    }
+    if (context.objectProperty(options, "expectedLayersPerTile")) {
+        context.fail(
+            options,
+            "createNavMesh's expectedLayersPerTile is not lowered; it " +
+                "sizes the tile cache, and the reached build is solo.",
+        );
     }
 }

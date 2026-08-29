@@ -3603,8 +3603,18 @@ class Compiler
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
+        // A source callback may name its delta and then not reach it --
+        // most often because a branch the scene's own query folds away was
+        // the only reader, as `?freeze=1` does to a crowd step. The
+        // parameter still has to be there, because the signature is the
+        // pin's, so it is announced unused unconditionally, exactly as
+        // `compileNamedFrameCallback` below does: the attribute is legal on
+        // a parameter that IS read, and asking the question per callback
+        // would be a second answer to it.
         const cppParameter = parameterName
-            ? `${signature === "timestamp" ? "double" : "float"} ${this.cppIdentifier(parameterName)}`
+            ? `[[maybe_unused]] ` +
+                `${signature === "timestamp" ? "double" : "float"} ` +
+                `${this.cppIdentifier(parameterName)}`
             : signature === "timestamp" ? "double" : "float";
         const lambdaParameter =
             signature === "void" || signature === "interval"
@@ -3705,12 +3715,20 @@ class Compiler
         return this.evaluator.isNumberExpression(expression);
     }
 
+    /**
+     * An options bag, written inline or named by a `const` above the call.
+     *
+     * Resolved rather than merely unwrapped, which is what
+     * `expectStaticArrayLiteral` already does for the list form: a scene
+     * that names its parameters once and passes the name is writing the
+     * same literal, and refusing it would refuse a spelling.
+     */
     public expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression {
-        const unwrapped = this.unwrap(expression);
-        if (!ts.isObjectLiteralExpression(unwrapped)) {
-            this.fail(unwrapped, "Expected an object literal.");
+        const resolved = this.evaluator.resolveStaticExpression(expression);
+        if (!ts.isObjectLiteralExpression(resolved)) {
+            this.fail(resolved, "Expected an object literal.");
         }
-        return unwrapped;
+        return resolved;
     }
 
     public objectProperty(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
@@ -4141,6 +4159,73 @@ class Compiler
 
     public reachThrow(): void {
         this.throwReached = true;
+    }
+
+    /**
+     * Materialize a PAL container as the plain-data value the scene's own
+     * type says it is.
+     *
+     * Every other intrinsic that returns data returns a PRIMITIVE container
+     * -- an `f32array`, a handle, a string -- which needs no element type.
+     * A query that answers a list of records does, and the element struct is
+     * the scene's, not the PAL's: `Vec3` is generated from the pinned
+     * interface with its own field order and its own value-or-reference
+     * backing. So the type is read off the call site rather than assumed,
+     * the fields are filled by NAME against the generated definition, and a
+     * field the caller cannot supply is a refusal rather than a positional
+     * guess that would compile and mean something else.
+     */
+    public emitDataVectorOfStructs(
+        node: ts.Node,
+        sourceCpp: string,
+        fieldValues: (
+            element: string,
+        ) => Readonly<Record<string, string>>,
+    ): Value {
+        const dataType = this.dataLowerer.dataTypeAt(node);
+        if (
+            dataType?.kind !== "vector" ||
+            dataType.element.kind !== "struct"
+        ) {
+            this.fail(
+                node,
+                "This query answers a list of records, which needs a " +
+                    "generated struct element at the call site.",
+            );
+        }
+        const structName = dataType.element.name;
+        // The loop variable is MINTED and handed to the caller, so the name
+        // the loop declares and the names the fields read cannot disagree.
+        const elementName =
+            this.allocateTemporaryCppName("data_element");
+        const values = fieldValues(elementName);
+        const parts = this.dataTypes
+            .structFields(structName, node)
+            .map((field) => {
+                const value = values[field.name];
+                if (value === undefined) {
+                    this.fail(
+                        node,
+                        `Reached '${structName}' names a field ` +
+                            `'${field.name}' this query cannot fill.`,
+                    );
+                }
+                return value;
+            });
+        const cppName = this.allocateTemporaryCppName("data_vector");
+        this.reachJsData();
+        this.emit(`${this.dataTypes.cppType(dataType)} ${cppName};`);
+        this.emit(`${cppName}.reserve(${sourceCpp}.size());`);
+        this.emit(`for (const auto& ${elementName} : ${sourceCpp}) {`);
+        this.increaseIndent();
+        this.emit(
+            `${cppName}.push_back(` +
+                `${this.dataLowerer.structAggregate(dataType.element, parts)});`,
+        );
+        this.decreaseIndent();
+        this.emit(`}`);
+        this.dataLowerer.registerLocal(cppName, "owned");
+        return { kind: "data", cpp: cppName, dataType };
     }
 
     public reachJsData(): void {

@@ -5409,6 +5409,20 @@ export class DataLowerer {
                 `Struct literal has unknown field '${[...provided.keys()][0]}'.`,
             );
         }
+        return this.structAggregate(dataType, parts);
+    }
+
+    /**
+     * One struct value from its fields, in declared order.
+     *
+     * The reference-vs-value fork is the whole of it, and it is stated
+     * here alone: a reference struct is built through its `Data` shadow
+     * and shared, a value struct is braced directly.
+     */
+    public structAggregate(
+        dataType: DataType & { kind: "struct" },
+        parts: readonly string[],
+    ): string {
         if (
             this.context.dataTypes.isReferenceStruct(
                 dataType.name,
