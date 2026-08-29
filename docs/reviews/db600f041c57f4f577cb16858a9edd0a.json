@@ -48,6 +48,10 @@
     {
       "summary": "Named frame callback adapters must preserve the browser-supplied delta or timestamp even when the JavaScript callback ignores it. Marking the generated adapter parameter [[maybe_unused]] keeps that single signature path warning-clean without branching on callback arity.",
       "applied": true
+    },
+    {
+      "summary": "A zero-delta first engine frame made the generic three-second capture settle and Torus States' pinned pose one elapsed step early. Explicit-frame captures now reuse a clock-only environment, while wall-clock captures and Torus account for frame zero without changing parity thresholds or reference images.",
+      "applied": true
     }
   ]
 }

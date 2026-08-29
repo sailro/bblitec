@@ -2654,7 +2654,7 @@ const sceneInputs: readonly SceneInput[] = [
                 ...adHocCaptureEnvironment(),
                 // The immutable browser reference reaches its measured
                 // post-start settle pose on this fixed-rate frame.
-                BBLITE_SCREENSHOT_FRAME: "184",
+                BBLITE_SCREENSHOT_FRAME: "185",
             },
         },
     },
@@ -2670,7 +2670,7 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.05,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
-            nativeEnvironment: adHocCaptureEnvironment(),
+            nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
 ];
@@ -2882,7 +2882,10 @@ export function resolveScene(idOrSource: string): SceneDefinition {
     };
 }
 import { existsSync, statSync } from "node:fs";
-import { adHocCaptureEnvironment } from "./capture-timing.js";
+import {
+    adHocCaptureEnvironment,
+    fixedCaptureEnvironment,
+} from "./capture-timing.js";
 import {
     basename,
     extname,

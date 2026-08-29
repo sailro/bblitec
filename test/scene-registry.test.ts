@@ -104,6 +104,19 @@ test("registers unique generated scene targets", () => {
     );
     assert.equal(getScene("platformer").parity?.maxFullMad, 0.05);
     assert.equal(
+        getScene("tetris").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
+        "181",
+    );
+    assert.equal(
+        getScene("doom").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
+        "181",
+    );
+    assert.equal(
+        getScene("torus-states").parity?.nativeEnvironment
+            ?.BBLITE_SCREENSHOT_FRAME,
+        "185",
+    );
+    assert.equal(
         getScene("scene273").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "19",
     );
@@ -165,7 +178,7 @@ test("derives defaults for an unregistered scene source", () => {
         assert.equal(scene.parity?.maxFullMad, undefined);
         assert.deepEqual(scene.parity?.nativeEnvironment, {
             BBLITE_FRAME_DELTA_MS: String(1000 / 60),
-            BBLITE_SCREENSHOT_FRAME: "180",
+            BBLITE_SCREENSHOT_FRAME: "181",
         });
         assert.equal(paritySceneTarget(scene), source);
     } finally {
