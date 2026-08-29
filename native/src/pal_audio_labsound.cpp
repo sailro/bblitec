@@ -42,6 +42,9 @@
 #if BBLITE_HAS_AUDIO_CAPTURE
 #include "LabSound/extended/RecorderNode.h"
 #endif
+#if BBLITE_HAS_AUDIO_DECODE_FILE
+#include "LabSound/extended/AudioFileReader.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -86,6 +89,10 @@ struct ContextRecord {
     double sample_rate = 48000.0;
     /** Index 0 is the node `ctx.destination` names; see `audio_create_context`. */
     std::vector<std::shared_ptr<lab::AudioNode>> nodes;
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    /** Web Audio's per-buffer-source loop flag, parallel to `nodes`. */
+    std::vector<bool> source_loops;
+#endif
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     std::vector<std::shared_ptr<AudioBufferRecord>> buffers;
 #endif
@@ -184,6 +191,39 @@ std::shared_ptr<AudioBufferRecord>& require_buffer(AudioBufferHandle buffer)
     }
     return record.buffers[index];
 }
+
+AudioBufferHandle allocate_audio_buffer(
+    AudioContextHandle context,
+    std::uint32_t channels,
+    std::uint32_t frames,
+    double sample_rate)
+{
+    if (channels == 0 || frames == 0 || !(sample_rate > 0.0)) {
+        throw std::runtime_error("Invalid AudioBuffer dimensions or sample rate.");
+    }
+    ContextRecord& context_record = require_context(context.value);
+    if (context_record.buffers.size() >= 0xffffu) {
+        throw std::runtime_error("Too many audio buffers in one context.");
+    }
+    auto buffer = std::make_shared<AudioBufferRecord>();
+    buffer->channels.reserve(channels);
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        buffer->channels.emplace_back(frames, 0.0f);
+    }
+    buffer->bus = std::make_shared<lab::AudioBus>(
+        static_cast<int>(channels), static_cast<int>(frames), false);
+    buffer->bus->setSampleRate(static_cast<float>(sample_rate));
+    for (std::uint32_t channel = 0; channel < channels; ++channel) {
+        buffer->bus->setChannelMemory(
+            static_cast<int>(channel),
+            buffer->channels[channel].data(),
+            static_cast<int>(frames));
+    }
+    context_record.buffers.push_back(std::move(buffer));
+    return AudioBufferHandle{pack(
+        context.value,
+        static_cast<std::uint32_t>(context_record.buffers.size() - 1))};
+}
 #endif
 
 /**
@@ -204,6 +244,7 @@ constexpr const char* spelling(AudioParamName name)
         case AudioParamName::Detune: return "detune";
         case AudioParamName::Q: return "Q";
         case AudioParamName::Pan: return "pan";
+        case AudioParamName::PlaybackRate: return "playbackRate";
     }
     return nullptr;
 }
@@ -252,6 +293,9 @@ AudioNodeHandle create_node(AudioContextHandle context)
 {
     ContextRecord& record = require_context(context.value);
     record.nodes.push_back(std::make_shared<Node>(*record.context));
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    record.source_loops.push_back(false);
+#endif
     return AudioNodeHandle{
         pack(context.value, static_cast<std::uint32_t>(record.nodes.size() - 1))};
 }
@@ -406,6 +450,9 @@ AudioContextHandle audio_create_context()
     record.nodes.push_back(
         std::static_pointer_cast<lab::AudioNode>(record.destination));
 #endif
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    record.source_loops.push_back(false);
+#endif
     contexts().emplace(id, std::move(record));
     return AudioContextHandle{id};
 }
@@ -505,31 +552,8 @@ AudioBufferHandle audio_create_buffer(
     double sample_rate)
 {
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
-    if (channels == 0 || frames == 0 || !(sample_rate > 0.0)) {
-        throw std::runtime_error("Invalid AudioBuffer dimensions or sample rate.");
-    }
-    ContextRecord& context_record = require_context(context.value);
-    if (context_record.buffers.size() >= 0xffffu) {
-        throw std::runtime_error("Too many audio buffers in one context.");
-    }
-    auto buffer = std::make_shared<AudioBufferRecord>();
-    buffer->channels.reserve(channels);
-    for (std::uint32_t channel = 0; channel < channels; ++channel) {
-        buffer->channels.emplace_back(frames, 0.0f);
-    }
-    buffer->bus = std::make_shared<lab::AudioBus>(
-        static_cast<int>(channels), static_cast<int>(frames), false);
-    buffer->bus->setSampleRate(static_cast<float>(sample_rate));
-    for (std::uint32_t channel = 0; channel < channels; ++channel) {
-        buffer->bus->setChannelMemory(
-            static_cast<int>(channel),
-            buffer->channels[channel].data(),
-            static_cast<int>(frames));
-    }
-    context_record.buffers.push_back(std::move(buffer));
-    const AudioBufferHandle handle{pack(
-        context.value,
-        static_cast<std::uint32_t>(context_record.buffers.size() - 1))};
+    const AudioBufferHandle handle = allocate_audio_buffer(
+        context, channels, frames, sample_rate);
     if (runtime_trace_enabled()) {
         std::fprintf(
             stderr,
@@ -543,6 +567,43 @@ AudioBufferHandle audio_create_buffer(
     (void)frames;
     (void)sample_rate;
     throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
+AudioBufferHandle audio_decode_file(
+    AudioContextHandle context,
+    const std::string& path)
+{
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE && BBLITE_HAS_AUDIO_DECODE_FILE
+    try {
+        ContextRecord& context_record = require_context(context.value);
+        const std::shared_ptr<lab::AudioBus> decoded = lab::MakeBusFromFile(
+            path, false, static_cast<float>(context_record.sample_rate));
+        if (!decoded || decoded->numberOfChannels() <= 0 || decoded->length() <= 0) {
+            return {};
+        }
+        const auto channel_count = static_cast<std::uint32_t>(
+            decoded->numberOfChannels());
+        const auto frame_count = static_cast<std::uint32_t>(decoded->length());
+        const AudioBufferHandle handle = allocate_audio_buffer(
+            context, channel_count, frame_count, context_record.sample_rate);
+        auto& buffer = require_buffer(handle);
+        for (std::uint32_t channel = 0; channel < channel_count; ++channel) {
+            const float* samples = decoded->channel(channel)->data();
+            std::copy_n(
+                samples,
+                frame_count,
+                buffer->channels[channel].begin());
+        }
+        return handle;
+    } catch (...) {
+        // Racer's source helper catches fetch/decode failures and returns null.
+        return {};
+    }
+#else
+    (void)context;
+    (void)path;
+    return {};
 #endif
 }
 
@@ -606,6 +667,25 @@ void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer)
 #endif
 }
 
+void audio_set_loop(AudioNodeHandle source, bool enabled)
+{
+#if BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    ContextRecord& record = require_context(context_of(source.value));
+    const std::uint32_t index = index_of(source.value);
+    if (
+        index >= record.source_loops.size() ||
+        !std::dynamic_pointer_cast<lab::SampledAudioNode>(
+            require_node(record, source))) {
+        throw std::runtime_error("Audio node is not a buffer source.");
+    }
+    record.source_loops[index] = enabled;
+#else
+    (void)source;
+    (void)enabled;
+    throw std::runtime_error("Audio buffer source support was not compiled.");
+#endif
+}
+
 void audio_connect(AudioNodeHandle source, AudioNodeHandle destination)
 {
     if (context_of(source.value) != context_of(destination.value)) {
@@ -636,7 +716,13 @@ void audio_node_start(AudioNodeHandle node, double when)
     // common `start(when)` surface by dispatching this concrete node first.
     if (auto sampled = std::dynamic_pointer_cast<lab::SampledAudioNode>(
             require_node(node))) {
-        sampled->start(static_cast<float>(when));
+        const ContextRecord& record =
+            require_context(context_of(node.value));
+        const std::uint32_t index = index_of(node.value);
+        const bool loop =
+            index < record.source_loops.size() &&
+            record.source_loops[index];
+        sampled->start(static_cast<float>(when), loop ? -1 : 0);
         if (runtime_trace_enabled()) {
             std::fprintf(
                 stderr,

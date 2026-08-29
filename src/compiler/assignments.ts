@@ -304,6 +304,12 @@ const lightProperties: Readonly<
       valueKind: "color3",
       supportsCompound: false,
     },
+    groundColor: {
+      collection: "lights",
+      nativeProperty: "ground_color",
+      valueKind: "color3",
+      supportsCompound: false,
+    },
   },
   // The three positional kinds carry the same colour pair; the two whose
   // pinned writer packs an attenuation range carry that too, and the spot
@@ -470,6 +476,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
   reachFeature(feature: Feature, site: ts.Node): void;
   /** `mesh.receiveShadows = true`, by scene-mesh index. */
   recordShadowReceiver(sceneMeshIndex: number): void;
+  recordDynamicShadowReceivers(): void;
   propertyName(name: ts.PropertyName): string | undefined;
   probeStaticArrayLiteral(
     expression: ts.Expression,
@@ -786,10 +793,20 @@ export function emitPropertyAssignment(
       // compiling one merely to discover it is not a record would run
       // it again in the actual assignment path.
       const right = context.unwrap(expression.right);
-      const assigned = ts.isObjectLiteralExpression(right)
+      const existing = owner.recordProperties?.[left.name.text];
+      let assigned = ts.isObjectLiteralExpression(right)
         ? context.compileValue(right)
         : context.resolveRecordValue(right);
-      if (assigned?.kind === "record") {
+      if (
+        !assigned &&
+        existing?.kind === "json-null" &&
+        (ts.isCallExpression(right) ||
+          ts.isArrowFunction(right) ||
+          ts.isFunctionExpression(right))
+      ) {
+        assigned = context.compileValue(right);
+      }
+      if (assigned?.kind === "record" || assigned?.kind === "callback") {
         owner.recordProperties ??= {};
         owner.recordProperties[left.name.text] = assigned;
         return;
@@ -963,14 +980,73 @@ export function emitPropertyAssignment(
     );
     return;
   }
+  // An imported TransformNode root is represented by an AssetHandle rather
+  // than a data record. Intercept its nested TRS component before the broad
+  // property-owner path tries to materialize `root.rotation` as a record.
+  if (
+    ts.isPropertyAccessExpression(left.expression) &&
+    ["position", "rotation", "scaling"].includes(left.expression.name.text)
+  ) {
+    const root = context.compileValue(left.expression.expression);
+    if (root.kind === "asset-root") {
+      const vector = left.expression.name.text;
+      const axis = { x: 0, y: 1, z: 2 }[
+        left.name.text as "x" | "y" | "z"
+      ];
+      if (axis === undefined) {
+        context.fail(
+          left.name,
+          `Unsupported imported root axis '${left.name.text}'.`,
+        );
+      }
+      if (vector === "scaling") {
+        context.fail(
+          left.expression,
+          "An imported root currently exposes position and Y rotation; scaling requires a retained outer matrix.",
+        );
+      }
+      requireSimpleAssignment(context, expression, `imported root ${vector}`);
+      const engine = context.requireEngine(root, expression);
+      if (vector === "rotation") {
+        context.emit(
+          `bbl::set_asset_root_rotation_component(` +
+            `${engine}, ${root.cpp}, ${axis}u, ` +
+            `${context.compileNumber(expression.right)});`,
+        );
+        return;
+      }
+      context.emit(
+        `bbl::set_asset_root_position_component(` +
+          `${engine}, ${root.cpp}, ${axis}u, ` +
+          `${context.compileNumber(expression.right)});`,
+      );
+      return;
+    }
+  }
   // A scene may widen the target before writing a property the narrow
   // type does not carry -- `(sphere as { material?: unknown }).material`
   // is how the corpus assigns a node material to a mesh. The cast is a
   // type-level annotation with no value, so the target it names is the
   // expression underneath it.
   const targetExpression = context.unwrap(left.expression);
-  if (ts.isIdentifier(targetExpression)) {
-    const target = context.lookup(targetExpression);
+  const transformComponent =
+    ts.isPropertyAccessExpression(targetExpression) &&
+    ["position", "rotation", "scaling"].includes(
+      targetExpression.name.text,
+    );
+  if (
+    ts.isIdentifier(targetExpression) ||
+    (ts.isPropertyAccessExpression(targetExpression) &&
+      !transformComponent) ||
+    ts.isElementAccessExpression(targetExpression)
+  ) {
+    // Resource identity can travel through compile-time records and tuples
+    // (`lighting.sun.shadowGenerator`, `track.ground.receiveShadows`) just as
+    // it can through a local. Compile the complete owner path so the same
+    // assignment table serves both spellings.
+    const target = ts.isIdentifier(targetExpression)
+      ? context.lookup(targetExpression)
+      : context.compileValue(targetExpression);
     const property = left.name.text;
 
     if (target.kind === "node-particle-system" && property === "buffer") {
@@ -1092,14 +1168,13 @@ export function emitPropertyAssignment(
         );
       }
       if (target.sceneMeshIndex === undefined) {
-        context.fail(
-          left.expression,
-          "Shadow receiving is lowered for a scene-code mesh: an " +
-            "imported one composes through its asset's own " +
-            "variant rows.",
-        );
+        // A handle read from a runtime collection has no generation-known
+        // mesh row. Keep both composed states; the emitted record lane is
+        // the runtime half of the same key used by both material families.
+        context.recordDynamicShadowReceivers();
+      } else {
+        context.recordShadowReceiver(target.sceneMeshIndex);
       }
-      context.recordShadowReceiver(target.sceneMeshIndex);
       // The record lane too, which the node family reads per draw:
       // its receiver mixes each light's factor by `receivesShadow`
       // rather than selecting a variant, so one composed module
@@ -1621,26 +1696,31 @@ export function emitPropertyAssignment(
       context.fail(left.name, `Unsupported rotation axis '${left.name.text}'.`);
     }
     if (mesh.kind === "asset-root") {
-      if (!mesh.assetRootClone) {
-        context.fail(
-          left.expression.expression,
-          "Only a cloned imported root exposes a writable transform.",
-        );
-      }
-      if (left.expression.name.text !== "position") {
+      const vector = left.expression.name.text;
+      if (vector === "scaling") {
         context.fail(
           left.expression,
-          "An imported root clone currently exposes position; rotation and scaling require a retained outer matrix.",
+          "An imported root currently exposes position and Y rotation; scaling requires a retained outer matrix.",
         );
       }
       requireSimpleAssignment(
         context,
         expression,
-        "imported root clone position",
+        `imported root ${vector}`,
       );
+      const engine = context.requireEngine(mesh, expression);
+      if (vector === "rotation") {
+        context.emit(
+          `bbl::set_asset_root_rotation_component(` +
+            `${engine}, ${mesh.cpp}, ` +
+            `${axis}u, ` +
+            `${context.compileNumber(expression.right)});`,
+        );
+        return;
+      }
       context.emit(
         `bbl::set_asset_root_position_component(` +
-          `${context.requireEngine(mesh, expression)}, ` +
+          `${engine}, ` +
           `${mesh.cpp}, ${axis}u, ` +
           `${context.compileNumber(expression.right)});`,
       );
@@ -1741,7 +1821,7 @@ export function emitPropertyAssignment(
     context.emit(
       `${engine}.${record.collection}[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(
         expression.right,
-        wide ? "double" : undefined,
+        wide ? "double" : "float",
       )};`,
     );
     // The transform version is what the backends gate their baked

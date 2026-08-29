@@ -321,10 +321,18 @@ export interface UserFunctionContext {
         identifier: ts.Identifier,
         value: Value,
     ): void;
+    materializeEscapingValue(
+        value: Value,
+        label: string,
+    ): Value;
     pushScope(cppPrefix: string): void;
     popScope(): void;
     allocateUserFunctionPrefix(): string;
     reachJsData(): void;
+    emitNativeCallbackStorage(
+        cppName: string,
+        signature: string,
+    ): void;
     beginInlineFrame(wrapped: boolean): void;
     endInlineFrame(): void;
     beginNativeFunctionBody(returnType: DataType | undefined): void;
@@ -497,7 +505,8 @@ export class UserFunctionLowerer {
         }
         if (
             context.isBrowserOnlyExpression(argument) &&
-            !ts.isCallExpression(argument)
+            !ts.isCallExpression(argument) &&
+            !ts.isIdentifier(argument)
         ) {
             return { kind: "browser", cpp: "" };
         }
@@ -753,6 +762,18 @@ export class UserFunctionLowerer {
                     fail,
                 );
                 if (called) callees.add(called);
+                if (
+                    node.expression.text === "setTimeout" &&
+                    node.arguments[0] &&
+                    ts.isIdentifier(node.arguments[0])
+                ) {
+                    const scheduled = resolveFunctionDeclaration(
+                        this.checker,
+                        node.arguments[0],
+                        fail,
+                    );
+                    if (scheduled) callees.add(scheduled);
+                }
             }
             ts.forEachChild(node, visit);
         };
@@ -861,8 +882,9 @@ export class UserFunctionLowerer {
                         : undefined,
                 )
                 .filter((type): type is string => type !== undefined);
-            context.emit(
-                `std::function<${returnCpp}(${parametersCpp.join(", ")})> ${entry.cppName};`,
+            context.emitNativeCallbackStorage(
+                entry.cppName,
+                `${returnCpp}(${parametersCpp.join(", ")})`,
             );
         }
 
@@ -1211,8 +1233,11 @@ export class UserFunctionLowerer {
             }
             return ir.returnExpression
                 ? {
-                      ...context.compileValue(
-                          ir.returnExpression,
+                      ...context.materializeEscapingValue(
+                          context.compileValue(
+                              ir.returnExpression,
+                          ),
+                          `return_${ir.name}`,
                       ),
                       requiresExplicitDiscard: true,
                   }
@@ -1378,7 +1403,9 @@ export class UserFunctionLowerer {
                 `Function '${ir.name}' uses early value returns but its return type is outside the native data model.`,
             );
         }
-        return type;
+        return type.kind === "struct"
+            ? context.dataTypes.markStoredObjectReferences(type)
+            : type;
     }
 
     /**

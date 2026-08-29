@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace bbl {
@@ -164,6 +165,11 @@ struct SkeletonHandle {
 /** One joint of a skeleton, addressed by name through `getBoneByName`. */
 struct BoneHandle {
     std::uint32_t value = invalid_handle;
+};
+
+struct BillboardSpriteHandle {
+    BillboardSystemHandle system{};
+    std::uint32_t id = invalid_handle;
 };
 
 struct EffectWrapperHandle {
@@ -1045,18 +1051,24 @@ struct MeshRecord {
      * world matrix per draw instead of rebaking and re-uploading them.
      */
     bool gpu_world_transform = false;
+    /** A static imported mesh restored to its authored local vertex stream. */
+    bool live_imported_transform = false;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
-    // A clone shares its source mesh's pinned shader composition. Generated
-    // variant tables are creation-ordered and therefore end at the meshes
-    // known during generation; this indirection keeps a later clone on the
-    // exact attribute row its source uses instead of falling through to the
-    // unrelated scene-builder fallback.
+    // Before renderer startup a clone records the runtime handle of its
+    // source mesh here. The renderer uses that link while assigning stable
+    // creation-order composition rows, then keeps it for clone provenance.
     std::uint32_t feature_source_mesh = invalid_handle;
+    // Generated shader-feature tables describe only original meshes, in
+    // source creation order. Runtime clone handles can be interleaved with
+    // later imports, so every original receives a stable row and every clone
+    // inherits its source row before the first render plan is built.
+    std::uint32_t composition_feature_row = invalid_handle;
     // A cloned imported root remains an outer scene-node transform. Unlike
     // ordinary mesh TRS this is applied by the draw world after deformation,
     // matching a clone whose mesh retains the source skeleton/morph resource.
     Vec3 outer_position{};
+    Vec3 outer_rotation{};
     float baked_world_scale = 1.0f;
     std::uint64_t transform_version = 0;
     bool has_rotation_quaternion = false;
@@ -1124,7 +1136,7 @@ struct MeshRecord {
     bool thin_instanced = false;
     std::uint32_t instance_count = 0;
     std::uint64_t instance_version = 0;
-    const std::vector<float>* instance_source = nullptr;
+    std::vector<float>* instance_source = nullptr;
     // The per-instance RGBA stream `setThinInstanceColors` bound, as the
     // pin's own tightly-packed float4 rows. Empty where the mesh has none.
     std::vector<float> instance_colors;
@@ -1373,6 +1385,10 @@ struct BillboardSystemRecord {
     std::uint32_t capacity = 0;
     std::uint32_t instance_floats_per_sprite = 16;
     std::vector<float> instance_data;
+    // billboard-sprite-handle.ts: stable ids survive packed-index removal.
+    std::uint32_t next_handle_id = 1u;
+    std::unordered_map<std::uint32_t, std::uint32_t> handle_id_to_index;
+    std::vector<std::uint32_t> index_to_handle_id;
     // The mode-4 second pass's blend; see BillboardSystemOptions.
     SpriteBlendDescriptor add_pass_blend;
     // billboard-custom-shader.ts: the same opt-in the 2D layer carries --
@@ -2044,10 +2060,11 @@ struct AssetRecord {
      * referencing glTF node in node order — `AssetContainer.cameras`.
      */
     std::vector<CameraHandle> cameras;
-    // The synthetic root's own position for a hierarchy clone. The cloned
-    // mesh records carry it as `outer_position`; this value preserves
-    // absolute assignment and clone-of-clone semantics.
+    // The synthetic root's own transform for a hierarchy clone. The cloned
+    // mesh records carry it as `outer_position`/`outer_rotation`; these
+    // values preserve absolute assignment and clone-of-clone semantics.
     Vec3 root_position{};
+    Vec3 root_rotation{};
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -2186,6 +2203,15 @@ struct ShadowGeneratorRecord {
     double ortho_min_z = 1.0;
     double ortho_max_z = 10000.0;
     /**
+     * A CSM generator rendered through the native single-map adaptation.
+     * The map uses the pin's first camera-fitted cascade rather than the
+     * unrelated whole-caster PCF fit, so near-camera coverage and bias stay
+     * identical while the backend still binds its existing 2D PCF resource.
+     */
+    bool csm_single_map = false;
+    std::uint32_t csm_num_cascades = 4;
+    double csm_lambda = 0.5;
+    /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.
      */
@@ -2209,20 +2235,26 @@ struct Engine {
      */
     std::vector<std::function<bool()>> capture_ready;
     /**
+     * Heap storage for recursive callbacks that escape their source scope.
+     * Timer lambdas capture the referenced function object, so retaining the
+     * object here preserves JavaScript closure lifetime without a self-cycle.
+     */
+    std::vector<std::shared_ptr<void>> native_callback_owners;
+    /**
      * `setTimeout(callback, 0)`: callbacks queued to run once, after the
-     * frame that queued them.
-     *
-     * Babylon Native, which embeds a JavaScript engine, needs a whole
-     * `TimeoutDispatcher` for this -- a timer thread with a time-ordered
-     * queue that marshals each due call back onto the JS thread. None of
-     * that applies here: there is no second thread to marshal to and the
-     * frame conductor is the only one. Seventeen of the corpus's
-     * twenty-one `setTimeout` call sites pass a delay of exactly 0, so
-     * the reached slice is a one-shot deferred queue the conductor drains
-     * once per frame; the four real waits refuse at generation rather
-     * than pretending this is a timer.
+     * frame that queued them. Non-zero waits live in `timeout_callbacks`;
+     * zero remains a distinct next-turn queue so a callback queued while it
+     * drains cannot run recursively in the same frame.
      */
     std::vector<std::function<void()>> deferred_callbacks;
+    /** Browser one-shot timers with non-zero delays. */
+    struct TimeoutCallback {
+        std::uint64_t id = 0;
+        double due_ms = 0.0;
+        std::function<void()> callback;
+    };
+    std::vector<TimeoutCallback> timeout_callbacks;
+    std::uint64_t next_timeout_id = 1;
     /**
      * Browser `setInterval` callbacks. They share the frame conductor's
      * double-precision monotonic clock and run at most once per frame; the
@@ -2276,6 +2308,8 @@ struct Engine {
      */
     std::vector<PropertyAnimationManager> animation_managers;
     std::vector<MeshRecord> meshes;
+    /** Whether original meshes and their clones have stable feature rows. */
+    bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
     std::vector<LightRecord> lights;
     std::vector<TransformNodeRecord> transform_nodes;
@@ -2687,6 +2721,11 @@ void set_thin_instance_count(
     Engine& engine,
     MeshHandle mesh,
     double count);
+void set_thin_instance_matrix(
+    Engine& engine,
+    MeshHandle mesh,
+    double index,
+    const std::vector<float>& matrix);
 void flush_thin_instances(Engine& engine, MeshHandle mesh);
 void upload_thin_instance_matrices(
     Engine& engine,
@@ -2697,6 +2736,15 @@ void set_thin_instance_colors(
     Engine& engine,
     MeshHandle mesh,
     const std::vector<float>& colors);
+/** Restore a baked imported mesh's local pivot before replacing its rotation. */
+void prepare_imported_mesh_quaternion_write(
+    Engine& engine,
+    MeshHandle mesh);
+/** Install a mesh quaternion in the coordinate basis its vertices use. */
+void set_mesh_rotation_quaternion(
+    Engine& engine,
+    MeshHandle mesh,
+    Vec4 quaternion);
 void flatten_line_attributes(
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors,
@@ -3108,6 +3156,19 @@ struct PcfDirectionalShadowOptions {
     double ortho_max_z;
 };
 
+/**
+ * The CSM values that determine the first cascade retained by the native
+ * single-map adaptation. Other public CSM controls are still validated and
+ * evaluated by the compiler, but do not alter this one-map resource shape.
+ */
+struct CsmDirectionalShadowOptions {
+    std::uint32_t map_size;
+    std::uint32_t csm_num_cascades;
+    double csm_lambda;
+    double bias;
+    double darkness;
+};
+
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(
     Engine& engine,
     LightHandle light,
@@ -3120,6 +3181,10 @@ ShadowGeneratorHandle create_pcf_directional_shadow_generator(
     Engine& engine,
     LightHandle light,
     PcfDirectionalShadowOptions options);
+ShadowGeneratorHandle create_csm_directional_shadow_generator(
+    Engine& engine,
+    LightHandle light,
+    CsmDirectionalShadowOptions options);
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,
@@ -3136,6 +3201,11 @@ void add_to_scene(Scene& scene, AssetHandle asset);
 void add_asset_entities(Scene& scene, AssetHandle asset);
 AssetHandle clone_asset_root(Engine& engine, AssetHandle asset);
 void set_asset_root_position_component(
+    Engine& engine,
+    AssetHandle asset,
+    std::size_t component,
+    float value);
+void set_asset_root_rotation_component(
     Engine& engine,
     AssetHandle asset,
     std::size_t component,
@@ -3352,6 +3422,8 @@ struct BillboardSpriteProps {
     bool has_flip_y = false;
     bool visible = true;
     bool has_visible = false;
+    // Required by add, optional for updateBillboardSprite.
+    bool has_position = false;
 };
 
 struct Sprite2DProps {
@@ -3429,6 +3501,20 @@ double add_billboard_sprite_index(
     Engine& engine,
     BillboardSystemHandle system,
     BillboardSpriteProps props);
+
+BillboardSpriteHandle add_billboard_sprite(
+    Engine& engine,
+    BillboardSystemHandle system,
+    BillboardSpriteProps props);
+
+void update_billboard_sprite(
+    Engine& engine,
+    BillboardSpriteHandle handle,
+    BillboardSpriteProps props);
+
+void remove_billboard_sprite(
+    Engine& engine,
+    BillboardSpriteHandle handle);
 
 void clear_billboard_sprites(
     Engine& engine,
@@ -3576,6 +3662,11 @@ void start_engine(Engine& engine);
 void stop_engine(Engine& engine);
 /** `setTimeout(callback, 0)`; see `Engine::deferred_callbacks`. */
 void defer_callback(Engine& engine, std::function<void()> callback);
+/** Browser `setTimeout` with a real delay, serviced by the frame conductor. */
+double set_timeout(
+    Engine& engine,
+    std::function<void()> callback,
+    double delay_ms);
 /** Browser `setInterval`; callbacks are serviced by the frame conductor. */
 double set_interval(
     Engine& engine,
@@ -3647,6 +3738,8 @@ void dispose_picker(Engine& engine, GpuPickerHandle picker);
  * frame rather than in this drain, exactly as it would be in a browser.
  */
 void run_deferred_callbacks(Engine& engine);
+/** Run one-shot callbacks due at this frame boundary. */
+void run_timeout_callbacks(Engine& engine);
 /** Run recurring callbacks due at this frame boundary. */
 void run_interval_callbacks(Engine& engine);
 

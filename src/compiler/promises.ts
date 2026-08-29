@@ -26,16 +26,26 @@ export function compileImmediatePromise(
         call.expression.expression.text === "Promise" &&
         call.expression.name.text === "all"
     ) {
-        if (
-            call.arguments.length !== 1 ||
-            !ts.isArrayLiteralExpression(
-                call.arguments[0]!,
-            )
-        ) {
+        if (call.arguments.length !== 1) {
             context.fail(
                 call,
-                "Promise.all requires one static array literal.",
+                "Promise.all requires one static iterable.",
             );
+        }
+        const argument = call.arguments[0]!;
+        if (!ts.isArrayLiteralExpression(argument)) {
+            const iterable = context.compileValue(argument);
+            if (iterable.kind !== "tuple" || !iterable.tupleElements) {
+                context.fail(
+                    argument,
+                    "Promise.all requires an array literal or compile-time tuple.",
+                );
+            }
+            return {
+                kind: "tuple",
+                cpp: "",
+                tupleElements: iterable.tupleElements,
+            };
         }
         // Every element runs for its side effects whether or not the caller
         // keeps its result — one of the awaited calls in Scene 21 is
@@ -43,7 +53,7 @@ export function compileImmediatePromise(
         // hole. So the elements are always compiled in order here; the only
         // question is whether their values have to outlive the call.
         if (!isDestructured(call)) {
-            for (const element of call.arguments[0].elements) {
+            for (const element of argument.elements) {
                 emitValue(
                     context,
                     context.compileValue(element),
@@ -52,7 +62,7 @@ export function compileImmediatePromise(
             return { kind: "void", cpp: "" };
         }
         const elements: Value[] = [];
-        for (const element of call.arguments[0].elements) {
+        for (const element of argument.elements) {
             const value = context.compileValue(element);
             if (value.cpp.length === 0 || value.kind === "engine") {
                 elements.push(value);

@@ -1263,6 +1263,7 @@ struct ImageSkyboxUniforms {
 `
     : ""}\
 
+void initialize_composition_feature_rows(Engine& engine);
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
     const Scene& scene,
@@ -1866,6 +1867,27 @@ CameraBasis camera_basis(const CameraRecord& camera) {
     };
 }
 
+Vec3 rotate_outer_point(Vec3 point, const Vec3& rotation) {
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
+    const float sin_y = std::sin(rotation.y);
+    const float cos_y = std::cos(rotation.y);
+    const float sin_z = std::sin(rotation.z);
+    const float cos_z = std::cos(rotation.z);
+    point = Vec3{
+        point.x,
+        point.y * cos_x - point.z * sin_x,
+        point.y * sin_x + point.z * cos_x};
+    point = Vec3{
+        point.x * cos_y + point.z * sin_y,
+        point.y,
+        -point.x * sin_y + point.z * cos_y};
+    return Vec3{
+        point.x * cos_z - point.y * sin_z,
+        point.x * sin_z + point.y * cos_z,
+        point.z};
+}
+
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
@@ -1891,19 +1913,23 @@ void sort_transparent_draws(
         // The pin's own statement, at the record's width: mesh.position
         // is a double, so each row accumulates in double and narrows once
         // -- the same single store every other world composition makes.
-        const Vec3 center{
+        const Vec3 local_center{
             static_cast<float>(
                 parent[0] * mesh.position.x + parent[4] * mesh.position.y +
-                parent[8] * mesh.position.z + parent[12] +
-                mesh.outer_position.x),
+                parent[8] * mesh.position.z + parent[12]),
             static_cast<float>(
                 parent[1] * mesh.position.x + parent[5] * mesh.position.y +
-                parent[9] * mesh.position.z + parent[13] +
-                mesh.outer_position.y),
+                parent[9] * mesh.position.z + parent[13]),
             static_cast<float>(
                 parent[2] * mesh.position.x + parent[6] * mesh.position.y +
-                parent[10] * mesh.position.z + parent[14] +
-                mesh.outer_position.z),
+                parent[10] * mesh.position.z + parent[14]),
+        };
+        const Vec3 rotated_center = rotate_outer_point(
+            local_center, mesh.outer_rotation);
+        const Vec3 center{
+            rotated_center.x + mesh.outer_position.x,
+            rotated_center.y + mesh.outer_position.y,
+            rotated_center.z + mesh.outer_position.z,
         };
         const Vec3 delta{
             center.x - eye.x,
@@ -1920,6 +1946,31 @@ void sort_transparent_draws(
                 (left.sort_distance == right.sort_distance &&
                  left.item.order < right.item.order);
         });
+}
+
+void initialize_composition_feature_rows(Engine& engine) {
+    if (engine.composition_feature_rows_initialized) {
+        return;
+    }
+    std::uint32_t next_row = 0;
+    for (std::uint32_t index = 0; index < engine.meshes.size(); ++index) {
+        MeshRecord& mesh = engine.meshes[index];
+        if (mesh.feature_source_mesh == invalid_handle) {
+            mesh.composition_feature_row = next_row++;
+            continue;
+        }
+        if (
+            mesh.feature_source_mesh >= index ||
+            engine.meshes[mesh.feature_source_mesh]
+                    .composition_feature_row == invalid_handle) {
+            throw std::runtime_error(
+                "A cloned mesh has no earlier composition source.");
+        }
+        mesh.composition_feature_row =
+            engine.meshes[mesh.feature_source_mesh]
+                .composition_feature_row;
+    }
+    engine.composition_feature_rows_initialized = true;
 }
 
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
@@ -2159,9 +2210,35 @@ ${meshTrs.composeLocalBody}\
             world_local[row * 4 + column] = sum;
         }
     }
-    // A cloned imported root's offset, folded in at full width rather than
-    // added to the narrowed result -- adding it after the store would put
-    // the large coordinate straight back.
+    // A cloned imported root's transform, folded in at full width rather
+    // than added to the narrowed result -- adding it after the store would
+    // put a large coordinate straight back.
+    if (
+        mesh.outer_rotation.x != 0.0f ||
+        mesh.outer_rotation.y != 0.0f ||
+        mesh.outer_rotation.z != 0.0f) {
+        const double sin_x = std::sin(static_cast<double>(mesh.outer_rotation.x));
+        const double cos_x = std::cos(static_cast<double>(mesh.outer_rotation.x));
+        const double sin_y = std::sin(static_cast<double>(mesh.outer_rotation.y));
+        const double cos_y = std::cos(static_cast<double>(mesh.outer_rotation.y));
+        const double sin_z = std::sin(static_cast<double>(mesh.outer_rotation.z));
+        const double cos_z = std::cos(static_cast<double>(mesh.outer_rotation.z));
+        for (std::size_t column = 0; column < 4; ++column) {
+            const std::size_t offset = column * 4;
+            const double x0 = world_local[offset];
+            const double y0 = world_local[offset + 1];
+            const double z0 = world_local[offset + 2];
+            const double x1 = x0;
+            const double y1 = y0 * cos_x - z0 * sin_x;
+            const double z1 = y0 * sin_x + z0 * cos_x;
+            const double x2 = x1 * cos_y + z1 * sin_y;
+            const double y2 = y1;
+            const double z2 = -x1 * sin_y + z1 * cos_y;
+            world_local[offset] = x2 * cos_z - y2 * sin_z;
+            world_local[offset + 1] = x2 * sin_z + y2 * cos_z;
+            world_local[offset + 2] = z2;
+        }
+    }
     world_local[12] += static_cast<double>(mesh.outer_position.x);
     world_local[13] += static_cast<double>(mesh.outer_position.y);
     world_local[14] += static_cast<double>(mesh.outer_position.z);

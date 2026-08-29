@@ -377,6 +377,13 @@ export class NativeFunctionLowerer {
             this.rejected.add(declaration);
             return undefined;
         }
+        if (this.containsEntryEngineOperation(declaration)) {
+            // Timers enqueue work on the entry engine. A namespace-scope
+            // data helper has no engine parameter to use, so it must remain
+            // inline where createEngine's binding is visible.
+            this.rejected.add(declaration);
+            return undefined;
+        }
         const returnTsType =
             this.context.checker.getReturnTypeOfSignature(
                 checkerSignature,
@@ -415,13 +422,33 @@ export class NativeFunctionLowerer {
             if (!ts.isIdentifier(parameter.name)) {
                 return undefined;
             }
-            const parameterType =
+            let parameterType =
                 this.context.dataTypes.fromTsType(
                     this.context.checker.getTypeAtLocation(
                         parameter,
                     ),
                     parameter,
                 );
+            if (
+                parameterType?.kind === "struct" &&
+                this.returnTypeIsStored(
+                    this.context.checker.getTypeAtLocation(
+                        parameter,
+                    ),
+                )
+            ) {
+                // Reference representation is a property of the source
+                // object type, not the order in which native functions are
+                // first reached. A type returned by one helper can be seen
+                // first as another helper's parameter (Doom's Wad does
+                // exactly this); mark it before emitting that parameter's
+                // member accesses so the body and later call sites agree on
+                // `->` versus `.`.
+                parameterType =
+                    this.context.dataTypes.markStoredObjectReferences(
+                        parameterType,
+                    );
+            }
             if (
                 !parameterType ||
                 this.context.dataTypes.carriesHandle(parameterType)
@@ -468,6 +495,31 @@ export class NativeFunctionLowerer {
             ) {
                 found = true;
                 return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration.body ?? declaration);
+        return found;
+    }
+
+    /** Whether this otherwise plain-data helper needs the entry engine. */
+    private containsEntryEngineOperation(
+        declaration: SupportedFunction,
+    ): boolean {
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (ts.isCallExpression(node)) {
+                const callee = this.context.unwrap(node.expression);
+                if (
+                    (ts.isIdentifier(callee) &&
+                        callee.text === "setTimeout") ||
+                    (ts.isPropertyAccessExpression(callee) &&
+                        callee.name.text === "setTimeout")
+                ) {
+                    found = true;
+                    return;
+                }
             }
             ts.forEachChild(node, visit);
         };

@@ -1130,6 +1130,94 @@ double add_billboard_sprite_index(
     return static_cast<double>(index);
 }
 
+BillboardSpriteHandle add_billboard_sprite(
+    Engine& engine,
+    BillboardSystemHandle system_handle,
+    BillboardSpriteProps props) {
+    const std::uint32_t index = static_cast<std::uint32_t>(
+        add_billboard_sprite_index(engine, system_handle, props));
+    BillboardSystemRecord& system =
+        engine.billboard_systems[system_handle.value];
+    if (system.next_handle_id == invalid_handle) {
+        throw std::runtime_error("Billboard sprite handle id space exhausted.");
+    }
+    const std::uint32_t id = system.next_handle_id++;
+    if (system.index_to_handle_id.size() < system.capacity) {
+        system.index_to_handle_id.resize(system.capacity, 0u);
+    }
+    system.handle_id_to_index[id] = index;
+    system.index_to_handle_id[index] = id;
+    return BillboardSpriteHandle{system_handle, id};
+}
+
+void update_billboard_sprite(
+    Engine& engine,
+    BillboardSpriteHandle handle,
+    BillboardSpriteProps props) {
+    if (handle.system.value >= engine.billboard_systems.size()) {
+        throw std::runtime_error("Invalid billboard system handle.");
+    }
+    BillboardSystemRecord& system =
+        engine.billboard_systems[handle.system.value];
+    const auto found = system.handle_id_to_index.find(handle.id);
+    if (found == system.handle_id_to_index.end()) {
+        throw std::runtime_error("Invalid billboard sprite handle.");
+    }
+    const std::size_t base =
+        static_cast<std::size_t>(found->second) *
+        system.instance_floats_per_sprite;
+    if (props.has_position) {
+        system.instance_data[base + 0u] = props.position.x;
+        system.instance_data[base + 1u] = props.position.y;
+        system.instance_data[base + 2u] = props.position.z;
+    }
+    if (props.has_size_world) {
+        system.instance_data[base + 3u] = props.size_world.x;
+        system.instance_data[base + 4u] = props.size_world.y;
+    }
+    if (props.has_color) {
+        system.instance_data[base + 12u] = props.color.x;
+        system.instance_data[base + 13u] = props.color.y;
+        system.instance_data[base + 14u] = props.color.z;
+        system.instance_data[base + 15u] = props.color.w;
+    }
+    system.instance_version += 1u;
+}
+
+void remove_billboard_sprite(
+    Engine& engine,
+    BillboardSpriteHandle handle) {
+    if (handle.system.value >= engine.billboard_systems.size()) {
+        return;
+    }
+    BillboardSystemRecord& system =
+        engine.billboard_systems[handle.system.value];
+    const auto found = system.handle_id_to_index.find(handle.id);
+    if (found == system.handle_id_to_index.end()) {
+        return;
+    }
+    const std::uint32_t index = found->second;
+    const std::uint32_t last = system.count - 1u;
+    if (index != last) {
+        const std::size_t stride = system.instance_floats_per_sprite;
+        std::copy_n(
+            system.instance_data.begin() +
+                static_cast<std::ptrdiff_t>(last * stride),
+            stride,
+            system.instance_data.begin() +
+                static_cast<std::ptrdiff_t>(index * stride));
+        const std::uint32_t moved = system.index_to_handle_id[last];
+        system.index_to_handle_id[index] = moved;
+        if (moved != 0u) {
+            system.handle_id_to_index[moved] = index;
+        }
+    }
+    system.index_to_handle_id[last] = 0u;
+    system.handle_id_to_index.erase(found);
+    system.count = last;
+    system.instance_version += 1u;
+}
+
 void clear_billboard_sprites(
     Engine& engine,
     BillboardSystemHandle system_handle) {
@@ -1140,6 +1228,11 @@ void clear_billboard_sprites(
     // logical count and reuses capacity when a dynamic set is refilled.
     BillboardSystemRecord& system =
         engine.billboard_systems[system_handle.value];
+    system.handle_id_to_index.clear();
+    std::fill(
+        system.index_to_handle_id.begin(),
+        system.index_to_handle_id.end(),
+        0u);
     if (system.count != 0u) {
         system.count = 0u;
         system.instance_version += 1u;

@@ -908,7 +908,7 @@ test("the new families' generation refusals are inventoried", () => {
     );
 });
 
-test("interleave refusal rows record the guards' clean pass", () => {
+test("creation-order rows record ordered and interleaved paths", () => {
     // Zero creations: the rows state there was nothing to compare.
     const scene33 = featureActivationRows(scene33Inputs());
     const meshRow = named(scene33, "refusal:scene-mesh-interleave");
@@ -950,31 +950,34 @@ test("interleave refusal rows record the guards' clean pass", () => {
         false,
     );
 
-    // An interleaving creation reaching the table is the cli.ts guard
-    // and the inventory drifting apart: fail loudly, never publish a
-    // wrong refusal row.
-    assert.throws(
-        () =>
-            featureActivationRows({
-                ...everythingOnInputs(),
-                interleave: {
-                    sceneMeshGltfAssetsBefore: [0, 1],
-                    scenePbrMaterialGltfAssetsBefore: [1],
-                    gltfAssetCount: 1,
-                },
-            }),
-        /scene-mesh-interleave/,
+    // Interleaved creation is now composed by recorded load count, and the
+    // inventory records that supported path rather than a generation refusal.
+    const interleaved = featureActivationRows({
+        ...everythingOnInputs(),
+        interleave: {
+            sceneMeshGltfAssetsBefore: [0, 1],
+            scenePbrMaterialGltfAssetsBefore: [0],
+            gltfAssetCount: 1,
+        },
+    });
+    const interleavedMesh = named(
+        interleaved,
+        "refusal:scene-mesh-interleave",
     );
-    assert.throws(
-        () =>
-            featureActivationRows({
-                ...everythingOnInputs(),
-                interleave: {
-                    sceneMeshGltfAssetsBefore: [1],
-                    scenePbrMaterialGltfAssetsBefore: [0],
-                    gltfAssetCount: 1,
-                },
-            }),
-        /scene-material-interleave/,
+    assert.equal(interleavedMesh.active, true);
+    assert.equal(interleavedMesh.mechanism, "composition");
+    assert.equal(
+        interleavedMesh.activatedBy,
+        "composed 2 scene-code mesh creation(s) through 1 glTF load(s) " +
+            "in their recorded handle order",
+    );
+    assert.deepEqual(interleavedMesh.consumers, ["variant table"]);
+    assert.equal(
+        named(
+            interleaved,
+            "refusal:scene-material-interleave",
+        ).activatedBy,
+        "composed 1 scene-code PBR material creation(s) through 1 glTF " +
+            "load(s) in their recorded handle order",
     );
 });

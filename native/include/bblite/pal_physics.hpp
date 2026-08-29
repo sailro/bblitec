@@ -119,6 +119,26 @@ struct PhysicsMassProperties {
     std::array<double, 4> inertia_orientation{0.0, 0.0, 0.0, 1.0};
 };
 
+enum class PhysicsCollisionEventType {
+    started,
+    continued,
+    finished,
+};
+
+struct PhysicsCollisionEvent {
+    PhysicsCollisionEventType type = PhysicsCollisionEventType::finished;
+    std::array<double, 3> point{};
+    std::array<double, 3> normal{};
+    double impulse = 0.0;
+};
+
+struct PhysicsRaycastResult {
+    bool has_hit = false;
+    std::array<double, 3> point{};
+    std::array<double, 3> normal{};
+    double distance = 0.0;
+};
+
 // --- World -----------------------------------------------------------
 
 /** `HP_World_Create`. */
@@ -134,6 +154,14 @@ void physics_world_add_body(
     bool start_asleep);
 /** `HP_World_Step`, taking seconds exactly as the pin converts them. */
 void physics_world_step(PhysicsWorldHandle world, double seconds);
+[[nodiscard]] const std::vector<PhysicsCollisionEvent>&
+physics_world_collision_events(PhysicsWorldHandle world);
+[[nodiscard]] PhysicsRaycastResult physics_world_raycast(
+    PhysicsWorldHandle world,
+    std::array<double, 3> from,
+    std::array<double, 3> to,
+    std::uint32_t membership,
+    std::uint32_t collide_with);
 
 // --- Shapes ----------------------------------------------------------
 //
@@ -168,6 +196,9 @@ void physics_world_step(PhysicsWorldHandle world, double seconds);
 void physics_shape_set_material(
     PhysicsShapeHandle shape,
     const PhysicsShapeMaterial& material);
+void physics_shape_set_filter_membership_mask(
+    PhysicsShapeHandle shape,
+    std::uint32_t membership_mask);
 
 // --- Bodies ----------------------------------------------------------
 
@@ -211,5 +242,10 @@ void physics_body_apply_impulse(
     PhysicsBodyHandle body,
     std::array<double, 3> location,
     std::array<double, 3> impulse);
+[[nodiscard]] std::array<double, 3> physics_body_get_linear_velocity(
+    PhysicsBodyHandle body);
+void physics_body_set_collision_events_enabled(
+    PhysicsBodyHandle body,
+    bool enabled);
 
 }  // namespace bbl::pal

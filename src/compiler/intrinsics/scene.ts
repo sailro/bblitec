@@ -63,11 +63,12 @@ export function compileSceneIntrinsic(
                     resource.assetRootClone
                 ) &&
                 resource.kind !== "mesh" &&
-                resource.kind !== "light"
+                resource.kind !== "light" &&
+                resource.kind !== "camera"
             ) {
                 context.fail(
                     call.arguments[1]!,
-                    `addToScene supports asset, entity, mesh, and light values, received ${resource.kind}.`,
+                    `addToScene supports asset, entity, mesh, light, and camera values, received ${resource.kind}.`,
                 );
             }
             context.expectSameEngine(scene, resource, call);
@@ -87,7 +88,9 @@ export function compileSceneIntrinsic(
             return {
                 kind: "void",
                 cpp:
-                    resource.kind === "asset-entity" ||
+                    resource.kind === "camera"
+                        ? ""
+                        : resource.kind === "asset-entity" ||
                     resource.kind === "asset-root"
                         ? `bbl::add_asset_entities(` +
                           `${scene.cpp}, ${resource.cpp})`

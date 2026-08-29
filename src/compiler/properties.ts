@@ -244,6 +244,7 @@ const AUDIO_PARAM_NAMES: readonly (readonly [
   ["detune", "Detune"],
   ["Q", "Q"],
   ["pan", "Pan"],
+  ["playbackRate", "PlaybackRate"],
 ];
 
 const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(

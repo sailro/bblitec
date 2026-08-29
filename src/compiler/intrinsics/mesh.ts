@@ -71,6 +71,7 @@ export interface MeshIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    reachJsData(): void;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -218,6 +219,23 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "mat4Compose": {
+            context.expectArgumentCount(call, 10, 10);
+            context.reachJsData();
+            return {
+                kind: "data",
+                cpp:
+                    `bbl::js::mat4_compose(` +
+                    call.arguments
+                        .map((argument) =>
+                            context.compileNumber(argument, "double"),
+                        )
+                        .join(", ") +
+                    `)`,
+                dataType: { kind: "f32array" },
+                freshData: true,
+            };
+        }
         case "setParent": {
             context.expectArgumentCount(call, 2, 2);
             const child = context.compileValue(call.arguments[0]!);
@@ -443,6 +461,29 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::set_thin_instance_count(${context.requireEngine(mesh, call)}, ` +
                     `${mesh.cpp}, ${count})`,
+            };
+        }
+
+        case "setThinInstanceMatrix": {
+            context.expectArgumentCount(call, 3, 3);
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const index = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const matrix = context.compileTypedArrayArgument(
+                call.arguments[2]!,
+                "f32array",
+            );
+            context.reachFeature("mesh:thin-instances-dynamic", call);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_thin_instance_matrix(` +
+                    `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
+                    `${index}, ${matrix})`,
             };
         }
 

@@ -1714,6 +1714,217 @@
           "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
         }
       ]
+    },
+    {
+      "id": "racer",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/racer.ts",
+      "reference": {
+        "source": "reference/racer/babylon-lite-golden.png",
+        "sha256": "363e8134fde4ecd03e54621567d8596229da7110da49a2436022538a21058d72"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/racer.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer.ts",
+          "sha256": "82225e21ff6a461fea54dfe161f1eccdbb40488727927bb153ca5f82e14575a1"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/audio.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/audio.ts",
+          "sha256": "20d42af8c0ee7badc613e0b65ce790fb00c551078810a302dda7668ffb973e77"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/camera.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/camera.ts",
+          "sha256": "60d1602ed76c9c098d96ca36f5d1ec943382dd24a37f7e252d7d3589d8dff048"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/input.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/input.ts",
+          "sha256": "1e64de4b3bfb65b5f84f41920864d72ab45b63bcd99873b0985d8888e1f3119e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/lighting.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/lighting.ts",
+          "sha256": "fc4bb2cd02aedac2d741b9426050366bdd69f7db6b53a6488e177aa351b1c875"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/minimap.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/minimap.ts",
+          "sha256": "c91210b0d733d2d9d0b00e918a39d27c7abcaef76b283934afcb952212271543"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/physics.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/physics.ts",
+          "sha256": "e3b6ebca1273ad20a6cb42fe2d57da627136bfac412f511b526462127ea12bed"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/race.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/race.ts",
+          "sha256": "bde2629ba1f9841b55aa094eb3f3c4c68f1557b2c64da2b0fd6f97f060714d0b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/skid.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/skid.ts",
+          "sha256": "731e6099a0e232e803bd566360b4976204cb41871dcfccc96bff57555c1f4b35"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/smoke.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/smoke.ts",
+          "sha256": "e1da239510afa92ad0f5edffe78db3f226e8dd193a53bfb319041bc3565669cb"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/speed-lines.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/speed-lines.ts",
+          "sha256": "7b03d5fbf7165dc89b764f0e07fac9e177c6f7cd97fc4b02bdc5b23402254da8"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/track.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/track.ts",
+          "sha256": "21e970c1bca0e035c65819b10733505a12bbfb7d8dc63702a29848b481460974"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/vehicle.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/vehicle.ts",
+          "sha256": "bcb388b7c9c82298b4ac5c312d07928a5ce311a88ce536f802d55582c25b288a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/racer/vehicles.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/vehicles.ts",
+          "sha256": "c3f14d7be846d3ed345def374ef982c65a2ded03c216e33eb550e6eabe3cf862"
+        },
+        {
+          "upstreamPath": "lab/public/racer/audio/engine-motorcycle.ogg",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/audio/engine-motorcycle.ogg",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/audio/engine-motorcycle.ogg",
+          "sha256": "aed3b357bf885d5390a517ee6da2a55f3a17307d8d094175215fb60669f98ef7"
+        },
+        {
+          "upstreamPath": "lab/public/racer/audio/engine.ogg",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/audio/engine.ogg",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/audio/engine.ogg",
+          "sha256": "6d665dfc961e2d522c866bdcf12fc0ac56c885c0c7117e830df84ba8eecd655c"
+        },
+        {
+          "upstreamPath": "lab/public/racer/audio/impact.ogg",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/audio/impact.ogg",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/audio/impact.ogg",
+          "sha256": "964c5fcfb91e7710e2af25c2243c8b7160756b223b0984bacc9eb25bfeea057b"
+        },
+        {
+          "upstreamPath": "lab/public/racer/audio/skid.ogg",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/audio/skid.ogg",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/audio/skid.ogg",
+          "sha256": "424bbe660f29b825bd0255e332d084a22719c2c4a04b64f83ec6a531197780ed"
+        },
+        {
+          "upstreamPath": "lab/public/racer/LICENSE",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/LICENSE",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/LICENSE",
+          "sha256": "db2c350e96739247706b6b395aae08ac335395eda9cfe2bc80b79636934ecdc2"
+        },
+        {
+          "upstreamPath": "lab/public/racer/README.md",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/README.md",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/README-assets.md",
+          "sha256": "af46d41233baf86e8760eeb45d0775d850a810ff42ffb76b9e4ce0c2f8bd1d47"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/decoration-empty.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/decoration-empty.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/decoration-empty.glb",
+          "sha256": "3815b26a5274173934d37cf605e320450efad4e0034040868b6aea761cfd74bc"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/decoration-forest.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/decoration-forest.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/decoration-forest.glb",
+          "sha256": "664a53f0f709fef9096af3bbfb1aa76536527a616b05170c0cf4e27e33358a00"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/decoration-tents.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/decoration-tents.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/decoration-tents.glb",
+          "sha256": "19dbf2a778ad75f95c7d61f12866ef7174ab69cad169d3749c5400f5e14db8a3"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/Textures/colormap.png",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/Textures/colormap.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/Textures/colormap.png",
+          "sha256": "02bb3fb87365927d16e265d27caae405aeef5819b6bde5a989ff5e435318de4d"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/track-bump.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/track-bump.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/track-bump.glb",
+          "sha256": "6db020edc53532ebc0971c9d4ad9afb11c4de67c510649ca843db4616514f43c"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/track-corner.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/track-corner.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/track-corner.glb",
+          "sha256": "0ffb3d83b60456fc5a2962447111a1a64bfe943f4ad95462e1edba107be81c80"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/track-finish.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/track-finish.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/track-finish.glb",
+          "sha256": "2fec3b681658d6e77e20c4342d1e3ceeaab3e8d2fbf340942cde25cc2b21975b"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/track-straight.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/track-straight.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/track-straight.glb",
+          "sha256": "2d8080df1fe27e39981480809f36eba7f239e814f96bff61bb4c99793221b701"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/track-tents.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/track-tents.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/track-tents.glb",
+          "sha256": "eaf68bbb44e362e291b71d13015fbafc4ce22a9102bda029614972d6cc843c7f"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/vehicle-motorcycle.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/vehicle-motorcycle.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/vehicle-motorcycle.glb",
+          "sha256": "c97911b8dbc2d5dd9d1961b46eb4d1f132b67a6c5a84f45593fea44e0595dd92"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/vehicle-truck-green.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/vehicle-truck-green.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/vehicle-truck-green.glb",
+          "sha256": "df362d027a09b19395be0e96abd7cc2dc54608dfb920b592e64357b589f9fcd6"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/vehicle-truck-purple.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/vehicle-truck-purple.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/vehicle-truck-purple.glb",
+          "sha256": "03e32f5abcbbd03da3591f42fdaae2cf7d27ed379df7ce0d1f233bea02998565"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/vehicle-truck-red.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/vehicle-truck-red.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/vehicle-truck-red.glb",
+          "sha256": "eca99bd9ab0a2b02125f915e65d1ec8f1c5a93be7c6d4840efdac6633f47772c"
+        },
+        {
+          "upstreamPath": "lab/public/racer/models/vehicle-truck-yellow.glb",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/models/vehicle-truck-yellow.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/models/vehicle-truck-yellow.glb",
+          "sha256": "1ebd83174eab6d2fdf69eb5d8e32bd06a23a86d9edc4fe915a4160430a7c36a5"
+        },
+        {
+          "upstreamPath": "lab/public/racer/sprites/smoke.png",
+          "origin": "https://raw.githubusercontent.com/KenneyNL/Starter-Kit-Racing/f5241ebdf00c25bc951bf4fdb7950bb1b78b4bcc/sprites/smoke.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/racer/sprites/smoke.png",
+          "sha256": "371590cb06875916ee1ab783217a2b8680ef792fbc358937e917afdfa413a1f1"
+        }
+      ]
     }
   ]
 }

@@ -423,6 +423,67 @@ function tupleOption(
     );
 }
 
+/** One billboard instance patch, shared by stable-handle add and update. */
+function billboardPropsCpp(
+    context: SpriteIntrinsicContext,
+    props: Value | undefined,
+    call: ts.CallExpression,
+    requirePosition: boolean,
+): string {
+    for (const name of Object.keys(props?.recordProperties ?? {})) {
+        if (
+            ![
+                "position",
+                "sizeWorld",
+                "frame",
+                "rotation",
+                "pivot",
+                "color",
+                "flipX",
+                "flipY",
+                "visible",
+            ].includes(name)
+        ) {
+            context.fail(call, `Billboard sprite option '${name}' is not lowered.`);
+        }
+        if (
+            !requirePosition &&
+            !["position", "sizeWorld", "color"].includes(name)
+        ) {
+            context.fail(
+                call,
+                `updateBillboardSprite option '${name}' is not lowered.`,
+            );
+        }
+    }
+    const position = tupleOption(context, props, "position", call, 3);
+    if (requirePosition && !position) {
+        context.fail(call, "addBillboardSprite: position required.");
+    }
+    const sizeWorld = tupleOption(context, props, "sizeWorld", call, 2);
+    const pivot = tupleOption(context, props, "pivot", call, 2);
+    const color = tupleOption(context, props, "color", call, 4);
+    const frame = property(props, "frame");
+    const rotation = property(props, "rotation");
+    const flipX = property(props, "flipX");
+    const flipY = property(props, "flipY");
+    const visible = property(props, "visible");
+    return (
+        `bbl::BillboardSpriteProps{` +
+        `bbl::Vec3{${position ? position.join(", ") : "0.0f, 0.0f, 0.0f"}}, ` +
+        `bbl::Vec2{${sizeWorld ? sizeWorld.join(", ") : "0.0f, 0.0f"}}, ` +
+        `${sizeWorld ? "true" : "false"}, ` +
+        `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ${frame ? "true" : "false"}, ` +
+        `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ${rotation ? "true" : "false"}, ` +
+        `bbl::Vec2{${pivot ? pivot.join(", ") : "0.0f, 0.0f"}}, ${pivot ? "true" : "false"}, ` +
+        `bbl::Vec4{${color ? color.join(", ") : "1.0f, 1.0f, 1.0f, 1.0f"}}, ${color ? "true" : "false"}, ` +
+        `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
+        `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
+        `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}, ` +
+        `${position ? "true" : "false"}}`
+    );
+}
+
 export function compileSpriteIntrinsic(
     context: SpriteIntrinsicContext,
     importedName: string,
@@ -1159,8 +1220,62 @@ export function compileSpriteIntrinsic(
                     }}, ${color ? "true" : "false"}, ` +
                     `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
                     `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
-                    `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}})`,
+                    `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}, true})`,
                 engineCpp,
+            };
+        }
+
+        case "addBillboardSprite": {
+            context.expectArgumentCount(call, 2, 2);
+            const system = context.compileValue(call.arguments[0]!);
+            context.expectKind(system, "billboard-system", call.arguments[0]!);
+            const props = optionsRecord(
+                context,
+                call.arguments[1],
+                "addBillboardSprite",
+            );
+            const engineCpp =
+                system.engineCpp ?? context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            return {
+                kind: "billboard-sprite",
+                cpp:
+                    `bbl::add_billboard_sprite(${engineCpp}, ${system.cpp}, ` +
+                    `${billboardPropsCpp(context, props, call, true)})`,
+                engineCpp,
+            };
+        }
+
+        case "updateBillboardSprite": {
+            context.expectArgumentCount(call, 2, 2);
+            const handle = context.compileValue(call.arguments[0]!);
+            context.expectKind(handle, "billboard-sprite", call.arguments[0]!);
+            const props = optionsRecord(
+                context,
+                call.arguments[1],
+                "updateBillboardSprite",
+            );
+            const engineCpp =
+                handle.engineCpp ?? context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::update_billboard_sprite(${engineCpp}, ${handle.cpp}, ` +
+                    `${billboardPropsCpp(context, props, call, false)})`,
+            };
+        }
+
+        case "removeBillboardSprite": {
+            context.expectArgumentCount(call, 1, 1);
+            const handle = context.compileValue(call.arguments[0]!);
+            context.expectKind(handle, "billboard-sprite", call.arguments[0]!);
+            const engineCpp =
+                handle.engineCpp ?? context.requireDefaultEngine(call);
+            context.reachFeature("sprite:billboard", call);
+            return {
+                kind: "void",
+                cpp: `bbl::remove_billboard_sprite(${engineCpp}, ${handle.cpp})`,
             };
         }
 

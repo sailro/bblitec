@@ -379,6 +379,18 @@ class Compiler
     private thisInstance: Value | undefined;
     private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
     private readonly body: string[] = [];
+    /**
+     * Collision listeners are registered before every startup assignment has
+     * necessarily run. Their native bodies are specialized only after the
+     * entry walk is complete, while retaining registration-site scopes.
+     */
+    private readonly deferredPhysicsCallbacks: Array<{
+        callback: ts.Identifier | ts.ArrowFunction | ts.FunctionExpression;
+        cppName: string;
+        eventName: string;
+        node: ts.Node;
+        scopes: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
+    }> = [];
     public readonly erasedBrowserExpressions = new Set<number>();
     public readonly erasedBrowserInstrumentation = new Set<number>();
     public readonly unwrappedAwaitExpressions = new Set<number>();
@@ -387,9 +399,11 @@ class Compiler
     public readonly postProcessComposites: PostProcessCompositeManifest[] =
         [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
+    private readonly sceneMaterialGltfAssetsBefore: number[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
     private readonly shadowGenerators: ShadowGeneratorManifest[] = [];
     private readonly shadowReceiverMeshes = new Set<number>();
+    private dynamicShadowReceivers = false;
     /** How many lights `addToScene` has added, which is their slot order. */
     private sceneLightCount = 0;
     private readonly sceneLightKinds: LightKind[] = [];
@@ -490,10 +504,12 @@ class Compiler
     public compile(): CompileResult {
         this.collectSourceCppNames();
         this.collectStaticConstants();
+        this.predeclareStoredObjectReferences();
         this.emitImportedModuleInitializers();
         for (const statement of this.entryStatements()) {
             this.emitStatement(statement);
         }
+        this.emitDeferredPhysicsCallbacks();
         assertDeterministicRandomUnreached(
             this,
             this.jsRandomReached,
@@ -577,6 +593,8 @@ class Compiler
                 standardMaterialPlugins:
                     this.sceneMaterials.standardMaterialPlugins,
                 sceneMaterialCount: this.sceneMaterials.count,
+                sceneMaterialGltfAssetsBefore:
+                    this.sceneMaterialGltfAssetsBefore,
                 sceneMeshes: this.sceneMeshes,
                 sceneLightKinds: this.sceneLightKinds,
                 dynamicSceneLights: this.dynamicSceneLights,
@@ -596,6 +614,7 @@ class Compiler
                 shadowReceiverMeshes: [
                     ...this.shadowReceiverMeshes,
                 ].sort((left, right) => left - right),
+                dynamicShadowReceivers: this.dynamicShadowReceivers,
                 splatFragments: this.sceneSplatFragments ?? [],
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
                 effects: this.reachedEffects_,
@@ -603,6 +622,61 @@ class Compiler
                 plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
         };
+    }
+
+    /**
+     * Fix object representation before any C++ member access is emitted.
+     *
+     * Data types are discovered lazily, but whether a struct is value-backed
+     * or reference-backed is global to its generated C++ name. Scan declared
+     * storage shapes and class fields first so a function reached early cannot
+     * emit `record.field` and then have a later class turn the same record into
+     * a shared pointer that requires `record->field`.
+     */
+    private predeclareStoredObjectReferences(): void {
+        const visit = (node: ts.Node): void => {
+            if (
+                (ts.isInterfaceDeclaration(node) ||
+                    ts.isTypeAliasDeclaration(node)) &&
+                node.name
+            ) {
+                this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(node.name),
+                    node,
+                );
+            } else if (ts.isPropertyDeclaration(node)) {
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(node),
+                    node,
+                );
+                if (dataType) {
+                    this.dataTypes.markStoredObjectReferences(
+                        dataType,
+                    );
+                }
+            } else if (
+                ts.isParameter(node) &&
+                node.parent &&
+                ts.isParameterPropertyDeclaration(
+                    node,
+                    node.parent,
+                )
+            ) {
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(node),
+                    node,
+                );
+                if (dataType) {
+                    this.dataTypes.markStoredObjectReferences(
+                        dataType,
+                    );
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const source of this.sourceFiles()) {
+            if (!source.isDeclarationFile) visit(source);
+        }
     }
 
     private collectStaticConstants(): void {
@@ -1020,7 +1094,10 @@ class Compiler
             return;
         }
 
-        if (this.isBrowserOnlyExpression(declaration.initializer)) {
+        if (
+            this.isBrowserOnlyExpression(declaration.initializer) &&
+            this.moduleRelativeAssetUrl(declaration.initializer) === undefined
+        ) {
             const browserValue =
                 this.evaluateBrowserValue(
                     declaration.initializer,
@@ -1105,7 +1182,15 @@ class Compiler
             this.defineVariable(declaration.name, value);
             return;
         }
-        if (value.kind === "void" || value.kind === "browser") {
+        if (value.kind === "browser") {
+            // A local helper can erase its DOM body statement by statement
+            // and return a browser handle. The call itself is not necessarily
+            // recognizable as browser-only before inlining, but its resulting
+            // binding is still a valid erased browser value.
+            this.defineVariable(declaration.name, value);
+            return;
+        }
+        if (value.kind === "void") {
             this.fail(declaration.initializer, `Expression assigned to '${sourceName}' does not produce a native value.`);
         }
         if (value.kind === "callback" || isCompileTimeOnlyValue(value.kind)) {
@@ -1412,8 +1497,9 @@ class Compiler
                 : this.dataTypes.cppType(type),
         );
         this.reachJsData();
-        this.emit(
-            `std::function<${returnCpp}(${parameterTypes.join(", ")})> ${cppName};`,
+        this.emitNativeCallbackStorage(
+            cppName,
+            `${returnCpp}(${parameterTypes.join(", ")})`,
         );
         this.defineVariable(name, {
             kind: "callback",
@@ -1959,7 +2045,7 @@ class Compiler
                         signature?.declaration?.parameters;
                     if (parameters) {
                         node.arguments.forEach((argument, index) => {
-                            if (!isAlias(argument)) return;
+                            if (!containsAlias(argument)) return;
                             const parameter = parameters[index];
                             if (!parameter || !ts.isIdentifier(parameter.name)) {
                                 return;
@@ -2026,7 +2112,33 @@ class Compiler
                     "Tuple destructuring supports plain identifiers.",
                 );
             }
-            this.bindLocalValue(element.name, bound);
+            let stored = bound;
+            if (bound.kind === "record") {
+                const declared = this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(element.name),
+                    element.name,
+                );
+                if (declared?.kind === "struct") {
+                    const dataType = this.dataTypes.markStoredObjectReferences(
+                        declared,
+                    );
+                    stored = this.dataLowerer.leafValue(
+                        this.dataLowerer.compileKnownValueForSink(
+                            bound,
+                            dataType,
+                            element.name,
+                        ),
+                        dataType,
+                    );
+                }
+                if (stored.kind === "record") {
+                    stored = this.materializeRecordScalars(
+                        stored,
+                        `record_${element.name.text}`,
+                    );
+                }
+            }
+            this.bindLocalValue(element.name, stored);
         };
         if (
             value.kind === "tuple" &&
@@ -2152,6 +2264,43 @@ class Compiler
             }
             return;
         }
+        if (value.kind === "physics-aggregate") {
+            const temporary =
+                this.allocateTemporaryCppName("destructure");
+            this.emit(`const auto ${temporary} = ${value.cpp};`);
+            for (const element of declaration.name.elements) {
+                if (element.initializer) {
+                    this.fail(
+                        element,
+                        "Default values in physics aggregate destructuring are not supported.",
+                    );
+                }
+                const { name, property } =
+                    this.bindingProperty(element);
+                const propertyValue =
+                    readProperty(
+                        this,
+                        { ...value, cpp: temporary },
+                        property,
+                        element,
+                    ) ??
+                    this.fail(
+                        element,
+                        `Unsupported physics aggregate property '${property}'.`,
+                    );
+                const cppName = this.allocateTemporaryCppName(
+                    `class_field_${name.text}`,
+                );
+                this.emit(
+                    `const auto ${cppName} = ${propertyValue.cpp};`,
+                );
+                this.defineVariable(name, {
+                    ...propertyValue,
+                    cpp: cppName,
+                });
+            }
+            return;
+        }
         if (
             value.kind !== "render-target-texture"
         ) {
@@ -2240,10 +2389,12 @@ class Compiler
                 );
             }
             if (propertyValue.kind !== "number") {
-                this.fail(
-                    element,
-                    `Record destructuring supports numeric properties only, received ${propertyValue.kind}.`,
-                );
+                // Compile-time records and resource handles already carry
+                // their native expressions. Destructuring aliases the same
+                // value just as an ordinary identifier binding does; only a
+                // numeric property needs distinct mutable local storage.
+                this.defineVariable(name, propertyValue);
+                continue;
             }
             const cppName = this.cppIdentifier(name.text);
             this.emit(
@@ -2577,10 +2728,30 @@ class Compiler
                     `Static record has no property '${property}'.`,
                 );
             }
-            return value;
+            if (owner.optionalFoundCpp === undefined) {
+                return value;
+            }
+            const present =
+                value.optionalFoundCpp === undefined
+                    ? owner.optionalFoundCpp
+                    : `(${owner.optionalFoundCpp} && ${value.optionalFoundCpp})`;
+            return { ...value, optionalFoundCpp: present };
+        }
+        const resolved = this.readOwnerProperty(owner, expression);
+        if (resolved) {
+            if (
+                expression.questionDotToken &&
+                owner.optionalFoundCpp !== undefined
+            ) {
+                const present =
+                    resolved.optionalFoundCpp === undefined
+                        ? owner.optionalFoundCpp
+                        : `(${owner.optionalFoundCpp} && ${resolved.optionalFoundCpp})`;
+                return { ...resolved, optionalFoundCpp: present };
+            }
+            return resolved;
         }
         return (
-            this.readOwnerProperty(owner, expression) ??
             this.fail(
                 expression,
                 `Unsupported property value '${this.propertyPathForDiagnostic(expression)}' (owner ${owner.kind} ${owner.dataType ? JSON.stringify(owner.dataType) : "without data type"}).`,
@@ -3666,9 +3837,17 @@ class Compiler
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
             if (signature === "void") {
+                const bound = this.lookupOptional(unwrapped);
+                if (
+                    bound?.kind === "callback" &&
+                    bound.cpp.length > 0 &&
+                    bound.nativeCallbackParameterTypes?.length === 0
+                ) {
+                    return `[&]() { ${bound.cpp}(); }`;
+                }
                 this.fail(
                     unwrapped,
-                    "A deferred callback must be written inline.",
+                    "A named deferred callback must resolve to a native zero-argument function.",
                 );
             }
             return this.compileNamedFrameCallback(
@@ -4528,9 +4707,11 @@ class Compiler
         const expression = only.expression;
         return this.withRecordScopes(owner, () => {
             const previousThis = this.activeThis();
-            if (this.classOf(owner)) {
-                this.defineThis(owner);
-            }
+            // A getter's `this` is its receiver for both class instances and
+            // object-literal accessors. The record may have crossed a return
+            // boundary that copied its compile-time Value wrapper, so its
+            // identity in classInstances is not a reliable dispatch guard.
+            this.defineThis(owner);
             try {
                 return this.compileValue(expression);
             } finally {
@@ -4551,9 +4732,12 @@ class Compiler
     ): void {
         const nullableResource =
             this.nullableResourceKind(name);
+        const nullableInitializer = nullableResource
+            ? this.compileValue(initializer)
+            : undefined;
         if (
-            initializer.kind === ts.SyntaxKind.NullKeyword &&
-            nullableResource
+            nullableResource &&
+            nullableInitializer?.kind === "json-null"
         ) {
             const cppName = this.allocateTemporaryCppName(
                 `class_field_${name.text}`,
@@ -4574,12 +4758,74 @@ class Compiler
         }
         this.bindLocalOrParameterValue(
             name,
-            this.compileValue(initializer),
+            nullableInitializer ?? this.compileValue(initializer),
             false,
             this.allocateTemporaryCppName(
                 `class_field_${name.text}`,
             ),
         );
+    }
+
+    /** Predeclare an uninitialized nullable resource class field. */
+    public bindNullableClassField(
+        name: ts.Identifier,
+    ): Value | undefined {
+        const resource = this.nullableResourceKind(name);
+        if (!resource) return undefined;
+        const cppName = this.allocateTemporaryCppName(
+            `class_field_${name.text}`,
+        );
+        this.emit(
+            `std::optional<${resource.cppType}> ${cppName};`,
+        );
+        const value: Value = {
+            kind: resource.kind,
+            cpp: `(*${cppName})`,
+            optionalFoundCpp: `${cppName}.has_value()`,
+            optionalStorageCpp: cppName,
+        };
+        this.defineVariable(name, value);
+        return value;
+    }
+
+    /** Predeclare optional storage for a resource-valued expression. */
+    public bindOptionalResourceValue(
+        name: ts.Identifier,
+    ): Value | undefined {
+        const declared = this.nullableResourceKind(name);
+        const typeName = this.checker.getTypeAtLocation(name).symbol?.name;
+        const direct = typeName?.endsWith("Node")
+            ? {
+                  kind: "audio-node" as const,
+                  cppType: "bbl::pal::AudioNodeHandle",
+              }
+            : typeName === "AudioBuffer"
+              ? {
+                    kind: "audio-buffer" as const,
+                    cppType: "bbl::pal::AudioBufferHandle",
+                }
+              : typeName === "AudioParam"
+                ? {
+                      kind: "audio-param" as const,
+                      cppType: "bbl::pal::AudioParamHandle",
+                  }
+                : undefined;
+        const resource = declared ?? direct;
+        if (!resource) return undefined;
+        const cppName = this.allocateTemporaryCppName(
+            `class_field_${name.text}`,
+        );
+        this.emit(
+            `std::optional<${resource.cppType}> ${cppName};`,
+        );
+        const value: Value = {
+            kind: resource.kind,
+            cpp: `(*${cppName})`,
+            optionalFoundCpp: `${cppName}.has_value()`,
+            optionalStorageCpp: cppName,
+        };
+        this.defineVariable(name, value);
+        return value;
     }
 
     /**
@@ -4636,13 +4882,14 @@ class Compiler
         instance: Value,
         declaration: ts.ClassDeclaration,
     ): void {
+        instance.classDeclaration = declaration;
         this.classInstances.set(instance, declaration);
     }
 
     public classOf(
         instance: Value,
     ): ts.ClassDeclaration | undefined {
-        return this.classInstances.get(instance);
+        return instance.classDeclaration ?? this.classInstances.get(instance);
     }
 
     public defaultEngine(): string | undefined {
@@ -4651,6 +4898,34 @@ class Compiler
 
     public reachJsRandom(): void {
         this.jsRandomReached = true;
+    }
+
+    /**
+     * Give a recursive local function JavaScript closure lifetime when an
+     * engine exists. A reference to the heap function keeps existing `[&]`
+     * callback lowering correct, while the engine owns the actual object.
+     */
+    public emitNativeCallbackStorage(
+        cppName: string,
+        signature: string,
+    ): void {
+        const engine = this.defaultEngine();
+        if (
+            !engine ||
+            this.activeNativeReturnType() !== undefined
+        ) {
+            // Namespace-scope data functions do not capture the entry
+            // engine. Their recursive callbacks are invoked synchronously
+            // within the function, so ordinary stack lifetime is sufficient.
+            this.emit(`std::function<${signature}> ${cppName};`);
+            return;
+        }
+        const owner = `${cppName}_owner`;
+        this.emit(
+            `auto ${owner} = std::make_shared<std::function<${signature}>>();`,
+        );
+        this.emit(`${engine}.native_callback_owners.push_back(${owner});`);
+        this.emit(`auto& ${cppName} = *${owner};`);
     }
 
     /**
@@ -4840,6 +5115,19 @@ class Compiler
             return true;
         }
         const value = this.compileValue(right);
+        if (value.kind === "json-null") {
+            this.emit(`${storage}.reset();`);
+            return true;
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "optional" &&
+            value.dataType.inner.kind === "handle" &&
+            value.dataType.inner.handle === target.kind
+        ) {
+            this.emit(`${storage} = ${value.cpp};`);
+            return true;
+        }
         if (value.kind !== target.kind) {
             this.fail(
                 right,
@@ -5570,17 +5858,26 @@ class Compiler
             lines = this.captureEmittedLines(() => {
                 const unwrapped = this.unwrap(callback) as
                     | ts.Identifier
+                    | ts.PropertyAccessExpression
                     | ts.ArrowFunction
                     | ts.FunctionExpression;
-                const bound = ts.isIdentifier(unwrapped)
-                    ? this.lookupOptional(unwrapped)
-                    : undefined;
+                const bound =
+                    ts.isIdentifier(unwrapped)
+                        ? this.lookupOptional(unwrapped)
+                        : ts.isPropertyAccessExpression(unwrapped)
+                          ? this.compileValue(unwrapped)
+                          : undefined;
                 const declaration =
                     bound?.kind === "callback" &&
                     bound.callbackDeclaration &&
                     !ts.isMethodDeclaration(bound.callbackDeclaration)
                         ? bound.callbackDeclaration
-                        : unwrapped;
+                        : ts.isPropertyAccessExpression(unwrapped)
+                          ? this.fail(
+                                unwrapped,
+                                "Platform callback property does not resolve to a function value.",
+                            )
+                          : unwrapped;
                 const compile = () =>
                     this.compileCallbackWithValues(
                         declaration,
@@ -5866,6 +6163,34 @@ class Compiler
                 },
             };
         }
+        if (
+            (owner.kind === "mesh" || owner.kind === "transform-node") &&
+            ["position", "rotation", "scaling"].includes(
+                expression.name.text,
+            )
+        ) {
+            const engine = this.requireEngine(owner, expression);
+            const collection =
+                owner.kind === "mesh" ? "meshes" : "transform_nodes";
+            const field = expression.name.text;
+            const component = (name: "x" | "y" | "z"): Value => ({
+                kind: "number",
+                cpp:
+                    `${engine}.${collection}[${owner.cpp}.value].` +
+                    `${field}.${name}`,
+                dataType: { kind: "number" },
+                engineCpp: engine,
+            });
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    x: component("x"),
+                    y: component("y"),
+                    z: component("z"),
+                },
+            };
+        }
         if (owner.kind === "task" && owner.geometryTask) {
             return this.readGeometryTaskProperty(
                 owner,
@@ -6131,12 +6456,16 @@ class Compiler
         identifier: ts.Identifier,
         argument: ts.Expression,
     ): void {
-        const dataType =
+        let dataType =
             this.dataLowerer.dataTypeAt(identifier);
+        if (dataType?.kind === "struct") {
+            dataType = this.dataTypes.markStoredObjectReferences(dataType);
+        }
         if (!dataType || dataType.kind === "handle") {
+            const actual = this.compileValue(argument);
             this.bindParameterValue(
                 identifier,
-                this.compileValue(argument),
+                actual,
             );
             return;
         }
@@ -6177,6 +6506,95 @@ class Compiler
         );
     }
 
+    /** Materialize scalar members when a compile-time value escapes. */
+    public materializeEscapingValue(
+        value: Value,
+        label: string,
+    ): Value {
+        if (value.kind === "record") {
+            return this.materializeRecordScalars(value, label, true);
+        }
+        if (value.kind === "tuple" && value.tupleElements) {
+            return {
+                ...value,
+                tupleElements: value.tupleElements.map((element, index) =>
+                    this.materializeEscapingValue(
+                        element,
+                        `${label}_${index}`,
+                    ),
+                ),
+            };
+        }
+        return value;
+    }
+
+    /** Materialize scalar members when a compile-time record escapes. */
+    private materializeRecordScalars(
+        record: Value,
+        label: string,
+        preserveIdentity = false,
+    ): Value {
+        const properties: Record<string, Value> = {};
+        for (const [name, property] of Object.entries(
+            record.recordProperties ?? {},
+        )) {
+            if (property.kind === "record") {
+                properties[name] = this.materializeRecordScalars(
+                    property,
+                    `${label}_${name}`,
+                    preserveIdentity,
+                );
+                continue;
+            }
+            const cppName = this.allocateTemporaryCppName(
+                `${label}_${name}`,
+            );
+            if (property.kind === "number") {
+                const {
+                    staticNumber: _staticNumber,
+                    ...dynamicProperty
+                } = property;
+                this.emit(
+                    `double ${cppName} = ${
+                        property.staticNumber === undefined
+                            ? property.cpp
+                            : doubleLiteral(property.staticNumber)
+                    };`,
+                );
+                properties[name] = {
+                    ...dynamicProperty,
+                    cpp: cppName,
+                };
+                continue;
+            }
+            if (property.kind === "boolean") {
+                this.emit(`bool ${cppName} = ${property.cpp};`);
+                properties[name] = {
+                    ...property,
+                    cpp: cppName,
+                };
+                continue;
+            }
+            if (property.staticString !== undefined) {
+                this.emit(
+                    `std::string ${cppName} = ${this.cppString(property.staticString)};`,
+                );
+                properties[name] = {
+                    kind: "data",
+                    cpp: cppName,
+                    dataType: { kind: "string" },
+                };
+                continue;
+            }
+            properties[name] = property;
+        }
+        if (preserveIdentity) {
+            record.recordProperties = properties;
+            return record;
+        }
+        return { ...record, recordProperties: properties };
+    }
+
     public compileCallbackWithValues(
         declaration:
             | ts.Identifier
@@ -6200,6 +6618,116 @@ class Compiler
             arguments_,
             callNode,
         );
+    }
+
+    /**
+     * Register the callback shape emitted by the pinned collision-event walk.
+     *
+     * The body is specialized after startup lowering has seen later callback
+     * assignments, then inserted before `startEngine`. Registration itself
+     * stays at the source site through the forwarding lambda returned here.
+     */
+    public compilePhysicsCollisionCallback(
+        expression: ts.Expression,
+    ): string {
+        const callback = this.unwrap(expression);
+        if (
+            !ts.isIdentifier(callback) &&
+            !ts.isArrowFunction(callback) &&
+            !ts.isFunctionExpression(callback)
+        ) {
+            this.fail(
+                callback,
+                "Physics collision callbacks must be a local function or function literal.",
+            );
+        }
+        const event = this.allocateTemporaryCppName("physics_collision");
+        const callbackName = this.allocateTemporaryCppName(
+            "physics_collision_callback",
+        );
+        this.reachJsData();
+        this.emit(
+            `std::function<void(const bbl::upstream::PhysicsCollisionInfo&)> ${callbackName};`,
+        );
+        this.deferredPhysicsCallbacks.push({
+            callback,
+            cppName: callbackName,
+            eventName: event,
+            node: expression,
+            scopes: this.variableScopes.map((scope) => new Map(scope)),
+        });
+        return (
+            `[&](const bbl::upstream::PhysicsCollisionInfo& ${event}) { ` +
+            `if (${callbackName}) { ${callbackName}(${event}); } }`
+        );
+    }
+
+    /** Emit deferred collision bodies immediately before the engine starts. */
+    private emitDeferredPhysicsCallbacks(): void {
+        if (this.deferredPhysicsCallbacks.length === 0) return;
+        const emitted: string[] = [];
+        for (const deferred of this.deferredPhysicsCallbacks) {
+            const savedScopes = [...this.variableScopes];
+            this.variableScopes.length = 0;
+            this.variableScopes.push(...deferred.scopes);
+            const event = deferred.eventName;
+            const vec3 = (member: string): Value => ({
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    x: { kind: "number", cpp: `${event}.${member}.x` },
+                    y: { kind: "number", cpp: `${event}.${member}.y` },
+                    z: { kind: "number", cpp: `${event}.${member}.z` },
+                },
+            });
+            const info: Value = {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    type: {
+                        kind: "data",
+                        cpp:
+                            `std::string(bbl::upstream::physics_collision_type_name(` +
+                            `${event}.type))`,
+                        dataType: { kind: "string" },
+                    },
+                    point: vec3("point"),
+                    normal: vec3("normal"),
+                    impulse: { kind: "number", cpp: `${event}.impulse` },
+                },
+            };
+            const previousDepth = this.frameCallbackDepth;
+            this.frameCallbackDepth += 1;
+            try {
+                const lines = this.captureEmittedLines(() => {
+                    const result = this.compileCallbackWithValues(
+                        deferred.callback,
+                        [info],
+                        deferred.node,
+                    );
+                    if (result.cpp.length > 0) {
+                        this.emit(
+                            result.requiresExplicitDiscard
+                                ? `static_cast<void>(${result.cpp});`
+                                : `${result.cpp};`,
+                        );
+                    }
+                });
+                const indent = "    ".repeat(2);
+                emitted.push(
+                    `${indent}${deferred.cppName} = [&](const bbl::upstream::PhysicsCollisionInfo& ${event}) {`,
+                    ...lines.map((line) => `    ${line}`),
+                    `${indent}};`,
+                );
+            } finally {
+                this.frameCallbackDepth = previousDepth;
+                this.variableScopes.length = 0;
+                this.variableScopes.push(...savedScopes);
+            }
+        }
+        const insertion = this.engineStartMark?.index ?? this.body.length;
+        this.body.splice(insertion, 0, ...emitted);
+        this.deferredPhysicsCallbacks.length = 0;
     }
 
     private bindLocalOrParameterValue(
@@ -6255,8 +6783,7 @@ class Compiler
                 ? doubleLiteral(value.staticNumber)
                 : value.cpp;
         const maybeUnused =
-            value.kind === "boolean" ||
-            (parameter && value.staticNumber !== undefined)
+            value.kind === "boolean" || parameter
                 ? "[[maybe_unused]] "
                 : "";
         this.emit(
@@ -6266,6 +6793,12 @@ class Compiler
             ...value,
             cpp: cppName,
             ...(parameter ? { parameterBinding: true } : {}),
+            ...(parameter && value.staticHandleElements
+                ? {
+                      staticHandleElementsOwner:
+                          value.staticHandleElementsOwner ?? value,
+                  }
+                : {}),
         };
         if (
             value.kind === "data" &&
@@ -6390,13 +6923,25 @@ class Compiler
     public recordScenePbrNoColorView(
         sourceIndex: number | undefined,
     ): number {
+        this.sceneMaterialGltfAssetsBefore.push(
+            this.currentGltfAssetCount(),
+        );
         return this.sceneMaterials.recordScenePbrNoColorView(
             sourceIndex,
         );
     }
 
     public recordSceneMaterialSlot(): number {
+        this.sceneMaterialGltfAssetsBefore.push(
+            this.currentGltfAssetCount(),
+        );
         return this.sceneMaterials.recordSceneMaterialSlot();
+    }
+
+    private currentGltfAssetCount(): number {
+        return [...this.assets.values()].filter(
+            (asset) => asset.kind === "gltf",
+        ).length;
     }
 
     public recordScenePbrUnlit(index: number | undefined): void {
@@ -6643,6 +7188,10 @@ class Compiler
     /** `mesh.receiveShadows = true`, by scene-mesh index. */
     public recordShadowReceiver(sceneMeshIndex: number): void {
         this.shadowReceiverMeshes.add(sceneMeshIndex);
+    }
+
+    public recordDynamicShadowReceivers(): void {
+        this.dynamicShadowReceivers = true;
     }
 
     /** The scene slot the next `addToScene(scene, light)` fills. */

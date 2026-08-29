@@ -642,6 +642,11 @@ endif()
 # linked as the platform layer and carries the audio device
 # (`pal_audio_sdl_device.hpp`), so no second platform dependency appears.
 if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if("audio:decoded-buffer" IN_LIST BBLITE_RUNTIME_FEATURES)
+        set(BBLITE_AUDIO_DECODE_FILE ON)
+    else()
+        set(BBLITE_AUDIO_DECODE_FILE OFF)
+    endif()
     if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib")
         message(
             FATAL_ERROR
@@ -668,7 +673,11 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             )
         endif()
     endif()
-    if(NOT BBLITE_AUDIO_CAPTURE AND NOT BBLITE_LABSOUND_CORE_ONLY)
+    if(
+        NOT BBLITE_AUDIO_CAPTURE
+        AND NOT BBLITE_AUDIO_DECODE_FILE
+        AND NOT BBLITE_LABSOUND_CORE_ONLY
+    )
         message(
             FATAL_ERROR
             "An audio build without capture/codecs requires the core-only "
@@ -687,11 +696,11 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
         PRIVATE
             "${BBLITE_LABSOUND_DIR}/lib/LabSound.lib"
     )
-    if(BBLITE_AUDIO_CAPTURE)
+    if(BBLITE_AUDIO_CAPTURE OR BBLITE_AUDIO_DECODE_FILE)
         if(NOT EXISTS "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib")
             message(
                 FATAL_ERROR
-                "BBLITE_AUDIO_CAPTURE requires libnyquist at "
+                "Audio capture or decoded-file support requires libnyquist at "
                 "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib."
             )
         endif()
@@ -699,13 +708,16 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             bblite_native PRIVATE
             "${BBLITE_LABSOUND_DIR}/lib/libnyquist.lib"
         )
-        target_compile_definitions(
-            bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=1
-        )
+    endif()
+    if(BBLITE_AUDIO_CAPTURE)
+        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=1)
     else()
-        target_compile_definitions(
-            bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=0
-        )
+        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_CAPTURE=0)
+    endif()
+    if(BBLITE_AUDIO_DECODE_FILE)
+        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_DECODE_FILE=1)
+    else()
+        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_AUDIO_DECODE_FILE=0)
     endif()
     foreach(BBLITE_AUDIO_NODE_FEATURE IN ITEMS
         BUFFER_SOURCE OSCILLATOR BIQUAD_FILTER STEREO_PANNER
@@ -730,6 +742,7 @@ else()
         bblite_native PRIVATE
         BBLITE_HAS_AUDIO=0
         BBLITE_HAS_AUDIO_CAPTURE=0
+        BBLITE_HAS_AUDIO_DECODE_FILE=0
         BBLITE_HAS_AUDIO_BUFFER_SOURCE=0
         BBLITE_HAS_AUDIO_OSCILLATOR=0
         BBLITE_HAS_AUDIO_BIQUAD_FILTER=0

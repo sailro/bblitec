@@ -80,6 +80,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
 | [Physics](#physics) | Run | rigid bodies, primitive and convex-hull shapes, one fixed step per frame — over a substituted solver |
+| [Audio](#audio) | Compile → Run | packaged encoded clips decoded into Web Audio buffers; the reached graph and parameters run over a substituted engine |
 | [Shadows](#shadows) | Compile → Run | the receiver fragment composed per shadow-casting light at generation; the caster pass, the map and the comparison sampling at run time |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
 | [Post-process passes](#post-process-passes) | Compile → Run | each effect's stage composed by the pin at generation; the fullscreen pass, its uniforms and its viewport at run time |
@@ -112,7 +113,10 @@ analyzable entry file against one engine.
 - **Classes and factory records.** Reached local classes retain native identity,
   fields, constructors, methods, getters, and parameter properties; purely
   static factory records remain compile-time values and carry the scopes their
-  methods close over.
+  methods close over. A runtime factory record returned from a helper retains
+  its resource handles and callable identity while scalar members snapshot at
+  the return boundary. Recursive callbacks that escape into timers are retained
+  by the engine after their source scope returns.
 - **The plain-data model.** Interface structs, `T | null` optionals, dynamic
   arrays, insertion-ordered `Map`/`Set`, `ArrayBuffer`/`DataView`,
   `Uint8Array`/`Float32Array`/`Uint16Array`/`Uint32Array`, runtime strings,
@@ -234,6 +238,11 @@ Every remote URL the scene reaches is downloaded into
 and GLB with their external buffers and images, `.babylon` scenes with their
 textures, `.env`/`.hdr`/`.dds` environments, PNG/JPEG/WebP images, cubemap
 faces, and the pinned BRDF LUT.
+
+An image URI inside a GLB is resolved relative to that GLB and embedded as a
+new buffer view during packaging. The original BIN chunk stays intact and the
+JSON image becomes the same buffer-view-plus-MIME form the native loader
+already reads, so a built scene never needs the source file's directory tree.
 
 A `data:` URL is the one source that names no location: its bytes are in the
 scene's own text, so materializing it is a decode rather than a download, and
@@ -554,7 +563,11 @@ renderer and affect the following frame. The application may schedule itself
 again without growing the callback list. Browser `setInterval`/`clearInterval`
 are the recurring-timer arm of the same conductor: callbacks become due from
 that monotonic clock and run at the frame boundary, with no independent timer
-thread racing application state.
+thread racing application state. `setTimeout` shares that clock for finite
+non-negative delays. Zero remains a next-turn queue; real delays run once at
+the first frame boundary at or after their deadline. A timer that schedules
+itself keeps the callback object alive without growing the callback list or
+capturing dead stack storage.
 
 ### Cameras and input
 
@@ -1247,7 +1260,10 @@ The reached slice: `createHavokWorld` with an explicit or defaulted gravity;
 `createPrimitivePhysicsShapeHandle` builds without a mesh (sphere, box,
 capsule, cylinder), plus mesh-derived convex hulls with child geometry;
 `mass`, `friction`, `restitution`, fixed-timestep writes, motion-type and mass
-changes, world-space impulses, and `onPhysicsAfterStep`. The step registers at
+changes, world-space impulses and central forces, linear-velocity reads,
+collision membership masks, per-body collision-event enablement and deferred
+STARTED/CONTINUED/FINISHED callbacks, filtered raycasts, and
+`onPhysicsAfterStep`. The step registers at
 the *front* of the scene's
 before-render list, as the pin's `unshift` puts it, so a scene reading a
 pose in its own callback reads this frame's rather than the previous
@@ -1255,27 +1271,42 @@ frame's. A body's integrated position and rotation are written onto the same
 `MeshRecord` fields property animation writes, and bump the same
 `transform_version` the renderer re-reads.
 
-**A physics scene freezes itself, and that is what makes it measurable.**
-Every one in the corpus counts steps in `onPhysicsAfterStep` and, at the
-step its `?captureFrame=` query names, calls `stopEngine` from a zero-delay
-`setTimeout` — both halves reached rather than erased: the flag the frame
-conductor reads, and the one-shot callback it drains after the frame's own
-callbacks. Without those two the scene runs free and the two sides are at
-different steps, which makes any pixel comparison meaningless; with them,
-both sides stop at the same physics step. The reached zero-delay slice, its
-census, and the real-delay scenes that refuse are in
-[fidelity](fidelity.md#physics-contract).
+**A physics scene can freeze itself, and that is what makes the small physics
+gates measurable.** Those scenes count steps in `onPhysicsAfterStep` and, at
+the step their `?captureFrame=` query names, call `stopEngine` from a
+zero-delay `setTimeout`. Both halves are reached rather than erased: the flag
+the frame conductor reads and the next-turn callback it drains after the
+frame's own callbacks. Racer additionally exercises real-delay recursive
+timers while its physics remains live.
 
 Everything else in the pinned physics layer refuses at generation naming
 what it reached: triangle-mesh shapes, containers, heightfields, constraints,
-queries, triggers, collision events, the character controller, the debug
-viewer, floating origin, and the body controls not listed above.
+triggers, the character controller, the debug viewer, floating origin, and
+the body controls and query options not listed above.
+
+### Audio
+
+`createAudioEngineAsync` and `createSoundSourceAsync` keep the Lite engine's
+bus and lifecycle boundary while the scene builds the reached Web Audio graph:
+gain, oscillator and buffer-source nodes, connection/disconnection, loop and
+playback-rate state, starts/stops, one-shot `onended`, and live `AudioParam`
+values and schedules. Encoded Ogg clips reached through a generation-known
+`fetch`/`decodeAudioData` helper are packaged with the scene and decoded by
+LabSound/libnyquist at the context's sample rate. `AudioBuffer` channel data is
+retained as a mutable borrowed float span.
+
+The underlying Web Audio implementation is LabSound rather than the browser's,
+so scenes record `substituted-audio-engine`; the platform boundary and PCM
+validation are detailed in [fidelity](fidelity.md#audio-contract). Racer is the
+published gate for decoded engine, skid, motorcycle and impact buffers. The
+microphone, analyser, 3D panner, delay/convolver/compressor/waveshaper nodes and
+unreached parameter curves still refuse by name.
 
 ### Shadows
 
-Two shadow filters, both reached: a percentage-closer-filtered spot and an
-exponential-shadow-map directional light, and a single receiver may sample
-one of each.
+Two native shadow resource/filter families are reached — PCF and ESM — through
+four source factories: PCF spot, PCF directional, ESM directional and CSM
+directional. A single receiver may sample the reached filters by light slot.
 
 `createPcfSpotlightShadowGenerator(engine, light, cfg)` owns the GPU state —
 a `depth32float` map at `mapSize`, a comparison sampler under the pin's
@@ -1334,6 +1365,15 @@ needs no define of its own — every resource it wants some sibling already
 builds — so what the port adds for it is the factory, its defaults read off
 the pinned module, and the third arm of the per-frame refresh.
 
+**The CSM directional generator is an explicit single-map adaptation.** The
+pin allocates a depth-texture array, fits one map per camera-frustum cascade,
+and selects or blends them by view depth. The native resource seam retains the
+first camera-fitted cascade in one 2D PCF map. Its split formula, float
+view-projection inversion, clone-aware caster Z fit, texel snap, bias and
+nine-tap filter are still derived from the pinned CSM declarations. Farther
+coverage and cross-cascade blending are omitted and recorded as
+`csm-single-map-near-cascade` at high risk.
+
 **A composed row names a LIGHT, not a generator.** The pin numbers a
 receiver's group-2 rows `shadowTex_<lightIndex>`, where the index is "the
 position of its light in `scene.lights`" — so a scene whose shadow-casting
@@ -1363,16 +1403,18 @@ receiver then binds the map, the comparison sampler and the receiver block as
 the pin's group 2, and `shadowFactors[lightIndex]` scales that light's diffuse
 and specular contribution.
 
-What refuses at generation, by name: the cascaded generator, a node
+Imported meshes and runtime handle collections may cast or receive. A dynamic
+receiver keeps both composed receiver states and writes the live mesh-record
+lane; a dynamic caster list is evaluated when the shadow task runs.
+
+What refuses at generation, by name: a node
 receiver (`node-shadow.ts` is the third sibling of that one
 core, and needs the node family's group-2 wiring), a `receiveShadows` written
-to anything but `true` (the variant is selected at generation), an imported
-mesh as caster or receiver, and every generator option past the two factories'
-own reached sets (`mapSize`, `bias`,
-`darkness`, `near`, `far` for the spot and the directional PCF; those plus
-`depthScale`,
-`blurKernel`, `blurScale`, `frustumEdgeFalloff` and the two ortho bounds for
-the directional) — `normalBias` and `forceRefreshEveryFrame` among them.
+to anything but a statically known boolean (the variant is selected at
+generation), and generator controls outside the reached factory sets.
+`normalBias` and `forceRefreshEveryFrame` remain refused; CSM controls whose
+only effect belongs to omitted farther cascades are accepted, validated, and
+named by the fidelity adaptation rather than silently approximated.
 
 ### Navigation
 
@@ -1616,7 +1658,7 @@ before it trusts a measurement.
 
 | Family | Compile time | Run time |
 | --- | --- | --- |
-| glTF assets | download, Draco/meshopt decode, upstream feature-predicate specialization, capability defines | parse, build meshes/materials/skins, deindex, strip expansion, upload |
+| glTF assets | download, external buffer/image embedding, Draco/meshopt decode, upstream feature-predicate specialization, capability defines | parse, build meshes/materials/skins, deindex, strip expansion, upload |
 | Environments | HDR and DDS packaged (GGX prefilter, SH projection); BRDF LUT integrated | `.env` parsed, RGBD decoded, cubes uploaded and sampled |
 | Shaders | composition, specialization and reflection for both backends, plus the selected DXIL, SPIR-V, or MSL target for SDL_GPU | Dawn's embedded Tint and DXC compile the same WGSL at startup; pipelines built lazily per kind |
 | Sprites | the atlas image executed and baked | the frame grid derived from it, instance writes, the pass, the billboard sort |
@@ -1675,13 +1717,14 @@ is the boundaries that belong to no single family.
   reject later use; `new Array` elements zero-initialize; and `Math.random` is
   the pinned seeded sequence — each adaptation is recorded in `fidelity.json`
 - no networking. Physics is reached behind a substituted solver
-  ([above](#physics)) and a Web Audio prototype behind a substituted engine
-  ([fidelity](fidelity.md#audio-contract))
+  ([above](#physics)); packaged audio clips and the reached Web Audio graph run
+  behind a substituted engine ([fidelity](fidelity.md#audio-contract))
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
-- a scene-code mesh or PBR material created before a later glTF load fails,
-  because it would interleave the variant table's creation-order key
+- scene-code meshes and PBR materials may interleave glTF loads because their
+  recorded load counts reproduce creation-order handles in the variant table;
+  `.babylon` interleaving is not represented by that metadata
 - an orthographic camera composed with an environment skybox or ground fails,
   because those build their own perspective view-projection
 - an asset carrying more punctual light nodes than the pinned `MAX_LIGHTS`

@@ -26,6 +26,7 @@
 #include <deque>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
@@ -91,6 +92,8 @@ struct ShapeEntry {
     PhysicsMassProperties mass_properties{};
     bool has_exact_mass_properties = false;
     ShapeMaterial material{};
+    std::uint32_t membership_mask = 0xffffffffu;
+    std::uint32_t collide_mask = 0xffffffffu;
 };
 
 struct BodyEntry {
@@ -116,6 +119,14 @@ struct BodyEntry {
      * the body where the pin asked for it.
      */
     PhysicsTransform requested{};
+    std::uint32_t shape = 0;
+    bool collision_events_enabled = false;
+};
+
+struct ContactSnapshot {
+    std::array<double, 3> point{};
+    std::array<double, 3> normal{};
+    double impulse = 0.0;
 };
 
 struct WorldEntry {
@@ -125,6 +136,8 @@ struct WorldEntry {
     std::unique_ptr<btSequentialImpulseConstraintSolver> solver;
     std::unique_ptr<btDiscreteDynamicsWorld> world;
     std::uint64_t stabilized_total = 0;
+    std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
+    std::vector<PhysicsCollisionEvent> collision_events;
 };
 
 /**
@@ -294,6 +307,79 @@ int stabilize_contacting_bodies(
     return stabilized;
 }
 
+void collect_collision_events(WorldEntry& world_entry) {
+    std::unordered_map<std::uint64_t, ContactSnapshot> current;
+    const int manifold_count = world_entry.dispatcher->getNumManifolds();
+    for (int manifold_index = 0;
+         manifold_index < manifold_count;
+         ++manifold_index) {
+        const btPersistentManifold* manifold =
+            world_entry.dispatcher->getManifoldByIndexInternal(manifold_index);
+        const auto* object_a = static_cast<const btCollisionObject*>(
+            manifold->getBody0());
+        const auto* object_b = static_cast<const btCollisionObject*>(
+            manifold->getBody1());
+        const int index_a = object_a->getUserIndex();
+        const int index_b = object_b->getUserIndex();
+        if (
+            index_a <= 0 || index_b <= 0 ||
+            static_cast<std::size_t>(index_a) >= bodies().size() ||
+            static_cast<std::size_t>(index_b) >= bodies().size() ||
+            (!bodies()[static_cast<std::size_t>(index_a)].collision_events_enabled &&
+             !bodies()[static_cast<std::size_t>(index_b)].collision_events_enabled)) {
+            continue;
+        }
+        const std::uint32_t low = static_cast<std::uint32_t>(
+            std::min(index_a, index_b));
+        const std::uint32_t high = static_cast<std::uint32_t>(
+            std::max(index_a, index_b));
+        const std::uint64_t key =
+            (static_cast<std::uint64_t>(low) << 32) | high;
+        for (int point_index = 0;
+             point_index < manifold->getNumContacts();
+             ++point_index) {
+            const btManifoldPoint& point =
+                manifold->getContactPoint(point_index);
+            if (point.getDistance() > 0.0) {
+                continue;
+            }
+            const btVector3 position = point.getPositionWorldOnB();
+            const btVector3 normal = point.m_normalWorldOnB;
+            ContactSnapshot& snapshot = current[key];
+            snapshot.point = {position.x(), position.y(), position.z()};
+            snapshot.normal = {normal.x(), normal.y(), normal.z()};
+            snapshot.impulse = std::max(
+                snapshot.impulse,
+                static_cast<double>(point.getAppliedImpulse()));
+        }
+    }
+
+    world_entry.collision_events.clear();
+    world_entry.collision_events.reserve(
+        current.size() + world_entry.previous_contacts.size());
+    for (const auto& [key, snapshot] : current) {
+        world_entry.collision_events.push_back(PhysicsCollisionEvent{
+            world_entry.previous_contacts.contains(key)
+                ? PhysicsCollisionEventType::continued
+                : PhysicsCollisionEventType::started,
+            snapshot.point,
+            snapshot.normal,
+            snapshot.impulse,
+        });
+    }
+    for (const auto& [key, snapshot] : world_entry.previous_contacts) {
+        if (!current.contains(key)) {
+            world_entry.collision_events.push_back(PhysicsCollisionEvent{
+                PhysicsCollisionEventType::finished,
+                snapshot.point,
+                snapshot.normal,
+                0.0,
+            });
+        }
+    }
+    world_entry.previous_contacts = std::move(current);
+}
+
 /**
  * The pin configures a body in Havok's order: create, motion type, add to
  * world, transform, shape, material, mass. Havok reads each write live;
@@ -322,7 +408,18 @@ void flush_pending_readds(WorldEntry& world_entry, std::uint32_t world) {
         if (entry.in_world) {
             world_entry.world->removeRigidBody(entry.body.get());
         }
-        world_entry.world->addRigidBody(entry.body.get());
+        const ShapeEntry* shape =
+            entry.shape > 0 && entry.shape < shapes().size()
+                ? &shapes()[entry.shape]
+                : nullptr;
+        world_entry.world->addRigidBody(
+            entry.body.get(),
+            shape
+                ? static_cast<int>(shape->membership_mask)
+                : -1,
+            shape
+                ? static_cast<int>(shape->collide_mask)
+                : -1);
         entry.in_world = true;
         if (!entry.start_asleep) {
             entry.body->activate(true);
@@ -524,6 +621,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
     // remain invariant after a step, so make that invariant observable here
     // too before transforms and counters are read.
     clamp_world_velocities(*entry.world);
+    collect_collision_events(entry);
     const int stabilized_bodies =
         stabilize_contacting_bodies(entry, world.value, seconds);
     entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
@@ -624,6 +722,36 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         }
         ++step_index;
     }
+}
+
+const std::vector<PhysicsCollisionEvent>& physics_world_collision_events(
+    PhysicsWorldHandle world) {
+    return world_at(world).collision_events;
+}
+
+PhysicsRaycastResult physics_world_raycast(
+    PhysicsWorldHandle world,
+    std::array<double, 3> from,
+    std::array<double, 3> to,
+    std::uint32_t membership,
+    std::uint32_t collide_with) {
+    const btVector3 ray_from = to_bt(from);
+    const btVector3 ray_to = to_bt(to);
+    btCollisionWorld::ClosestRayResultCallback callback(ray_from, ray_to);
+    callback.m_collisionFilterGroup = static_cast<int>(membership);
+    callback.m_collisionFilterMask = static_cast<int>(collide_with);
+    world_at(world).world->rayTest(ray_from, ray_to, callback);
+    if (!callback.hasHit()) {
+        return {};
+    }
+    const btVector3& point = callback.m_hitPointWorld;
+    const btVector3& normal = callback.m_hitNormalWorld;
+    return PhysicsRaycastResult{
+        true,
+        {point.x(), point.y(), point.z()},
+        {normal.x(), normal.y(), normal.z()},
+        static_cast<double>((point - ray_from).length()),
+    };
 }
 
 // --- Shapes ----------------------------------------------------------
@@ -802,6 +930,18 @@ void physics_shape_set_material(
     };
 }
 
+void physics_shape_set_filter_membership_mask(
+    PhysicsShapeHandle shape,
+    std::uint32_t membership_mask) {
+    ShapeEntry& shape_entry = shape_at(shape);
+    shape_entry.membership_mask = membership_mask;
+    for (BodyEntry& body : bodies()) {
+        if (body.shape == shape.value) {
+            mark_body_dirty(body);
+        }
+    }
+}
+
 // --- Bodies ----------------------------------------------------------
 
 PhysicsBodyHandle physics_body_create() {
@@ -859,6 +999,7 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     BodyEntry& entry = body_at(body);
     ShapeEntry& shape_entry = shape_at(shape);
+    entry.shape = shape.value;
     entry.node_from_body = shape_entry.node_from_body;
     entry.body->setCollisionShape(shape_entry.shape.get());
     entry.body->setUserPointer(&shape_entry.material);
@@ -1001,6 +1142,18 @@ void physics_body_apply_impulse(
             static_cast<double>(entry.body->getLinearVelocity().length()),
             static_cast<double>(entry.body->getAngularVelocity().length()));
     }
+}
+
+std::array<double, 3> physics_body_get_linear_velocity(
+    PhysicsBodyHandle body) {
+    const btVector3 velocity = body_at(body).body->getLinearVelocity();
+    return {velocity.x(), velocity.y(), velocity.z()};
+}
+
+void physics_body_set_collision_events_enabled(
+    PhysicsBodyHandle body,
+    bool enabled) {
+    body_at(body).collision_events_enabled = enabled;
 }
 
 }  // namespace bbl::pal

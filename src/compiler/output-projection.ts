@@ -98,6 +98,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:esm": [],
     "shadow:pcf": [],
     "shadow:pcf-directional": [],
+    "shadow:csm-single-map": [],
     "shadow:task": [],
     "sprite:2d": [],
     "sprite:uv-scroll": [],
@@ -130,6 +131,7 @@ export const featureSources: Record<Feature, string[]> = {
     // Babylon does with those nodes stays generated.
     "audio:engine": ["src/pal_audio_labsound.cpp"],
     "audio:buffer-source": [],
+    "audio:decoded-buffer": [],
     "audio:oscillator": [],
     "audio:biquad-filter": [],
     "audio:stereo-panner": [],

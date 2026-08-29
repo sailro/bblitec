@@ -244,7 +244,7 @@ async function materializeAsset(
         return;
     }
 
-    if (asset.kind === "gltf" && /\.gltf(?:[?#]|$)/i.test(source)) {
+    if (asset.kind === "gltf" && /\.(?:gltf|glb)(?:[?#]|$)/i.test(source)) {
         writeFileSync(
             destination,
             await resolveGeometryExtensions(

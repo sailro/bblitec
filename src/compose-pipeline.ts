@@ -129,6 +129,23 @@ export function staticSceneLightArms(
     };
 }
 
+/**
+ * Every mesh shape a dynamically populated caster task can pair with one
+ * asset material. The task may receive that asset's imported meshes or a
+ * scene-code mesh retaining the asset material, and a thin-instance pool can
+ * attach to either after registration.
+ */
+export function dynamicCasterFeatureSets(
+    assetFeatures: readonly number[],
+    sceneFeatures: readonly number[],
+    runtimeBits: readonly number[],
+): number[] {
+    return expandRuntimeMeshFeatureSets(
+        [...new Set([...assetFeatures, ...sceneFeatures])],
+        runtimeBits,
+    ).sort((left, right) => left - right);
+}
+
 // Every glTF material the scene loads, composed through Babylon Lite's own
 // pipeline. An arm it reaches that the emitted fragment does not carry is
 // refused here, where it names the material, rather than shipping as a
@@ -209,7 +226,8 @@ export async function composeScenePipeline({
         ? staticSceneLightArms(
               staticLightKinds,
               result.manifest.shadowGenerators.length > 0 &&
-                  result.manifest.shadowReceiverMeshes.length > 0,
+                  (result.manifest.shadowReceiverMeshes.length > 0 ||
+                      result.manifest.dynamicShadowReceivers),
           )
         : undefined;
     const sceneArms = await pinnedSceneArms({
@@ -240,34 +258,42 @@ export async function composeScenePipeline({
         specializationFeatures.assetTransmission;
     // The runtime keys the variant table by material handle, which is
     // creation order: each glTF load appends its materials, and a scene
-    // material appends where its `createPbrMaterial` runs. Every reached
-    // scene creates its materials after every load, so the sequence is the
-    // assets' materials in load order followed by the scene's; a material
-    // created before a later load would interleave, and stays a named error.
+    // material appends where its `createPbrMaterial` runs. The recorded glTF
+    // load count at each scene material creation interleaves those two sources
+    // into the same handle order the runtime assigns.
     const composedVariants: PinnedRenderableVariant[] = [];
     // The mesh half of the variant key, per runtime mesh handle: each glTF
     // load appends its renderables in the pinned loader's node-order walk,
     // and each scene-code builder appends one mesh of the fixed procedural
     // attribute set, in the same creation order the runtime hands out
-    // handles. Computed before composition because a scene-code material can
-    // be assigned to any of these renderables, so its variants compose over
-    // every distinct set here.
+    // handles. Scene-code meshes are inserted at the glTF load count recorded
+    // when their builder ran, so interleaved creation retains handle order.
+    // Computed before composition because a scene-code material can be assigned
+    // to any of these renderables, so its variants compose over every distinct
+    // set here.
     const renderableMeshFeatures: number[] = [];
-    for (const asset of gltfAssets) {
-        renderableMeshFeatures.push(
-            ...(await gltfRenderableFeatures(
-                resolve(outputPath, "assets", asset.output),
-            )),
-        );
-    }
-    for (const mesh of result.manifest.sceneMeshes) {
-        if (mesh.gltfAssetsBefore !== gltfAssets.length) {
+    const gltfRenderableFeatureSets: (readonly number[])[] = [];
+    const sceneMeshRows = new Array<number>(
+        result.manifest.sceneMeshes.length,
+    );
+    const sceneMeshesByLoadCount = new Map<number, number[]>();
+    result.manifest.sceneMeshes.forEach((mesh, index) => {
+        if (
+            mesh.gltfAssetsBefore < 0 ||
+            mesh.gltfAssetsBefore > gltfAssets.length
+        ) {
             throw new Error(
-                "A scene-code mesh created before a later glTF load " +
-                    "would interleave the renderable key; no scene " +
-                    "reaches this yet.",
+                "A scene-code mesh records an impossible glTF load count.",
             );
         }
+        const bucket =
+            sceneMeshesByLoadCount.get(mesh.gltfAssetsBefore) ?? [];
+        bucket.push(index);
+        sceneMeshesByLoadCount.set(mesh.gltfAssetsBefore, bucket);
+    });
+    const appendSceneMesh = async (index: number): Promise<void> => {
+        const mesh = result.manifest.sceneMeshes[index]!;
+        sceneMeshRows[index] = renderableMeshFeatures.length;
         if (mesh.kind === "from-data") {
             // The recorded streams, walked exactly the way a glTF primitive
             // is: normals are a required argument, so the flat-normal arm is
@@ -284,9 +310,22 @@ export async function composeScenePipeline({
                     },
                 }),
             );
-            continue;
+            return;
         }
         renderableMeshFeatures.push(await proceduralRenderableFeatures());
+    };
+    for (let loadCount = 0; loadCount <= gltfAssets.length; loadCount += 1) {
+        for (const index of sceneMeshesByLoadCount.get(loadCount) ?? []) {
+            await appendSceneMesh(index);
+        }
+        const asset = gltfAssets[loadCount];
+        if (asset) {
+            const features = await gltfRenderableFeatures(
+                resolve(outputPath, "assets", asset.output),
+            );
+            gltfRenderableFeatureSets.push(features);
+            renderableMeshFeatures.push(...features);
+        }
     }
     // The generators in `scene.lights` order, which is the ordinal every
     // shadow contract names: the composed receiver's group-2 rows, the
@@ -313,10 +352,10 @@ export async function composeScenePipeline({
     const receiveShadowsBit = shadowLights.length > 0
         ? await pinnedReceiveShadowsBit()
         : 0;
-    // The scene's own meshes follow every asset renderable, in creation
-    // order, so a receiver's row is its creation index in that tail.
-    const sceneMeshRowBase =
-        renderableMeshFeatures.length - result.manifest.sceneMeshes.length;
+    const dynamicReceiverBits =
+        result.manifest.dynamicShadowReceivers && receiveShadowsBit !== 0
+            ? [receiveShadowsBit]
+            : [];
     // The runtime fallback for meshes created after registration is read
     // BEFORE the receive bit is ORed on, because it describes an ATTRIBUTE
     // set: a mesh a scene builds at run time carries the builders'
@@ -327,7 +366,7 @@ export async function composeScenePipeline({
     // site -- so handles past the static table take this fallback when every
     // scene-code mesh shares one attribute set, and refuse otherwise.
     const sceneMeshAttributeValues = new Set(
-        renderableMeshFeatures.slice(sceneMeshRowBase),
+        sceneMeshRows.map((row) => renderableMeshFeatures[row] ?? 0),
     );
     const runtimeMeshFeatures =
         result.manifest.sceneMeshes.length === 0
@@ -338,10 +377,10 @@ export async function composeScenePipeline({
     // Each receiver's bit onto its own row, in place: from here on this walk
     // is the pin's own composition key -- the primitive's attributes plus
     // `MSH_RECEIVE_SHADOWS` -- and both family tables read it. An asset
-    // renderable never carries the bit, because an imported mesh refuses at
-    // the assignment.
+    // renderable reached through a runtime collection is handled by
+    // `dynamicReceiverBits`, because it has no generation-known scene row.
     for (const index of result.manifest.shadowReceiverMeshes) {
-        const row = sceneMeshRowBase + index;
+        const row = sceneMeshRows[index]!;
         renderableMeshFeatures[row] =
             (renderableMeshFeatures[row] ?? 0) | receiveShadowsBit;
     }
@@ -358,13 +397,17 @@ export async function composeScenePipeline({
         ? [await pinnedThinInstancesBit()]
         : [];
     const thinInstancesBit = runtimePbrMeshBits[0] ?? 0;
+    const runtimePbrCompositionBits = [
+        ...runtimePbrMeshBits,
+        ...dynamicReceiverBits,
+    ];
     const assetMaterialMeshFeatures = expandRuntimeMeshFeatureSets(
         result.manifest.sceneMeshes.flatMap((mesh, index) =>
             mesh.assetPbrMaterial
-                ? [renderableMeshFeatures[sceneMeshRowBase + index] ?? 0]
+                ? [renderableMeshFeatures[sceneMeshRows[index]!] ?? 0]
                 : [],
         ),
-        runtimePbrMeshBits,
+        runtimePbrCompositionBits,
     );
     const geometryTasks = result.manifest.geometryOutputTasks.map(
         (task, index) => ({
@@ -382,15 +425,64 @@ export async function composeScenePipeline({
                 : "no-color",
         );
     }
-    const dynamicCasterMeshFeatures = expandRuntimeMeshFeatureSets(
+    const dynamicCasterSceneMeshFeatures =
         sceneMeshAttributeValues.size > 0
             ? [...sceneMeshAttributeValues]
-            : [await proceduralRenderableFeatures()],
-        runtimePbrMeshBits,
+            : [await proceduralRenderableFeatures()];
+    const gltfMaterialCounts = gltfAssets.map((asset) =>
+        gltfMaterialCount(resolve(outputPath, "assets", asset.output)),
     );
-    let materialIndexBase = 0;
+    const gltfMaterialPrefix = [0];
+    for (const count of gltfMaterialCounts) {
+        gltfMaterialPrefix.push(gltfMaterialPrefix.at(-1)! + count);
+    }
+    const sceneMaterialLoadCounts =
+        result.manifest.sceneMaterialGltfAssetsBefore ??
+        new Array(result.manifest.sceneMaterialCount).fill(
+            gltfAssets.length,
+        );
+    if (
+        sceneMaterialLoadCounts.length !==
+        result.manifest.sceneMaterialCount
+    ) {
+        throw new Error(
+            "Scene material creation-order metadata does not match its count.",
+        );
+    }
+    for (const count of sceneMaterialLoadCounts) {
+        if (count < 0 || count > gltfAssets.length) {
+            throw new Error(
+                "A scene material records an impossible glTF load count.",
+            );
+        }
+    }
+    const absoluteSceneMaterialIndex = (sceneIndex: number): number =>
+        sceneIndex +
+        gltfMaterialPrefix[sceneMaterialLoadCounts[sceneIndex]!]!;
+    const assetMaterialBases = gltfAssets.map((_, assetIndex) =>
+        gltfMaterialPrefix[assetIndex]! +
+        sceneMaterialLoadCounts.filter(
+            (count) => count <= assetIndex,
+        ).length,
+    );
+    const totalAssetMaterials = gltfMaterialPrefix.at(-1)!;
+    const absoluteScenePbrMaterials =
+        result.manifest.scenePbrMaterials.map((material) => ({
+            ...material,
+            materialsBefore: absoluteSceneMaterialIndex(
+                material.materialsBefore,
+            ),
+            ...(material.sourceMaterialsBefore === undefined
+                ? {}
+                : {
+                      sourceMaterialsBefore: absoluteSceneMaterialIndex(
+                          material.sourceMaterialsBefore,
+                      ),
+                  }),
+        }));
     let assetMetallicReflectanceRegistered = false;
-    for (const asset of gltfAssets) {
+    for (const [assetIndex, asset] of gltfAssets.entries()) {
+        const materialIndexBase = assetMaterialBases[assetIndex]!;
         const path = resolve(outputPath, "assets", asset.output);
         const composed = await composeGltfMaterials(path, {
             linearImageProcessing,
@@ -407,6 +499,18 @@ export async function composeScenePipeline({
                 linearImageProcessing,
                 ...(asset.selectedVariant
                     ? { selectedVariant: asset.selectedVariant }
+                    : {}),
+                ...(dynamicReceiverBits.length > 0
+                    ? {
+                          meshFeatureSets: expandRuntimeMeshFeatureSets(
+                              gltfRenderableFeatureSets[assetIndex] ?? [],
+                              dynamicReceiverBits,
+                          ),
+                          shadowLights,
+                          perMeshLightLists: result.manifest.assets.some(
+                              (entry) => entry.kind === "babylon",
+                          ),
+                      }
                     : {}),
             },
             // A PBR mesh drawn in a geometry-output task resolves the pin's
@@ -447,12 +551,15 @@ export async function composeScenePipeline({
                             ? { selectedVariant: asset.selectedVariant }
                             : {}),
                         materialView,
-                        meshFeatureSets: dynamicCasterMeshFeatures,
+                        meshFeatureSets: dynamicCasterFeatureSets(
+                            gltfRenderableFeatureSets[assetIndex] ?? [],
+                            dynamicCasterSceneMeshFeatures,
+                            runtimePbrMeshBits,
+                        ),
                     },
                 )),
             );
         }
-        materialIndexBase += gltfMaterialCount(path);
     }
     // The caster material VIEWS `registerSceneWithShadowSupport` appends at
     // run time, composed here because a PBR view resolves its variant by
@@ -476,11 +583,13 @@ export async function composeScenePipeline({
             // caster ahead of a PBR one would otherwise hand the PBR view
             // the Standard view's handle.
             const materialsBefore =
-                result.manifest.sceneMaterialCount + casterViewCount;
+                totalAssetMaterials +
+                result.manifest.sceneMaterialCount +
+                casterViewCount;
             casterViewCount += 1;
             if (caster.pbrMaterial === null) continue;
             const source =
-                result.manifest.scenePbrMaterials[caster.pbrMaterial];
+                absoluteScenePbrMaterials[caster.pbrMaterial];
             if (!source) {
                 throw new Error(
                     "A shadow caster names scene PBR material " +
@@ -505,7 +614,7 @@ export async function composeScenePipeline({
                 meshFeatureSets: expandRuntimeMeshFeatureSets(
                     [
                         renderableMeshFeatures[
-                            sceneMeshRowBase + caster.meshIndex
+                            sceneMeshRows[caster.meshIndex]!
                         ] ?? 0,
                     ],
                     runtimePbrMeshBits,
@@ -514,7 +623,7 @@ export async function composeScenePipeline({
         }
     }
     for (const materialView of dynamicCasterViews) {
-        for (const source of result.manifest.scenePbrMaterials) {
+        for (const source of absoluteScenePbrMaterials) {
             if (source.noColorView || source.esmShadowView) continue;
             casterViews.push(
                 materialView === "esm-shadow"
@@ -523,7 +632,7 @@ export async function composeScenePipeline({
             );
         }
     }
-    const exactScenePbrMaterials = result.manifest.scenePbrMaterials.map(
+    const exactScenePbrMaterials = absoluteScenePbrMaterials.map(
         (material) => {
             if (material.unknownSceneMesh || !material.sceneMeshIndices) {
                 return material;
@@ -532,7 +641,7 @@ export async function composeScenePipeline({
             for (const meshIndex of material.sceneMeshIndices) {
                 const row = result.manifest.sceneMeshes[meshIndex];
                 const base = renderableMeshFeatures[
-                    sceneMeshRowBase + meshIndex
+                    sceneMeshRows[meshIndex]!
                 ] ?? 0;
                 if (row?.thinInstances === "always") {
                     featureSets.add(base | thinInstancesBit);
@@ -556,26 +665,17 @@ export async function composeScenePipeline({
         ...casterViews,
     ];
     if (result.manifest.scenePbrMaterials.length > 0) {
-        for (const material of result.manifest.scenePbrMaterials) {
-            if (material.gltfAssetsBefore !== gltfAssets.length) {
-                throw new Error(
-                    "A scene-code PBR material created before a later glTF " +
-                        "load would interleave the variant table's " +
-                        "creation-order key; no scene reaches this yet.",
-                );
-            }
-        }
         composedVariants.push(
             ...(await composeScenePbrVariants(
                 scenePbrMaterials,
                 sceneArms,
-                materialIndexBase,
+                0,
                 expandRuntimeMeshFeatureSets(
                     [
                         ...renderableMeshFeatures,
                         await proceduralRenderableFeatures(),
                     ],
-                    runtimePbrMeshBits,
+                    runtimePbrCompositionBits,
                 ),
                 {
                     linearImageProcessing,
@@ -614,8 +714,8 @@ export async function composeScenePipeline({
     let standardRenderableMeshFeatures: number[] | undefined;
     // The scene-code rows the Standard table keys on: the same walk both
     // families read, sliced to the scene's own meshes.
-    const standardSceneMeshFeatures = renderableMeshFeatures.slice(
-        sceneMeshRowBase,
+    const standardSceneMeshFeatures = sceneMeshRows.map(
+        (row) => renderableMeshFeatures[row] ?? 0,
     );
     if (result.manifest.features.includes("material:standard")) {
         const babylonAssets = result.manifest.assets
@@ -680,7 +780,12 @@ export async function composeScenePipeline({
                 ),
                 sceneMaterials: sceneStandardMaterials,
                 sceneMeshFeatureValues: [
-                    ...new Set(standardSceneMeshFeatures),
+                    ...new Set(
+                        expandRuntimeMeshFeatureSets(
+                            standardSceneMeshFeatures,
+                            dynamicReceiverBits,
+                        ),
+                    ),
                 ],
                 shadowLights,
                 geometryTasks: result.manifest.geometryOutputTasks.map(
@@ -693,32 +798,40 @@ export async function composeScenePipeline({
             },
             (path) => readFileSync(path, "utf8"),
         );
-        // The Standard mesh table covers every runtime mesh handle in
-        // creation order: each asset's renderables as its loader creates
-        // them (`.babylon` records carry no composition-relevant bits, so
-        // zero rows sized by the loader's own walk), then the scene-code
-        // meshes.
-        standardRenderableMeshFeatures = [];
-        for (const asset of result.manifest.assets) {
-            if (asset.kind === "gltf") {
-                standardRenderableMeshFeatures.push(
-                    ...(await gltfRenderableFeatures(
-                        resolve(outputPath, "assets", asset.output),
-                    )),
-                );
-            } else if (asset.kind === "babylon") {
-                const count = babylonRenderableCount(
-                    readFileSync(
-                        resolve(outputPath, "assets", asset.output),
-                        "utf8",
-                    ),
-                );
-                for (let index = 0; index < count; index += 1) {
-                    standardRenderableMeshFeatures.push(0);
+        if (babylonAssets.length === 0) {
+            // The PBR-family walk above is actually a shared mesh-feature
+            // walk: with glTF plus scene builders it already follows runtime
+            // creation order, including a scene mesh created before a later
+            // glTF load. Standard reads the same pinned mesh bits, so retain
+            // that exact interleaving instead of rebuilding assets-first.
+            standardRenderableMeshFeatures = [...renderableMeshFeatures];
+        } else {
+            // `.babylon` records carry no composition-relevant bits. No
+            // adopted `.babylon` scene interleaves a scene-code builder with
+            // its load, and that format is not represented by the glTF load
+            // count recorded on a builder, so retain its loader-order path.
+            standardRenderableMeshFeatures = [];
+            let gltfAssetIndex = 0;
+            for (const asset of result.manifest.assets) {
+                if (asset.kind === "gltf") {
+                    standardRenderableMeshFeatures.push(
+                        ...(gltfRenderableFeatureSets[gltfAssetIndex] ?? []),
+                    );
+                    gltfAssetIndex += 1;
+                } else if (asset.kind === "babylon") {
+                    const count = babylonRenderableCount(
+                        readFileSync(
+                            resolve(outputPath, "assets", asset.output),
+                            "utf8",
+                        ),
+                    );
+                    for (let index = 0; index < count; index += 1) {
+                        standardRenderableMeshFeatures.push(0);
+                    }
                 }
             }
+            standardRenderableMeshFeatures.push(...standardSceneMeshFeatures);
         }
-        standardRenderableMeshFeatures.push(...standardSceneMeshFeatures);
     }
     // Every node graph the scene parsed, compiled by the pin's own emitter
     // and pipeline builder. The index is the scene's reach order, which is
@@ -826,7 +939,7 @@ export async function composeScenePipeline({
         toneMappingStates,
         linearImageProcessing,
         gltfAssets,
-        materialIndexBase,
+        materialIndexBase: totalAssetMaterials,
         casterViewCount,
         renderableMeshFeatures,
         pinnedVariants,

@@ -126,7 +126,10 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     assert.match(cmake, /NOT BBLITE_LABSOUND_STATIC_RUNTIME/);
     assert.match(cmake, /if\(BBLITE_AUDIO_CAPTURE\)/);
-    assert.match(cmake, /NOT BBLITE_AUDIO_CAPTURE AND NOT BBLITE_LABSOUND_CORE_ONLY/);
+    assert.match(
+        cmake,
+        /NOT BBLITE_AUDIO_CAPTURE\s+AND NOT BBLITE_AUDIO_DECODE_FILE\s+AND NOT BBLITE_LABSOUND_CORE_ONLY/,
+    );
     assert.doesNotMatch(
         cmake,
         /LabSound\.lib"\s*"\$\{BBLITE_LABSOUND_DIR\}\/lib\/libnyquist\.lib/,

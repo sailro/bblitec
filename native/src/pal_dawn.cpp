@@ -8152,6 +8152,7 @@ bool run_dawn_engine(Engine& engine) {
         }
         initialize_render_tasks();
     };
+    upstream::initialize_composition_feature_rows(engine);
     rebuild_meshes();
 
     if (use_skybox) {
@@ -9570,6 +9571,19 @@ bool run_dawn_engine(Engine& engine) {
                             pinned_matrices.data(),
                             active_count *
                                 sizeof(pinned_matrices.front()));
+                    }
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+                    if (
+                        dawn_mesh.instance_colors &&
+                        mesh.instance_colors.size() >=
+                            active_count * 4) {
+                        wgpuQueueWriteBuffer(
+                            state.queue,
+                            dawn_mesh.instance_colors,
+                            0,
+                            mesh.instance_colors.data(),
+                            active_count * 4 * sizeof(float));
                     }
 #endif
                 }
@@ -11444,6 +11458,27 @@ bool run_dawn_engine(Engine& engine) {
                         encoder,
                         &pass_descriptor);
                 WGPURenderPipeline bound_pipeline = nullptr;
+#if BBLITE_HAS_BILLBOARDS
+                const auto draw_task_billboards =
+                    [&](BillboardDepthMode mode) {
+                    for (const DawnBillboardPass& billboard :
+                         state.billboard_passes) {
+                        if (
+                            engine.billboard_systems[
+                                billboard.system.value].depth_mode != mode) {
+                            continue;
+                        }
+                        record_dawn_billboard_pass(
+                            task_pass,
+                            engine,
+                            billboard);
+                    }
+                    // The billboard pass has its own pipeline; a following
+                    // mesh list must not mistake the previously cached mesh
+                    // pipeline for the one currently bound on the encoder.
+                    bound_pipeline = nullptr;
+                };
+#endif
                 const bool pass_has_depth = borrowed_depth_view ||
                     (target_record.has_depth && target.depth);
                 if (task.render.scene_stages) {
@@ -11623,6 +11658,11 @@ bool run_dawn_engine(Engine& engine) {
                     bound_pipeline,
                     pass_has_depth,
                     render_task.pinned_frame_group);
+#if BBLITE_HAS_BILLBOARDS
+                if (task.render.scene_stages) {
+                    draw_task_billboards(BillboardDepthMode::cutout);
+                }
+#endif
                 draw_list_into(
                     task_pass,
                     render_task.draw_lists.transparent,
@@ -11690,6 +11730,13 @@ bool run_dawn_engine(Engine& engine) {
                         0,
                         0);
                 }
+#if BBLITE_HAS_BILLBOARDS
+                if (task.render.scene_stages) {
+                    // Transparent systems close the compiler-owned scene
+                    // task just as they close the ordinary scene pass.
+                    draw_task_billboards(BillboardDepthMode::transparent);
+                }
+#endif
                 wgpuRenderPassEncoderEnd(task_pass);
                 wgpuRenderPassEncoderRelease(task_pass);
                 continue;

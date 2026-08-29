@@ -26,6 +26,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import {
     lowerPinnedFunction,
+    lowerMat4InvertCpp,
     lowerTupleComponents,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
@@ -40,6 +41,8 @@ const hooksModule = "src/shadow/pcf-shadow-task-hooks.ts";
 const pcfDirectionalModule =
     "src/shadow/pcf-directional-shadow-generator.ts";
 const esmModule = "src/shadow/esm-directional-shadow-generator.ts";
+const csmModule = "src/shadow/csm-directional-shadow-generator.ts";
+const csmHooksModule = "src/shadow/csm-shadow-task-hooks.ts";
 const sceneModule = "src/scene/scene-core.ts";
 
 /** The `<cmath>` names these bodies reach, from the shared pinned table. */
@@ -649,6 +652,67 @@ function pcfDirectionalDefaults(context: LoweringContext) {
     );
 }
 
+/** Defaults which determine the retained first cascade of a CSM generator. */
+function csmDefaults(context: LoweringContext) {
+    const { file, declaration } = context.functionDeclaration(
+        csmModule,
+        "createCsmDirectionalShadowGenerator",
+    );
+    const cascades = context.unwrapExpression(
+        context.variableInitializer(declaration, "numCascades"),
+    );
+    if (
+        !ts.isCallExpression(cascades) ||
+        cascades.expression.getText(file) !== "Math.min" ||
+        cascades.arguments.length !== 2
+    ) {
+        context.contractError(
+            cascades,
+            "Expected CSM cascade count to be clamped with Math.min.",
+        );
+    }
+    const requested = context.unwrapExpression(cascades.arguments[0]!);
+    if (
+        !ts.isBinaryExpression(requested) ||
+        requested.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        context.contractError(
+            requested,
+            "Expected CSM cascade count to resolve through '??'.",
+        );
+    }
+    const max = context.numericValue(cascades.arguments[1]!, file);
+    const fallback = context.numericValue(requested.right, file);
+    if (max !== fallback) {
+        context.contractError(
+            cascades,
+            "Expected the CSM cascade default and clamp to agree.",
+        );
+    }
+    const csmCfg = context.unwrapExpression(
+        context.variableInitializer(declaration, "csmCfg"),
+    );
+    if (!ts.isObjectLiteralExpression(csmCfg)) {
+        context.contractError(csmCfg, "Expected CSM config object literal.");
+    }
+    const lambda = context.unwrapExpression(
+        context.propertyInitializer(csmCfg, "_lambda"),
+    );
+    if (
+        !ts.isBinaryExpression(lambda) ||
+        lambda.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
+    ) {
+        context.contractError(lambda, "Expected CSM lambda to resolve through '??'.");
+    }
+    return {
+        mapSize: optionDefault(context, declaration, "mapSize", file),
+        numCascades: fallback,
+        lambda: context.numericValue(lambda.right, file),
+        bias: optionDefault(context, declaration, "bias", file),
+        darkness: optionDefault(context, declaration, "darkness", file),
+    };
+}
+
 /**
  * The record field each factory's lane locals stand for.
  *
@@ -1228,6 +1292,13 @@ export function pinnedShadowHeader(context: LoweringContext): string {
     const defaults = pcfSpotDefaults(context);
     const esm = esmDefaults(context);
     const pcfDirectional = pcfDirectionalDefaults(context);
+    const csm = csmDefaults(context);
+    // Anchor the adapted fit to the exact camera-frustum function it mirrors.
+    context.functionDeclaration(csmHooksModule, "_computeCsmCascades");
+    const mat4Invert = lowerMat4InvertCpp(context).replace(
+        "\nstd::optional<std::array<float, 16>> mat4_invert(",
+        "\ninline std::optional<std::array<float, 16>> mat4_invert(",
+    );
     const casterFallback = esmCasterBoundsFallback(context);
     const trs = pinnedTrsComposition(context);
     const floats = (values: readonly number[]): string =>
@@ -1240,10 +1311,13 @@ export function pinnedShadowHeader(context: LoweringContext): string {
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <vector>
 
 #include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
 
 namespace bbl::upstream {
 
@@ -1279,6 +1353,13 @@ inline constexpr double pcf_directional_default_ortho_min_z = ${
 inline constexpr double pcf_directional_default_ortho_max_z = ${
         context.doubleLiteral(pcfDirectional.orthoMaxZ)
     };
+
+/** Defaults read from createCsmDirectionalShadowGenerator's own config. */
+inline constexpr std::uint32_t csm_default_map_size = ${csm.mapSize}u;
+inline constexpr std::uint32_t csm_default_num_cascades = ${csm.numCascades}u;
+inline constexpr double csm_default_lambda = ${context.doubleLiteral(csm.lambda)};
+inline constexpr double csm_default_bias = ${context.doubleLiteral(csm.bias)};
+inline constexpr double csm_default_darkness = ${context.doubleLiteral(csm.darkness)};
 
 /**
  * The pin's own shadow target, which is its ONE exception to this port's
@@ -1369,6 +1450,46 @@ struct ShadowCaster {
  */
 inline std::array<double, 16> shadow_caster_world(const MeshRecord& mesh) {
 ${trs.composeLocalBody}\
+    // A cloned imported hierarchy keeps its placement as an outer root
+    // transform while the child mesh's local TRS remains authored. The pin's
+    // \`mesh.worldMatrix\` already includes that parent. Apply the same XYZ
+    // rotation and translation here before folding the caster bounds, at the
+    // double width this fit deliberately retains.
+    if (
+        mesh.outer_rotation.x != 0.0f ||
+        mesh.outer_rotation.y != 0.0f ||
+        mesh.outer_rotation.z != 0.0f) {
+        const double sin_x = std::sin(
+            static_cast<double>(mesh.outer_rotation.x));
+        const double cos_x = std::cos(
+            static_cast<double>(mesh.outer_rotation.x));
+        const double sin_y = std::sin(
+            static_cast<double>(mesh.outer_rotation.y));
+        const double cos_y = std::cos(
+            static_cast<double>(mesh.outer_rotation.y));
+        const double sin_z = std::sin(
+            static_cast<double>(mesh.outer_rotation.z));
+        const double cos_z = std::cos(
+            static_cast<double>(mesh.outer_rotation.z));
+        for (std::size_t column = 0; column < 4; ++column) {
+            const std::size_t offset = column * 4;
+            const double x0 = local[offset];
+            const double y0 = local[offset + 1];
+            const double z0 = local[offset + 2];
+            const double x1 = x0;
+            const double y1 = y0 * cos_x - z0 * sin_x;
+            const double z1 = y0 * sin_x + z0 * cos_x;
+            const double x2 = x1 * cos_y + z1 * sin_y;
+            const double y2 = y1;
+            const double z2 = -x1 * sin_y + z1 * cos_y;
+            local[offset] = x2 * cos_z - y2 * sin_z;
+            local[offset + 1] = x2 * sin_z + y2 * cos_z;
+            local[offset + 2] = z2;
+        }
+    }
+    local[12] += static_cast<double>(mesh.outer_position.x);
+    local[13] += static_cast<double>(mesh.outer_position.y);
+    local[14] += static_cast<double>(mesh.outer_position.z);
     return local;
 }
 
@@ -1387,6 +1508,8 @@ ${lowerComputeSpotLightMatrix(context)}
 ${lowerComputeDirectionalLightMatrix(context)}
 
 ${lowerBiasViewProjection(context)}
+
+${mat4Invert}
 
 ${lowerShadowParamsBlock(context)}
 
@@ -1496,6 +1619,213 @@ inline void update_pcf_directional_shadow(
         bias_view_projection(generator.light_matrix, generator.bias);
 }
 
+/**
+ * The pin's first CSM cascade, retained as a single 2D PCF map.
+ *
+ * The native resource seam has one sampled depth texture per generator. A
+ * CSM source still needs a camera-frustum fit, not the unrelated whole-caster
+ * directional PCF fit. The split formula, float VP inversion, clone-aware
+ * caster Z fit, texel snap and bias split remain the pin's own; farther
+ * cascades conservatively fall outside this one-map resource.
+ */
+inline void update_csm_single_map_shadow(
+    ShadowGeneratorRecord& generator,
+    const LightRecord& light,
+    const CameraRecord& camera,
+    double aspect,
+    const std::vector<ShadowCaster>& casters) {
+    const double near_z = camera.near_plane;
+    const double far_z = camera.far_plane;
+    const double camera_range = far_z - near_z;
+    const double p = 1.0 /
+        static_cast<double>(generator.csm_num_cascades);
+    const double logarithmic =
+        near_z * std::pow(far_z / near_z, p);
+    const double uniform = near_z + camera_range * p;
+    const double split_distance =
+        generator.csm_lambda * (logarithmic - uniform) + uniform;
+    const double split = (split_distance - near_z) / camera_range;
+
+    const std::array<float, 16> view_projection =
+        build_view_projection(camera, aspect);
+    const auto inverse_value = mat4_invert(view_projection);
+    const std::array<float, 16>& inverse =
+        inverse_value ? *inverse_value : view_projection;
+    const auto transform = [&](double x, double y, double z) {
+        const double tx = static_cast<double>(inverse[0]) * x +
+            static_cast<double>(inverse[4]) * y +
+            static_cast<double>(inverse[8]) * z + inverse[12];
+        const double ty = static_cast<double>(inverse[1]) * x +
+            static_cast<double>(inverse[5]) * y +
+            static_cast<double>(inverse[9]) * z + inverse[13];
+        const double tz = static_cast<double>(inverse[2]) * x +
+            static_cast<double>(inverse[6]) * y +
+            static_cast<double>(inverse[10]) * z + inverse[14];
+        const double tw = static_cast<double>(inverse[3]) * x +
+            static_cast<double>(inverse[7]) * y +
+            static_cast<double>(inverse[11]) * z + inverse[15];
+        return std::array<double, 3>{tx / tw, ty / tw, tz / tw};
+    };
+    constexpr std::array<std::array<double, 3>, 8> ndc{{
+        {{-1.0,  1.0, 1.0}}, {{ 1.0,  1.0, 1.0}},
+        {{ 1.0, -1.0, 1.0}}, {{-1.0, -1.0, 1.0}},
+        {{-1.0,  1.0, 0.0}}, {{ 1.0,  1.0, 0.0}},
+        {{ 1.0, -1.0, 0.0}}, {{-1.0, -1.0, 0.0}},
+    }};
+    std::array<std::array<double, 3>, 8> corners{};
+    for (std::size_t index = 0; index < corners.size(); ++index) {
+        corners[index] = transform(
+            ndc[index][0], ndc[index][1], ndc[index][2]);
+    }
+    for (std::size_t index = 0; index < 4; ++index) {
+        const auto near_corner = corners[index];
+        const auto far_corner = corners[index + 4];
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            corners[index + 4][axis] = near_corner[axis] +
+                (far_corner[axis] - near_corner[axis]) * split;
+        }
+    }
+
+    double center_x = 0.0;
+    double center_y = 0.0;
+    double center_z = 0.0;
+    for (const auto& corner : corners) {
+        center_x += corner[0];
+        center_y += corner[1];
+        center_z += corner[2];
+    }
+    center_x /= 8.0;
+    center_y /= 8.0;
+    center_z /= 8.0;
+
+    double direction_x = light.direction.x;
+    double direction_y = light.direction.y;
+    double direction_z = light.direction.z;
+    const double direction_length =
+        std::hypot(direction_x, direction_y, direction_z);
+    const double safe_length = direction_length == 0.0 ? 1.0 : direction_length;
+    direction_x /= safe_length;
+    direction_y /= safe_length;
+    direction_z /= safe_length;
+    if (std::abs(direction_y) >= 1.0) direction_z = 1e-13;
+
+    const std::array<float, 16> center_view = build_light_view_matrix(
+        direction_x, direction_y, direction_z,
+        center_x, center_y, center_z);
+    double min_x = std::numeric_limits<double>::infinity();
+    double min_y = std::numeric_limits<double>::infinity();
+    double min_eye_z = std::numeric_limits<double>::infinity();
+    double max_x = -std::numeric_limits<double>::infinity();
+    double max_y = -std::numeric_limits<double>::infinity();
+    double max_eye_z = -std::numeric_limits<double>::infinity();
+    for (const auto& corner : corners) {
+        const double x = center_view[0] * corner[0] +
+            center_view[4] * corner[1] + center_view[8] * corner[2] +
+            center_view[12];
+        const double y = center_view[1] * corner[0] +
+            center_view[5] * corner[1] + center_view[9] * corner[2] +
+            center_view[13];
+        const double z = center_view[2] * corner[0] +
+            center_view[6] * corner[1] + center_view[10] * corner[2] +
+            center_view[14];
+        min_x = std::min(min_x, x);
+        max_x = std::max(max_x, x);
+        min_y = std::min(min_y, y);
+        max_y = std::max(max_y, y);
+        min_eye_z = std::min(min_eye_z, z);
+        max_eye_z = std::max(max_eye_z, z);
+    }
+
+    const double eye_x = center_x + direction_x * min_eye_z;
+    const double eye_y = center_y + direction_y * min_eye_z;
+    const double eye_z = center_z + direction_z * min_eye_z;
+    const std::array<float, 16> view = build_light_view_matrix(
+        direction_x, direction_y, direction_z, eye_x, eye_y, eye_z);
+    double view_min_z = 0.0;
+    double view_max_z = max_eye_z - min_eye_z;
+
+    double caster_min_x = std::numeric_limits<double>::infinity();
+    double caster_min_y = std::numeric_limits<double>::infinity();
+    double caster_min_z = std::numeric_limits<double>::infinity();
+    double caster_max_x = -std::numeric_limits<double>::infinity();
+    double caster_max_y = -std::numeric_limits<double>::infinity();
+    double caster_max_z = -std::numeric_limits<double>::infinity();
+    for (const ShadowCaster& caster : casters) {
+        for (std::size_t corner = 0; corner < 8; ++corner) {
+            const double local_x = (corner & 1u)
+                ? caster.bounds_max[0] : caster.bounds_min[0];
+            const double local_y = (corner & 2u)
+                ? caster.bounds_max[1] : caster.bounds_min[1];
+            const double local_z = (corner & 4u)
+                ? caster.bounds_max[2] : caster.bounds_min[2];
+            const double world_x = caster.world[0] * local_x +
+                caster.world[4] * local_y + caster.world[8] * local_z +
+                caster.world[12];
+            const double world_y = caster.world[1] * local_x +
+                caster.world[5] * local_y + caster.world[9] * local_z +
+                caster.world[13];
+            const double world_z = caster.world[2] * local_x +
+                caster.world[6] * local_y + caster.world[10] * local_z +
+                caster.world[14];
+            caster_min_x = std::min(caster_min_x, world_x);
+            caster_min_y = std::min(caster_min_y, world_y);
+            caster_min_z = std::min(caster_min_z, world_z);
+            caster_max_x = std::max(caster_max_x, world_x);
+            caster_max_y = std::max(caster_max_y, world_y);
+            caster_max_z = std::max(caster_max_z, world_z);
+        }
+    }
+    if (std::isfinite(caster_min_x)) {
+        double caster_view_min_z = std::numeric_limits<double>::infinity();
+        double caster_view_max_z = -std::numeric_limits<double>::infinity();
+        for (std::size_t corner = 0; corner < 8; ++corner) {
+            const double world_x = (corner & 1u) ? caster_max_x : caster_min_x;
+            const double world_y = (corner & 2u) ? caster_max_y : caster_min_y;
+            const double world_z = (corner & 4u) ? caster_max_z : caster_min_z;
+            const double z = view[2] * world_x + view[6] * world_y +
+                view[10] * world_z + view[14];
+            caster_view_min_z = std::min(caster_view_min_z, z);
+            caster_view_max_z = std::max(caster_view_max_z, z);
+        }
+        if (caster_view_min_z <= view_max_z) {
+            view_min_z = std::min(view_min_z, caster_view_min_z);
+            view_max_z = std::min(view_max_z, caster_view_max_z);
+        }
+    }
+
+    std::array<float, 16> projection{};
+    projection[0] = static_cast<float>(2.0 / (max_x - min_x));
+    projection[5] = static_cast<float>(2.0 / (max_y - min_y));
+    projection[10] = static_cast<float>(1.0 / (view_max_z - view_min_z));
+    projection[12] = static_cast<float>(-(max_x + min_x) / (max_x - min_x));
+    projection[13] = static_cast<float>(-(max_y + min_y) / (max_y - min_y));
+    projection[14] = static_cast<float>(-view_min_z / (view_max_z - view_min_z));
+    projection[15] = 1.0f;
+    std::array<float, 16> transform_matrix = multiply_4x4(projection, view);
+    const double offset_x =
+        (std::round(transform_matrix[12] * generator.map_size / 2.0) -
+         transform_matrix[12] * generator.map_size / 2.0) *
+        (2.0 / generator.map_size);
+    const double offset_y =
+        (std::round(transform_matrix[13] * generator.map_size / 2.0) -
+         transform_matrix[13] * generator.map_size / 2.0) *
+        (2.0 / generator.map_size);
+    std::array<float, 16> snap{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        static_cast<float>(offset_x), static_cast<float>(offset_y), 0.0f, 1.0f};
+    projection = multiply_4x4(snap, projection);
+    transform_matrix = multiply_4x4(projection, view);
+
+    generator.light_matrix = transform_matrix;
+    generator.caster_view = view;
+    generator.caster_view_projection =
+        bias_view_projection(transform_matrix, generator.bias);
+    generator.near_plane = view_min_z;
+    generator.far_plane = view_max_z;
+}
+
 } // namespace bbl::upstream
 `;
 }
@@ -1587,6 +1917,7 @@ export function shadowFactorySource(
     const pcfDirectionalShadows = features.includes(
         "shadow:pcf-directional",
     );
+    const csmSingleMapShadows = features.includes("shadow:csm-single-map");
     // One family's caster view, under the filter its task carries. The node
     // family composes only the ESM half -- `buildNodeRenderables` re-compiles
     // the graph's own bodies under the ESM bit, and there is no depth-only
@@ -1691,6 +2022,21 @@ ${!pcfDirectionalShadows ? "" : shadowGeneratorFactory({
         "ortho_min_z",
         "ortho_max_z",
     ],
+})}
+${!csmSingleMapShadows ? "" : shadowGeneratorFactory({
+    name: "csm_directional",
+    options: "CsmDirectionalShadowOptions",
+    article: "A CSM directional shadow generator",
+    lightKind: "directional",
+    filter: "pcf_directional",
+    fields: [
+        "map_size",
+        "bias",
+        "darkness",
+        "csm_num_cascades",
+        "csm_lambda",
+    ],
+    tail: "    generator.csm_single_map = true;",
 })}
 ${!esmShadows ? "" : shadowGeneratorFactory({
     name: "esm_directional",

@@ -2691,6 +2691,12 @@ ${nonTrianglePrimitives
                 ${materialVariants
                     ? `variant_material_index(document, primitive, material_json.size())`
                     : `unsigned_or(primitive, "material", material_json.size())`};
+            const std::string authored_name = string_or(mesh, "name");
+            const bool retains_live_wheel_vertices =
+                authored_name.rfind("wheel", 0) == 0;
+            if (retains_live_wheel_vertices) {
+                geometry.bind_vertices.resize(positions.count);
+            }
             // A primitive with no material index takes the pin's default
             // material -- getMat(undefined) assembles one from an empty
             // object -- created once and appended after the document's,
@@ -2726,12 +2732,18 @@ ${nonTrianglePrimitives
                           local_position.z,
                       }
                     : transform_point(matrix, local_position);
+                Vec3 live_local_normal = vertex.normal;
                 if (normals) {
                     const Vec3 local_normal{
                         read_component(buffer, container, views, *normals, index, 0),
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
                     };
+                    live_local_normal = normalize(Vec3{
+                        -local_normal.x,
+                        local_normal.y,
+                        local_normal.z,
+                    });
                     vertex.normal = animated || instanced
                         ? normalize(Vec3{
                               -local_normal.x,
@@ -2740,11 +2752,20 @@ ${nonTrianglePrimitives
                           })
                         : transform_direction(matrix, local_normal);
                 }
+                Vec4 live_local_tangent = vertex.tangent;
                 if (tangents) {
                     const Vec3 local_tangent{
                         read_component(buffer, container, views, *tangents, index, 0),
                         read_component(buffer, container, views, *tangents, index, 1),
                         read_component(buffer, container, views, *tangents, index, 2),
+                    };
+                    const float local_tangent_w =
+                        read_component(buffer, container, views, *tangents, index, 3);
+                    live_local_tangent = Vec4{
+                        -local_tangent.x,
+                        local_tangent.y,
+                        local_tangent.z,
+                        -local_tangent_w,
                     };
                     const Vec3 tangent = animated || instanced
                         ? normalize(Vec3{
@@ -2758,7 +2779,7 @@ ${nonTrianglePrimitives
                         tangent.y,
                         tangent.z,
                         (determinant < 0.0f ? 1.0f : -1.0f) *
-                            read_component(buffer, container, views, *tangents, index, 3),
+                            local_tangent_w,
                     };
                 }
                 if (texcoords) {
@@ -2800,6 +2821,17 @@ ${lowered.vertexColor}
                 geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
                 geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
                 geometry.vertices[index] = vertex;
+                if (retains_live_wheel_vertices) {
+                    ModelVertex local_vertex = vertex;
+                    local_vertex.position = Vec3{
+                        -local_position.x,
+                        local_position.y,
+                        local_position.z,
+                    };
+                    local_vertex.normal = live_local_normal;
+                    local_vertex.tangent = live_local_tangent;
+                    geometry.bind_vertices[index] = local_vertex;
+                }
             }
             for (std::size_t target = 0; target < morph_positions.size(); ++target) {
                 std::vector<Vec3> position_deltas(
@@ -3146,7 +3178,6 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             }
 ` : ""}            engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
-            const std::string authored_name = string_or(mesh, "name");
             record.name = authored_name.empty()
                 ? "${lowered.gltfMeshNamePrefix}" +
                     std::to_string(gltf_mesh_counter)

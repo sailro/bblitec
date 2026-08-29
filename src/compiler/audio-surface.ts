@@ -29,7 +29,7 @@
 import ts from "typescript";
 
 import { readProperty, type PropertyContext } from "./properties.js";
-import type { Feature, Value } from "./types.js";
+import type { CompileAsset, Feature, Value } from "./types.js";
 
 /**
  * What resolving a receiver needs, and nothing more. `PropertyContext`
@@ -49,13 +49,21 @@ export interface AudioWriteContext extends AudioReceiverContext {
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileBoolean(expression: ts.Expression): string;
     reachFeature(feature: Feature, site?: ts.Node): void;
     emit(line: string): void;
 }
 
 /** What a method call needs. The expression compiler satisfies it. */
 export interface AudioCallContext extends AudioWriteContext {
+    readonly checker: ts.TypeChecker;
+    expectKind(value: Value, kind: Value["kind"], node: ts.Node): void;
     allocateTemporaryCppName(label: string): string;
+    cppString(value: string): string;
+    registerAsset(
+        source: string,
+        kind: CompileAsset["kind"],
+    ): CompileAsset;
 }
 
 const AUDIO_KINDS = new Set<string>([
@@ -122,8 +130,8 @@ const PARAM_SCHEDULES: Readonly<Record<string, string>> = {
  */
 const REFUSED_METHODS: Readonly<Record<string, string>> = {
     decodeAudioData:
-        "an encoded audio file is an asset, and audio assets are not " +
-        "materialized at generation yet",
+        "direct decodeAudioData calls are not lowered; the reached asset " +
+        "path requires a generation-known fetch/decode helper",
     createAnalyser: "the analyzer is not lowered",
     createPanner: "3D panning is not lowered",
     createDelay: "the delay node is not lowered",
@@ -199,12 +207,103 @@ function resolveAudioReceiver(
 
 // -- method calls --------------------------------------------------------
 
+/**
+ * Racer's small `decode(ctx, url)` helper expresses the browser operation as
+ * `fetch(url)` followed by `ctx.decodeAudioData(...)`. Native builds package
+ * that same encoded file and let LabSound/libnyquist decode it at the audio
+ * context's sample rate. Recognize the helper by its body, not merely by its
+ * local name, so an unrelated function named `decode` keeps the ordinary user
+ * function semantics.
+ */
+export function compileAudioDecodeAssetCall(
+    context: AudioCallContext,
+    call: ts.CallExpression,
+    callee: ts.Identifier,
+): Value | undefined {
+    if (callee.text !== "decode" || call.arguments.length !== 2) {
+        return undefined;
+    }
+    const symbol = context.checker.getSymbolAtLocation(callee);
+    const target =
+        symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+            ? context.checker.getAliasedSymbol(symbol)
+            : symbol;
+    const declaration = (target?.declarations ?? []).find(
+        (candidate): candidate is ts.FunctionDeclaration =>
+            ts.isFunctionDeclaration(candidate) && candidate.body !== undefined,
+    );
+    if (!declaration || declaration.parameters.length !== 2) {
+        return undefined;
+    }
+    let fetches = false;
+    let decodes = false;
+    const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+            if (
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "fetch"
+            ) {
+                fetches = true;
+            } else if (
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "decodeAudioData"
+            ) {
+                decodes = true;
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    const body = declaration.body;
+    if (!body) return undefined;
+    visit(body);
+    if (!fetches || !decodes) {
+        return undefined;
+    }
+
+    const audioContext = context.compileValue(call.arguments[0]!);
+    context.expectKind(audioContext, "audio-context", call.arguments[0]!);
+    const url = context.compileValue(call.arguments[1]!);
+    if (url.kind !== "string" || url.staticString === undefined) {
+        context.fail(
+            call.arguments[1]!,
+            "Encoded audio decode requires a generation-known asset URL.",
+        );
+    }
+    const source = url.staticString;
+    const asset = context.registerAsset(source, "binary");
+    context.reachFeature("audio:buffer-source", call);
+    context.reachFeature("audio:decoded-buffer", call);
+    const decoded = context.allocateTemporaryCppName("decoded_audio");
+    context.emit(
+        `const bbl::pal::AudioBufferHandle ${decoded} = ` +
+            `bbl::pal::audio_decode_file(${audioContext.cpp}, ` +
+            `bbl::asset_path(${context.cppString(asset.output)}));`,
+    );
+    return {
+        kind: "audio-buffer",
+        cpp: decoded,
+        dataType: { kind: "handle", handle: "audio-buffer" },
+        optionalFoundCpp: `${decoded}.value != 0u`,
+        audioContextCpp: audioContext.cpp,
+    };
+}
+
 export function compileAudioMethodCall(
     context: AudioCallContext,
     call: ts.CallExpression,
     callee: ts.PropertyAccessExpression,
 ): Value | undefined {
-    const receiver = resolveAudioReceiver(context, callee.expression);
+    const receiverExpression = context.unwrap(callee.expression);
+    const chainedConnect =
+        ts.isCallExpression(receiverExpression) &&
+        ts.isPropertyAccessExpression(receiverExpression.expression) &&
+        receiverExpression.expression.name.text === "connect"
+            ? context.compileValue(receiverExpression)
+            : undefined;
+    const receiver =
+        chainedConnect && AUDIO_KINDS.has(chainedConnect.kind)
+            ? chainedConnect
+            : resolveAudioReceiver(context, callee.expression);
     if (!receiver) {
         return undefined;
     }
@@ -288,10 +387,11 @@ export function compileAudioMethodCall(
                     );
                 }
                 return {
-                    kind: "void",
+                    ...destination,
                     cpp:
-                        `bbl::pal::audio_connect(${receiver.cpp}, ` +
-                        `${destination.cpp})`,
+                        `(bbl::pal::audio_connect(${receiver.cpp}, ` +
+                        `${destination.cpp}), ${destination.cpp})`,
+                    impure: true,
                 };
             }
             case "disconnect": {
@@ -417,7 +517,47 @@ export function emitAudioPropertyAssignment(
         return true;
     }
 
+    if (property === "loop") {
+        context.reachFeature("audio:buffer-source", expression);
+        context.emit(
+            `bbl::pal::audio_set_loop(${owner.cpp}, ` +
+                `${context.compileBoolean(right)});`,
+        );
+        return true;
+    }
+
     if (property === "onended") {
+        const callback = context.unwrap(right);
+        const statements =
+            (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+            ts.isBlock(callback.body)
+                ? callback.body.statements
+                : undefined;
+        const cleanupOnly =
+            statements &&
+            statements.every((statement) => {
+                if (!ts.isExpressionStatement(statement)) return false;
+                const call = context.unwrap(statement.expression);
+                if (
+                    !ts.isCallExpression(call) ||
+                    call.arguments.length !== 0 ||
+                    !ts.isPropertyAccessExpression(call.expression) ||
+                    call.expression.name.text !== "disconnect"
+                ) {
+                    return false;
+                }
+                return resolveAudioReceiver(
+                    context,
+                    call.expression.expression,
+                )?.kind === "audio-node";
+            });
+        if (cleanupOnly) {
+            // LabSound releases a finished source independently. Dropping an
+            // onended handler whose only observable work disconnects that
+            // finished source and its private one-shot gain preserves audio;
+            // no later source retains either node.
+            return true;
+        }
         context.fail(
             right,
             "onended is an escaping callback, which is not lowered.",

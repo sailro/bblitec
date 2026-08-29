@@ -663,6 +663,7 @@ ${
     : ""
 }
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -715,6 +716,67 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     ++scene.mesh_membership_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
+}
+
+// A static glTF mesh normally bakes its node world into each vertex. Once
+// scene code replaces that node's quaternion, those baked vertices would
+// rotate around the flattened asset origin. Recover the node translation and
+// scale retained by the loader, route the draw through the local vertex lanes,
+// and let the caller install the replacement rotation immediately afterward.
+void prepare_imported_mesh_quaternion_write(
+    Engine& engine,
+    MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid imported mesh handle.");
+    }
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (
+        record.name.rfind("wheel", 0) != 0 ||
+        record.live_imported_transform ||
+        record.geometry >= engine.geometries.size() ||
+        engine.geometries[record.geometry].vertex_space !=
+            VertexSpace::world) {
+        return;
+    }
+    const std::array<float, 16>& matrix =
+        record.instance_parent_matrix;
+    record.position = Vec3d{
+        matrix[12], matrix[13], matrix[14]};
+    const auto column_length = [&matrix](std::size_t column) {
+        const std::size_t lane = column * 4;
+        return std::sqrt(
+            matrix[lane] * matrix[lane] +
+            matrix[lane + 1] * matrix[lane + 1] +
+            matrix[lane + 2] * matrix[lane + 2]);
+    };
+    record.scaling = Vec3{
+        column_length(0),
+        column_length(1),
+        column_length(2)};
+    record.rotation = Vec3{};
+    record.has_rotation_quaternion = false;
+    record.gpu_world_transform = true;
+    record.live_imported_transform = true;
+    ++record.transform_version;
+}
+
+void set_mesh_rotation_quaternion(
+    Engine& engine,
+    MeshHandle mesh,
+    Vec4 quaternion) {
+    prepare_imported_mesh_quaternion_write(engine, mesh);
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (record.live_imported_transform) {
+        // The loader mirrors glTF's local X coordinate before retaining the
+        // wheel vertices. Conjugating a rotation by that reflection keeps
+        // X-axis roll unchanged and reverses Y/Z rotation into the same
+        // basis, so steering and combined steer+roll remain coherent.
+        quaternion.y = -quaternion.y;
+        quaternion.z = -quaternion.z;
+    }
+    record.rotation_quaternion = quaternion;
+    record.has_rotation_quaternion = true;
+    ++record.transform_version;
 }
 
 // src/scene/scene-remove.ts removeFromScene: drop the mesh from the
@@ -771,6 +833,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
     const auto clone_animation = source.clone_mesh_animation;
     AssetRecord clone;
     clone.root_position = source.root_position;
+    clone.root_rotation = source.root_rotation;
     clone.clone_mesh_animation = clone_animation;
     clone.meshes.reserve(source_meshes.size());
     for (const MeshHandle source_mesh : source_meshes) {
@@ -822,6 +885,35 @@ void set_asset_root_position_component(
         }
         MeshRecord& record = engine.meshes[mesh.value];
         component_ref(record.outer_position) += delta;
+        ++record.transform_version;
+    }
+}
+
+void set_asset_root_rotation_component(
+    Engine& engine,
+    AssetHandle asset,
+    std::size_t component,
+    float value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const auto component_ref = [component](Vec3& vector) -> float& {
+        switch (component) {
+            case 0: return vector.x;
+            case 1: return vector.y;
+            case 2: return vector.z;
+            default:
+                throw std::runtime_error(
+                    "Imported root rotation component is out of range.");
+        }
+    };
+    float& root_component = component_ref(root.root_rotation);
+    const float delta = value - root_component;
+    root_component = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        component_ref(record.outer_rotation) += delta;
         ++record.transform_version;
     }
 }

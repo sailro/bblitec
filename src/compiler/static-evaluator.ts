@@ -974,6 +974,10 @@ export class StaticEvaluator {
             if (value.staticString !== undefined) {
                 return value.staticString;
             }
+            this.fail(
+                unwrapped,
+                `Expected a string literal; '${unwrapped.text}' is bound as ${value.kind} without a static string.`,
+            );
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);

@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { downloadCachedResource } from "./asset-download-cache.js";
 import { isDataUrl, parseDataUrl } from "./data-url.js";
-import { extname, resolve } from "node:path";
+import {
+    GLB_BINARY_CHUNK,
+    GLB_JSON_CHUNK,
+    GLB_MAGIC,
+} from "./gltf-document.js";
+import { dirname, extname, resolve } from "node:path";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -69,6 +74,34 @@ async function readResource(
     return { bytes: new Uint8Array(await readFile(resolve(baseDirectory, uri))) };
 }
 
+function glbChunks(bytes: Uint8Array): {
+    document: JsonRecord;
+    binary: Buffer;
+} | undefined {
+    const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (buffer.length < 12 || buffer.readUInt32LE(0) !== GLB_MAGIC) {
+        return undefined;
+    }
+    let offset = 12;
+    let document: JsonRecord | undefined;
+    let binary = Buffer.alloc(0);
+    while (offset + 8 <= buffer.length) {
+        const length = buffer.readUInt32LE(offset);
+        const type = buffer.readUInt32LE(offset + 4);
+        const end = offset + 8 + length;
+        if (end > buffer.length) throw new Error("Truncated GLB chunk.");
+        const chunk = buffer.subarray(offset + 8, end);
+        if (type === GLB_JSON_CHUNK) {
+            document = asRecord(JSON.parse(chunk.toString("utf8")));
+        } else if (type === GLB_BINARY_CHUNK) {
+            binary = Buffer.from(chunk);
+        }
+        offset = end;
+    }
+    if (!document) throw new Error("GLB is missing its JSON chunk.");
+    return { document, binary };
+}
+
 function imageMimeType(uri: string, contentType?: string): string {
     if (contentType === "image/png" || contentType === "image/jpeg") return contentType;
     switch (extname(uri).toLowerCase()) {
@@ -86,13 +119,19 @@ export async function packageGltf(
     source: string,
     baseDirectory: string,
 ): Promise<Uint8Array> {
-    const rootResource = /^https?:\/\//i.test(source)
+    const remote = /^https?:\/\//i.test(source);
+    const rootResource = remote
         ? await readResource(source, source, baseDirectory)
         : { bytes: new Uint8Array(await readFile(resolve(baseDirectory, source))) };
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(rootResource.bytes));
-    const document = asRecord(parsed);
-    const chunks: Buffer[] = [];
-    let binaryLength = 0;
+    const parsedGlb = glbChunks(rootResource.bytes);
+    const document = parsedGlb?.document ?? asRecord(
+        JSON.parse(new TextDecoder().decode(rootResource.bytes)),
+    );
+    const resourceDirectory = remote
+        ? baseDirectory
+        : dirname(resolve(baseDirectory, source));
+    const chunks: Buffer[] = parsedGlb ? [parsedGlb.binary] : [];
+    let binaryLength = parsedGlb?.binary.length ?? 0;
     const append = (bytes: Uint8Array): number => {
         const padding = (4 - (binaryLength % 4)) % 4;
         if (padding) {
@@ -108,9 +147,16 @@ export async function packageGltf(
 
     const buffers = asRecords(document.buffers);
     const offsets: number[] = [];
-    for (const buffer of buffers) {
+    for (const [index, buffer] of buffers.entries()) {
+        if (typeof buffer.uri !== "string") {
+            if (parsedGlb && index === 0) {
+                offsets.push(0);
+                continue;
+            }
+            throw new Error(`glTF buffer ${index} is missing its URI.`);
+        }
         const uri = stringValue(buffer.uri, "buffer URI");
-        const resource = await readResource(uri, source, baseDirectory);
+        const resource = await readResource(uri, source, resourceDirectory);
         offsets.push(append(resource.bytes));
     }
 
@@ -128,7 +174,7 @@ export async function packageGltf(
     for (const image of asRecords(document.images)) {
         if (typeof image.uri !== "string") continue;
         const uri = image.uri;
-        const resource = await readResource(uri, source, baseDirectory);
+        const resource = await readResource(uri, source, resourceDirectory);
         const offset = append(resource.bytes);
         bufferViews.push({
             buffer: 0,

@@ -12,7 +12,10 @@
 import ts from "typescript";
 
 import { doubleLiteral } from "../cpp-literals.js";
-import { compileAudioMethodCall } from "./audio-surface.js";
+import {
+    compileAudioDecodeAssetCall,
+    compileAudioMethodCall,
+} from "./audio-surface.js";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
@@ -154,6 +157,10 @@ export interface ExpressionContext
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
+    registerAsset(
+        source: string,
+        kind: import("./types.js").CompileAsset["kind"],
+    ): import("./types.js").CompileAsset;
     moduleRelativeAssetUrl(
         expression: ts.Expression,
     ): string | undefined;
@@ -388,6 +395,25 @@ export class ExpressionLowerer {
             return this.context.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === "Math" &&
+                (unwrapped.name.text === "PI" ||
+                    unwrapped.name.text === "SQRT1_2")
+            ) {
+                const staticNumber = staticNumberValue(
+                    this.context,
+                    unwrapped,
+                );
+                return {
+                    kind: "number",
+                    cpp: this.context.compileNumber(unwrapped, "double"),
+                    ...(staticNumber === undefined
+                        ? {}
+                        : { staticNumber }),
+                    dataType: { kind: "number" },
+                };
+            }
             const canvasSize =
                 this.context.canvasSizeValue(unwrapped);
             if (canvasSize) {
@@ -734,22 +760,53 @@ export class ExpressionLowerer {
             const index = this.compileValue(
                 unwrapped.argumentExpression,
             );
+            const staticIndex =
+                index.kind === "number"
+                    ? (index.staticNumber ??
+                      staticNumberValue(
+                          this.context,
+                          unwrapped.argumentExpression,
+                      ))
+                    : undefined;
             if (
-                index.kind !== "number" ||
-                index.staticNumber === undefined ||
-                !Number.isInteger(index.staticNumber)
+                index.kind !== "number"
             ) {
+                this.context.fail(
+                    unwrapped.argumentExpression,
+                    "Static tuple access requires a numeric index.",
+                );
+            }
+            if (staticIndex === undefined) {
+                const elements = owner.tupleElements ?? [];
+                if (elements.length === 0) {
+                    this.context.fail(
+                        unwrapped,
+                        "A runtime index cannot read an empty static tuple.",
+                    );
+                }
+                let selected = elements[0]!;
+                for (let lane = 1; lane < elements.length; lane += 1) {
+                    selected = this.selectValue(
+                        `(${index.cpp}) == ${lane}`,
+                        elements[lane]!,
+                        selected,
+                        unwrapped,
+                    );
+                }
+                return selected;
+            }
+            if (!Number.isInteger(staticIndex)) {
                 this.context.fail(
                     unwrapped.argumentExpression,
                     "Static tuple access requires an integer index.",
                 );
             }
             const value =
-                owner.tupleElements?.[index.staticNumber];
+                owner.tupleElements?.[staticIndex];
             if (!value) {
                 this.context.fail(
                     unwrapped,
-                    `Tuple index ${index.staticNumber} is out of range.`,
+                    `Tuple index ${staticIndex} is out of range.`,
                 );
             }
             return value;
@@ -1385,6 +1442,18 @@ export class ExpressionLowerer {
             ) {
                 allCompiledValuesAreStatic = false;
                 parts.push(value.cpp);
+            } else if (
+                value.kind === "data" &&
+                value.dataType?.kind === "enum"
+            ) {
+                allCompiledValuesAreStatic = false;
+                parts.push(
+                    this.context.dataTypes.enumToStringCpp(
+                        value.dataType,
+                        value.cpp,
+                        span.expression,
+                    ),
+                );
             } else if (value.kind === "json-null") {
                 compiledStaticText += "null";
                 parts.push(this.context.cppString("null"));
@@ -1529,14 +1598,10 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `setTimeout(callback, 0)`, as the deferred callback the engine runs
-     * at the next frame boundary.
-     *
-     * The delay is read at generation and must be zero. Babylon Native --
-     * which embeds a JavaScript engine and so must serve any delay -- pays
-     * for a whole timer thread here; the reached slice needs none of it,
-     * and a non-zero delay refuses rather than silently becoming "next
-     * frame", which would be a different scene.
+     * `setTimeout(callback, 0)` uses the deferred queue the engine drains at
+     * the next frame boundary. A generation-known non-zero delay uses the
+     * conductor's one-shot timer queue, preserving elapsed-time semantics
+     * without introducing a timer thread or a JavaScript-thread marshal.
      */
     private compileDeferredCallback(
         call: ts.CallExpression,
@@ -1547,13 +1612,13 @@ export class ExpressionLowerer {
             call.arguments[1]!,
         );
         if (delay !== 0) {
-            const callback = this.context.unwrap(
+            const callbackExpression = this.context.unwrap(
                 call.arguments[0]!,
             );
             const body =
-                ts.isArrowFunction(callback) ||
-                ts.isFunctionExpression(callback)
-                    ? callback.body
+                ts.isArrowFunction(callbackExpression) ||
+                ts.isFunctionExpression(callbackExpression)
+                    ? callbackExpression.body
                     : undefined;
             const browserOnly = body
                 ? ts.isBlock(body)
@@ -1569,14 +1634,22 @@ export class ExpressionLowerer {
             if (browserOnly) {
                 return { kind: "void", cpp: "" };
             }
-            this.context.fail(
-                call.arguments[1]!,
-                "Only a zero-delay setTimeout is lowered: it means " +
-                    "\"after the current turn\", which the frame " +
-                    "conductor already has. A real delay needs a timer " +
-                    "this runtime does not carry, and rounding one to " +
-                    "the next frame would be a different scene.",
+            if (delay === undefined || !Number.isFinite(delay) || delay < 0) {
+                this.context.fail(
+                    call.arguments[1]!,
+                    "setTimeout delay must be a generation-known finite non-negative number.",
+                );
+            }
+            const engine = this.context.requireDefaultEngine(call);
+            const callback = this.context.compileFrameCallback(
+                call.arguments[0]!,
+                "void",
             );
+            return {
+                kind: "number",
+                cpp: `bbl::set_timeout(${engine}, ${callback}, ${delay})`,
+                impure: true,
+            };
         }
         const engine = this.context.requireDefaultEngine(call);
         const callback = this.context.compileFrameCallback(
@@ -1643,6 +1716,62 @@ export class ExpressionLowerer {
         whenFalse: Value,
         node: ts.Node,
     ): Value {
+        // Racer's placement helper selects between a loaded AssetContainer
+        // and `{ entities: [cloneTransformNode(root)] }`. Both are the same
+        // native AssetHandle shape: clone_asset_root deliberately creates a
+        // mesh-only AssetRecord so addToScene, entities[0], and
+        // getContainerMeshes all consume it through the ordinary asset path.
+        const asAssetContainer = (value: Value): Value | undefined => {
+            if (value.kind === "asset") return value;
+            if (value.kind !== "record") return undefined;
+            const properties = value.recordProperties ?? {};
+            const names = Object.keys(properties);
+            const entities = properties.entities;
+            const root =
+                names.length === 1 &&
+                entities?.kind === "tuple" &&
+                entities.tupleElements?.length === 1
+                    ? entities.tupleElements[0]
+                    : undefined;
+            return root?.kind === "asset-root" && root.assetRootClone
+                ? { ...root, kind: "asset" }
+                : undefined;
+        };
+        if (whenTrue.kind !== whenFalse.kind) {
+            const trueAsset = asAssetContainer(whenTrue);
+            const falseAsset = asAssetContainer(whenFalse);
+            if (trueAsset && falseAsset) {
+                whenTrue = trueAsset;
+                whenFalse = falseAsset;
+            }
+        }
+        if (
+            whenTrue.kind !== whenFalse.kind &&
+            ((whenTrue.kind === "record" &&
+                whenFalse.kind === "data" &&
+                whenFalse.dataType?.kind === "struct") ||
+                (whenFalse.kind === "record" &&
+                    whenTrue.kind === "data" &&
+                    whenTrue.dataType?.kind === "struct"))
+        ) {
+            const data = whenTrue.kind === "data" ? whenTrue : whenFalse;
+            const record = whenTrue.kind === "record" ? whenTrue : whenFalse;
+            const dataType = data.dataType!;
+            const projected: Value = {
+                kind: "data",
+                cpp: this.context.dataLowerer.compileKnownValueForSink(
+                    record,
+                    dataType,
+                    node,
+                ),
+                dataType,
+            };
+            if (whenTrue.kind === "record") {
+                whenTrue = projected;
+            } else {
+                whenFalse = projected;
+            }
+        }
         if (
             whenTrue.kind === "tuple" &&
             whenFalse.kind === "tuple"
@@ -1705,6 +1834,40 @@ export class ExpressionLowerer {
                 recordProperties: selected,
             };
         }
+        if (
+            whenTrue.kind === "handle-collection" &&
+            whenFalse.kind === "handle-collection" &&
+            whenTrue.handleCollection &&
+            whenFalse.handleCollection
+        ) {
+            const trueCollection = whenTrue.handleCollection;
+            const falseCollection = whenFalse.handleCollection;
+            if (
+                trueCollection.elementKind !== falseCollection.elementKind ||
+                trueCollection.elementCppType !== falseCollection.elementCppType ||
+                trueCollection.engineCpp !== falseCollection.engineCpp
+            ) {
+                this.context.fail(
+                    node,
+                    "Conditional handle collections must carry the same element and engine types.",
+                );
+            }
+            return {
+                kind: "handle-collection",
+                cpp: "",
+                engineCpp: trueCollection.engineCpp,
+                handleCollection: {
+                    property: trueCollection.property,
+                    elementKind: trueCollection.elementKind,
+                    elementCppType: trueCollection.elementCppType,
+                    engineCpp: trueCollection.engineCpp,
+                    temporaryLabel: "selected_handles",
+                    containerCpp:
+                        `(${condition} ? ${trueCollection.containerCpp} : ` +
+                        `${falseCollection.containerCpp})`,
+                },
+            };
+        }
         // A literal string and a string READ OUT OF A RECORD are the same
         // type; only the kinds differ, because one carries a compile-time
         // value and the other does not. The element-access path already
@@ -1747,13 +1910,24 @@ export class ExpressionLowerer {
         ) {
             this.context.fail(
                 node,
-                "Conditional expressions require matching native value branches.",
+                "Conditional expressions require matching native value branches " +
+                    `(received ${whenTrue.kind}${whenTrue.cpp.length === 0 ? " without native storage" : ""} ` +
+                    `and ${whenFalse.kind}${whenFalse.cpp.length === 0 ? " without native storage" : ""}).`,
             );
         }
         const conditional: Value = {
             ...whenTrue,
             cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
         };
+        if (
+            whenTrue.optionalFoundCpp !== undefined ||
+            whenFalse.optionalFoundCpp !== undefined
+        ) {
+            conditional.optionalFoundCpp =
+                `(${condition} ? ` +
+                `${whenTrue.optionalFoundCpp ?? "true"} : ` +
+                `${whenFalse.optionalFoundCpp ?? "true"})`;
+        }
         if (
             whenTrue.staticNumber !== whenFalse.staticNumber
         ) {
@@ -2011,6 +2185,21 @@ export class ExpressionLowerer {
             if (found) {
                 return found;
             }
+            const staticMethod =
+                this.context.classLowerer.resolveStaticMethod(callee);
+            if (staticMethod) {
+                const factory =
+                    this.context.classLowerer.compileNullableResourceFactory(
+                        call,
+                        staticMethod,
+                    );
+                if (factory) return factory;
+                return this.context.userFunctions.compileCallbackCall(
+                    this.context,
+                    call,
+                    staticMethod,
+                );
+            }
             // A method on a constructed instance inlines with `this`
             // bound to that instance's field record.
             const receiver = this.context.unwrap(callee.expression);
@@ -2037,11 +2226,17 @@ export class ExpressionLowerer {
                               callee.name.text
                           ]
                         : undefined;
+                const recordCallback =
+                    instance?.kind === "record"
+                        ? instance.recordProperties?.[
+                              callee.name.text
+                          ]
+                        : undefined;
                 if (
                     instance?.kind === "record" &&
                     call.questionDotToken &&
                     !recordMethod &&
-                    !instance.recordProperties?.[callee.name.text]
+                    !recordCallback
                 ) {
                     return { kind: "void", cpp: "" };
                 }
@@ -2080,6 +2275,33 @@ export class ExpressionLowerer {
                         return method;
                     }
                 }
+                if (
+                    recordCallback?.kind === "callback" &&
+                    recordCallback.callbackDeclaration
+                ) {
+                    const inRecordScope = <T>(work: () => T): T =>
+                        recordCallback.callbackRecordOwner
+                            ? this.context.withRecordScopes(
+                                  recordCallback.callbackRecordOwner,
+                                  work,
+                              )
+                            : work();
+                    return ts.isIdentifier(
+                        recordCallback.callbackDeclaration,
+                    )
+                        ? this.context.userFunctions.compile(
+                              this.context,
+                              call,
+                              recordCallback.callbackDeclaration,
+                              inRecordScope,
+                          )!
+                        : this.context.userFunctions.compileCallbackCall(
+                              this.context,
+                              call,
+                              recordCallback.callbackDeclaration,
+                              inRecordScope,
+                          );
+                }
                 if (instance && declaration) {
                     return this.context.classLowerer.compileMethodCall(
                         instance,
@@ -2101,7 +2323,18 @@ export class ExpressionLowerer {
             );
         }
         if (!ts.isIdentifier(callee)) {
-            this.context.fail(callee, `Unsupported call target '${callee.getText()}'.`);
+            const receiver =
+                ts.isPropertyAccessExpression(callee) &&
+                ts.isIdentifier(callee.expression)
+                    ? this.context.lookupOptional(callee.expression)
+                    : undefined;
+            this.context.fail(
+                callee,
+                `Unsupported call target '${callee.getText()}'` +
+                    (receiver
+                        ? ` on ${receiver.kind}${receiver.dataType ? `:${receiver.dataType.kind}` : ""}.`
+                        : "."),
+            );
         }
 
         if (
@@ -2237,6 +2470,22 @@ export class ExpressionLowerer {
         if (thinInstanceUpload) {
             return thinInstanceUpload;
         }
+        const assetNode =
+            this.context.handleCollections.compileAssetDescendantNameSearch(
+                call,
+                callee,
+            );
+        if (assetNode) {
+            return assetNode;
+        }
+        const decodedAudio = compileAudioDecodeAssetCall(
+            this.context,
+            call,
+            callee,
+        );
+        if (decodedAudio) {
+            return decodedAudio;
+        }
         const userFunction = this.context.userFunctions.compile(
             this.context,
             call,
@@ -2313,9 +2562,18 @@ export class ExpressionLowerer {
             );
         }
         if (ts.isIdentifier(unwrapped)) {
-            return this.staticContainer(
+            const bound = this.staticContainer(
                 this.context.lookupOptional(unwrapped),
             );
+            if (bound) return bound;
+            const resolved =
+                this.context.resolveStaticExpression(unwrapped);
+            return resolved !== unwrapped &&
+                ts.isArrayLiteralExpression(resolved)
+                ? this.staticContainer(
+                      this.compileValue(resolved),
+                  )
+                : undefined;
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const owner = this.compileStaticOwner(

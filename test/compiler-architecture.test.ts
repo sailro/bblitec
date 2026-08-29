@@ -244,7 +244,7 @@ test("resolves property reads from one declared table", () => {
     );
     assert.equal(
         (compiler.match(/readProperty\(/g) ?? []).length,
-        2,
+        3,
     );
     assert.match(assignments, /cameraRecordField/);
     for (const field of [
@@ -706,7 +706,7 @@ test("selects live shadow-receiver variants for runtime meshes", () => {
     );
     assert.equal(
         (shared.match(/key\.mesh_features &= ~receive_shadows;/g) ?? []).length,
-        2,
+        3,
     );
 });
 
@@ -782,6 +782,89 @@ test("invalidates billboard uploads when same-count instance data changes", () =
     assert.match(
         shared,
         /stamp\.instance_version = system\.instance_version;/,
+    );
+});
+
+test("replays billboard stages in compiler-owned frame-graph scene tasks", () => {
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(
+        sdl,
+        /draw_scene_billboard_stages[\s\S]{0,18000}BillboardDepthMode::cutout/,
+    );
+    assert.match(
+        sdl,
+        /draw_task_ground[\s\S]{0,900}BillboardDepthMode::transparent/,
+    );
+    assert.match(
+        dawn,
+        /task\.render\.scene_stages[\s\S]{0,12000}BillboardDepthMode::cutout/,
+    );
+    assert.match(
+        dawn,
+        /state\.ground_pipeline[\s\S]{0,3500}BillboardDepthMode::transparent/,
+    );
+});
+
+test("fits the single CSM map to the first clone-aware cascade", () => {
+    const shadows = source("src/lowering/shadow-lowerer.ts");
+
+    assert.match(
+        shadows,
+        /const double p = 1\.0 \/[\s\S]{0,100}csm_num_cascades/,
+    );
+    assert.match(
+        shadows,
+        /shadow_caster_world[\s\S]{0,3200}mesh\.outer_rotation[\s\S]{0,2500}mesh\.outer_position\.x/,
+    );
+});
+
+test("reuploads dynamic thin-instance colors on both GPU backends", () => {
+    for (const backend of [
+        source("native/src/pal_sdl_gpu.cpp"),
+        source("native/src/pal_dawn.cpp"),
+    ]) {
+        assert.match(
+            backend,
+            /instance_version !=[\s\S]{0,2200}instance_colors\.data\(\)/,
+        );
+    }
+});
+
+test("keeps looping buffer sources and playback rate on the audio PAL", () => {
+    const contract = source("native/include/bblite/pal_audio.hpp");
+    const pal = source("native/src/pal_audio_labsound.cpp");
+
+    assert.match(contract, /AudioParamName[\s\S]{0,200}PlaybackRate/);
+    assert.match(contract, /void audio_set_loop\(/);
+    assert.match(pal, /AudioParamName::PlaybackRate: return "playbackRate"/);
+    assert.match(
+        pal,
+        /sampled->start\(static_cast<float>\(when\), loop \? -1 : 0\);/,
+    );
+});
+
+test("restores wheel-local glTF vertices before live quaternion writes", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const loader = source("src/lowering/templates/gltf-loader-cpp.ts");
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const scene = source("src/lowering/scene-lowerer.ts");
+
+    assert.match(runtime, /bool live_imported_transform = false;/);
+    assert.match(loader, /retains_live_wheel_vertices/);
+    assert.match(loader, /geometry\.bind_vertices\[index\] = local_vertex/);
+    assert.match(
+        shared,
+        /mesh\.gpu_deformation \|\| mesh\.live_imported_transform/,
+    );
+    assert.match(
+        scene,
+        /record\.name\.rfind\("wheel", 0\) != 0[\s\S]{0,900}record\.gpu_world_transform = true;/,
+    );
+    assert.match(
+        scene,
+        /void set_mesh_rotation_quaternion\([\s\S]{0,800}record\.live_imported_transform[\s\S]{0,500}quaternion\.y = -quaternion\.y;[\s\S]{0,120}quaternion\.z = -quaternion\.z;/,
     );
 });
 

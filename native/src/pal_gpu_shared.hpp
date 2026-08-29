@@ -266,9 +266,44 @@ inline std::uint32_t pass_depth_samples(
 namespace bbl::pal {
 
 /** Apply a cloned imported root after the mesh's own/deformation world. */
+inline Vec3 rotate_outer_point(Vec3 point, const Vec3& rotation) {
+    const float sin_x = std::sin(rotation.x);
+    const float cos_x = std::cos(rotation.x);
+    const float sin_y = std::sin(rotation.y);
+    const float cos_y = std::cos(rotation.y);
+    const float sin_z = std::sin(rotation.z);
+    const float cos_z = std::cos(rotation.z);
+    point = Vec3{
+        point.x,
+        point.y * cos_x - point.z * sin_x,
+        point.y * sin_x + point.z * cos_x};
+    point = Vec3{
+        point.x * cos_y + point.z * sin_y,
+        point.y,
+        -point.x * sin_y + point.z * cos_y};
+    return Vec3{
+        point.x * cos_z - point.y * sin_z,
+        point.x * sin_z + point.y * cos_z,
+        point.z};
+}
+
 inline std::array<float, 16> outer_draw_world(
     std::array<float, 16> world,
     const MeshRecord& record) {
+    if (
+        record.outer_rotation.x != 0.0f ||
+        record.outer_rotation.y != 0.0f ||
+        record.outer_rotation.z != 0.0f) {
+        for (std::size_t column = 0; column < 4; ++column) {
+            const std::size_t offset = column * 4;
+            const Vec3 rotated = rotate_outer_point(
+                Vec3{world[offset], world[offset + 1], world[offset + 2]},
+                record.outer_rotation);
+            world[offset] = rotated.x;
+            world[offset + 1] = rotated.y;
+            world[offset + 2] = rotated.z;
+        }
+    }
     world[12] += record.outer_position.x;
     world[13] += record.outer_position.y;
     world[14] += record.outer_position.z;
@@ -1057,7 +1092,7 @@ inline std::vector<GpuVertex> transformed_vertices(
             : mesh;
 #endif
     const std::vector<ModelVertex>& source_vertices =
-        mesh.gpu_deformation &&
+        (mesh.gpu_deformation || mesh.live_imported_transform) &&
                 geometry.bind_vertices.size() ==
                     geometry.vertices.size()
             ? geometry.bind_vertices
@@ -1321,15 +1356,9 @@ inline void release_all_shared(
 inline std::array<float, 16> shader_draw_world(
     const Engine& engine,
     const MeshRecord& mesh) {
-    std::array<float, 16> world =
-        upstream::mesh_world_matrix(engine, mesh);
-    // A cloned imported root's outer scene-node translation, applied by
-    // the draw world rather than baked: the clone shares its source's
-    // skeleton and morph resources, so it cannot travel in the vertices.
-    world[12] += mesh.outer_position.x;
-    world[13] += mesh.outer_position.y;
-    world[14] += mesh.outer_position.z;
-    return world;
+    return outer_draw_world(
+        upstream::mesh_world_matrix(engine, mesh),
+        mesh);
 }
 #endif
 
@@ -2012,11 +2041,23 @@ inline void refresh_shadow_generators(
             // ESM's.
             if (generator.filter == ShadowFilter::pcf_directional) {
                 fitted_shadow_casters(engine, generator, refresh.casters);
-                upstream::update_pcf_directional_shadow(
-                    generator,
-                    engine.lights[light.value],
-                    refresh.casters,
-                    eye);
+                if (
+                    generator.csm_single_map &&
+                    scene.camera.value < engine.cameras.size()) {
+                    upstream::update_csm_single_map_shadow(
+                        generator,
+                        engine.lights[light.value],
+                        engine.cameras[scene.camera.value],
+                        static_cast<double>(engine.options.width) /
+                            static_cast<double>(engine.options.height),
+                        refresh.casters);
+                } else {
+                    upstream::update_pcf_directional_shadow(
+                        generator,
+                        engine.lights[light.value],
+                        refresh.casters,
+                        eye);
+                }
             } else
             upstream::update_pcf_spot_shadow(
                 generator,
@@ -2390,17 +2431,16 @@ inline PinnedVariantKey pinned_variant_key(
             " the composed table names";
         return key;
     }
-    // The mesh half of the key comes per renderable: generation writes one
-    // entry per runtime mesh handle in the loader's own creation order, so a
-    // material drawn under two attribute sets resolves each mesh's own
-    // variant instead of collapsing to the per-material ambiguity.
+    // The mesh half of the key comes per original renderable. Renderer
+    // startup assigns its stable generated-table row and gives every clone
+    // the same row, even when clone handles precede later imported meshes.
     std::uint32_t feature_mesh = draw.item.mesh.value;
     if (
         draw.item.mesh.value < engine.meshes.size() &&
         engine.meshes[draw.item.mesh.value]
-                .feature_source_mesh != invalid_handle) {
+                .composition_feature_row != invalid_handle) {
         feature_mesh = engine.meshes[draw.item.mesh.value]
-            .feature_source_mesh;
+            .composition_feature_row;
     }
     key.mesh_features =
         feature_mesh <
@@ -2430,6 +2470,13 @@ inline PinnedVariantKey pinned_variant_key(
         if (record.receives_shadows) {
             key.mesh_features |= receive_shadows;
         } else {
+            key.mesh_features &= ~receive_shadows;
+        }
+        // A shadow-caster material view is itself the shadow output. The
+        // pin computes `receiveShadows` as `!shadowOutput && ...`, so its
+        // no-colour/ESM views never splice the receiver fragment even when
+        // their source mesh receives shadows in the main render task.
+        if (key.material_view != 0u) {
             key.mesh_features &= ~receive_shadows;
         }
     }
@@ -2695,9 +2742,9 @@ inline StandardVariantKey standard_variant_key(
     if (
         draw.item.mesh.value < engine.meshes.size() &&
         engine.meshes[draw.item.mesh.value]
-                .feature_source_mesh != invalid_handle) {
+                .composition_feature_row != invalid_handle) {
         feature_mesh = engine.meshes[draw.item.mesh.value]
-            .feature_source_mesh;
+            .composition_feature_row;
     }
     key.mesh_features =
         feature_mesh <
@@ -4412,6 +4459,7 @@ inline void finish_frame(Engine& engine) {
         engine.post_render_animation_frame_callbacks_armed = true;
     }
     run_deferred_callbacks(engine);
+    run_timeout_callbacks(engine);
     run_interval_callbacks(engine);
 }
 
