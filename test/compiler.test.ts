@@ -6718,11 +6718,11 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
     assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
+        /\[\[maybe_unused\]\] static double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
     );
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
+        /\[\[maybe_unused\]\] static double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
     );
 });
 

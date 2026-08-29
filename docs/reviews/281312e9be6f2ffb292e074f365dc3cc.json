@@ -30,7 +30,7 @@
       "applied": true
     },
     {
-      "summary": "Continuation persistence initially recognized every later assignment to a post-start local as another declaration and could emit invalid static assignments. Persistence now consumes each storage name at its first declaration, with a regression covering a later top-level write.",
+      "summary": "Continuation persistence initially recognized every later assignment to a post-start local as another declaration and could emit invalid static assignments. Persistence now consumes each storage name at its first declaration, with regressions covering later top-level writes and existing post-start destructuring.",
       "applied": true
     },
     {
