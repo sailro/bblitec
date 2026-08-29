@@ -44,6 +44,10 @@
     {
       "summary": "Dawn's startup-only surface configuration would have been copied into resize handling. configure_dawn_surface() now owns both paths, and resize_dawn_surface() guards unchanged extents before reconfiguration.",
       "applied": true
+    },
+    {
+      "summary": "Named frame callback adapters must preserve the browser-supplied delta or timestamp even when the JavaScript callback ignores it. Marking the generated adapter parameter [[maybe_unused]] keeps that single signature path warning-clean without branching on callback arity.",
+      "applied": true
     }
   ]
 }

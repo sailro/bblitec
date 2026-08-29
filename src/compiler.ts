@@ -3652,7 +3652,7 @@ class Compiler
         }
         const callbackBody = this.body.splice(start);
         const lambdaParameter = parameter
-            ? `${signature === "timestamp" ? "double" : "float"} ${parameter}`
+            ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
             : "";
         return `[&](${lambdaParameter}) {\n${callbackBody
             .map((line) => `            ${line}`)

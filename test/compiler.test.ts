@@ -5819,6 +5819,10 @@ test("compiles Babylon Lite scene 176 transmission, IOR, and volume", () => {
         result.manifest.features.includes("renderer:transmission"),
     );
     assert.match(result.cpp, /bbl::enable_scene_transmission/);
+    assert.match(
+        result.cpp,
+        /bbl::on_before_render\([^]*\[&\]\(\[\[maybe_unused\]\] float /,
+    );
     // The amber body's transmission, IOR, volume, and skybox-mode
     // material state arrive through the glTF loader; the scene's own
     // PBR material carries the skybox-mode backdrop.
@@ -7134,7 +7138,7 @@ test("registers pre-start application animation loops before rendering", () => {
     assert.match(result.cpp, /animation_frame_callbacks\.push_back/);
     assert.match(
         result.cpp,
-        /animation_frame_callbacks\.push_back\(\[&\]\(double /,
+        /animation_frame_callbacks\.push_back\(\[&\]\(\[\[maybe_unused\]\] double /,
     );
     assert.doesNotMatch(
         result.cpp,
