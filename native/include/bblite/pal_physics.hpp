@@ -34,6 +34,7 @@
 
 #include <array>
 #include <cstdint>
+#include <vector>
 
 namespace bbl::pal {
 
@@ -107,13 +108,15 @@ struct PhysicsShapeMaterial {
 
 /**
  * The mass-properties tuple `HP_Shape_BuildMassProperties` returns and
- * `HP_Body_SetMassProperties` takes. The pin's fourth member, the inertia
- * orientation, is unreached and absent.
+ * `HP_Body_SetMassProperties` takes. Convex hulls make every member
+ * observable: their centre and principal-axis orientation determine the
+ * lever arm and angular response of a world-space impulse.
  */
 struct PhysicsMassProperties {
     std::array<double, 3> center_of_mass{};
     double mass = 0.0;
     std::array<double, 3> inertia{};
+    std::array<double, 4> inertia_orientation{0.0, 0.0, 0.0, 1.0};
 };
 
 // --- World -----------------------------------------------------------
@@ -158,6 +161,9 @@ void physics_world_step(PhysicsWorldHandle world, double seconds);
     std::array<double, 3> point_a,
     std::array<double, 3> point_b,
     double radius);
+/** `HP_Shape_CreateConvexHull`, with the pin's packed vec3 input expanded. */
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_convex_hull(
+    const std::vector<std::array<double, 3>>& positions);
 /** `HP_Shape_SetMaterial`, taking the pin's own array as a record. */
 void physics_shape_set_material(
     PhysicsShapeHandle shape,
@@ -200,5 +206,10 @@ void physics_body_set_target_transform(
 void physics_body_set_mass_properties(
     PhysicsBodyHandle body,
     const PhysicsMassProperties& properties);
+/** `HP_Body_ApplyImpulse`: world-space location followed by impulse. */
+void physics_body_apply_impulse(
+    PhysicsBodyHandle body,
+    std::array<double, 3> location,
+    std::array<double, 3> impulse);
 
 }  // namespace bbl::pal

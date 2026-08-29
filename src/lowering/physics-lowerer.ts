@@ -39,10 +39,13 @@
  */
 import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
-import { lowerObjectComponents } from "./pinned-function-lowerer.js";
 import {
-    PinnedNumericLowerer,
-    type PinnedBinding,
+  lowerMat4MultiplyWriterCpp,
+  lowerObjectComponents,
+} from "./pinned-function-lowerer.js";
+import {
+  PinnedNumericLowerer,
+  type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 
@@ -53,12 +56,12 @@ const buildShapeParams = "_buildShapeParams";
 
 /** The statement kinds a restated pinned body's inventory names. */
 const STATEMENT_KINDS: ReadonlyArray<
-    readonly [string, (statement: ts.Statement) => boolean]
+  readonly [string, (statement: ts.Statement) => boolean]
 > = [
-    ["variable statement", ts.isVariableStatement],
-    ["if statement", ts.isIfStatement],
-    ["for statement", ts.isForStatement],
-    ["expression statement", ts.isExpressionStatement],
+  ["variable statement", ts.isVariableStatement],
+  ["if statement", ts.isIfStatement],
+  ["for statement", ts.isForStatement],
+  ["expression statement", ts.isExpressionStatement],
 ];
 
 /**
@@ -72,325 +75,295 @@ const STATEMENT_KINDS: ReadonlyArray<
  * `scaleYMagnitude` -- would pass every check and ship the wrong scale.
  */
 const PRELUDE_SCALARS = [
-    ["scaleX", "scale_x"],
-    ["scaleYMagnitude", "scale_y_magnitude"],
-    ["scaleZ", "scale_z"],
-    ["scaleY", "scale_y"],
+  ["scaleX", "scale_x"],
+  ["scaleYMagnitude", "scale_y_magnitude"],
+  ["scaleZ", "scale_z"],
+  ["scaleY", "scale_y"],
 ] as const;
 
 export class PhysicsLowerer {
-    public constructor(private readonly context: LoweringContext) {}
+  public constructor(private readonly context: LoweringContext) {}
 
-    /**
-     * `MAX_STEP_MS`, the pin's own tunnelling ceiling. Read rather than
-     * restated: the value is a solver-stability contract, and a bump that
-     * changes it changes what a native step does.
-     */
-    private maxStepMs(): number {
-        const file = this.context.sourceFile(havokModule);
-        const declared = this.context.moduleScopeConstant(
-            file,
-            "MAX_STEP_MS",
-        );
-        if (!declared) {
-            this.context.contractError(
-                file,
-                `Expected ${havokModule} to declare MAX_STEP_MS.`,
-            );
-        }
-        return this.context.numericValue(declared, file);
+  /**
+   * `MAX_STEP_MS`, the pin's own tunnelling ceiling. Read rather than
+   * restated: the value is a solver-stability contract, and a bump that
+   * changes it changes what a native step does.
+   */
+  private maxStepMs(): number {
+    const file = this.context.sourceFile(havokModule);
+    const declared = this.context.moduleScopeConstant(file, "MAX_STEP_MS");
+    if (!declared) {
+      this.context.contractError(
+        file,
+        `Expected ${havokModule} to declare MAX_STEP_MS.`,
+      );
     }
+    return this.context.numericValue(declared, file);
+  }
 
-    /**
-     * The `gravity ?? { x, y, z }` default `createHavokWorld` resolves.
-     */
-    private defaultGravity(): [number, number, number] {
-        const { declaration } = this.context.functionDeclaration(
-            havokModule,
-            "createHavokWorld",
-        );
-        const initializer = this.context.variableInitializer(
-            declaration,
-            "g",
-        );
-        const split = this.context.nullishDefault(initializer);
-        if (!split || !ts.isObjectLiteralExpression(split.right)) {
-            this.context.contractError(
-                initializer,
-                "Expected createHavokWorld to default its gravity " +
-                    "through `gravity ?? { x, y, z }`.",
-            );
-        }
-        const fallback = split.right;
-        const file = this.context.sourceFile(havokModule);
-        return ["x", "y", "z"].map((axis) =>
-            this.context.numericValue(
-                this.context.propertyInitializer(fallback, axis),
-                file,
-            ),
-        ) as [number, number, number];
+  /**
+   * The `gravity ?? { x, y, z }` default `createHavokWorld` resolves.
+   */
+  private defaultGravity(): [number, number, number] {
+    const { declaration } = this.context.functionDeclaration(
+      havokModule,
+      "createHavokWorld",
+    );
+    const initializer = this.context.variableInitializer(declaration, "g");
+    const split = this.context.nullishDefault(initializer);
+    if (!split || !ts.isObjectLiteralExpression(split.right)) {
+      this.context.contractError(
+        initializer,
+        "Expected createHavokWorld to default its gravity " +
+          "through `gravity ?? { x, y, z }`.",
+      );
     }
+    const fallback = split.right;
+    const file = this.context.sourceFile(havokModule);
+    return ["x", "y", "z"].map((axis) =>
+      this.context.numericValue(
+        this.context.propertyInitializer(fallback, axis),
+        file,
+      ),
+    ) as [number, number, number];
+  }
 
-    /**
-     * `createPhysicsAggregate`'s `options.friction ?? 0.2` and
-     * `options.restitution ?? 0.2`. Two separate reads, because the pin
-     * writes two separate defaults and a bump may move only one.
-     */
-    private aggregateMaterialDefaults(): {
-        friction: number;
-        restitution: number;
-    } {
-        const { declaration } = this.context.functionDeclaration(
-            havokModule,
-            "createPhysicsAggregate",
+  /**
+   * `createPhysicsAggregate`'s `options.friction ?? 0.2` and
+   * `options.restitution ?? 0.2`. Two separate reads, because the pin
+   * writes two separate defaults and a bump may move only one.
+   */
+  private aggregateMaterialDefaults(): {
+    friction: number;
+    restitution: number;
+  } {
+    const { declaration } = this.context.functionDeclaration(
+      havokModule,
+      "createPhysicsAggregate",
+    );
+    const file = this.context.sourceFile(havokModule);
+    const read = (name: string): number => {
+      const initializer = this.context.variableInitializer(declaration, name);
+      const split = this.context.nullishDefault(initializer);
+      if (!split) {
+        this.context.contractError(
+          initializer,
+          `Expected createPhysicsAggregate to default ` +
+            `${name} through \`options.${name} ?? <value>\`.`,
         );
-        const file = this.context.sourceFile(havokModule);
-        const read = (name: string): number => {
-            const initializer = this.context.variableInitializer(
-                declaration,
-                name,
-            );
-            const split = this.context.nullishDefault(initializer);
-            if (!split) {
-                this.context.contractError(
-                    initializer,
-                    `Expected createPhysicsAggregate to default ` +
-                        `${name} through \`options.${name} ?? <value>\`.`,
-                );
-            }
-            return this.context.numericValue(split.right, file);
-        };
-        return {
-            friction: read("friction"),
-            restitution: read("restitution"),
-        };
+      }
+      return this.context.numericValue(split.right, file);
+    };
+    return {
+      friction: read("friction"),
+      restitution: read("restitution"),
+    };
+  }
+
+  /**
+   * The numeric value of each `PhysicsShapeType` / `PhysicsMotionType`
+   * member. A `const enum` is inlined by the TypeScript emitter, so the
+   * declaration is the only place the number exists -- and both PALs
+   * translate the emitted enumerator, so a member the pin renumbers has
+   * to renumber here too.
+   */
+  private enumMembers(name: string): Map<string, number> {
+    const file = this.context.sourceFile(havokModule);
+    const declaration = file.statements.find(
+      (statement): statement is ts.EnumDeclaration =>
+        ts.isEnumDeclaration(statement) && statement.name.text === name,
+    );
+    if (!declaration) {
+      this.context.contractError(
+        file,
+        `Expected ${havokModule} to declare enum ${name}.`,
+      );
     }
-
-    /**
-     * The numeric value of each `PhysicsShapeType` / `PhysicsMotionType`
-     * member. A `const enum` is inlined by the TypeScript emitter, so the
-     * declaration is the only place the number exists -- and both PALs
-     * translate the emitted enumerator, so a member the pin renumbers has
-     * to renumber here too.
-     */
-    private enumMembers(name: string): Map<string, number> {
-        const file = this.context.sourceFile(havokModule);
-        const declaration = file.statements.find(
-            (statement): statement is ts.EnumDeclaration =>
-                ts.isEnumDeclaration(statement) &&
-                statement.name.text === name,
+    const members = new Map<string, number>();
+    for (const member of declaration.members) {
+      if (!ts.isIdentifier(member.name) || !member.initializer) {
+        this.context.contractError(
+          member,
+          `Expected ${name} members to carry explicit ` +
+            "numeric initializers.",
         );
-        if (!declaration) {
-            this.context.contractError(
-                file,
-                `Expected ${havokModule} to declare enum ${name}.`,
-            );
-        }
-        const members = new Map<string, number>();
-        for (const member of declaration.members) {
-            if (!ts.isIdentifier(member.name) || !member.initializer) {
-                this.context.contractError(
-                    member,
-                    `Expected ${name} members to carry explicit ` +
-                        "numeric initializers.",
-                );
-            }
-            members.set(
-                member.name.text,
-                this.context.numericValue(member.initializer, file),
-            );
-        }
-        return members;
+      }
+      members.set(
+        member.name.text,
+        this.context.numericValue(member.initializer, file),
+      );
     }
+    return members;
+  }
 
-    /**
-     * `_buildShapeParams`, translated from its own AST.
-     *
-     * 1.25.0 deleted `_boundingCenter`, `_boundingExtents` and
-     * `_boundingRadius` and states the whole derivation inline instead --
-     * scaled by the node's own scaling, with a capsule and a cylinder
-     * spanning the mesh's Y range where the old defaults gave both the unit
-     * segment. So the port follows the derivation to where it now lives:
-     * every number below is one of the pin's own expressions.
-     *
-     * Two specializations, and they are the ones the deleted helpers
-     * already made: the optional bound arrays become `MeshBounds::present`
-     * with each `??` taking the pin's own literal, and every component
-     * widens to the JavaScript-number double the pin computes in.
-     *
-     * The reached aggregate slice names no explicit geometry option --
-     * `radius`, `extents`, `center`, `pointA` and `pointB` all refuse at
-     * generation -- so each per-case `??` is emitted as its right arm, the
-     * derived one, read from the pin rather than restated.
-     */
-    private lowerShapeParams(): string {
-        const { file, declaration } = this.context.functionDeclaration(
-            havokModule,
-            buildShapeParams,
+  /**
+   * `_buildShapeParams`, translated from its own AST.
+   *
+   * 1.25.0 deleted `_boundingCenter`, `_boundingExtents` and
+   * `_boundingRadius` and states the whole derivation inline instead --
+   * scaled by the node's own scaling, with a capsule and a cylinder
+   * spanning the mesh's Y range where the old defaults gave both the unit
+   * segment. So the port follows the derivation to where it now lives:
+   * every number below is one of the pin's own expressions.
+   *
+   * Two specializations, and they are the ones the deleted helpers
+   * already made: the optional bound arrays become `MeshBounds::present`
+   * with each `??` taking the pin's own literal, and every component
+   * widens to the JavaScript-number double the pin computes in.
+   *
+   * The reached aggregate slice names no explicit geometry option --
+   * `radius`, `extents`, `center`, `pointA` and `pointB` all refuse at
+   * generation -- so each per-case `??` is emitted as its right arm, the
+   * derived one, read from the pin rather than restated.
+   */
+  private lowerShapeParams(): string {
+    const { file, declaration } = this.context.functionDeclaration(
+      havokModule,
+      buildShapeParams,
+    );
+    if (!declaration.body) {
+      this.context.contractError(
+        declaration,
+        `Expected ${buildShapeParams} to have a body.`,
+      );
+    }
+    this.assertShapeParamsPrelude(declaration);
+    this.assertShapeParamsCases(declaration);
+    const axes = ["x", "y", "z"] as const;
+    const scalar = (cpp: string): PinnedBinding => ({
+      cpp,
+      type: "scalar",
+    });
+    const bindings = new Map<string, PinnedBinding>([
+      // The prelude reads the mesh; every case reads the prelude.
+      ...axes.map((axis): [string, PinnedBinding] => [
+        `node.scaling.${axis}`,
+        scalar(`static_cast<double>(scaling.${axis})`),
+      ]),
+      ["node.boundMin", { cpp: "box.present", type: "bool" }],
+      ["node.boundMax", { cpp: "box.present", type: "bool" }],
+      ...PRELUDE_SCALARS.map(([pinned, field]): [string, PinnedBinding] => [
+        pinned,
+        scalar(`shape.${field}`),
+      ]),
+      ...axes.flatMap((axis, index): Array<[string, PinnedBinding]> => [
+        [`min[${index}]`, scalar(`shape.minimum.${axis}`)],
+        [`max[${index}]`, scalar(`shape.maximum.${axis}`)],
+      ]),
+      // `extents.x` resolves through this one: the translator appends
+      // the member to a `vec3` binding, so the three component
+      // spellings would be the same text stated twice.
+      ["extents", { cpp: "shape.extents", type: "vec3" }],
+      // The CAPSULE case's own local, which its two points read back.
+      // The emitted `capsule_shape` declares it where the pin does,
+      // and no other case names one.
+      ["radius", scalar("radius")],
+    ]);
+    const lowerer = new PinnedNumericLowerer(file, {
+      bindings,
+      // The one-to-one names come from `pinnedNumericMathCalls`, so a
+      // member one lowerer learns is a member all of them know. Only
+      // `Math.max` is stated here, and only because the pin calls it
+      // with THREE arguments: the shared spelling is the two-argument
+      // `std::max<double>(a, b)`, where a three-way maximum needs the
+      // initializer-list overload.
+      calls: new Map<string, (args: readonly string[]) => string>([
+        ...pinnedNumericMathCalls(),
+        [
+          "Math.max",
+          (args: readonly string[]) => `std::max<double>({${args.join(", ")}})`,
+        ],
+      ]),
+    });
+    const vector = (expression: ts.Expression): string => {
+      const unwrapped = this.context.unwrapExpression(expression);
+      if (!ts.isObjectLiteralExpression(unwrapped)) {
+        return lowerer.expression(unwrapped);
+      }
+      return `Vec3d{${lowerObjectComponents(this.context, lowerer, unwrapped, [
+        ...axes,
+      ]).join(", ")}}`;
+    };
+    const preludeTerm = (name: string): string =>
+      lowerer.expression(this.context.variableInitializer(declaration, name));
+    const boundVector = (name: "min" | "max"): string => {
+      const member = name === "min" ? "minimum" : "maximum";
+      const initializer = this.context.variableInitializer(declaration, name);
+      const split = this.context.nullishDefault(initializer);
+      const fallback = split
+        ? this.context.unwrapExpression(split.right)
+        : undefined;
+      if (
+        !split ||
+        !fallback ||
+        !ts.isArrayLiteralExpression(fallback) ||
+        fallback.elements.length !== axes.length
+      ) {
+        this.context.contractError(
+          initializer,
+          `Expected ${buildShapeParams}'s '${name}' to be the ` +
+            "optional bound array over a three-component " +
+            "literal fallback.",
         );
-        if (!declaration.body) {
-            this.context.contractError(
-                declaration,
-                `Expected ${buildShapeParams} to have a body.`,
-            );
-        }
-        this.assertShapeParamsPrelude(declaration);
-        this.assertShapeParamsCases(declaration);
-        const axes = ["x", "y", "z"] as const;
-        const scalar = (cpp: string): PinnedBinding => ({
-            cpp,
-            type: "scalar",
-        });
-        const bindings = new Map<string, PinnedBinding>([
-            // The prelude reads the mesh; every case reads the prelude.
-            ...axes.map(
-                (axis): [string, PinnedBinding] => [
-                    `node.scaling.${axis}`,
-                    scalar(`static_cast<double>(scaling.${axis})`),
-                ],
+      }
+      const present = lowerer.expression(split.left);
+      return `Vec3d{${axes
+        .map(
+          (axis, index) =>
+            `${present} ? static_cast<double>(` +
+            `box.${member}.${axis}) : ` +
+            this.context.doubleLiteral(
+              this.context.numericValue(fallback.elements[index]!, file),
             ),
-            ["node.boundMin", { cpp: "box.present", type: "bool" }],
-            ["node.boundMax", { cpp: "box.present", type: "bool" }],
-            ...PRELUDE_SCALARS.map(
-                ([pinned, field]): [string, PinnedBinding] => [
-                    pinned,
-                    scalar(`shape.${field}`),
-                ],
-            ),
-            ...axes.flatMap(
-                (axis, index): Array<[string, PinnedBinding]> => [
-                    [`min[${index}]`, scalar(`shape.minimum.${axis}`)],
-                    [`max[${index}]`, scalar(`shape.maximum.${axis}`)],
-                ],
-            ),
-            // `extents.x` resolves through this one: the translator appends
-            // the member to a `vec3` binding, so the three component
-            // spellings would be the same text stated twice.
-            ["extents", { cpp: "shape.extents", type: "vec3" }],
-            // The CAPSULE case's own local, which its two points read back.
-            // The emitted `capsule_shape` declares it where the pin does,
-            // and no other case names one.
-            ["radius", scalar("radius")],
-        ]);
-        const lowerer = new PinnedNumericLowerer(file, {
-            bindings,
-            // The one-to-one names come from `pinnedNumericMathCalls`, so a
-            // member one lowerer learns is a member all of them know. Only
-            // `Math.max` is stated here, and only because the pin calls it
-            // with THREE arguments: the shared spelling is the two-argument
-            // `std::max<double>(a, b)`, where a three-way maximum needs the
-            // initializer-list overload.
-            calls: new Map<string, (args: readonly string[]) => string>([
-                ...pinnedNumericMathCalls(),
-                [
-                    "Math.max",
-                    (args: readonly string[]) =>
-                        `std::max<double>({${args.join(", ")}})`,
-                ],
-            ]),
-        });
-        const vector = (expression: ts.Expression): string => {
-            const unwrapped = this.context.unwrapExpression(expression);
-            if (!ts.isObjectLiteralExpression(unwrapped)) {
-                return lowerer.expression(unwrapped);
-            }
-            return `Vec3d{${lowerObjectComponents(
-                this.context,
-                lowerer,
-                unwrapped,
-                [...axes],
-            ).join(", ")}}`;
-        };
-        const preludeTerm = (name: string): string =>
-            lowerer.expression(
-                this.context.variableInitializer(declaration, name),
+        )
+        .join(", ")}}`;
+    };
+    const sphereCenter = vector(
+      this.shapeCaseValue(declaration, "SPHERE", "center"),
+    );
+    const boxCenter = vector(this.shapeCaseValue(declaration, "BOX", "center"));
+    if (sphereCenter !== boxCenter) {
+      this.context.contractError(
+        declaration,
+        "Expected the SPHERE and BOX cases to state the same " +
+          "centre. They share one emitted helper, so a pin that " +
+          "gives them different centres has to split it.",
+      );
+    }
+    // A capsule declares a local its two points read back and a
+    // cylinder declares none, so the locals come from the clause rather
+    // than from a hoist that would have to move if the pin added one.
+    const segment = (caseName: "CAPSULE" | "CYLINDER"): string => {
+      const clause = this.shapeCaseClause(declaration, caseName);
+      const locals = this.context
+        .findNodes(clause, ts.isVariableDeclaration)
+        .map((local) => {
+          if (!ts.isIdentifier(local.name) || !local.initializer) {
+            return this.context.contractError(
+              local,
+              `Expected the ${caseName} case's local to be a ` +
+                "named initialized binding.",
             );
-        const boundVector = (name: "min" | "max"): string => {
-            const member = name === "min" ? "minimum" : "maximum";
-            const initializer = this.context.variableInitializer(
-                declaration,
-                name,
-            );
-            const split = this.context.nullishDefault(initializer);
-            const fallback = split
-                ? this.context.unwrapExpression(split.right)
-                : undefined;
-            if (
-                !split ||
-                !fallback ||
-                !ts.isArrayLiteralExpression(fallback) ||
-                fallback.elements.length !== axes.length
-            ) {
-                this.context.contractError(
-                    initializer,
-                    `Expected ${buildShapeParams}'s '${name}' to be the ` +
-                        "optional bound array over a three-component " +
-                        "literal fallback.",
-                );
-            }
-            const present = lowerer.expression(split.left);
-            return `Vec3d{${axes
-                .map(
-                    (axis, index) =>
-                        `${present} ? static_cast<double>(` +
-                        `box.${member}.${axis}) : ` +
-                        this.context.doubleLiteral(
-                            this.context.numericValue(
-                                fallback.elements[index]!,
-                                file,
-                            ),
-                        ),
-                )
-                .join(", ")}}`;
-        };
-        const sphereCenter = vector(
-            this.shapeCaseValue(declaration, "SPHERE", "center"),
-        );
-        const boxCenter = vector(
-            this.shapeCaseValue(declaration, "BOX", "center"),
-        );
-        if (sphereCenter !== boxCenter) {
-            this.context.contractError(
-                declaration,
-                "Expected the SPHERE and BOX cases to state the same " +
-                    "centre. They share one emitted helper, so a pin that " +
-                    "gives them different centres has to split it.",
-            );
-        }
-        // A capsule declares a local its two points read back and a
-        // cylinder declares none, so the locals come from the clause rather
-        // than from a hoist that would have to move if the pin added one.
-        const segment = (caseName: "CAPSULE" | "CYLINDER"): string => {
-            const clause = this.shapeCaseClause(declaration, caseName);
-            const locals = this.context
-                .findNodes(clause, ts.isVariableDeclaration)
-                .map((local) => {
-                    if (!ts.isIdentifier(local.name) || !local.initializer) {
-                        return this.context.contractError(
-                            local,
-                            `Expected the ${caseName} case's local to be a ` +
-                                "named initialized binding.",
-                        );
-                    }
-                    return `    const double ${local.name.text} = ` +
-                        `${lowerer.expression(local.initializer)};
-`;
-                })
-                .join("");
-            const value = (property: string): ts.Expression =>
-                this.shapeCaseValue(declaration, caseName, property);
-            return `PinnedSegmentShape ${caseName.toLowerCase()}_shape(
+          }
+          return (
+            `    const double ${local.name.text} = ` +
+            `${lowerer.expression(local.initializer)};
+`
+          );
+        })
+        .join("");
+      const value = (property: string): ts.Expression =>
+        this.shapeCaseValue(declaration, caseName, property);
+      return `PinnedSegmentShape ${caseName.toLowerCase()}_shape(
     const PinnedShapeBounds& shape) {
 ${locals}    return PinnedSegmentShape{
         ${lowerer.expression(value("radius"))},
         ${vector(value("pointA"))},
         ${vector(value("pointB"))}};
 }`;
-        };
-        return `struct PinnedShapeBounds {
-${PRELUDE_SCALARS.map(([, field]) => `    double ${field} = 0.0;`).join(
-        "\n",
-    )}
+    };
+    return `struct PinnedShapeBounds {
+${PRELUDE_SCALARS.map(([, field]) => `    double ${field} = 0.0;`).join("\n")}
     Vec3d minimum{};
     Vec3d maximum{};
     Vec3d extents{};
@@ -408,13 +381,12 @@ PinnedShapeBounds pinned_shape_bounds(
     const Vec3& scaling) {
     PinnedShapeBounds shape{};
 ${PRELUDE_SCALARS.map(
-        ([pinned, field]) =>
-            `    shape.${field} = ${preludeTerm(pinned)};`,
-    ).join("\n")}
+  ([pinned, field]) => `    shape.${field} = ${preludeTerm(pinned)};`,
+).join("\n")}
     shape.minimum = ${boundVector("min")};
     shape.maximum = ${boundVector("max")};
     shape.extents = ${vector(
-        this.context.variableInitializer(declaration, "extents"),
+      this.context.variableInitializer(declaration, "extents"),
     )};
     return shape;
 }
@@ -426,7 +398,7 @@ Vec3d bounding_center(const PinnedShapeBounds& shape) {
 
 double sphere_radius(const PinnedShapeBounds& shape) {
     return ${lowerer.expression(
-        this.shapeCaseValue(declaration, "SPHERE", "radius"),
+      this.shapeCaseValue(declaration, "SPHERE", "radius"),
     )};
 }
 
@@ -437,508 +409,491 @@ Vec3d box_extents(const PinnedShapeBounds& shape) {
 ${segment("CAPSULE")}
 
 ${segment("CYLINDER")}`;
-    }
+  }
 
-    /**
-     * The switch's own case set, and each case's own assignments.
-     *
-     * `shapeCaseValue` asks for the properties this port already names, so
-     * on its own it is blind in the direction a bump actually moves: a case
-     * the pin ADDS, or a `params.<property>` it starts assigning inside an
-     * existing one, is silently dropped. That is precisely the class of
-     * change 1.25.0 made, and it surfaced only because the three helpers it
-     * replaced were deleted. Here it fails by name instead.
-     *
-     * `rotation` is listed for BOX and SPHERE because the emitted box passes
-     * the pin's own identity quaternion: it is an aggregate option this port
-     * refuses, so what has to hold is that the pin still derives nothing for
-     * it -- a case that started computing a rotation would need the emitted
-     * shape to carry one.
-     */
-    private assertShapeParamsCases(
-        declaration: ts.FunctionDeclaration,
-    ): void {
-        const file = declaration.getSourceFile();
-        const expected = new Map<string, readonly string[]>([
-            ["SPHERE", ["radius", "center"]],
-            ["BOX", ["extents", "center"]],
-            ["CAPSULE", ["radius", "pointA", "pointB"]],
-            ["CYLINDER", ["radius", "pointA", "pointB"]],
-        ]);
-        const clauses = this.context.findNodes(declaration, ts.isCaseClause);
-        const cases = clauses.map((clause) =>
-            clause.expression.getText(file).replace("PhysicsShapeType.", ""),
+  /**
+   * The switch's own case set, and each case's own assignments.
+   *
+   * `shapeCaseValue` asks for the properties this port already names, so
+   * on its own it is blind in the direction a bump actually moves: a case
+   * the pin ADDS, or a `params.<property>` it starts assigning inside an
+   * existing one, is silently dropped. That is precisely the class of
+   * change 1.25.0 made, and it surfaced only because the three helpers it
+   * replaced were deleted. Here it fails by name instead.
+   *
+   * `rotation` is listed for BOX and SPHERE because the emitted box passes
+   * the pin's own identity quaternion: it is an aggregate option this port
+   * refuses, so what has to hold is that the pin still derives nothing for
+   * it -- a case that started computing a rotation would need the emitted
+   * shape to carry one.
+   */
+  private assertShapeParamsCases(declaration: ts.FunctionDeclaration): void {
+    const file = declaration.getSourceFile();
+    const expected = new Map<string, readonly string[]>([
+      ["SPHERE", ["radius", "center"]],
+      ["BOX", ["extents", "center"]],
+      ["CAPSULE", ["radius", "pointA", "pointB"]],
+      ["CYLINDER", ["radius", "pointA", "pointB"]],
+    ]);
+    const clauses = this.context.findNodes(declaration, ts.isCaseClause);
+    const cases = clauses.map((clause) =>
+      clause.expression.getText(file).replace("PhysicsShapeType.", ""),
+    );
+    if (
+      cases.length !== expected.size ||
+      cases.some((name) => !expected.has(name))
+    ) {
+      this.context.contractError(
+        declaration,
+        `${buildShapeParams} switches on [${cases.join(", ")}]; ` +
+          "the emitted aggregate serves exactly " +
+          `[${[...expected.keys()].join(", ")}], so a case the ` +
+          "pin adds must be read and re-emitted rather than " +
+          "falling through to the primitive-shape refusal.",
+      );
+    }
+    for (const clause of clauses) {
+      const name = clause.expression
+        .getText(file)
+        .replace("PhysicsShapeType.", "");
+      const assigned = this.context
+        .findNodes(clause, ts.isBinaryExpression)
+        .filter(
+          (candidate) =>
+            candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            candidate.left.getText(file).startsWith("params."),
+        )
+        .map((candidate) =>
+          candidate.left.getText(file).slice("params.".length),
         );
-        if (
-            cases.length !== expected.size ||
-            cases.some((name) => !expected.has(name))
-        ) {
-            this.context.contractError(
-                declaration,
-                `${buildShapeParams} switches on [${cases.join(", ")}]; ` +
-                    "the emitted aggregate serves exactly " +
-                    `[${[...expected.keys()].join(", ")}], so a case the ` +
-                    "pin adds must be read and re-emitted rather than " +
-                    "falling through to the primitive-shape refusal.",
-            );
-        }
-        for (const clause of clauses) {
-            const name = clause.expression
-                .getText(file)
-                .replace("PhysicsShapeType.", "");
-            const assigned = this.context
-                .findNodes(clause, ts.isBinaryExpression)
-                .filter(
-                    (candidate) =>
-                        candidate.operatorToken.kind ===
-                            ts.SyntaxKind.EqualsToken &&
-                        candidate.left.getText(file).startsWith("params."),
-                )
-                .map((candidate) =>
-                    candidate.left.getText(file).slice("params.".length),
-                );
-            const wanted = expected.get(name)!;
-            const extra = assigned.filter((key) => !wanted.includes(key));
-            const missing = wanted.filter((key) => !assigned.includes(key));
-            if (extra.length === 0 && missing.length === 0) continue;
-            this.context.contractError(
-                clause,
-                `The ${name} case assigns [${assigned.join(", ")}]; the ` +
-                    `emitted shape reads [${wanted.join(", ")}]. ` +
-                    (missing.length > 0
-                        ? `Unassigned: ${missing.join(", ")}. `
-                        : "") +
-                    (extra.length > 0 ? `Unread: ${extra.join(", ")}. ` : "") +
-                    "A parameter the pin derives and this port does not read " +
-                    "ships whatever the emitted shape hardcodes instead.",
-            );
-        }
+      const wanted = expected.get(name)!;
+      const extra = assigned.filter((key) => !wanted.includes(key));
+      const missing = wanted.filter((key) => !assigned.includes(key));
+      if (extra.length === 0 && missing.length === 0) continue;
+      this.context.contractError(
+        clause,
+        `The ${name} case assigns [${assigned.join(", ")}]; the ` +
+          `emitted shape reads [${wanted.join(", ")}]. ` +
+          (missing.length > 0 ? `Unassigned: ${missing.join(", ")}. ` : "") +
+          (extra.length > 0 ? `Unread: ${extra.join(", ")}. ` : "") +
+          "A parameter the pin derives and this port does not read " +
+          "ships whatever the emitted shape hardcodes instead.",
+      );
     }
+  }
 
-    /** One `case PhysicsShapeType.<name>:` of `_buildShapeParams`. */
-    private shapeCaseClause(
-        declaration: ts.FunctionDeclaration,
-        caseName: string,
-    ): ts.CaseClause {
-        const file = declaration.getSourceFile();
-        const clause = this.context
-            .findNodes(declaration, ts.isCaseClause)
-            .find(
-                (candidate) =>
-                    candidate.expression.getText(file) ===
-                    `PhysicsShapeType.${caseName}`,
-            );
-        if (!clause) {
-            this.context.contractError(
-                declaration,
-                `Expected ${buildShapeParams} to carry a ` +
-                    `PhysicsShapeType.${caseName} case.`,
-            );
-        }
-        return clause;
+  /** One `case PhysicsShapeType.<name>:` of `_buildShapeParams`. */
+  private shapeCaseClause(
+    declaration: ts.FunctionDeclaration,
+    caseName: string,
+  ): ts.CaseClause {
+    const file = declaration.getSourceFile();
+    const clause = this.context
+      .findNodes(declaration, ts.isCaseClause)
+      .find(
+        (candidate) =>
+          candidate.expression.getText(file) === `PhysicsShapeType.${caseName}`,
+      );
+    if (!clause) {
+      this.context.contractError(
+        declaration,
+        `Expected ${buildShapeParams} to carry a ` +
+          `PhysicsShapeType.${caseName} case.`,
+      );
     }
+    return clause;
+  }
 
-    /**
-     * The DERIVED side of `params.<property> = <override> ?? <derived>`.
-     *
-     * The override is an aggregate option this port refuses at generation,
-     * so what an emitted shape uses is always the right arm -- and reading
-     * it through the `??` is what makes a pin that stopped deriving the
-     * value fail here instead of quietly keeping the old default.
-     */
-    private shapeCaseValue(
-        declaration: ts.FunctionDeclaration,
-        caseName: string,
-        property: string,
-    ): ts.Expression {
-        const clause = this.shapeCaseClause(declaration, caseName);
-        const file = declaration.getSourceFile();
-        const assignment = this.context
-            .findNodes(clause, ts.isBinaryExpression)
-            .find(
-                (candidate) =>
-                    candidate.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    candidate.left.getText(file) === `params.${property}`,
-            );
-        if (!assignment) {
-            this.context.contractError(
-                clause,
-                `Expected the ${caseName} case to assign ` +
-                    `params.${property}.`,
-            );
-        }
-        const derived = this.context.nullishDefault(assignment.right);
-        if (!derived) {
-            this.context.contractError(
-                assignment.right,
-                `Expected the ${caseName} case to derive ` +
-                    `params.${property} behind an option '??'.`,
-            );
-        }
-        return derived.right;
+  /**
+   * The DERIVED side of `params.<property> = <override> ?? <derived>`.
+   *
+   * The override is an aggregate option this port refuses at generation,
+   * so what an emitted shape uses is always the right arm -- and reading
+   * it through the `??` is what makes a pin that stopped deriving the
+   * value fail here instead of quietly keeping the old default.
+   */
+  private shapeCaseValue(
+    declaration: ts.FunctionDeclaration,
+    caseName: string,
+    property: string,
+  ): ts.Expression {
+    const clause = this.shapeCaseClause(declaration, caseName);
+    const file = declaration.getSourceFile();
+    const assignment = this.context
+      .findNodes(clause, ts.isBinaryExpression)
+      .find(
+        (candidate) =>
+          candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          candidate.left.getText(file) === `params.${property}`,
+      );
+    if (!assignment) {
+      this.context.contractError(
+        clause,
+        `Expected the ${caseName} case to assign ` + `params.${property}.`,
+      );
     }
-
-    /**
-     * The pinned declarations this port RESTATES, and what must still be
-     * true of each.
-     *
-     * A restated body is safe only while the thing it restates has not
-     * moved, so every rule the emitted template folds is listed against the
-     * declaration that states it. Two shapes cover all of them: expressions
-     * a body must state, and CALLS it must make in order. Both read the
-     * declaration's own nodes rather than its text, because a substring
-     * scan is satisfied by a comment naming the rule, and an ordering a
-     * comment can reorder is not a contract. Each expression is matched
-     * structurally (`expressionMatchesShape`), so formatting, parentheses
-     * and `as` casts do not pin bytes that carry no meaning.
-     */
-    private static readonly shapeContracts: ReadonlyArray<
-        readonly [string, readonly string[]]
-    > = [
-        [
-            "_stepWorld",
-            [
-                // The step gate: which delta, and the tunnelling clamp.
-                "world._fixedDeltaMs > 0 ? world._fixedDeltaMs : deltaMs",
-                "!Number.isFinite(stepMs) || stepMs <= 0",
-                "Math.min(stepMs, MAX_STEP_MS) / 1000",
-                // Which bodies each phase touches; the template restates
-                // all three predicates, and the whole pre-step gate --
-                // DISABLED skips, and only an ANIMATED (kinematic) or
-                // explicitly pre-stepped body syncs.
-                "b._prestepType !== PhysicsPrestepType.DISABLED",
-                "b._prestepType !== PhysicsPrestepType.DISABLED && " +
-                    "(b.motionType === (PhysicsMotionType.ANIMATED as number) " +
-                    "|| b._preStep)",
-                "b._prestepType === PhysicsPrestepType.ACTION",
-                "b.motionType === (PhysicsMotionType.DYNAMIC as number)",
-            ],
-        ],
-        [
-            // `unshift`, not `push`: physics integrates before every other
-            // before-render callback, so a scene reading a pose in one
-            // reads this frame pose rather than the previous frame one.
-            "createHavokWorld",
-            ["scene._beforeRender.unshift(stepCb)"],
-        ],
-        [
-            "_syncBodyToNode",
-            [
-                "node.position.set(pos[0], pos[1], pos[2])",
-                "node.rotationQuaternion.set(rot[0], rot[1], rot[2], rot[3])",
-            ],
-        ],
-        [
-            // `mass === 0` is what makes a body static, and a mass is
-            // written only for a positive one.
-            "createPhysicsAggregate",
-            ["options.mass === 0", "options.mass > 0"],
-        ],
-        [
-            // The material array in the pin own field order. Which combine
-            // mode applies to which channel travels across the PAL surface
-            // as data, so a flip upstream has to fail here. The static
-            // channel is its own parameter since 1.25.0; the emitted
-            // template still writes ONE friction into both, which is only
-            // right while that parameter defaults to the dynamic one -- so
-            // the default is asserted beside the array rather than assumed
-            // (`staticFrictionDefault` below).
-            "setPhysicsShapeMaterial",
-            [
-                "[staticFriction, friction, restitution, combines.MINIMUM, combines.MAXIMUM]",
-            ],
-        ],
-        [
-            // The motion-type mapping the generated body factory performs.
-            // Upstream does not pass its own enum to the solver either.
-            "createPhysicsBody",
-            [
-                "hknp.MotionType.STATIC",
-                "hknp.MotionType.KINEMATIC",
-                "hknp.MotionType.DYNAMIC",
-            ],
-        ],
-        [
-            // `setPhysicsBodyMass` keeps the shape-derived tensor and
-            // overrides only the mass scalar. The generated code performs
-            // that branch, so the branch has to still be the pin one --
-            // asserted whole, isotropic fallback arm included.
-            "setPhysicsBodyMass",
-            [
-                "body._shape ? buildMassProperties(world, body) : " +
-                    "[[0, 0, 0], mass, [mass, mass, mass], [0, 0, 0, 1]]",
-                "massProps[1] = mass",
-            ],
-        ],
-    ];
-
-    /** The calls each declaration must make, in this order. */
-    private static readonly orderContracts: ReadonlyArray<
-        readonly [string, readonly string[]]
-    > = [
-        [
-            // The four phases of a frame. A reordering is invisible in
-            // every single expression and changes every frame.
-            "_stepWorld",
-            ["_syncNodeToBodyTarget", "HP_World_Step", "_syncBodyToNode"],
-        ],
-        [
-            // Upstream comments this ordering because it is observable:
-            // mass derives from the shape, so a mass written before the
-            // shape is attached reads a different inertia tensor.
-            "createPhysicsAggregate",
-            [
-                "createPhysicsBody",
-                "setPhysicsBodyShape",
-                "setPhysicsShapeMaterial",
-                "setPhysicsBodyMass",
-            ],
-        ],
-        [
-            // Motion type, then add to world, then transform: the solver
-            // resets a body transform on add, which is why the pin orders
-            // it this way and the generated factory follows.
-            "createPhysicsBody",
-            [
-                "HP_Body_Create",
-                "HP_Body_SetMotionType",
-                "HP_World_AddBody",
-                "HP_Body_SetQTransform",
-            ],
-        ],
-    ];
-
-    private pinnedDeclaration(symbolName: string): ts.FunctionDeclaration {
-        return this.context.functionDeclaration(havokModule, symbolName)
-            .declaration;
+    const derived = this.context.nullishDefault(assignment.right);
+    if (!derived) {
+      this.context.contractError(
+        assignment.right,
+        `Expected the ${caseName} case to derive ` +
+          `params.${property} behind an option '??'.`,
+      );
     }
+    return derived.right;
+  }
 
-    /** Every rule the emitted template folds, checked where it is stated. */
-    private assertPinnedContracts(): void {
-        for (const [symbolName, shapes] of PhysicsLowerer
-            .shapeContracts) {
-            const declaration = this.pinnedDeclaration(symbolName);
-            for (const shape of shapes) {
-                const stated = this.context.findNodes(
-                    declaration,
-                    (node): node is ts.Expression =>
-                        ts.isExpression(node) &&
-                        this.context.expressionMatchesShape(node, shape),
-                );
-                if (stated.length > 0) continue;
-                this.context.contractError(
-                    declaration,
-                    "Expected " + symbolName + " to state '" +
-                        shape + "'. The generated physics " +
-                        "translation unit restates this rule, so a " +
-                        "pinned change to it fails generation rather " +
-                        "than shipping a different simulation.",
-                );
-            }
-        }
-        this.assertStepWorldInventory();
-        this.assertStaticFrictionDefault();
-        for (const [symbolName, callees] of PhysicsLowerer
-            .orderContracts) {
-            const declaration = this.pinnedDeclaration(symbolName);
-            const called = this.context
-                .findNodes(declaration, ts.isCallExpression)
-                .map((call) => {
-                    const callee = call.expression;
-                    if (ts.isPropertyAccessExpression(callee)) {
-                        return callee.name.text;
-                    }
-                    return ts.isIdentifier(callee) ? callee.text : "";
-                });
-            let cursor = -1;
-            for (const callee of callees) {
-                const at = called.indexOf(callee, cursor + 1);
-                if (at <= cursor) {
-                    this.context.contractError(
-                        declaration,
-                        "Expected " + symbolName + " to call " +
-                            callees.join(" then ") + "; '" + callee +
-                            "' is missing or out of that order.",
-                    );
-                }
-                cursor = at;
-            }
-        }
-    }
+  /**
+   * The pinned declarations this port RESTATES, and what must still be
+   * true of each.
+   *
+   * A restated body is safe only while the thing it restates has not
+   * moved, so every rule the emitted template folds is listed against the
+   * declaration that states it. Two shapes cover all of them: expressions
+   * a body must state, and CALLS it must make in order. Both read the
+   * declaration's own nodes rather than its text, because a substring
+   * scan is satisfied by a comment naming the rule, and an ordering a
+   * comment can reorder is not a contract. Each expression is matched
+   * structurally (`expressionMatchesShape`), so formatting, parentheses
+   * and `as` casts do not pin bytes that carry no meaning.
+   */
+  private static readonly shapeContracts: ReadonlyArray<
+    readonly [string, readonly string[]]
+  > = [
+    [
+      "_stepWorld",
+      [
+        // The step gate: which delta, and the tunnelling clamp.
+        "world._fixedDeltaMs > 0 ? world._fixedDeltaMs : deltaMs",
+        "!Number.isFinite(stepMs) || stepMs <= 0",
+        "Math.min(stepMs, MAX_STEP_MS) / 1000",
+        // Which bodies each phase touches; the template restates
+        // all three predicates, and the whole pre-step gate --
+        // DISABLED skips, and only an ANIMATED (kinematic) or
+        // explicitly pre-stepped body syncs.
+        "b._prestepType !== PhysicsPrestepType.DISABLED",
+        "b._prestepType !== PhysicsPrestepType.DISABLED && " +
+          "(b.motionType === (PhysicsMotionType.ANIMATED as number) " +
+          "|| b._preStep)",
+        "b._prestepType === PhysicsPrestepType.ACTION",
+        "b.motionType === (PhysicsMotionType.DYNAMIC as number)",
+      ],
+    ],
+    [
+      // `unshift`, not `push`: physics integrates before every other
+      // before-render callback, so a scene reading a pose in one
+      // reads this frame pose rather than the previous frame one.
+      "createHavokWorld",
+      ["scene._beforeRender.unshift(stepCb)"],
+    ],
+    [
+      "_syncBodyToNode",
+      [
+        "node.position.set(pos[0], pos[1], pos[2])",
+        "node.rotationQuaternion.set(rot[0], rot[1], rot[2], rot[3])",
+      ],
+    ],
+    [
+      // `mass === 0` is what makes a body static, and a mass is
+      // written only for a positive one.
+      "createPhysicsAggregate",
+      ["options.mass === 0", "options.mass > 0"],
+    ],
+    [
+      // The material array in the pin own field order. Which combine
+      // mode applies to which channel travels across the PAL surface
+      // as data, so a flip upstream has to fail here. The static
+      // channel is its own parameter since 1.25.0; the emitted
+      // template still writes ONE friction into both, which is only
+      // right while that parameter defaults to the dynamic one -- so
+      // the default is asserted beside the array rather than assumed
+      // (`staticFrictionDefault` below).
+      "setPhysicsShapeMaterial",
+      [
+        "[staticFriction, friction, restitution, combines.MINIMUM, combines.MAXIMUM]",
+      ],
+    ],
+    [
+      // The motion-type mapping the generated body factory performs.
+      // Upstream does not pass its own enum to the solver either.
+      "createPhysicsBody",
+      [
+        "hknp.MotionType.STATIC",
+        "hknp.MotionType.KINEMATIC",
+        "hknp.MotionType.DYNAMIC",
+      ],
+    ],
+    [
+      // `setPhysicsBodyMass` keeps the shape-derived tensor and
+      // overrides only the mass scalar. The generated code performs
+      // that branch, so the branch has to still be the pin one --
+      // asserted whole, isotropic fallback arm included.
+      "setPhysicsBodyMass",
+      [
+        "body._shape ? buildMassProperties(world, body) : " +
+          "[[0, 0, 0], mass, [mass, mass, mass], [0, 0, 0, 1]]",
+        "massProps[1] = mass",
+      ],
+    ],
+  ];
 
-    /**
-     * `setPhysicsShapeMaterial`'s static-friction parameter defaults to the
-     * dynamic one.
-     *
-     * The emitted aggregate writes one friction into both channels, which
-     * is the pin's behaviour only because the caller passes four arguments
-     * and the fifth falls back. A pin that gave the static channel a
-     * default of its own would keep the array shape above and change the
-     * simulation, so the DEFAULT is what has to be read.
-     */
-    private assertStaticFrictionDefault(): void {
-        const declaration = this.pinnedDeclaration(
-            "setPhysicsShapeMaterial",
+  /** The calls each declaration must make, in this order. */
+  private static readonly orderContracts: ReadonlyArray<
+    readonly [string, readonly string[]]
+  > = [
+    [
+      // The four phases of a frame. A reordering is invisible in
+      // every single expression and changes every frame.
+      "_stepWorld",
+      ["_syncNodeToBodyTarget", "HP_World_Step", "_syncBodyToNode"],
+    ],
+    [
+      // Upstream comments this ordering because it is observable:
+      // mass derives from the shape, so a mass written before the
+      // shape is attached reads a different inertia tensor.
+      "createPhysicsAggregate",
+      [
+        "createPhysicsBody",
+        "setPhysicsBodyShape",
+        "setPhysicsShapeMaterial",
+        "setPhysicsBodyMass",
+      ],
+    ],
+    [
+      // Motion type, then add to world, then transform: the solver
+      // resets a body transform on add, which is why the pin orders
+      // it this way and the generated factory follows.
+      "createPhysicsBody",
+      [
+        "HP_Body_Create",
+        "HP_Body_SetMotionType",
+        "HP_World_AddBody",
+        "HP_Body_SetQTransform",
+      ],
+    ],
+  ];
+
+  private pinnedDeclaration(symbolName: string): ts.FunctionDeclaration {
+    return this.context.functionDeclaration(havokModule, symbolName)
+      .declaration;
+  }
+
+  /** Every rule the emitted template folds, checked where it is stated. */
+  private assertPinnedContracts(): void {
+    for (const [symbolName, shapes] of PhysicsLowerer.shapeContracts) {
+      const declaration = this.pinnedDeclaration(symbolName);
+      for (const shape of shapes) {
+        const stated = this.context.findNodes(
+          declaration,
+          (node): node is ts.Expression =>
+            ts.isExpression(node) &&
+            this.context.expressionMatchesShape(node, shape),
         );
-        const parameter = declaration.parameters.find(
-            (candidate) =>
-                ts.isIdentifier(candidate.name) &&
-                candidate.name.text === "staticFriction",
-        );
-        if (
-            !parameter?.initializer ||
-            !this.context.expressionMatchesShape(
-                parameter.initializer,
-                "friction",
-            )
-        ) {
-            this.context.contractError(
-                parameter ?? declaration,
-                "Expected setPhysicsShapeMaterial's staticFriction to " +
-                    "default to friction. The generated aggregate writes " +
-                    "one friction into both material channels because " +
-                    "that default is what the pin's own four-argument " +
-                    "call resolves to.",
-            );
-        }
-    }
-
-    /**
-     * `_stepWorld`'s own statement inventory, kind by kind and in order.
-     *
-     * The emitted `step_world` restates the whole body, so the shape and
-     * order contracts above are complete only while the body has exactly
-     * these statements: an arm upstream ADDS is invisible to every
-     * per-expression check, and this is what makes it refuse generation
-     * naming the count instead of shipping a frame with a missing phase.
-     */
-    private assertStepWorldInventory(): void {
-        this.assertInventory(
-            this.pinnedDeclaration("_stepWorld"),
-            "_stepWorld",
-            "the emitted step_world restates the whole body",
-            [
-                // const { _hknp, _hkWorld, _bodies } = world;
-                "variable statement",
-                // const stepMs = <fixed-or-live gate>;
-                "variable statement",
-                // the non-finite / non-positive rejection
-                "if statement",
-                // const dt = <MAX_STEP_MS clamp>;
-                "variable statement",
-                // the floating-origin arm (nothing reached sets `_fo`)
-                "if statement",
-                // the pre-step sync loop
-                "for statement",
-                // hknp.HP_World_Step(hkWorld, dt);
-                "expression statement",
-                // the post-step sync loop
-                "for statement",
-                // the after-step hooks
-                "if statement",
-            ],
-            (statement) =>
-                STATEMENT_KINDS.find(([, is]) => is(statement))?.[0] ??
-                "other statement",
-        );
-    }
-
-    /**
-     * The prelude's own declaration inventory, in the pin's order.
-     *
-     * The emitted builder assigns each term in that order, so every read
-     * reaches a written field. A pin that reorders them, or adds one the
-     * emitted struct has no lane for, fails here rather than emitting a
-     * builder that reads an uninitialised one.
-     */
-    private assertShapeParamsPrelude(
-        declaration: ts.FunctionDeclaration,
-    ): void {
-        this.assertInventory(
-            declaration,
-            buildShapeParams,
-            "the emitted builder restates each term in that order",
-            [
-                "params",
-                ...PRELUDE_SCALARS.map(([pinned]) => pinned),
-                "min",
-                "max",
-                "extents",
-            ],
-            (statement) =>
-                ts.isVariableStatement(statement)
-                    ? statement.declarationList.declarations
-                          .map((entry) =>
-                              ts.isIdentifier(entry.name)
-                                  ? entry.name.text
-                                  : "",
-                          )
-                          .join(", ")
-                    : undefined,
-        );
-    }
-
-    /**
-     * A pinned body's own top-level inventory, in the pin's order.
-     *
-     * Two bodies here are restated whole rather than translated statement by
-     * statement, and for both the per-expression contracts above are
-     * complete only while the body still has exactly these statements: an
-     * arm the pin ADDS is invisible to every one of them. `project` is what
-     * each caller compares -- a statement kind for the frame loop, a
-     * declaration name for the shape prelude -- and returning undefined
-     * skips a statement the inventory does not describe.
-     */
-    private assertInventory(
-        declaration: ts.FunctionDeclaration,
-        symbolName: string,
-        restated: string,
-        expected: readonly string[],
-        project: (statement: ts.Statement) => string | undefined,
-    ): void {
-        const found = declaration
-            .body!.statements.map(project)
-            .filter((entry): entry is string => entry !== undefined);
-        if (
-            found.length === expected.length &&
-            found.every((entry, index) => entry === expected[index])
-        ) {
-            return;
-        }
+        if (stated.length > 0) continue;
         this.context.contractError(
-            declaration,
-            `${symbolName} carries [${found.join("; ")}]; ${restated} of ` +
-                `exactly [${expected.join("; ")}], so an added or reordered ` +
-                "arm must be read and re-emitted rather than silently " +
-                "dropped.",
+          declaration,
+          "Expected " +
+            symbolName +
+            " to state '" +
+            shape +
+            "'. The generated physics " +
+            "translation unit restates this rule, so a " +
+            "pinned change to it fails generation rather " +
+            "than shipping a different simulation.",
         );
+      }
     }
+    this.assertStepWorldInventory();
+    this.assertStaticFrictionDefault();
+    for (const [symbolName, callees] of PhysicsLowerer.orderContracts) {
+      const declaration = this.pinnedDeclaration(symbolName);
+      const called = this.context
+        .findNodes(declaration, ts.isCallExpression)
+        .map((call) => {
+          const callee = call.expression;
+          if (ts.isPropertyAccessExpression(callee)) {
+            return callee.name.text;
+          }
+          return ts.isIdentifier(callee) ? callee.text : "";
+        });
+      let cursor = -1;
+      for (const callee of callees) {
+        const at = called.indexOf(callee, cursor + 1);
+        if (at <= cursor) {
+          this.context.contractError(
+            declaration,
+            "Expected " +
+              symbolName +
+              " to call " +
+              callees.join(" then ") +
+              "; '" +
+              callee +
+              "' is missing or out of that order.",
+          );
+        }
+        cursor = at;
+      }
+    }
+  }
 
-    public lowerPhysics(): LoweredSource {
-        this.assertPinnedContracts();
+  /**
+   * `setPhysicsShapeMaterial`'s static-friction parameter defaults to the
+   * dynamic one.
+   *
+   * The emitted aggregate writes one friction into both channels, which
+   * is the pin's behaviour only because the caller passes four arguments
+   * and the fifth falls back. A pin that gave the static channel a
+   * default of its own would keep the array shape above and change the
+   * simulation, so the DEFAULT is what has to be read.
+   */
+  private assertStaticFrictionDefault(): void {
+    const declaration = this.pinnedDeclaration("setPhysicsShapeMaterial");
+    const parameter = declaration.parameters.find(
+      (candidate) =>
+        ts.isIdentifier(candidate.name) &&
+        candidate.name.text === "staticFriction",
+    );
+    if (
+      !parameter?.initializer ||
+      !this.context.expressionMatchesShape(parameter.initializer, "friction")
+    ) {
+      this.context.contractError(
+        parameter ?? declaration,
+        "Expected setPhysicsShapeMaterial's staticFriction to " +
+          "default to friction. The generated aggregate writes " +
+          "one friction into both material channels because " +
+          "that default is what the pin's own four-argument " +
+          "call resolves to.",
+      );
+    }
+  }
 
-        const maxStepMs = this.maxStepMs();
-        const gravity = this.defaultGravity();
-        const defaults = this.aggregateMaterialDefaults();
-        const shapeTypes = this.enumMembers("PhysicsShapeType");
-        const motionTypes = this.enumMembers("PhysicsMotionType");
-        const prestepTypes = this.enumMembers("PhysicsPrestepType");
-        const shapeParams = this.lowerShapeParams();
+  /**
+   * `_stepWorld`'s own statement inventory, kind by kind and in order.
+   *
+   * The emitted `step_world` restates the whole body, so the shape and
+   * order contracts above are complete only while the body has exactly
+   * these statements: an arm upstream ADDS is invisible to every
+   * per-expression check, and this is what makes it refuse generation
+   * naming the count instead of shipping a frame with a missing phase.
+   */
+  private assertStepWorldInventory(): void {
+    this.assertInventory(
+      this.pinnedDeclaration("_stepWorld"),
+      "_stepWorld",
+      "the emitted step_world restates the whole body",
+      [
+        // const { _hknp, _hkWorld, _bodies } = world;
+        "variable statement",
+        // const stepMs = <fixed-or-live gate>;
+        "variable statement",
+        // the non-finite / non-positive rejection
+        "if statement",
+        // const dt = <MAX_STEP_MS clamp>;
+        "variable statement",
+        // the floating-origin arm (nothing reached sets `_fo`)
+        "if statement",
+        // the pre-step sync loop
+        "for statement",
+        // hknp.HP_World_Step(hkWorld, dt);
+        "expression statement",
+        // the post-step sync loop
+        "for statement",
+        // the after-step hooks
+        "if statement",
+      ],
+      (statement) =>
+        STATEMENT_KINDS.find(([, is]) => is(statement))?.[0] ??
+        "other statement",
+    );
+  }
 
-        const enumeratorList = (
-            members: Map<string, number>,
-        ): string =>
-            [...members]
-                .map(([name, value]) => `    ${name} = ${value},`)
-                .join("\n");
+  /**
+   * The prelude's own declaration inventory, in the pin's order.
+   *
+   * The emitted builder assigns each term in that order, so every read
+   * reaches a written field. A pin that reorders them, or adds one the
+   * emitted struct has no lane for, fails here rather than emitting a
+   * builder that reads an uninitialised one.
+   */
+  private assertShapeParamsPrelude(declaration: ts.FunctionDeclaration): void {
+    this.assertInventory(
+      declaration,
+      buildShapeParams,
+      "the emitted builder restates each term in that order",
+      [
+        "params",
+        ...PRELUDE_SCALARS.map(([pinned]) => pinned),
+        "min",
+        "max",
+        "extents",
+      ],
+      (statement) =>
+        ts.isVariableStatement(statement)
+          ? statement.declarationList.declarations
+              .map((entry) =>
+                ts.isIdentifier(entry.name) ? entry.name.text : "",
+              )
+              .join(", ")
+          : undefined,
+    );
+  }
 
-        const header = `// ${this.context.provenance(
-            havokModule,
-            "createHavokWorld",
-            "the pin's own rigid-body semantics; the HP_* back end is " +
-                "the PAL's",
-        )}
+  /**
+   * A pinned body's own top-level inventory, in the pin's order.
+   *
+   * Two bodies here are restated whole rather than translated statement by
+   * statement, and for both the per-expression contracts above are
+   * complete only while the body still has exactly these statements: an
+   * arm the pin ADDS is invisible to every one of them. `project` is what
+   * each caller compares -- a statement kind for the frame loop, a
+   * declaration name for the shape prelude -- and returning undefined
+   * skips a statement the inventory does not describe.
+   */
+  private assertInventory(
+    declaration: ts.FunctionDeclaration,
+    symbolName: string,
+    restated: string,
+    expected: readonly string[],
+    project: (statement: ts.Statement) => string | undefined,
+  ): void {
+    const found = declaration
+      .body!.statements.map(project)
+      .filter((entry): entry is string => entry !== undefined);
+    if (
+      found.length === expected.length &&
+      found.every((entry, index) => entry === expected[index])
+    ) {
+      return;
+    }
+    this.context.contractError(
+      declaration,
+      `${symbolName} carries [${found.join("; ")}]; ${restated} of ` +
+        `exactly [${expected.join("; ")}], so an added or reordered ` +
+        "arm must be read and re-emitted rather than silently " +
+        "dropped.",
+    );
+  }
+
+  public lowerPhysics(): LoweredSource {
+    this.assertPinnedContracts();
+
+    const maxStepMs = this.maxStepMs();
+    const gravity = this.defaultGravity();
+    const defaults = this.aggregateMaterialDefaults();
+    const shapeTypes = this.enumMembers("PhysicsShapeType");
+    const motionTypes = this.enumMembers("PhysicsMotionType");
+    const prestepTypes = this.enumMembers("PhysicsPrestepType");
+    const shapeParams = this.lowerShapeParams();
+
+    const enumeratorList = (members: Map<string, number>): string =>
+      [...members].map(([name, value]) => `    ${name} = ${value},`).join("\n");
+
+    const header = `// ${this.context.provenance(
+      havokModule,
+      "createHavokWorld",
+      "the pin's own rigid-body semantics; the HP_* back end is " + "the PAL's",
+    )}
 #pragma once
 
 #include <cmath>
@@ -993,30 +948,31 @@ ${enumeratorList(prestepTypes)}
  * declaration. A long hitch otherwise hands the solver one huge dt.
  */
 inline constexpr double physics_max_step_ms = ${this.context.doubleLiteral(
-            maxStepMs,
-        )};
+      maxStepMs,
+    )};
 
 /** \`createHavokWorld\`'s own \`gravity ?? { ... }\`. */
 [[nodiscard]] inline Vec3d pinned_default_gravity() {
     return Vec3d{${gravity
-        .map((component) => this.context.doubleLiteral(component))
-        .join(", ")}};
+      .map((component) => this.context.doubleLiteral(component))
+      .join(", ")}};
 }
 
 /** \`createPhysicsAggregate\`'s \`options.friction ?? ...\`. */
 inline constexpr double physics_default_friction = ${this.context.doubleLiteral(
-            defaults.friction,
-        )};
+      defaults.friction,
+    )};
 /** \`createPhysicsAggregate\`'s \`options.restitution ?? ...\`. */
 inline constexpr double physics_default_restitution = ${this.context.doubleLiteral(
-            defaults.restitution,
-        )};
+      defaults.restitution,
+    )};
 
 /** ${havokModule} \`PhysicsAggregateOptions\`, reached slice. */
 struct PhysicsAggregateOptions {
     double mass = 0.0;
     js::Nullable<double> friction{};
     js::Nullable<double> restitution{};
+    pal::PhysicsShapeHandle shape{};
 };
 
 /**
@@ -1036,6 +992,7 @@ struct PhysicsShape {
 struct PhysicsBody {
     pal::PhysicsBodyHandle handle{};
     MeshHandle node{};
+    PhysicsShape shape{};
     PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
     PhysicsPrestepType prestep_type = PhysicsPrestepType::TELEPORT;
     bool pre_step = false;
@@ -1043,6 +1000,7 @@ struct PhysicsBody {
 
 /** ${havokModule} \`PhysicsAggregate\`. */
 struct PhysicsAggregate {
+    PhysicsBody body{};
     PhysicsShape shape{};
 };
 
@@ -1085,20 +1043,38 @@ struct PhysicsWorldHandle {
 void on_physics_after_step(
     PhysicsWorldHandle world,
     std::function<void(float)> callback);
+void set_physics_timestep_ms(
+    PhysicsWorldHandle world,
+    double fixed_delta_ms);
+PhysicsShape create_physics_convex_hull_shape(
+    PhysicsWorldHandle world,
+    MeshHandle mesh,
+    bool include_child_meshes);
 PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle world,
     MeshHandle mesh,
     PhysicsShapeType type,
     const PhysicsAggregateOptions& options);
+void set_physics_body_motion_type(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    PhysicsMotionType motion_type);
+void set_physics_body_mass(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    double mass);
+void apply_physics_impulse(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    Vec3d impulse,
+    std::optional<Vec3d> point);
 
 }  // namespace bbl::upstream
 `;
 
-        const source = `// ${this.context.provenance(
-            havokModule,
-            "_stepWorld",
-        )}
+    const source = `// ${this.context.provenance(havokModule, "_stepWorld")}
 #include "bblite/upstream/physics.hpp"
+#include "bblite/upstream/renderer_plan.hpp"
 
 #include <algorithm>
 #include <deque>
@@ -1106,6 +1082,8 @@ PhysicsAggregate create_physics_aggregate(
 
 namespace bbl::upstream {
 namespace {
+
+${lowerMat4MultiplyWriterCpp(this.context)}
 
 /**
  * The worlds a scene created. A \`PhysicsWorld\` is handed out by
@@ -1155,11 +1133,81 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
     return bounds;
 }
 
+/**
+ * MeshAccumulator.addNodeMeshes for the reached runtime-created hierarchy.
+ * The pin maps every vertex through rootScale * inverse(rootWorld) *
+ * nodeWorld. For a node below this tagged mesh root, cancelling rootWorld
+ * leaves rootScale followed by the child's local chain, which is what this
+ * recursive form composes. Imported glTF hierarchy mutation remains outside
+ * this slice; those vertices keep the loader's bake-to-world model.
+ */
+void append_convex_hull_vertices(
+    const Engine& engine,
+    MeshHandle mesh,
+    const std::array<float, 16>& mesh_to_body,
+    bool include_children,
+    std::vector<std::array<double, 3>>& positions) {
+    if (mesh.value >= engine.meshes.size()) return;
+    const MeshRecord& record = engine.meshes[mesh.value];
+    if (record.geometry < engine.geometries.size()) {
+        const ModelGeometry& geometry = engine.geometries[record.geometry];
+        positions.reserve(positions.size() + geometry.vertices.size());
+        for (const ModelVertex& vertex : geometry.vertices) {
+            const double x = vertex.position.x;
+            const double y = vertex.position.y;
+            const double z = vertex.position.z;
+            positions.push_back({
+                mesh_to_body[0] * x + mesh_to_body[4] * y +
+                    mesh_to_body[8] * z + mesh_to_body[12],
+                mesh_to_body[1] * x + mesh_to_body[5] * y +
+                    mesh_to_body[9] * z + mesh_to_body[13],
+                mesh_to_body[2] * x + mesh_to_body[6] * y +
+                    mesh_to_body[10] * z + mesh_to_body[14],
+            });
+        }
+    }
+    if (!include_children) return;
+    for (const MeshHandle child : record.children) {
+        if (child.value >= engine.meshes.size()) continue;
+        const std::array<float, 16> local =
+            mesh_local_matrix(engine.meshes[child.value]);
+        std::array<float, 16> child_to_body{};
+        mat4_multiply_into(
+            child_to_body, 0, mesh_to_body, 0, local, 0);
+        append_convex_hull_vertices(
+            engine, child, child_to_body, true, positions);
+    }
+}
+
+void mark_physics_mesh_dirty(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) return;
+    MeshRecord& record = engine.meshes[mesh.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_physics_mesh_dirty(engine, child);
+    }
+}
+
+// A physics body owns a runtime-moving mesh hierarchy. Keep that hierarchy's
+// geometry local on the GPU from its first upload; _syncBodyToNode then only
+// changes the per-draw world matrix instead of rebuilding every vertex buffer.
+void mark_physics_gpu_world(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) return;
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.gpu_world_transform) {
+        record.gpu_world_transform = true;
+        ++record.transform_version;
+    }
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_physics_gpu_world(engine, child);
+    }
+}
+
 // ${this.context.provenance(
-            havokModule,
-            buildShapeParams,
-            "typed-array reads specialized onto MeshBounds",
-        )}
+      havokModule,
+      buildShapeParams,
+      "typed-array reads specialized onto MeshBounds",
+    )}
 ${shapeParams}
 
 /** \`_syncBodyToNode\`: the integrated pose written back onto the node. */
@@ -1179,7 +1227,7 @@ void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
         static_cast<float>(transform.rotation[3]),
     };
     mesh.has_rotation_quaternion = true;
-    ++mesh.transform_version;
+    mark_physics_mesh_dirty(engine, body.node);
 }
 
 /** \`_syncNodeToBody\` / \`_syncNodeToBodyTarget\`. */
@@ -1269,6 +1317,109 @@ void on_physics_after_step(
         std::move(callback));
 }
 
+void set_physics_timestep_ms(
+    PhysicsWorldHandle handle,
+    double fixed_delta_ms) {
+    // setPhysicsTimestepMs is exactly this state write; step_world owns the
+    // finite/positive gate and MAX_STEP_MS clamp when it consumes it.
+    physics_world_record(handle).fixed_delta_ms = fixed_delta_ms;
+}
+
+PhysicsShape create_physics_convex_hull_shape(
+    PhysicsWorldHandle handle,
+    MeshHandle mesh,
+    bool include_child_meshes) {
+    PhysicsWorld& world = physics_world_record(handle);
+    Engine& engine = *world.engine;
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error(
+            "Physics mesh shapes require a live mesh hierarchy.");
+    }
+    const MeshRecord& root = engine.meshes[mesh.value];
+    const std::array<float, 16> root_scale{
+        root.scaling.x, 0.0f, 0.0f, 0.0f,
+        0.0f, root.scaling.y, 0.0f, 0.0f,
+        0.0f, 0.0f, root.scaling.z, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
+    std::vector<std::array<double, 3>> positions;
+    append_convex_hull_vertices(
+        engine, mesh, root_scale, include_child_meshes, positions);
+    if (positions.empty()) {
+        throw std::runtime_error(
+            "Cannot create physics mesh shape without vertex positions.");
+    }
+    return PhysicsShape{
+        pal::physics_shape_create_convex_hull(positions)};
+}
+
+PhysicsBody& physics_body_record(
+    PhysicsWorld& world,
+    PhysicsBody body) {
+    const auto found = std::find_if(
+        world.bodies.begin(),
+        world.bodies.end(),
+        [body](const PhysicsBody& candidate) {
+            return candidate.handle.value == body.handle.value;
+        });
+    if (found == world.bodies.end()) {
+        throw std::runtime_error(
+            "Physics body is not part of this world.");
+    }
+    return *found;
+}
+
+void set_physics_body_motion_type(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    PhysicsMotionType motion_type) {
+    PhysicsWorld& world = physics_world_record(handle);
+    PhysicsBody& live = physics_body_record(world, body);
+    pal::physics_body_set_motion_type(
+        live.handle, pinned_motion_type(motion_type));
+    live.motion_type = motion_type;
+}
+
+void set_physics_body_mass(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    double mass) {
+    PhysicsWorld& world = physics_world_record(handle);
+    PhysicsBody& live = physics_body_record(world, body);
+    pal::PhysicsMassProperties properties =
+        pal::physics_shape_build_mass_properties(
+            live.shape.handle, mass);
+    // setPhysicsBodyMass preserves the shape-derived tensor and overrides
+    // only the mass scalar.
+    properties.mass = mass;
+    pal::physics_body_set_mass_properties(live.handle, properties);
+}
+
+void apply_physics_impulse(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    Vec3d impulse,
+    std::optional<Vec3d> point) {
+    PhysicsWorld& world = physics_world_record(handle);
+    PhysicsBody& live = physics_body_record(world, body);
+    Vec3d location{};
+    if (point) {
+        location = *point;
+    } else {
+        const pal::PhysicsTransform transform =
+            pal::physics_body_get_transform(live.handle);
+        location = Vec3d{
+            transform.position[0],
+            transform.position[1],
+            transform.position[2],
+        };
+    }
+    pal::physics_body_apply_impulse(
+        live.handle,
+        {location.x, location.y, location.z},
+        {impulse.x, impulse.y, impulse.z});
+}
+
 PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle handle,
     MeshHandle mesh,
@@ -1276,17 +1427,19 @@ PhysicsAggregate create_physics_aggregate(
     const PhysicsAggregateOptions& options) {
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
+    mark_physics_gpu_world(engine, mesh);
     const MeshRecord& record = engine.meshes[mesh.value];
     const MeshBounds bounds = mesh_bounds(engine, record);
 
     // \`_buildShapeParams\`: the reached slice names no explicit geometry,
     // so every parameter comes from the mesh's own bounds, scaled by the
     // node's own scaling exactly as the pinned builder scales them.
-    PhysicsShape shape{};
-    const PinnedShapeBounds sized =
-        pinned_shape_bounds(bounds, record.scaling);
-    const Vec3d center = bounding_center(sized);
-    switch (type) {
+    PhysicsShape shape{options.shape};
+    if (shape.handle.value == 0) {
+      const PinnedShapeBounds sized =
+          pinned_shape_bounds(bounds, record.scaling);
+      const Vec3d center = bounding_center(sized);
+      switch (type) {
         case PhysicsShapeType::SPHERE:
             shape.handle = pal::physics_shape_create_sphere(
                 {center.x, center.y, center.z}, sphere_radius(sized));
@@ -1315,16 +1468,18 @@ PhysicsAggregate create_physics_aggregate(
                 segment.radius);
             break;
         }
-        default:
-            throw std::runtime_error(
-                "createPhysicsAggregate supports only primitive physics "
-                "shapes.");
+          default:
+              throw std::runtime_error(
+                  "createPhysicsAggregate supports only primitive physics "
+                  "shapes without a supplied shape.");
+      }
     }
 
     // \`createPhysicsBody\`: motion type, add to world, then transform --
     // in that order, because the solver resets a body's transform on add.
     PhysicsBody body{};
     body.node = mesh;
+    body.shape = shape;
     body.motion_type = options.mass == 0.0
                            ? PhysicsMotionType::STATIC
                            : PhysicsMotionType::DYNAMIC;
@@ -1369,17 +1524,17 @@ PhysicsAggregate create_physics_aggregate(
     }
 
     world.bodies.push_back(body);
-    return PhysicsAggregate{shape};
+    return PhysicsAggregate{body, shape};
 }
 
 }  // namespace bbl::upstream
 `;
 
-        return {
-            header,
-            source,
-            modulePath: havokModule,
-            symbolName: "createHavokWorld",
-        };
-    }
+    return {
+      header,
+      source,
+      modulePath: havokModule,
+      symbolName: "createHavokWorld",
+    };
+  }
 }

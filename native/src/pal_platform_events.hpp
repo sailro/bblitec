@@ -222,6 +222,8 @@ inline void handle_platform_event(
         event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
         const PlatformMouseEvent mouse_event{
             .button = static_cast<double>(event.button.button - 1),
+            .client_x = static_cast<double>(event.button.x),
+            .client_y = static_cast<double>(event.button.y),
         };
         const auto& callbacks =
             event.type == SDL_EVENT_MOUSE_BUTTON_DOWN

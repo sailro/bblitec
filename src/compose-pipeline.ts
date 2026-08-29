@@ -358,6 +358,36 @@ export async function composeScenePipeline({
         ? [await pinnedThinInstancesBit()]
         : [];
     const thinInstancesBit = runtimePbrMeshBits[0] ?? 0;
+    const assetMaterialMeshFeatures = expandRuntimeMeshFeatureSets(
+        result.manifest.sceneMeshes.flatMap((mesh, index) =>
+            mesh.assetPbrMaterial
+                ? [renderableMeshFeatures[sceneMeshRowBase + index] ?? 0]
+                : [],
+        ),
+        runtimePbrMeshBits,
+    );
+    const geometryTasks = result.manifest.geometryOutputTasks.map(
+        (task, index) => ({
+            index,
+            attachments: task.attachments,
+            emitColor: task.emitColor,
+        }),
+    );
+    const dynamicCasterViews = new Set<"no-color" | "esm-shadow">();
+    for (const generator of generatorsByLight) {
+        if (!generator.dynamicCasters) continue;
+        dynamicCasterViews.add(
+            pinnedShadowFilter(generator.kind) === "esm"
+                ? "esm-shadow"
+                : "no-color",
+        );
+    }
+    const dynamicCasterMeshFeatures = expandRuntimeMeshFeatureSets(
+        sceneMeshAttributeValues.size > 0
+            ? [...sceneMeshAttributeValues]
+            : [await proceduralRenderableFeatures()],
+        runtimePbrMeshBits,
+    );
     let materialIndexBase = 0;
     let assetMetallicReflectanceRegistered = false;
     for (const asset of gltfAssets) {
@@ -381,13 +411,47 @@ export async function composeScenePipeline({
             },
             // A PBR mesh drawn in a geometry-output task resolves the pin's
             // own MRT arm for that task's attachment list.
-            result.manifest.geometryOutputTasks.map((task, index) => ({
-                index,
-                attachments: task.attachments,
-                emitColor: task.emitColor,
-            })),
+            geometryTasks,
         );
         composedVariants.push(...variants);
+        // A fractured or otherwise rebuilt scene mesh can retain the PBR
+        // material read from its source asset. The material handle remains
+        // the asset's, while the mesh-feature half of the runtime key is the
+        // new scene row, so compose that legal cross-product explicitly.
+        if (assetMaterialMeshFeatures.length > 0) {
+            composedVariants.push(
+                ...(await composeRenderableVariants(
+                    path,
+                    sceneArms,
+                    materialIndexBase,
+                    {
+                        linearImageProcessing,
+                        ...(asset.selectedVariant
+                            ? { selectedVariant: asset.selectedVariant }
+                            : {}),
+                        meshFeatureSets: assetMaterialMeshFeatures,
+                    },
+                    geometryTasks,
+                )),
+            );
+        }
+        for (const materialView of dynamicCasterViews) {
+            composedVariants.push(
+                ...(await composeRenderableVariants(
+                    path,
+                    sceneArms,
+                    materialIndexBase,
+                    {
+                        linearImageProcessing,
+                        ...(asset.selectedVariant
+                            ? { selectedVariant: asset.selectedVariant }
+                            : {}),
+                        materialView,
+                        meshFeatureSets: dynamicCasterMeshFeatures,
+                    },
+                )),
+            );
+        }
         materialIndexBase += gltfMaterialCount(path);
     }
     // The caster material VIEWS `registerSceneWithShadowSupport` appends at
@@ -447,6 +511,16 @@ export async function composeScenePipeline({
                     runtimePbrMeshBits,
                 ),
             });
+        }
+    }
+    for (const materialView of dynamicCasterViews) {
+        for (const source of result.manifest.scenePbrMaterials) {
+            if (source.noColorView || source.esmShadowView) continue;
+            casterViews.push(
+                materialView === "esm-shadow"
+                    ? pbrEsmShadowView(source, source.materialsBefore)
+                    : pbrNoColorView(source, source.materialsBefore),
+            );
         }
     }
     const exactScenePbrMaterials = result.manifest.scenePbrMaterials.map(

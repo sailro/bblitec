@@ -254,13 +254,29 @@ export function resolveFunctionDeclaration(
     }
     for (const parameter of declaration.parameters) {
         if (
-            !ts.isIdentifier(parameter.name) ||
+            (!ts.isIdentifier(parameter.name) &&
+                !ts.isArrayBindingPattern(parameter.name)) ||
             parameter.dotDotDotToken
         ) {
             fail(
                 parameter,
-                "User-function parameters must be non-rest identifiers.",
+                "User-function parameters must be non-rest identifiers or array binding patterns.",
             );
+        }
+        if (ts.isArrayBindingPattern(parameter.name)) {
+            for (const element of parameter.name.elements) {
+                if (
+                    ts.isOmittedExpression(element) ||
+                    !ts.isIdentifier(element.name) ||
+                    element.dotDotDotToken ||
+                    element.initializer
+                ) {
+                    fail(
+                        element,
+                        "Array-bound parameters support plain identifier elements.",
+                    );
+                }
+            }
         }
     }
     return declaration;
@@ -268,7 +284,7 @@ export function resolveFunctionDeclaration(
 
 export interface UserFunctionParameterIr {
     declaration: ts.ParameterDeclaration;
-    name: ts.Identifier;
+    name: ts.BindingName;
     type: ts.Type;
 }
 
@@ -339,6 +355,53 @@ export class UserFunctionLowerer {
     public constructor(
         private readonly checker: ts.TypeChecker,
     ) {}
+
+    /** Bind one reached parameter, including callback tuple destructuring. */
+    private bindParameter(
+        context: UserFunctionContext,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+    ): void {
+        if (ts.isIdentifier(parameter.name)) {
+            context.bindParameterValue(parameter.name, value);
+            return;
+        }
+        if (value.kind === "tuple" && value.tupleElements) {
+            parameter.name.elements.forEach((element, index) => {
+                if (ts.isOmittedExpression(element)) return;
+                const lane = value.tupleElements![index];
+                if (!lane) {
+                    context.fail(
+                        element,
+                        "Array-bound callback parameter reads beyond the supplied tuple.",
+                    );
+                }
+                context.bindParameterValue(element.name as ts.Identifier, lane);
+            });
+            return;
+        }
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "tuple" ||
+            parameter.name.elements.length > value.dataType.arity
+        ) {
+            context.fail(
+                parameter.name,
+                "Array-bound callback parameters require a numeric tuple value.",
+            );
+        }
+        parameter.name.elements.forEach((element, index) => {
+            if (ts.isOmittedExpression(element)) return;
+            context.bindParameterValue(
+                element.name as ts.Identifier,
+                {
+                    kind: "number",
+                    cpp: `(${value.cpp})[${index}]`,
+                    dataType: { kind: "number" },
+                },
+            );
+        });
+    }
 
     /**
      * `inBodyScope` wraps only the body lowering. A record method
@@ -737,7 +800,7 @@ export class UserFunctionLowerer {
                     parameterIsReadOnly(
                         this.checker,
                         declaration,
-                        parameter,
+                        parameter as ts.Identifier,
                     ),
             );
             const cppName =
@@ -777,7 +840,7 @@ export class UserFunctionLowerer {
                     ? context.compileValue(parameter.declaration.initializer)
                     : context.fail(
                           parameter.declaration,
-                          `Recursive function requires argument '${parameter.name.text}'.`,
+                          `Recursive function requires argument '${parameter.name.getText()}'.`,
                       ));
             rootEntry.captured[index] = value;
         });
@@ -911,7 +974,12 @@ export class UserFunctionLowerer {
                 );
                 parameterBindings.push({
                     parameter,
-                    value: context.dataValue(cppName, type),
+                    value: {
+                        ...context.dataValue(cppName, type),
+                        ...(entry.parameterReadOnly[index]
+                            ? { readOnly: true as const }
+                            : {}),
+                    },
                 });
             });
             context.emit(
@@ -921,10 +989,7 @@ export class UserFunctionLowerer {
             context.beginNativeFunctionBody(entry.returnType);
             try {
                 for (const { parameter, value } of parameterBindings) {
-                    context.bindParameterValue(
-                        parameter.name,
-                        value,
-                    );
+                    this.bindParameter(context, parameter, value);
                 }
                 const body = entry.declaration.body;
                 if (!body) {
@@ -1095,12 +1160,9 @@ export class UserFunctionLowerer {
                           ? { kind: "json-null" as const, cpp: "" }
                         : context.fail(
                               parameter.declaration,
-                              `Optional parameter '${parameter.name.text}' requires a default value in reached user functions.`,
+                              `Optional parameter '${parameter.name.getText()}' requires a default value in reached user functions.`,
                           ));
-                context.bindParameterValue(
-                    parameter.name,
-                    value,
-                );
+                this.bindParameter(context, parameter, value);
             });
             if (ir.needsValueLambda) {
                 const returnType = this.valueLambdaReturnType(
@@ -1191,12 +1253,6 @@ export class UserFunctionLowerer {
         }
         const parameters = declaration.parameters.map(
             (parameter): UserFunctionParameterIr => {
-                if (!ts.isIdentifier(parameter.name)) {
-                    fail(
-                        parameter,
-                        "User-function parameters must be non-rest identifiers.",
-                    );
-                }
                 return {
                     declaration: parameter,
                     name: parameter.name,

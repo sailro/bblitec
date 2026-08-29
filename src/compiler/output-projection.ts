@@ -90,6 +90,8 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:ribbon": [],
     "mesh:torus": [],
     "mesh:tube": [],
+    "mesh:parenting": [],
+    "mesh:geometry-access": [],
     "picking:gpu": [],
     "scene:remove": [],
     "shadow:esm": [],
@@ -199,11 +201,20 @@ function markUnreferencedLocals(body: string[]): void {
             counts.set(name, (counts.get(name) ?? 0) + 1);
         }
     }
-    for (const [index, line] of body.entries()) {
-        const match = declaration.exec(line);
-        if (!match || counts.get(match[3]!) !== 1) continue;
-        body[index] =
-            `${match[1]}[[maybe_unused]] ${line.trimStart()}`;
+    for (const [index, block] of body.entries()) {
+        // Deferred callbacks are captured as one body entry containing
+        // several physical lines. Inspect each of those lines so a local
+        // whose only browser-instrumentation reader was erased is treated
+        // exactly like the same declaration in the outer entry body.
+        body[index] = block
+            .split("\n")
+            .map((line) => {
+                const match = declaration.exec(line);
+                return match && counts.get(match[3]!) === 1
+                    ? `${match[1]}[[maybe_unused]] ${line.trimStart()}`
+                    : line;
+            })
+            .join("\n");
     }
 }
 

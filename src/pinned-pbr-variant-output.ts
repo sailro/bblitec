@@ -36,6 +36,7 @@ function pipelineDigest(vertex: string, fragment: string): string {
 export interface PinnedVariantSelector {
     materialIndex: number;
     materialName: string;
+    materialView?: "no-color" | "esm-shadow";
     meshFeatures: number;
     lightMode: 0 | 1 | 2;
     singleLightType: string;
@@ -94,6 +95,9 @@ export function writePinnedPbrVariants(
         entry.selectors.push({
             materialIndex: variant.materialIndex,
             materialName: variant.materialName,
+            ...(variant.materialView
+                ? { materialView: variant.materialView }
+                : {}),
             meshFeatures: variant.meshFeatures,
             lightMode: variant.lightMode,
             singleLightType: variant.singleLightType,

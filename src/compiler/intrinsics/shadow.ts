@@ -55,6 +55,8 @@ export interface ShadowIntrinsicContext
         generatorIndex: number,
         casters: readonly ShadowCasterMeshManifest[],
     ): void;
+    shadowGeneratorHasRecordedCasters(generatorIndex: number): boolean;
+    recordDynamicShadowCasters(generatorIndex: number): void;
     esmGeneratorOrdinal(): number;
 }
 
@@ -113,11 +115,20 @@ const esmDirectionalOptions = [
     "frustumEdgeFalloff",
     "orthoMinZ",
     "orthoMaxZ",
+    "forceRefreshEveryFrame",
 ] as const;
 
 /** The ESM ordinal is generation's, not an option the scene passes. */
 const esmDirectionalEmitted = [
-    ...esmDirectionalOptions,
+    "mapSize",
+    "depthScale",
+    "bias",
+    "blurKernel",
+    "blurScale",
+    "darkness",
+    "frustumEdgeFalloff",
+    "orthoMinZ",
+    "orthoMaxZ",
     "esmIndex",
 ] as const;
 
@@ -268,6 +279,27 @@ function compileShadowGeneratorFactory(
         for (const name of spec.options) {
             const expression = context.objectProperty(options, name);
             if (!expression) continue;
+            if (name === "forceRefreshEveryFrame") {
+                const value = context.compileValue(expression);
+                context.expectKind(value, "boolean", expression);
+                const fixed =
+                    value.staticBoolean ??
+                    (value.cpp === "true"
+                        ? true
+                        : value.cpp === "false"
+                          ? false
+                          : undefined);
+                if (fixed === undefined) {
+                    context.fail(
+                        expression,
+                        "forceRefreshEveryFrame must be generation-known.",
+                    );
+                }
+                // Native refreshes and records every reached shadow task on
+                // every frame already, so either pinned setting has no
+                // additional state to carry across this seam.
+                continue;
+            }
             if (spec.generationResolved.includes(name)) {
                 const literal = compilePositiveInteger(context, expression);
                 resolved[name] = literal;
@@ -338,23 +370,45 @@ export function compileShadowIntrinsic(
             // scene 207 writes it. One reader answers for both.
             const listNode = call.arguments[1]!;
             const entries =
-                context.handleCollections.staticHandleList(listNode) ??
-                context.fail(
-                    listNode,
-                    "A shadow generator's caster list must be a " +
-                        "compile-time array of scene-code meshes.",
+                context.handleCollections.staticHandleList(listNode);
+            if (!entries) {
+                const list = context.compileValue(listNode);
+                if (
+                    list.kind !== "data" ||
+                    list.dataType?.kind !== "vector" ||
+                    list.dataType.element.kind !== "handle" ||
+                    list.dataType.element.handle !== "mesh"
+                ) {
+                    context.fail(
+                        listNode,
+                        "A shadow generator's caster list must be an array of meshes.",
+                    );
+                }
+                // A runtime list selects from the generator's dynamically
+                // composed caster-view universe. The first registration may
+                // itself be runtime-built (Break Meshes fills allPieces in a
+                // native loop), and later registrations filter that list.
+                context.recordDynamicShadowCasters(
+                    generator.shadowGeneratorIndex,
                 );
+                context.reachFeature("material:no-color-view", call);
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::set_shadow_task_caster_meshes(` +
+                        `${context.requireEngine(generator, call)}, ` +
+                        `${generator.cpp}, bbl::js::array_to_vector(${list.cpp}))`,
+                };
+            }
             const emitted: string[] = [];
             const casters: ShadowCasterMeshManifest[] = [];
+            let hasDynamicCaster = false;
             for (const { value: mesh, node } of entries) {
                 context.expectKind(mesh, "mesh", node);
                 if (mesh.sceneMeshIndex === undefined) {
-                    context.fail(
-                        node,
-                        "A shadow caster must be a scene-code mesh: an " +
-                            "imported one's material composes through its " +
-                            "asset's own variant rows.",
-                    );
+                    hasDynamicCaster = true;
+                } else {
+                    casters.push({ meshIndex: mesh.sceneMeshIndex });
                 }
                 emitted.push(mesh.cpp);
                 // Only WHICH mesh casts. Which material it carries is read
@@ -362,7 +416,6 @@ export function compileShadowIntrinsic(
                 // upstream resolves `mesh.material` lazily when the pass
                 // builds, and a scene naming its casters before assigning
                 // their materials (scene 65) would otherwise record none.
-                casters.push({ meshIndex: mesh.sceneMeshIndex });
             }
             if (emitted.length === 0) {
                 context.fail(
@@ -375,16 +428,29 @@ export function compileShadowIntrinsic(
                 generator.shadowGeneratorIndex,
                 casters,
             );
+            if (hasDynamicCaster) {
+                context.recordDynamicShadowCasters(
+                    generator.shadowGeneratorIndex,
+                );
+            }
             // The caster pass draws each mesh through its material's own
             // no-colour view, which is the same composition arm scene 116
             // reaches from scene code.
             context.reachFeature("material:no-color-view", call);
+            const storedList = context.compileValue(listNode);
+            const casterListCpp =
+                storedList.kind === "data" &&
+                storedList.dataType?.kind === "vector" &&
+                storedList.dataType.element.kind === "handle" &&
+                storedList.dataType.element.handle === "mesh"
+                    ? `bbl::js::array_to_vector(${storedList.cpp})`
+                    : `{${emitted.join(", ")}}`;
             return {
                 kind: "void",
                 cpp:
                     `bbl::set_shadow_task_caster_meshes(` +
                     `${context.requireEngine(generator, call)}, ` +
-                    `${generator.cpp}, {${emitted.join(", ")}})`,
+                    `${generator.cpp}, ${casterListCpp})`,
             };
         }
 

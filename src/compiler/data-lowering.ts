@@ -243,6 +243,23 @@ export class DataLowerer {
         if (!ts.isIdentifier(left)) {
             return undefined;
         }
+        const scalar = this.context.lookupIdentifierValue(left);
+        if (scalar?.kind === "number") {
+            return {
+                kind: "number",
+                cpp: `(${scalar.cpp} = ${this.context.compileNumber(expression.right, "double")})`,
+                dataType: { kind: "number" },
+                impure: true,
+            };
+        }
+        if (scalar?.kind === "boolean") {
+            return {
+                kind: "boolean",
+                cpp: `(${scalar.cpp} = ${this.context.compileCondition(expression.right)})`,
+                dataType: { kind: "boolean" },
+                impure: true,
+            };
+        }
         const target = this.compileDataPath(expression.left, "read");
         if (target?.kind !== "data" || !target.dataType) {
             return undefined;
@@ -1515,10 +1532,15 @@ export class DataLowerer {
         }
         switch (dataType.kind) {
             case "vector":
-                return this.leafValue(
-                    indexed,
-                    dataType.element,
-                );
+                return {
+                    ...this.leafValue(
+                        indexed,
+                        dataType.element,
+                    ),
+                    ...(owner.readOnly
+                        ? { readOnly: true as const }
+                        : {}),
+                };
             case "span":
                 return {
                     ...this.leafValue(
@@ -2027,7 +2049,21 @@ export class DataLowerer {
                 "Array.from requires a local function or function literal mapper.",
             );
         }
-        const mappedType = this.dataTypeAt(call);
+        const directType = this.dataTypeAt(call);
+        const contextualTsType =
+            this.context.checker.getContextualType(call);
+        const contextualType = contextualTsType
+            ? this.context.dataTypes.fromTsType(
+                  contextualTsType,
+                  call,
+              )
+            : undefined;
+        // An empty mapper literal is inferred as `never[]`; the annotated
+        // destination supplies its actual JavaScript array element type.
+        const mappedType =
+            directType?.kind === "vector"
+                ? directType
+                : contextualType;
         if (mappedType?.kind !== "vector") {
             this.context.fail(
                 call,
@@ -2144,6 +2180,21 @@ export class DataLowerer {
             return {
                 kind: "number",
                 cpp: `${unary}(${numbers()[0]})`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (method === "imul") {
+            if (call.arguments.length !== 2) {
+                this.context.fail(
+                    call,
+                    "Math.imul expects two arguments.",
+                );
+            }
+            const [left, right] = numbers();
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp: `bbl::js::math_imul(${left}, ${right})`,
                 dataType: { kind: "number" },
             };
         }
@@ -2268,6 +2319,7 @@ export class DataLowerer {
                 kind: "number",
                 cpp: "bbl::js::random_js()",
                 dataType: { kind: "number" },
+                impure: true,
             };
         }
         this.context.fail(
@@ -2385,7 +2437,7 @@ export class DataLowerer {
     /** Emit the shared callback protocol for reached JavaScript array methods. */
     private emitArrayCallbackLoop(
         call: ts.CallExpression,
-        method: "find" | "filter" | "some" | "map" | "forEach",
+        method: "find" | "filter" | "some" | "every" | "map" | "forEach",
         narrowed: Value,
         dataType: DataType & { kind: "vector" },
         snapshotLength: boolean,
@@ -2610,6 +2662,13 @@ export class DataLowerer {
             owner,
             callee.expression,
         );
+        if (
+            ["pop", "unshift", "fill", "splice", "set", "clear", "delete"].includes(
+                method,
+            )
+        ) {
+            delete narrowed.staticHandleElements;
+        }
         const dataType =
             narrowed.dataType ??
             (narrowed.kind === "string"
@@ -3232,6 +3291,39 @@ export class DataLowerer {
                 dataType: { kind: "boolean" },
             };
         }
+        if (method === "every") {
+            const result =
+                this.context.allocateTemporaryCppName(
+                    "every_result",
+                );
+            this.emitArrayCallbackLoop(
+                call,
+                "every",
+                narrowed,
+                dataType,
+                false,
+                () => this.context.emit(`bool ${result} = true;`),
+                (matched, callback) => {
+                    if (matched.kind !== "boolean") {
+                        this.context.fail(
+                            callback,
+                            "Array.every callback must return a boolean value.",
+                        );
+                    }
+                    this.context.emit(`if (!(${matched.cpp})) {`);
+                    this.context.increaseIndent();
+                    this.context.emit(`${result} = false;`);
+                    this.context.emit("break;");
+                    this.context.decreaseIndent();
+                    this.context.emit("}");
+                },
+            );
+            return {
+                kind: "boolean",
+                cpp: result,
+                dataType: { kind: "boolean" },
+            };
+        }
         if (method === "map") {
             const mappedType = this.dataTypeAt(call);
             if (mappedType?.kind !== "vector") {
@@ -3304,9 +3396,37 @@ export class DataLowerer {
                 );
             }
             this.invalidateAliases(narrowed.cpp);
+            const pushedHandleKind =
+                dataType.element.kind === "handle"
+                    ? dataType.element.handle
+                    : undefined;
+            const pushedValues =
+                pushedHandleKind
+                    ? call.arguments.map((argument) =>
+                          this.context.compileValue(argument),
+                      )
+                    : undefined;
+            if (
+                narrowed.staticHandleElements &&
+                pushedValues?.every(
+                    (value) =>
+                        value.kind === pushedHandleKind &&
+                        !value.runtimeIteration,
+                )
+            ) {
+                narrowed.staticHandleElements.push(...pushedValues);
+            } else {
+                delete narrowed.staticHandleElements;
+            }
             const pushes = call.arguments.map(
-                (argument) =>
-                    `${narrowed.cpp}.push_back(${this.compileForSink(argument, dataType.element)})`,
+                (argument, index) =>
+                    `${narrowed.cpp}.push_back(${pushedValues
+                        ? this.compileKnownValueForSink(
+                              pushedValues[index]!,
+                              dataType.element,
+                              argument,
+                          )
+                        : this.compileForSink(argument, dataType.element)})`,
             );
             return {
                 kind: "void",
@@ -5638,12 +5758,11 @@ export class DataLowerer {
     /**
      * Assigns to a data-typed local by name (`currentMode = mode`).
      *
-     * Only the scalar data kinds are reachable this way. A tag or a
-     * handle is a value in both languages, so a C++ assignment says
-     * exactly what the JavaScript said. Rebinding a name that holds a
-     * struct or an array does NOT: JavaScript would leave both names
-     * pointing at one object while C++ would copy, so those keep their
-     * rejection rather than compiling into a different program.
+     * Scalars are native values. A vector is `js::Array`, whose copy
+     * assignment copies its shared storage identity: aliases of the old
+     * array keep the old object while the rebound name takes the right-hand
+     * array, exactly like JavaScript. Value-backed structs still cannot be
+     * rebound because their C++ assignment would copy fields instead.
      */
     private emitLocalDataAssignment(
         expression: ts.BinaryExpression,
@@ -5662,6 +5781,7 @@ export class DataLowerer {
             return false;
         }
         const kind = target.dataType.kind;
+        const vectorRebind = kind === "vector";
         const optionalRebind =
             target.dataType.kind === "optional" &&
             (target.dataType.inner.kind === "number" ||
@@ -5693,7 +5813,8 @@ export class DataLowerer {
                     target.dataType.name,
                 )
             ) &&
-            !optionalRebind
+            !optionalRebind &&
+            !vectorRebind
         ) {
             this.context.fail(
                 expression,
@@ -5703,6 +5824,7 @@ export class DataLowerer {
         this.context.emit(
             `${target.cpp} = ${this.compileForSink(expression.right, target.dataType)};`,
         );
+        delete target.staticHandleElements;
         return true;
     }
 
@@ -5747,6 +5869,20 @@ export class DataLowerer {
         ) {
             return false;
         }
+        const clearStaticHandleSnapshot = (node: ts.Expression): void => {
+            let root = this.context.unwrap(node);
+            while (
+                ts.isPropertyAccessExpression(root) ||
+                ts.isElementAccessExpression(root)
+            ) {
+                root = this.context.unwrap(root.expression);
+            }
+            if (ts.isIdentifier(root)) {
+                const value = this.context.lookupIdentifierValue(root);
+                if (value) delete value.staticHandleElements;
+            }
+        };
+        clearStaticHandleSnapshot(left);
         if (
             ts.isPropertyAccessExpression(left) &&
             left.name.text === "length"
@@ -5810,6 +5946,13 @@ export class DataLowerer {
             "write",
         );
         if (!target) {
+            return false;
+        }
+        // A declared engine property can expose a freshly materialized data
+        // value for reads (mesh.boundMin is one). Assigning to that helper's
+        // return value would only mutate a temporary; let the property layer
+        // handle the owner's real setter instead.
+        if (target.freshData) {
             return false;
         }
         if (target.kind === "number") {
@@ -6172,6 +6315,25 @@ export class DataLowerer {
             // Arrays and plain objects are truthy even when empty. A
             // statically specialized callback can expose either shape
             // directly instead of first storing it as native data.
+            return "true";
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType !== undefined &&
+            [
+                "vector",
+                "map",
+                "set",
+                "arraybuffer",
+                "dataview",
+                "u8array",
+                "f32array",
+                "u16array",
+                "u32array",
+            ].includes(value.dataType.kind)
+        ) {
+            // JavaScript containers and typed arrays are objects and are
+            // therefore truthy even when their native storage is empty.
             return "true";
         }
         if (
@@ -6645,7 +6807,10 @@ export class DataLowerer {
             return;
         }
         if (ts.isIdentifier(name)) {
-            define(name, this.leafValue(itemCpp, element));
+            define(name, {
+                ...this.leafValue(itemCpp, element),
+                runtimeIteration: true,
+            });
             return;
         }
         if (ts.isArrayBindingPattern(name)) {

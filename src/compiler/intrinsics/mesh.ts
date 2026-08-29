@@ -87,6 +87,11 @@ export interface MeshIntrinsicContext
     isEntryBodyScope(): boolean;
     recordThinInstanceMesh(sceneMeshIndex: number | undefined): void;
     requireEngine(value: Value, node: ts.Node): string;
+    expectSameEngine(
+        left: Value,
+        right: Value,
+        node: ts.Node,
+    ): void;
     unwrap(expression: ts.Expression): ts.Expression;
     resolveStaticExpression(
         expression: ts.Expression,
@@ -213,6 +218,30 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "setParent": {
+            context.expectArgumentCount(call, 2, 2);
+            const child = context.compileValue(call.arguments[0]!);
+            context.expectKind(child, "mesh", call.arguments[0]!);
+            const parent = context.compileValue(call.arguments[1]!);
+            if (parent.kind !== "mesh" && parent.kind !== "json-null") {
+                context.fail(
+                    call.arguments[1]!,
+                    `setParent's reached scene-graph slice accepts a Mesh or null, received ${parent.kind}.`,
+                );
+            }
+            if (parent.kind === "mesh") {
+                context.expectSameEngine(child, parent, call);
+            }
+            context.reachFeature("mesh:parenting", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_mesh_parent(` +
+                    `${context.requireEngine(child, call)}, ${child.cpp}, ` +
+                    `${parent.kind === "mesh" ? parent.cpp : "bbl::MeshHandle{}"})`,
+            };
+        }
+
         case "cloneTransformNode": {
             context.expectArgumentCount(call, 1, 1);
             const source = context.compileValue(

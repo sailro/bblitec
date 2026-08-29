@@ -275,6 +275,24 @@ inline std::array<float, 16> outer_draw_world(
     return world;
 }
 
+/** Column-major matrix product, matching the generated pinned multiply. */
+inline std::array<float, 16> draw_matrix_product(
+    const std::array<float, 16>& left,
+    const std::array<float, 16>& right) {
+    std::array<float, 16> result{};
+    for (std::size_t column = 0; column < 4; ++column) {
+        for (std::size_t row = 0; row < 4; ++row) {
+            double sum = 0.0;
+            for (std::size_t term = 0; term < 4; ++term) {
+                sum += static_cast<double>(left[term * 4 + row]) *
+                    static_cast<double>(right[column * 4 + term]);
+            }
+            result[column * 4 + row] = static_cast<float>(sum);
+        }
+    }
+    return result;
+}
+
 /**
  * The floating-origin offset, or the zero vector when the mode is off.
  *
@@ -316,6 +334,15 @@ inline std::array<float, 16> draw_world(
         base,
         floating_origin_offset(scene, engine));
 #else
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+    if (record.gpu_world_transform) {
+        return outer_draw_world(
+            draw_matrix_product(
+                base,
+                upstream::mesh_world_matrix(engine, record)),
+            record);
+    }
+#endif
     return outer_draw_world(base, record);
 #endif
 }
@@ -1025,7 +1052,9 @@ inline std::vector<GpuVertex> transformed_vertices(
 #if BBLITE_FLOATING_ORIGIN
         identity_transform;
 #else
-        mesh.thin_instanced ? identity_transform : mesh;
+        mesh.thin_instanced || mesh.gpu_world_transform
+            ? identity_transform
+            : mesh;
 #endif
     const std::vector<ModelVertex>& source_vertices =
         mesh.gpu_deformation &&
@@ -1676,6 +1705,16 @@ inline std::array<float, 16> pinned_draw_world(
     if (world_from_palette) {
         return draw_world(record.bone_matrices[0], record, scene, engine);
     }
+    if (record.gpu_world_transform) {
+        // `pinned_convention_vertices` applies the Babylon X mirror to the
+        // local stream. The live native world therefore precedes the mirror:
+        // (world * mirror) * (mirror * local) == world * local.
+        return outer_draw_world(
+            draw_matrix_product(
+                upstream::mesh_world_matrix(engine, record),
+                pinned_mesh_world()),
+            record);
+    }
     if (uses_local_position || pinned_record_instanced(record)) {
         return draw_world(
             pinned_instanced_world(record),
@@ -2304,6 +2343,7 @@ inline bool pinned_variant_skeleton(std::size_t variant) {
  */
 struct PinnedVariantKey {
     std::uint32_t material_index = 0;
+    std::uint32_t material_view = 0;
     std::size_t mesh_features = 0;
     std::uint32_t light_mode = 0;
     std::string_view single_light_type;
@@ -2330,7 +2370,19 @@ inline PinnedVariantKey pinned_variant_key(
     // shadow caster VIEWS `registerSceneWithShadowSupport` builds, and one
     // of those draws through its own no-colour variant rather than a row
     // here; a miss is then reported by the selector rather than guessed at.
-    key.material_index = draw.item.material.value;
+    if (draw.item.material.value >= engine.materials.size()) {
+        key.refusal = "the draw material handle is invalid";
+        return key;
+    }
+    const MaterialRecord& draw_material =
+        engine.materials[draw.item.material.value];
+    key.material_view = draw_material.esm_shadow
+        ? 2u
+        : draw_material.no_color ? 1u : 0u;
+    key.material_index =
+        draw_material.source_material.value == invalid_handle
+            ? draw.item.material.value
+            : draw_material.source_material.value;
     if (key.material_index >= upstream::pbr_variant_material_count) {
         key.refusal = "material " + std::to_string(key.material_index) +
             " is past the " +
@@ -2414,6 +2466,7 @@ inline std::string pinned_variant_request(
     std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
     if (!key.resolved) return "no key: " + key.refusal;
     return "material " + std::to_string(key.material_index) +
+        ", view " + std::to_string(key.material_view) +
         ", mesh features " + std::to_string(key.mesh_features) +
         ", light mode " + std::to_string(key.light_mode) +
         ", single light '" + std::string(key.single_light_type) + "'" +
@@ -2487,6 +2540,7 @@ inline std::size_t pinned_variant_for_draw(
     // the guard missing from the composed fragments, not pass structure.
     const std::size_t variant = upstream::pbr_variant_for(
         key.material_index,
+        key.material_view,
         static_cast<std::uint32_t>(key.mesh_features),
         key.light_mode,
         key.single_light_type,

@@ -129,7 +129,7 @@ Primary source ownership:
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
 | `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
 | `native/include/bblite/pal_physics.hpp` | the rigid-body solver contract: the `HP_*` surface the pinned physics layer calls on the module it is handed |
-| `native/src/pal_physics_bullet.cpp` | that surface over Bullet, plus its two ordering repairs ([fidelity](fidelity.md#physics-contract)) |
+| `native/src/pal_physics_bullet.cpp` | that surface over Bullet: ordering repairs, convex mass frames, Havok body defaults, contact convergence and opt-in CPU counters ([fidelity](fidelity.md#physics-contract)) |
 | `native/include/bblite/pal_navigation.hpp` | the navigation contract: the Recast/Detour surface the pinned wrapper calls on the module it loads |
 | `native/include/bblite/pal_audio.hpp` | the Web Audio contract: the browser surface the pinned audio module calls, which is the seam the pin itself draws |
 | `native/src/pal_audio_labsound.cpp` | that surface over LabSound, a fork of WebKit's own WebAudio ([fidelity](fidelity.md#audio-contract)) |

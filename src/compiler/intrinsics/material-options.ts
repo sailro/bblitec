@@ -402,13 +402,29 @@ export function compilePbrMaterialOptions(
         "baseColorFactor",
     );
     const ormExpression = context.objectProperty(object, "ormTexture");
-    if (!baseColorExpression || !ormExpression) {
-        context.fail(object, "PBR material requires baseColorTexture and ormTexture.");
+    // createPbrMaterial installs the pin's fallback resolver: either absent
+    // slot samples the same shared 1x1 white rgba8unorm texture. Carry that
+    // exact quantized texel directly when the source omits a texture.
+    const whiteFallback: Value = {
+        kind: "texture",
+        textureStorage: "solid",
+        cpp:
+            "bbl::SolidTexture{" +
+            "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}, " +
+            "std::array<std::uint8_t, 4>{255u, 255u, 255u, 255u}}",
+    };
+    const baseColor = baseColorExpression
+        ? context.compileValue(baseColorExpression)
+        : whiteFallback;
+    const orm = ormExpression
+        ? context.compileValue(ormExpression)
+        : whiteFallback;
+    if (baseColorExpression) {
+        context.expectKind(baseColor, "texture", baseColorExpression);
     }
-    const baseColor = context.compileValue(baseColorExpression);
-    const orm = context.compileValue(ormExpression);
-    context.expectKind(baseColor, "texture", baseColorExpression);
-    context.expectKind(orm, "texture", ormExpression);
+    if (ormExpression) {
+        context.expectKind(orm, "texture", ormExpression);
+    }
     const baseColorFactor = baseColorFactorExpression
         ? staticPbrBaseColorFactor(context, baseColorFactorExpression)
         : undefined;

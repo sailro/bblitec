@@ -474,14 +474,6 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/enable-mirrored-meshes.ts",
         consumers: CMAKE,
     },
-    "mesh:visible": {
-        provenance: "src/scene/scene-node.ts",
-        consumers: CMAKE,
-    },
-    "mesh:pickable": {
-        provenance: "src/mesh/mesh.ts",
-        consumers: CMAKE,
-    },
     "mesh:transform-node": {
         provenance: "src/scene/transform-node.ts",
         consumers: CMAKE,
@@ -528,6 +520,22 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "mesh:torus": {
         provenance: "src/mesh/create-torus.ts",
+        consumers: CMAKE,
+    },
+    "mesh:parenting": {
+        provenance: "src/scene/set-parent.ts",
+        consumers: CMAKE,
+    },
+    "mesh:geometry-access": {
+        provenance: "src/mesh/mesh.ts retained CPU geometry + worldMatrix",
+        consumers: CMAKE,
+    },
+    "mesh:visible": {
+        provenance: "src/scene/scene-node.ts",
+        consumers: CMAKE,
+    },
+    "mesh:pickable": {
+        provenance: "src/mesh/mesh.ts",
         consumers: CMAKE,
     },
     "picking:gpu": {

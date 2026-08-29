@@ -373,6 +373,55 @@ export class HandleCollections {
             ?.target;
     }
 
+    /** `getContainerMeshes(container)` as the asset's flattened mesh list. */
+    public assetMeshCollection(
+        owner: Value,
+        expression: ts.Expression,
+    ): Value {
+        this.context.expectKind(owner, "asset", expression);
+        const collection = readHandleCollection(owner, "meshes");
+        if (!collection) {
+            this.context.fail(
+                expression,
+                "The asset handle table does not expose its mesh collection.",
+            );
+        }
+        const elementType = this.context.checker.getIndexTypeOfType(
+            this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(expression),
+            ),
+            ts.IndexKind.Number,
+        );
+        const element = elementType
+            ? this.context.dataTypes.fromTsType(elementType, expression)
+            : undefined;
+        if (element?.kind !== "handle" || element.handle !== "mesh") {
+            this.context.fail(
+                expression,
+                "getContainerMeshes must retain the pinned Mesh[] result type.",
+            );
+        }
+        const engineCpp = this.context.requireEngine(owner, expression);
+        return {
+            kind: "handle-collection",
+            cpp: "",
+            engineCpp,
+            handleCollection: {
+                property: "meshes",
+                temporaryLabel: collection.temporaryLabel,
+                containerCpp: nativeLocation(
+                    collection,
+                    owner.cpp,
+                    engineCpp,
+                ),
+                elementKind: element.handle,
+                elementCppType: this.context.dataTypes.cppType(element),
+                engineCpp,
+                ...(owner.asset ? { asset: owner.asset } : {}),
+            },
+        };
+    }
+
     /**
      * `<lhs> ?? []` where the left operand is an engine handle collection:
      * the collection as a compile-time value.
@@ -700,7 +749,7 @@ export class HandleCollections {
               : undefined;
         return value?.kind === "tuple"
             ? value.tupleElements
-            : undefined;
+            : value?.staticHandleElements;
     }
 
     /**
@@ -1256,10 +1305,22 @@ export class HandleCollections {
         const literal =
             this.context.probeStaticArrayLiteral(expression);
         if (literal) {
-            return literal.elements.map((element) => ({
-                value: this.context.compileValue(element),
-                node: element,
-            }));
+            const entries: { value: Value; node: ts.Node }[] = [];
+            for (const element of literal.elements) {
+                if (ts.isSpreadElement(element)) {
+                    const spread = this.tupleElements(element.expression);
+                    if (!spread) return undefined;
+                    entries.push(
+                        ...spread.map((value) => ({ value, node: element })),
+                    );
+                } else {
+                    entries.push({
+                        value: this.context.compileValue(element),
+                        node: element,
+                    });
+                }
+            }
+            return entries;
         }
         const tuple = this.tupleElements(expression);
         return tuple?.map((value) => ({ value, node: expression }));
@@ -1270,12 +1331,27 @@ export class HandleCollections {
         expression: ts.Expression,
     ): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
-        if (!ts.isIdentifier(unwrapped)) {
+        if (ts.isIdentifier(unwrapped)) {
+            const value =
+                this.context.lookupOptional(unwrapped);
+            if (value) {
+                return handleKinds.includes(value.kind) &&
+                    value.animationGroupSource !== "property"
+                    ? value
+                    : undefined;
+            }
+        }
+        const type = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(unwrapped),
+            unwrapped,
+        );
+        if (
+            type?.kind !== "handle" ||
+            !handleKinds.includes(type.handle)
+        ) {
             return undefined;
         }
-        const value =
-            this.context.lookupOptional(unwrapped);
-        if (!value) return undefined;
+        const value = this.context.compileValue(unwrapped);
         return handleKinds.includes(value.kind) &&
             value.animationGroupSource !== "property"
             ? value

@@ -224,6 +224,29 @@ export class ExpressionLowerer {
     ) {}
 
     public compileValue(expression: ts.Expression): Value {
+        if (
+            (ts.isAsExpression(expression) ||
+                ts.isTypeAssertionExpression(expression)) &&
+            ts.isTypeReferenceNode(expression.type) &&
+            ts.isIdentifier(expression.type.typeName) &&
+            this.context.symbols.importedName(
+                expression.type.typeName,
+            ) === "Mesh"
+        ) {
+            const asserted = this.compileValue(expression.expression);
+            if (asserted.kind === "picked-node") {
+                return {
+                    kind: "mesh",
+                    cpp: `bbl::picked_mesh(${asserted.cpp})`,
+                    ...(asserted.engineCpp
+                        ? { engineCpp: asserted.engineCpp }
+                        : {}),
+                    optionalFoundCpp:
+                        `(${asserted.cpp}.picked_kind == ` +
+                        `bbl::PickedNodeKind::mesh)`,
+                };
+            }
+        }
         const assertedNonNull =
             hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);
@@ -1254,6 +1277,12 @@ export class ExpressionLowerer {
             };
         }
         if (this.context.evaluator.isBooleanExpression(unwrapped)) {
+            const staticBoolean =
+                unwrapped.kind === ts.SyntaxKind.TrueKeyword
+                    ? true
+                    : unwrapped.kind === ts.SyntaxKind.FalseKeyword
+                      ? false
+                      : undefined;
             return {
                 kind: "boolean",
                 // Value position still needs the full runtime condition
@@ -1261,6 +1290,9 @@ export class ExpressionLowerer {
                 // `!set.has(value)`, which is boolean but not a static
                 // literal expression.
                 cpp: this.context.compileCondition(unwrapped),
+                ...(staticBoolean === undefined
+                    ? {}
+                    : { staticBoolean }),
             };
         }
         // A comparison in value position is the same expression a
@@ -1489,6 +1521,7 @@ export class ExpressionLowerer {
                     staticString: value.browserValue.value,
                 };
             case "null":
+            case "dom-rect":
             case "object":
             case "search-params":
                 return value;

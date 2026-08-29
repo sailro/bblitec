@@ -119,6 +119,21 @@ export class BrowserErasure {
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
+        // `import.meta.url` is the browser module's deployment URL. Native
+        // asset sinks fold the reached `new URL(path, import.meta.url)`
+        // helper before this erasure gate; every remaining use is browser
+        // setup (for example, selecting decoder script base URLs) and has no
+        // run-time representation in an AOT package with no network loader.
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "url" &&
+            ts.isMetaProperty(unwrapped.expression) &&
+            unwrapped.expression.keywordToken ===
+                ts.SyntaxKind.ImportKeyword &&
+            unwrapped.expression.name.text === "meta"
+        ) {
+            return true;
+        }
         // Two browser-shaped values have direct platform counterparts. Keep
         // them out of the erasure flow so ordinary expression lowering owns
         // their native representation.
@@ -590,6 +605,18 @@ export class BrowserErasure {
                 );
                 const method = unwrapped.expression.name.text;
                 if (
+                    method === "getBoundingClientRect" &&
+                    unwrapped.arguments.length === 0 &&
+                    this.context.isBrowserDomValue(
+                        unwrapped.expression.expression,
+                    )
+                ) {
+                    // Native's drawing surface is its client box: there is
+                    // no CSS page offset between an SDL pointer coordinate
+                    // and the backing surface coordinate the picker reads.
+                    return { kind: "dom-rect" };
+                }
+                if (
                     owner?.kind === "search-params" &&
                     (method === "get" || method === "has")
                 ) {
@@ -740,6 +767,7 @@ export class BrowserErasure {
                     !Number.isNaN(value.value)
                 );
             case "object":
+            case "dom-rect":
             case "search-params":
                 return true;
             case "string":
@@ -982,6 +1010,8 @@ function strictlyEqualBrowserValues(
     if (
         left.kind === "object" ||
         right.kind === "object" ||
+        left.kind === "dom-rect" ||
+        right.kind === "dom-rect" ||
         left.kind === "search-params" ||
         right.kind === "search-params"
     ) {

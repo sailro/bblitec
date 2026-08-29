@@ -1709,6 +1709,67 @@ ${!esmShadows ? "" : shadowGeneratorFactory({
         "esm_index",
     ],
 })}
+namespace {
+
+MaterialHandle shadow_caster_view(
+    Engine& engine,
+    ShadowGeneratorHandle handle,
+    MaterialHandle material) {
+    ShadowGeneratorRecord& generator =
+        engine.shadow_generators[handle.value];
+    for (std::size_t index = 0;
+         index < generator.caster_material_sources.size();
+         ++index) {
+        if (generator.caster_material_sources[index].value == material.value) {
+            return generator.caster_material_views[index];
+        }
+    }
+${esmShadows ? `    const bool esm =
+        generator.filter == ShadowFilter::esm_directional;
+` : ""}\
+    const MaterialRecord& source = engine.materials[material.value];
+    const MaterialHandle view =
+        ${nodeEsmCasters ? `source.node_material
+            ? ${casterView("node")}
+            : ` : ""}source.standard_material
+            ? ${casterView("standard")}
+            : ${casterView("pbr")};
+    generator.caster_material_sources.push_back(material);
+    generator.caster_material_views.push_back(view);
+    return view;
+}
+
+void refresh_shadow_task_meshes(
+    Engine& engine,
+    ShadowGeneratorHandle handle) {
+    ShadowGeneratorRecord& generator =
+        engine.shadow_generators[handle.value];
+    if (generator.task.value >= engine.frame_tasks.size()) return;
+    FrameTaskRecord& task = engine.frame_tasks[generator.task.value];
+    task.render_meshes.clear();
+    for (const MeshHandle mesh : generator.caster_meshes) {
+        const MeshRecord& record = engine.meshes[mesh.value];
+        // Invisible anchors participate in the light-volume fit but the
+        // pin's normal renderable traversal does not draw them.
+        if (!record.visible) continue;
+        const MaterialHandle material = record.material;
+        if (material.value >= engine.materials.size()) {
+            throw std::runtime_error(
+                std::string("Visible shadow caster '") + record.name +
+                "' (mesh " + std::to_string(mesh.value) +
+                ") carries invalid material " +
+                std::to_string(material.value) + ".");
+        }
+        add_render_task_mesh(
+            engine,
+            generator.task,
+            mesh,
+            shadow_caster_view(engine, handle, material));
+    }
+}
+
+} // namespace
+
 void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,
@@ -1723,6 +1784,7 @@ void set_shadow_task_caster_meshes(
     }
     engine.shadow_generators[generator.value].caster_meshes =
         std::move(caster_meshes);
+    refresh_shadow_task_meshes(engine, generator);
 }
 
 namespace {
@@ -1776,25 +1838,7 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     const TaskHandle task_handle =
         create_render_task(engine, scene, std::move(task));
     engine.shadow_generators[handle.value].task = task_handle;
-    const std::vector<MeshHandle> casters =
-        engine.shadow_generators[handle.value].caster_meshes;
-    for (const MeshHandle mesh : casters) {
-        const MaterialHandle material = engine.meshes[mesh.value].material;
-        if (material.value >= engine.materials.size()) {
-            throw std::runtime_error(
-                "A shadow caster mesh carries no material.");
-        }
-        // Which view: the family's own ESM caster for the ESM task, its
-        // depth-only one for the PCF task. Both are the pin's own
-        // per-family factory, and the fork between them is stated once.
-        const MaterialHandle view =
-            ${nodeEsmCasters ? `engine.materials[material.value].node_material
-                ? ${casterView("node")}
-                : ` : ""}engine.materials[material.value].standard_material
-                ? ${casterView("standard")}
-                : ${casterView("pbr")};
-        add_render_task_mesh(engine, task_handle, mesh, view);
-    }
+    refresh_shadow_task_meshes(engine, handle);
     // ensureShadowTask unshifts the scheduler ahead of the scene's own
     // tasks, so every shadow map renders before the pass that samples it.
     add_task_at_start(scene, task_handle);

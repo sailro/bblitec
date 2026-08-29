@@ -47,7 +47,7 @@ static_assert(
     sizeof(DawnPickMeshUniforms) == 256,
     "a pick candidate's block is one dynamic-offset stride");
 
-/** The one-pixel target set and the buffer its colour is mapped from. */
+/** The one-pixel target set and the buffer its id and depth are mapped from. */
 struct DawnPickTargets {
     WGPUTexture color = nullptr;
     WGPUTextureView color_view = nullptr;
@@ -111,7 +111,7 @@ inline void ensure_dawn_pick_targets(
 
     WGPUBufferDescriptor staging = WGPU_BUFFER_DESCRIPTOR_INIT;
     staging.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-    staging.size = 256;
+    staging.size = 512;
     targets.staging = wgpuDeviceCreateBuffer(device, &staging);
     if (!targets.staging) dawn_error("pick staging buffer");
 }

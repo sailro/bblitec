@@ -17,30 +17,31 @@
 import ts from "typescript";
 import type { CompilerSymbols } from "../symbols.js";
 import {
-    pinnedEnumMemberName,
-    validateObjectProperties,
-    type ObjectValidationContext,
+  pinnedEnumMemberName,
+  validateObjectProperties,
+  type ObjectValidationContext,
 } from "../option-helpers.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
-    requiredObjectNumber,
-    type RequiredObjectNumberContext,
+  requiredObjectNumber,
+  type RequiredObjectNumberContext,
 } from "./engine-options.js";
 
 export interface PhysicsIntrinsicContext
-    extends IntrinsicCallContext,
-        ObjectValidationContext,
-        RequiredObjectNumberContext {
-    readonly symbols: CompilerSymbols;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
-    expectObjectLiteral(
-        expression: ts.Expression,
-    ): ts.ObjectLiteralExpression;
-    compileFrameCallback(expression: ts.Expression): string;
+  extends
+    IntrinsicCallContext,
+    ObjectValidationContext,
+    RequiredObjectNumberContext {
+  readonly symbols: CompilerSymbols;
+  compileVec3(
+    expression: ts.Expression,
+    precision?: "float" | "double",
+  ): string;
+  compileBoolean(expression: ts.Expression): string;
+  expectSameEngine(left: Value, right: Value, node: ts.Node): void;
+  expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
+  compileFrameCallback(expression: ts.Expression): string;
 }
 
 /**
@@ -50,112 +51,253 @@ export interface PhysicsIntrinsicContext
  * pinned numeric values are asserted against the declaration by
  * `physics-lowerer.ts` rather than restated as literals in this file.
  */
-const PRIMITIVE_SHAPE_TYPES = [
-    "SPHERE",
-    "CAPSULE",
-    "CYLINDER",
-    "BOX",
-] as const;
+const PRIMITIVE_SHAPE_TYPES = ["SPHERE", "CAPSULE", "CYLINDER", "BOX"] as const;
+
+const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, "CONVEX_HULL"] as const;
 
 /** The `PhysicsAggregateOptions` fields the reached slice lowers. */
-const AGGREGATE_OPTIONS = [
-    "mass",
-    "friction",
-    "restitution",
-] as const;
+const AGGREGATE_OPTIONS = ["mass", "friction", "restitution", "shape"] as const;
 
 export function compilePhysicsIntrinsic(
-    context: PhysicsIntrinsicContext,
-    importedName: string,
-    call: ts.CallExpression,
+  context: PhysicsIntrinsicContext,
+  importedName: string,
+  call: ts.CallExpression,
 ): Value | undefined {
-    switch (importedName) {
-        case "createHavokWorld": {
-            // `(scene, hknp, gravity?)`. The module argument is required by
-            // the pin's signature and carries nothing here, so it is
-            // compiled (to reach its own diagnostics) and dropped.
-            context.expectArgumentCount(call, 2, 3);
-            const scene = context.compileValue(call.arguments[0]!);
-            context.expectKind(scene, "scene", call.arguments[0]!);
-            const engineModule = context.compileValue(
-                call.arguments[1]!,
-            );
-            if (engineModule.kind !== "physics-engine-module") {
-                context.fail(
-                    call.arguments[1]!,
-                    "createHavokWorld's second argument must be the " +
-                        "physics engine module a scene loads " +
-                        "(`await HavokPhysics(...)`). A native build " +
-                        "reaches its solver through the PAL, so the " +
-                        "value is accepted and carries nothing.",
-                );
-            }
-            // `gravity ?? { x: 0, y: -9.81, z: 0 }` is the pin's own
-            // default and is resolved by the generated factory, not here.
-            const gravity = call.arguments[2]
-                ? context.compileVec3(
-                      call.arguments[2],
-                      "double",
-                  )
-                : "bbl::upstream::pinned_default_gravity()";
-            context.reachFeature("physics:world", call);
-            return {
-                kind: "physics-world",
-                cpp:
-                    `bbl::upstream::create_havok_world(` +
-                    `${scene.cpp}, ${gravity})`,
-            };
-        }
-
-        case "onPhysicsAfterStep": {
-            context.expectArgumentCount(call, 2, 2);
-            const world = context.compileValue(call.arguments[0]!);
-            context.expectKind(
-                world,
-                "physics-world",
-                call.arguments[0]!,
-            );
-            return {
-                kind: "void",
-                cpp:
-                    `bbl::upstream::on_physics_after_step(` +
-                    `${world.cpp}, ` +
-                    `${context.compileFrameCallback(call.arguments[1]!)})`,
-            };
-        }
-
-        case "createPhysicsAggregate": {
-            context.expectArgumentCount(call, 4, 4);
-            const world = context.compileValue(call.arguments[0]!);
-            context.expectKind(
-                world,
-                "physics-world",
-                call.arguments[0]!,
-            );
-            const mesh = context.compileValue(call.arguments[1]!);
-            context.expectKind(mesh, "mesh", call.arguments[1]!);
-            const shapeType = expectShapeType(
-                context,
-                call.arguments[2]!,
-            );
-            const options = compileAggregateOptions(
-                context,
-                call.arguments[3]!,
-            );
-            context.reachFeature("physics:aggregate", call);
-            return {
-                kind: "physics-aggregate",
-                cpp:
-                    `bbl::upstream::create_physics_aggregate(` +
-                    `${world.cpp}, ${mesh.cpp}, ` +
-                    `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
-                    `${options})`,
-            };
-        }
-
-        default:
-            return undefined;
+  switch (importedName) {
+    case "createHavokWorld": {
+      // `(scene, hknp, gravity?)`. The module argument is required by
+      // the pin's signature and carries nothing here, so it is
+      // compiled (to reach its own diagnostics) and dropped.
+      context.expectArgumentCount(call, 2, 3);
+      const scene = context.compileValue(call.arguments[0]!);
+      context.expectKind(scene, "scene", call.arguments[0]!);
+      const engineModule = context.compileValue(call.arguments[1]!);
+      if (engineModule.kind !== "physics-engine-module") {
+        context.fail(
+          call.arguments[1]!,
+          "createHavokWorld's second argument must be the " +
+            "physics engine module a scene loads " +
+            "(`await HavokPhysics(...)`). A native build " +
+            "reaches its solver through the PAL, so the " +
+            "value is accepted and carries nothing.",
+        );
+      }
+      // `gravity ?? { x: 0, y: -9.81, z: 0 }` is the pin's own
+      // default and is resolved by the generated factory, not here.
+      const gravity = call.arguments[2]
+        ? context.compileVec3(call.arguments[2], "double")
+        : "bbl::upstream::pinned_default_gravity()";
+      context.reachFeature("physics:world", call);
+      return {
+        kind: "physics-world",
+        cpp: `bbl::upstream::create_havok_world(` + `${scene.cpp}, ${gravity})`,
+        ...(scene.engineCpp ? { engineCpp: scene.engineCpp } : {}),
+      };
     }
+
+    case "setPhysicsTimestepMs": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_timestep_ms(` +
+          `${world.cpp}, ${context.compileNumber(call.arguments[1]!, "double")})`,
+      };
+    }
+
+    case "createPhysicsShape": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      const options = context.expectObjectLiteral(call.arguments[1]!);
+      validateObjectProperties(
+        context,
+        options,
+        ["type", "parameters", "mesh", "includeChildMeshes"],
+        "A physics shape option outside the reached convex-hull slice.",
+      );
+      if (context.objectProperty(options, "parameters")) {
+        context.fail(
+          call.arguments[1]!,
+          "The reached convex-hull shape takes its geometry from `mesh`; explicit physics shape parameters are not used.",
+        );
+      }
+      const typeExpression = context.objectProperty(options, "type");
+      if (!typeExpression) {
+        context.fail(call.arguments[1]!, "createPhysicsShape requires `type`.");
+      }
+      const shapeType = expectShapeType(context, typeExpression);
+      if (shapeType !== "CONVEX_HULL") {
+        context.fail(
+          typeExpression,
+          "The standalone createPhysicsShape slice reached here is PhysicsShapeType.CONVEX_HULL.",
+        );
+      }
+      const meshExpression = context.objectProperty(options, "mesh");
+      if (!meshExpression) {
+        context.fail(
+          call.arguments[1]!,
+          "A convex-hull physics shape requires `mesh`.",
+        );
+      }
+      const mesh = context.compileValue(meshExpression);
+      context.expectKind(mesh, "mesh", meshExpression);
+      context.expectSameEngine(world, mesh, call);
+      const includeChildren = context.objectProperty(
+        options,
+        "includeChildMeshes",
+      );
+      context.reachFeature("physics:aggregate", call);
+      return {
+        kind: "physics-shape",
+        cpp:
+          `bbl::upstream::create_physics_convex_hull_shape(` +
+          `${world.cpp}, ${mesh.cpp}, ` +
+          `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
+        ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+      };
+    }
+
+    case "onPhysicsAfterStep": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::on_physics_after_step(` +
+          `${world.cpp}, ` +
+          `${context.compileFrameCallback(call.arguments[1]!)})`,
+      };
+    }
+
+    case "createPhysicsAggregate": {
+      context.expectArgumentCount(call, 4, 4);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      const mesh = context.compileValue(call.arguments[1]!);
+      context.expectKind(mesh, "mesh", call.arguments[1]!);
+      context.expectSameEngine(world, mesh, call);
+      const shapeType = expectShapeType(context, call.arguments[2]!);
+      const options = compileAggregateOptions(context, call.arguments[3]!);
+      context.reachFeature("physics:aggregate", call);
+      return {
+        kind: "physics-aggregate",
+        cpp:
+          `bbl::upstream::create_physics_aggregate(` +
+          `${world.cpp}, ${mesh.cpp}, ` +
+          `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
+          `${options})`,
+        ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+      };
+    }
+
+    case "setPhysicsBodyMotionType": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      const motion = expectMotionType(context, call.arguments[2]!);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_motion_type(` +
+          `${world.cpp}, ${body.cpp}, ` +
+          `bbl::upstream::PhysicsMotionType::${motion})`,
+      };
+    }
+
+    case "setPhysicsBodyMass": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_mass(` +
+          `${world.cpp}, ${body.cpp}, ` +
+          `${context.compileNumber(call.arguments[2]!, "double")})`,
+      };
+    }
+
+    case "applyPhysicsImpulse": {
+      context.expectArgumentCount(call, 3, 4);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      const impulse = context.compileVec3(call.arguments[2]!, "double");
+      const point = call.arguments[3]
+        ? compileImpulsePoint(context, call.arguments[3])
+        : "std::optional<bbl::Vec3d>{}";
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::apply_physics_impulse(` +
+          `${world.cpp}, ${body.cpp}, ${impulse}, ${point})`,
+      };
+    }
+
+    default:
+      return undefined;
+  }
+}
+
+function compileImpulsePoint(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
+): string {
+  let unwrapped = expression;
+  while (
+    ts.isParenthesizedExpression(unwrapped) ||
+    ts.isAsExpression(unwrapped) ||
+    ts.isTypeAssertionExpression(unwrapped) ||
+    ts.isNonNullExpression(unwrapped)
+  ) {
+    unwrapped = unwrapped.expression;
+  }
+  if (ts.isConditionalExpression(unwrapped)) {
+    let absent = unwrapped.whenFalse;
+    while (ts.isParenthesizedExpression(absent)) {
+      absent = absent.expression;
+    }
+    if (!ts.isIdentifier(absent) || absent.text !== "undefined") {
+      context.fail(
+        absent,
+        "An optional physics impulse point must use undefined for its absent arm.",
+      );
+    }
+    const condition = context.compileValue(unwrapped.condition);
+    const present =
+      condition.optionalFoundCpp ??
+      (condition.kind === "data" &&
+      condition.dataType?.kind === "optional"
+        ? `${condition.cpp}.has_value()`
+        : undefined);
+    if (!present) {
+      context.fail(
+        unwrapped.condition,
+        "An optional physics impulse point requires a nullable condition.",
+      );
+    }
+    const value = context.compileVec3(unwrapped.whenTrue, "double");
+    return (
+      `(${present} ? std::optional<bbl::Vec3d>{${value}} : ` +
+      "std::optional<bbl::Vec3d>{})"
+    );
+  }
+  return (
+    `std::optional<bbl::Vec3d>{` +
+    `${context.compileVec3(expression, "double")}}`
+  );
 }
 
 /**
@@ -166,28 +308,32 @@ export function compilePhysicsIntrinsic(
  * than at the pin's own `throw` inside `createPhysicsAggregate`.
  */
 function expectShapeType(
-    context: PhysicsIntrinsicContext,
-    expression: ts.Expression,
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
 ): string {
-    const member = pinnedEnumMemberName(
-        context,
-        expression,
-        "PhysicsShapeType",
+  const member = pinnedEnumMemberName(context, expression, "PhysicsShapeType");
+  if (!(SHAPE_TYPES as readonly string[]).includes(member)) {
+    context.fail(
+      expression,
+      `PhysicsShapeType.${member} is not reached by this ` +
+        "prototype. Only the primitive shapes " +
+        "`createPrimitivePhysicsShapeHandle` builds are " +
+        `lowered (${SHAPE_TYPES.join(", ")}); MESH and CONTAINER ` +
+        "need their additional pinned paths.",
     );
-    if (
-        !(PRIMITIVE_SHAPE_TYPES as readonly string[]).includes(member)
-    ) {
-        context.fail(
-            expression,
-            `PhysicsShapeType.${member} is not reached by this ` +
-                "prototype. Only the primitive shapes " +
-                "`createPrimitivePhysicsShapeHandle` builds are " +
-                `lowered (${PRIMITIVE_SHAPE_TYPES.join(", ")}); the ` +
-                "mesh and container shapes need the pin's own mesh " +
-                "accumulator.",
-        );
-    }
-    return member;
+  }
+  return member;
+}
+
+function expectMotionType(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
+): "STATIC" | "ANIMATED" | "DYNAMIC" {
+  const member = pinnedEnumMemberName(context, expression, "PhysicsMotionType");
+  if (member !== "STATIC" && member !== "ANIMATED" && member !== "DYNAMIC") {
+    context.fail(expression, `Unknown PhysicsMotionType.${member}.`);
+  }
+  return member;
 }
 
 /**
@@ -197,31 +343,39 @@ function expectShapeType(
  * `?? 0.2`, so an omitted option is absent here rather than substituted.
  */
 function compileAggregateOptions(
-    context: PhysicsIntrinsicContext,
-    expression: ts.Expression,
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
 ): string {
-    const object = context.expectObjectLiteral(expression);
-    validateObjectProperties(
-        context,
-        object,
-        AGGREGATE_OPTIONS,
-        "A physics aggregate option outside this prototype's reached " +
-            `slice (${AGGREGATE_OPTIONS.join(", ")}).`,
-    );
-    // `mass` is not optional in the pinned interface and decides the
-    // motion type, so it reads through the required helper the other
-    // option families use.
-    const mass = requiredObjectNumber(context, object, "mass", "double");
-    const optional = (name: string): string => {
-        const value = context.objectProperty(object, name);
-        return value
-            ? `bbl::js::Nullable<double>{${context.compileNumber(value, "double")}}`
-            : "bbl::js::Nullable<double>{}";
-    };
-    return (
-        `bbl::upstream::PhysicsAggregateOptions{` +
-        `${mass}, ` +
-        `${optional("friction")}, ` +
-        `${optional("restitution")}}`
-    );
+  const object = context.expectObjectLiteral(expression);
+  validateObjectProperties(
+    context,
+    object,
+    AGGREGATE_OPTIONS,
+    "A physics aggregate option outside this prototype's reached " +
+      `slice (${AGGREGATE_OPTIONS.join(", ")}).`,
+  );
+  // `mass` is not optional in the pinned interface and decides the
+  // motion type, so it reads through the required helper the other
+  // option families use.
+  const mass = requiredObjectNumber(context, object, "mass", "double");
+  const optional = (name: string): string => {
+    const value = context.objectProperty(object, name);
+    return value
+      ? `bbl::js::Nullable<double>{${context.compileNumber(value, "double")}}`
+      : "bbl::js::Nullable<double>{}";
+  };
+  const shapeExpression = context.objectProperty(object, "shape");
+  const shape = shapeExpression
+    ? context.compileValue(shapeExpression)
+    : undefined;
+  if (shape) {
+    context.expectKind(shape, "physics-shape", shapeExpression!);
+  }
+  return (
+    `bbl::upstream::PhysicsAggregateOptions{` +
+    `${mass}, ` +
+    `${optional("friction")}, ` +
+    `${optional("restitution")}, ` +
+    `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}}`
+  );
 }

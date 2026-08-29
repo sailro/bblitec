@@ -19,6 +19,7 @@
 #include "bblite/pal_physics.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +28,9 @@
 #include <stdexcept>
 
 #include <btBulletDynamicsCommon.h>
+#include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
+#include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
+#include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 
 namespace bbl::pal {
 namespace {
@@ -39,6 +43,31 @@ namespace {
  * applied across shape kinds moves surfaces rather than aligning them.
  */
 constexpr btScalar convex_margin = CONVEX_DISTANCE_MARGIN;
+
+/**
+ * `HP_World_GetSpeedLimit` on the reached Havok world reports these default
+ * body-speed limits. Havok applies them as part of an impulse write (the
+ * boombox shard is exactly 100 rad/s before its first step), whereas Bullet
+ * has no finite rigid-body speed limit of its own. Keep the substitution at
+ * the PAL boundary instead of changing the demo's impulse.
+ */
+constexpr btScalar default_max_linear_speed = btScalar(200);
+constexpr btScalar default_max_angular_speed = btScalar(100);
+constexpr btScalar default_linear_damping = btScalar(0);
+constexpr btScalar default_angular_damping = btScalar(0.1);
+
+/**
+ * Havok's resting-contact solver converges the reached shard trace to exact
+ * zero: its last two movers are at 0.301/1.982 (linear/angular) after 150
+ * steps, 0.019/0.215 after 180, and zero by 240. Bullet otherwise leaves a
+ * small contact-jitter tail for roughly twice as long. Stabilize only bodies
+ * which stay below that late-motion envelope while touching another body;
+ * free bodies retain their velocity and any later contact or impulse wakes a
+ * stabilized body through Bullet's ordinary island activation.
+ */
+constexpr btScalar contact_rest_linear_speed = btScalar(0.3);
+constexpr btScalar contact_rest_angular_speed = btScalar(2.0);
+constexpr double contact_rest_seconds = 0.25;
 
 /** The friction and restitution a shape carries until a material is set. */
 struct ShapeMaterial {
@@ -53,18 +82,23 @@ struct ShapeMaterial {
 struct ShapeEntry {
     std::unique_ptr<btCollisionShape> shape;
     /**
-     * `HP_Shape_CreateSphere`/`CreateBox` take a centre, and Bullet's
-     * primitives are origin-centred — so a non-zero centre becomes a
-     * transform offset the body carries.
+     * Transform from Bullet's centre-of-mass/principal-axis body frame into
+     * the node-local frame the pin exposes. A primitive contributes its
+     * authored centre; a convex hull contributes its computed centre and
+     * inertia orientation.
      */
-    btVector3 center{0, 0, 0};
+    btTransform node_from_body{btTransform::getIdentity()};
+    PhysicsMassProperties mass_properties{};
+    bool has_exact_mass_properties = false;
     ShapeMaterial material{};
 };
 
 struct BodyEntry {
-    std::unique_ptr<btRigidBody> body;
+    // Members destroy in reverse declaration order: the rigid body must die
+    // before the motion state pointer it references.
     std::unique_ptr<btDefaultMotionState> motion_state;
-    btVector3 shape_center{0, 0, 0};
+    std::unique_ptr<btRigidBody> body;
+    btTransform node_from_body{btTransform::getIdentity()};
     std::uint32_t world = 0;
     bool start_asleep = false;
     bool in_world = false;
@@ -73,6 +107,8 @@ struct BodyEntry {
      * flushed by the next step. See `flush_pending_readds`.
      */
     bool needs_readd = false;
+    bool contacting = false;
+    double contact_quiet_seconds = 0.0;
     /**
      * The node transform the pin last wrote. `createPhysicsBody` writes it
      * before `setPhysicsBodyShape` runs, so the shape's own centre offset is
@@ -88,6 +124,7 @@ struct WorldEntry {
     std::unique_ptr<btBroadphaseInterface> broadphase;
     std::unique_ptr<btSequentialImpulseConstraintSolver> solver;
     std::unique_ptr<btDiscreteDynamicsWorld> world;
+    std::uint64_t stabilized_total = 0;
 };
 
 /**
@@ -95,19 +132,30 @@ struct WorldEntry {
  * never names a live object. `std::deque` keeps references stable across
  * growth, which the body entries a world holds depend on.
  */
+struct PhysicsTables {
+    // Members destroy in reverse declaration order. Worlds release their
+    // non-owning body pointers first, then bodies release shape pointers,
+    // then shapes themselves die.
+    std::deque<ShapeEntry> shapes{1};
+    std::deque<BodyEntry> bodies{1};
+    std::deque<WorldEntry> worlds{1};
+};
+
+PhysicsTables& physics_tables() {
+    static PhysicsTables tables;
+    return tables;
+}
+
 std::deque<WorldEntry>& worlds() {
-    static std::deque<WorldEntry> table(1);
-    return table;
+    return physics_tables().worlds;
 }
 
 std::deque<BodyEntry>& bodies() {
-    static std::deque<BodyEntry> table(1);
-    return table;
+    return physics_tables().bodies;
 }
 
 std::deque<ShapeEntry>& shapes() {
-    static std::deque<ShapeEntry> table(1);
-    return table;
+    return physics_tables().shapes;
 }
 
 WorldEntry& world_at(PhysicsWorldHandle handle) {
@@ -136,6 +184,114 @@ btVector3 to_bt(std::array<double, 3> v) {
         static_cast<btScalar>(v[0]),
         static_cast<btScalar>(v[1]),
         static_cast<btScalar>(v[2]));
+}
+
+void clamp_vector_length(btVector3& value, btScalar maximum) {
+    const btScalar squared_length = value.length2();
+    const btScalar squared_maximum = maximum * maximum;
+    if (squared_length > squared_maximum) {
+        value *= maximum / btSqrt(squared_length);
+    }
+}
+
+void clamp_body_velocity(btRigidBody& body) {
+    btVector3 linear = body.getLinearVelocity();
+    btVector3 angular = body.getAngularVelocity();
+    clamp_vector_length(linear, default_max_linear_speed);
+    clamp_vector_length(angular, default_max_angular_speed);
+    body.setLinearVelocity(linear);
+    body.setAngularVelocity(angular);
+}
+
+void clamp_world_velocities(btDiscreteDynamicsWorld& world) {
+    for (int i = 0; i < world.getNumCollisionObjects(); ++i) {
+        btRigidBody* body = btRigidBody::upcast(
+            world.getCollisionObjectArray()[i]);
+        if (body != nullptr && !body->isStaticOrKinematicObject()) {
+            clamp_body_velocity(*body);
+        }
+    }
+}
+
+int stabilize_contacting_bodies(
+    WorldEntry& world_entry,
+    std::uint32_t world,
+    double seconds) {
+    for (BodyEntry& entry : bodies()) {
+        if (entry.world == world) {
+            entry.contacting = false;
+        }
+    }
+    const auto mark_contacting = [&](const btCollisionObject* object) {
+        const btRigidBody* body = btRigidBody::upcast(object);
+        if (body == nullptr) return;
+        const int index = body->getUserIndex();
+        if (
+            index > 0 && static_cast<std::size_t>(index) < bodies().size() &&
+            bodies()[static_cast<std::size_t>(index)].body.get() == body) {
+            bodies()[static_cast<std::size_t>(index)].contacting = true;
+        }
+    };
+    const int manifold_count = world_entry.dispatcher->getNumManifolds();
+    for (int manifold_index = 0;
+         manifold_index < manifold_count;
+         ++manifold_index) {
+        const btPersistentManifold* manifold =
+            world_entry.dispatcher->getManifoldByIndexInternal(
+                manifold_index);
+        bool has_contact = false;
+        for (int point_index = 0;
+             point_index < manifold->getNumContacts();
+             ++point_index) {
+            if (manifold->getContactPoint(point_index).getDistance() <=
+                manifold->getContactBreakingThreshold()) {
+                has_contact = true;
+                break;
+            }
+        }
+        if (has_contact) {
+            mark_contacting(static_cast<const btCollisionObject*>(
+                manifold->getBody0()));
+            mark_contacting(static_cast<const btCollisionObject*>(
+                manifold->getBody1()));
+        }
+    }
+
+    int stabilized = 0;
+    for (BodyEntry& entry : bodies()) {
+        btRigidBody* body = entry.body.get();
+        if (
+            entry.world != world || !entry.in_world || body == nullptr ||
+            body->isStaticOrKinematicObject() ||
+            !entry.contacting) {
+            entry.contact_quiet_seconds = 0.0;
+            continue;
+        }
+        if (!body->isActive()) {
+            entry.contact_quiet_seconds = 0.0;
+            continue;
+        }
+        const bool quiet =
+            body->getLinearVelocity().length2() <=
+                contact_rest_linear_speed * contact_rest_linear_speed &&
+            body->getAngularVelocity().length2() <=
+                contact_rest_angular_speed * contact_rest_angular_speed;
+        if (!quiet) {
+            entry.contact_quiet_seconds = 0.0;
+            continue;
+        }
+        entry.contact_quiet_seconds += seconds;
+        if (entry.contact_quiet_seconds + 1e-9 < contact_rest_seconds) {
+            continue;
+        }
+        body->setLinearVelocity(btVector3(0, 0, 0));
+        body->setAngularVelocity(btVector3(0, 0, 0));
+        body->clearForces();
+        body->setActivationState(ISLAND_SLEEPING);
+        entry.contact_quiet_seconds = 0.0;
+        ++stabilized;
+    }
+    return stabilized;
 }
 
 /**
@@ -185,12 +341,11 @@ void write_world_transform(
         static_cast<btScalar>(transform.rotation[3]));
     btTransform world;
     world.setRotation(rotation);
-    world.setOrigin(
-        btVector3(
-            static_cast<btScalar>(transform.position[0]),
-            static_cast<btScalar>(transform.position[1]),
-            static_cast<btScalar>(transform.position[2])) +
-        quatRotate(rotation, entry.shape_center));
+    world.setOrigin(btVector3(
+        static_cast<btScalar>(transform.position[0]),
+        static_cast<btScalar>(transform.position[1]),
+        static_cast<btScalar>(transform.position[2])));
+    world *= entry.node_from_body;
     entry.body->setWorldTransform(world);
     entry.body->getMotionState()->setWorldTransform(world);
 }
@@ -242,10 +397,23 @@ bool combine_material_contact(
 
 PhysicsShapeHandle push_shape(
     std::unique_ptr<btCollisionShape> shape,
-    btVector3 center) {
-    shapes().push_back(ShapeEntry{std::move(shape), center, {}});
+    btTransform node_from_body,
+    PhysicsMassProperties mass_properties = {},
+    bool has_exact_mass_properties = false) {
+    shapes().push_back(ShapeEntry{
+        std::move(shape),
+        node_from_body,
+        mass_properties,
+        has_exact_mass_properties,
+        {}});
     return PhysicsShapeHandle{
         static_cast<std::uint32_t>(shapes().size() - 1)};
+}
+
+btTransform translated_frame(btVector3 center) {
+    btTransform frame = btTransform::getIdentity();
+    frame.setOrigin(center);
+    return frame;
 }
 
 /**
@@ -321,7 +489,27 @@ void physics_world_add_body(
 
 void physics_world_step(PhysicsWorldHandle world, double seconds) {
     WorldEntry& entry = world_at(world);
+    static const bool cpu_profile = [] {
+        const char* value = std::getenv("BBLITE_CPU_PROFILE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    using ProfileClock = std::chrono::steady_clock;
+    const auto profile_start =
+        cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+    int pending_readds = 0;
+    if (cpu_profile) {
+        for (const BodyEntry& body : bodies()) {
+            if (body.world == world.value && body.needs_readd) {
+                ++pending_readds;
+            }
+        }
+    }
     flush_pending_readds(entry, world.value);
+    // An impulse is clamped at its write below. This pass also covers any
+    // velocity written by another reached body operation before this step.
+    clamp_world_velocities(*entry.world);
+    const auto flush_end =
+        cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
 
     // The pin runs ONE step per frame and says so: "The clamp is
     // intentionally *not* a substepping loop: Lite runs a single fixed step
@@ -332,6 +520,86 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         static_cast<btScalar>(seconds),
         0,
         static_cast<btScalar>(seconds));
+    // Contacts can add velocity inside Bullet's solver. Havok's body limits
+    // remain invariant after a step, so make that invariant observable here
+    // too before transforms and counters are read.
+    clamp_world_velocities(*entry.world);
+    const int stabilized_bodies =
+        stabilize_contacting_bodies(entry, world.value, seconds);
+    entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
+    const auto solver_end =
+        cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
+
+    if (cpu_profile) {
+        static std::uint64_t profile_step = 0;
+        if (profile_step % 30 == 0 || pending_readds > 0) {
+            int dynamic_bodies = 0;
+            int active_dynamic_bodies = 0;
+            int moving_bodies = 0;
+            double maximum_linear_speed = 0.0;
+            double maximum_angular_speed = 0.0;
+            double squared_speed_sum = 0.0;
+            const btDiscreteDynamicsWorld& stepped = *entry.world;
+            for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
+                const btCollisionObject* object =
+                    stepped.getCollisionObjectArray()[i];
+                if (!object->isStaticOrKinematicObject()) {
+                    ++dynamic_bodies;
+                    if (object->isActive()) {
+                        ++active_dynamic_bodies;
+                    }
+                    const auto* rigid_body = btRigidBody::upcast(object);
+                    if (rigid_body != nullptr) {
+                        const double linear_speed = static_cast<double>(
+                            rigid_body->getLinearVelocity().length());
+                        const double angular_speed = static_cast<double>(
+                            rigid_body->getAngularVelocity().length());
+                        maximum_linear_speed =
+                            std::max(maximum_linear_speed, linear_speed);
+                        maximum_angular_speed =
+                            std::max(maximum_angular_speed, angular_speed);
+                        squared_speed_sum += linear_speed * linear_speed;
+                        if (linear_speed > 0.01 || angular_speed > 0.01) {
+                            ++moving_bodies;
+                        }
+                    }
+                }
+            }
+            const double flush_ms =
+                std::chrono::duration<double, std::milli>(
+                    flush_end - profile_start)
+                    .count();
+            const double solver_ms =
+                std::chrono::duration<double, std::milli>(
+                    solver_end - flush_end)
+                    .count();
+            std::fprintf(
+                stderr,
+                "[cpu][physics] step=%llu bodies=%d dynamic=%d "
+                "active_dynamic=%d "
+                "moving=%d max_linear=%.3f max_angular=%.3f rms_linear=%.3f "
+                "manifolds=%d stabilized_total=%llu pending_readds=%d "
+                "flush_ms=%.3f solver_ms=%.3f\n",
+                static_cast<unsigned long long>(profile_step),
+                stepped.getNumCollisionObjects(),
+                dynamic_bodies,
+                active_dynamic_bodies,
+                moving_bodies,
+                maximum_linear_speed,
+                maximum_angular_speed,
+                dynamic_bodies > 0
+                    ? std::sqrt(
+                          squared_speed_sum /
+                          static_cast<double>(dynamic_bodies))
+                    : 0.0,
+                entry.dispatcher->getNumManifolds(),
+                static_cast<unsigned long long>(entry.stabilized_total),
+                pending_readds,
+                flush_ms,
+                solver_ms);
+        }
+        ++profile_step;
+    }
 
     // The trajectory instrument. A substituted solver cannot be gated by
     // MAD against a Havok golden at a moving pose, so what grades it is the
@@ -366,7 +634,7 @@ PhysicsShapeHandle physics_shape_create_sphere(
     return push_shape(
         std::make_unique<btSphereShape>(
             static_cast<btScalar>(radius)),
-        to_bt(center));
+        translated_frame(to_bt(center)));
 }
 
 PhysicsShapeHandle physics_shape_create_box(
@@ -402,7 +670,9 @@ PhysicsShapeHandle physics_shape_create_box(
         offset[axis] -= grown - half[axis];
         half[axis] = grown;
     }
-    return push_shape(std::make_unique<btBoxShape>(half), offset);
+    return push_shape(
+        std::make_unique<btBoxShape>(half),
+        translated_frame(offset));
 }
 
 PhysicsShapeHandle physics_shape_create_capsule(
@@ -414,7 +684,7 @@ PhysicsShapeHandle physics_shape_create_capsule(
         std::make_unique<btCapsuleShape>(
             static_cast<btScalar>(radius),
             segment.half_height * btScalar(2)),
-        segment.center);
+        translated_frame(segment.center));
 }
 
 PhysicsShapeHandle physics_shape_create_cylinder(
@@ -427,7 +697,88 @@ PhysicsShapeHandle physics_shape_create_cylinder(
             static_cast<btScalar>(radius),
             segment.half_height,
             static_cast<btScalar>(radius))),
-        segment.center);
+        translated_frame(segment.center));
+}
+
+PhysicsShapeHandle physics_shape_create_convex_hull(
+    const std::vector<std::array<double, 3>>& positions) {
+    auto source_hull = std::make_unique<btConvexHullShape>();
+    for (const std::array<double, 3>& position : positions) {
+        source_hull->addPoint(to_bt(position), false);
+    }
+    source_hull->recalcLocalAabb();
+    if (!source_hull->initializePolyhedralFeatures()) {
+        throw std::runtime_error(
+            "A convex-hull physics shape has no closed polyhedron.");
+    }
+    const btConvexPolyhedron* polyhedron =
+        source_hull->getConvexPolyhedron();
+    if (polyhedron == nullptr || polyhedron->m_faces.size() == 0) {
+        throw std::runtime_error(
+            "A convex-hull physics shape has no mass-properties faces.");
+    }
+
+    // `HP_Shape_BuildMassProperties` returns the hull's centre and
+    // principal axes. Bullet's fast btConvexHullShape leaves both at the
+    // object origin, so build one temporary exact triangle hull to obtain
+    // the same physical frame, then retain the fast shape in that frame.
+    btTriangleMesh mass_mesh;
+    for (int face_index = 0;
+         face_index < polyhedron->m_faces.size();
+         ++face_index) {
+        const btFace& face = polyhedron->m_faces[face_index];
+        if (face.m_indices.size() < 3) continue;
+        const btVector3& first =
+            polyhedron->m_vertices[face.m_indices[0]];
+        for (int i = 1; i + 1 < face.m_indices.size(); ++i) {
+            const btVector3& second =
+                polyhedron->m_vertices[face.m_indices[i]];
+            const btVector3& third =
+                polyhedron->m_vertices[face.m_indices[i + 1]];
+            const btVector3 face_normal(
+                face.m_plane[0], face.m_plane[1], face.m_plane[2]);
+            if ((second - first).cross(third - first).dot(face_normal) >= 0) {
+                mass_mesh.addTriangle(first, second, third);
+            } else {
+                mass_mesh.addTriangle(first, third, second);
+            }
+        }
+    }
+    btConvexTriangleMeshShape mass_shape(&mass_mesh, true);
+    btTransform principal = btTransform::getIdentity();
+    btVector3 inertia(0, 0, 0);
+    btScalar volume = 0;
+    mass_shape.calculatePrincipalAxisTransform(
+        principal, inertia, volume);
+    if (
+        !std::isfinite(static_cast<double>(volume)) ||
+        volume <= SIMD_EPSILON) {
+        // Havok accepts the reached sliver cells by inflating them through
+        // its convex radius. Bullet's raw hull can collide with the same
+        // points, but an exact volume frame is undefined; retain the origin
+        // frame and let its ordinary AABB inertia handle this rare arm.
+        return push_shape(
+            std::move(source_hull), btTransform::getIdentity());
+    }
+
+    auto hull = std::make_unique<btConvexHullShape>();
+    const btTransform body_from_node = principal.inverse();
+    for (const std::array<double, 3>& position : positions) {
+        hull->addPoint(body_from_node * to_bt(position), false);
+    }
+    hull->recalcLocalAabb();
+    const btVector3 center = principal.getOrigin();
+    const btQuaternion orientation = principal.getRotation();
+    return push_shape(
+        std::move(hull),
+        principal,
+        PhysicsMassProperties{
+            {center.x(), center.y(), center.z()},
+            static_cast<double>(volume),
+            {inertia.x(), inertia.y(), inertia.z()},
+            {orientation.x(), orientation.y(), orientation.z(),
+             orientation.w()}},
+        true);
 }
 
 void physics_shape_set_material(
@@ -463,14 +814,21 @@ PhysicsBodyHandle physics_body_create() {
     btRigidBody::btRigidBodyConstructionInfo info(
         btScalar(0), entry.motion_state.get(), &placeholder);
     entry.body = std::make_unique<btRigidBody>(info);
+    // A fresh Havok body reports damping 0/0.1. Bullet defaults both channels
+    // to zero, which leaves small convex shards spinning long after the
+    // reference has allowed their contact island to sleep.
+    entry.body->setDamping(
+        default_linear_damping, default_angular_damping);
     // The manifold callback reads the material through the user pointer,
     // and CF_CUSTOM_MATERIAL_CALLBACK is what makes Bullet call it.
     entry.body->setCollisionFlags(
         entry.body->getCollisionFlags() |
         btCollisionObject::CF_CUSTOM_MATERIAL_CALLBACK);
+    const std::size_t body_index = bodies().size();
+    entry.body->setUserIndex(static_cast<int>(body_index));
     bodies().push_back(std::move(entry));
     return PhysicsBodyHandle{
-        static_cast<std::uint32_t>(bodies().size() - 1)};
+        static_cast<std::uint32_t>(body_index)};
 }
 
 void physics_body_set_motion_type(
@@ -501,7 +859,7 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     BodyEntry& entry = body_at(body);
     ShapeEntry& shape_entry = shape_at(shape);
-    entry.shape_center = shape_entry.center;
+    entry.node_from_body = shape_entry.node_from_body;
     entry.body->setCollisionShape(shape_entry.shape.get());
     entry.body->setUserPointer(&shape_entry.material);
     // The pin writes the node transform before the shape, so the shape's
@@ -514,13 +872,11 @@ PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body) {
     const BodyEntry& entry = body_at(body);
     btTransform transform;
     entry.body->getMotionState()->getWorldTransform(transform);
-    // The shape centre is the pin's, not Bullet's: `HP_Shape_CreateSphere`
-    // takes a centre and the node's transform is the body's origin, so the
-    // offset is removed on the way back out.
-    const btVector3 origin =
-        transform.getOrigin() -
-        quatRotate(transform.getRotation(), entry.shape_center);
-    const btQuaternion rotation = transform.getRotation();
+    // Bullet integrates its COM/principal-axis frame. The pin exposes the
+    // node frame, so remove the shape-owned transform on the way back out.
+    const btTransform node = transform * entry.node_from_body.inverse();
+    const btVector3 origin = node.getOrigin();
+    const btQuaternion rotation = node.getRotation();
     return PhysicsTransform{
         {origin.x(), origin.y(), origin.z()},
         {rotation.x(), rotation.y(), rotation.z(), rotation.w()},
@@ -532,6 +888,7 @@ void physics_body_set_transform(
     const PhysicsTransform& transform) {
     BodyEntry& entry = body_at(body);
     entry.requested = transform;
+    entry.contact_quiet_seconds = 0.0;
     write_world_transform(entry, transform);
     entry.body->activate(true);
 }
@@ -550,14 +907,53 @@ void physics_body_set_target_transform(
 PhysicsMassProperties physics_shape_build_mass_properties(
     PhysicsShapeHandle shape,
     double mass) {
+    const ShapeEntry& shape_entry = shape_at(shape);
+    PhysicsMassProperties properties = shape_entry.mass_properties;
     btVector3 inertia(0, 0, 0);
-    shape_at(shape).shape->calculateLocalInertia(
-        static_cast<btScalar>(mass), inertia);
-    return PhysicsMassProperties{
-        {0.0, 0.0, 0.0},
-        mass,
-        {inertia.x(), inertia.y(), inertia.z()},
-    };
+    if (shape_entry.has_exact_mass_properties) {
+        inertia = btVector3(
+            static_cast<btScalar>(properties.inertia[0]),
+            static_cast<btScalar>(properties.inertia[1]),
+            static_cast<btScalar>(properties.inertia[2]));
+    } else {
+        shape_entry.shape->calculateLocalInertia(
+            static_cast<btScalar>(mass), inertia);
+        properties.mass = mass;
+        properties.inertia = {
+            inertia.x(), inertia.y(), inertia.z()};
+        const btVector3 center = shape_entry.node_from_body.getOrigin();
+        const btQuaternion orientation =
+            shape_entry.node_from_body.getRotation();
+        properties.center_of_mass = {
+            center.x(), center.y(), center.z()};
+        properties.inertia_orientation = {
+            orientation.x(), orientation.y(), orientation.z(),
+            orientation.w()};
+    }
+    static const bool cpu_profile = [] {
+        const char* value = std::getenv("BBLITE_CPU_PROFILE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    if (cpu_profile) {
+        std::fprintf(
+            stderr,
+            "[cpu][physics-mass] shape=%u mass=%.6f "
+            "center=%.6f,%.6f,%.6f inertia=%.6f,%.6f,%.6f "
+            "orientation=%.6f,%.6f,%.6f,%.6f\n",
+            shape.value,
+            properties.mass,
+            properties.center_of_mass[0],
+            properties.center_of_mass[1],
+            properties.center_of_mass[2],
+            static_cast<double>(inertia.x()),
+            static_cast<double>(inertia.y()),
+            static_cast<double>(inertia.z()),
+            properties.inertia_orientation[0],
+            properties.inertia_orientation[1],
+            properties.inertia_orientation[2],
+            properties.inertia_orientation[3]);
+    }
+    return properties;
 }
 
 void physics_body_set_mass_properties(
@@ -571,7 +967,40 @@ void physics_body_set_mass_properties(
             static_cast<btScalar>(properties.inertia[1]),
             static_cast<btScalar>(properties.inertia[2])));
     entry.body->updateInertiaTensor();
+    entry.contact_quiet_seconds = 0.0;
     mark_body_dirty(entry);
+}
+
+void physics_body_apply_impulse(
+    PhysicsBodyHandle body,
+    std::array<double, 3> location,
+    std::array<double, 3> impulse) {
+    BodyEntry& entry = body_at(body);
+    const btVector3 relative =
+        to_bt(location) - entry.body->getCenterOfMassPosition();
+    entry.body->applyImpulse(to_bt(impulse), relative);
+    entry.contact_quiet_seconds = 0.0;
+    clamp_body_velocity(*entry.body);
+    entry.body->activate(true);
+    static const bool cpu_profile = [] {
+        const char* value = std::getenv("BBLITE_CPU_PROFILE");
+        return value && value[0] == '1' && value[1] == '\0';
+    }();
+    if (cpu_profile) {
+        std::fprintf(
+            stderr,
+            "[cpu][physics-impulse] body=%u location=%.6f,%.6f,%.6f "
+            "relative=%.6f,%.6f,%.6f impulse=%.6f,%.6f,%.6f "
+            "linear=%.6f angular=%.6f\n",
+            body.value,
+            location[0], location[1], location[2],
+            static_cast<double>(relative.x()),
+            static_cast<double>(relative.y()),
+            static_cast<double>(relative.z()),
+            impulse[0], impulse[1], impulse[2],
+            static_cast<double>(entry.body->getLinearVelocity().length()),
+            static_cast<double>(entry.body->getAngularVelocity().length()));
+    }
 }
 
 }  // namespace bbl::pal

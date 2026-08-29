@@ -195,6 +195,7 @@ inline void release_dawn_draw_states(
 
 struct DawnSharedShaderGeometry;
 struct DawnSharedShaderMaterialTextures;
+struct DawnSharedComposedMaterialTextures;
 
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
@@ -275,12 +276,14 @@ struct DawnMesh {
     // declares its textures from binding 0 up.
     std::vector<DawnSampledTexture> shader_textures;
     DawnSharedShaderMaterialTextures* shared_shader_textures = nullptr;
+    DawnSharedComposedMaterialTextures* shared_composed_textures = nullptr;
     // Standard-material `.babylon` reflection cube view, non-owning
     // (points into DawnState::reflection_cube_views).
     WGPUTextureView reflection = nullptr;
     // Alpha-card shader vertex uniforms (center/angle/depth).
     WGPUBuffer shader_vertex_uniforms = nullptr;
     std::uint64_t transform_version = 0;
+    bool gpu_world_transform = false;
 #if BBLITE_GPU_DEFORMATION
     WGPUBuffer deformation_uniforms = nullptr;
 #endif
@@ -325,6 +328,31 @@ struct DawnSharedShaderMaterialTextures {
     std::vector<DawnSampledTexture> textures;
     std::size_t users = 0;
 };
+
+/** Generated PBR/Standard texture slots uploaded once per material. */
+struct DawnSharedComposedMaterialTextures {
+    MaterialHandle material{};
+    bool standard_material = false;
+    std::array<WGPUTexture, mesh_texture_slots> textures{};
+    std::array<WGPUTextureView, mesh_texture_slots> views{};
+    std::array<WGPUSampler, mesh_texture_slots> samplers{};
+    std::size_t users = 0;
+};
+
+void release_dawn_composed_material_textures(
+    DawnSharedComposedMaterialTextures& textures) {
+    for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
+        if (textures.views[slot]) {
+            wgpuTextureViewRelease(textures.views[slot]);
+        }
+        if (textures.textures[slot]) {
+            wgpuTextureRelease(textures.textures[slot]);
+        }
+        if (textures.samplers[slot]) {
+            wgpuSamplerRelease(textures.samplers[slot]);
+        }
+    }
+}
 
 [[nodiscard]] const std::vector<DawnSampledTexture>&
 mesh_shader_textures(const DawnMesh& mesh) {
@@ -832,6 +860,8 @@ WGPUBuffer esm_caster_params_buffer(
         shared_shader_geometries;
     std::vector<std::unique_ptr<DawnSharedShaderMaterialTextures>>
         shared_shader_material_textures;
+    std::vector<std::unique_ptr<DawnSharedComposedMaterialTextures>>
+        shared_composed_material_textures;
 
     // Frame-task draw resources are tied to the current render plan
     // and rebuild together with the meshes.
@@ -1008,20 +1038,26 @@ WGPUBuffer esm_caster_params_buffer(
 #if BBLITE_NODE_VARIANTS > 0
             release_dawn_draw_states(mesh.node_states);
 #endif
-            for (std::size_t slot = 0;
-                 slot < mesh_texture_slots;
-                 ++slot) {
-                if (mesh.owned_views[slot]) {
-                    wgpuTextureViewRelease(mesh.owned_views[slot]);
-                }
-                if (mesh.owned_textures[slot]) {
-                    wgpuTextureRelease(mesh.owned_textures[slot]);
-                }
-                // Unmaterialized slots borrow the state's default sampler;
-                // only a slot with its own uploaded texture created the
-                // sampler stored beside it.
-                if (mesh.owned_textures[slot] && mesh.samplers[slot]) {
-                    wgpuSamplerRelease(mesh.samplers[slot]);
+            if (mesh.shared_composed_textures) {
+                release_shared_user(
+                    mesh.shared_composed_textures,
+                    "Composed material texture reference count underflow.");
+            } else {
+                for (std::size_t slot = 0;
+                     slot < mesh_texture_slots;
+                     ++slot) {
+                    if (mesh.owned_views[slot]) {
+                        wgpuTextureViewRelease(mesh.owned_views[slot]);
+                    }
+                    if (mesh.owned_textures[slot]) {
+                        wgpuTextureRelease(mesh.owned_textures[slot]);
+                    }
+                    // Unmaterialized slots borrow the state's default sampler;
+                    // only a slot with its own uploaded texture created the
+                    // sampler stored beside it.
+                    if (mesh.owned_textures[slot] && mesh.samplers[slot]) {
+                        wgpuSamplerRelease(mesh.samplers[slot]);
+                    }
                 }
             }
             if (mesh.shared_shader_textures) {
@@ -1112,6 +1148,14 @@ WGPUBuffer esm_caster_params_buffer(
             shared_shader_material_textures,
             [](DawnSharedShaderMaterialTextures& textures) {
                 release_dawn_extra_textures(textures.textures);
+            });
+    }
+
+    void prune_shared_composed_material_textures() {
+        prune_unused_shared(
+            shared_composed_material_textures,
+            [](DawnSharedComposedMaterialTextures& textures) {
+                release_dawn_composed_material_textures(textures);
             });
     }
 
@@ -1279,6 +1323,11 @@ WGPUBuffer esm_caster_params_buffer(
             shared_shader_material_textures,
             [](DawnSharedShaderMaterialTextures& textures) {
                 release_dawn_extra_textures(textures.textures);
+            });
+        release_all_shared(
+            shared_composed_material_textures,
+            [](DawnSharedComposedMaterialTextures& textures) {
+                release_dawn_composed_material_textures(textures);
             });
 #if BBLITE_GPU_MORPH_STORAGE
         if (empty_morph_weights) {
@@ -7905,6 +7954,8 @@ bool run_dawn_engine(Engine& engine) {
         }
         mesh.transform_version =
             mesh_record.transform_version;
+        mesh.gpu_world_transform =
+            mesh_record.gpu_world_transform;
 
         // Per-slot texture selection reads the generated
         // `material_texture_slots` table -- the same rows the SDL_GPU
@@ -7933,44 +7984,78 @@ bool run_dawn_engine(Engine& engine) {
         mesh.views.fill(state.white_view);
         mesh.samplers.fill(state.default_sampler);
         if (composed_material) {
-            for (
-                const upstream::MaterialTextureSlot& slot_row :
-                upstream::material_texture_slots) {
-                if (slot_row.slot == upstream::material_texture_no_slot) {
-                    continue;
+            const auto shared_it = std::find_if(
+                state.shared_composed_material_textures.begin(),
+                state.shared_composed_material_textures.end(),
+                [&](const auto& candidate) {
+                    return candidate->material.value == item.material.value &&
+                        candidate->standard_material == standard_material;
+                });
+            if (
+                shared_it ==
+                state.shared_composed_material_textures.end()) {
+                auto created =
+                    std::make_unique<DawnSharedComposedMaterialTextures>();
+                created->material = item.material;
+                created->standard_material = standard_material;
+                for (
+                    const upstream::MaterialTextureSlot& slot_row :
+                    upstream::material_texture_slots) {
+                    if (
+                        slot_row.slot ==
+                        upstream::material_texture_no_slot) {
+                        continue;
+                    }
+                    const TextureData* slot_data = material
+                        ? material_slot_texture(
+                              *material,
+                              slot_row.source,
+                              standard_material)
+                        : nullptr;
+                    const TextureData empty{};
+                    const TextureData& data =
+                        slot_data ? *slot_data : empty;
+                    std::uint32_t mip_count = 1;
+                    created->textures[slot_row.slot] =
+                        upload_material_texture(
+                            state,
+                            data,
+                            material_slot_srgb(
+                                slot_row.srgb,
+                                material,
+                                standard_material),
+                            material_slot_fallback(
+                                slot_row.fallback,
+                                material,
+                                standard_material),
+                            mip_count);
+                    created->views[slot_row.slot] =
+                        wgpuTextureCreateView(
+                            created->textures[slot_row.slot],
+                            nullptr);
+                    created->samplers[slot_row.slot] =
+                        create_texture_sampler(
+                            state.device,
+                            slot_data
+                                ? slot_data->sampler
+                                : TextureSamplerState{});
                 }
-                const TextureData* slot_data = material
-                    ? material_slot_texture(
-                          *material,
-                          slot_row.source,
-                          standard_material)
-                    : nullptr;
-                const TextureData empty{};
-                const TextureData& data = slot_data ? *slot_data : empty;
-                std::uint32_t mip_count = 1;
-                mesh.owned_textures[slot_row.slot] =
-                    upload_material_texture(
-                        state,
-                        data,
-                        material_slot_srgb(
-                            slot_row.srgb,
-                            material,
-                            standard_material),
-                        material_slot_fallback(
-                            slot_row.fallback,
-                            material,
-                            standard_material),
-                        mip_count);
-                mesh.owned_views[slot_row.slot] = wgpuTextureCreateView(
-                    mesh.owned_textures[slot_row.slot],
-                    nullptr);
-                mesh.views[slot_row.slot] =
-                    mesh.owned_views[slot_row.slot];
-                mesh.samplers[slot_row.slot] = create_texture_sampler(
-                    state.device,
-                    slot_data
-                        ? slot_data->sampler
-                        : TextureSamplerState{});
+                mesh.shared_composed_textures = created.get();
+                state.shared_composed_material_textures.push_back(
+                    std::move(created));
+            } else {
+                mesh.shared_composed_textures = shared_it->get();
+            }
+            ++mesh.shared_composed_textures->users;
+            for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
+                if (mesh.shared_composed_textures->views[slot]) {
+                    mesh.views[slot] =
+                        mesh.shared_composed_textures->views[slot];
+                }
+                if (mesh.shared_composed_textures->samplers[slot]) {
+                    mesh.samplers[slot] =
+                        mesh.shared_composed_textures->samplers[slot];
+                }
             }
         }
         const auto upload_shader_textures = [&] {
@@ -8923,13 +9008,15 @@ bool run_dawn_engine(Engine& engine) {
                 continue;
             }
             DawnPickMeshUniforms block{};
-            // Identity: these vertices are baked to world here, where the
-            // pin keeps them local and multiplies by the node's world.
-            block.world = {
-                1.0f, 0.0f, 0.0f, 0.0f,
-                0.0f, 1.0f, 0.0f, 0.0f,
-                0.0f, 0.0f, 1.0f, 0.0f,
-                0.0f, 0.0f, 0.0f, 1.0f};
+            const MeshRecord& pick_mesh =
+                engine.meshes[handle.value];
+            block.world = pick_mesh.gpu_world_transform
+                ? shader_draw_world(engine, pick_mesh)
+                : std::array<float, 16>{
+                      1.0f, 0.0f, 0.0f, 0.0f,
+                      0.0f, 1.0f, 0.0f, 0.0f,
+                      0.0f, 0.0f, 1.0f, 0.0f,
+                      0.0f, 0.0f, 0.0f, 1.0f};
             block.pick_id = next_id;
             blocks.push_back(block);
             drawn_items.push_back(item_index);
@@ -9185,6 +9272,10 @@ bool run_dawn_engine(Engine& engine) {
         const WGPUExtent3D one{1, 1, 1};
         wgpuCommandEncoderCopyTextureToBuffer(
             encoder, &source, &destination, &one);
+        source.texture = state.pick_targets.depth_color;
+        destination.layout.offset = 256;
+        wgpuCommandEncoderCopyTextureToBuffer(
+            encoder, &source, &destination, &one);
 
         WGPUCommandBufferDescriptor finish =
             WGPU_COMMAND_BUFFER_DESCRIPTOR_INIT;
@@ -9218,19 +9309,31 @@ bool run_dawn_engine(Engine& engine) {
                 state.pick_targets.staging,
                 WGPUMapMode_Read,
                 0,
-                256,
+                512,
                 map_callback));
         if (!state.uncaptured_error.empty()) {
             dawn_error("pick buffer map failed: " + state.uncaptured_error);
         }
         const void* mapped = wgpuBufferGetConstMappedRange(
-            state.pick_targets.staging, 0, 256);
+            state.pick_targets.staging, 0, 512);
         if (!mapped) dawn_error("pick map returned no data.");
+        const auto* bytes = static_cast<const std::uint8_t*>(mapped);
         const std::uint32_t pick_id =
-            decode_pick_id(static_cast<const std::uint8_t*>(mapped));
+            decode_pick_id(bytes);
+        float pick_depth = 1.0f;
+        std::memcpy(&pick_depth, bytes + 256, sizeof(pick_depth));
         wgpuBufferUnmap(state.pick_targets.staging);
 
-        return resolve_pick_result(ranges, pick_id);
+        PickingInfo info = resolve_pick_result(ranges, pick_id);
+        populate_picked_point(
+            info,
+            view_projection,
+            x,
+            y,
+            width,
+            height,
+            pick_depth);
+        return info;
     };
 #endif
 
@@ -9331,6 +9434,7 @@ bool run_dawn_engine(Engine& engine) {
                     });
             state.prune_shared_shader_geometries();
             state.prune_shared_shader_material_textures();
+            state.prune_shared_composed_material_textures();
             state.meshes = std::move(updated_meshes);
             render_plan = std::move(updated_plan);
             rebuild_task_draw_lists();
@@ -9497,12 +9601,22 @@ bool run_dawn_engine(Engine& engine) {
             }
             if (
                 dawn_mesh.transform_version ==
-                mesh.transform_version) {
+                    mesh.transform_version &&
+                dawn_mesh.gpu_world_transform ==
+                    mesh.gpu_world_transform) {
                 continue;
             }
             if (
                 item.material_kind ==
                 upstream::RenderMaterialKind::shader) {
+                dawn_mesh.gpu_world_transform =
+                    mesh.gpu_world_transform;
+                dawn_mesh.transform_version = mesh.transform_version;
+                continue;
+            }
+            if (
+                mesh.gpu_world_transform &&
+                dawn_mesh.gpu_world_transform) {
                 dawn_mesh.transform_version = mesh.transform_version;
                 continue;
             }
@@ -9533,6 +9647,8 @@ bool run_dawn_engine(Engine& engine) {
 #endif
             dawn_mesh.transform_version =
                 mesh.transform_version;
+            dawn_mesh.gpu_world_transform =
+                mesh.gpu_world_transform;
         }
         update_camera(camera);
         trace_camera_state(camera, camera_trace_state, frame);

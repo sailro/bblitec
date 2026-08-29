@@ -108,13 +108,11 @@ inline void ensure_pick_targets(
         SDL_GPU_TEXTUREFORMAT_D24_UNORM,
         SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
         "pick-depth");
-    // One 256-aligned row, which is the minimum a texture-to-buffer copy
-    // takes. Only the id attachment is read back: the depth one is the
-    // pin's own second target and this port consumes nothing from it, so
-    // `PickingInfo` declares no `pickedPoint` for it to feed.
+    // Two 256-aligned rows: the encoded id, then the r32float clip depth
+    // used by the pin to reconstruct `PickingInfo.pickedPoint`.
     SDL_GPUTransferBufferCreateInfo transfer{};
     transfer.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-    transfer.size = 256;
+    transfer.size = 512;
     targets.staging = SDL_CreateGPUTransferBuffer(device, &transfer);
     if (!targets.staging) {
         gpu_error("SDL_CreateGPUTransferBuffer pick");
