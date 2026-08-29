@@ -1185,10 +1185,13 @@ reverse-Z; the cloud pipeline compares LESS, which is what its own pinned
 pipeline declares and is kept rather than reconciled.
 
 `mesh.pickable = false` keeps a mesh out of the pass entirely, so it can
-neither answer a pick nor occlude one behind it. The flag rides the render
-plan beside the winding, because the pass walks the plan rather than
-`scene.meshes` -- the plan is what already agrees with each backend's own
-mesh vector.
+neither answer a pick nor occlude one behind it. The predicate is generated
+beside the light-set one and reads the mesh RECORD: upstream re-walks
+`scene.meshes` on every `pickAsync`, so a flag written after the scene's last
+membership change still reaches the next pick. The pass itself walks the
+render plan, which is what agrees with each backend's own mesh vector -- and
+that plan already drops an invisible mesh, so this port cannot pick one where
+the pin can. `gpu-picker.ts` never tests visibility; `TODO.md` carries it.
 
 `PickingInfo` carries WHICH node was hit -- the collection and the index --
 and `pickedMesh.name` reads through that pair where the scene asks for it,

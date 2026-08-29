@@ -1057,8 +1057,9 @@ struct MeshRecord {
     // through the subtree at set time so the render path and the camera
     // bounds only test one boolean.
     bool visible = true;
-    // mesh.ts `pickable?: boolean`, undefined = pickable. The GPU picker
-    // skips a mesh whose flag is false; nothing else reads it.
+    // mesh.ts `pickable?: boolean`, undefined = pickable. Read only by the
+    // generated `pick_candidate`, which both backends' pick passes ask; no
+    // draw path consults it, because a non-pickable mesh still renders.
     bool pickable = true;
     std::vector<std::array<float, 16>> bone_matrices;
     std::array<float, 16> instance_parent_matrix{

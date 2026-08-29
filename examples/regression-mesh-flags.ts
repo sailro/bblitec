@@ -29,9 +29,9 @@
 //               perspective keeps the farther box concentric with the nearer
 //               one rather than sliding it out from behind it, which is what
 //               makes one pixel land inside both. The pick must return the
-//               white box; a marker is
-//               added to the scene only when it does. Ignore `pickable` and
-//               the pick answers the blocker and the marker never appears.
+//               white box; a marker is added to the scene only when it does.
+//               Ignore `pickable` and the pick answers the blocker, so the
+//               marker never appears.
 //
 // The camera looks down +z, so the NEARER box of each pair is the one at
 // negative z. Putting the front box behind instead leaves every probe green,
@@ -111,11 +111,9 @@ async function main(): Promise<void> {
     // the box behind the blocker puts it on screen.
     const marker = colouredBox(engine, 0.8, 0, 0, [0.1, 0.9, 0.9], "marker");
     marker.position.set(0, 2.8, 0);
-    // Diagnostic twin: a pick that answers the blocker paints magenta instead
-    // of cyan, so one run distinguishes "the flag was ignored" from "the pick
-    // pixel reached nothing".
-    const wrongMarker = colouredBox(engine, 0.8, -2.4, 0, [0.95, 0.1, 0.8], "wrongMarker");
-    wrongMarker.position.set(-2.4, 2.8, 0);
+    // `dataset.pickedHit` below records the name the pick actually resolved,
+    // including "miss", so a red run says which of the two ways it failed
+    // without a second marker in the scene to say it.
 
     // The late hide must land after the scene's last membership change has
     // already been taken up, or the two would arrive in the same frame and the
@@ -139,13 +137,14 @@ async function main(): Promise<void> {
     if (pickedName === "target") {
         addToScene(scene, marker);
     }
-    if (pickedName === "blocker") {
-        addToScene(scene, wrongMarker);
-    }
     hideFrame = frame + 2;
 
-    // Two frames for the marker's membership change, then the hide, then one
-    // more so a renderer that re-read the flag would have shown it.
+    // Slack, not an exact count. The marker's membership change has to be
+    // taken up before it can draw, and the hide has to land after that has
+    // happened -- and the browser, SDL_GPU and Dawn do not all take a new
+    // mesh up on the same frame. Measured: at `frame > hideFrame` the native
+    // run captures before the marker appears and the gate reads 0.227
+    // against a reference that has it. Two frames of margin agree.
     await new Promise<void>((resolve) => {
         const wait = (): void => (frame > hideFrame + 2 ? resolve() : void requestAnimationFrame(wait));
         wait();

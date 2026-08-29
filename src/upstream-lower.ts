@@ -298,7 +298,20 @@ export interface UpstreamEmitOptions {
     animatedWorldBounds: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
+    /**
+     * A mesh's `visible` lane is read at all: the renderer's plan skip and
+     * the camera's bounds skip. Raised by an asset's KHR_node_visibility OR
+     * by scene code writing the flag, because either one needs those two
+     * readers.
+     */
     nodeVisibility: boolean;
+    /**
+     * The KHR_node_visibility EXTENSION, which is the loader's half alone.
+     * Kept apart from the merged flag above so a scene that writes
+     * `mesh.visible` and also loads a glTF asset without the extension does
+     * not emit the per-node cascade walk for an extension no asset carries.
+     */
+    gltfNodeVisibility: boolean;
     /**
      * The sprite-family custom fragment bodies scene code built, at most one
      * per family. Generation composes each into the pin's own builder; the
@@ -966,7 +979,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     animationSpeedRatio: features.includes(
                         "animation:gltf-group-speed",
                     ),
-                    nodeVisibility: options.nodeVisibility,
+                    nodeVisibility: options.gltfNodeVisibility,
                     animationPointer: options.animationPointer,
                     animatedWorldBounds:
                         options.animatedWorldBounds,
@@ -1427,6 +1440,7 @@ ${wgsl}`,
                         "renderer:floating-origin",
                     ),
                     fog: features.includes("renderer:fog"),
+                    picking: features.includes("picking:gpu"),
                     imageSkybox: features.includes(
                         "background:image-skybox",
                     ),
@@ -2619,6 +2633,7 @@ export function emitUpstreamGenerated(
         morphStorage: false,
         nonTrianglePrimitives: false,
         nodeVisibility: false,
+        gltfNodeVisibility: false,
         animationPointer: false,
         animationPointerMaterials: false,
         assetTransmission: false,

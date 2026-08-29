@@ -926,6 +926,7 @@ async function main(): Promise<void> {
         // and the camera-bounds skip that read it.
         nodeVisibility: specializationFeatures.nodeVisibility ||
             result.manifest.features.includes("mesh:visible"),
+        gltfNodeVisibility: specializationFeatures.nodeVisibility,
         spriteCustomShaders: result.manifest.spriteCustomShaders,
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),

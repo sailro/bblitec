@@ -6407,10 +6407,13 @@ bool run_gpu_engine(Engine& engine) {
                     render_plan.items[item_index].mesh;
                 const GpuMesh& gpu = state.meshes[item_index];
                 if (!gpu.vertices || !gpu.indices) continue;
-                // gpu-picker.ts: a mesh whose pickable flag is false never
-                // enters the pick pass, so it can neither answer a pick nor
-                // occlude one behind it.
-                if (!render_plan.items[item_index].pickable) continue;
+                // A mesh the pin's picker would not take never enters the
+                // pass, so it can neither answer a pick nor occlude one
+                // behind it. The predicate is generated, and it reads the
+                // live record rather than the plan's snapshot of it.
+                if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+                    continue;
+                }
                 PickMeshUniforms mesh_uniforms{};
                 // Identity: these vertices are already world-space here
                 // (`transformed_vertices`), where the pin keeps them

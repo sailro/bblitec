@@ -748,9 +748,8 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        // Retires when a corpus scene writing a material property over
-        // `scene.meshes` compiles: 166 and 179 both do, each behind the
-        // clustered light container.
+        // Retires when a corpus scene writing both flags compiles: 102, 103
+        // and 118 reach the pair, each behind physics or billboard picking.
         id: "regression-mesh-flags",
         name: "Regression - Mesh Visible and Pickable",
         source: "examples/regression-mesh-flags.ts",
@@ -759,6 +758,16 @@ const sceneInputs: readonly SceneInput[] = [
         buildDirectory:
             "native/build-regression-mesh-flags-release",
         parity: {
+            // The pick runs on the setTimeout-0 continuation, which
+            // `finish_frame` drains at the END of a frame -- after that
+            // frame's capture check. So frame 0 can be captured before the
+            // drain this scene registers exists, and the pick's marker never
+            // reaches the picture. Holding the native capture past the
+            // continuation is what makes the gate deterministic rather than
+            // a race it wins most of the time.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "8",
+            },
             reference: {
                 kind: "source",
                 path:
@@ -773,6 +782,9 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene writing a material property over
+        // `scene.meshes` compiles: 166 and 179 both do, each behind the
+        // clustered light container.
         id: "regression-material-falloff",
         name: "Regression - Material Falloff Write",
         source: "examples/regression-material-falloff.ts",

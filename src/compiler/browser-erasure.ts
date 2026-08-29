@@ -62,6 +62,36 @@ export class BrowserErasure {
     }
 
     /**
+     * The browser global this expression names, written any of the ways that
+     * reach the same object: bare (`setTimeout`, `location`), or as a member
+     * of `window` or `globalThis`. A scene that picks one spelling must fold
+     * the same as one that picks another -- an unrecognized `location.search`
+     * would read as an empty query and silently take the scene's
+     * unparameterised branch.
+     *
+     * Returns the identifier naming the global, so a caller compares its
+     * text. `isDefaultBrowserGlobal` is what keeps a lexical shadow from
+     * being mistaken for the global, and `globalThis` an accepted host.
+     */
+    private browserGlobalNamed(
+        expression: ts.Expression,
+    ): ts.MemberName | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (ts.isIdentifier(unwrapped)) {
+            return this.isDefaultBrowserGlobal(unwrapped)
+                ? unwrapped
+                : undefined;
+        }
+        return ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            (unwrapped.expression.text === "window" ||
+                unwrapped.expression.text === "globalThis") &&
+            this.isDefaultBrowserGlobal(unwrapped.expression)
+            ? unwrapped.name
+            : undefined;
+    }
+
+    /**
      * `setTimeout(callback, 0)` -- bare or through `window`.
      *
      * Every other `window.*` call erases, because the browser service
@@ -82,20 +112,9 @@ export class BrowserErasure {
     public isDeferredCallbackCall(
         call: ts.CallExpression,
     ): boolean {
-        const callee = this.context.unwrap(call.expression);
-        const name = ts.isPropertyAccessExpression(callee)
-            ? (ts.isIdentifier(callee.expression) &&
-                    callee.expression.text === "window" &&
-                    this.context.isDefaultLibraryIdentifier(
-                        callee.expression,
-                    )
-                  ? callee.name
-                  : undefined)
-            : ts.isIdentifier(callee) &&
-                this.context.isDefaultLibraryIdentifier(callee)
-              ? callee
-              : undefined;
-        return name?.text === "setTimeout";
+        return (
+            this.browserGlobalNamed(call.expression)?.text === "setTimeout"
+        );
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
@@ -341,30 +360,6 @@ export class BrowserErasure {
         return this.browserTruthy(value);
     }
 
-    /**
-     * The page's `Location`, written either way: `window.location` or the
-     * bare global `location`. They are the same object, so a scene reading
-     * its own query string through either spelling must fold to the same
-     * reference query -- a scene using the bare form would otherwise see an
-     * empty query and silently take its unparameterised branch.
-     */
-    private isLocationGlobal(expression: ts.Expression): boolean {
-        const unwrapped = this.context.unwrap(expression);
-        if (
-            ts.isIdentifier(unwrapped) &&
-            unwrapped.text === "location"
-        ) {
-            return this.context.isDefaultLibraryIdentifier(unwrapped);
-        }
-        return (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "location" &&
-            ts.isIdentifier(unwrapped.expression) &&
-            unwrapped.expression.text === "window" &&
-            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
-        );
-    }
-
     public evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
@@ -414,7 +409,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "search" &&
-            this.isLocationGlobal(unwrapped.expression)
+            this.browserGlobalNamed(unwrapped.expression)?.text === "location"
         ) {
             return {
                 kind: "string",

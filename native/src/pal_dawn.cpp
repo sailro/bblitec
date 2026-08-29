@@ -8915,10 +8915,13 @@ bool run_dawn_engine(Engine& engine) {
             const MeshHandle handle = render_plan.items[item_index].mesh;
             const DawnMesh& mesh = state.meshes[item_index];
             if (!mesh.vertices || !mesh.indices) continue;
-            // gpu-picker.ts: a mesh whose pickable flag is false never
-            // enters the pick pass, so it can neither answer a pick nor
-            // occlude one behind it.
-            if (!render_plan.items[item_index].pickable) continue;
+            // A mesh the pin's picker would not take never enters the
+            // pass, so it can neither answer a pick nor occlude one
+            // behind it. The predicate is generated, and it reads the
+            // live record rather than the plan's snapshot of it.
+            if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+                continue;
+            }
             DawnPickMeshUniforms block{};
             // Identity: these vertices are baked to world here, where the
             // pin keeps them local and multiplies by the node's world.

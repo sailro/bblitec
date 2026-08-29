@@ -21,15 +21,17 @@ export interface DirectPropertyAssignment {
  * value is a colour or a flag rather than an accumulating number.
  */
 interface RecordFieldAssignment {
-    kind: "material" | "camera-ortho";
+    kind: "material" | "camera-ortho" | "mesh";
     property: string;
-    collection: "materials" | "cameras";
+    collection: "materials" | "cameras" | "meshes";
     /** The record field, or the pair a two-element source writes. */
     field: string | readonly [string, string];
     value: "color3" | "number" | "boolean" | "number2";
     simpleOnly?: boolean;
     /** Stored as the logical inverse of what the source assigns. */
     invert?: boolean;
+    /** A generated helper this write makes reachable. */
+    feature?: Feature;
 }
 
 /**
@@ -142,6 +144,33 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         collection: "cameras",
         field: "ortho_half_height",
         value: "number",
+    },
+    {
+        // scene-node.ts `visible` and mesh.ts `pickable`: the two optional
+        // booleans a node carries for "skip me", both `undefined = true`, so
+        // the records' default-true lanes already answer an unwritten flag
+        // and each write is a plain field store. Neither cascades -- the pin
+        // materializes visibility over a subtree only through
+        // `setSubtreeVisible`, which is the loader's entry point, not this
+        // one. The features they reach are what turn their readers on:
+        // `visible` shares the renderer and camera skips with an asset's
+        // KHR_node_visibility, and `pickable` emits the picker's predicate.
+        kind: "mesh",
+        property: "visible",
+        collection: "meshes",
+        field: "visible",
+        value: "boolean",
+        simpleOnly: true,
+        feature: "mesh:visible",
+    },
+    {
+        kind: "mesh",
+        property: "pickable",
+        collection: "meshes",
+        field: "pickable",
+        value: "boolean",
+        simpleOnly: true,
+        feature: "mesh:pickable",
     },
 ];
 
@@ -1226,42 +1255,6 @@ export function emitPropertyAssignment(
             return;
         }
 
-        // `mesh.visible` and `mesh.pickable` are the two optional booleans
-        // SceneNode/Mesh carry for "skip me": undefined means visible and
-        // pickable, so the record's default-true lanes already answer an
-        // unwritten flag and the write is a plain field store. Neither
-        // cascades -- the pin materializes visibility over a subtree only
-        // through `setSubtreeVisible`, which is the loader's entry point,
-        // not this one.
-        //
-        // A bare `visible` write does not bump the pin's visibility epoch,
-        // by design: upstream that leaves a cached opaque render bundle
-        // drawing the mesh until something else re-records it. This port
-        // records no bundles, so the flag is read per draw and takes
-        // effect on the next frame. docs/fidelity.md carries it.
-        if (
-            target.kind === "mesh" &&
-            (property === "visible" || property === "pickable")
-        ) {
-            requireSimpleAssignment(
-                context,
-                expression,
-                `mesh ${property}`,
-            );
-            const flag = context.compileValue(expression.right);
-            context.expectKind(flag, "boolean", expression.right);
-            // The renderer's own skip and the camera bounds' skip are one
-            // emit option, which an asset's KHR_node_visibility also
-            // raises; a scene-code write has to raise it too or the lane
-            // would be written and never read.
-            context.reachFeature(`mesh:${property}`, expression);
-            context.emit(
-                `${context.requireEngine(target, expression)}.meshes[` +
-                    `${target.cpp}.value].${property} = ${flag.cpp};`,
-            );
-            return;
-        }
-
         // `mesh.receiveShadows` is a composition key and nothing else:
         // `_computeMeshFeatures` turns it into `MSH_RECEIVE_SHADOWS`, which
         // selects the fragment carrying the per-light sampling, and every
@@ -1679,6 +1672,9 @@ export function emitPropertyAssignment(
                 candidate.property === property,
         );
         if (recordField) {
+            if (recordField.feature) {
+                context.reachFeature(recordField.feature, expression);
+            }
             if (recordField.simpleOnly) {
                 requireSimpleAssignment(
                     context,

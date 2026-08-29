@@ -1660,15 +1660,22 @@ function emitOptionRows(
                 "generated loader (mirrored_x)",
             ["loader flag"],
         ),
-        row(
+        checkedRow(
             "nodeVisibility",
             "emit-option",
             emit.nodeVisibility,
-            emit.nodeVisibility
-                ? "an asset uses KHR_node_visibility, or scene code " +
-                    "writes mesh.visible"
-                : "no asset uses KHR_node_visibility and no scene code " +
-                    "writes mesh.visible",
+            [
+                [
+                    emit.gltfNodeVisibility,
+                    "an asset uses KHR_node_visibility",
+                ],
+                [
+                    features.includes("mesh:visible"),
+                    "scene code writes mesh.visible",
+                ],
+            ],
+            "no asset uses KHR_node_visibility and no scene code " +
+                "writes mesh.visible",
             "src/scene/scene-node.ts visible?: boolean; " +
                 "src/loader-gltf/gltf-feature-registry.ts: " +
                 "KHR_node_visibility -> gltf-ext-node-visibility.js",

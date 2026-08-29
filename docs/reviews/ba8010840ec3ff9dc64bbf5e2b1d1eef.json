@@ -1,0 +1,50 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The pickable flag was copied onto RenderItem and tested from that snapshot in each PAL, but the pin re-walks scene.meshes on every pickAsync -- so a flag written after the last membership change would never have reached a pick. The predicate is now generated (pick_candidate, beside light_affects_mesh, gated on picking:gpu) and reads the live record; the lane and both hand-written guards are gone, and the 220 non-picking scenes no longer emit it.",
+      "applied": true
+    },
+    {
+      "summary": "The comment on the assignment site said the flag is read per draw and takes effect on the next frame, contradicting docs/fidelity.md in the same commit and the gate's own second probe, which measures the deferral. It was a leftover from before the measurement.",
+      "applied": true
+    },
+    {
+      "summary": "The two mesh flags open-coded the ceremony that recordFieldAssignments exists to declare -- engine resolution, compound rejection, the record[handle].field string. They are now two table rows, and the table gained the optional feature hook its sibling in properties.ts already had.",
+      "applied": true
+    },
+    {
+      "summary": "isLocationGlobal was a third copy of the bare-or-window global shape already inlined in isDeferredCallbackCall. One browserGlobalNamed helper now serves both, routed through isDefaultBrowserGlobal so a lexical shadow cannot be mistaken for the global and globalThis is an accepted host.",
+      "applied": true
+    },
+    {
+      "summary": "The fidelity note claimed the port and the pin defer a bare visible write identically. The pin also tests visible inside drawList, which render-task.ts calls on the direct and transparent bindings every frame OUTSIDE the bundle-record branch -- so the deferral is the opaque bucket's alone and this port applies it wider. The claim is now scoped and the divergence recorded.",
+      "applied": true
+    },
+    {
+      "summary": "Folding visible into plan membership also costs the picker its candidates: the pass walks the plan, which drops an invisible mesh, where gpu-picker.ts never tests visibility. Both divergences come from one choice and are recorded together in the existing picking entry rather than filed as a new one.",
+      "applied": true
+    },
+    {
+      "summary": "The merged nodeVisibility flag also drove the glTF loader's KHR_node_visibility cascade, so a scene writing mesh.visible while loading an asset without the extension would emit the per-node walk. The loader now takes an asset-only gltfNodeVisibility; the renderer and camera skips keep the merged value, and the inventory row became a checkedRow so the merge cannot drift from cli.ts.",
+      "applied": true
+    },
+    {
+      "summary": "The gate's magenta diagnostic twin could only appear in a run that had already failed, and dataset.pickedHit already records the resolved name including \"miss\". Removed, along with the dead x/z arguments both markers passed to a helper whose position the next line overwrote.",
+      "applied": true
+    },
+    {
+      "summary": "The new registry entry was spliced above the retire comment belonging to regression-material-falloff. The comment went back to its subject and the new gate got its own.",
+      "applied": true
+    },
+    {
+      "summary": "Shortening the gate's drain to the count its comment claimed made the native capture land before the marker appeared (0.227 against a reference that has it). Chasing that exposed a real race the gate had been winning by luck: the pick runs on the setTimeout-0 continuation, which finish_frame drains at the END of a frame, after that frame's capture check -- so frame 0 could be captured before the drain existed. The gate now pins BBLITE_SCREENSHOT_FRAME, and the drain comment states the measured reason for its margin.",
+      "applied": true
+    }
+  ]
+}

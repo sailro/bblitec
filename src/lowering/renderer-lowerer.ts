@@ -536,6 +536,8 @@ export class RendererLowerer {
         gpuInstancing?: boolean;
         punctualLights?: boolean;
         nodeVisibility?: boolean;
+        /** The scene reaches `createGpuPicker`. */
+        picking?: boolean;
         /** The scene reaches `enableMirroredMeshes`. */
         mirroredMeshes?: boolean;
         /** The scene reaches `createTransformNode`. */
@@ -934,6 +936,7 @@ export class RendererLowerer {
             imageSkybox?: boolean;
             gpuInstancing?: boolean;
             floatingOrigin?: boolean;
+            picking?: boolean;
             mirroredMeshes?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
@@ -1054,10 +1057,6 @@ struct RenderItem {
     MeshTopology topology = MeshTopology::triangles;
     std::uint32_t shader_variant = 0;
     bool clockwise_front_face = false;
-    // gpu-picker.ts skips a mesh whose pickable flag is false. Carried per
-    // draw because the pick pass walks the render plan, not scene.meshes:
-    // the plan is what already agrees with the backend's own mesh vector.
-    bool pickable = true;
     bool alpha_to_coverage = false;
     bool transmissive = false;
     bool skybox_mode = false;
@@ -1356,7 +1355,20 @@ ${options.gpuInstancing
 
 ${pinnedInstanceAttributesCpp(this.context)}`
     : ""}\
-// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
+${options.picking
+    ? `// src/picking/gpu-picker.ts: the picker walks the scene's meshes and
+// takes the ones whose pickable flag is not false. One definition, because
+// both backends' pick passes ask it, and because the pin's own predicate has
+// arms this port has not reached yet -- a supplied pickFilter, and
+// picking-ignore.ts's PickIgnore set -- which belong beside this one rather
+// than in two hand-written guards.
+//
+// It reads the RECORD, not the render item: upstream re-walks scene.meshes on
+// every pickAsync, so a flag written after the last membership change still
+// reaches the next pick. A copy taken when the plan was built would freeze it.
+bool pick_candidate(const MeshRecord& mesh);
+`
+    : ""}// src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
 // includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
 // not. One definition, because both the Standard slot writer and the pinned
 // per-draw mesh block need the same per-mesh light set.
@@ -1412,6 +1424,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             solidSkybox?: boolean;
             imageSkybox?: boolean;
             floatingOrigin?: boolean;
+            picking?: boolean;
             mirroredMeshes?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
@@ -1892,9 +1905,10 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         if (mesh.geometry >= engine.geometries.size()) {
             continue;
         }${options.nodeVisibility ? `
-        // KHR_node_visibility, materialized per mesh by the loader and by
-        // the animation pointer, exactly as the pinned setSubtreeVisible
-        // materializes it per node.
+        // scene-node.ts visible, written by scene code and materialized
+        // per mesh by the KHR_node_visibility loader and the animation
+        // pointer, exactly as the pinned setSubtreeVisible materializes it
+        // per node.
         if (!mesh.visible) {
             continue;
         }` : ""}
@@ -1903,7 +1917,6 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         item.geometry = mesh.geometry;
         item.clockwise_front_face =
             mesh.clockwise_front_face;
-        item.pickable = mesh.pickable;
         item.topology = engine.geometries[mesh.geometry].topology;
         RenderItem bound =
             bind_render_item(item, engine, mesh.material);
@@ -2168,7 +2181,15 @@ ${meshTrs.composeLocalBody}\
 
 `
     : ""}\
-// src/render/lights-ubo.ts affectsMesh.
+${options.picking
+    ? `// src/picking/gpu-picker.ts: mesh.pickable !== false, where an
+// unwritten flag is pickable -- which the record's default-true lane is.
+bool pick_candidate(const MeshRecord& mesh) {
+    return mesh.pickable;
+}
+
+`
+    : ""}// src/render/lights-ubo.ts affectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
     std::uint32_t mesh_index) {
