@@ -694,9 +694,9 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        // Retires when a corpus scene reaching the light vector setters
-        // compiles (4, 22, 141, 207, 223 all do, each behind another
-        // contract); until then this is the only thing that measures them.
+        // Retires when a corpus scene visibly executes post-creation spot
+        // direction, angle and exponent writes. Position and range already
+        // have corpus coverage; the remaining writes do not.
         id: "regression-light-setters",
         name: "Regression - Light Vector Setters",
         source: "examples/regression-light-setters.ts",
@@ -1834,20 +1834,6 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        id: "regression-animation-groups",
-        name: "Regression - glTF Animation Groups",
-        source: "examples/regression-animation-groups.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - glTF Animation Groups",
-        parity: {
-            referenceTimeSeconds: 1,
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.006,
-            backgroundColor: [51, 51, 76],
-            backgroundThreshold: 30,
-        },
-    },
-    {
         id: "scene26",
         name: "Scene 26 - PBR Subsurface",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene26.ts",
@@ -2640,21 +2626,6 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [10, 13, 20],
-            backgroundThreshold: 30,
-        },
-    },
-    {
-        // Retires when a corpus scene reaches an ESM generator with no
-        // PCF one beside it.
-        id: "regression-shadow-esm-only",
-        name: "Regression - ESM Shadows Without PCF",
-        source: "examples/regression-shadow-esm-only.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - ESM Shadows Without PCF",
-        parity: {
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
     },

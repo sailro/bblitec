@@ -132,7 +132,7 @@ act on it — not what was tried.
 - [ ] Add multiple registered scenes and scene switching.
 - [ ] Add headless renderer tests.
 - [ ] Add per-function differential tests for camera, environment, material
-  and transform math. The eleven project-owned `examples/regression-*.ts`
+  and transform math. The project-owned `examples/regression-*.ts`
   gates and `parity --differential` compare whole images, not functions.
 - [ ] Add backend-layout tests: nothing checks a compiled stage's `.slots`
   register layout against what the PAL binds.
@@ -222,11 +222,10 @@ families that arrived with the release. Read it as a capability list.
 `186-debug` and `187-debug` are helper modules rather than scenes: they have no
 `main()`, so a sweep reports them clean and neither is integrable.
 
-**No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
-`createMeshFromData` half and scene 279 its `setThinInstances` half, but none
-of the remaining scenes reaching `setThinInstances` (17, 103, 165, 219) or
-`removeFromScene` (173, 271, 272) compiles, and
-`flushThinInstances`/`setThinInstanceCount` are unreferenced under `corpus/`.
+**No registered scene or demo can retire the runtime-sweep gate.** Scene 267
+covers its `createMeshFromData` half, Scenes 16 and 279 cover
+`setThinInstances`, and Doom/Tetris exercise `removeFromScene`, but no
+registered source calls `flushThinInstances` or `setThinInstanceCount`.
 Corpus scenes are the preferred validation: author a project-owned gate only
 for a contract no corpus scene exercises, and delete it once one does.
 
