@@ -6719,6 +6719,23 @@ class Compiler
         }
     }
 
+    /**
+     * Whether a glTF has already been loaded at this point in the walk.
+     *
+     * The one question this compiler asks of the reached-feature set
+     * *during* the walk rather than after it, and it is deliberately
+     * narrow: the set is otherwise an accumulate-only inventory, and a
+     * general "has this been reached yet" query would make every consumer
+     * order-sensitive. `enableBoneControl` needs it because upstream the
+     * call installs a builder hook, so only the loads after it carry
+     * skeletons — and this port emits ONE loader for every load, so it
+     * cannot give two assets different builders and refuses the order
+     * instead.
+     */
+    public gltfAlreadyLoaded(): boolean {
+        return this.features.has("loader:gltf");
+    }
+
     public ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,

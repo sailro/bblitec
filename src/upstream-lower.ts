@@ -994,6 +994,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     gltfCameras: features.includes(
                         "loader:gltf-cameras",
                     ),
+                    boneControl: features.includes(
+                        "loader:gltf-bone-control",
+                    ),
                 }),
                 generated,
             );

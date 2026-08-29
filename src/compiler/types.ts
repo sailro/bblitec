@@ -1014,6 +1014,12 @@ export type ValueKind =
   // and meshes it joins is generation's to resolve, since the composed
   // receiver fragment is keyed by the scene's shadow-light slots.
   | "shadow-generator"
+  // The opt-in bone-control pair: a `Skeleton` the loader built per glTF
+  // skin instance, and one `Bone` of it. Both are native handles because
+  // the bones and their overrides live on records the loader fills, and
+  // the bake reads them back.
+  | "skeleton"
+  | "bone"
   | "string"
   | "task"
   | "texture"
@@ -1479,6 +1485,7 @@ export type Feature =
   | "loader:gltf"
   | "loader:gltf-variants"
   | "loader:gltf-cameras"
+  | "loader:gltf-bone-control"
   | "loader:splat"
   | "loader:splat-bake"
   | "material:pbr"

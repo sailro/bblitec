@@ -347,6 +347,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/loader-gltf/gltf-feature-camera.ts#applyAsset",
         consumers: ["features.cmake", "loader flag"],
     },
+    "loader:gltf-bone-control": {
+        provenance:
+            "src/skeleton/bone-control.ts#enableBoneControl + " +
+            "src/skeleton/bone-control.ts#buildSkeletons + " +
+            "src/skeleton/skeleton-pose.ts",
+        consumers: ["features.cmake", "loader flag"],
+    },
     "loader:splat": {
         provenance:
             "src/loader-splat/load-splat.ts#loadSplat + " +

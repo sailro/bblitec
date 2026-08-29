@@ -24,6 +24,7 @@ import {
     lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
+import { lowerBoneControl } from "./bone-control.js";
 import { lowerGltfCamerasCpp } from "./cameras.js";
 import { lowerPunctualLightsCpp } from "./punctual-lights.js";
 import { lowerSamplerMappingCpp } from "./sampler-mapping.js";
@@ -31,7 +32,9 @@ import { lowerShPrescaleCpp } from "./sh-prescale.js";
 import {
     coalescedPropertyDefault,
     collectNodes,
+    identifierText,
     refuseModule,
+    topLevelFunction,
     unwrapPin,
 } from "./shared.js";
 
@@ -66,6 +69,12 @@ export interface GltfLoaderOptions {
     selectedMaterialVariant?: string;
     /** The scene reached `enableGltfCameras` (the `_camera` feature). */
     gltfCameras?: boolean;
+    /**
+     * The scene reached `enableBoneControl`, so the loader builds the
+     * skeletons the pin's own opt-in chunk builds and carries its eager
+     * bake. Every other scene emits a loader with none of it.
+     */
+    boneControl?: boolean;
 }
 
 export class GltfLowerer {
@@ -723,6 +732,21 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                   parserFile,
               )
             : { parentWriter: "", loading: "", poseRefresh: "" };
+        const boneControl = options.boneControl
+            ? lowerBoneControl(
+                  this.context.sourceFile(
+                      "src/skeleton/bone-control.ts",
+                  ),
+              )
+            : { loading: "", entryPoints: "" };
+        assertRestPoseSeed(
+            this.context.sourceFile(
+                "src/loader-gltf/gltf-feature-skeleton.ts",
+            ),
+            this.context.sourceFile(
+                "src/loader-gltf/gltf-animation.ts",
+            ),
+        );
         const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(
             this.context.sourceFile("src/loader-gltf/load-gltf.ts"),
             this.context.sourceFile("src/loader-gltf/gltf-share.ts"),
@@ -756,11 +780,86 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     gltfCameraParentWriter: gltfCameras.parentWriter,
                     gltfCameraLoading: gltfCameras.loading,
                     gltfCameraPoseRefresh: gltfCameras.poseRefresh,
+                    boneControlLoading: boneControl.loading,
+                    boneControlEntryPoints: boneControl.entryPoints,
                     gltfMeshNamePrefix,
                 },
                 options,
             ),
         };
+    }
+}
+
+/**
+ * The pre-tick pose is the file's REST hierarchy, and the emitted loader
+ * depends on it: it runs its pose pass alone at load, over the node TRS
+ * the document authored, rather than evaluating the first clip at zero.
+ *
+ * Upstream states it in two halves. `gltf-feature-skeleton.ts` seeds each
+ * skin's bone texture with `computeBoneTextureData(skin)`, and that
+ * function takes the skin alone — no time, no sampler — composing
+ * `invMeshWorld * jointWorld * IBM` over `jointWorldMatrices`, which
+ * `extractSkin` derives straight from `json.nodes`. A seed that grew a
+ * time argument, or stopped being what `createSkeleton` is handed, would
+ * make the load pose something else, and the divergence it reintroduces
+ * measures 0.816 full MAD on the one shape that never ticks
+ * (docs/fidelity.md). So both halves are read rather than restated.
+ */
+function assertRestPoseSeed(
+    skeletonFeature: ts.SourceFile,
+    animation: ts.SourceFile,
+): void {
+    const symbol = "gltf rest-pose seed";
+    const seed = topLevelFunction(animation, "computeBoneTextureData");
+    if (seed.parameters.length !== 1) {
+        refuseModule(
+            symbol,
+            "computeBoneTextureData no longer composes from the skin alone",
+        );
+    }
+    for (const name of [
+        "jointWorldMatrices",
+        "inverseBindMatrices",
+        "meshWorldMatrix",
+    ]) {
+        if (
+            collectNodes(
+                seed,
+                (node): node is ts.Node =>
+                    (ts.isPropertyAccessExpression(node) ||
+                        ts.isPropertyAccessChain(node)) &&
+                    node.name.text === name,
+            ).length === 0
+        ) {
+            refuseModule(
+                symbol,
+                `computeBoneTextureData no longer reads '${name}'`,
+            );
+        }
+    }
+    const seeds = collectNodes(
+        skeletonFeature,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            collectNodes(
+                node,
+                (inner): inner is ts.Identifier =>
+                    ts.isIdentifier(inner) &&
+                    inner.text === "computeBoneTextureData",
+            ).length > 0,
+    );
+    const handedOver = collectNodes(
+        skeletonFeature,
+        (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            identifierText(node.expression) === "createSkeleton",
+    ).length > 0;
+    if (seeds.length === 0 || !handedOver) {
+        refuseModule(
+            symbol,
+            "the skeleton feature no longer seeds createSkeleton from " +
+                "computeBoneTextureData",
+        );
     }
 }
 

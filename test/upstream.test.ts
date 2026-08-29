@@ -555,11 +555,13 @@ test("generates GLB framing validation from upstream constants", () => {
     assert.match(adapter.source, /inverseBindMatrices/);
     assert.match(adapter.source, /RotationTrack/);
     assert.match(adapter.source, /animation_tick/);
-    // The load-time pose is applied as a tick, not a seek: a seek places every
-    // clip that is not stopped, which is not what loading does.
+    // The load-time pose is the pose pass alone, over the node TRS the file
+    // authored: upstream seeds each skin's bone texture from that rest
+    // hierarchy and evaluates no channel until a tick, so a scene that never
+    // ticks holds the rest pose (docs/fidelity.md).
     assert.match(
         adapter.source,
-        /apply_animation_time\(0\.0f, false\)/,
+        /apply_animation_pose\(\);\s*\/\/ cloneTransformNode/,
     );
     // Every transform and morph channel reads its keyframe pair through
     // the one sampler pair, which carries the pinned clamp.
@@ -615,6 +617,53 @@ test("generated animated world bounds do not shadow the node-world cache", () =>
     assert.match(source, /std::vector<Matrix> world\(node_json\.size\(\)\)/);
     assert.match(source, /const Vec3 world_corner = transform_point\(/);
     assert.doesNotMatch(source, /const Vec3 world = transform_point\(/);
+});
+
+test("emits the opt-in bone-control chunk only when it is reached", () => {
+    const plain = new GltfLowerer(new LoweringContext())
+        .lowerLoaderAdapter().source;
+    assert.doesNotMatch(plain, /bake_skeletons/);
+    assert.doesNotMatch(plain, /get_bone_by_name/);
+    assert.doesNotMatch(plain, /rest_translation/);
+
+    const source = new GltfLowerer(new LoweringContext())
+        .lowerLoaderAdapter({ boneControl: true }).source;
+    // One skeleton per node carrying both a skin and mesh primitives, and
+    // the asset-wide override slot per node the bake reads.
+    assert.match(source, /skin_groups\.emplace_back\(binding\.node, binding\.skin\)/);
+    assert.match(
+        source,
+        /asset\.bone_overrides\.assign\(\s*animation_runtime->nodes\.size\(\), BoneOverride\{\}\)/,
+    );
+    // The bake resets to the authored rest pose, applies the one override
+    // phase this slice reaches, then composes the palettes. The hidden bit
+    // comes from the pin's own guard, so it is asserted as the value that
+    // module declares rather than as a literal typed here — and the three
+    // transform bits are absent, because no lowered setter can set one.
+    assert.match(
+        source,
+        /translation\[index\] = node\.rest_translation;/,
+    );
+    assert.doesNotMatch(source, /mask &\s*(1|2|4)u/);
+    assert.match(
+        source,
+        /mask &\s*8u\) != 0u\) \{\s*scaling\[index\] = Vec3\{0\.0f, 0\.0f, 0\.0f\};/,
+    );
+    assert.match(
+        source,
+        /native_matrix\(\s*multiply_matrix\(\s*bake_world\(skin\.joints\[joint\]\),/,
+    );
+    // The two entry points, and the show arm's own rules: clear the bit,
+    // drop an override the clear emptied, re-bake only when there was one.
+    assert.match(source, /BoneHandle get_bone_by_name\(/);
+    assert.match(source, /if \(\(entry\.mask & 8u\) == 0u\) return;/);
+    assert.match(
+        source,
+        /entry\.mask &= ~static_cast<std::uint32_t>\(8u\);/,
+    );
+    // A skinned file with no animations carries no skin runtime here, so
+    // that pairing is refused by name rather than silently empty.
+    assert.match(source, /if \(!animated && !skin_json\.empty\(\)\)/);
 });
 
 test("generates the Babylon loader adapter from pinned scene semantics", () => {

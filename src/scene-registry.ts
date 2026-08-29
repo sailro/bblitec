@@ -1881,6 +1881,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene99",
+        name: "Scene 99 - Bone Control",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene99.ts",
+        title: "Babylon Lite Native - Bone Control",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene177",
         name: "Scene 177 - Iridescence Sphere",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene177.ts",

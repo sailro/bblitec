@@ -148,6 +148,13 @@ export interface GltfLoaderLoweredSegments {
     gltfCameraLoading: string;
     gltfCameraPoseRefresh: string;
     /**
+     * The opt-in bone-control chunk: the skeleton build with its eager
+     * bake, and the two entry points a scene reaches it through. Empty
+     * strings when the scene never reached `enableBoneControl`.
+     */
+    boneControlLoading: string;
+    boneControlEntryPoints: string;
+    /**
      * The pinned primitive-mesh fallback-name prefix
      * (`gltf_mesh_` in `<mesh name> || gltf_mesh_<i>`), read from both
      * the tight and shared-primitive paths, which must agree.
@@ -269,6 +276,7 @@ export function gltfLoaderCpp(
         materialSpecular = false,
         selectedMaterialVariant = "",
         gltfCameras = false,
+        boneControl = false,
     } = options;
     // The scene selected a variant, so the loader resolves each mapped
     // primitive's material. `JSON.stringify` is the C++ string literal: the
@@ -674,14 +682,17 @@ struct AnimatedNode {
     Matrix world{};
     bool computed = false;
     bool computing = false;
-    std::vector<float> weights;${animationBlending || animationMask ? `
-    // The mixer accumulates into the TRS above, so the rest pose it
-    // resets to each tick is kept beside it — and the partial-weight
-    // rotation slerp blends against that rest rotation, which is what
-    // upstream's uploadTarget does when a node's weights sum below one.
+    std::vector<float> weights;${animationBlending || animationMask || boneControl ? `
+    // The rest pose the authored TRS is: the mixer resets to it each tick
+    // before a clip accumulates, a masked node holds it, and the
+    // bone-control bake starts from it — the pin's own \`resetTRS\`, which
+    // is why its working pose is the file's rather than the last frame's.
     Vec3 rest_translation{};
     Vec4 rest_rotation{0.0f, 0.0f, 0.0f, 1.0f};
-    Vec3 rest_scale{1.0f, 1.0f, 1.0f};
+    Vec3 rest_scale{1.0f, 1.0f, 1.0f};` : ""}${animationBlending ? `
+    // The partial-weight rotation slerp blends against that rest
+    // rotation, which is what upstream's uploadTarget does when a node's
+    // weights sum below one.
     float translation_weight = 0.0f;
     float rotation_weight = 0.0f;
     float scale_weight = 0.0f;` : ""}
@@ -2392,7 +2403,7 @@ ${animationPointer ? `    animation_runtime->light_nodes =
                             *optional(node, "mesh")))
                         .as_object(),
                     "weights"));
-        }${animationBlending || animationMask ? `
+        }${animationBlending || animationMask || boneControl ? `
         // The node's authored TRS is the rest pose the weighted mixer
         // resets to each tick before any clip accumulates into it, and the
         // pose a masked node holds: the pin's controller resets every node
@@ -4927,7 +4938,17 @@ ${animationSpeedRatio ? `                // The pin advances time += dt * speedR
             }
             apply_animation_state(invalid_handle, false);
         };
-        apply_animation_time(0.0f, false);
+        // The pre-tick pose is the file's REST hierarchy, not the first
+        // clip at time zero: gltf-feature-skeleton.ts seeds each skin's
+        // bone texture with computeBoneTextureData, which composes
+        // invMeshWorld * jointWorld * IBM over the authored node TRS,
+        // and nothing evaluates a channel until a tick. The node TRS here
+        // is still that authored one, so the pose pass alone IS that
+        // seed -- evaluating clip 0 at zero would pose an asset a scene
+        // that never ticks leaves at rest. Measured on an Xbot added
+        // entity by entity: 0.816 full MAD against the browser with the
+        // channel evaluation, 0.000 without it.
+        apply_animation_pose();
         // cloneTransformNode gives every mesh wrapper its own transform and
         // material, but retains the exact skeleton resource. Native mesh
         // records hold the evaluated palette themselves, so a skinned clone
@@ -5102,13 +5123,23 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             animation_runtime->clips[clip].additive_reference_time =
                 reference_time;
         };` : ""}${animationBlending ? `
-        asset.animation_blend = apply_blended_animation;` : ""}
-    }
+        asset.animation_blend = apply_blended_animation;` : ""}${lowered.boneControlLoading}
+    }${boneControl ? `
+    // The pin builds a Skeleton per skin whatever the file animates. Here
+    // the joint list, the inverse bind matrices and the rest hierarchy all
+    // live on the animation runtime, which a file with no animations does
+    // not build -- so that pairing is refused by name rather than handing
+    // the scene an empty skeleton list it would read as "no skins".
+    if (!animated && !skin_json.empty()) {
+        throw std::runtime_error(
+            "enableBoneControl needs the skin runtime this loader builds "
+            "for an animated glTF; this file declares skins and carries "
+            "no animations.");
+    }` : ""}
     if (asset.meshes.empty()) throw std::runtime_error("glTF contains no renderable meshes.");
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }
-
-} // namespace bbl
+${lowered.boneControlEntryPoints}} // namespace bbl
 `;
 }

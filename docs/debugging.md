@@ -82,19 +82,28 @@ SDL_GPU and Dawn are independent compiler and API stacks: agreement to one
 LSB puts the cause on the CPU side, disagreement on the GPU side
 ([backends](backends.md) carries the rationale).
 
-Scenes 9, 14, 37, 120, 126 and 128 are not bit-stable run to run, so a moved
-cell for those six means nothing on its own — `scene -- neutrality` reports
-them as expected wobble. The scope is measured per scene and per backend:
-each is bit-identical under `BBLITE_MSAA=1`, so the wobble is the
-multisampled path, and it is not Dawn's alone. Scene 9 wobbles on Dawn while
-bit-stable on SDL_GPU across four runs; scene 14 is the mirror; scenes 37,
-120, 126 and 128 wobble on both (peak run-to-run MAD 0.000059, 0.000250,
-0.000081 and 0.000007 on SDL_GPU). Scenes 128 and 14 are the narrowest and
-were found the way an entry should be — a neutrality run over a change that
-could not reach them reported a moved cell and the `stability` pair said why
-(scene 14's is one channel-byte on one pixel, 0.000002). Scene 126's Dawn
-side is the widest: its foreground alternates between 0.001 and 0.005 across
-consecutive runs, which its threshold has to clear.
+Scenes 9, 14, 37, 120, 125, 126, 128 and 129 are not bit-stable run to run,
+so a moved cell for those eight means nothing on its own — `scene --
+neutrality` reports them as expected wobble. The scope is measured per scene
+and per backend: each is bit-identical under `BBLITE_MSAA=1`, so the wobble is
+the multisampled path, and it is not Dawn's alone. Scene 9 wobbles on Dawn
+while bit-stable on SDL_GPU across four runs; scene 14 is the mirror; scenes
+37, 120, 125, 126, 128 and 129 wobble on both (peak run-to-run MAD 0.000059,
+0.000250, 0.000051, 0.000081, 0.000007 and 0.000118 on SDL_GPU). Scenes 128
+and 14 are the narrowest and were found the way an entry should be — a
+neutrality run over a change that could not reach them reported a moved cell
+and the `stability` pair said why (scene 14's is one channel-byte on one
+pixel, 0.000002). Scene 126's Dawn side is the widest: its foreground
+alternates between 0.001 and 0.005 across consecutive runs, which its
+threshold has to clear.
+
+**A `stability` sample can understate a band, so read the cells too.**
+Scenes 125 and 129 joined the list that way: their `stability` runs move by
+1e-6 to 8e-4, while three consecutive `parity --differential` runs of one
+unchanged scene-125 binary gave Dawn full MADs of 1.8e-4, 2.8e-5 and 1.6e-4.
+That spread spans two sweeps' recorded values, which is what a neutrality run
+reports as a move — so when a cell moves on a scene the change cannot reach,
+sample the cell itself before concluding anything about the change.
 
 A whitelist row is per scene *and* per backend: a cross-backend cell moves
 when either side does, so one wobbling backend excuses it, while that scene's
@@ -444,7 +453,7 @@ the wrong one wastes the run:
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
 | `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. Takes `--backend`, `--seek`, `--gpu-debug` and `--exe` under the same rules as `diff`: the pose defaults to the registry's, and a cached reference at another pose (or without provenance) is recaptured rather than compared. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh, in full. `diff`'s texture-palette section verdicts the first two matrices per mesh against the browser's uploads; this dump is what to read when that verdict says divergent. |
-| `stability` | **Whether a number is reproducible at all.** Every other tool measures one run; only repeated runs separate a residual from the scenes 9/14/37/120/126/128 run-to-run wobble class — and its golden column prints beside the run-to-run one because a stable-but-wrong image passes the latter. |
+| `stability` | **Whether a number is reproducible at all.** Every other tool measures one run; only repeated runs separate a residual from the scenes 9/14/37/120/125/126/128/129 run-to-run wobble class — and its golden column prints beside the run-to-run one because a stable-but-wrong image passes the latter. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |
 
 The shape to expect: `parity` says something is wrong, `--differential`
@@ -524,7 +533,7 @@ well, which makes the assertion print and the run continue.
 
 **`BBLITE_MSAA=1` is a bisection tool, not just a diagnostic.** Comparing a
 backend against *itself* at one sample separates multisampling from
-everything else — it is what placed the scenes 9/14/37/120/126/128 run-to-run wobble in
+everything else — it is what placed the scenes 9/14/37/120/125/126/128/129 run-to-run wobble in
 the multisampled path ([which side is it on?](#2-which-side-is-it-on)
 carries the measurement). Compare backend-to-backend or run-to-run when you
 do this — the goldens are multisampled, so every scene looks worse against

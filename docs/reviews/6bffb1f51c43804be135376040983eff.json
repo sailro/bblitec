@@ -1,0 +1,106 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "three of the four override mask bits were unreachable: `setBoneVisible` is the one lowered mutator, so no override this port can build carries a transform bit, yet the bake emitted a transform phase that could never fire, `BoneOverride` carried three lanes nothing wrote, and ~110 lines of lowering (`laneOffsets`, `writtenLane`, `laneConstantName`, two thirds of `maskBits`) existed only to number them. The hidden bit is now read from the `hiddenOnly` phase that applies it, `skeleton-pose.ts` is no longer read at all, and the record carries the mask alone",
+      "applied": true
+    },
+    {
+      "summary": "the lane machinery round-tripped a constant NAME through its numeric offset back to the same name \u2014 `writtenLane` matched on `\"T_OFF\"` and no offset ever left the module \u2014 so the second pinned source file and the `poseFile` parameter carried no information",
+      "applied": true
+    },
+    {
+      "summary": "`getBoneByName` set `optionalFoundCpp` and the optional sink discarded it, so a miss compiled to a PRESENT `Nullable` holding an invalid handle and every guard downstream answered the wrong way, saved only by a sentinel check inside `set_bone_visible`. The sink now wraps a found-flag-carrying handle as `(found ? Nullable{h} : Nullable{nullopt})`, which is where a miss becomes absence",
+      "applied": true
+    },
+    {
+      "summary": "the new optional-index guard keyed on the property NAME, restating in a third place what `data-types.ts` already answers from the declared type, and it was applied to only one of the two branches carrying the identical optional-chaining escape hatch \u2014 so `container.skeletons?.length` still died on the property table's message. It asks the declared element type now, and both branches ask it",
+      "applied": true
+    },
+    {
+      "summary": "`featureReached(feature)` exposed the reached-feature set as a general mid-walk query, promoting an accumulate-only inventory into an order-sensitive one for every future caller. It is `gltfAlreadyLoaded()` now, documented as the one such question, and the refusal says why this port cannot serve the order (one generated loader serves every load)",
+      "applied": true
+    },
+    {
+      "summary": "the emitted bone-control C++ was interpolated into the template behind eight redundant `boneControl ?` re-tests whose false arms would have emitted non-compiling C++, and used a raw `JSON.stringify` where `cpp-literals.ts#stringLiteral` owns the escaping. The lowerer returns the two C++ snippets instead, which is the shape `lowerGltfCamerasCpp` already takes",
+      "applied": true
+    },
+    {
+      "summary": "the load-pose change \u2014 the one shared-path behaviour change in the branch \u2014 rested on a hand-typed comment where every other fact here is read from the pin. `assertRestPoseSeed` now reads both halves: `computeBoneTextureData` takes the skin alone and composes from `jointWorldMatrices`/`inverseBindMatrices`/`meshWorldMatrix`, and the skeleton feature still seeds `createSkeleton` from it",
+      "applied": true
+    },
+    {
+      "summary": "`assertSkinGrouping` asserted four property reads but not its own docstring's fact (one group per NODE), and its `resolveIBMs` anchor accepted any `=` anywhere under an error message about identity matrices \u2014 while naming a fallback the generated code never uses. It asserts the node-bounded group loop and `inverseBindMatrices` instead",
+      "applied": true
+    },
+    {
+      "summary": "`clearsBit` matched ANY `&=` in `setBoneVisible`, so it would have passed on a clear of a different bit while the emitted arm hardcodes `~8u`; it checks the complement of the same bit now, as `setsBit` already did",
+      "applied": true
+    },
+    {
+      "summary": "the unnamed-joint prefix was taken as \"the first template literal in `buildSkeletons`\", so an unrelated template added earlier would silently become the bone-name prefix; it goes through `coalescedPropertyDefault` keyed on `name`, the anchor `cameras.ts` and `pinnedGltfMeshNamePrefix` already use",
+      "applied": true
+    },
+    {
+      "summary": "`declarationOf` was re-implemented twice, and \"a call to a method named X\" three times with one copy recomputing `unwrapPin` three times; the shared helper and one local `callsNamed` replace them",
+      "applied": true
+    },
+    {
+      "summary": "`signedNumericValue` was called on every `|=` right-hand side, and it THROWS rather than declining for a non-literal \u2014 so a pin writing `o.mask |= HIDDEN_BIT` would surface as \"uses a constant this lowering cannot evaluate\" instead of the intended refusal. Every call is guarded by `ts.isNumericLiteral` now",
+      "applied": true
+    },
+    {
+      "summary": "`setBoneVisible` took two handles without `expectSameEngine`, where every other two-handle intrinsic guards it, and the invalid-handle test string was spelled a second way (without the parens the first one carries). `handleFoundCpp` is exported from `properties.ts` and both callers use it",
+      "applied": true
+    },
+    {
+      "summary": "`bone_override_count` was a hand-maintained field whose only reader gated two loops the bake walks anyway \u2014 the pin's `size() > 0` skips a sparse Map, a dense per-node table has nothing to skip. Dropped, with the reason recorded on the field it gated",
+      "applied": true
+    },
+    {
+      "summary": "`BoneRecord::skeleton` was write-only; the walk goes the other way and `set_bone_visible` takes the skeleton as a parameter",
+      "applied": true
+    },
+    {
+      "summary": "`requireEngine` was called twice for one value, and `GltfLoaderOptions` grew a stray blank line",
+      "applied": true
+    },
+    {
+      "summary": "the bake writes palettes only, as `writeBoneTextures` does, so it does not recompute the CPU face normals the pose pass folds for a primitive with no authored normals \u2014 the two copies of the pose math differ there at birth",
+      "applied": false,
+      "blockedBy": "reviewed and argued rather than changed: the vertices a hide moves are exactly those weighted to the collapsed sub-tree, whose triangles degenerate to a point, so the normals that go stale belong to triangles covering no pixel. The equivalence is recorded in docs/fidelity.md beside the contract",
+      "filedIn": "docs/fidelity.md, in the bone-override contract"
+    },
+    {
+      "summary": "the bake's recursive node-world memo is a near-verbatim copy of `apply_animation_pose`'s, ~26 lines of generated C++ per bone-control loader",
+      "applied": false,
+      "blockedBy": "sharing needs the traversal parameterized over BOTH the TRS source and where the memo lives (`compute_animated_world` caches onto `AnimatedNode`, which later passes read), plus a skins-only flag so the bake does not write morph weights and non-skinned node worlds the pin's own bake leaves alone \u2014 two flags on a per-frame lambda. Upstream carries the same two copies for its own reason (`skeleton-pose.ts` says it 'mirrors the per-frame math the animation tick runs'), and the port's per-node TRS record layout is what makes the parameterization invasive rather than free",
+      "filedIn": "not filed: the duplication is upstream's own shape, stated in the emitted comment beside both copies"
+    },
+    {
+      "summary": "`compileForSink`'s `case \"optional\"` still recompiles the expression for every inner kind that is not a matching handle \u2014 the sprite-atlas record arm takes that path",
+      "applied": false,
+      "blockedBy": "pre-existing and outside this change: closing it generally means routing the already-compiled value through `compileKnownValueForSink`, which fails rather than declining, so the arm's fall-through to `compileForSink(inner)` and its diagnostics would move with it",
+      "filedIn": "not filed: no reached scene hits the remaining arm, and the handle case this change reached is closed"
+    },
+    {
+      "summary": "`enableGltfCameras` documents the same must-precede-the-load constraint and relies on 'the corpus shape' rather than checking it; it can now reuse `gltfAlreadyLoaded()`",
+      "applied": false,
+      "blockedBy": "outside the reviewed diff, and adding the refusal would change what an existing scene compiles: nothing has measured whether any registered scene enables cameras after a load",
+      "filedIn": "not filed: it is a one-line reuse of a query this change introduced, offered here rather than made a TODO entry"
+    },
+    {
+      "summary": "the neutrality run over this change reported moved cells on scenes 125 and 129 -- neither of which compiles a glTF loader, so nothing it emits can reach them. Sampling the cells rather than the change settled it: three consecutive serial `parity --differential` runs of one unchanged scene-125 binary gave Dawn full MADs of 1.8e-4, 2.8e-5 and 1.6e-4, spanning both sweeps' recorded values. Both scenes pay the documented entry fee (they wobble at 4x on both backends and are byte-identical at one sample) and now carry whitelist rows, so the next change does not re-litigate them",
+      "applied": true
+    },
+    {
+      "summary": "rebasing onto PR #169 left one moved cell: scene 175 gained one exactly-matching pixel of 921600 (Dawn full MAD 0.0055357 -> 0.0055360). Its generated tree is byte-identical to main's apart from `build_stamp.hpp`, so nothing this branch emits reaches it -- and adding two BEHAVIOURLESS fields of the same shape to `AssetRecord` ON MAIN reproduces the branch's value exactly. The mover is the record's size shifting codegen in a header every translation unit includes, not the bone-control logic",
+      "applied": true
+    }
+  ]
+}

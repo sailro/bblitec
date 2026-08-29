@@ -42,6 +42,10 @@ import { join } from "node:path";
  * | 128 | Dawn | differ, worst MAD 0.000035, max 1 | byte-identical |
  * | 128 | SDL_GPU | differ, worst MAD 0.000007, max 1 | byte-identical |
  * | 14 | SDL_GPU | differ, worst MAD 0.000002, max 1 | byte-identical |
+ * | 125 | Dawn | differ, worst MAD 0.000001, max 1 | byte-identical |
+ * | 125 | SDL_GPU | differ, worst MAD 0.000051, max 1 | byte-identical |
+ * | 129 | Dawn | differ, worst MAD 0.000772, max 3 | byte-identical |
+ * | 129 | SDL_GPU | differ, worst MAD 0.000118, max 2 | byte-identical |
  *
  * Scene 128 joined on 2026-08-27, found the way an entry should be: a
  * neutrality run over a change that could not reach it reported a moved
@@ -57,14 +61,27 @@ import { join } from "node:path";
  * Scenes 9 and 14 are measured bit-stable on the backend each is absent
  * from -- 9 on SDL_GPU across four runs, 14 on Dawn across three -- because
  * the wobble is per scene AND per backend, not a property of either alone.
+ *
+ * Scenes 125 and 129 joined on 2026-08-29, the same way 128 did: a
+ * neutrality run over a change that could not reach either -- neither
+ * compiles a glTF loader at all -- reported moved cells, and the pairs
+ * above say why. They are the splat family's band, and its width is worth
+ * stating because the stability sample alone understates it: three
+ * consecutive serial `parity --differential` runs of one unchanged
+ * scene-125 binary gave Dawn full MADs of 1.8e-4, 2.8e-5 and 1.6e-4,
+ * which spans both the value a previous sweep recorded and the one the
+ * next sweep did. Both published rows are 0.000 and 0.001 against
+ * thresholds two orders above that.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
+    ["scene125", new Set(["dawn", "sdl_gpu"])],
     ["scene126", new Set(["dawn", "sdl_gpu"])],
     ["scene128", new Set(["dawn", "sdl_gpu"])],
+    ["scene129", new Set(["dawn", "sdl_gpu"])],
 ]);
 
 /**
@@ -193,7 +210,8 @@ export function runNeutralityReport(baselineDirectory: string): void {
     if (wobbled.length > 0) {
         console.log(
             "\nExpected multisampling wobble (not a regression — scenes" +
-                " 9, 37, 120, 126 and 128 are not bit-stable between runs at 4x;" +
+                " 9, 37, 120, 125, 126, 128 and 129 are not bit-stable between" +
+                " runs at 4x;" +
                 " every one is byte-identical at a single sample):",
         );
         for (const line of wobbled) console.log(line);
