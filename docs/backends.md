@@ -183,7 +183,22 @@ callbacks run before rendering-context updates, while callbacks registered
 after awaited `startEngine` run after submission and update the following
 frame. The first engine frame reports zero even under a fixed capture delta,
 matching `startEngine`'s contract; the same fixed clock supplies their
-`performance.now()` timestamp.
+`performance.now()` timestamp as a double-precision `DOMHighResTimeStamp`.
+Keeping that value double end to end is observable in long-running interactive
+sessions: narrowing an absolute monotonic millisecond clock to float produces
+repeated timestamps and intermittent jumps. Recurring `setInterval` callbacks
+also live on this conductor. They drain after post-render RAF and zero-delay
+timeouts, run at most once per frame when due, retain their period-relative
+next deadline after a late frame, and are removed by `clearInterval` without a
+timer thread or a second platform loop.
+
+The shared SDL event bridge also keeps the application-facing canvas extent
+current. Resize and drawable-pixel events query backing-store pixels before
+the next application callback, so a per-frame `canvas.width`/`canvas.height`
+read sees the same size the SDL_GPU swapchain acquires. The scene-less Dawn
+sprite driver reconfigures its WebGPU surface at that boundary and rebuilds
+its layer projection against the new extent; maximize and restore therefore
+resize content rather than exposing an unchanged frame surrounded by black.
 
 The vertex, deformation, texture and diagnostic payloads live there too:
 vertex packing, morph deltas and weights, image decode with the pinned

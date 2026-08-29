@@ -345,7 +345,7 @@ class Compiler
     public readonly variableScopes: Array<
         Map<
             ts.Symbol,
-            { name: string; value: Value }
+            { name: string; value: Value; frameLocal?: boolean }
         >
     > = [new Map()];
     private readonly cppNamePrefixes: string[] = [""];
@@ -3507,7 +3507,7 @@ class Compiler
      */
     public compileFrameCallback(
         expression: ts.Expression,
-        signature: "delta" | "void" = "delta",
+        signature: "delta" | "timestamp" | "interval" | "void" = "delta",
     ): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
@@ -3517,7 +3517,10 @@ class Compiler
                     "A deferred callback must be written inline.",
                 );
             }
-            return this.compileNamedFrameCallback(unwrapped);
+            return this.compileNamedFrameCallback(
+                unwrapped,
+                signature,
+            );
         }
         if (!ts.isArrowFunction(unwrapped) && !ts.isFunctionExpression(unwrapped)) {
             this.fail(unwrapped, "onBeforeRender requires an inline callback.");
@@ -3525,11 +3528,13 @@ class Compiler
         if (unwrapped.parameters.length > 1) {
             this.fail(unwrapped, "onBeforeRender callback supports at most one deltaMs parameter.");
         }
-        if (signature === "void" && unwrapped.parameters.length > 0) {
+        if (
+            (signature === "void" || signature === "interval") &&
+            unwrapped.parameters.length > 0
+        ) {
             this.fail(
                 unwrapped,
-                "A deferred callback takes no parameters: a timeout is " +
-                    "not a frame and carries no delta.",
+                "A timer callback takes no parameters.",
             );
         }
 
@@ -3552,9 +3557,15 @@ class Compiler
                 this.variableScopes.length;
         }
         const previousDeferredFloor = this.deferredCaptureFloor;
-        this.deferredCaptureFloor = signature === "void"
+        const previousDeferredCeiling = this.deferredCaptureCeiling;
+        this.deferredCaptureFloor =
+            signature === "void" || signature === "interval"
             ? this.frameCallbackScopeFloor
             : undefined;
+        this.deferredCaptureCeiling =
+            this.deferredCaptureFloor === undefined
+                ? undefined
+                : this.variableScopes.length;
         this.pushScope(
             this.cppNamePrefixes.at(-1) ?? "",
         );
@@ -3588,32 +3599,47 @@ class Compiler
             this.frameCallbackDepth -= 1;
             this.popScope();
             this.deferredCaptureFloor = previousDeferredFloor;
+            this.deferredCaptureCeiling = previousDeferredCeiling;
             this.frameCallbackScopeFloor = previousFrameFloor;
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
         const cppParameter = parameterName
-            ? `float ${this.cppIdentifier(parameterName)}`
-            : "float";
+            ? `${signature === "timestamp" ? "double" : "float"} ${this.cppIdentifier(parameterName)}`
+            : signature === "timestamp" ? "double" : "float";
         const lambdaParameter =
-            signature === "void" ? "" : cppParameter;
+            signature === "void" || signature === "interval"
+                ? ""
+                : cppParameter;
         return `[&](${lambdaParameter}) {\n${callbackBody.map((line) => `            ${line}`).join("\n")}\n        }`;
     }
 
     private compileNamedFrameCallback(
         identifier: ts.Identifier,
+        signature: "delta" | "timestamp" | "interval",
     ): string {
         const start = this.body.length;
         const previousIndent = this.indentLevel;
         this.indentLevel = 0;
-        const parameter = this.allocateTemporaryCppName(
-            "frame_callback_value",
-        );
+        const parameter = signature === "interval"
+            ? undefined
+            : this.allocateTemporaryCppName("frame_callback_value");
+        const previousDeferredFloor = this.deferredCaptureFloor;
+        const previousDeferredCeiling = this.deferredCaptureCeiling;
+        if (signature === "interval") {
+            this.deferredCaptureFloor = this.frameCallbackScopeFloor;
+            this.deferredCaptureCeiling =
+                this.deferredCaptureFloor === undefined
+                    ? undefined
+                    : this.variableScopes.length;
+        }
         this.frameCallbackDepth += 1;
         try {
             const value = this.compileCallbackWithValues(
                 identifier,
-                [{ kind: "number", cpp: parameter }],
+                parameter
+                    ? [{ kind: "number", cpp: parameter }]
+                    : [],
                 identifier,
             );
             if (value.cpp.length > 0) {
@@ -3621,10 +3647,15 @@ class Compiler
             }
         } finally {
             this.frameCallbackDepth -= 1;
+            this.deferredCaptureFloor = previousDeferredFloor;
+            this.deferredCaptureCeiling = previousDeferredCeiling;
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
-        return `[&](float ${parameter}) {\n${callbackBody
+        const lambdaParameter = parameter
+            ? `${signature === "timestamp" ? "double" : "float"} ${parameter}`
+            : "";
+        return `[&](${lambdaParameter}) {\n${callbackBody
             .map((line) => `            ${line}`)
             .join("\n")}\n        }`;
     }
@@ -4937,6 +4968,38 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         const callee = this.unwrap(call.expression);
+        if (
+            ts.isIdentifier(callee) &&
+            this.isDefaultLibraryIdentifier(callee)
+        ) {
+            if (callee.text === "setInterval") {
+                this.expectArgumentCount(call, 2, 2);
+                const engine = this.requireDefaultEngine(call);
+                const callback = this.compileFrameCallback(
+                    call.arguments[0]!,
+                    "interval",
+                );
+                const delay = this.compileNumber(
+                    call.arguments[1]!,
+                    "double",
+                );
+                return {
+                    kind: "number",
+                    cpp: `bbl::set_interval(${engine}, ${callback}, ${delay})`,
+                    impure: true,
+                };
+            }
+            if (callee.text === "clearInterval") {
+                this.expectArgumentCount(call, 1, 1);
+                const engine = this.requireDefaultEngine(call);
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::clear_interval(${engine}, ` +
+                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                };
+            }
+        }
         if (!ts.isPropertyAccessExpression(callee)) {
             return undefined;
         }
@@ -5010,16 +5073,14 @@ class Compiler
         const engine = this.requireDefaultEngine(call);
         const callback = this.compileFrameCallback(
             call.arguments[0]!,
+            "timestamp",
         );
         const callbacks = this.engineStartMark
             ? "post_render_animation_frame_callbacks"
             : "animation_frame_callbacks";
         return {
             kind: "void",
-            cpp:
-                `${engine}.${callbacks}.push_back(` +
-                `[&, callback = ${callback}](float) mutable { ` +
-                `callback(static_cast<float>(bbl::pal::performance_milliseconds())); })`,
+            cpp: `${engine}.${callbacks}.push_back(${callback})`,
         };
     }
 
@@ -5285,23 +5346,38 @@ class Compiler
                 // memory; it refuses instead. Escaping captures are
                 // unsolved generally (see TODO), and this is the one
                 // place the reached slice can walk into them.
-                if (
-                    this.deferredCaptureFloor !== undefined &&
-                    index >= this.deferredCaptureFloor
-                ) {
-                    this.fail(
-                        identifier,
-                        `A deferred callback cannot name '${identifier.text}': ` +
-                            "it is bound inside the callback that queued " +
-                            "the timeout, and that frame has returned by " +
-                            "the time the timeout runs. Bind it outside " +
-                            "the enclosing callback.",
-                    );
-                }
+                this.refuseDeadDeferredCapture(
+                    identifier,
+                    index,
+                    binding.frameLocal === true,
+                );
                 return binding.value;
             }
         }
         return undefined;
+    }
+
+    private refuseDeadDeferredCapture(
+        identifier: ts.Identifier,
+        scopeIndex: number,
+        frameLocal: boolean,
+    ): void {
+        if (
+            frameLocal &&
+            this.deferredCaptureFloor !== undefined &&
+            this.deferredCaptureCeiling !== undefined &&
+            scopeIndex >= this.deferredCaptureFloor &&
+            scopeIndex < this.deferredCaptureCeiling
+        ) {
+            this.fail(
+                identifier,
+                `A deferred callback cannot name '${identifier.text}': ` +
+                    "it is bound inside the callback that queued the " +
+                    "timer, and that frame has returned by the time " +
+                    "the timer runs. Bind it outside the enclosing " +
+                    "callback.",
+            );
+        }
     }
 
     private lookupRecordProperty(
@@ -5623,6 +5699,11 @@ class Compiler
             const binding =
                 this.variableScopes[index]!.get(symbol);
             if (binding) {
+                this.refuseDeadDeferredCapture(
+                    identifier,
+                    index,
+                    binding.frameLocal === true,
+                );
                 return binding.value;
             }
         }
@@ -5654,7 +5735,22 @@ class Compiler
         scope.set(symbol, {
             name: identifier.text,
             value,
+            ...(this.frameCallbackDepth > 0
+                ? { frameLocal: true }
+                : {}),
         });
+        const continuationStorage =
+            value.optionalStorageCpp ?? value.cpp;
+        if (
+            this.engineStartMark &&
+            this.indentLevel ===
+                this.engineStartMark.indentLevel &&
+            /^v_[A-Za-z0-9_]+$/.test(continuationStorage)
+        ) {
+            this.engineContinuationStorage.add(
+                continuationStorage,
+            );
+        }
     }
 
     public bindLocalValue(
@@ -5911,6 +6007,9 @@ class Compiler
      * gone when the callback runs.
      */
     private deferredCaptureFloor: number | undefined;
+
+    /** First callback-owned scope, which is safe for that callback to read. */
+    private deferredCaptureCeiling: number | undefined;
 
     public pushScope(cppPrefix: string): void {
         this.variableScopes.push(new Map());
@@ -6476,8 +6575,16 @@ class Compiler
      * queue `advance_frame` drains.
      */
     private engineStartMark:
-        | { index: number; engine: string; node: ts.Node }
+        | {
+              index: number;
+              engine: string;
+              node: ts.Node;
+              indentLevel: number;
+          }
         | undefined;
+
+    /** Native locals initialized by the post-start continuation. */
+    private readonly engineContinuationStorage = new Set<string>();
 
     public markEngineStart(
         engineCpp: string,
@@ -6494,6 +6601,7 @@ class Compiler
             index: this.body.length,
             engine: engineCpp,
             node,
+            indentLevel: this.indentLevel,
         };
     }
 
@@ -6546,11 +6654,44 @@ class Compiler
             );
         }
         const indent = " ".repeat(startDepth);
+        const unpersistedStorage = new Set(
+            this.engineContinuationStorage,
+        );
+        const persistentTail = tail.map((line) => {
+            if (depth(line) !== startDepth) return line;
+            const storage = [...unpersistedStorage].find(
+                (name) =>
+                    new RegExp(
+                        `\\b${name}\\b\\s*(?:=|;)`,
+                    ).test(line.split(/\r?\n/, 1)[0]!),
+            );
+            if (!storage) return line;
+            // Only the declaration owns storage duration. A later assignment
+            // to the same continuation local must remain an assignment.
+            unpersistedStorage.delete(storage);
+            const leading = line.slice(
+                0,
+                line.length - line.trimStart().length,
+            );
+            const declaration = line.trimStart();
+            if (declaration.startsWith("[[")) {
+                const attributeEnd = declaration.indexOf("]]", 2);
+                if (attributeEnd >= 0) {
+                    return (
+                        leading +
+                        declaration.slice(0, attributeEnd + 2) +
+                        " static" +
+                        declaration.slice(attributeEnd + 2)
+                    );
+                }
+            }
+            return `${leading}static ${declaration}`;
+        });
         this.body.splice(
             index,
             0,
             `${indent}bbl::defer_callback(${mark.engine}, [&]() {`,
-            ...tail.map((line) => `    ${line}`),
+            ...persistentTail.map((line) => `    ${line}`),
             `${indent}});`,
         );
     }

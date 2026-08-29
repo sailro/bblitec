@@ -2036,6 +2036,22 @@ struct Engine {
      * than pretending this is a timer.
      */
     std::vector<std::function<void()>> deferred_callbacks;
+    /**
+     * Browser `setInterval` callbacks. They share the frame conductor's
+     * double-precision monotonic clock and run at most once per frame; the
+     * next due time still advances by whole periods so a late frame does not
+     * introduce permanent drift. `clearInterval` marks an entry inactive,
+     * including while another due callback is being drained.
+     */
+    struct IntervalCallback {
+        std::uint64_t id = 0;
+        double period_ms = 0.0;
+        double next_due_ms = 0.0;
+        std::function<void()> callback;
+        bool active = true;
+    };
+    std::vector<IntervalCallback> interval_callbacks;
+    std::uint64_t next_interval_id = 1;
     /** Input callbacks registered before the platform frame loop starts. */
     std::vector<std::function<void(const PlatformKeyboardEvent&)>>
         key_down_callbacks;
@@ -2052,16 +2068,18 @@ struct Engine {
      * `startEngine`. Browser RAF callbacks run in registration order, so these
      * precede the engine-owned render callback.
      */
-    std::vector<std::function<void(float)>> animation_frame_callbacks;
+    std::vector<std::function<void(double)>> animation_frame_callbacks;
     /**
      * Application-owned RAF callbacks registered after `startEngine` has
      * resolved. The engine callback was registered first, so these run after
      * the frame has been submitted and can only affect the following frame.
      */
-    std::vector<std::function<void(float)>>
+    std::vector<std::function<void(double)>>
         post_render_animation_frame_callbacks;
     /** The awaited start resolves only after the engine's initial render. */
     bool post_render_animation_frame_callbacks_armed = false;
+    /** One double-precision DOMHighResTimeStamp shared by this RAF turn. */
+    double animation_frame_timestamp_ms = 0.0;
     /**
      * Every animation manager created with this engine
      * (`createAnimationManager({ engine })`). A manager owns animation time
@@ -3298,6 +3316,13 @@ void start_engine(Engine& engine);
 void stop_engine(Engine& engine);
 /** `setTimeout(callback, 0)`; see `Engine::deferred_callbacks`. */
 void defer_callback(Engine& engine, std::function<void()> callback);
+/** Browser `setInterval`; callbacks are serviced by the frame conductor. */
+double set_interval(
+    Engine& engine,
+    std::function<void()> callback,
+    double period_ms);
+/** Browser `clearInterval`. */
+void clear_interval(Engine& engine, double id);
 
 /** `createGpuPicker(scene)`. */
 GpuPickerHandle create_gpu_picker(Scene& scene);
@@ -3321,5 +3346,7 @@ void dispose_picker(Engine& engine, GpuPickerHandle picker);
  * frame rather than in this drain, exactly as it would be in a browser.
  */
 void run_deferred_callbacks(Engine& engine);
+/** Run recurring callbacks due at this frame boundary. */
+void run_interval_callbacks(Engine& engine);
 
 } // namespace bbl

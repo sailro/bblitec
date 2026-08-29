@@ -109,8 +109,9 @@ export function compileAudioIntrinsic(
             // master volume, the ramp duration and three browser
             // auto-resume switches. The reached slice takes none of them:
             // an offline context is generation's choice rather than a
-            // scene's, and the resume hooks are `document.addEventListener`
-            // and `setInterval`, which erase.
+            // scene's, and that option path installs its own document
+            // listeners plus polling. Application `setInterval` calls are
+            // separate platform input and run on the frame conductor.
             context.expectArgumentCount(call, 0, 1);
             if (call.arguments[0]) {
                 context.expectObjectLiteral(call.arguments[0]);

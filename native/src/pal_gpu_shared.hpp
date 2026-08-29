@@ -4320,8 +4320,9 @@ inline std::vector<float> shader_stage_block_floats(
         frame_delta_ms > 0.0f
             ? frame_delta_ms
             : scene.fixed_delta_ms);
+    engine.animation_frame_timestamp_ms = performance_milliseconds();
     for (const auto& callback : engine.animation_frame_callbacks) {
-        callback(delta_ms);
+        callback(engine.animation_frame_timestamp_ms);
     }
     for (const auto& callback : scene.before_render) {
         callback(delta_ms);
@@ -4343,8 +4344,9 @@ inline std::vector<float> shader_stage_block_floats(
         return 0.0f;
     }
     const float delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.animation_frame_timestamp_ms = performance_milliseconds();
     for (const auto& callback : engine.animation_frame_callbacks) {
-        callback(delta_ms);
+        callback(engine.animation_frame_timestamp_ms);
     }
     return delta_ms;
 }
@@ -4357,8 +4359,9 @@ inline std::vector<float> shader_stage_block_floats(
     float frame_delta_ms) {
     if (engine.stopped) return 0.0f;
     const float delta_ms = frame_clock.advance(frame_delta_ms);
+    engine.animation_frame_timestamp_ms = performance_milliseconds();
     for (const auto& callback : engine.animation_frame_callbacks) {
-        callback(delta_ms);
+        callback(engine.animation_frame_timestamp_ms);
     }
     for (const auto& callback : context.updates) {
         callback(delta_ms);
@@ -4377,7 +4380,7 @@ inline void finish_frame(Engine& engine) {
     if (engine.post_render_animation_frame_callbacks_armed) {
         for (const auto& callback :
              engine.post_render_animation_frame_callbacks) {
-            callback(0.0f);
+            callback(engine.animation_frame_timestamp_ms);
         }
     } else {
         // `startEngine` resolves after this initial render; source following
@@ -4385,6 +4388,7 @@ inline void finish_frame(Engine& engine) {
         engine.post_render_animation_frame_callbacks_armed = true;
     }
     run_deferred_callbacks(engine);
+    run_interval_callbacks(engine);
 }
 
 class CaptureGate {

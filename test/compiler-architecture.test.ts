@@ -649,6 +649,7 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
         dawn,
         /WGPUTextureUsage_RenderAttachment \|\s*WGPUTextureUsage_TextureBinding/,
     );
+    assert.match(dawn, /resize_dawn_surface\(state, engine\.options\)/);
 });
 
 test("forwards DOM-compatible application input through every native loop", () => {
@@ -657,6 +658,11 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /if \(code == "Space"\) return " ";/);
     assert.match(events, /engine\.key_down_callbacks/);
     assert.match(events, /engine\.key_up_callbacks/);
+    assert.match(events, /SDL_EVENT_WINDOW_RESIZED/);
+    assert.match(events, /SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED/);
+    assert.match(events, /SDL_GetWindowSizeInPixels/);
+    assert.match(events, /engine\.options\.width = width;/);
+    assert.match(events, /engine\.options\.height = height;/);
 
     for (const path of [
         "native/src/pal_sdl_gpu.cpp",
@@ -692,10 +698,16 @@ test("runs post-start RAF callbacks only after the engine render", () => {
 
     assert.match(runtime, /post_render_animation_frame_callbacks/);
     assert.match(
+        runtime,
+        /std::vector<std::function<void\(double\)>> animation_frame_callbacks/,
+    );
+    assert.match(runtime, /double animation_frame_timestamp_ms = 0\.0;/);
+    assert.match(
         shared,
         /inline void finish_frame\(Engine& engine\)[\s\S]{0,900}post_render_animation_frame_callbacks/,
     );
     assert.match(shared, /post_render_animation_frame_callbacks_armed = true/);
+    assert.match(shared, /run_interval_callbacks\(engine\);/);
     for (const backend of [sdl, dawn]) {
         assert.match(backend, /finish_frame\(engine\);[\s\S]{0,220}\+\+frame/);
     }

@@ -136,13 +136,10 @@ bool run_sprite_dawn_engine(Engine& engine) {
         sync_render_textures();
         sync_renderer_passes();
 
-        const std::uint32_t width =
+        std::uint32_t width =
             static_cast<std::uint32_t>(engine.options.width);
-        const std::uint32_t height =
+        std::uint32_t height =
             static_cast<std::uint32_t>(engine.options.height);
-        // The extent is pinned to the engine options for the whole run
-        // (no per-frame resize on this driver), so a zero extent cannot
-        // be skipped like the SDL twin skips a minimized frame — refuse.
         if (width == 0 || height == 0) {
             dawn_error("sprite surface has a zero extent.");
         }
@@ -160,6 +157,10 @@ bool run_sprite_dawn_engine(Engine& engine) {
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
+            }
+            if (resize_dawn_surface(state, engine.options)) {
+                width = state.surface_width;
+                height = state.surface_height;
             }
             keyboard_replay.dispatch(frame, engine);
             const float delta_ms = advance_frame(

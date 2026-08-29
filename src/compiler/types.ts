@@ -1400,7 +1400,10 @@ export interface Value {
      * getter of the record runs. This is the closure the source wrote.
      */
     recordScopes?: ReadonlyArray<
-        Map<ts.Symbol, { name: string; value: Value }>
+        Map<
+            ts.Symbol,
+            { name: string; value: Value; frameLocal?: boolean }
+        >
     >;
     defaultRenderTask?: boolean;
     defaultRenderTaskEmitted?: boolean;

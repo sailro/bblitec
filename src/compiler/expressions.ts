@@ -109,7 +109,10 @@ export interface ExpressionContext
     readonly nativeFunctions: NativeFunctionLowerer;
     readonly symbols: CompilerSymbols;
     readonly variableScopes: ReadonlyArray<
-        Map<ts.Symbol, { name: string; value: Value }>
+        Map<
+            ts.Symbol,
+            { name: string; value: Value; frameLocal?: boolean }
+        >
     >;
     unwrap(expression: ts.Expression): ts.Expression;
     expectArgumentCount(
@@ -175,7 +178,7 @@ export interface ExpressionContext
     isDeferredCallbackCall(call: ts.CallExpression): boolean;
     compileFrameCallback(
         expression: ts.Expression,
-        signature?: "delta" | "void",
+        signature?: "delta" | "timestamp" | "interval" | "void",
     ): string;
     requireDefaultEngine(node: ts.Node): string;
     evaluateBrowserValue(

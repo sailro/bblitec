@@ -132,11 +132,13 @@ analyzable entry file against one engine.
   materialized asset resolves immediately. `window.location.search` reads as
   the query the scene's reference pose is captured at, so a scene that
   branches on one takes the branch its golden was captured under.
-  `canvas.width`/`canvas.height` read as the engine's configured size — a
-  compile-time fold that is exact until a window resize, which no measured
-  pose performs; a scene re-reading them per frame to track resizes needs
-  the live render-target size instead, a gap recorded on that scene's own
-  entry (scene 53) in [TODO](../TODO.md).
+  `canvas.width`/`canvas.height` lower to the engine's live drawing-buffer
+  dimensions. The shared SDL event path updates them in backing-store pixels
+  before application callbacks run; SDL_GPU acquires that same extent from
+  the swapchain, and the reached scene-less Dawn sprite driver reconfigures
+  its WebGPU surface to it before acquisition. Generation-only size decisions
+  still use the configured startup dimensions because they cannot vary at
+  runtime.
 - **`??` over the data model.** A nullish coalesce lowers by the left
   operand's own type: a static record property still settles at compile
   time, an asset-derived handle collection resolves through its concept,
@@ -543,12 +545,16 @@ scene callbacks advance by.
 An application-owned `requestAnimationFrame` loop registers its callback on
 that same conductor, including a scene-less sprite application. Its timestamp
 comes from the PAL's browser-facing `performance.now()` clock: monotonic in an
-interactive run and advanced by the measured fixed delta in a capture. The
-first engine frame receives a zero delta. Registration order remains the
-browser's phase boundary: callbacks installed before `startEngine` update
-before its renderer; callbacks installed after awaiting `startEngine` run
-after the renderer and affect the following frame. The application may
-schedule itself again without growing the callback list.
+interactive run and advanced by the measured fixed delta in a capture, with
+JavaScript-number/double precision retained through the callback. The first
+engine frame receives a zero delta. Registration order remains the browser's
+phase boundary: callbacks installed before `startEngine` update before its
+renderer; callbacks installed after awaiting `startEngine` run after the
+renderer and affect the following frame. The application may schedule itself
+again without growing the callback list. Browser `setInterval`/`clearInterval`
+are the recurring-timer arm of the same conductor: callbacks become due from
+that monotonic clock and run at the frame boundary, with no independent timer
+thread racing application state.
 
 ### Cameras and input
 

@@ -1238,7 +1238,20 @@ counts from the scene-ready boundary, fixes `performance.now()` to that same
 clock, and freezes after every callback on frame 180 has run. Native derives
 `BBLITE_SCREENSHOT_FRAME` from that one registry value. This keeps the source
 live—the game loop and shader time still execute—while making the measured
-state identical on both sides.
+state identical on both sides. Interactive RAF receives the absolute
+monotonic timestamp at double precision too; converting it to float would
+quantize a machine with long uptime into runs of zero `dt` followed by jumps,
+which changes the platformer's collision, friction, and stand/crouch/jump
+state machine even though a fixed-clock golden would hide the defect.
+
+**The platformer's projection follows the canvas, so native has to as well.**
+Its application loop reads `canvas.width` and `canvas.height` on every frame,
+derives the world scale and visible width from them, and rebuilds its CRT
+chain when they change. Native preserves those reads as live engine values;
+the common window event path updates them from SDL's drawable pixel size
+before the callback, while SDL_GPU's acquired texture and Dawn's reconfigured
+sprite surface use that same extent. This is application behavior reached by
+the demo, not a Platformer-specific resize rule.
 
 **A sprite layer is drawn by its own renderer, not by the scene.** Upstream's
 `SpriteRenderer` implements `RenderingContext` directly and registers on the
@@ -1655,6 +1668,16 @@ audio module's own Tier-4 showcase, and it is the one place
 unmute UI are reached at all; upstream marks it manual and
 non-deterministic, never a gate. Nothing published is gated on audio, and
 the slice is a prototype: [TODO](../TODO.md) carries what remains.
+
+**The platformer also reaches the browser timer that drives its music.** Its
+30 ms `setInterval` is a look-ahead scheduler: each wake reads
+`AudioContext.state` and `currentTime`, then schedules lead, bass, and chord
+voices at precise Web Audio times. It is therefore executable application
+logic, not browser setup to erase. Native registers it on the shared frame
+conductor, tests due time against the same double-precision monotonic clock as
+RAF, coalesces a late wake to one callback while advancing the next deadline
+by whole periods, and honors `clearInterval`. The audio notes remain timed by
+the audio context; the conductor only performs the browser timer's wake-up.
 
 **The engine's output graph is folded, and the fold is gated.**
 `createAudioEngineAsync` builds `mainBus -> mainOut -> ctx.destination`

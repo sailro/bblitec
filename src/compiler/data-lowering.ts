@@ -249,6 +249,7 @@ export class DataLowerer {
         }
         const assignable = target.dataType.kind === "optional" &&
             [
+                "number",
                 "vector",
                 "map",
                 "set",
@@ -1085,6 +1086,12 @@ export class DataLowerer {
                         ? { objectIdentityCpp: objectIdentity }
                         : {}),
                 };
+            }
+            if (fallback.kind === "json-null") {
+                // `optionalResource ?? undefined` remains the same optional
+                // resource. Keep its presence flag so a later real fallback
+                // can select without dereferencing empty storage.
+                return left;
             }
             if (fallback.kind !== left.kind) {
                 this.context.fail(

@@ -1,7 +1,9 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -40,6 +42,64 @@ void run_deferred_callbacks(Engine& engine) {
     for (const auto& callback : due) {
         callback();
     }
+}
+
+double set_interval(
+    Engine& engine,
+    std::function<void()> callback,
+    double period_ms) {
+    if (!std::isfinite(period_ms) || period_ms < 0.0) {
+        throw std::runtime_error("setInterval requires a finite non-negative delay.");
+    }
+    const std::uint64_t id = engine.next_interval_id++;
+    const double clamped_period_ms = std::max(1.0, period_ms);
+    engine.interval_callbacks.push_back(Engine::IntervalCallback{
+        id,
+        clamped_period_ms,
+        pal::performance_milliseconds() + clamped_period_ms,
+        std::move(callback),
+        true,
+    });
+    return static_cast<double>(id);
+}
+
+void clear_interval(Engine& engine, double id) {
+    const std::uint64_t numeric_id = static_cast<std::uint64_t>(id);
+    for (Engine::IntervalCallback& interval : engine.interval_callbacks) {
+        if (interval.id == numeric_id) {
+            interval.active = false;
+            break;
+        }
+    }
+}
+
+void run_interval_callbacks(Engine& engine) {
+    const double now_ms = engine.animation_frame_timestamp_ms;
+    std::vector<std::uint64_t> due;
+    for (Engine::IntervalCallback& interval : engine.interval_callbacks) {
+        if (!interval.active || now_ms < interval.next_due_ms) continue;
+        do {
+            interval.next_due_ms += interval.period_ms;
+        } while (interval.next_due_ms <= now_ms);
+        due.push_back(interval.id);
+    }
+    for (const std::uint64_t id : due) {
+        const auto found = std::find_if(
+            engine.interval_callbacks.begin(),
+            engine.interval_callbacks.end(),
+            [id](const Engine::IntervalCallback& interval) {
+                return interval.id == id && interval.active;
+            });
+        if (found != engine.interval_callbacks.end()) {
+            const std::function<void()> callback = found->callback;
+            callback();
+        }
+    }
+    std::erase_if(
+        engine.interval_callbacks,
+        [](const Engine::IntervalCallback& interval) {
+            return !interval.active;
+        });
 }
 
 }  // namespace bbl

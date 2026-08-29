@@ -163,9 +163,42 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
     }
 }
 
+/**
+ * Keep the native drawing-buffer dimensions behind `canvas.width` and
+ * `canvas.height` live.
+ *
+ * SDL's window-resized event reports logical window coordinates while the
+ * renderer and an HTML canvas both expose backing-store pixels. Querying the
+ * window here therefore also preserves the right contract on a high-density
+ * display. Every native loop drains events before advancing the application,
+ * so a frame triggered by maximize/restore sees the new size in its callbacks.
+ */
+inline void sync_engine_canvas_size(
+    SDL_Window* window,
+    Engine& engine) {
+    int width = 0;
+    int height = 0;
+    if (
+        window &&
+        SDL_GetWindowSizeInPixels(window, &width, &height) &&
+        width > 0 &&
+        height > 0) {
+        engine.options.width = width;
+        engine.options.height = height;
+    }
+}
+
 inline void handle_platform_event(
     const SDL_Event& event,
     Engine& engine) {
+    if (
+        event.type == SDL_EVENT_WINDOW_RESIZED ||
+        event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+        sync_engine_canvas_size(
+            SDL_GetWindowFromID(event.window.windowID),
+            engine);
+        return;
+    }
     if (
         event.type == SDL_EVENT_KEY_DOWN ||
         event.type == SDL_EVENT_KEY_UP) {

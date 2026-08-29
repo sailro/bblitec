@@ -185,7 +185,8 @@ test("audio node factories publish independent link features", () => {
         async function main() {
             const audio = await createAudioEngineAsync();
             const oscillator = audio.audioContext.createOscillator();
-            oscillator.start(0);
+            const state = audio.audioContext.state;
+            if (state === "running") oscillator.start(audio.audioContext.currentTime);
         }
     `);
 
@@ -193,6 +194,7 @@ test("audio node factories publish independent link features", () => {
     assert.ok(result.manifest.features.includes("audio:oscillator"));
     assert.ok(!result.manifest.features.includes("audio:biquad-filter"));
     assert.ok(!result.manifest.features.includes("audio:stereo-panner"));
+    assert.match(result.cpp, /bbl::pal::audio_state\(/);
 });
 
 test("preserves Web Audio writes and nullable class resource assignments", () => {
@@ -216,6 +218,8 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
                 this.engine = engine;
                 this.context = engine.audioContext;
                 this.output = output;
+                const optionalOutput = this.output ?? undefined;
+                if (optionalOutput) optionalOutput.gain.value = 0.4;
             }
         }
 
@@ -234,6 +238,10 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
     assert.match(
         result.cpp,
         /class_field_output_\d+ = v_[^;]*output;/,
+    );
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, 0\.4f\);/,
     );
 });
 
@@ -7124,6 +7132,14 @@ test("registers pre-start application animation loops before rendering", () => {
     `);
 
     assert.match(result.cpp, /animation_frame_callbacks\.push_back/);
+    assert.match(
+        result.cpp,
+        /animation_frame_callbacks\.push_back\(\[&\]\(double /,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /static_cast<float>\(bbl::pal::performance_milliseconds\(\)\)/,
+    );
     assert.doesNotMatch(
         result.cpp,
         /post_render_animation_frame_callbacks\.push_back/,
@@ -7138,7 +7154,13 @@ test("registers post-start application animation loops after rendering", () => {
             const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
             const engine = await createEngine(canvas);
             await startEngine(engine);
-            const tick = (_time: number): void => {
+            let last = performance.now();
+            let elapsed = 0;
+            let phase = 0;
+            phase = 1;
+            const tick = (time: number): void => {
+                elapsed += time - last;
+                last = time;
                 requestAnimationFrame(tick);
             };
             requestAnimationFrame(tick);
@@ -7149,6 +7171,89 @@ test("registers post-start application animation loops after rendering", () => {
     assert.match(
         result.cpp,
         /post_render_animation_frame_callbacks\.push_back/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::defer_callback\([^]*static double v_\w*last = bbl::pal::performance_milliseconds\(\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::defer_callback\([^]*static double v_\w*elapsed = 0\.0;/,
+    );
+    assert.match(result.cpp, /v_\w*phase = 1\.0;/);
+    assert.doesNotMatch(result.cpp, /static v_\w*phase = 1\.0;/);
+});
+
+test("lowers recurring browser timers onto the frame conductor", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            let timer: ReturnType<typeof setInterval> | null = null;
+            let ticks = 0;
+            const tick = (): void => {
+                const previous = ticks;
+                ticks = previous + 1;
+                if (ticks > 2 && timer !== null) {
+                    clearInterval(timer);
+                    timer = null;
+                }
+            };
+            timer = setInterval(tick, 30);
+            await startEngine(engine);
+        }
+        main();
+    `);
+
+    assert.match(result.cpp, /bbl::set_interval\(v_engine, \[&\]\(\) \{/);
+    assert.match(result.cpp, /v_\w*previous = v_\w*ticks/);
+    assert.match(result.cpp, /v_\w*ticks = \(v_\w*previous \+ 1\.0\)/);
+    assert.match(result.cpp, /bbl::clear_interval\(v_engine,/);
+    assert.doesNotMatch(result.cpp, /setInterval|clearInterval/);
+});
+
+test("lets recurring timers read persistent factory closure state", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const makeTimer = () => {
+                let ticks = 0;
+                const tick = (): void => {
+                    const previous = ticks;
+                    ticks = previous + 1;
+                };
+                return { start: (): void => { setInterval(tick, 30); } };
+            };
+            const timer = makeTimer();
+            await startEngine(engine);
+            requestAnimationFrame(() => timer.start());
+        }
+        main();
+    `);
+
+    assert.match(result.cpp, /bbl::set_interval\(v_engine, \[&\]\(\) \{/);
+    assert.match(result.cpp, /v_\w*ticks = \(v_\w*previous \+ 1\.0\)/);
+});
+
+test("refuses recurring timers that capture an outer frame local", () => {
+    assert.throws(
+        () => compileSource(`
+            import { createEngine, startEngine } from "babylon-lite";
+            async function main(): Promise<void> {
+                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                const engine = await createEngine(canvas);
+                await startEngine(engine);
+                requestAnimationFrame(() => {
+                    let frameLocal = 0;
+                    setInterval(() => { frameLocal += 1; }, 30);
+                });
+            }
+            main();
+        `),
+        /deferred callback cannot name 'frameLocal'/,
     );
 });
 
