@@ -2801,6 +2801,20 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+    {
+        id: "break-meshes",
+        name: "Break Meshes",
+        source: "corpus/babylon-lite/lab/lite/src/demos/break-meshes.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Break Meshes",
+        parity: {
+            maxFullMad: 0.6,
+            maxForegroundMad: 0.01,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
 ];
 
 /**
