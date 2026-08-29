@@ -185,7 +185,8 @@ test("audio node factories publish independent link features", () => {
         async function main() {
             const audio = await createAudioEngineAsync();
             const oscillator = audio.audioContext.createOscillator();
-            oscillator.start(0);
+            const state = audio.audioContext.state;
+            if (state === "running") oscillator.start(audio.audioContext.currentTime);
         }
     `);
 
@@ -193,6 +194,7 @@ test("audio node factories publish independent link features", () => {
     assert.ok(result.manifest.features.includes("audio:oscillator"));
     assert.ok(!result.manifest.features.includes("audio:biquad-filter"));
     assert.ok(!result.manifest.features.includes("audio:stereo-panner"));
+    assert.match(result.cpp, /bbl::pal::audio_state\(/);
 });
 
 test("preserves Web Audio writes and nullable class resource assignments", () => {
@@ -216,6 +218,8 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
                 this.engine = engine;
                 this.context = engine.audioContext;
                 this.output = output;
+                const optionalOutput = this.output ?? undefined;
+                if (optionalOutput) optionalOutput.gain.value = 0.4;
             }
         }
 
@@ -234,6 +238,10 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
     assert.match(
         result.cpp,
         /class_field_output_\d+ = v_[^;]*output;/,
+    );
+    assert.match(
+        result.cpp,
+        /audio_param_set_value\([^;]*, 0\.4f\);/,
     );
 });
 
@@ -1139,6 +1147,176 @@ test("lowers dynamic arrays with fill, pop, truncation, and index writes", () =>
     );
 });
 
+test("lowers nested Array.from length allocations", () => {
+    const result = compileSource(`
+        const grid: number[][] = Array.from(
+            { length: 2 },
+            () => Array.from({ length: 3 }, () => 7),
+        );
+        grid[1]![2] = 9;
+    `);
+
+    assert.match(
+        result.cpp,
+        /const std::size_t v_bblite_array_from_count_\d+ = static_cast<std::size_t>\(2\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bbl::js::Array<double>> v_bblite_array_from_result_\d+;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<double> v_bblite_array_from_result_\d+;/,
+    );
+    assert.match(result.cpp, /\.push_back\(7\.0\);/);
+});
+
+test("folds string-literal comparisons in specialized callbacks", () => {
+    const result = compileSource(`
+        const classify = (kind: "coin" | "flower"): number =>
+            kind === "flower" ? 1 : 0;
+        const coin = classify("coin");
+        const flower = classify("flower");
+    `);
+
+    assert.doesNotMatch(result.cpp, /"(?:coin|flower)" == "flower"/);
+    assert.match(
+        result.cpp,
+        /std::string\("coin"\) == std::string\("flower"\)/,
+    );
+    assert.match(
+        result.cpp,
+        /std::string\("flower"\) == std::string\("flower"\)/,
+    );
+});
+
+test("materializes mutable intersection-typed object locals", () => {
+    const result = compileSource(`
+        interface Contacts {
+            grounded: boolean;
+            wall: -1 | 0 | 1;
+        }
+        function move(): { vx: number } & Contacts {
+            const result: { vx: number } & Contacts = {
+                vx: 2,
+                grounded: false,
+                wall: 0,
+            };
+            result.grounded = true;
+            result.wall = 1;
+            return result;
+        }
+        const moved = move();
+    `);
+
+    assert.match(result.cpp, /\.grounded = true;/);
+    assert.match(result.cpp, /\.wall = 1\.0;/);
+    assert.doesNotMatch(result.cpp, /false = true|0\.0 =/);
+});
+
+test("keeps returned callbacks as compile-time bindings", () => {
+    const result = compileSource(`
+        const makeAdder = (amount: number) => (value: number): number =>
+            value + amount;
+        const addTwo = makeAdder(2);
+        const total = addTwo(3);
+    `);
+
+    assert.doesNotMatch(result.cpp, /auto v_addTwo =\s*;/);
+    assert.match(result.cpp, /double v_total = \(v_fn\d+_value \+ v_fn\d+_amount\);/);
+});
+
+test("coerces missing partial Record numbers to NaN in arithmetic", () => {
+    const result = compileSource(`
+        type Kind = "a" | "b";
+        interface Item { kind: Kind }
+        const foot: Partial<Record<Kind, number>> = { a: 0.5 };
+        const items: Item[] = [{ kind: "a" }, { kind: "b" }];
+        let total = 0;
+        for (const item of items) {
+            total += 1 - foot[item.kind];
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::js::Nullable<double>/);
+    assert.match(result.cpp, /bbl::js::number_from_optional/);
+});
+
+test("materializes constant-expression tuple tables for runtime break", () => {
+    const result = compileSource(`
+        const TILE = 70;
+        function launch(): number {
+            const shots: readonly [number, number][] = [
+                [-TILE * 2, -TILE * 7.5],
+                [TILE * 2, -TILE * 7.5],
+            ];
+            let total = 0;
+            for (const [vx, vy] of shots) {
+                total += vy;
+                if (vx > 0) break;
+            }
+            return total;
+        }
+        const total = launch();
+    `);
+
+    assert.match(result.cpp, /inline const std::array/);
+    assert.match(result.cpp, /for \(auto&& v_bblite_item_/);
+});
+
+test("materializes runtime-valued static maps as native arrays", () => {
+    const result = compileSource(`
+        let offset = 2;
+        const mapped = ["a", "b"].map((_, index) => offset + index);
+        const picked = mapped[Math.floor(Math.random() * mapped.length)]!;
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<double> v_mapped = bbl::js::Array<double>\{/,
+    );
+    assert.match(result.cpp, /v_mapped\[bbl::js::array_index\(/);
+});
+
+test("returns the value of chained numeric field assignments", () => {
+    const result = compileSource(`
+        interface Box { w: number; h: number }
+        const box: Box = { w: 1, h: 1 };
+        box.w = box.h = 42;
+    `);
+
+    assert.match(result.cpp, /v_box\.w = \(v_box\.h = 42\.0\);/);
+});
+
+test("spreads a native partial struct into a wider struct", () => {
+    const result = compileSource(`
+        interface Options {
+            label?: string;
+            enabled?: boolean;
+        }
+        interface Item {
+            id: number;
+            label?: string;
+            enabled?: boolean;
+        }
+        const options: Options = { label: "ready" };
+        const item: Item = { id: 3, ...options };
+    `);
+
+    assert.match(
+        result.cpp,
+        /if \(v_options\.label\.has_value\(\)\) \{/,
+    );
+    assert.match(
+        result.cpp,
+        /v_item\.label = \*v_options\.label;/,
+    );
+    assert.match(
+        result.cpp,
+        /if \(v_options\.enabled\.has_value\(\)\) \{/,
+    );
+});
+
 test("lowers array callbacks through one native iteration protocol", () => {
     const result = compileSource(`
         const values: number[] = [1, 2, 3];
@@ -1172,6 +1350,45 @@ test("lowers array callbacks through one native iteration protocol", () => {
     assert.match(
         result.cpp,
         /const std::size_t v_bblite_for_each_count_\d+/,
+    );
+});
+
+test("unrolls some over a readonly tuple table", () => {
+    const result = compileSource(`
+        const ranges: ReadonlyArray<readonly [number, number]> = [
+            [1, 3],
+            [8, 10],
+        ];
+        function contains(value: number): boolean {
+            return ranges.some(([first, last]) =>
+                value >= first && value <= last,
+            );
+        }
+        let value = 9;
+        const found = contains(value);
+    `);
+
+    assert.match(
+        result.cpp,
+        /return .*v_fn\d+_first.*v_fn\d+_last.*\|\|.*v_fn\d+_first.*v_fn\d+_last/,
+    );
+});
+
+test("unrolls destructured forEach blocks over readonly tuple tables", () => {
+    const result = compileSource(`
+        const ranges: ReadonlyArray<readonly [number, number]> = [
+            [1, 3],
+            [8, 10],
+        ];
+        const widths: number[] = [];
+        ranges.forEach(([first, last], index) => {
+            if (index === 0) widths.push(last - first);
+        });
+    `);
+
+    assert.equal(
+        result.cpp.match(/v_widths\.push_back/g)?.length,
+        1,
     );
 });
 
@@ -1438,6 +1655,45 @@ test("preserves object identity through a dynamic Record lookup", () => {
     assert.match(result.cpp, /\.get\(v_\w*code\)/);
     assert.match(result.cpp, /static_cast<bool>\(v_\w*entry\)/);
     assert.match(result.cpp, /v_\w*entry->value\+\+;/);
+});
+
+test("keeps generic Record instantiations type-distinct", () => {
+    const result = compileSource(`
+        type Area = "overworld" | "cave";
+        interface Cell { x: number; y: number; }
+        interface World {
+            areas: Record<Area, Cell>;
+            entries: Record<string, Cell>;
+        }
+        const entries: Record<string, Cell> = {
+            start: { x: 1, y: 2 },
+        };
+        const world: World = {
+            areas: {
+                overworld: { x: 3, y: 4 },
+                cave: { x: 5, y: 6 },
+            },
+            entries,
+        };
+    `);
+
+    assert.match(result.cpp, /Generated by bblitec/);
+});
+
+test("materializes Object.values from a closed Record", () => {
+    const result = compileSource(`
+        type Area = "one" | "two";
+        interface Cell { value: number; }
+        function main() {
+            const cells: Record<Area, Cell> = {
+                one: { value: 1 },
+                two: { value: 2 },
+            };
+            const values = Object.values(cells);
+        }
+    `);
+
+    assert.match(result.cpp, /\.begin\(\), .*\.end\(\)/);
 });
 
 test("stores and mutates a runtime string local", () => {
@@ -2169,6 +2425,24 @@ test("inlines function-valued parameters at their call sites", () => {
         )?.length,
         3,
     );
+    const named = compileSource(`
+        function apply(count: number, producer: (index: number) => number): number {
+            let total = 0;
+            for (let index = 0; index < count; index++) {
+                total += producer(index);
+            }
+            return total;
+        }
+        const offset = 5;
+        const produce = (index: number): number => index + offset;
+        const result = apply(2, produce);
+    `);
+    assert.equal(
+        named.cpp.match(
+            /v_fn\d+_total \+= \(v_fn\d+_index \+ 5\.0\);/g,
+        )?.length,
+        2,
+    );
 });
 
 test("keeps mutable locals unfolded when bound as arguments", () => {
@@ -2275,7 +2549,7 @@ test("compiles generated mesh data and the file-texture contract", () => {
     // attaching after the material exists.
     assert.match(
         result.cpp,
-        /bbl::load_file_texture\(v_engine, bbl::asset_path\("[0-9a-f]+-ebf71b300f43563f\.png"\), bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::repeat, bbl::TextureAddressMode::repeat, 1\.0f, 0\.0f\}, false, true\)/,
+        /bbl::load_file_texture\(v_engine, bbl::asset_path\("[0-9a-f]+-ebf71b300f43563f\.png"\), bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::repeat, bbl::TextureAddressMode::repeat, 1\.0f, 0\.0f\}, false, true, false\)/,
     );
     assert.match(
         result.cpp,
@@ -2317,6 +2591,29 @@ test("keeps data URL asset payloads out of the generated manifest", () => {
     assert.match(asset.output, /^[0-9a-f]{8}-inline\.png$/);
 });
 
+test("carries file-texture address modes into the sampler", () => {
+    const result = compileSource(`
+        import { createEngine, loadTexture2D } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            await loadTexture2D(
+                engine,
+                "/textures/nme/ebf71b300f43563f.png",
+                {
+                    addressModeU: "clamp-to-edge",
+                    addressModeV: "mirror-repeat",
+                },
+            );
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /TextureAddressMode::clamp, bbl::TextureAddressMode::mirror/,
+    );
+});
+
 test("carries a base-color image's own encoding, either way", () => {
     // Upstream keeps the format on the `Texture2D` `loadTexture2D` built
     // (`opts.srgb ?? false` picks `rgba8unorm-srgb` or `rgba8unorm`), so the
@@ -2340,10 +2637,11 @@ test("carries a base-color image's own encoding, either way", () => {
                 });
             }
         `).cpp;
-    // `load_file_texture`'s last argument is the requested encoding, and the
-    // attach carries it onto the record's own base-colour lane.
-    assert.match(load(", { srgb: true }"), /bbl::load_file_texture\([^\n]+, true\)/);
-    assert.match(load(""), /bbl::load_file_texture\([^\n]+, false\)/);
+    // The penultimate `load_file_texture` argument is the requested encoding;
+    // premultiplication follows it. The attach carries the encoding onto the
+    // record's own base-colour lane.
+    assert.match(load(", { srgb: true }"), /bbl::load_file_texture\([^\n]+, true, false\)/);
+    assert.match(load(""), /bbl::load_file_texture\([^\n]+, false, false\)/);
     for (const options of [", { srgb: true }", ""]) {
         assert.match(
             load(options),
@@ -4690,6 +4988,35 @@ test("lowers platform listeners through generic engine callbacks", () => {
     assert.doesNotMatch(result.cpp, /addEventListener|preventDefault|document\.hidden/);
 });
 
+test("keeps callback-local declarations inside platform listeners", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            await createEngine({});
+            let on = true;
+            let state = 0;
+            const toggle = {
+                toggle(): boolean {
+                    on = !on;
+                    return on;
+                },
+            };
+            window.addEventListener("keydown", (event) => {
+                if (event.key === "c") {
+                    const nowOn = toggle.toggle();
+                    state = nowOn ? 1 : 0;
+                }
+            });
+        }
+    `);
+
+    const listener = result.cpp.indexOf("bbl::on_key_down");
+    const toggleAssignment = result.cpp.indexOf("v_on = !(v_on)");
+    assert.ok(listener >= 0);
+    assert.ok(toggleAssignment > listener);
+});
+
 test("lowers Uint16Array construction, mutation, and native references", () => {
     const result = compileSource(`
         function write(values: Uint16Array, fill: number): void {
@@ -4872,6 +5199,67 @@ test("materializes static fetched JSON through records, tuples, and typed arrays
     assert.match(result.cpp, /f32_array_from/);
     assert.match(result.cpp, /u32_array_from/);
     assert.doesNotMatch(result.cpp, /fetch|Response|JSON/);
+});
+
+test("preserves static template URLs through text-fetch helpers", () => {
+    const result = compileSource(
+        `
+            async function fetchText(url: string): Promise<string> {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(String(response.status));
+                return response.text();
+            }
+
+            async function load(baseUrl: string): Promise<string> {
+                return fetchText(\`${"${baseUrl}"}.json\`);
+            }
+
+            async function main() {
+                const base = "./fixtures/compiler-modules/static-geometry";
+                const source = await load(base);
+                const label = \`bytes: ${"${source}"}\`;
+            }
+        `,
+        { fileName: "test/compiler-static-text-fetch-entry.ts" },
+    );
+
+    assert.match(result.cpp, /bytes:/);
+    assert.doesNotMatch(result.cpp, /fetch|Response/);
+});
+
+test("lowers global RegExp exec loops and lastIndex", () => {
+    const result = compileSource(`
+        const ATTRIBUTE = /(\\w+)\\s*=\\s*"([^"]*)"/g;
+
+        function names(source: string): string[] {
+            const result: string[] = [];
+            ATTRIBUTE.lastIndex = 0;
+            let match: RegExpExecArray | null;
+            while ((match = ATTRIBUTE.exec(source)) !== null) {
+                result.push(match[1]!);
+            }
+            return result;
+        }
+
+        function main() {
+            const result = names('x="1" y="2"');
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::js::RegExp/);
+    assert.match(result.cpp, /\.last_index = 0\.0/);
+    assert.match(result.cpp, /\.exec\(/);
+});
+
+test("converts runtime strings with Number", () => {
+    const result = compileSource(`
+        function main() {
+            let value = "42";
+            const converted = Number(value);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::js::number_from_string\(v_value\)/);
 });
 
 test("packages a local root-relative binary fetch for native ArrayBuffer reads", () => {
@@ -5431,6 +5819,10 @@ test("compiles Babylon Lite scene 176 transmission, IOR, and volume", () => {
         result.manifest.features.includes("renderer:transmission"),
     );
     assert.match(result.cpp, /bbl::enable_scene_transmission/);
+    assert.match(
+        result.cpp,
+        /bbl::on_before_render\([^]*\[&\]\(\[\[maybe_unused\]\] float /,
+    );
     // The amber body's transmission, IOR, volume, and skybox-mode
     // material state arrive through the glTF loader; the scene's own
     // PBR material carries the skybox-mode backdrop.
@@ -6330,11 +6722,11 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
     assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
+        /\[\[maybe_unused\]\] static double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
     );
     assert.match(
         result.cpp,
-        /\[\[maybe_unused\]\] double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
+        /\[\[maybe_unused\]\] static double v_z = v_engine\.cameras\[v_cam\.value\]\.target\.z;/,
     );
 });
 
@@ -6724,6 +7116,149 @@ test("erases a single-frame yield", () => {
         frameYieldFile,
     );
     assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
+});
+
+test("registers pre-start application animation loops before rendering", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            let elapsed = 0;
+            const tick = (time: number): void => {
+                elapsed = time;
+                requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+            await startEngine(engine);
+        }
+        main();
+    `);
+
+    assert.match(result.cpp, /animation_frame_callbacks\.push_back/);
+    assert.match(
+        result.cpp,
+        /animation_frame_callbacks\.push_back\(\[&\]\(\[\[maybe_unused\]\] double /,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /static_cast<float>\(bbl::pal::performance_milliseconds\(\)\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /post_render_animation_frame_callbacks\.push_back/,
+    );
+    assert.doesNotMatch(result.cpp, /create_scene_context|register_scene/);
+});
+
+test("registers post-start application animation loops after rendering", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            await startEngine(engine);
+            let last = performance.now();
+            let elapsed = 0;
+            let phase = 0;
+            phase = 1;
+            const tick = (time: number): void => {
+                elapsed += time - last;
+                last = time;
+                requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+        }
+        main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /post_render_animation_frame_callbacks\.push_back/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::defer_callback\([^]*static double v_\w*last = bbl::pal::performance_milliseconds\(\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::defer_callback\([^]*static double v_\w*elapsed = 0\.0;/,
+    );
+    assert.match(result.cpp, /v_\w*phase = 1\.0;/);
+    assert.doesNotMatch(result.cpp, /static v_\w*phase = 1\.0;/);
+});
+
+test("lowers recurring browser timers onto the frame conductor", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            let timer: ReturnType<typeof setInterval> | null = null;
+            let ticks = 0;
+            const tick = (): void => {
+                const previous = ticks;
+                ticks = previous + 1;
+                if (ticks > 2 && timer !== null) {
+                    clearInterval(timer);
+                    timer = null;
+                }
+            };
+            timer = setInterval(tick, 30);
+            await startEngine(engine);
+        }
+        main();
+    `);
+
+    assert.match(result.cpp, /bbl::set_interval\(v_engine, \[&\]\(\) \{/);
+    assert.match(result.cpp, /v_\w*previous = v_\w*ticks/);
+    assert.match(result.cpp, /v_\w*ticks = \(v_\w*previous \+ 1\.0\)/);
+    assert.match(result.cpp, /bbl::clear_interval\(v_engine,/);
+    assert.doesNotMatch(result.cpp, /setInterval|clearInterval/);
+});
+
+test("lets recurring timers read persistent factory closure state", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "babylon-lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const makeTimer = () => {
+                let ticks = 0;
+                const tick = (): void => {
+                    const previous = ticks;
+                    ticks = previous + 1;
+                };
+                return { start: (): void => { setInterval(tick, 30); } };
+            };
+            const timer = makeTimer();
+            await startEngine(engine);
+            requestAnimationFrame(() => timer.start());
+        }
+        main();
+    `);
+
+    assert.match(result.cpp, /bbl::set_interval\(v_engine, \[&\]\(\) \{/);
+    assert.match(result.cpp, /v_\w*ticks = \(v_\w*previous \+ 1\.0\)/);
+});
+
+test("refuses recurring timers that capture an outer frame local", () => {
+    assert.throws(
+        () => compileSource(`
+            import { createEngine, startEngine } from "babylon-lite";
+            async function main(): Promise<void> {
+                const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+                const engine = await createEngine(canvas);
+                await startEngine(engine);
+                requestAnimationFrame(() => {
+                    let frameLocal = 0;
+                    setInterval(() => { frameLocal += 1; }, 30);
+                });
+            }
+            main();
+        `),
+        /deferred callback cannot name 'frameLocal'/,
+    );
 });
 
 test("refuses a frame yield inside a loop as the multi-frame wait it is", () => {
@@ -7296,7 +7831,10 @@ test("a mesh search by name selects at run time, with an indexed fallback and th
     assert.match(result.cpp, /\.name = "hero";/);
     // The search is the loaded loop over record names, and the miss
     // selects the fallback...
-    assert.match(result.cpp, /\.name == "hero"/);
+    assert.match(
+        result.cpp,
+        /std::string\([^\n]*\.name\) == std::string\("hero"\)/,
+    );
     assert.match(
         result.cpp,
         /_found_\d+ \? \w*_match_\d+ : \w*_at_\d+/,

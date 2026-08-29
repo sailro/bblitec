@@ -1453,6 +1453,196 @@
           "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
         }
       ]
+    },
+    {
+      "id": "platformer",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/platformer.ts",
+      "reference": {
+        "source": "reference/platformer/babylon-lite-golden.png",
+        "sha256": "42dc4657c0bcf89d7deb4a8bc10f052eaa281b722d1be20d5752ca1cd92163e8"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer.ts",
+          "sha256": "4928cae68f1d39d6170cc4d9ec11466e541f735e1e88304219921fdafa55cb2f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/atlas.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/atlas.ts",
+          "sha256": "9c8341ad68779420f07a2dd0772b201d686c6c18811e28ab8a7c35e676bae2dc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/audio.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/audio.ts",
+          "sha256": "d59b9f8e2814e12c0a030287e79ff9962e9133279de844ec4da8080fd98a3d41"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/constants.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/constants.ts",
+          "sha256": "8d2229b657f5a4351e72dbd2565d5c4eabc794bfd93494aa7d2732f6fb474775"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/crt.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/crt.ts",
+          "sha256": "d514fe3b0622a691ff0ad27f86794d4fa30d5854d055c83355544e6673799b4a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/entities.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/entities.ts",
+          "sha256": "0180c40514c01bc990f59057759edfe049161baa9eada922e6c7e22250ee1e7e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/fire.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/fire.ts",
+          "sha256": "0c5ce1f2b9d1a05d7ec2409656db0988bf628908bda3e32626409fb4fad78d4e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/frames.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/frames.ts",
+          "sha256": "d15b6d9a02a2868edc6bf5f2670832d7549cb3d76b5e1f4ccdc3ad77bff6e5a2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/game.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/game.ts",
+          "sha256": "ade091e7bf87b81ab833ee5086c5fba835fb3171fa48654a6f580e69596767c3"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/hud.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/hud.ts",
+          "sha256": "51dcd87b2b4bb7a6cce1cdde51ba7bcfcc82f8fc7533fd66a47362a5b0e96b61"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/improvements.md",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/improvements.md",
+          "sha256": "9c23f2b9f2c84c1853091586c6af84808f3b2b49e890ae494911906549a46d57"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/input.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/input.ts",
+          "sha256": "00199af34f4a29df9d1b1b3309dd9dc6593fce2e0a0546e3e87b649d6d17d917"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/juice.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/juice.ts",
+          "sha256": "1ee9c39a5ab91e904c7d94fd19763c798066be26dd7e4da56ca18c1e8daf2c26"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/lantern.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/lantern.ts",
+          "sha256": "ed77f4ce96a25aeaad79fc31f2ef81063b8219687c775a71ebdcf127d892a05e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/lava.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/lava.ts",
+          "sha256": "ba056310e6986563ce46a1f02c10b0902319ac8e5abae75a7841662bb42db812"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/level.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/level.ts",
+          "sha256": "591f2a8b370967a87480337401f28635b44c684449a9b3a70927a338bc529a5e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/parallax.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/parallax.ts",
+          "sha256": "6a824adf9788ca05fa79b07a9ab2fa03e6ae9306169d9dc980e4faa9bbe151e4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/physics.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/physics.ts",
+          "sha256": "51c0999c4a19269229225e16a803fc2bf4c638514864a73f990813b69593d435"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/platformer/portal.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/portal.ts",
+          "sha256": "1027fc3674ac5ed213b10e0e0ffd4eeaa9ce1832ba7538dc7668adfc26bd0641"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/License.txt",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/License.txt",
+          "sha256": "7f0b882622737a9a4dbe28cf1235a23548b1e25afa5a483d62bef11aa8502bf5"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/README.md",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/README.md",
+          "sha256": "e0d0451601d7e356b76383304e8033ba24b152e0b667466c42b27781f5031137"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/backgrounds/bg_castle.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/backgrounds/bg_castle.png",
+          "sha256": "87d4c559a19e1791f108c9c90c81804692270576cce8c1cd5022afe7141b332e"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/backgrounds/bg_grasslands.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/backgrounds/bg_grasslands.png",
+          "sha256": "61535667a01b8000eebe073ab3d19ac5177d819482b6b678fda24ca06b478aed"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/backgrounds/bg_shroom.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/backgrounds/bg_shroom.png",
+          "sha256": "287e5007f4c6651ec93a56010411d999faafff276a387a546bfe37b66c017903"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/enemies.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/enemies.png",
+          "sha256": "4aaec959462b17008f3772fa02439d1fa706e431c322fe7d28646e9ac5a059af"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/enemies.xml",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/enemies.xml",
+          "sha256": "411720e0db78d885e4e2bfffcce9adcb2a5239b535fd6da6247f369553eb5cb2"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/hud.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/hud.png",
+          "sha256": "94255f2d20c29739395ad5fc821ceedab189b4606e0e9aca43e08946273d1272"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/hud.xml",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/hud.xml",
+          "sha256": "d8b60d2cda1352bdb342debbc6392f6cb8a33a2567e64baa4cc1aa57f1ef7520"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/items.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/items.png",
+          "sha256": "39cfe4f3847ef0361229fda65320939c75f71a501da8581261f6395c8ad3d17a"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/items.xml",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/items.xml",
+          "sha256": "703f06921fb876e708641fc0ec149f6ba95361150ce91772106a11f908b6a9b2"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/players.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/players.png",
+          "sha256": "6ce673f141cf70c22a4ebd9911ac881b02cd892c09ce19e4fcb123d53d3282fa"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/players.xml",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/players.xml",
+          "sha256": "40621e0ea8ea6197ce5aa0858396f403dc118da8f7e9b52e05769cdb54268915"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/tiles.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/tiles.png",
+          "sha256": "112fe6393b1869a778c2890d45a0347d006eb2889b68f6b78708525eee564dd2"
+        },
+        {
+          "upstreamPath": "lab/public/platformer/tiles.xml",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/platformer/tiles.xml",
+          "sha256": "db8107657047f41010caa9eb0e571388b8c7f4c647f71f80666632af4ca6a218"
+        }
+      ]
     }
   ]
 }

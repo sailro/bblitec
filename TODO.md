@@ -427,13 +427,7 @@ platform boundary.
     premultiplied atlas and blend behind it.
   - Scene 52: `onSceneDispose`, then the HUD-over-scene composition the native
     renderers refuse.
-  - Scene 53: depth-hosted layers, then `spriteBlendOpaque`. Its
-    before-render loop also re-reads `canvas.width`/`canvas.height` to
-    detect resizes, where the compile-time fold to the configured size is
-    only pose-equivalent: integrating it needs those reads, in callback
-    context, lowered to the live render-target size (the engine already
-    acquires it every frame; the pinned `getRenderTargetSize` is the same
-    read, and no corpus scene calls it today).
+  - Scene 53: depth-hosted layers, then `spriteBlendOpaque`.
   - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.

@@ -48,13 +48,12 @@ export function compileSpriteAtlasRecord(
     const premultiplied = property("premultipliedAlpha");
     if (
         texture.kind !== "texture" ||
-        texture.textureStorage === "file" ||
         texture.textureStorage === "solid"
     ) {
         context.fail(
             node,
-            "A data SpriteAtlas currently requires a texture created " +
-                `from pixels; received ${texture.kind} ` +
+            "A data SpriteAtlas requires a file or pixels texture; " +
+                `received ${texture.kind} ` +
                 `${texture.dataType ? JSON.stringify(texture.dataType) : "without data type"}.`,
         );
     }
@@ -82,11 +81,19 @@ export function compileSpriteAtlasRecord(
             "SpriteAtlas textureSizePx requires a 2-tuple.",
         );
     };
-    if (
-        frames.kind !== "data" ||
-        frames.dataType?.kind !== "vector" ||
-        frames.dataType.element.kind !== "struct"
-    ) {
+    const storedFrameType =
+        frames.dataType?.kind === "vector" &&
+        frames.dataType.element.kind === "struct"
+            ? frames.dataType.element
+            : undefined;
+    const storedFrames =
+        frames.kind === "data" && storedFrameType !== undefined;
+    const literalFrames =
+        frames.kind === "tuple" &&
+        frames.tupleElements?.every(
+            (frame) => frame.kind === "record",
+        );
+    if (!storedFrames && !literalFrames) {
         context.fail(
             node,
             "SpriteAtlas frames require an array of frame records.",
@@ -98,43 +105,91 @@ export function compileSpriteAtlasRecord(
             "SpriteAtlas premultipliedAlpha must be boolean.",
         );
     }
-    const frameType = frames.dataType.element;
-    const arrow = context.dataTypes.isReferenceStruct(
-        frameType.name,
-    );
-    const access = (base: string, name: string): string => {
-        const field = context.dataTypes.structField(
-            frameType.name,
-            name,
-            node,
-        );
-        return `${base}${arrow ? "->" : "."}${field.name}`;
-    };
     const engine = context.requireDefaultEngine(node);
     const atlas = context.allocateTemporaryCppName(
         "sprite_atlas",
     );
-    const stored = context.allocateTemporaryCppName(
-        "sprite_frame",
+    const decoded = context.allocateTemporaryCppName(
+        "sprite_atlas_image",
     );
-    const uvMin = access(stored, "uvMin");
-    const uvMax = access(stored, "uvMax");
-    const sourceSize = access(stored, "sourceSizePx");
-    const pivot = access(stored, "pivot");
+    let frameStatements: string;
+    if (storedFrames) {
+        const frameType = storedFrameType!;
+        const arrow = context.dataTypes.isReferenceStruct(
+            frameType.name,
+        );
+        const access = (base: string, name: string): string => {
+            const field = context.dataTypes.structField(
+                frameType.name,
+                name,
+                node,
+            );
+            return `${base}${arrow ? "->" : "."}${field.name}`;
+        };
+        const stored = context.allocateTemporaryCppName(
+            "sprite_frame",
+        );
+        const uvMin = access(stored, "uvMin");
+        const uvMax = access(stored, "uvMax");
+        const sourceSize = access(stored, "sourceSizePx");
+        const pivot = access(stored, "pivot");
+        frameStatements =
+            `for (const auto& ${stored} : ${frames.cpp}) { ` +
+            `${atlas}.frames.push_back(bbl::SpriteFrame{` +
+            `bbl::Vec2{static_cast<float>(${uvMin}[0]), static_cast<float>(${uvMin}[1])}, ` +
+            `bbl::Vec2{static_cast<float>(${uvMax}[0]), static_cast<float>(${uvMax}[1])}, ` +
+            `bbl::Vec2{static_cast<float>(${sourceSize}[0]), static_cast<float>(${sourceSize}[1])}, ` +
+            `bbl::Vec2{static_cast<float>(${pivot}[0]), static_cast<float>(${pivot}[1])}}); } `;
+    } else {
+        const frameProperty = (frame: Value, name: string): Value => {
+            const property = frame.recordProperties?.[name];
+            if (!property) {
+                context.fail(
+                    node,
+                    `SpriteAtlas frame is missing '${name}'.`,
+                );
+            }
+            return property;
+        };
+        frameStatements = (frames.tupleElements ?? [])
+            .map((frame) => {
+                const uvMin = frameProperty(frame, "uvMin");
+                const uvMax = frameProperty(frame, "uvMax");
+                const sourceSize = frameProperty(
+                    frame,
+                    "sourceSizePx",
+                );
+                const pivot = frameProperty(frame, "pivot");
+                return (
+                    `${atlas}.frames.push_back(bbl::SpriteFrame{` +
+                    `bbl::Vec2{static_cast<float>(${tupleLane(uvMin, 0)}), static_cast<float>(${tupleLane(uvMin, 1)})}, ` +
+                    `bbl::Vec2{static_cast<float>(${tupleLane(uvMax, 0)}), static_cast<float>(${tupleLane(uvMax, 1)})}, ` +
+                    `bbl::Vec2{static_cast<float>(${tupleLane(sourceSize, 0)}), static_cast<float>(${tupleLane(sourceSize, 1)})}, ` +
+                    `bbl::Vec2{static_cast<float>(${tupleLane(pivot, 0)}), static_cast<float>(${tupleLane(pivot, 1)})}}); `
+                );
+            })
+            .join("");
+    }
     context.reachJsData();
+    const texturePixels = texture.textureStorage === "file"
+        ? `const auto ${decoded} = bbl::pal::decode_image(bbl::js::ArrayBuffer(${texture.cpp}.data.bytes)); ` +
+          `${atlas}.rgba = ${decoded}.rgba; ` +
+          `if (${texture.cpp}.data.premultiply_alpha) { ` +
+          `bbl::pal::DecodedImage premultiplied{${decoded}.width, ${decoded}.height, ${atlas}.rgba}; ` +
+          `bbl::pal::premultiply_image_alpha(premultiplied); ` +
+          `${atlas}.rgba = std::move(premultiplied.rgba); } `
+        : `${atlas}.rgba = ${texture.cpp}.rgba; `;
+    const sampler = texture.textureStorage === "file"
+        ? `${texture.cpp}.data.sampler`
+        : `${texture.cpp}.sampler`;
     return (
         `([&]() { bbl::SpriteAtlasRecord ${atlas}; ` +
-        `${atlas}.rgba = ${texture.cpp}.rgba; ` +
+        texturePixels +
         `${atlas}.width = bbl::js::to_uint32(${tupleLane(size, 0)}); ` +
         `${atlas}.height = bbl::js::to_uint32(${tupleLane(size, 1)}); ` +
         `${atlas}.premultiplied_alpha = ${premultiplied.cpp}; ` +
-        `${atlas}.mip_maps = false; ${atlas}.sampler = ${texture.cpp}.sampler; ` +
-        `for (const auto& ${stored} : ${frames.cpp}) { ` +
-        `${atlas}.frames.push_back(bbl::SpriteFrame{` +
-        `bbl::Vec2{static_cast<float>(${uvMin}[0]), static_cast<float>(${uvMin}[1])}, ` +
-        `bbl::Vec2{static_cast<float>(${uvMax}[0]), static_cast<float>(${uvMax}[1])}, ` +
-        `bbl::Vec2{static_cast<float>(${sourceSize}[0]), static_cast<float>(${sourceSize}[1])}, ` +
-        `bbl::Vec2{static_cast<float>(${pivot}[0]), static_cast<float>(${pivot}[1])}}); } ` +
+        `${atlas}.mip_maps = false; ${atlas}.sampler = ${sampler}; ` +
+        frameStatements +
         `${engine}.sprite_atlases.push_back(std::move(${atlas})); ` +
         `return bbl::SpriteAtlasHandle{static_cast<std::uint32_t>(${engine}.sprite_atlases.size() - 1)}; }())`
     );

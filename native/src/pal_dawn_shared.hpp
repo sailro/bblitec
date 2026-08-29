@@ -226,6 +226,9 @@ struct DawnDevice {
     WGPUQueue queue = nullptr;
     WGPUSurface surface = nullptr;
     WGPUTextureFormat surface_format = WGPUTextureFormat_BGRA8Unorm;
+    WGPUPresentMode present_mode = WGPUPresentMode_Fifo;
+    std::uint32_t surface_width = 0;
+    std::uint32_t surface_height = 0;
     std::string uncaptured_error;
 };
 
@@ -241,6 +244,42 @@ struct DawnDeviceOptions {
     std::uint32_t max_vertex_attributes = 0;
     std::uint32_t max_color_attachment_bytes_per_sample = 0;
 };
+
+inline void configure_dawn_surface(
+    DawnDevice& state,
+    std::uint32_t width,
+    std::uint32_t height) {
+    WGPUSurfaceConfiguration configuration =
+        WGPU_SURFACE_CONFIGURATION_INIT;
+    configuration.device = state.device;
+    configuration.format = state.surface_format;
+    configuration.usage =
+        WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
+    configuration.width = width;
+    configuration.height = height;
+    configuration.presentMode = state.present_mode;
+    wgpuSurfaceConfigure(state.surface, &configuration);
+    state.surface_width = width;
+    state.surface_height = height;
+}
+
+/** Reconfigure WebGPU when the application-facing canvas size changes. */
+inline bool resize_dawn_surface(
+    DawnDevice& state,
+    const EngineOptions& options) {
+    if (options.width <= 0 || options.height <= 0) return false;
+    const std::uint32_t width =
+        static_cast<std::uint32_t>(options.width);
+    const std::uint32_t height =
+        static_cast<std::uint32_t>(options.height);
+    if (
+        width == state.surface_width &&
+        height == state.surface_height) {
+        return false;
+    }
+    configure_dawn_surface(state, width, height);
+    return true;
+}
 
 inline void create_dawn_device(
     const EngineOptions& engine_options,
@@ -453,24 +492,17 @@ inline void create_dawn_device(
     }
     state.queue = wgpuDeviceGetQueue(state.device);
 
-    WGPUSurfaceConfiguration surface_configuration =
-        WGPU_SURFACE_CONFIGURATION_INIT;
-    surface_configuration.device = state.device;
-    surface_configuration.format = state.surface_format;
-    surface_configuration.usage =
-        WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_CopySrc;
-    surface_configuration.width =
-        static_cast<std::uint32_t>(engine_options.width);
-    surface_configuration.height =
-        static_cast<std::uint32_t>(engine_options.height);
     // Present with vsync like the SDL_GPU backend so the per-frame
     // camera inertia integrates identically across backends;
     // benchmarks keep immediate present (the recorded frame-time
     // numbers depend on it).
-    surface_configuration.presentMode = options.immediate_present
+    state.present_mode = options.immediate_present
         ? WGPUPresentMode_Immediate
         : WGPUPresentMode_Fifo;
-    wgpuSurfaceConfigure(state.surface, &surface_configuration);
+    configure_dawn_surface(
+        state,
+        static_cast<std::uint32_t>(engine_options.width),
+        static_cast<std::uint32_t>(engine_options.height));
 }
 
 inline WGPUShaderModule load_wgsl_module(

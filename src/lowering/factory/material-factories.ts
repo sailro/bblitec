@@ -661,11 +661,13 @@ FileTexture load_file_texture(
     const std::string& path,
     TextureSamplerState sampler,
     bool invert_y,
-    bool srgb) {
+    bool srgb,
+    bool premultiply_alpha) {
     FileTexture texture;
     texture.data.bytes = pal::read_binary_file(path);
     texture.data.sampler = sampler;
     texture.data.invert_y = invert_y;
+    texture.data.premultiply_alpha = premultiply_alpha;
     texture.srgb = srgb;
     return texture;
 }

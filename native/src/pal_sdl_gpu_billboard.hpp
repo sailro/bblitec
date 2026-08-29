@@ -65,7 +65,8 @@ struct BillboardPass {
     int fx_block_slot = -1;
     // The custom shader's own clock: seconds since this system's first
     // frame, which the pin accumulates inside its fx attachment.
-    float elapsed_ms = 0.0f;
+    // Mirrors the JavaScript `number` accumulator until the f32 UBO write.
+    double elapsed_ms = 0.0;
 };
 
 /** The vertex block the reconstructed billboard stage declares. */
@@ -381,7 +382,9 @@ inline void record_billboard_pass(
     if (pass.fx_block_slot >= 0) {
         std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
         upstream::build_sprite_fx_ubo(
-            pass.elapsed_ms / 1000.0f, system.shader_params, fx);
+            static_cast<float>(pass.elapsed_ms / 1000.0),
+            system.shader_params,
+            fx);
         push_stage_uniform(
             command, pass.fx_block_slot, fx.data(), fx.size() * sizeof(float));
     }

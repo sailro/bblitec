@@ -62,6 +62,11 @@ export function createCompilerProgram(
         target: ts.ScriptTarget.ES2022,
         module: ts.ModuleKind.NodeNext,
         moduleResolution: ts.ModuleResolutionKind.NodeNext,
+        // Entry sources target the browser-facing Babylon Lite API. Do not
+        // let ambient packages installed for this compiler (notably
+        // @types/node) change browser globals such as setInterval from their
+        // DOM number handle into NodeJS.Timeout.
+        types: [],
         noEmit: true,
         skipLibCheck: true,
         strict: true,

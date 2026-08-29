@@ -15,6 +15,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import { compileAudioMethodCall } from "./audio-surface.js";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
+import type { DataType } from "./data-types.js";
 import type { NativeFunctionLowerer } from "./native-functions.js";
 import {
     compileImmediatePromise,
@@ -26,8 +27,10 @@ import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompiledNodeParticles,
     Feature,
+    FrameCallbackSignature,
     Value,
     ValueKind,
+    VariableBinding,
 } from "./types.js";
 import type {
     HandleCollections,
@@ -108,7 +111,7 @@ export interface ExpressionContext
     readonly nativeFunctions: NativeFunctionLowerer;
     readonly symbols: CompilerSymbols;
     readonly variableScopes: ReadonlyArray<
-        Map<ts.Symbol, { name: string; value: Value }>
+        Map<ts.Symbol, VariableBinding>
     >;
     unwrap(expression: ts.Expression): ts.Expression;
     expectArgumentCount(
@@ -154,6 +157,10 @@ export interface ExpressionContext
     moduleRelativeAssetUrl(
         expression: ts.Expression,
     ): string | undefined;
+    materializeStaticNativeValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): Value;
     isNumberExpression(
         expression: ts.Expression,
     ): boolean;
@@ -170,7 +177,7 @@ export interface ExpressionContext
     isDeferredCallbackCall(call: ts.CallExpression): boolean;
     compileFrameCallback(
         expression: ts.Expression,
-        signature?: "delta" | "void",
+        signature?: FrameCallbackSignature,
     ): string;
     requireDefaultEngine(node: ts.Node): string;
     evaluateBrowserValue(
@@ -203,6 +210,10 @@ export interface ExpressionContext
         method: string,
     ): Value | undefined;
     compilePlatformCall(call: ts.CallExpression): Value | undefined;
+    compileAnimationFrameCall(call: ts.CallExpression): Value | undefined;
+    compileBrowserGeneratedString(
+        call: ts.CallExpression,
+    ): Value | undefined;
     reachFeature(feature: Feature, site?: ts.Node): void;
     reachJsData(): void;
 }
@@ -219,6 +230,32 @@ export class ExpressionLowerer {
 
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
             return { kind: "json-null", cpp: "" };
+        }
+
+        if (
+            ts.isArrowFunction(unwrapped) ||
+            ts.isFunctionExpression(unwrapped)
+        ) {
+            return {
+                kind: "callback",
+                cpp: "",
+                callbackDeclaration: unwrapped,
+                callbackRecordOwner: {
+                    kind: "record",
+                    cpp: "",
+                    recordScopes: [
+                        ...this.context.variableScopes,
+                    ],
+                },
+            };
+        }
+
+        if (ts.isBinaryExpression(unwrapped)) {
+            const assignment =
+                this.context.dataLowerer.compileAssignmentValue(
+                    unwrapped,
+                );
+            if (assignment) return assignment;
         }
 
         if (
@@ -307,7 +344,13 @@ export class ExpressionLowerer {
             const resolved =
                 this.context.resolveStaticExpression(unwrapped);
             if (resolved !== unwrapped) {
-                return this.compileValue(resolved);
+                const value = this.compileValue(resolved);
+                return value.kind === "regexp"
+                    ? this.context.materializeStaticNativeValue(
+                          unwrapped,
+                          value,
+                      )
+                    : value;
             }
             // A pinned constant a scene imports by name -- pure data the
             // intrinsic families own, not a local.
@@ -433,6 +476,12 @@ export class ExpressionLowerer {
             const owner = this.compileValue(
                 unwrapped.expression,
             );
+            const dataElement =
+                this.context.dataLowerer.compileElementFromValue(
+                    owner,
+                    unwrapped.argumentExpression,
+                );
+            if (dataElement) return dataElement;
             if (owner.kind === "camera-world-matrix") {
                 const index = this.compileValue(
                     unwrapped.argumentExpression,
@@ -515,7 +564,14 @@ export class ExpressionLowerer {
                         key.kind === "string" ||
                         (key.kind === "data" &&
                             key.dataType?.kind === "string");
-                    if (key.kind !== "number" && !dynamicString) {
+                    const dynamicEnum =
+                        key.kind === "data" &&
+                        key.dataType?.kind === "enum";
+                    if (
+                        key.kind !== "number" &&
+                        !dynamicString &&
+                        !dynamicEnum
+                    ) {
                         this.context.fail(
                             unwrapped.argumentExpression,
                             "Dynamic compile-time record access requires a string or numeric key.",
@@ -553,9 +609,23 @@ export class ExpressionLowerer {
                         unwrapped.argumentExpression,
                     );
                     const closedEnumKey =
+                        dynamicEnum ||
                         (keyType.flags & ts.TypeFlags.EnumLike) !== 0 ||
                         (keyType.symbol?.flags ?? 0) & ts.SymbolFlags.Enum;
-                    const resultType = closedEnumKey
+                    const ownerHasOptionalProperties =
+                        this.context.checker
+                            .getTypeAtLocation(unwrapped.expression)
+                            .getProperties()
+                            .some(
+                                (member) =>
+                                    (member.flags & ts.SymbolFlags.Optional) !==
+                                    0,
+                            );
+                    const totalClosedKey =
+                        closedEnumKey &&
+                        indexedType.kind !== "optional" &&
+                        !ownerHasOptionalProperties;
+                    const resultType = totalClosedKey
                         ? valueType
                         : indexedType.kind === "optional"
                             ? indexedType
@@ -570,6 +640,9 @@ export class ExpressionLowerer {
                     const entries = Object.entries(
                         owner.recordProperties ?? {},
                     ).map(([name, value]) => {
+                        if (dynamicEnum) {
+                            return `{${this.context.dataTypes.enumMemberCpp(key.dataType as Extract<DataType, { kind: "enum" }>, name, unwrapped)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                        }
                         if (dynamicString) {
                             return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
                         }
@@ -585,13 +658,15 @@ export class ExpressionLowerer {
                     this.context.reachJsData();
                     const keyCpp = dynamicString
                         ? "std::string"
-                        : "double";
+                        : dynamicEnum
+                          ? this.context.dataTypes.cppType(key.dataType!)
+                          : "double";
                     const mapType =
                         `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
                     const lookup =
                         `([]() -> ${mapType}& { ` +
                         `static ${mapType} values{${entries.join(", ")}}; ` +
-                        `return values; }()).${closedEnumKey ? "at" : "get"}(${key.cpp})`;
+                        `return values; }()).${totalClosedKey ? "at" : "get"}(${key.cpp})`;
                     if (
                         valueType.kind === "struct" &&
                         this.context.dataTypes.isReferenceStruct(
@@ -612,7 +687,7 @@ export class ExpressionLowerer {
                         kind: "data",
                         cpp: lookup,
                         dataType: resultType,
-                        ...(!closedEnumKey
+                        ...(resultType.kind === "optional"
                             ? { preserveUncheckedLookup: true as const }
                             : {}),
                     };
@@ -804,6 +879,31 @@ export class ExpressionLowerer {
                         unwrapped,
                     );
                 if (dataType?.kind !== "vector") {
+                    const elements: Value[] = [];
+                    let staticTuple = true;
+                    for (const element of unwrapped.elements) {
+                        if (ts.isSpreadElement(element)) {
+                            const spread = this.compileValue(
+                                element.expression,
+                            );
+                            if (spread.kind !== "tuple") {
+                                staticTuple = false;
+                                break;
+                            }
+                            elements.push(
+                                ...(spread.tupleElements ?? []),
+                            );
+                        } else {
+                            elements.push(this.laneValue(element));
+                        }
+                    }
+                    if (staticTuple) {
+                        return {
+                            kind: "tuple",
+                            cpp: "",
+                            tupleElements: elements,
+                        };
+                    }
                     this.context.fail(
                         unwrapped,
                         "Array spread requires a concrete native array element type.",
@@ -833,6 +933,7 @@ export class ExpressionLowerer {
                 | ts.Identifier
                 | ts.ArrowFunction
                 | ts.FunctionExpression
+                | ts.MethodDeclaration
             > = {};
             const getters: Record<
                 string,
@@ -876,6 +977,19 @@ export class ExpressionLowerer {
                         );
                     }
                     getters[name] = property;
+                    continue;
+                }
+                if (ts.isMethodDeclaration(property)) {
+                    const name = this.context.propertyName(
+                        property.name,
+                    );
+                    if (!name) {
+                        this.context.fail(
+                            property.name,
+                            "Static record methods require literal names.",
+                        );
+                    }
+                    methods[name] = property;
                     continue;
                 }
                 if (ts.isPropertyAssignment(property)) {
@@ -927,7 +1041,7 @@ export class ExpressionLowerer {
                 } else {
                     this.context.fail(
                         property,
-                        "Static records support property assignments, getters, and properties naming a local function.",
+                        "Static records support property assignments, methods, getters, and properties naming a local function.",
                     );
                 }
             }
@@ -971,6 +1085,35 @@ export class ExpressionLowerer {
         }
         if (ts.isTemplateExpression(unwrapped)) {
             return this.compileTemplate(unwrapped);
+        }
+        if (ts.isRegularExpressionLiteral(unwrapped)) {
+            const literal = unwrapped.text;
+            const delimiter = literal.lastIndexOf("/");
+            if (delimiter <= 0) {
+                this.context.fail(unwrapped, "Malformed regular expression literal.");
+            }
+            const flags = literal.slice(delimiter + 1);
+            for (const flag of flags) {
+                if (flag !== "g" && flag !== "i") {
+                    this.context.fail(
+                        unwrapped,
+                        `Reached RegExp literals support the g and i flags, not '${flag}'.`,
+                    );
+                }
+            }
+            // Slash delimits a JavaScript literal but has no syntactic role
+            // once the pattern is handed to std::regex as a string.
+            const pattern = literal
+                .slice(1, delimiter)
+                .replaceAll("\\/", "/");
+            this.context.reachJsData();
+            return {
+                kind: "regexp",
+                cpp:
+                    `bbl::js::RegExp(${this.context.cppString(pattern)}, ` +
+                    `${flags.includes("g") ? "true" : "false"}, ` +
+                    `${flags.includes("i") ? "true" : "false"})`,
+            };
         }
         if (
             ts.isStringLiteral(unwrapped) ||
@@ -1171,36 +1314,47 @@ export class ExpressionLowerer {
                 expression.head.text,
             )})`,
         ];
+        let compiledStaticText = expression.head.text;
+        let allCompiledValuesAreStatic = true;
         expression.templateSpans.forEach((span) => {
             const value = this.compileValue(
                 span.expression,
             );
             if (value.staticString !== undefined) {
+                compiledStaticText += value.staticString;
                 parts.push(
                     this.context.cppString(
                         value.staticString,
                     ),
                 );
             } else if (value.staticNumber !== undefined) {
+                compiledStaticText += String(value.staticNumber);
                 parts.push(
                     this.context.cppString(
                         String(value.staticNumber),
                     ),
                 );
             } else if (value.kind === "number") {
+                allCompiledValuesAreStatic = false;
                 parts.push(
                     `bbl::js::number_to_string(${value.cpp})`,
                 );
             } else if (value.kind === "boolean") {
+                allCompiledValuesAreStatic = false;
                 parts.push(
                     `std::string(${value.cpp} ? "true" : "false")`,
                 );
+            } else if (value.kind === "string") {
+                allCompiledValuesAreStatic = false;
+                parts.push(value.cpp);
             } else if (
                 value.kind === "data" &&
                 value.dataType?.kind === "string"
             ) {
+                allCompiledValuesAreStatic = false;
                 parts.push(value.cpp);
             } else if (value.kind === "json-null") {
+                compiledStaticText += "null";
                 parts.push(this.context.cppString("null"));
             } else {
                 this.context.fail(
@@ -1213,7 +1367,15 @@ export class ExpressionLowerer {
                     span.literal.text,
                 ),
             );
+            compiledStaticText += span.literal.text;
         });
+        if (allCompiledValuesAreStatic) {
+            return {
+                kind: "string",
+                cpp: this.context.cppString(compiledStaticText),
+                staticString: compiledStaticText,
+            };
+        }
         this.context.reachJsData();
         return {
             kind: "data",
@@ -1272,7 +1434,8 @@ export class ExpressionLowerer {
                     continue;
                 }
                 this.context.emit(
-                    value.requiresExplicitDiscard
+                    value.kind !== "void" ||
+                        value.requiresExplicitDiscard
                         ? `static_cast<void>(${value.cpp});`
                         : `${value.cpp};`,
                 );
@@ -1351,6 +1514,28 @@ export class ExpressionLowerer {
             call.arguments[1]!,
         );
         if (delay !== 0) {
+            const callback = this.context.unwrap(
+                call.arguments[0]!,
+            );
+            const body =
+                ts.isArrowFunction(callback) ||
+                ts.isFunctionExpression(callback)
+                    ? callback.body
+                    : undefined;
+            const browserOnly = body
+                ? ts.isBlock(body)
+                    ? body.statements.every(
+                          (statement) =>
+                              ts.isExpressionStatement(statement) &&
+                              this.context.isBrowserOnlyExpression(
+                                  statement.expression,
+                              ),
+                      )
+                    : this.context.isBrowserOnlyExpression(body)
+                : false;
+            if (browserOnly) {
+                return { kind: "void", cpp: "" };
+            }
             this.context.fail(
                 call.arguments[1]!,
                 "Only a zero-delay setTimeout is lowered: it means " +
@@ -1561,6 +1746,9 @@ export class ExpressionLowerer {
         if (promise) {
             return promise;
         }
+        const browserGenerated =
+            this.context.compileBrowserGeneratedString(call);
+        if (browserGenerated) return browserGenerated;
         // `setTimeout(callback, 0)`: run once, after the current turn.
         // Every other browser call erases; this one is implemented,
         // because the frame conductor already has that boundary and the
@@ -1583,6 +1771,15 @@ export class ExpressionLowerer {
             };
         }
         const callee = this.context.unwrap(call.expression);
+        if (
+            ts.isIdentifier(callee) &&
+            callee.text === "requestAnimationFrame" &&
+            !this.context.lookupOptional(callee)
+        ) {
+            const animationFrame =
+                this.context.compileAnimationFrameCall(call);
+            if (animationFrame) return animationFrame;
+        }
         if (ts.isPropertyAccessExpression(callee)) {
             if (
                 ts.isIdentifier(callee.expression) &&
@@ -1592,6 +1789,22 @@ export class ExpressionLowerer {
             ) {
                 this.context.expectArgumentCount(call, 1, 1);
                 const object = this.compileValue(call.arguments[0]!);
+                const resultType =
+                    this.context.dataLowerer.dataTypeAt(call);
+                if (
+                    object.kind === "data" &&
+                    object.dataType?.kind === "enummap" &&
+                    resultType?.kind === "vector"
+                ) {
+                    this.context.reachJsData();
+                    return {
+                        kind: "data",
+                        cpp:
+                            `bbl::js::Array<${this.context.dataTypes.cppType(resultType.element)}>` +
+                            `(${object.cpp}.begin(), ${object.cpp}.end())`,
+                        dataType: resultType,
+                    };
+                }
                 if (object.kind !== "record") {
                     this.context.fail(
                         call.arguments[0]!,
@@ -1601,8 +1814,6 @@ export class ExpressionLowerer {
                 const values = Object.values(
                     object.recordProperties ?? {},
                 );
-                const resultType =
-                    this.context.dataLowerer.dataTypeAt(call);
                 if (resultType?.kind === "vector") {
                     this.context.reachJsData();
                     return {
@@ -1642,6 +1853,20 @@ export class ExpressionLowerer {
                     dataType: { kind: "string" },
                 };
             }
+            if (callee.name.text === "toString") {
+                const owner = this.compileValue(
+                    callee.expression,
+                );
+                if (owner.kind === "number") {
+                    this.context.expectArgumentCount(call, 0, 0);
+                    this.context.reachJsData();
+                    return {
+                        kind: "data",
+                        cpp: `bbl::js::number_to_string(${owner.cpp})`,
+                        dataType: { kind: "string" },
+                    };
+                }
+            }
             const staticOwner = this.compileStaticOwner(
                 callee.expression,
             );
@@ -1660,6 +1885,34 @@ export class ExpressionLowerer {
                 );
                 if (mapped) return mapped;
             }
+            const regexpOwner = ts.isIdentifier(callee.expression)
+                ? this.context.lookupOptional(callee.expression)
+                : undefined;
+            if (regexpOwner?.kind === "regexp") {
+                if (callee.name.text !== "exec") {
+                    this.context.fail(
+                        callee.name,
+                        `RegExp method '${callee.name.text}' is not supported.`,
+                    );
+                }
+                this.context.expectArgumentCount(call, 1, 1);
+                const input = this.context.dataLowerer.compileForSink(
+                    call.arguments[0]!,
+                    { kind: "string" },
+                );
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: `${regexpOwner.cpp}.exec(${input})`,
+                    dataType: {
+                        kind: "optional",
+                        inner: {
+                            kind: "vector",
+                            element: { kind: "string" },
+                        },
+                    },
+                };
+            }
             // The handle-collection concept owns the collection calls; the
             // three dispatch positions stay exactly where the arms sat so
             // the resolution order a call site observes is unchanged.
@@ -1673,6 +1926,11 @@ export class ExpressionLowerer {
                 this.context.dataLowerer.compileMathCall(call);
             if (math) {
                 return math;
+            }
+            const arrayFrom =
+                this.context.dataLowerer.compileArrayFrom(call);
+            if (arrayFrom) {
+                return arrayFrom;
             }
             const method =
                 this.context.dataLowerer.compileDataMethodCall(
@@ -1844,6 +2102,16 @@ export class ExpressionLowerer {
             );
         }
 
+        if (
+            callee.text === "Number" &&
+            !this.context.lookupOptional(callee)
+        ) {
+            this.context.expectArgumentCount(call, 1, 1);
+            return this.compileNumberConversion(
+                call.arguments[0]!,
+            );
+        }
+
         const fetched = this.context.compileStaticFetch(
             call,
             callee,
@@ -1950,10 +2218,67 @@ export class ExpressionLowerer {
         );
     }
 
+    private compileNumberConversion(
+        expression: ts.Expression,
+    ): Value {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            const optional = this.compileValue(unwrapped.left);
+            if (
+                optional.kind === "data" &&
+                optional.dataType?.kind === "optional" &&
+                (optional.dataType.inner.kind === "string" ||
+                    optional.dataType.inner.kind === "number")
+            ) {
+                const fallback = this.compileNumberConversion(
+                    unwrapped.right,
+                );
+                const present = optional.dataType.inner.kind === "string"
+                    ? `bbl::js::number_from_string(*v)`
+                    : `static_cast<double>(*v)`;
+                this.context.reachJsData();
+                return {
+                    kind: "number",
+                    cpp:
+                        `([&]() { auto v = ${optional.cpp}; ` +
+                        `return v.has_value() ? ${present} : ${fallback.cpp}; }())`,
+                    dataType: { kind: "number" },
+                };
+            }
+        }
+        const value = this.compileValue(unwrapped);
+        if (value.kind === "number") return value;
+        if (
+            value.kind === "string" ||
+            (value.kind === "data" &&
+                value.dataType?.kind === "string")
+        ) {
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp: `bbl::js::number_from_string(${value.cpp})`,
+                dataType: { kind: "number" },
+            };
+        }
+        this.context.fail(
+            expression,
+            `Number() supports number and string values, received ${value.kind}.`,
+        );
+    }
+
     private compileStaticOwner(
         expression: ts.Expression,
     ): Value | undefined {
         const unwrapped = this.context.unwrap(expression);
+        if (ts.isArrayLiteralExpression(unwrapped)) {
+            return this.staticContainer(
+                this.compileValue(unwrapped),
+            );
+        }
         if (ts.isIdentifier(unwrapped)) {
             return this.staticContainer(
                 this.context.lookupOptional(unwrapped),
@@ -2011,13 +2336,18 @@ export class ExpressionLowerer {
         owner: Value,
         method: string,
     ): Value | undefined {
-        if (owner.kind !== "tuple" || method !== "map") {
+        if (
+            owner.kind !== "tuple" ||
+            (method !== "map" &&
+                method !== "some" &&
+                method !== "forEach")
+        ) {
             return undefined;
         }
         if (call.arguments.length !== 1) {
             this.context.fail(
                 call,
-                "Compile-time Array.map requires exactly one callback and no thisArg.",
+                `Compile-time Array.${method} requires exactly one callback and no thisArg.`,
             );
         }
         const callback = this.context.unwrap(call.arguments[0]!);
@@ -2028,29 +2358,205 @@ export class ExpressionLowerer {
         ) {
             this.context.fail(
                 callback,
-                "Compile-time Array.map requires a local function or function literal callback.",
+                `Compile-time Array.${method} requires a local function or function literal callback.`,
             );
         }
         const elements = owner.tupleElements ?? [];
+        const results = elements.map((element, index) =>
+            this.compileStaticTupleCallback(
+                callback,
+                [
+                    element,
+                    {
+                        kind: "number",
+                        cpp: `${index}.0f`,
+                        staticNumber: index,
+                    },
+                    owner,
+                ],
+                call,
+            ),
+        );
+        if (method === "forEach") {
+            return { kind: "void", cpp: "" };
+        }
+        if (method === "some") {
+            for (const result of results) {
+                if (result.kind !== "boolean") {
+                    this.context.fail(
+                        callback,
+                        "Compile-time Array.some callback must return a boolean value.",
+                    );
+                }
+            }
+            return {
+                kind: "boolean",
+                cpp:
+                    results.length === 0
+                        ? "false"
+                        : results
+                              .map((result) => `(${result.cpp})`)
+                              .join(" || "),
+                dataType: { kind: "boolean" },
+            };
+        }
+        const mappedType =
+            this.context.dataLowerer.dataTypeAt(call);
+        if (
+            mappedType?.kind === "vector" &&
+            results.some(
+                (result) =>
+                    result.staticNumber === undefined &&
+                    result.staticString === undefined &&
+                    result.kind !== "boolean" &&
+                    result.kind !== "tuple" &&
+                    result.kind !== "record",
+            )
+        ) {
+            const elementType = mappedType.element;
+            const elementCpp =
+                this.context.dataTypes.cppType(
+                    elementType,
+                );
+            const values = results.map((result) =>
+                this.context.dataLowerer.compileKnownValueForSink(
+                    result,
+                    elementType,
+                    call,
+                ),
+            );
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: `bbl::js::Array<${elementCpp}>{${values.join(", ")}}`,
+                dataType: mappedType,
+            };
+        }
         return {
             kind: "tuple",
             cpp: "",
-            tupleElements: elements.map((element, index) =>
-                this.context.userFunctions.compileCallbackWithValues(
-                    this.context,
-                    callback,
-                    [
-                        element,
-                        {
-                            kind: "number",
-                            cpp: `${index}.0f`,
-                            staticNumber: index,
-                        },
-                        owner,
-                    ],
-                    call,
-                ),
-            ),
+            tupleElements: results,
         };
+    }
+
+    /**
+     * Invoke a statically unrolled tuple callback. The ordinary user-function
+     * path owns identifier parameters; this small extension owns the array
+     * binding pattern JavaScript commonly uses for tuple tables
+     * (`ranges.some(([first, last]) => ...)`).
+     */
+    private compileStaticTupleCallback(
+        callback:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression,
+        arguments_: readonly Value[],
+        call: ts.CallExpression,
+    ): Value {
+        if (
+            ts.isIdentifier(callback) ||
+            callback.parameters.length === 0 ||
+            !ts.isArrayBindingPattern(
+                callback.parameters[0]!.name,
+            )
+        ) {
+            return this.context.userFunctions.compileCallbackWithValues(
+                this.context,
+                callback,
+                arguments_,
+                call,
+            );
+        }
+        const tuple = arguments_[0];
+        if (tuple?.kind !== "tuple") {
+            this.context.fail(
+                callback.parameters[0]!,
+                "Array binding callback requires a tuple element.",
+            );
+        }
+        this.context.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
+        try {
+            const pattern = callback.parameters[0]!
+                .name as ts.ArrayBindingPattern;
+            pattern.elements.forEach((binding, index) => {
+                if (ts.isOmittedExpression(binding)) return;
+                if (
+                    !ts.isIdentifier(binding.name) ||
+                    binding.initializer ||
+                    binding.dotDotDotToken
+                ) {
+                    this.context.fail(
+                        binding,
+                        "Static tuple callback bindings must be plain identifiers.",
+                    );
+                }
+                const value = tuple.tupleElements?.[index];
+                if (!value) {
+                    this.context.fail(
+                        binding,
+                        "Static tuple callback binding exceeds the tuple width.",
+                    );
+                }
+                this.context.bindLocalValue(binding.name, value);
+            });
+            callback.parameters
+                .slice(1)
+                .forEach((parameter, index) => {
+                    if (
+                        !ts.isIdentifier(parameter.name) ||
+                        parameter.dotDotDotToken ||
+                        parameter.initializer
+                    ) {
+                        this.context.fail(
+                            parameter,
+                            "Static tuple callback parameters after the binding must be plain identifiers.",
+                        );
+                    }
+                    const value = arguments_[index + 1];
+                    if (!value) {
+                        this.context.fail(
+                            parameter,
+                            "Static tuple callback declares more parameters than the operation supplies.",
+                        );
+                    }
+                    this.context.bindCompileTimeValue(
+                        parameter.name,
+                        value,
+                    );
+                });
+            if (ts.isBlock(callback.body)) {
+                let hasReturn = false;
+                const findReturn = (node: ts.Node): void => {
+                    if (hasReturn) return;
+                    if (ts.isReturnStatement(node)) {
+                        hasReturn = true;
+                        return;
+                    }
+                    if (
+                        node !== callback.body &&
+                        ts.isFunctionLike(node)
+                    ) {
+                        return;
+                    }
+                    ts.forEachChild(node, findReturn);
+                };
+                findReturn(callback.body);
+                if (hasReturn) {
+                    this.context.fail(
+                        callback.body,
+                        "Destructured static tuple block callbacks do not support return statements.",
+                    );
+                }
+                for (const statement of callback.body.statements) {
+                    this.context.emitStatement(statement);
+                }
+                return { kind: "void", cpp: "" };
+            }
+            return this.context.compileValue(callback.body);
+        } finally {
+            this.context.popScope();
+        }
     }
 }

@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "pal_platform_events.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
 #if BBLITE_HAS_EFFECT_TASK
@@ -526,11 +527,14 @@ bool run_frame_graph_gpu_engine(Engine& engine) {
         FrameClock clock;
         bool running = true;
         long frame = 0;
+        KeyboardReplay keyboard_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                handle_platform_event(event, engine);
             }
+            keyboard_replay.dispatch(frame, engine);
             (void)advance_frame(
                 engine,
                 context,
@@ -650,6 +654,7 @@ bool run_frame_graph_gpu_engine(Engine& engine) {
             } else if (!SDL_SubmitGPUCommandBuffer(command)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             }
+            finish_frame(engine);
             ++frame;
         }
         if (!SDL_WaitForGPUIdle(state.gpu.device)) {

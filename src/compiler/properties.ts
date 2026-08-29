@@ -327,6 +327,13 @@ const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "audio-context",
+        property: "state",
+        value: "data",
+        helper: "bbl::pal::audio_state",
+        dataType: { kind: "string" },
+    },
+    {
+        owner: "audio-context",
         property: "destination",
         value: "audio-node",
         helper: "bbl::pal::audio_destination",

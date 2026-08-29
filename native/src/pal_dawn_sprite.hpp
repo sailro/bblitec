@@ -68,7 +68,10 @@ struct DawnSpriteLayer {
     bool uploaded = false;
     // The custom shader's own clock: seconds since this layer's first
     // frame, which the pin accumulates inside the layer's fx attachment.
-    float elapsed_ms = 0.0f;
+    // JavaScript `number` accumulation stays double precision; only the
+    // final SpriteFx UBO write narrows to f32.
+    double elapsed_ms = 0.0;
+    bool owns_atlas_texture = true;
 };
 
 /** One registered `SpriteRenderer`, as GPU resources. */
@@ -127,7 +130,7 @@ inline WGPUBuffer dawn_sprite_uniform_buffer(
 inline std::array<WGPUBindGroupLayout, 4>
 create_dawn_sprite_layer_layouts(
     WGPUDevice device,
-    bool custom_shader,
+    std::uint32_t custom_shader,
     std::size_t extra_textures) {
     std::array<WGPUBindGroupLayout, 4> layouts{};
 
@@ -196,7 +199,7 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     const std::array<WGPUBindGroupLayout, 4>& group_layouts,
     const SpriteBlendDescriptor& blend,
     bool scroll,
-    bool custom_shader,
+    std::uint32_t custom_shader,
     WGPUTextureFormat target_format) {
     WGPUShaderModule vertex_module = load_wgsl_module(
         device,
@@ -204,9 +207,11 @@ inline WGPURenderPipeline create_dawn_sprite_layer_pipeline(
     // The custom program replaces the fragment stage alone -- the pin
     // composes it from the same prologue -- so it pairs with whichever
     // vertex stage the layout chose.
+    const std::string fragment_name =
+        sprite_fragment_shader_name(custom_shader);
     WGPUShaderModule fragment_module = load_wgsl_module(
         device,
-        custom_shader ? "sprite_custom.frag" : "sprite.frag");
+        fragment_name);
 
     // The generated instance layout (sprite_layer.hpp, from
     // sprite-pipeline.ts): the pure-2D attributes at their pinned byte
@@ -316,6 +321,8 @@ inline DawnSpriteLayer build_dawn_sprite_layer(
     WGPUQueue queue,
     Engine& engine,
     Sprite2DLayerHandle handle,
+    const std::vector<WGPUTexture>& render_textures,
+    const std::vector<WGPUTextureView>& render_texture_views,
     WGPUTextureFormat target_format) {
     const Sprite2DLayerRecord& layer =
         engine.sprite_layers[handle.value];
@@ -352,14 +359,21 @@ inline DawnSpriteLayer build_dawn_sprite_layer(
 
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas texels
     // reach the blend stage as the bytes on disk.
-    gpu.atlas = upload_dawn_rgba_texture(
-        device,
-        queue,
-        atlas.rgba.data(),
-        atlas.rgba.size(),
-        atlas.width,
-        atlas.height);
-    gpu.atlas_view = wgpuTextureCreateView(gpu.atlas, nullptr);
+    if (atlas.has_render_texture) {
+        gpu.atlas = render_textures[atlas.render_texture.value];
+        gpu.atlas_view =
+            render_texture_views[atlas.render_texture.value];
+        gpu.owns_atlas_texture = false;
+    } else {
+        gpu.atlas = upload_dawn_rgba_texture(
+            device,
+            queue,
+            atlas.rgba.data(),
+            atlas.rgba.size(),
+            atlas.width,
+            atlas.height);
+        gpu.atlas_view = wgpuTextureCreateView(gpu.atlas, nullptr);
+    }
 
     // The pinned sampler, derived from the record like the SDL_GPU
     // pass: the atlas loader stamps clamp both axes, no mip chain,
@@ -430,8 +444,12 @@ inline void release_dawn_sprite_layer(DawnSpriteLayer& layer) {
     }
     if (layer.sampler) wgpuSamplerRelease(layer.sampler);
     release_dawn_extra_textures(layer.extras);
-    if (layer.atlas_view) wgpuTextureViewRelease(layer.atlas_view);
-    if (layer.atlas) wgpuTextureRelease(layer.atlas);
+    if (layer.owns_atlas_texture && layer.atlas_view) {
+        wgpuTextureViewRelease(layer.atlas_view);
+    }
+    if (layer.owns_atlas_texture && layer.atlas) {
+        wgpuTextureRelease(layer.atlas);
+    }
     if (layer.pipeline) wgpuRenderPipelineRelease(layer.pipeline);
     if (layer.instances) wgpuBufferRelease(layer.instances);
     if (layer.vertex_uniforms) {
@@ -468,7 +486,9 @@ inline void rebuild_dawn_sprite_pass_layers(
     WGPUDevice device,
     WGPUQueue queue,
     Engine& engine,
-    DawnSpritePass& pass) {
+    DawnSpritePass& pass,
+    const std::vector<WGPUTexture>& render_textures,
+    const std::vector<WGPUTextureView>& render_texture_views) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     std::vector<DawnSpriteLayer> next;
@@ -486,7 +506,13 @@ inline void rebuild_dawn_sprite_pass_layers(
             continue;
         }
         next.push_back(build_dawn_sprite_layer(
-            device, queue, engine, handle, pass.target_format));
+            device,
+            queue,
+            engine,
+            handle,
+            render_textures,
+            render_texture_views,
+            pass.target_format));
     }
     // Whatever is left was dropped from the list.
     release_dawn_sprite_pass_layers(pass);
@@ -502,11 +528,19 @@ inline void sync_dawn_sprite_pass_layers(
     WGPUDevice device,
     WGPUQueue queue,
     Engine& engine,
-    DawnSpritePass& pass) {
+    DawnSpritePass& pass,
+    const std::vector<WGPUTexture>& render_textures,
+    const std::vector<WGPUTextureView>& render_texture_views) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     if (renderer.layers_version == pass.layers_version) return;
-    rebuild_dawn_sprite_pass_layers(device, queue, engine, pass);
+    rebuild_dawn_sprite_pass_layers(
+        device,
+        queue,
+        engine,
+        pass,
+        render_textures,
+        render_texture_views);
 }
 
 inline DawnSpritePass create_dawn_sprite_pass(
@@ -514,6 +548,8 @@ inline DawnSpritePass create_dawn_sprite_pass(
     WGPUQueue queue,
     Engine& engine,
     SpriteRendererHandle renderer_handle,
+    const std::vector<WGPUTexture>& render_textures,
+    const std::vector<WGPUTextureView>& render_texture_views,
     WGPUTextureFormat target_format) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[renderer_handle.value];
@@ -543,7 +579,13 @@ inline DawnSpritePass create_dawn_sprite_pass(
     }
 
     pass.target_format = target_format;
-    rebuild_dawn_sprite_pass_layers(device, queue, engine, pass);
+    rebuild_dawn_sprite_pass_layers(
+        device,
+        queue,
+        engine,
+        pass,
+        render_textures,
+        render_texture_views);
     return pass;
 }
 
@@ -593,7 +635,9 @@ inline void upload_dawn_sprite_pass(
             gpu.elapsed_ms += delta_ms;
             std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
             upstream::build_sprite_fx_ubo(
-                gpu.elapsed_ms / 1000.0f, layer.shader_params, fx);
+                static_cast<float>(gpu.elapsed_ms / 1000.0),
+                layer.shader_params,
+                fx);
             wgpuQueueWriteBuffer(
                 queue, gpu.fx_uniforms, 0, fx.data(), sizeof(fx));
         }

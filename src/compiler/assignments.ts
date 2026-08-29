@@ -769,6 +769,31 @@ export function emitPropertyAssignment(
         expression,
     );
     const left = expression.left;
+    const regexpOwner = ts.isIdentifier(left.expression)
+        ? context.lookupOptional(left.expression) ??
+          (context.checker.getTypeAtLocation(left.expression).symbol
+              ?.name === "RegExp"
+              ? context.compileValue(left.expression)
+              : undefined)
+        : undefined;
+    if (regexpOwner?.kind === "regexp") {
+        if (left.name.text !== "lastIndex") {
+            context.fail(
+                left.name,
+                `RegExp property '${left.name.text}' is not writable.`,
+            );
+        }
+        if (operator !== "=") {
+            context.fail(
+                expression.operatorToken,
+                "RegExp.lastIndex requires a simple assignment.",
+            );
+        }
+        context.emit(
+            `${regexpOwner.cpp}.last_index = ${context.compileNumber(expression.right, "double")};`,
+        );
+        return;
+    }
     if (
         emitDeterministicRandomInstall(
             context,

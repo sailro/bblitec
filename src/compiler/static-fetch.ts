@@ -39,6 +39,15 @@ export function compileStaticFetch(
             "Generation-time fetch requires exactly one static URL argument.",
         );
     }
+    if (ts.isIdentifier(call.arguments[0]!)) {
+        const bound = context.lookupOptional(call.arguments[0]!);
+        if (bound && bound.staticString === undefined) {
+            context.fail(
+                call.arguments[0]!,
+                `Generation-time fetch URL '${call.arguments[0]!.text}' lost its static value (${bound.kind}: ${bound.cpp}).`,
+            );
+        }
+    }
     const logicalSource = context.compileStringLiteral(call.arguments[0]!);
     const source = resolveBundledAsset(
         logicalSource,
@@ -78,10 +87,35 @@ export function compileStaticFetchMethod(
             dataType: { kind: "arraybuffer" },
         };
     }
+    if (method === "text") {
+        if (call.arguments.length !== 0) {
+            context.fail(call, "Response.text() takes no arguments.");
+        }
+        let source: string;
+        try {
+            const bytes = readAssetBytesSync(
+                owner.staticString ?? "",
+                context.options.fileName,
+            );
+            source = new TextDecoder().decode(bytes);
+        } catch (error: unknown) {
+            context.fail(
+                call,
+                `Generation-time fetch of '${owner.staticString ?? ""}' failed: ${
+                    error instanceof Error ? error.message : String(error)
+                }`,
+            );
+        }
+        return {
+            kind: "string",
+            cpp: context.cppString(source),
+            staticString: source,
+        };
+    }
     if (method !== "json") {
         context.fail(
             call.expression,
-            `Generation-time fetch responses support json() and arrayBuffer(), not '${method}()'.`,
+            `Generation-time fetch responses support json(), text(), and arrayBuffer(), not '${method}()'.`,
         );
     }
     if (call.arguments.length !== 0) {

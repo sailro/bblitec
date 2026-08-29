@@ -1295,6 +1295,36 @@ void grow_sprite_capacity(
     layer.capacity = capacity;
 }
 
+void populate_grid_sprite_atlas_frames(
+    SpriteAtlasRecord& atlas,
+    const GridSpriteAtlasOptions& options) {
+    const double cell_w = options.cell_width_px;
+    const double cell_h = options.cell_height_px;
+    const double margin = options.margin_px;
+    const double spacing = options.spacing_px;
+    const double tw = static_cast<double>(atlas.width);
+    const double th = static_cast<double>(atlas.height);
+    const double columns = options.has_columns
+        ? options.columns
+        : std::max(1.0, std::floor(
+              (tw - margin * 2.0 + spacing) / (cell_w + spacing)));
+    const double rows = options.has_rows
+        ? options.rows
+        : std::max(1.0, std::floor(
+              (th - margin * 2.0 + spacing) / (cell_h + spacing)));
+    for (double r = 0.0; r < rows; r += 1.0) {
+        for (double c = 0.0; c < columns; c += 1.0) {
+            const double x = margin + c * (cell_w + spacing);
+            const double y = margin + r * (cell_h + spacing);
+            atlas.frames.push_back(SpriteFrame{
+                Vec2{static_cast<float>(x / tw), static_cast<float>(y / th)},
+                Vec2{static_cast<float>((x + cell_w) / tw), static_cast<float>((y + cell_h) / th)},
+                Vec2{static_cast<float>(cell_w), static_cast<float>(cell_h)},
+                options.pivot});
+        }
+    }
+}
+
 } // namespace
 
 // sprite-2d-uvscroll.ts ensureWide: widen a layer from the narrow base
@@ -1377,19 +1407,12 @@ ${decodeAtlasImageCpp()}
     atlas.premultiplied_alpha = options.premultiplied_alpha;
     if (options.premultiply_on_load) {
         // createImageBitmap({ premultiplyAlpha: "premultiply" }).
-        for (std::size_t index = 0; index + 3 < atlas.rgba.size();
-             index += 4) {
-            const std::uint32_t alpha = atlas.rgba[index + 3];
-            for (std::size_t channel = 0; channel < 3; ++channel) {
-                atlas.rgba[index + channel] =
-                    static_cast<std::uint8_t>(
-                        (static_cast<std::uint32_t>(
-                             atlas.rgba[index + channel]) *
-                             alpha +
-                         127u) /
-                        255u);
-            }
-        }
+        pal::DecodedImage premultiplied{
+            static_cast<int>(atlas.width),
+            static_cast<int>(atlas.height),
+            std::move(atlas.rgba)};
+        pal::premultiply_image_alpha(premultiplied);
+        atlas.rgba = std::move(premultiplied.rgba);
     }
     // The pinned sampler: clamp both axes, no mip chain, and a filter
     // chosen by \`sampling\`. mipmapFilter is "nearest" without mips, which
@@ -1410,6 +1433,87 @@ ${decodeAtlasImageCpp()}
 ${gridSpriteAtlasFramesCpp(this.context)}
 
 ${pushAtlasHandleCpp()}
+}
+
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
+    const FileTexture& texture,
+    GridSpriteAtlasOptions options) {
+    SpriteAtlasRecord atlas;
+    pal::DecodedImage image =
+        pal::decode_image(ts::ArrayBuffer(texture.data.bytes));
+    if (texture.data.premultiply_alpha) {
+        pal::premultiply_image_alpha(image);
+    }
+    if (texture.data.invert_y && image.height > 1) {
+        const std::size_t row_bytes =
+            static_cast<std::size_t>(image.width) * 4u;
+        std::vector<std::uint8_t> row(row_bytes);
+        for (int y = 0; y < image.height / 2; ++y) {
+            std::uint8_t* top = image.rgba.data() +
+                static_cast<std::size_t>(y) * row_bytes;
+            std::uint8_t* bottom = image.rgba.data() +
+                static_cast<std::size_t>(image.height - 1 - y) * row_bytes;
+            std::memcpy(row.data(), top, row_bytes);
+            std::memcpy(top, bottom, row_bytes);
+            std::memcpy(bottom, row.data(), row_bytes);
+        }
+    }
+    atlas.rgba = std::move(image.rgba);
+    atlas.width = static_cast<std::uint32_t>(image.width);
+    atlas.height = static_cast<std::uint32_t>(image.height);
+    atlas.premultiplied_alpha = options.premultiplied_alpha;
+    atlas.mip_maps = texture.data.sampler.max_lod > 0.0f;
+    atlas.sampler = texture.data.sampler;
+    populate_grid_sprite_atlas_frames(atlas, options);
+${pushAtlasHandleCpp()}
+}
+
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
+    SpriteRenderTextureHandle texture,
+    GridSpriteAtlasOptions options) {
+    const SpriteRenderTextureRecord& source =
+        engine.sprite_render_textures[texture.value];
+    SpriteAtlasRecord atlas;
+    atlas.width = source.width;
+    atlas.height = source.height;
+    atlas.premultiplied_alpha = options.premultiplied_alpha;
+    atlas.mip_maps = false;
+    atlas.sampler.min_filter = TextureFilter::linear;
+    atlas.sampler.mag_filter = TextureFilter::linear;
+    atlas.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    atlas.sampler.address_u = TextureAddressMode::clamp;
+    atlas.sampler.address_v = TextureAddressMode::clamp;
+    atlas.sampler.max_lod = 0.0f;
+    atlas.has_render_texture = true;
+    atlas.render_texture = texture;
+    populate_grid_sprite_atlas_frames(atlas, options);
+${pushAtlasHandleCpp()}
+}
+
+SpriteRenderTextureHandle create_sprite_render_texture(
+    Engine& engine,
+    double width,
+    double height) {
+    SpriteRenderTextureRecord texture;
+    texture.width = js::to_uint32(width);
+    texture.height = js::to_uint32(height);
+    engine.sprite_render_textures.push_back(texture);
+    return SpriteRenderTextureHandle{
+        static_cast<std::uint32_t>(
+            engine.sprite_render_textures.size() - 1u)};
+}
+
+void set_sprite_renderer_target(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    SpriteRenderTextureHandle target,
+    bool has_target) {
+    SpriteRendererRecord& record =
+        engine.sprite_renderers[renderer.value];
+    record.has_target = has_target;
+    record.target = target;
 }
 
 SpriteAtlasHandle create_sprite_atlas_from_frames(

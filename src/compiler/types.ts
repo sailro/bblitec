@@ -965,6 +965,7 @@ export type ValueKind =
     | "render-target-texture"
     | "render-texture"
     | "record"
+    | "regexp"
     | "scene"
     | "frame-graph-context"
     | "sprite-atlas"
@@ -1072,6 +1073,20 @@ export function isNodeParticleValue(kind: ValueKind): boolean {
     );
 }
 
+export type FrameCallbackSignature =
+    | "delta"
+    | "timestamp"
+    | "interval"
+    | "void";
+
+/** One symbol binding in the compiler's lexical scope stack. */
+export interface VariableBinding {
+    name: string;
+    value: Value;
+    /** The native storage belongs to an application frame callback. */
+    frameLocal?: boolean;
+}
+
 export interface Value {
     kind: ValueKind;
     cpp: string;
@@ -1106,7 +1121,8 @@ export interface Value {
         | ts.Identifier
         | ts.FunctionDeclaration
         | ts.ArrowFunction
-        | ts.FunctionExpression;
+        | ts.FunctionExpression
+        | ts.MethodDeclaration;
     /**
      * Runtime parameter types for a locally specialized recursive function.
      * An undefined entry is a compile-time argument captured by the lambda.
@@ -1119,8 +1135,16 @@ export interface Value {
     /** Scope-carrying record a function-valued property was read from. */
     callbackRecordOwner?: Value;
     /** The concrete native texture record produced by a texture factory. */
-    textureStorage?: "file" | "pixels" | "solid";
-    textureFile?: { srgb: boolean };
+    textureStorage?: "file" | "pixels" | "solid" | "render";
+    textureFile?: {
+        srgb: boolean;
+        /** Packaged source used only when source dimensions are reached. */
+        source?: string;
+        entryFileName?: string;
+    };
+    /** Statically decoded source dimensions for file-backed image textures. */
+    textureWidth?: number;
+    textureHeight?: number;
     /**
      * Which `scenePbrMaterials` entry this value names. The pin's opt-in
      * setters mutate the material object they are handed, so a setter has
@@ -1338,6 +1362,8 @@ export interface Value {
      * descriptor because that is what the layer or system is handed.
      */
     spriteCustomTextures?: string[];
+    /** One-based program index; zero is the stock sprite/billboard shader. */
+    spriteCustomShaderIndex?: number;
     shaderVariant?: string;
     animationFrameRate?: string;
     animationDuration?: string;
@@ -1367,7 +1393,10 @@ export interface Value {
      */
     recordMethods?: Record<
         string,
-        ts.Identifier | ts.ArrowFunction | ts.FunctionExpression
+        | ts.Identifier
+        | ts.ArrowFunction
+        | ts.FunctionExpression
+        | ts.MethodDeclaration
     >;
     /**
      * Record properties declared with `get`. The accessor is kept
@@ -1385,7 +1414,7 @@ export interface Value {
      * getter of the record runs. This is the closure the source wrote.
      */
     recordScopes?: ReadonlyArray<
-        Map<ts.Symbol, { name: string; value: Value }>
+        Map<ts.Symbol, VariableBinding>
     >;
     defaultRenderTask?: boolean;
     defaultRenderTaskEmitted?: boolean;

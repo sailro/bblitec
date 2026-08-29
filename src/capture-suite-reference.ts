@@ -235,6 +235,8 @@ export const seededRandomScript =
 export interface SuiteCaptureOptions {
     seededRandom?: boolean;
     sourcePath?: string;
+    /** Freeze requestAnimationFrame at an exact positive native 60 Hz frame. */
+    fixedAnimationFrame?: number;
     /**
      * Extra modules served by path, ahead of the repository lookup. A
      * diagnostic that has to intercept a pinned entry point re-exports the
@@ -271,10 +273,14 @@ export function createSuiteSceneServer(
     const seedScript = options.seededRandom
         ? `<script>${seededRandomScript}</script>\n`
         : "";
+    const fixedFrameScript = options.fixedAnimationFrame === undefined
+        ? ""
+        : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
+${options.fixedAnimationFrame === undefined ? "" : "body>:not(#renderCanvas){visibility:hidden!important}"}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
-${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
+${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></script></body></html>`;
     const pinnedAssets = new Map<
         string,
         { bytes: Uint8Array; contentType: string }
@@ -408,6 +414,89 @@ ${seedScript}<script type="module" src="${entryPath}"></script></body></html>`;
     });
 }
 
+/**
+ * A deterministic browser RAF turn queue. It retains browser registration
+ * order (engine render first, application callback second), pins
+ * `performance.now()` to the same 60 Hz clock, and stops only after every
+ * callback on the requested frame has run.
+ */
+export function fixedAnimationFrameScript(targetFrame: number): string {
+    if (!Number.isInteger(targetFrame) || targetFrame < 1) {
+        throw new Error(`Invalid fixed animation frame '${targetFrame}'.`);
+    }
+    return `(() => {
+const nativeRaf = window.requestAnimationFrame.bind(window);
+const nativeCancelRaf = window.cancelAnimationFrame.bind(window);
+const step = 1000 / 60;
+const target = ${targetFrame};
+let frame = -1;
+let readyFrame = -1;
+let now = 0;
+let nextId = 1;
+let scheduled = false;
+let flushing = false;
+let nativeId = 0;
+let done = false;
+const callbacks = new Map();
+const schedule = () => {
+    if (scheduled || flushing || done || callbacks.size === 0) return;
+    scheduled = true;
+    nativeId = nativeRaf(() => {
+        scheduled = false;
+        flushing = true;
+        frame += 1;
+        now = frame * step;
+        const due = Array.from(callbacks.entries());
+        callbacks.clear();
+        for (const [id, callback] of due) {
+            if (id > 0) callback(now);
+        }
+        const canvas = document.getElementById("renderCanvas");
+        if (canvas) {
+            if (readyFrame < 0 && canvas.dataset.ready === "true") {
+                readyFrame = frame;
+            }
+            const captureFrame = readyFrame < 0
+                ? -1
+                : frame - readyFrame + 1;
+            canvas.dataset.fixedAnimationFrame = String(frame);
+            canvas.dataset.fixedCaptureFrame = String(captureFrame);
+            canvas.dataset.fixedAnimationCallbacks = String(due.length);
+        }
+        if (readyFrame >= 0 && frame - readyFrame + 1 >= target) {
+            flushing = false;
+            done = true;
+        } else {
+            // startEngine resolves inside its first RAF. Let that promise
+            // continuation register application RAF callbacks before the
+            // engine's already-rearmed callback starts the following turn.
+            queueMicrotask(() => {
+                flushing = false;
+                schedule();
+            });
+        }
+    });
+};
+window.requestAnimationFrame = (callback) => {
+    const id = nextId++;
+    callbacks.set(id, callback);
+    schedule();
+    return id;
+};
+window.cancelAnimationFrame = (id) => {
+    callbacks.delete(id);
+    if (scheduled && callbacks.size === 0) {
+        nativeCancelRaf(nativeId);
+        scheduled = false;
+    }
+};
+Object.defineProperty(window.performance, "now", {
+    configurable: true,
+    value: () => now,
+});
+})();`;
+}
+
 export async function captureSuiteReference(
     sourcePath: string,
     referencePath: string,
@@ -452,6 +541,7 @@ export async function captureSuiteReference(
                 origin,
                 captureTimeSeconds !== undefined,
                 options.search,
+                options.fixedAnimationFrame,
             );
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
             await hideNonCanvasChrome(page);

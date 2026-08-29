@@ -61,7 +61,10 @@ struct SpriteLayerGpu {
     int fx_block_slot = -1;
     // The custom shader's own clock: seconds since this layer's first
     // frame, which the pin accumulates inside the layer's fx attachment.
-    float elapsed_ms = 0.0f;
+    // JavaScript `number` accumulation stays double precision; only the
+    // final SpriteFx UBO write narrows to f32.
+    double elapsed_ms = 0.0;
+    bool owns_atlas_texture = true;
 };
 
 /** One registered `SpriteRenderer`, as GPU resources. */
@@ -109,7 +112,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     SDL_GPUDevice* device,
     const SpriteBlendDescriptor& blend,
     bool scroll,
-    bool custom_shader,
+    std::uint32_t custom_shader,
     const PinnedStageSlots& slots,
     SDL_GPUTextureFormat target_format) {
     SDL_GPUShader* vertex_shader = load_shader(
@@ -123,9 +126,11 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     // composes it from the same prologue -- so it pairs with whichever
     // vertex stage the layout chose, and adds the fx block as a second
     // fragment uniform.
+    const std::string fragment_name =
+        sprite_fragment_shader_name(custom_shader);
     SDL_GPUShader* fragment_shader = load_shader(
         device,
-        custom_shader ? "sprite_custom.frag" : "sprite.frag",
+        fragment_name.c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
         static_cast<std::uint32_t>(slots.textures.size()),
         static_cast<std::uint32_t>(slots.uniforms.size()),
@@ -230,6 +235,7 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
     SDL_GPUDevice* device,
     Engine& engine,
     Sprite2DLayerHandle handle,
+    const std::vector<SDL_GPUTexture*>& render_textures,
     SDL_GPUTextureFormat target_format) {
     const Sprite2DLayerRecord& layer =
         engine.sprite_layers[handle.value];
@@ -237,8 +243,10 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
         engine.sprite_atlases[layer.atlas.value];
     SpriteLayerGpu gpu;
     gpu.layer = handle;
+    const std::string fragment_name =
+        sprite_fragment_shader_name(layer.custom_shader);
     const PinnedStageSlots slots = read_pinned_stage_slots(
-        layer.custom_shader ? "sprite_custom.frag" : "sprite.frag");
+        fragment_name);
     gpu.layer_block_slot = stage_uniform_slot(slots, "L");
     gpu.fx_block_slot = stage_uniform_slot(slots, "fx");
     gpu.pipeline = create_sprite_layer_pipeline(
@@ -258,16 +266,20 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
     }
     // rgba8unorm: `loadTexture2D` leaves srgb off, so the atlas
     // texels reach the blend stage as the bytes on disk.
-    gpu.textures = sprite_fragment_textures(
-        device,
-        upload_2d_texture(
+    SDL_GPUTexture* atlas_texture = atlas.has_render_texture
+        ? render_textures[atlas.render_texture.value]
+        : upload_2d_texture(
             device,
             atlas.rgba.data(),
             atlas.rgba.size(),
             atlas.width,
             atlas.height,
             SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "sprite atlas"),
+            "sprite atlas");
+    gpu.owns_atlas_texture = !atlas.has_render_texture;
+    gpu.textures = sprite_fragment_textures(
+        device,
+        atlas_texture,
         create_texture_sampler(device, atlas.sampler),
         layer.custom_textures,
         "sprite custom texture");
@@ -282,6 +294,9 @@ inline void release_sprite_layer_gpu(
         SDL_ReleaseGPUGraphicsPipeline(device, layer.pipeline);
     }
     if (layer.instances) SDL_ReleaseGPUBuffer(device, layer.instances);
+    if (!layer.owns_atlas_texture && !layer.textures.empty()) {
+        layer.textures[0].texture = nullptr;
+    }
     release_sprite_fragment_textures(device, layer.textures);
 }
 
@@ -313,7 +328,8 @@ inline void release_sprite_pass_layers(
 inline void rebuild_sprite_pass_layers(
     SDL_GPUDevice* device,
     Engine& engine,
-    SpritePass& pass) {
+    SpritePass& pass,
+    const std::vector<SDL_GPUTexture*>& render_textures) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     std::vector<SpriteLayerGpu> next;
@@ -331,7 +347,7 @@ inline void rebuild_sprite_pass_layers(
             continue;
         }
         next.push_back(build_sprite_layer_gpu(
-            device, engine, handle, pass.target_format));
+            device, engine, handle, render_textures, pass.target_format));
     }
     // Whatever is left was dropped from the list.
     release_sprite_pass_layers(device, pass);
@@ -347,17 +363,19 @@ inline void rebuild_sprite_pass_layers(
 inline void sync_sprite_pass_layers(
     SDL_GPUDevice* device,
     Engine& engine,
-    SpritePass& pass) {
+    SpritePass& pass,
+    const std::vector<SDL_GPUTexture*>& render_textures) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     if (renderer.layers_version == pass.layers_version) return;
-    rebuild_sprite_pass_layers(device, engine, pass);
+    rebuild_sprite_pass_layers(device, engine, pass, render_textures);
 }
 
 inline SpritePass create_sprite_pass(
     SDL_GPUDevice* device,
     Engine& engine,
     SpriteRendererHandle renderer_handle,
+    const std::vector<SDL_GPUTexture*>& render_textures,
     SDL_GPUTextureFormat target_format) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[renderer_handle.value];
@@ -377,7 +395,7 @@ inline SpritePass create_sprite_pass(
         quad_indices.size() * sizeof(std::uint16_t));
 
     pass.target_format = target_format;
-    rebuild_sprite_pass_layers(device, engine, pass);
+    rebuild_sprite_pass_layers(device, engine, pass, render_textures);
     return pass;
 }
 
@@ -474,7 +492,9 @@ inline void record_sprite_pass(
         if (gpu.fx_block_slot >= 0) {
             std::array<float, upstream::sprite_fx_ubo_bytes / 4u> fx{};
             upstream::build_sprite_fx_ubo(
-                gpu.elapsed_ms / 1000.0f, layer.shader_params, fx);
+                static_cast<float>(gpu.elapsed_ms / 1000.0),
+                layer.shader_params,
+                fx);
             push_stage_uniform(
                 command, gpu.fx_block_slot, fx.data(), sizeof(fx));
         }

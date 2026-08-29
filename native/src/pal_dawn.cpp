@@ -463,6 +463,8 @@ struct DawnState : DawnDevice {
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
     std::vector<DawnSpritePass> sprite_passes;
+    std::vector<WGPUTexture> sprite_render_textures;
+    std::vector<WGPUTextureView> sprite_render_texture_views;
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<DawnSplatPass> splat_passes;
@@ -1152,6 +1154,14 @@ WGPUBuffer esm_caster_params_buffer(
             release_dawn_sprite_pass(pass);
         }
         sprite_passes.clear();
+        for (WGPUTextureView view : sprite_render_texture_views) {
+            if (view) wgpuTextureViewRelease(view);
+        }
+        sprite_render_texture_views.clear();
+        for (WGPUTexture texture : sprite_render_textures) {
+            if (texture) wgpuTextureRelease(texture);
+        }
+        sprite_render_textures.clear();
 #endif
         for (auto& [format, pipeline] : mip_pipelines) {
             if (pipeline) wgpuRenderPipelineRelease(pipeline);
@@ -7420,19 +7430,49 @@ bool run_dawn_engine(Engine& engine) {
         static_cast<std::uint32_t>(engine.options.height);
 
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-    // A SpriteRenderer is another rendering context on the engine. Build a
-    // GPU mirror for every context already constructed; registration only
-    // controls whether that context records into a given frame.
-    for (std::size_t index = 0;
-         index < engine.sprite_renderers.size();
-         ++index) {
-        state.sprite_passes.push_back(create_dawn_sprite_pass(
-            state.device,
-            state.queue,
-            engine,
-            SpriteRendererHandle{static_cast<std::uint32_t>(index)},
-            state.surface_format));
-    }
+    // Sprite rendering contexts and their render targets may be created by a
+    // before-render callback. Mirror all newly appended CPU records in handle
+    // order both here and immediately after each callback run.
+    const auto sync_sprite_gpu_contexts = [&]() {
+        while (
+            state.sprite_render_textures.size() <
+            engine.sprite_render_textures.size()) {
+            const SpriteRenderTextureRecord& texture =
+                engine.sprite_render_textures[
+                    state.sprite_render_textures.size()];
+            WGPUTextureDescriptor descriptor =
+                WGPU_TEXTURE_DESCRIPTOR_INIT;
+            descriptor.usage = WGPUTextureUsage_RenderAttachment |
+                WGPUTextureUsage_TextureBinding |
+                WGPUTextureUsage_CopySrc;
+            descriptor.dimension = WGPUTextureDimension_2D;
+            descriptor.size = WGPUExtent3D{
+                texture.width, texture.height, 1u};
+            descriptor.format = state.surface_format;
+            descriptor.mipLevelCount = 1;
+            descriptor.sampleCount = 1;
+            WGPUTexture gpu_texture =
+                wgpuDeviceCreateTexture(state.device, &descriptor);
+            if (!gpu_texture) dawn_error("sprite render texture");
+            state.sprite_render_textures.push_back(gpu_texture);
+            state.sprite_render_texture_views.push_back(
+                wgpuTextureCreateView(gpu_texture, nullptr));
+        }
+        while (
+            state.sprite_passes.size() <
+            engine.sprite_renderers.size()) {
+            state.sprite_passes.push_back(create_dawn_sprite_pass(
+                state.device,
+                state.queue,
+                engine,
+                SpriteRendererHandle{static_cast<std::uint32_t>(
+                    state.sprite_passes.size())},
+                state.sprite_render_textures,
+                state.sprite_render_texture_views,
+                state.surface_format));
+        }
+    };
+    sync_sprite_gpu_contexts();
 #endif
 
     // Shared frame targets: 4x MSAA color (surface format, or linear
@@ -9223,18 +9263,28 @@ bool run_dawn_engine(Engine& engine) {
         // Upstream updates every rendering context before recording any of
         // them. Scene callbacks above may have changed layer membership or
         // instance data, so synchronize and upload every sprite context now.
+        sync_sprite_gpu_contexts();
         for (DawnSpritePass& sprite_pass : state.sprite_passes) {
             sync_dawn_sprite_pass_layers(
                 state.device,
                 state.queue,
                 engine,
-                sprite_pass);
+                sprite_pass,
+                state.sprite_render_textures,
+                state.sprite_render_texture_views);
+            const SpriteRendererRecord& sprite_renderer =
+                engine.sprite_renderers[sprite_pass.renderer.value];
+            const SpriteRenderTextureRecord* sprite_target =
+                sprite_renderer.has_target
+                    ? &engine.sprite_render_textures[
+                          sprite_renderer.target.value]
+                    : nullptr;
             upload_dawn_sprite_pass(
                 state.queue,
                 engine,
                 sprite_pass,
-                width,
-                height,
+                sprite_target ? sprite_target->width : width,
+                sprite_target ? sprite_target->height : height,
                 delta_ms);
         }
 #endif
@@ -11678,19 +11728,6 @@ bool run_dawn_engine(Engine& engine) {
         // any transmission image processing or frame-graph copy. Capture and
         // presentation therefore observe the same composed frame.
         if (!engine.registered_sprite_renderers.empty()) {
-            WGPURenderPassColorAttachment sprite_attachment =
-                WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-            sprite_attachment.view = surface_view;
-            sprite_attachment.loadOp = WGPULoadOp_Load;
-            sprite_attachment.storeOp = WGPUStoreOp_Store;
-            WGPURenderPassDescriptor sprite_descriptor =
-                WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-            sprite_descriptor.colorAttachmentCount = 1;
-            sprite_descriptor.colorAttachments = &sprite_attachment;
-            WGPURenderPassEncoder sprite_encoder =
-                wgpuCommandEncoderBeginRenderPass(
-                    encoder,
-                    &sprite_descriptor);
             for (const SpriteRendererHandle handle :
                  engine.registered_sprite_renderers) {
                 if (handle.value >= state.sprite_passes.size()) {
@@ -11698,13 +11735,38 @@ bool run_dawn_engine(Engine& engine) {
                         "A SpriteRenderer created after the scene frame "
                         "started has no Dawn pass yet.");
                 }
+                const SpriteRendererRecord& renderer =
+                    engine.sprite_renderers[handle.value];
+                WGPURenderPassColorAttachment sprite_attachment =
+                    WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                sprite_attachment.view = renderer.has_target
+                    ? state.sprite_render_texture_views[
+                          renderer.target.value]
+                    : surface_view;
+                sprite_attachment.loadOp = renderer.clear
+                    ? WGPULoadOp_Clear
+                    : WGPULoadOp_Load;
+                sprite_attachment.storeOp = WGPUStoreOp_Store;
+                sprite_attachment.clearValue = WGPUColor{
+                    renderer.clear_value.r,
+                    renderer.clear_value.g,
+                    renderer.clear_value.b,
+                    renderer.clear_value.a};
+                WGPURenderPassDescriptor sprite_descriptor =
+                    WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                sprite_descriptor.colorAttachmentCount = 1;
+                sprite_descriptor.colorAttachments = &sprite_attachment;
+                WGPURenderPassEncoder sprite_encoder =
+                    wgpuCommandEncoderBeginRenderPass(
+                        encoder,
+                        &sprite_descriptor);
                 record_dawn_sprite_pass(
                     sprite_encoder,
                     engine,
                     state.sprite_passes[handle.value]);
+                wgpuRenderPassEncoderEnd(sprite_encoder);
+                wgpuRenderPassEncoderRelease(sprite_encoder);
             }
-            wgpuRenderPassEncoderEnd(sprite_encoder);
-            wgpuRenderPassEncoderRelease(sprite_encoder);
             capture_source = surface_texture.texture;
         }
 #endif
@@ -11831,6 +11893,7 @@ bool run_dawn_engine(Engine& engine) {
         if (!state.uncaptured_error.empty()) {
             dawn_error("uncaptured error: " + state.uncaptured_error);
         }
+        finish_frame(engine);
         ++frame;
     }
     report_benchmark(benchmark_samples, "Dawn", "D3D12");

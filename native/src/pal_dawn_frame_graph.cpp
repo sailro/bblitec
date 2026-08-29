@@ -18,6 +18,7 @@
 #if BBLITE_HAS_EFFECT_TASK
 #include "pal_dawn_effect.hpp"
 #endif
+#include "pal_platform_events.hpp"
 #include "pal_dawn_shared.hpp"
 #include "pal_gpu_shared.hpp"
 #include "pal_render_capture.hpp"
@@ -547,11 +548,14 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
         FrameClock clock;
         bool running = true;
         long frame = 0;
+        KeyboardReplay keyboard_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                handle_platform_event(event, engine);
             }
+            keyboard_replay.dispatch(frame, engine);
             (void)advance_frame(
                 engine,
                 context,
@@ -669,6 +673,7 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
             if (!state.uncaptured_error.empty()) {
                 dawn_error(state.uncaptured_error);
             }
+            finish_frame(engine);
             ++frame;
         }
     } catch (...) {

@@ -12,10 +12,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <list>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <initializer_list>
 #include <iterator>
 #include <span>
@@ -271,6 +273,12 @@ inline void array_append(Array<T>& target, const Iterable& values) {
     target.insert(target.end(), values.begin(), values.end());
 }
 
+/** Materialize JavaScript array storage at a native std::vector sink. */
+template <typename T>
+[[nodiscard]] inline std::vector<T> array_to_vector(const Array<T>& values) {
+    return std::vector<T>(values.begin(), values.end());
+}
+
 /** JavaScript indexed writes grow an Array and leave default-valued holes. */
 template <typename T>
 [[nodiscard]] inline T& array_index_write(
@@ -347,6 +355,52 @@ class Nullable {
     std::optional<T> owned_;
 };
 
+/** The reached JavaScript RegExp surface: mutable global exec state. */
+class RegExp {
+  public:
+    RegExp(std::string source, bool global, bool ignore_case)
+        : expression_(
+              std::move(source),
+              std::regex_constants::ECMAScript |
+                  (ignore_case ? std::regex_constants::icase
+                               : std::regex_constants::syntax_option_type{})),
+          global_(global) {}
+
+    [[nodiscard]] Nullable<Array<std::string>> exec(
+        const std::string& input) {
+        const auto requested = global_ && std::isfinite(last_index)
+            ? std::max(0.0, std::trunc(last_index))
+            : 0.0;
+        const auto start = static_cast<std::size_t>(requested);
+        if (start > input.size()) {
+            if (global_) last_index = 0.0;
+            return std::nullopt;
+        }
+        std::match_results<std::string::const_iterator> match;
+        const auto first = input.cbegin() + static_cast<std::ptrdiff_t>(start);
+        if (!std::regex_search(first, input.cend(), match, expression_)) {
+            if (global_) last_index = 0.0;
+            return std::nullopt;
+        }
+        Array<std::string> groups;
+        groups.reserve(match.size());
+        for (const auto& group : match) {
+            groups.push_back(group.matched ? group.str() : std::string{});
+        }
+        if (global_) {
+            last_index = static_cast<double>(
+                start + static_cast<std::size_t>(match.position()) + match.length());
+        }
+        return groups;
+    }
+
+    double last_index = 0.0;
+
+  private:
+    std::regex expression_;
+    bool global_ = false;
+};
+
 /**
  * JavaScript unions flatten null and undefined. Map.get therefore returns
  * one Nullable<T> when the stored value is already Nullable<T>, rather than
@@ -384,6 +438,14 @@ struct MapGetResult<std::shared_ptr<T>> {
         return value;
     }
 };
+
+/** JavaScript arithmetic converts a missing numeric lookup to NaN. */
+[[nodiscard]] inline double number_from_optional(
+    const Nullable<double>& value) {
+    return value.has_value()
+        ? *value
+        : std::numeric_limits<double>::quiet_NaN();
+}
 
 /**
  * Stable insertion-order iteration for JavaScript Map and Set.
@@ -730,6 +792,11 @@ using Tuple = std::array<double, N>;
     return std::string(buffer, converted.ptr);
 }
 
+[[nodiscard]] inline double math_sign(double value) {
+    if (std::isnan(value) || value == 0.0) return value;
+    return value > 0.0 ? 1.0 : -1.0;
+}
+
 [[nodiscard]] inline std::pair<std::size_t, std::size_t>
 relative_slice_bounds(
     std::size_t length,
@@ -797,10 +864,33 @@ relative_slice_bounds(
     return result;
 }
 
+[[nodiscard]] inline Array<std::string> string_split(
+    const std::string& value,
+    const std::string& separator) {
+    if (separator.empty()) return string_characters(value);
+    Array<std::string> result;
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t end = value.find(separator, begin);
+        if (end == std::string::npos) {
+            result.push_back(value.substr(begin));
+            return result;
+        }
+        result.push_back(value.substr(begin, end - begin));
+        begin = end + separator.size();
+    }
+}
+
 [[nodiscard]] inline bool string_starts_with(
     const std::string& value,
     const std::string& prefix) {
     return value.starts_with(prefix);
+}
+
+[[nodiscard]] inline bool string_ends_with(
+    const std::string& value,
+    const std::string& suffix) {
+    return value.ends_with(suffix);
 }
 
 [[nodiscard]] inline double string_char_code_at(
@@ -809,6 +899,29 @@ relative_slice_bounds(
     const auto index = static_cast<std::size_t>(std::max(0.0, std::trunc(index_value)));
     return index < value.size()
         ? static_cast<unsigned char>(value[index])
+        : std::numeric_limits<double>::quiet_NaN();
+}
+
+[[nodiscard]] inline double number_from_string(
+    const std::string& value) {
+    const char* begin = value.c_str();
+    char* end = nullptr;
+    const double parsed = std::strtod(begin, &end);
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r' ||
+           *end == '\f' || *end == '\v') {
+        ++end;
+    }
+    if (end == begin) {
+        for (const char character : value) {
+            if (character != ' ' && character != '\t' && character != '\n' &&
+                character != '\r' && character != '\f' && character != '\v') {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+        return 0.0;
+    }
+    return *end == '\0'
+        ? parsed
         : std::numeric_limits<double>::quiet_NaN();
 }
 
@@ -934,6 +1047,16 @@ inline T array_pop(Array<T>& values) {
     T last = values.back();
     values.pop_back();
     return last;
+}
+
+// `array.unshift(...items)` inserts the arguments at the front in source
+// order and returns the new JavaScript length.
+template <typename T>
+inline double array_unshift(
+    Array<T>& values,
+    std::initializer_list<T> inserted) {
+    values.insert(values.begin(), inserted.begin(), inserted.end());
+    return static_cast<double>(values.size());
 }
 
 // `array.fill(value)` on an existing array.

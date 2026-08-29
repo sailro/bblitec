@@ -9,7 +9,21 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
     createSuiteSceneServer,
+    fixedAnimationFrameScript,
 } from "../src/capture-suite-reference.js";
+
+test("builds a registration-ordered fixed browser RAF clock", () => {
+    const script = fixedAnimationFrameScript(180);
+
+    assert.match(script, /const target = 180;/);
+    assert.match(script, /const due = Array\.from\(callbacks\.entries\(\)\)/);
+    assert.match(script, /for \(const \[id, callback\] of due\)/);
+    assert.match(script, /value: \(\) => now/);
+    assert.match(script, /frame - readyFrame \+ 1/);
+    assert.match(script, /queueMicrotask\(\(\) =>/);
+    assert.throws(() => fixedAnimationFrameScript(0), /Invalid fixed animation frame/);
+    assert.throws(() => fixedAnimationFrameScript(1.5), /Invalid fixed animation frame/);
+});
 
 test("serves entry modules from their source-relative URL", async () => {
     const root = mkdtempSync(

@@ -15,7 +15,8 @@ type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
     | ts.FunctionDeclaration
     | ts.FunctionExpression
-    | ts.ArrowFunction;
+    | ts.ArrowFunction
+    | ts.MethodDeclaration;
 
 /** Conservatively determines whether a function leaves a parameter unchanged. */
 export function parameterIsReadOnly(
@@ -285,6 +286,7 @@ export interface UserFunctionIr {
 export interface UserFunctionContext {
     readonly dataTypes: DataTypeRegistry;
     compileValue(expression: ts.Expression): Value;
+    isBrowserOnlyExpression(expression: ts.Expression): boolean;
     compileForDataSink(
         expression: ts.Expression,
         dataType: DataType,
@@ -292,6 +294,10 @@ export interface UserFunctionContext {
     dataValue(cpp: string, dataType: DataType): Value;
     emitStatement(statement: ts.Statement): void;
     bindLocalValue(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
+    bindCompileTimeValue(
         identifier: ts.Identifier,
         value: Value,
     ): void;
@@ -394,8 +400,9 @@ export class UserFunctionLowerer {
     }
 
     /**
-     * Inline function-literal arguments bind as callback values; every
-     * other argument compiles normally.
+     * Inline function-literal arguments and local names bound to function
+     * declarations bind as callback values; every other argument compiles
+     * normally.
      */
     private argumentValue(
         context: UserFunctionContext,
@@ -410,6 +417,26 @@ export class UserFunctionLowerer {
                 cpp: "",
                 callbackDeclaration: argument,
             };
+        }
+        if (ts.isIdentifier(argument)) {
+            const declaration = resolveFunctionDeclaration(
+                this.checker,
+                argument,
+                (node, message) => context.fail(node, message),
+            );
+            if (declaration) {
+                return {
+                    kind: "callback",
+                    cpp: "",
+                    callbackDeclaration: declaration,
+                };
+            }
+        }
+        if (
+            context.isBrowserOnlyExpression(argument) &&
+            !ts.isCallExpression(argument)
+        ) {
+            return { kind: "browser", cpp: "" };
         }
         return context.compileValue(argument);
     }
@@ -944,6 +971,12 @@ export class UserFunctionLowerer {
         ) {
             return declaration.name;
         }
+        if (
+            ts.isMethodDeclaration(declaration) &&
+            ts.isIdentifier(declaration.name)
+        ) {
+            return declaration.name;
+        }
         const parent = declaration.parent;
         if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
             return parent.name;
@@ -961,7 +994,8 @@ export class UserFunctionLowerer {
         declaration:
             | ts.Identifier
             | ts.ArrowFunction
-            | ts.FunctionExpression,
+            | ts.FunctionExpression
+            | ts.MethodDeclaration,
         arguments_: readonly Value[],
         callNode: ts.Node,
     ): Value {
@@ -1057,6 +1091,8 @@ export class UserFunctionLowerer {
                               parameter.declaration
                                   .initializer,
                           )
+                        : parameter.declaration.questionToken
+                          ? { kind: "json-null" as const, cpp: "" }
                         : context.fail(
                               parameter.declaration,
                               `Optional parameter '${parameter.name.text}' requires a default value in reached user functions.`,
@@ -1082,6 +1118,9 @@ export class UserFunctionLowerer {
                     for (const statement of ir.statements) {
                         context.emitStatement(statement);
                     }
+                    context.emit(
+                        'throw std::runtime_error("Native value function fell through without returning.");',
+                    );
                 } finally {
                     context.endNativeFunctionBody();
                     context.decreaseIndent();
