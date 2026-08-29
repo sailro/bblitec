@@ -1054,6 +1054,10 @@ struct RenderItem {
     MeshTopology topology = MeshTopology::triangles;
     std::uint32_t shader_variant = 0;
     bool clockwise_front_face = false;
+    // gpu-picker.ts skips a mesh whose pickable flag is false. Carried per
+    // draw because the pick pass walks the render plan, not scene.meshes:
+    // the plan is what already agrees with the backend's own mesh vector.
+    bool pickable = true;
     bool alpha_to_coverage = false;
     bool transmissive = false;
     bool skybox_mode = false;
@@ -1899,6 +1903,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         item.geometry = mesh.geometry;
         item.clockwise_front_face =
             mesh.clockwise_front_face;
+        item.pickable = mesh.pickable;
         item.topology = engine.geometries[mesh.geometry].topology;
         RenderItem bound =
             bind_render_item(item, engine, mesh.material);

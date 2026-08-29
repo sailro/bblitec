@@ -1184,6 +1184,12 @@ pipeline compares GREATER over a depth buffer cleared to 0, this renderer's
 reverse-Z; the cloud pipeline compares LESS, which is what its own pinned
 pipeline declares and is kept rather than reconciled.
 
+`mesh.pickable = false` keeps a mesh out of the pass entirely, so it can
+neither answer a pick nor occlude one behind it. The flag rides the render
+plan beside the winding, because the pass walks the plan rather than
+`scene.meshes` -- the plan is what already agrees with each backend's own
+mesh vector.
+
 `PickingInfo` carries WHICH node was hit -- the collection and the index --
 and `pickedMesh.name` reads through that pair where the scene asks for it,
 because upstream `pickedMesh` is a live node reference and a scene may

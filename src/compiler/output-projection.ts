@@ -74,6 +74,8 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:ground-heightmap": [],
     "mesh:lines": [],
     "mesh:morph-targets": [],
+    "mesh:visible": [],
+    "mesh:pickable": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],
     "mesh:plane": [],

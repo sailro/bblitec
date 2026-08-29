@@ -740,6 +740,24 @@ loader, which rewinds a single-sided mirrored primitive's indices at load
 and stamps a clockwise face only for the double-sided pair. Gated by
 scene 270.
 
+**A bare `visible` write takes effect when the draw list is rebuilt, not on
+the next frame -- and that is the pin's rule, not a shortfall.**
+`scene/visibility.ts` is the sole place that bumps the module-scoped
+visibility epoch, and its own header says a bare `node.visible = ...` field
+write deliberately does NOT, so the hot write path stays a plain assignment
+and bundle invalidation stays O(1). The pin's renderables test
+`mesh.visible === false` inside `draw`, which for an opaque mesh runs when
+the cached render bundle is RECORDED; `render-task.ts` re-records only on
+`scene._renderableVersion`, the visibility epoch, or an empty bundle list.
+This port records no bundles and caches the render plan on the same rule --
+`build_render_plan` skips an invisible mesh and both backends rebuild it on
+`mesh_membership_version` -- so the two defer identically. The
+`regression-mesh-flags` gate measures both ends of it: a mesh hidden before
+the plan is built shows the one behind it, and a mesh hidden two frames
+after the scene's last membership change stays drawn on both sides.
+`setMeshVisible` is the pin's entry point for a write that must take effect
+at once, and it is not reached yet.
+
 **A bounded multi-frame drain holds the capture, it does not erase.** The
 single-frame `await new Promise(r => requestAnimationFrame(() => r()))` is
 erased, because the work it waits for has already happened by the next

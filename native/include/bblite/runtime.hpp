@@ -1050,11 +1050,16 @@ struct MeshRecord {
     // default only when this field was never assigned.
     bool has_render_order = false;
     double render_order = 0.0;
-    // glTF KHR_node_visibility, materialized per mesh the way the pinned
+    // Self-visibility (scene-node.ts `visible?: boolean`, undefined = true).
+    // Written by scene code and by glTF KHR_node_visibility, which
+    // materializes the cascade per mesh the way the pinned
     // `setSubtreeVisible` materializes it per node: the extension cascades
     // through the subtree at set time so the render path and the camera
     // bounds only test one boolean.
     bool visible = true;
+    // mesh.ts `pickable?: boolean`, undefined = pickable. The GPU picker
+    // skips a mesh whose flag is false; nothing else reads it.
+    bool pickable = true;
     std::vector<std::array<float, 16>> bone_matrices;
     std::array<float, 16> instance_parent_matrix{
         1.0f, 0.0f, 0.0f, 0.0f,

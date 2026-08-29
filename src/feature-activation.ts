@@ -474,6 +474,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/enable-mirrored-meshes.ts",
         consumers: CMAKE,
     },
+    "mesh:visible": {
+        provenance: "src/scene/scene-node.ts",
+        consumers: CMAKE,
+    },
+    "mesh:pickable": {
+        provenance: "src/mesh/mesh.ts",
+        consumers: CMAKE,
+    },
     "mesh:transform-node": {
         provenance: "src/scene/transform-node.ts",
         consumers: CMAKE,
@@ -1657,9 +1665,12 @@ function emitOptionRows(
             "emit-option",
             emit.nodeVisibility,
             emit.nodeVisibility
-                ? "an asset uses KHR_node_visibility"
-                : "no asset uses KHR_node_visibility",
-            "src/loader-gltf/gltf-feature-registry.ts: " +
+                ? "an asset uses KHR_node_visibility, or scene code " +
+                    "writes mesh.visible"
+                : "no asset uses KHR_node_visibility and no scene code " +
+                    "writes mesh.visible",
+            "src/scene/scene-node.ts visible?: boolean; " +
+                "src/loader-gltf/gltf-feature-registry.ts: " +
                 "KHR_node_visibility -> gltf-ext-node-visibility.js",
             ["loader flag", "renderer plan"],
         ),

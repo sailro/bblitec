@@ -341,6 +341,30 @@ export class BrowserErasure {
         return this.browserTruthy(value);
     }
 
+    /**
+     * The page's `Location`, written either way: `window.location` or the
+     * bare global `location`. They are the same object, so a scene reading
+     * its own query string through either spelling must fold to the same
+     * reference query -- a scene using the bare form would otherwise see an
+     * empty query and silently take its unparameterised branch.
+     */
+    private isLocationGlobal(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isIdentifier(unwrapped) &&
+            unwrapped.text === "location"
+        ) {
+            return this.context.isDefaultLibraryIdentifier(unwrapped);
+        }
+        return (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "location" &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "window" &&
+            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+        );
+    }
+
     public evaluateBrowserValue(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
@@ -390,17 +414,7 @@ export class BrowserErasure {
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "search" &&
-            ts.isPropertyAccessExpression(
-                unwrapped.expression,
-            ) &&
-            unwrapped.expression.name.text === "location" &&
-            ts.isIdentifier(
-                unwrapped.expression.expression,
-            ) &&
-            unwrapped.expression.expression.text === "window" &&
-            this.context.isDefaultLibraryIdentifier(
-                unwrapped.expression.expression,
-            )
+            this.isLocationGlobal(unwrapped.expression)
         ) {
             return {
                 kind: "string",

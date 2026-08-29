@@ -1226,6 +1226,42 @@ export function emitPropertyAssignment(
             return;
         }
 
+        // `mesh.visible` and `mesh.pickable` are the two optional booleans
+        // SceneNode/Mesh carry for "skip me": undefined means visible and
+        // pickable, so the record's default-true lanes already answer an
+        // unwritten flag and the write is a plain field store. Neither
+        // cascades -- the pin materializes visibility over a subtree only
+        // through `setSubtreeVisible`, which is the loader's entry point,
+        // not this one.
+        //
+        // A bare `visible` write does not bump the pin's visibility epoch,
+        // by design: upstream that leaves a cached opaque render bundle
+        // drawing the mesh until something else re-records it. This port
+        // records no bundles, so the flag is read per draw and takes
+        // effect on the next frame. docs/fidelity.md carries it.
+        if (
+            target.kind === "mesh" &&
+            (property === "visible" || property === "pickable")
+        ) {
+            requireSimpleAssignment(
+                context,
+                expression,
+                `mesh ${property}`,
+            );
+            const flag = context.compileValue(expression.right);
+            context.expectKind(flag, "boolean", expression.right);
+            // The renderer's own skip and the camera bounds' skip are one
+            // emit option, which an asset's KHR_node_visibility also
+            // raises; a scene-code write has to raise it too or the lane
+            // would be written and never read.
+            context.reachFeature(`mesh:${property}`, expression);
+            context.emit(
+                `${context.requireEngine(target, expression)}.meshes[` +
+                    `${target.cpp}.value].${property} = ${flag.cpp};`,
+            );
+            return;
+        }
+
         // `mesh.receiveShadows` is a composition key and nothing else:
         // `_computeMeshFeatures` turns it into `MSH_RECEIVE_SHADOWS`, which
         // selects the fragment carrying the per-light sampling, and every

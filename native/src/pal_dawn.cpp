@@ -8855,12 +8855,6 @@ bool run_dawn_engine(Engine& engine) {
         const double aspect = width / height;
         const std::array<float, 16> view_projection =
             upstream::build_view_projection(camera, aspect);
-        const std::array<float, 16> pick_view =
-            upstream::build_view_matrix(
-                upstream::camera_world_matrix(camera));
-        const std::array<float, 16> pick_projection =
-            upstream::build_scene_projection(camera, aspect);
-
         ensure_dawn_pick_targets(state.device, state.pick_targets);
         if (!state.pick_mesh_pipeline) {
             state.pick_scene_layout =
@@ -8921,6 +8915,10 @@ bool run_dawn_engine(Engine& engine) {
             const MeshHandle handle = render_plan.items[item_index].mesh;
             const DawnMesh& mesh = state.meshes[item_index];
             if (!mesh.vertices || !mesh.indices) continue;
+            // gpu-picker.ts: a mesh whose pickable flag is false never
+            // enters the pick pass, so it can neither answer a pick nor
+            // occlude one behind it.
+            if (!render_plan.items[item_index].pickable) continue;
             DawnPickMeshUniforms block{};
             // Identity: these vertices are baked to world here, where the
             // pin keeps them local and multiplies by the node's world.
@@ -8992,6 +8990,14 @@ bool run_dawn_engine(Engine& engine) {
                     handle));
             }
         }
+        // The cloud pass wants the two matrices unmultiplied, where every
+        // other pick draw wants the product. Declared here, with their only
+        // consumer, so a picking scene that reaches no splat still compiles.
+        const std::array<float, 16> pick_view =
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera));
+        const std::array<float, 16> pick_projection =
+            upstream::build_scene_projection(camera, aspect);
         for (DawnSplatPass& splat : state.splat_passes) {
             upload_dawn_splat_pass(
                 state.queue,
