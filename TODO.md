@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-93 corpus scenes remain unregistered and none compiles clean; measured scenes
+87 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -224,8 +224,8 @@ families that arrived with the release. Read it as a capability list.
 
 **No corpus scene can retire the runtime-sweep gate.** Scene 267 covers its
 `createMeshFromData` half and scene 279 its `setThinInstances` half, but none
-of the remaining scenes reaching `setThinInstances` (16, 17, 43, 103, 165, 204,
-219) or `removeFromScene` (129, 173, 271, 272) compiles, and
+of the remaining scenes reaching `setThinInstances` (17, 103, 165, 219) or
+`removeFromScene` (173, 271, 272) compiles, and
 `flushThinInstances`/`setThinInstanceCount` are unreferenced under `corpus/`.
 Corpus scenes are the preferred validation: author a project-owned gate only
 for a contract no corpus scene exercises, and delete it once one does.
@@ -238,13 +238,12 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (59 scenes):** 16, 17, 20, 43,
+**Integrate first (53 scenes):** 17, 20,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 99, 111-115, 117, 118, 121-124,
-129,
 140, 149, 156, 165, 171-174, 179, 200, 201, 211, 214, 215, 218, 219,
-223, 226, 229, 231, 241, 261, 269-271, 275, 300.
+223, 226, 229, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
-and splats, deterministic picking (113-115, 117, 118, 129), and display-only
+and splats, deterministic picking (113-115, 117, 118), and display-only
 gizmos (223). The navigation scenes moved here
 when the toolset did: 175 and 170 are integrated, and what 171-174 still
 want is compiler contracts and the wrapper's tile-cache arm, not a new

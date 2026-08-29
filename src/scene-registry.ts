@@ -1574,6 +1574,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene16",
+        name: "Scene 16 - Thin Instances",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene16.ts",
+        title: "Babylon Lite Native - Thin Instances",
+        parity: {
+            // Served bare. The scene's own `?culling` arm reaches
+            // `enableThinInstanceGpuCulling`, which is not lowered, so the
+            // registered pose is the one the pin serves with no query.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene43",
         name: "Scene 43 - Parametric Proximity Path",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene43.ts",
