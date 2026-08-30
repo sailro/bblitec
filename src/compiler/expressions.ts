@@ -1930,8 +1930,6 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
-        if (call.expression.getText().includes("isFinite")) {
-        }
         const platform = this.context.compilePlatformCall(call);
         if (platform) {
             return platform;
@@ -2109,43 +2107,6 @@ export class ExpressionLowerer {
                         },
                     },
                 };
-            }
-            // `Number.isFinite(<static>)`: a guard a shared module writes
-            // around a value its caller may have left out. Browser-erasure
-            // already folds it for a query parameter; this is the same fold
-            // for a value generation settled some other way, which is what
-            // a seek time reaches an inlined helper as.
-            if (callee.name.text === "isFinite") {
-            }
-            if (
-                ts.isIdentifier(callee.expression) &&
-                callee.expression.text === "Number" &&
-                callee.name.text === "isFinite" &&
-                call.arguments.length === 1 &&
-                !this.context.lookupOptional(callee.expression)
-            ) {
-                const argument = this.compileValue(call.arguments[0]!);
-                if (argument.staticNumber !== undefined) {
-                    return {
-                        kind: "boolean",
-                        cpp: Number.isFinite(argument.staticNumber)
-                            ? "true"
-                            : "false",
-                    };
-                }
-                if (argument.kind === "number") {
-                    // A guard a shared module keeps around a value its
-                    // caller may have left out. Where generation cannot
-                    // settle it -- the value is a real parameter of an
-                    // emitted function -- the test emits, because `isFinite`
-                    // is false for both infinities and NaN and `std::isfinite`
-                    // is the same predicate.
-                    this.context.reachJsData();
-                    return {
-                        kind: "boolean",
-                        cpp: `std::isfinite(${argument.cpp})`,
-                    };
-                }
             }
             // The handle-collection concept owns the collection calls; the
             // three dispatch positions stay exactly where the arms sat so
@@ -2399,11 +2360,10 @@ export class ExpressionLowerer {
         }
 
         // `parseFloat(<query text>)`: the same value browser-erasure already
-        // settles for a guard beside it, carried as a number generation
-        // KNOWS rather than one it merely emits. A scene that freezes at a
-        // `?seekTime=` pose reads its own pose through this call, and what
-        // depends on it -- how many steps a seek loop runs -- is a
-        // compile-time fact only if the number is.
+        // settles for a guard beside it. It travels through the one path
+        // that turns a settled browser primitive into a value, so what a
+        // scene reads through its own pose is the number generation KNOWS
+        // -- which is what lets a helper's guard on it fold.
         if (
             callee.text === "parseFloat" &&
             call.arguments.length === 1 &&
@@ -2414,6 +2374,10 @@ export class ExpressionLowerer {
                 settled?.kind === "number" &&
                 Number.isFinite(settled.value)
             ) {
+                // The value is returned already settled rather than through
+                // `materializeBrowserPrimitive`: that helper renders its cpp
+                // with `compileNumber(expression)`, which for THIS
+                // expression re-enters the arm it was reached from.
                 return {
                     kind: "number",
                     cpp: doubleLiteral(settled.value),

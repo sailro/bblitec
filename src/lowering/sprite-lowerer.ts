@@ -1874,7 +1874,7 @@ double add_sprite_2d(
     Sprite2DLayerRecord& layer =
         engine.sprite_layers[layer_handle.value];
     const std::uint32_t id = layer.next_sprite_id;
-    if (id == 0xffffffffu) {
+    if (id == invalid_handle) {
         throw std::runtime_error("addSprite2D: handle id space exhausted.");
     }
     layer.next_sprite_id = id + 1u;
@@ -1899,11 +1899,10 @@ std::uint32_t sprite_2d_slot_of(
 bool sprite_2d_id_alive(
     const Engine& engine,
     Sprite2DLayerHandle layer_handle,
-    double sprite_id) {
+    std::uint32_t sprite_id) {
     const Sprite2DLayerRecord& layer =
         engine.sprite_layers[layer_handle.value];
-    return layer.sprite_id_to_index.count(
-               static_cast<std::uint32_t>(sprite_id)) != 0;
+    return sprite_2d_slot_of(layer, sprite_id) < layer.count;
 }
 
 // sprite-2d.ts#setSprite2DFrameIndex: rewrite the slot's four UV floats from
@@ -1912,12 +1911,12 @@ bool sprite_2d_id_alive(
 void set_sprite_2d_frame_id(
     Engine& engine,
     Sprite2DLayerHandle layer_handle,
-    double sprite_id,
+    std::uint32_t sprite_id,
     double frame) {
     Sprite2DLayerRecord& layer =
         engine.sprite_layers[layer_handle.value];
     const std::uint32_t index =
-        sprite_2d_slot_of(layer, static_cast<std::uint32_t>(sprite_id));
+        sprite_2d_slot_of(layer, sprite_id);
     if (index >= layer.count) {
         throw std::runtime_error(
             "setSprite2DFrameIndex: index out of range");
@@ -1950,21 +1949,22 @@ void set_sprite_2d_frame_id(
 void remove_sprite_2d_id(
     Engine& engine,
     Sprite2DLayerHandle layer_handle,
-    double sprite_id) {
+    std::uint32_t sprite_id) {
     Sprite2DLayerRecord& layer =
         engine.sprite_layers[layer_handle.value];
-    const std::uint32_t id = static_cast<std::uint32_t>(sprite_id);
-    const std::uint32_t index = sprite_2d_slot_of(layer, id);
+    const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
+    // removeSprite2D: a handle already gone does nothing, which is what
+    // lets an animation's own removeWhenFinished race a scene's own remove.
+    // The throw belongs to the INDEX form, whose caller has no id to miss.
     if (index >= layer.count) {
-        throw std::runtime_error(
-            "removeSprite2DIndex: index out of range");
+        return;
     }
     const std::uint32_t last = layer.count - 1u;
     const std::uint32_t moved_id =
         last < layer.sprite_index_to_id.size()
             ? layer.sprite_index_to_id[last]
             : 0u;
-    layer.sprite_id_to_index.erase(id);
+    layer.sprite_id_to_index.erase(sprite_id);
     if (index != last) {
         if (moved_id != 0u) {
             layer.sprite_id_to_index[moved_id] = index;
@@ -2003,6 +2003,14 @@ void clear_sprite_2d_layer(
     Sprite2DLayerHandle layer_handle) {
     Sprite2DLayerRecord& layer =
         engine.sprite_layers[layer_handle.value];
+    // The pin's clear runs the handle hooks' own clear first, so a layer
+    // emptied under live handles answers "gone" rather than naming a slot
+    // it no longer has.
+    layer.sprite_id_to_index.clear();
+    std::fill(
+        layer.sprite_index_to_id.begin(),
+        layer.sprite_index_to_id.end(),
+        0u);
     const std::uint32_t count = layer.count;
     if (count == 0u) return;
     std::fill_n(

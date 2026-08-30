@@ -213,12 +213,12 @@ struct SpriteFrameAnimation {
 /**
  * A set of frame animations advanced in lockstep.
  *
- * `fixedDeltaMs` is the pin's own override: zero means the manager takes the
- * caller's delta, which is what a seek loop of fixed steps relies on.
+ * The pin's `fixedDeltaMs` override is absent because its own option is:
+ * `createSpriteAnimationManager` takes no options here, so every step is
+ * the caller's own delta and a field for the override would have no writer.
  */
 struct SpriteAnimationManagerRecord {
     std::vector<SpriteFrameAnimation> animations;
-    double fixed_delta_ms = 0.0;
 };
 
 struct SpriteAnimationManagerHandle {
@@ -1493,9 +1493,10 @@ struct Sprite2DLayerRecord {
     // A layer that never scrolls keeps the narrow layout and ships none of it.
     bool uv_scroll = false;
     // sprite-2d-handle.ts: a stable id per sprite over a moving index, so a
-    // name a scene holds survives the swap a removal performs. Empty until
-    // the first `addSprite2D`, which is what keeps a layer that only ever
-    // indexes carrying none of it.
+    // name a scene holds survives the swap a removal performs. Upstream
+    // builds this lazily on the first `addSprite2D`; here it is a plain
+    // member, because the map's own empty state already costs a layer that
+    // never takes a handle nothing but its inline bytes.
     std::uint32_t next_sprite_id = 1;
     std::unordered_map<std::uint32_t, std::uint32_t> sprite_id_to_index;
     std::vector<std::uint32_t> sprite_index_to_id;
@@ -2488,7 +2489,6 @@ struct Engine {
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
-    /** The sprite frame-animation managers a scene created. */
     std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
@@ -3789,16 +3789,16 @@ double add_sprite_2d(
 void set_sprite_2d_frame_id(
     Engine& engine,
     Sprite2DLayerHandle layer,
-    double sprite_id,
+    std::uint32_t sprite_id,
     double frame);
 void remove_sprite_2d_id(
     Engine& engine,
     Sprite2DLayerHandle layer,
-    double sprite_id);
+    std::uint32_t sprite_id);
 bool sprite_2d_id_alive(
     const Engine& engine,
     Sprite2DLayerHandle layer,
-    double sprite_id);
+    std::uint32_t sprite_id);
 EffectWrapperHandle create_effect_wrapper(
     Engine& engine,
     std::uint32_t variant);

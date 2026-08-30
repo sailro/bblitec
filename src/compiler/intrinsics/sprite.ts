@@ -4,6 +4,7 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { validateObjectProperties } from "../option-helpers.js";
 import {
     isDataTuple,
     tupleComponents,
@@ -57,6 +58,7 @@ export interface SpriteIntrinsicContext
         shader: SpriteCustomShaderManifest,
     ): void;
     emit(line: string): void;
+    propertyName(name: ts.PropertyName): string | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -219,6 +221,22 @@ function customShaderOption(
  * Babylon Lite's sprite entry points all take one, and every reached call
  * writes it inline, so the record is the compile-time thing it looks like.
  */
+/** The object literal an options argument must be, for the shared
+ *  property validator to name what a scene wrote. */
+function optionsLiteral(
+    context: SpriteIntrinsicContext,
+    expression: ts.Expression,
+): ts.ObjectLiteralExpression {
+    const unwrapped = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(unwrapped)) {
+        context.fail(
+            expression,
+            "These options must be written as an object literal.",
+        );
+    }
+    return unwrapped;
+}
+
 function optionsRecord(
     context: SpriteIntrinsicContext,
     expression: ts.Expression | undefined,
@@ -1050,8 +1068,12 @@ export function compileSpriteIntrinsic(
         case "createSpriteAnimationManager": {
             context.expectArgumentCount(call, 0, 1);
             if (call.arguments[0]) {
-                context.fail(
-                    call.arguments[0],
+                // `{}` is legal upstream and means the defaults, so the
+                // refusal names the FIELDS rather than the argument.
+                validateObjectProperties(
+                    context,
+                    optionsLiteral(context, call.arguments[0]),
+                    [],
                     "createSpriteAnimationManager's options are unreached: " +
                         "fixedDeltaMs overrides the caller's own step, and " +
                         "onUpdate is a per-tick callback of the autonomous " +
@@ -1105,10 +1127,34 @@ export function compileSpriteIntrinsic(
                         "has no place to run scene code as it finishes.",
                 );
             }
-            const removeWhenFinished =
-                property(options, "removeWhenFinished")?.cpp === "true";
+            const removeWhenFinishedValue = property(
+                options,
+                "removeWhenFinished",
+            );
+            const removeWhenFinished = removeWhenFinishedValue
+                ? removeWhenFinishedValue.cpp
+                : "false";
+            if (
+                removeWhenFinished !== "true" &&
+                removeWhenFinished !== "false"
+            ) {
+                context.fail(
+                    call.arguments[6]!,
+                    importedName +
+                        "'s removeWhenFinished decides whether the sprite " +
+                        "survives its own animation, so it must settle at " +
+                        "generation rather than read as false.",
+                );
+            }
             const engineCpp =
                 manager.engineCpp ?? context.requireDefaultEngine(call);
+            if (sprite2d && target.spriteLayerCpp === undefined) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A Sprite2D animation target carries the layer it lives " +
+                        "in; this handle reached here without one.",
+                );
+            }
             const targetCpp = sprite2d
                 ? "bbl::SpriteAnimationTarget{" +
                   "bbl::SpriteAnimationTargetKind::sprite_2d, " +
@@ -1139,7 +1185,7 @@ export function compileSpriteIntrinsic(
                     ", " +
                     number(5) +
                     ", " +
-                    (removeWhenFinished ? "true" : "false") +
+                    removeWhenFinished +
                     ")",
                 engineCpp,
             };
@@ -1175,13 +1221,14 @@ export function compileSpriteIntrinsic(
             context.fail(
                 call,
                 importedName +
-                    " runs the manager from the render loop, which no " +
-                    "reached scene does: both drive it from their own " +
-                    "counted seek loop at a frozen pose. The stepper it " +
-                    "would install is the same one that loop already calls, " +
-                    "so what is missing is the hook, not the animation.",
+                    " installs the stepper on a render loop and hands back " +
+                    "a binding that detaches it -- a disposable this port " +
+                    "has no owner for. Both corpus scenes write it, in the " +
+                    "arm their own `?seekTime=` pose folds away; the arm " +
+                    "that survives drives the same stepper from a counted " +
+                    "loop, so what is missing is the hook and its binding, " +
+                    "not the animation.",
             );
-            break;
         }
 
         case "clearSprite2DLayer": {

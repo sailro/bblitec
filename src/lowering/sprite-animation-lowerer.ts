@@ -16,63 +16,125 @@
  * emitted stepper is gated below against the pin's own statements rather
  * than merely resembling them.
  */
-import ts from "typescript";
 import type { LoweredSource, LoweringContext } from "./context.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 const animationModule = "src/sprite/sprite-animation.ts";
 
 /**
- * The statements this port transcribes, asserted against the pin's own.
+ * `normalizeDelay` and `advanceSpriteAnimation`, lowered from their own
+ * declarations.
  *
- * Each entry is a fragment of `advanceSpriteAnimation`'s source: a pin that
- * moves one fails generation naming it, rather than leaving a stepper that
- * merely looks right. The fragments are the load-bearing lines -- the
- * accumulate, the exact-delay early-out, the remainder, the direction, the
- * end test and the two ways an animation can end.
+ * These two hold the timing rule the whole family turns on -- an EXACT delay
+ * does not step, the accumulator keeps its remainder, one update advances at
+ * most one frame -- and that rule is a Babylon compatibility contract rather
+ * than an implementation detail. Lowering them from the pin's AST is what
+ * makes the emitted arithmetic the pin's own: a transcription plus a gate
+ * can only prove the PIN still says something, never that the emission does.
+ *
+ * The three target operations are the map's own: upstream reaches them
+ * through a closure triple the family's adapter built, and this port reaches
+ * them through a tagged handle, so the calls are bound by the text the body
+ * reads them through.
  */
-const ADVANCE_CONTRACT: readonly string[] = [
-    "animation.accumulatedMs += deltaMs;",
-    "if (animation.accumulatedMs <= animation.delayMs) {",
-    "animation.accumulatedMs = animation.accumulatedMs % animation.delayMs;",
-    "const direction = animation.from > animation.to ? -1 : 1;",
-    "const next = animation.current + direction;",
-    "const passedEnd = direction > 0 ? next > animation.to : next < animation.to;",
-    "animation.current = animation.from;",
-    "animation.current = animation.to;",
-    "animation.animationStarted = false;",
-];
-
-/** `updateSpriteAnimationManager`'s own two rules, likewise. */
-const UPDATE_CONTRACT: readonly string[] = [
-    "const stepMs = manager.fixedDeltaMs > 0 ? manager.fixedDeltaMs : deltaMs;",
-    "if (!Number.isFinite(stepMs) || stepMs < 0) {",
-];
-
-/** `normalizeDelay`'s floor, which is what keeps a zero delay from dividing. */
-const NORMALIZE_CONTRACT =
-    "return Number.isFinite(delayMs) && delayMs > 1 ? delayMs : 1;";
-
-function assertPinnedStatements(
-    context: LoweringContext,
-    symbolName: string,
-    fragments: readonly string[],
-): void {
-    const { declaration } = context.functionDeclaration(
+function loweredStepper(context: LoweringContext): string {
+    const calls = new Map<string, (args: readonly string[]) => string>([
+        [
+            "animation.target.setFrame",
+            (args) => `set_target_frame(engine, animation.target, ${args[0]})`,
+        ],
+        [
+            "animation.target.remove",
+            () => "remove_target(engine, animation.target)",
+        ],
+        [
+            "animation.target.isAlive",
+            () => "target_is_alive(engine, animation.target)",
+        ],
+        ["normalizeDelay", (args) => `normalize_delay(${args[0]})`],
+        // The pin's finiteness guard, at the C++ spelling of the same
+        // predicate. Both bodies ask it, so the map is shared.
+        ["Number.isFinite", (args) => `std::isfinite(${args[0]})`],
+        // `animation.onEnd?.()`: an animation here never carries one,
+        // because the option that would set it refuses at generation. The
+        // pin's optional call is therefore the no-op its own `?.` makes it
+        // when the callback is absent -- bound rather than dropped, so the
+        // day the option is lowered this is the one place that changes.
+        ["animation.onEnd", () => "static_cast<void>(0)"],
+    ]);
+    const members = new Map<string, PinnedBinding>([
+        ["animation.from", { cpp: "animation.from", type: "scalar" }],
+        ["animation.to", { cpp: "animation.to", type: "scalar" }],
+        ["animation.current", { cpp: "animation.current", type: "scalar" }],
+        ["animation.loop", { cpp: "animation.loop", type: "bool" }],
+        ["animation.delayMs", { cpp: "animation.delay_ms", type: "scalar" }],
+        [
+            "animation.accumulatedMs",
+            { cpp: "animation.accumulated_ms", type: "scalar" },
+        ],
+        [
+            "animation.animationStarted",
+            { cpp: "animation.animation_started", type: "bool" },
+        ],
+        [
+            "animation.removeWhenFinished",
+            { cpp: "animation.remove_when_finished", type: "bool" },
+        ],
+    ]);
+    const normalize = lowerPinnedFunction(
+        context,
         animationModule,
-        symbolName,
+        "normalizeDelay",
+        [{ pinned: "delayMs", kind: "number", cpp: "delay_ms" }],
+        {
+            cppName: "normalize_delay",
+            returns: "double",
+            calls,
+            // `Number.isFinite(delayMs) && delayMs > 1` is a test, not the
+            // value-selecting `&&` the translator refuses by default: both
+            // sides are predicates, so the C++ operator is the same answer.
+            booleanAnd: true,
+        },
     );
-    const source = declaration.getText().replace(/\s+/g, " ");
-    for (const fragment of fragments) {
-        if (!source.includes(fragment.replace(/\s+/g, " "))) {
-            context.contractError(
-                declaration,
-                `Expected ${symbolName} to carry '${fragment}'. The ` +
-                    "emitted stepper is a transcription of these statements, " +
-                    "so a pin that moved one moves the frames every animated " +
-                    "sprite lands on.",
-            );
-        }
-    }
+    const advance = lowerPinnedFunction(
+        context,
+        animationModule,
+        "advanceSpriteAnimation",
+        [
+            {
+                pinned: "animation",
+                kind: "record",
+                cpp: "animation",
+                annotation: "SpriteFrameAnimation",
+                cppType: "SpriteFrameAnimation",
+                mutableRecord: true,
+                binding: { cpp: "animation", type: "scalar" },
+            },
+            { pinned: "deltaMs", kind: "number", cpp: "delta_ms" },
+        ],
+        {
+            cppName: "advance_sprite_animation",
+            // The pin reaches its sprite through a closure the family's
+            // adapter built; a free function is handed the engine that
+            // owns it instead, which is what the three bound calls use.
+            leadingParameters: ["Engine& engine"],
+            returns: {
+                type: "bool",
+                value: (lowerer, expression) =>
+                    expression ? lowerer.expression(expression) : "true",
+            },
+            // `animation.onEnd?.()` is the one call with no binding: the
+            // callback refuses at generation, so a body that reached it
+            // would fail here rather than lower to nothing.
+            calls,
+            memberBindings: members,
+            // `!passedEnd` and `animation.loop` are tests, and
+            // `direction > 0 ? ... : ...` selects between two of them.
+            booleanOr: true,
+        },
+    );
+    return `${normalize}\n\n${advance}`;
 }
 
 export class SpriteAnimationLowerer {
@@ -85,41 +147,6 @@ export class SpriteAnimationLowerer {
      * not emitted, exactly as the feature list decides everything else.
      */
     public lowerSpriteAnimation(billboards: boolean): LoweredSource {
-        assertPinnedStatements(
-            this.context,
-            "advanceSpriteAnimation",
-            ADVANCE_CONTRACT,
-        );
-        assertPinnedStatements(
-            this.context,
-            "updateSpriteAnimationManager",
-            UPDATE_CONTRACT,
-        );
-        assertPinnedStatements(this.context, "normalizeDelay", [
-            NORMALIZE_CONTRACT,
-        ]);
-        // `createSpriteFrameAnimation` truncates its range and shows the
-        // first frame at once; both are what a caller observes before any
-        // update runs.
-        const { declaration: create } = this.context.functionDeclaration(
-            animationModule,
-            "createSpriteFrameAnimation",
-        );
-        if (
-            !this.context.hasNode(
-                create,
-                (node) =>
-                    ts.isCallExpression(node) &&
-                    node.getText().includes("target.setFrame(fromFrame)"),
-            )
-        ) {
-            this.context.contractError(
-                create,
-                "Expected createSpriteFrameAnimation to show its first " +
-                    "frame before any update runs.",
-            );
-        }
-
         // A family the scene never built has no entry points to call, so
         // its arm is not emitted; the kind can never carry it either.
         const billboardArm = (
@@ -160,15 +187,10 @@ void update_sprite_animation_manager(
 #include <bblite/upstream/sprite_layer.hpp>
 
 #include <cmath>
+#include <vector>
 
 namespace bbl::upstream {
 namespace {
-
-/** normalizeDelay: a delay at or under one millisecond floors to one, which
- *  is what keeps the remainder below from dividing by zero. */
-double normalize_delay(double delay_ms) {
-    return std::isfinite(delay_ms) && delay_ms > 1.0 ? delay_ms : 1.0;
-}
 
 /** The target's own three operations, which upstream carries as a closure
  *  triple built by whichever family created the sprite. */
@@ -200,58 +222,7 @@ bool target_is_alive(
 ${billboardArm("return billboard_sprite_alive(engine, target.billboard);", "return true;")}
 }
 
-/**
- * advanceSpriteAnimation, statement for statement.
- *
- * The three rules that decide which frame a sprite lands on are the pin's
- * own, and the gate in the lowerer asserts each one is still written there:
- * an EXACT delay does not step, the accumulator keeps its remainder, and one
- * update advances at most one frame.
- */
-bool advance_sprite_animation(
-    Engine& engine,
-    SpriteFrameAnimation& animation,
-    double delta_ms) {
-    if (!target_is_alive(engine, animation.target)) {
-        animation.animation_started = false;
-        return false;
-    }
-    if (!animation.animation_started) {
-        return true;
-    }
-
-    animation.accumulated_ms += delta_ms;
-    if (animation.accumulated_ms <= animation.delay_ms) {
-        return true;
-    }
-
-    animation.accumulated_ms =
-        std::fmod(animation.accumulated_ms, animation.delay_ms);
-    const double direction = animation.from > animation.to ? -1.0 : 1.0;
-    const double next = animation.current + direction;
-    const bool passed_end =
-        direction > 0.0 ? next > animation.to : next < animation.to;
-    if (!passed_end) {
-        animation.current = next;
-        set_target_frame(engine, animation.target, next);
-        return true;
-    }
-
-    if (animation.loop) {
-        animation.current = animation.from;
-        set_target_frame(engine, animation.target, animation.from);
-        return true;
-    }
-
-    animation.current = animation.to;
-    set_target_frame(engine, animation.target, animation.to);
-    animation.animation_started = false;
-    // The pin's onEnd callback is unreached and refuses at generation.
-    if (animation.remove_when_finished) {
-        remove_target(engine, animation.target);
-    }
-    return false;
-}
+${loweredStepper(this.context)}
 
 } // namespace
 
@@ -295,8 +266,10 @@ void update_sprite_animation_manager(
     double delta_ms) {
     SpriteAnimationManagerRecord& record =
         engine.sprite_animation_managers[manager.value];
-    const double step_ms =
-        record.fixed_delta_ms > 0.0 ? record.fixed_delta_ms : delta_ms;
+    // The pin takes its manager's fixedDeltaMs where one is set; the
+    // option that would set it refuses at generation, so every step here
+    // is the caller's own delta.
+    const double step_ms = delta_ms;
     if (!std::isfinite(step_ms) || step_ms < 0.0) {
         return;
     }
@@ -304,15 +277,12 @@ void update_sprite_animation_manager(
     // without corrupting iteration, and removes by identity rather than by
     // a possibly-stale index. Nothing reached adds or clears from a
     // callback -- onEnd refuses at generation -- so the same answer is one
-    // pass that keeps what survived.
-    std::vector<SpriteFrameAnimation> surviving;
-    surviving.reserve(record.animations.size());
-    for (SpriteFrameAnimation& animation : record.animations) {
-        if (advance_sprite_animation(engine, animation, step_ms)) {
-            surviving.push_back(animation);
-        }
-    }
-    record.animations = std::move(surviving);
+    // pass in place over the list the record already owns.
+    std::erase_if(
+        record.animations,
+        [&](SpriteFrameAnimation& animation) {
+            return !advance_sprite_animation(engine, animation, step_ms);
+        });
 }
 
 } // namespace bbl::upstream
