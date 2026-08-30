@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-74 corpus scenes remain unregistered; measured scenes
+73 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -233,9 +233,9 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (42 scenes):** 17, 20,
+**Integrate first (41 scenes):** 17, 20,
 51-53, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
-140, 149, 156, 165, 211, 214, 215, 218, 219,
+140, 149, 156, 211, 214, 215, 218, 219,
 223, 226, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118), and display-only
@@ -655,11 +655,6 @@ integrated.
   `canvas.dataset.animationFrozen`, which is the shape this harness
   already injects — so the work is making the native side fold the same
   parameter to the measured pose rather than erasing the branch.
-- [ ] Scene 165: a `createShaderMaterial` call with no `name`, then the
-  viewProjection + world system-uniform pair, per-instance
-  thin-instance colors (`setThinInstanceColors` plus the instance color vertex
-  stream), and an explicit image-neutral lowering decision for
-  `enableThinInstanceGpuCulling`.
 - [ ] Extend the line slice past what scenes 278 and 279 measure. The
   polylines themselves are the scene's own static literals, materialized as
   the nested data the generated flatten reads, so a system whose points are

@@ -785,6 +785,34 @@ primitive's indices at load instead.
 `SceneNode.children` walk are not reached; scene 269 is the scene behind
 them ([TODO](../TODO.md)).
 
+A scene-local shader material draws through a mesh's thin instances. Both
+lanes are the **mesh's** decision: the pin's `hasColor` is
+`!!ti.colors && material._tic != 0`, and the material-side `_tic` opt-out is a
+key this port refuses, so the mesh decides outright. That cannot be settled
+where the material is created — which precedes both its assignment and its
+instances — so the four `world0..3` lanes and the `instanceColor` lane are
+settled after the whole entry is compiled, from the material-to-mesh pairs
+recorded on the way through, in either source order.
+
+Upstream builds one pipeline per renderable and keys it on exactly those
+lanes, so a material can be instanced on one mesh and plain on another. This
+port bakes one variant into the material record instead, so meshes that
+disagree on either lane refuse rather than one of them drawing through the
+wrong prelude; a mesh that can only *possibly* acquire instances, from a
+frame callback, refuses for the same reason. The line family shows the shape
+a generalization would take, naming each permutation (`-ti`, `-tic`) as its
+own variant.
+
+The lanes sit at fixed locations 16-20 where the pin puts them at
+`material.attributes.length`. Nothing observable rides the numbers — this
+port synthesizes the whole `VertexInput` and the scene's WGSL names the lanes,
+not their slots — but it is why the device asks for 21 vertex attributes
+where the pin asks for far fewer.
+
+The material's `name` is optional, as it is upstream, where it is carried onto
+the material and composed from by nothing; an unnamed one takes the identity
+its reach order gives it.
+
 ### Lights
 
 Directional, hemispheric, point, and spot lights with diffuse and specular

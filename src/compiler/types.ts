@@ -326,6 +326,20 @@ export interface SceneMeshManifest {
   /** Whether this exact mesh reaches thin instancing before rendering, or
    *  can acquire it later from a callback. */
   thinInstances?: "always" | "possible";
+  /** Whether the mesh also carries the per-instance RGBA stream. */
+  thinInstanceColors?: true;
+  /**
+   * The scene-local shader variant this mesh was assigned, by name.
+   *
+   * The pin decides a ShaderMaterial's instanced form mostly from the MESH:
+   * `hasColor` is `!!ti.colors && material._tic != 0`, so the mesh's stream
+   * decides and the material only opts out (a key this port refuses, so the
+   * mesh decides outright). Either way it cannot be settled where the
+   * material is created -- that precedes both the assignment and the
+   * instances -- so the pair is recorded and settled once, after the entry,
+   * in either source order.
+   */
+  shaderVariant?: string;
 }
 
 /**
@@ -1489,6 +1503,16 @@ export interface Value {
     /** One-based program index; zero is the stock sprite/billboard shader. */
     spriteCustomShaderIndex?: number;
     shaderVariant?: string;
+    /**
+     * The same name, but only for a program `createShaderMaterial` built
+     * from the entry's own WGSL.
+     *
+     * The line and linear-depth families also carry `shaderVariant`, and
+     * both settle their own instanced form from their options -- the line
+     * family even names the permutation. Only a scene-local program leaves
+     * that to the mesh, so only it is marked here.
+     */
+    sceneShaderVariant?: string;
     /** Stable creation slot for a scene-owned material that escapes a scope. */
     sceneMaterialSlot?: number;
     animationFrameRate?: string;

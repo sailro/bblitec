@@ -412,6 +412,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
       pbrMaterial: number | null;
       nodeMaterial: number | null;
       standardMaterial: boolean;
+      sceneShaderVariant?: string | undefined;
     },
   ): void;
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
@@ -1288,6 +1289,9 @@ export function emitPropertyAssignment(
           pbrMaterial: material.scenePbrMaterialIndex ?? null,
           nodeMaterial: material.nodeMaterialIndex ?? null,
           standardMaterial: material.standardMaterial === true,
+          // Only a scene-local program: the other families that carry a
+          // variant settle their own instanced form from their options.
+          sceneShaderVariant: material.sceneShaderVariant,
         });
         if (material.assetPbrMaterial) {
           context.recordSceneMeshAssetPbrMaterial(target.sceneMeshIndex);
