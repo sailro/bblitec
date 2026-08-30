@@ -11,13 +11,16 @@ import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     validateObjectProperties,
+    compileStaticNumber,
     type ObjectValidationContext,
+    type PositiveIntegerContext,
 } from "../option-helpers.js";
 import { PINNED_AGENT_PARAM_DEFAULTS } from "../../lowering/navigation-lowerer.js";
 
 export interface NavigationIntrinsicContext
     extends IntrinsicCallContext,
-        ObjectValidationContext {
+        ObjectValidationContext,
+        PositiveIntegerContext {
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -209,6 +212,13 @@ export function compileNavigationIntrinsic(
                 call.arguments[2]!,
             );
             validateNavMeshParams(context, options);
+            // Which arm this build takes is decided HERE and nowhere else:
+            // the feature is what carries it to the emitted dispatch, to
+            // the PAL half that gets compiled, and to the third-party
+            // library that gets linked.
+            if (buildGate(context, options, "maxObstacles") !== 0) {
+                context.reachFeature("navigation:tile-cache", call);
+            }
             const parameters =
                 context.allocateTemporaryCppName("nav_params");
             context.emit(
@@ -688,17 +698,30 @@ function validateNavMeshParams(
             "config keys.",
     );
     // The pin dispatches on `maxObstacles` first and `tileSize` second, so
-    // a tiled build is one that asked for tiles WITHOUT obstacles -- and
-    // that middle arm is the one with no reached scene. A zero literal is
-    // the solo arm by the pin's own test and is dropped.
-    const obstacles = staticZeroOrPositive(context, options, "maxObstacles");
-    const tiles = staticZeroOrPositive(context, options, "tileSize");
+    // the four corners of those two gates are the arm, and both refusals
+    // are stated together because that is how the table reads:
+    //
+    //   obstacles  tiles      arm
+    //   0          0          solo
+    //   0          > 0        tiled -- no reached scene, refused
+    //   > 0        > 0        tile cache
+    //   > 0        0          a cache with no tile size, refused
+    const obstacles = buildGate(context, options, "maxObstacles");
+    const tiles = buildGate(context, options, "tileSize");
     if (obstacles === 0 && tiles !== 0) {
         context.fail(
-            context.objectProperty(options, "tileSize")!,
+            requiredProperty(context, options, "tileSize"),
             "createNavMesh with tileSize > 0 and no obstacles builds a " +
                 "tiled navmesh, which is not lowered; the solo and " +
                 "tile-cache arms are.",
+        );
+    }
+    if (obstacles !== 0 && tiles === 0) {
+        context.fail(
+            requiredProperty(context, options, "maxObstacles"),
+            "createNavMesh with maxObstacles > 0 needs a tileSize: the " +
+                "cache is sized in tiles, and the pin's own default of 32 " +
+                "is a size no reached scene relies on.",
         );
     }
     if (context.objectProperty(options, "doNotReverseIndices")) {
@@ -708,14 +731,15 @@ function validateNavMeshParams(
                 "reached merge carries the pin's reversed winding.",
         );
     }
-    if (obstacles !== 0 && tiles === 0) {
-        context.fail(
-            options,
-            "createNavMesh with maxObstacles > 0 needs a tileSize: the " +
-                "cache is sized in tiles, and the pin's own default of 32 " +
-                "is a size no reached scene relies on.",
-        );
-    }
+}
+
+/** The property behind a gate that read non-zero, so it is present. */
+function requiredProperty(
+    context: NavigationIntrinsicContext,
+    options: ts.ObjectLiteralExpression,
+    name: string,
+): ts.Expression {
+    return context.objectProperty(options, name) ?? options;
 }
 
 /**
@@ -723,24 +747,16 @@ function validateNavMeshParams(
  * absent.
  *
  * Which build arm runs is a compile-time fact -- it decides which PAL entry
- * point the scene calls and whether the obstacle surface is reachable at
- * all -- so a gate that is not a static number is refused rather than
- * guessed.
+ * point the scene calls and whether the obstacle surface is reachable at all
+ * -- so a gate generation cannot fold is refused rather than guessed.
  */
-function staticZeroOrPositive(
+function buildGate(
     context: NavigationIntrinsicContext,
     options: ts.ObjectLiteralExpression,
     name: string,
 ): number {
     const value = context.objectProperty(options, name);
-    if (!value) return 0;
-    const literal = context.unwrap(value);
-    if (!ts.isNumericLiteral(literal)) {
-        context.fail(
-            value,
-            `createNavMesh's ${name} decides which build arm runs, so it ` +
-                "must be a numeric literal.",
-        );
-    }
-    return Number(literal.text);
+    return value === undefined
+        ? 0
+        : compileStaticNumber(context, value, `createNavMesh's ${name}`);
 }

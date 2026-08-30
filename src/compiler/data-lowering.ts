@@ -4727,6 +4727,25 @@ export class DataLowerer {
                         ` : ${cppType}{std::nullopt})`
                     );
                 }
+                // The same hazard the handle arm answers, for every other
+                // inner type. The expression is already compiled, and for a
+                // call whose body inlines, compiling it again emits that
+                // body again: scene 173 binds a `WireMesh[] | null` from a
+                // helper that builds twelve tubes, and before this arm the
+                // native scene drew all twelve twice -- co-located, so the
+                // capture matched the browser's while carrying 27% more
+                // draws. A value whose own type is the inner one needs no
+                // conversion, so it is handed on rather than recompiled.
+                if (
+                    optional?.kind === "data" &&
+                    optional.dataType &&
+                    dataTypesEqual(
+                        optional.dataType,
+                        dataType.inner,
+                    )
+                ) {
+                    return optional.cpp;
+                }
                 return this.compileForSink(
                     unwrapped,
                     dataType.inner,

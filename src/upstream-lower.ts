@@ -1949,7 +1949,9 @@ ${shadow.blurFragmentWgsl}`,
         if (features.includes("navigation:recast")) {
             this.writeSource(
                 "upstream/src/navigation.cpp",
-                new NavigationLowerer(context).lowerNavigation(),
+                new NavigationLowerer(context).lowerNavigation(
+                    features.includes("navigation:tile-cache"),
+                ),
                 generated,
                 "upstream/include/bblite/upstream/navigation.hpp",
             );

@@ -1,8 +1,4 @@
 import ts from "typescript";
-import {
-    handleValueKinds,
-    nullableHandleKinds,
-} from "./types.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
     isHandleKind,
@@ -1843,17 +1839,14 @@ export class StatementLowerer {
                 ) {
                     return;
                 } else if (
-                    handleValueKinds.has(target.kind) &&
+                    isHandleKind(target.kind) &&
                     operator === "=" &&
                     ts.isIdentifier(context.unwrap(unwrapped.left)) &&
                     context.unwrap(unwrapped.right).kind !==
                         ts.SyntaxKind.NullKeyword
                 ) {
-                    // Point a handle name at a different handle of the same
-                    // kind. The storage is one number, so the emitted
-                    // assignment is a copy -- but the identity the compiler
-                    // holds beside it decides composition, so it moves with
-                    // the assignment rather than being left behind.
+                    // Point a handle name at a different handle of the
+                    // same kind; `rebindVariable` carries what that means.
                     const right = context.compileValue(unwrapped.right);
                     if (right.kind !== target.kind) {
                         context.fail(
@@ -1867,18 +1860,6 @@ export class StatementLowerer {
                         context.unwrap(unwrapped.left) as ts.Identifier,
                         right,
                     );
-                    return;
-                } else if (
-                    nullableHandleKinds.has(target.kind) &&
-                    operator === "=" &&
-                    context.unwrap(unwrapped.right).kind ===
-                        ts.SyntaxKind.NullKeyword
-                ) {
-                    // Clearing one is the scene saying it no longer holds
-                    // what it dropped -- the removal itself was the call
-                    // before this. The zero handle is that "no longer", and
-                    // it is the same storage the guard beside it reads.
-                    context.emit(`${target.cpp} = {};`);
                     return;
                 } else if (
                     target.kind === "json-null" &&

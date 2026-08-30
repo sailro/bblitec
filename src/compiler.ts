@@ -911,6 +911,12 @@ class Compiler
                 cppType: "bbl::SpriteRendererHandle",
             };
         }
+        if (name === "ObstacleHandle") {
+            return {
+                kind: "navigation-obstacle",
+                cppType: "bbl::pal::NavObstacleHandle",
+            };
+        }
         if (name === "Mesh") {
             return {
                 kind: "mesh",
@@ -5992,7 +5998,7 @@ class Compiler
         identifier: ts.Identifier,
         binding: VariableBinding,
     ): void {
-        if (binding.rebindingScopeDepth === undefined) return;
+        if (!binding.reboundInNestedScope) return;
         this.fail(
             identifier,
             `'${identifier.text}' is read after a nested callback pointed ` +
@@ -6355,6 +6361,33 @@ class Compiler
         return current;
     }
 
+    /** The value symbol a name binds, or a failure naming it. */
+    private requireValueSymbol(identifier: ts.Identifier): ts.Symbol {
+        const symbol = this.symbols.valueSymbol(identifier);
+        if (!symbol) {
+            this.fail(
+                identifier,
+                `Unable to resolve variable '${identifier.text}'.`,
+            );
+        }
+        return symbol;
+    }
+
+    /** The innermost scope that binds a symbol, walked as `lookup` walks. */
+    private bindingScope(
+        symbol: ts.Symbol,
+    ): Map<ts.Symbol, VariableBinding> | undefined {
+        for (
+            let index = this.variableScopes.length - 1;
+            index >= 0;
+            index -= 1
+        ) {
+            const scope = this.variableScopes[index]!;
+            if (scope.has(symbol)) return scope;
+        }
+        return undefined;
+    }
+
     public lookup(identifier: ts.Identifier): Value {
         const symbol =
             this.symbols.valueSymbol(identifier);
@@ -6407,16 +6440,10 @@ class Compiler
         identifier: ts.Identifier,
         value: Value,
     ): void {
-        const symbol = this.symbols.valueSymbol(identifier);
-        if (!symbol) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
-        const owner = [...this.variableScopes]
-            .reverse()
-            .find((scope) => scope.has(symbol));
+        const symbol = this.requireValueSymbol(identifier);
+        // The same innermost-first walk `lookup` takes, so a rebind and a
+        // read cannot disagree about which scope owns the name.
+        const owner = this.bindingScope(symbol);
         if (!owner) {
             this.fail(
                 identifier,
@@ -6435,7 +6462,7 @@ class Compiler
         }
         owner.set(symbol, {
             ...binding,
-            rebindingScopeDepth: this.variableScopes.length,
+            reboundInNestedScope: true,
         });
         innermost.set(symbol, rebound);
     }
@@ -6444,14 +6471,7 @@ class Compiler
         identifier: ts.Identifier,
         value: Value,
     ): void {
-        const symbol =
-            this.symbols.valueSymbol(identifier);
-        if (!symbol) {
-            this.fail(
-                identifier,
-                `Unable to resolve variable '${identifier.text}'.`,
-            );
-        }
+        const symbol = this.requireValueSymbol(identifier);
         const scope = this.variableScopes.at(-1)!;
         if (scope.has(symbol)) {
             this.fail(

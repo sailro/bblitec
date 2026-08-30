@@ -686,6 +686,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the same recastnavigation sources the native library links)",
         consumers: CMAKE,
     },
+    "navigation:tile-cache": {
+        provenance:
+            "src/navigation/navigation.ts createNavMesh with " +
+            "maxObstacles > 0 + the @recast-navigation/generators " +
+            "generateTileCache pipeline and the addBoxObstacle / " +
+            "addCylinderObstacle / removeObstacle / " +
+            "updateNavMeshObstacles surface it is what makes possible",
+        consumers: CMAKE,
+    },
     "audio:engine": {
         provenance:
             "src/audio/audio-engine.ts createAudioEngineAsync + bus.ts " +

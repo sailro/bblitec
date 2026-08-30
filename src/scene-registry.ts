@@ -1113,6 +1113,33 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene removes an obstacle without depending
+        // on wall-clock time: 173 reaches `removeObstacle` and the nullable
+        // handle it holds one in, but only inside the branch its own
+        // `?freeze=1` pose folds away.
+        id: "regression-nav-obstacles",
+        name: "Regression - Navigation Obstacle Removal",
+        source: "examples/regression-nav-obstacles.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Navigation Obstacle Removal",
+        buildDirectory:
+            "native/build-regression-nav-obstacles-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-nav-obstacles/" +
+                    "babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-nav-obstacles",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene174",
         name: "Scene 174 - Navigation Off-Mesh Connections",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene174.ts",

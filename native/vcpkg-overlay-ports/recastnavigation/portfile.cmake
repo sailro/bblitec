@@ -46,26 +46,39 @@ vcpkg_fixup_pkgconfig()
 vcpkg_copy_pdbs()
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 
-# Two files the library targets do not carry, which the tile-cache build
-# reaches for: `rcChunkyTriMesh` -- the spatial partition
-# `generateTileCache` rasterizes each tile through -- and the FastLZ codec
-# its `dtTileCacheCompressor` wraps. Both live under `RecastDemo/`, which
-# `RECASTNAVIGATION_DEMO=OFF` does not build, so they are installed as
-# sources and compiled by the consumer. Taking them from THIS commit is
-# the point: the tile layers the native build compresses and the triangle
-# partition it rasterizes are the wasm reference's own, not a
-# transcription of them.
+# The tile-cache build reaches for two files the library targets do not
+# carry, both under the `RecastDemo/` tree `RECASTNAVIGATION_DEMO=OFF` does
+# not build. They are compiled into a library of their own here, from THIS
+# commit and under this port's own strict float, rather than handed to the
+# consumer as sources -- `tile-cache/CMakeLists.txt` beside this file says
+# what they are and why they live here.
+set(TILE_CACHE_SOURCE "${CURRENT_BUILDTREES_DIR}/tile-cache-src")
 file(
-    INSTALL
+    COPY
+        "${CMAKE_CURRENT_LIST_DIR}/tile-cache/CMakeLists.txt"
+        "${SOURCE_PATH}/RecastDemo/Include/ChunkyTriMesh.h"
+        "${SOURCE_PATH}/RecastDemo/Source/ChunkyTriMesh.cpp"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.h"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.c"
+    DESTINATION "${TILE_CACHE_SOURCE}"
+)
+file(
+    COPY
         "${SOURCE_PATH}/RecastDemo/Include/ChunkyTriMesh.h"
         "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.h"
     DESTINATION "${CURRENT_PACKAGES_DIR}/include/recastnavigation"
 )
+vcpkg_cmake_configure(SOURCE_PATH "${TILE_CACHE_SOURCE}")
+vcpkg_cmake_install()
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
+
+# The package's own config brings the tile-cache target with it, so a
+# consumer that found recastnavigation has already found this.
 file(
-    INSTALL
-        "${SOURCE_PATH}/RecastDemo/Source/ChunkyTriMesh.cpp"
-        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.c"
-    DESTINATION "${CURRENT_PACKAGES_DIR}/share/recastnavigation/tile-cache-src"
+    APPEND "${CURRENT_PACKAGES_DIR}/share/recastnavigation/recastnavigation-config.cmake"
+    "
+include(\"\${CMAKE_CURRENT_LIST_DIR}/recastnavigation-tile-cache-targets.cmake\")
+"
 )
 
 vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/License.txt")

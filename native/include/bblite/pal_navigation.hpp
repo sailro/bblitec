@@ -137,6 +137,11 @@ void navigation_create_solo_nav_mesh(
     const NavMeshGeometry& geometry,
     const NavMeshBuildParams& params);
 
+#ifndef BBLITE_HAS_NAV_TILE_CACHE
+#define BBLITE_HAS_NAV_TILE_CACHE 0
+#endif
+
+#if BBLITE_HAS_NAV_TILE_CACHE
 /**
  * The tile-cache build (`generateTileCache` semantics).
  *
@@ -156,24 +161,30 @@ void navigation_create_tile_cache_nav_mesh(
     const NavMeshGeometry& geometry,
     const NavMeshBuildParams& params);
 
-/** One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
- *  Absent where the pinned factory returns null, which is a refused add. */
+/**
+ * One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
+ *
+ * Zero is the null: Detour never issues that reference, and the pinned
+ * factories return `null` for a refused add. This port throws there
+ * instead, as it does for every other failed stage, so the zero handle is
+ * only ever what a SCENE cleared a name to.
+ */
 struct NavObstacleHandle {
     std::uint32_t value = 0;
 };
 
 /**
  * `addBoxObstacle(position, halfExtents, angle)`: the cache's own oriented
- * box. Absent when the add failed, which the pinned factory reports as null.
+ * box. Throws where the pinned factory returns null -- the cache is full.
  */
-std::optional<NavObstacleHandle> navigation_add_box_obstacle(
+NavObstacleHandle navigation_add_box_obstacle(
     NavigationHandle plugin,
     NavVec3 position,
     NavVec3 half_extents,
     float angle);
 
 /** `addCylinderObstacle(position, radius, height)`, likewise. */
-std::optional<NavObstacleHandle> navigation_add_cylinder_obstacle(
+NavObstacleHandle navigation_add_cylinder_obstacle(
     NavigationHandle plugin,
     NavVec3 position,
     float radius,
@@ -193,6 +204,8 @@ void navigation_remove_obstacle(
  * the obstacle no longer occupies, and the pin refuses to hand that back.
  */
 void navigation_update_obstacles(NavigationHandle plugin);
+
+#endif
 
 /** The wrapper's detail-mesh walk + detached-triangle rebuild. */
 NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin);

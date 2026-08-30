@@ -1493,11 +1493,14 @@ naming it.
 
 The reached slice: a navmesh built from the numeric config subset of
 `createNavMesh`, over either mesh kind the corpus casts from. Which of the
-pin's three build arms runs is a compile-time fact, because it decides
-whether the obstacle surface is reachable at all: `maxObstacles > 0` builds
-a **tile cache**, and anything else builds solo. The middle arm -- tiles
-without obstacles -- refuses by name, as does a gate written any way but as
-a numeric literal. The merge
+pin's three build arms runs is a compile-time fact: `maxObstacles > 0`
+builds a **tile cache**, anything else builds solo, and the middle arm --
+tiles without obstacles -- refuses by name, as does a gate generation
+cannot fold. Upstream asks that question again at run time; here it is
+asked once, at generation, and the answer reaches the build as
+`navigation:tile-cache`. A scene that never asked for an obstacle emits no
+tile-cache call, carries none of the obstacle surface, compiles none of the
+PAL half behind it and links none of the library that half needs. The merge
 applies each caster's own `worldMatrix` as the pin does, and where that
 matrix already is decides the arm: a glTF-imported mesh's vertices carry
 the loader-baked mirrored world (measured equal to the pin's stream on
@@ -1528,9 +1531,10 @@ at all; each ends by running the cache's update until nothing is pending,
 exactly as the pinned entry points do, and `updateNavMeshObstacles` is that
 same wait on its own. Two RecastDemo files the library targets do not carry
 -- the triangle partition each tile rasterizes through and the FastLZ codec
-its compressor wraps -- are installed by the overlay port from the pinned
-commit rather than transcribed here, so the tiles the native build
-compresses are the ones the reference does.
+its compressor wraps -- are built by the overlay port into a library of
+their own, from the pinned commit and under the port's own strict float
+rather than transcribed here, so the tiles the native build compresses are
+the ones the reference does.
 
 An obstacle handle is nullable the way upstream's is: a refused add is a
 `null` there and a throw here, because every reached use hands the handle
