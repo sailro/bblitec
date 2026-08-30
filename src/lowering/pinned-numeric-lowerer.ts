@@ -1278,6 +1278,18 @@ export class PinnedNumericLowerer {
             if (!binding) this.fail(unwrapped, "assignment target");
             return binding.cpp;
         }
+        if (ts.isPropertyAccessExpression(unwrapped)) {
+            // A member the caller bound, written through. The read path
+            // resolves these by their own source text, so the store does
+            // too -- a pinned function that mutates the record it was
+            // handed writes the same field the reads name, and binding one
+            // direction without the other would lower half its body.
+            const named = this.scope.bindings.get(
+                unwrapped.getText(this.file),
+            );
+            if (named) return named.cpp;
+            return this.fail(unwrapped, "assignment target");
+        }
         if (ts.isElementAccessExpression(unwrapped)) {
             // A view the caller did not declare mutable is an alias over
             // someone else's storage, so a store through one is refused

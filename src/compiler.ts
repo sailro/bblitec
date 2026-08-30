@@ -5673,6 +5673,35 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         const callee = this.unwrap(call.expression);
+        // `Number.isFinite(x)` is the same predicate as the global, and a
+        // shared module writes whichever spelling reads better beside its
+        // own guard. Both settle where generation knows the number and
+        // emit the one C++ test where it does not.
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "isFinite" &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "Number" &&
+            this.isDefaultLibraryIdentifier(callee.expression)
+        ) {
+            this.expectArgumentCount(call, 1, 1);
+            const argument = this.compileValue(call.arguments[0]!);
+            if (argument.staticNumber !== undefined) {
+                return {
+                    kind: "boolean",
+                    cpp: Number.isFinite(argument.staticNumber)
+                        ? "true"
+                        : "false",
+                };
+            }
+            return {
+                kind: "boolean",
+                cpp: `std::isfinite(${this.compileNumber(
+                    call.arguments[0]!,
+                    "double",
+                )})`,
+            };
+        }
         if (
             ts.isIdentifier(callee) &&
             this.isDefaultLibraryIdentifier(callee)

@@ -4,6 +4,7 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { validateObjectProperties } from "../option-helpers.js";
 import {
     isDataTuple,
     tupleComponents,
@@ -57,6 +58,7 @@ export interface SpriteIntrinsicContext
         shader: SpriteCustomShaderManifest,
     ): void;
     emit(line: string): void;
+    propertyName(name: ts.PropertyName): string | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -219,6 +221,22 @@ function customShaderOption(
  * Babylon Lite's sprite entry points all take one, and every reached call
  * writes it inline, so the record is the compile-time thing it looks like.
  */
+/** The object literal an options argument must be, for the shared
+ *  property validator to name what a scene wrote. */
+function optionsLiteral(
+    context: SpriteIntrinsicContext,
+    expression: ts.Expression,
+): ts.ObjectLiteralExpression {
+    const unwrapped = context.unwrap(expression);
+    if (!ts.isObjectLiteralExpression(unwrapped)) {
+        context.fail(
+            expression,
+            "These options must be written as an object literal.",
+        );
+    }
+    return unwrapped;
+}
+
 function optionsRecord(
     context: SpriteIntrinsicContext,
     expression: ts.Expression | undefined,
@@ -326,7 +344,7 @@ function sprite2DPropsCpp(
     context: SpriteIntrinsicContext,
     props: Value | undefined,
     call: ts.CallExpression,
-    entryName: string,
+    importedName: string,
     optionsArgument: ts.Node,
 ): string {
     const positionPx = tupleOption(
@@ -336,7 +354,7 @@ function sprite2DPropsCpp(
         call,
         2,
     );
-    if (!positionPx && entryName === "addSprite2DIndex") {
+    if (!positionPx && importedName === "addSprite2DIndex") {
         context.fail(call, "addSprite2DIndex: positionPx required.");
     }
     if (property(props, "z")) {
@@ -945,6 +963,44 @@ export function compileSpriteIntrinsic(
             };
         }
 
+        case "addSprite2D": {
+            // The pin's handle is a stable id over a moving index, kept in
+            // step with the layer's own swap-remove. That indirection is
+            // load-bearing here too: an animation that outlives another
+            // sprite's removal would otherwise drive whichever sprite the
+            // swap moved into its slot.
+            context.expectArgumentCount(call, 2, 2);
+            const layer = context.compileValue(call.arguments[0]!);
+            context.expectKind(layer, "sprite-layer", call.arguments[0]!);
+            const props = optionsRecord(
+                context,
+                call.arguments[1],
+                "addSprite2D",
+            );
+            const engineCpp =
+                layer.engineCpp ?? context.requireDefaultEngine(call);
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "sprite-2d-handle",
+                cpp:
+                    "bbl::add_sprite_2d(" +
+                    engineCpp +
+                    ", " +
+                    layer.cpp +
+                    ", " +
+                    sprite2DPropsCpp(
+                        context,
+                        props,
+                        call,
+                        "addSprite2D",
+                        call.arguments[1] ?? call,
+                    ) +
+                    ")",
+                engineCpp,
+                spriteLayerCpp: layer.cpp,
+            };
+        }
+
         case "updateSprite2DIndex": {
             // The patch is a `Partial<Sprite2DProps>`: every field the
             // caller omits keeps the value the slot already holds, which is
@@ -1007,6 +1063,172 @@ export function compileSpriteIntrinsic(
                 cpp: updateCpp(options),
                 engineCpp,
             };
+        }
+
+        case "createSpriteAnimationManager": {
+            context.expectArgumentCount(call, 0, 1);
+            if (call.arguments[0]) {
+                // `{}` is legal upstream and means the defaults, so the
+                // refusal names the FIELDS rather than the argument.
+                validateObjectProperties(
+                    context,
+                    optionsLiteral(context, call.arguments[0]),
+                    [],
+                    "createSpriteAnimationManager's options are unreached: " +
+                        "fixedDeltaMs overrides the caller's own step, and " +
+                        "onUpdate is a per-tick callback of the autonomous " +
+                        "loop this port does not run.",
+                );
+            }
+            const engineCpp = context.requireDefaultEngine(call);
+            context.reachFeature("sprite:animation", call);
+            return {
+                kind: "sprite-animation-manager",
+                cpp:
+                    "bbl::upstream::create_sprite_animation_manager(" +
+                    engineCpp +
+                    ")",
+                engineCpp,
+            };
+        }
+
+        case "playSprite2DAnimation":
+        case "playBillboardSpriteAnimation": {
+            // The two adapters differ only in which family names the sprite:
+            // upstream builds a closure triple over the handle, and the
+            // target record here is that same decoupling as data.
+            const sprite2d = importedName === "playSprite2DAnimation";
+            context.expectArgumentCount(call, 6, 7);
+            const manager = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                manager,
+                "sprite-animation-manager",
+                call.arguments[0]!,
+            );
+            const target = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                target,
+                sprite2d ? "sprite-2d-handle" : "billboard-sprite",
+                call.arguments[1]!,
+            );
+            const number = (index: number): string =>
+                context.compileNumber(call.arguments[index]!, "double");
+            const loop = context.compileCondition(call.arguments[4]!);
+            const options = optionsRecord(
+                context,
+                call.arguments[6],
+                importedName,
+            );
+            if (property(options, "onEnd")) {
+                context.fail(
+                    call.arguments[6]!,
+                    importedName +
+                        "'s onEnd callback is unreached: a native animation " +
+                        "has no place to run scene code as it finishes.",
+                );
+            }
+            const removeWhenFinishedValue = property(
+                options,
+                "removeWhenFinished",
+            );
+            const removeWhenFinished = removeWhenFinishedValue
+                ? removeWhenFinishedValue.cpp
+                : "false";
+            if (
+                removeWhenFinished !== "true" &&
+                removeWhenFinished !== "false"
+            ) {
+                context.fail(
+                    call.arguments[6]!,
+                    importedName +
+                        "'s removeWhenFinished decides whether the sprite " +
+                        "survives its own animation, so it must settle at " +
+                        "generation rather than read as false.",
+                );
+            }
+            const engineCpp =
+                manager.engineCpp ?? context.requireDefaultEngine(call);
+            if (sprite2d && target.spriteLayerCpp === undefined) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A Sprite2D animation target carries the layer it lives " +
+                        "in; this handle reached here without one.",
+                );
+            }
+            const targetCpp = sprite2d
+                ? "bbl::SpriteAnimationTarget{" +
+                  "bbl::SpriteAnimationTargetKind::sprite_2d, " +
+                  target.spriteLayerCpp +
+                  ", static_cast<std::uint32_t>(" +
+                  target.cpp +
+                  "), {}}"
+                : "bbl::SpriteAnimationTarget{" +
+                  "bbl::SpriteAnimationTargetKind::billboard, {}, 0u, " +
+                  target.cpp +
+                  "}";
+            context.reachFeature("sprite:animation", call);
+            return {
+                kind: "void",
+                cpp:
+                    "bbl::upstream::play_sprite_frame_animation(" +
+                    engineCpp +
+                    ", " +
+                    manager.cpp +
+                    ", " +
+                    targetCpp +
+                    ", " +
+                    number(2) +
+                    ", " +
+                    number(3) +
+                    ", " +
+                    loop +
+                    ", " +
+                    number(5) +
+                    ", " +
+                    removeWhenFinished +
+                    ")",
+                engineCpp,
+            };
+        }
+
+        case "updateSpriteAnimationManager": {
+            context.expectArgumentCount(call, 2, 2);
+            const manager = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                manager,
+                "sprite-animation-manager",
+                call.arguments[0]!,
+            );
+            const engineCpp =
+                manager.engineCpp ?? context.requireDefaultEngine(call);
+            context.reachFeature("sprite:animation", call);
+            return {
+                kind: "void",
+                cpp:
+                    "bbl::upstream::update_sprite_animation_manager(" +
+                    engineCpp +
+                    ", " +
+                    manager.cpp +
+                    ", " +
+                    context.compileNumber(call.arguments[1]!, "double") +
+                    ")",
+                engineCpp,
+            };
+        }
+
+        case "attachSpriteAnimationsToRenderer":
+        case "attachSpriteAnimationsToScene": {
+            context.fail(
+                call,
+                importedName +
+                    " installs the stepper on a render loop and hands back " +
+                    "a binding that detaches it -- a disposable this port " +
+                    "has no owner for. Both corpus scenes write it, in the " +
+                    "arm their own `?seekTime=` pose folds away; the arm " +
+                    "that survives drives the same stepper from a counted " +
+                    "loop, so what is missing is the hook and its binding, " +
+                    "not the animation.",
+            );
         }
 
         case "clearSprite2DLayer": {

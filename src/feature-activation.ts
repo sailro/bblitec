@@ -686,6 +686,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the same recastnavigation sources the native library links)",
         consumers: CMAKE,
     },
+    "sprite:animation": {
+        provenance:
+            "src/sprite/sprite-animation.ts createSpriteAnimationManager + " +
+            "the frame stepper its updateSpriteAnimationManager runs, and " +
+            "the two family adapters (sprite-2d-handle-animation.ts, " +
+            "billboard-sprite-handle-animation.ts) that name a sprite for it",
+        consumers: CMAKE,
+    },
     "navigation:tile-cache": {
         provenance:
             "src/navigation/navigation.ts createNavMesh with " +

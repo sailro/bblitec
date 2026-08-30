@@ -139,6 +139,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["sprite:billboard"],
     },
     {
+        source: "upstream/src/sprite_animation.cpp",
+        features: ["sprite:animation"],
+    },
+    {
         source: "upstream/src/node_particles.cpp",
         features: ["particle:node"],
     },

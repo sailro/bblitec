@@ -70,6 +70,13 @@ export interface PinnedFunctionParameter {
      * for that kind and ignored by the others, whose type follows the kind.
      */
     cppType?: string;
+    /**
+     * Bind a `record` parameter by MUTABLE reference. A pinned body that
+     * writes its own parameter's members -- a stepper advancing the
+     * animation it was handed -- needs the storage it writes to be the
+     * caller's, which a const binding would refuse at the store.
+     */
+    mutableRecord?: boolean;
 }
 
 const parameterKinds: Readonly<
@@ -430,6 +437,13 @@ export function lowerPinnedFunction(
          * native record the member lands on.
          */
         memberBindings?: ReadonlyMap<string, PinnedBinding>;
+        /**
+         * Parameters the EMISSION needs that the pin does not name, ahead
+         * of its own: state a pinned body reaches through a closure and a
+         * free C++ function has to be handed. They take no binding, so the
+         * body cannot read them -- only the `calls` the caller bound can.
+         */
+        leadingParameters?: readonly string[];
     },
 ): string {
     const { file, declaration } = context.functionDeclaration(
@@ -444,7 +458,7 @@ export function lowerPinnedFunction(
         );
     }
     const bindings = new Map<string, PinnedBinding>();
-    const signature: string[] = [];
+    const signature: string[] = [...(options.leadingParameters ?? [])];
     declaration.parameters.forEach((parameter, index) => {
         const spec = parameters[index]!;
         const kind = parameterKinds[spec.kind];
@@ -475,7 +489,8 @@ export function lowerPinnedFunction(
         );
         signature.push(
             spec.cppType
-                ? `const ${spec.cppType}& ${spec.cpp}`
+                ? `${spec.mutableRecord ? "" : "const "}${spec.cppType}& ` +
+                  `${spec.cpp}`
                 : kind.declare(spec.cpp),
         );
         if (spec.kind === "record" && !spec.cppType) {

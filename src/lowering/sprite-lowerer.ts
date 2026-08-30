@@ -1859,6 +1859,141 @@ void update_sprite_2d_index(
     layer.version += 1u;
 }
 
+
+// sprite-2d-handle.ts: a stable id over a moving index. Upstream keeps the
+// pair in a Map and a Uint32Array beside the layer, updated by a hook the
+// layer calls on every removal; the same two tables live on the record here,
+// and the same hook is the removal below. A layer only grows them once a
+// scene asks for a handle, which is what keeps an index-only layer free of
+// them.
+double add_sprite_2d(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    Sprite2DProps props) {
+    const double index = add_sprite_2d_index(engine, layer_handle, props);
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const std::uint32_t id = layer.next_sprite_id;
+    if (id == invalid_handle) {
+        throw std::runtime_error("addSprite2D: handle id space exhausted.");
+    }
+    layer.next_sprite_id = id + 1u;
+    const std::uint32_t slot = static_cast<std::uint32_t>(index);
+    if (layer.sprite_index_to_id.size() <= slot) {
+        layer.sprite_index_to_id.resize(slot + 1u, 0u);
+    }
+    layer.sprite_id_to_index[id] = slot;
+    layer.sprite_index_to_id[slot] = id;
+    return static_cast<double>(id);
+}
+
+/** The slot an id names, or the layer's count where it names none. */
+std::uint32_t sprite_2d_slot_of(
+    const Sprite2DLayerRecord& layer,
+    std::uint32_t sprite_id) {
+    const auto found = layer.sprite_id_to_index.find(sprite_id);
+    return found == layer.sprite_id_to_index.end() ? layer.count
+                                                   : found->second;
+}
+
+bool sprite_2d_id_alive(
+    const Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    std::uint32_t sprite_id) {
+    const Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    return sprite_2d_slot_of(layer, sprite_id) < layer.count;
+}
+
+// sprite-2d.ts#setSprite2DFrameIndex: rewrite the slot's four UV floats from
+// the atlas frame, keeping whichever axes the sprite was flipped on -- which
+// the pin reads back off the stored UVs rather than a stored flag.
+void set_sprite_2d_frame_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    std::uint32_t sprite_id,
+    double frame) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const std::uint32_t index =
+        sprite_2d_slot_of(layer, sprite_id);
+    if (index >= layer.count) {
+        throw std::runtime_error(
+            "setSprite2DFrameIndex: index out of range");
+    }
+    const SpriteAtlasRecord& atlas =
+        engine.sprite_atlases[layer.atlas.value];
+    const SpriteFrame& atlas_frame =
+        atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
+    const std::size_t base =
+        static_cast<std::size_t>(index) * layer.instance_floats_per_sprite;
+    const bool flip_x =
+        layer.instance_data[base + 4] > layer.instance_data[base + 6];
+    const bool flip_y =
+        layer.instance_data[base + 5] > layer.instance_data[base + 7];
+    layer.instance_data[base + 4] =
+        flip_x ? atlas_frame.uv_max.x : atlas_frame.uv_min.x;
+    layer.instance_data[base + 5] =
+        flip_y ? atlas_frame.uv_max.y : atlas_frame.uv_min.y;
+    layer.instance_data[base + 6] =
+        flip_x ? atlas_frame.uv_min.x : atlas_frame.uv_max.x;
+    layer.instance_data[base + 7] =
+        flip_y ? atlas_frame.uv_min.y : atlas_frame.uv_max.y;
+    layer.version += 1u;
+}
+
+// sprite-2d.ts#removeSprite2DIndex: a swap-remove. The last sprite moves
+// into the hole, so the id tables move with it -- that reindexing is the
+// whole reason a handle exists, and dropping it would leave every animation
+// past the removed one driving the wrong sprite.
+void remove_sprite_2d_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    std::uint32_t sprite_id) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
+    // removeSprite2D: a handle already gone does nothing, which is what
+    // lets an animation's own removeWhenFinished race a scene's own remove.
+    // The throw belongs to the INDEX form, whose caller has no id to miss.
+    if (index >= layer.count) {
+        return;
+    }
+    const std::uint32_t last = layer.count - 1u;
+    const std::uint32_t moved_id =
+        last < layer.sprite_index_to_id.size()
+            ? layer.sprite_index_to_id[last]
+            : 0u;
+    layer.sprite_id_to_index.erase(sprite_id);
+    if (index != last) {
+        if (moved_id != 0u) {
+            layer.sprite_id_to_index[moved_id] = index;
+        }
+        if (index < layer.sprite_index_to_id.size()) {
+            layer.sprite_index_to_id[index] = moved_id;
+        }
+        const std::size_t stride = layer.instance_floats_per_sprite;
+        std::copy(
+            layer.instance_data.begin() +
+                static_cast<std::ptrdiff_t>(last * stride),
+            layer.instance_data.begin() +
+                static_cast<std::ptrdiff_t>((last + 1u) * stride),
+            layer.instance_data.begin() +
+                static_cast<std::ptrdiff_t>(index * stride));
+        layer.saved_size[index * 2u] = layer.saved_size[last * 2u];
+        layer.saved_size[index * 2u + 1u] = layer.saved_size[last * 2u + 1u];
+    } else if (index < layer.sprite_index_to_id.size()) {
+        layer.sprite_index_to_id[index] = 0u;
+    }
+    if (last < layer.sprite_index_to_id.size()) {
+        layer.sprite_index_to_id[last] = 0u;
+    }
+    layer.saved_size[last * 2u] = 0.0f;
+    layer.saved_size[last * 2u + 1u] = 0.0f;
+    layer.count = last;
+    layer.version += 1u;
+}
+
 // sprite-2d.ts#clearSprite2DLayer: drop the count and the size shadow, and
 // leave the instance floats where they are -- nothing reads past the count.
 // An already-empty layer returns before the version moves, which is what
@@ -1868,6 +2003,14 @@ void clear_sprite_2d_layer(
     Sprite2DLayerHandle layer_handle) {
     Sprite2DLayerRecord& layer =
         engine.sprite_layers[layer_handle.value];
+    // The pin's clear runs the handle hooks' own clear first, so a layer
+    // emptied under live handles answers "gone" rather than naming a slot
+    // it no longer has.
+    layer.sprite_id_to_index.clear();
+    std::fill(
+        layer.sprite_index_to_id.begin(),
+        layer.sprite_index_to_id.end(),
+        0u);
     const std::uint32_t count = layer.count;
     if (count == 0u) return;
     std::fill_n(

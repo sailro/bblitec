@@ -1184,6 +1184,59 @@ void update_billboard_sprite(
     system.instance_version += 1u;
 }
 
+// billboard-sprite-handle-animation.ts drives a sprite's frame through the
+// same setter the 2D family has: rewrite the four UV floats from the atlas
+// frame, keeping whichever axes the sprite was flipped on. The flip is read
+// back off the stored endpoints rather than a stored flag, exactly as the
+// add above resolves it.
+void set_billboard_sprite_frame(
+    Engine& engine,
+    BillboardSpriteHandle handle,
+    double frame) {
+    if (handle.system.value >= engine.billboard_systems.size()) {
+        throw std::runtime_error("Invalid billboard system handle.");
+    }
+    BillboardSystemRecord& system =
+        engine.billboard_systems[handle.system.value];
+    const auto found = system.handle_id_to_index.find(handle.id);
+    if (found == system.handle_id_to_index.end()) {
+        throw std::runtime_error("Invalid billboard sprite handle.");
+    }
+    const SpriteAtlasRecord& atlas =
+        engine.sprite_atlases[system.atlas.value];
+    const SpriteFrame& atlas_frame =
+        atlas.frames[upstream::resolve_sprite_frame(atlas, frame)];
+    const std::size_t base =
+        static_cast<std::size_t>(found->second) *
+        system.instance_floats_per_sprite;
+    const bool flip_x =
+        system.instance_data[base + 5u] > system.instance_data[base + 7u];
+    const bool flip_y =
+        system.instance_data[base + 6u] > system.instance_data[base + 8u];
+    system.instance_data[base + 5u] =
+        flip_x ? atlas_frame.uv_max.x : atlas_frame.uv_min.x;
+    system.instance_data[base + 6u] =
+        flip_y ? atlas_frame.uv_max.y : atlas_frame.uv_min.y;
+    system.instance_data[base + 7u] =
+        flip_x ? atlas_frame.uv_min.x : atlas_frame.uv_max.x;
+    system.instance_data[base + 8u] =
+        flip_y ? atlas_frame.uv_min.y : atlas_frame.uv_max.y;
+    system.instance_version += 1u;
+}
+
+/** Whether a handle still names a sprite, which is what stops an animation
+ *  stepping one its own removeWhenFinished already took away. */
+bool billboard_sprite_alive(
+    const Engine& engine,
+    BillboardSpriteHandle handle) {
+    if (handle.system.value >= engine.billboard_systems.size()) {
+        return false;
+    }
+    const BillboardSystemRecord& system =
+        engine.billboard_systems[handle.system.value];
+    return system.handle_id_to_index.count(handle.id) != 0;
+}
+
 void remove_billboard_sprite(
     Engine& engine,
     BillboardSpriteHandle handle) {

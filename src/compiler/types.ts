@@ -1013,6 +1013,8 @@ export type ValueKind =
   | "billboard-custom-shader"
   | "billboard-system"
   | "billboard-sprite"
+  | "sprite-2d-handle"
+  | "sprite-animation-manager"
   | "sprite-renderer"
   | "splat-mesh"
   /**
@@ -1511,6 +1513,9 @@ export interface Value {
    * rather than reaching a state that cannot hold it.
    */
   clusteredContainerState?: ClusteredContainerState;
+  /** The layer an `addSprite2D` handle lives in, which its animation
+   *  target names beside the sprite's own id. */
+  spriteLayerCpp?: string;
   browserValue?:
     | { kind: "boolean"; value: boolean }
     | { kind: "number"; value: number }
@@ -1611,6 +1616,7 @@ export type Feature =
   | "particle:node"
   | "navigation:recast"
   | "navigation:tile-cache"
+  | "sprite:animation"
   | "audio:engine"
   | "audio:buffer-source"
   | "audio:decoded-buffer"

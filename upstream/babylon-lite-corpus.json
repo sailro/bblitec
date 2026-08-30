@@ -701,6 +701,18 @@
       "sha256": "339040ae85a77c5e6fec227e4be7c9cffb038b9b0965b335042bd6c6268967d9"
     },
     {
+      "id": "scene58",
+      "upstreamPath": "lab/lite/src/lite/scene58.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene58.ts",
+      "sha256": "db65d20ea1a751cc2dc0f3835660cef8594375d7994aed2358a3cea7d7e9a3a2"
+    },
+    {
+      "id": "scene59",
+      "upstreamPath": "lab/lite/src/lite/scene59.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene59.ts",
+      "sha256": "6b5d587d4096171abbc1dacb8463b333f1cb9c18a3b9aaf48f792d919fac0c79"
+    },
+    {
       "id": "scene60",
       "upstreamPath": "lab/lite/src/lite/scene60.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene60.ts",
@@ -1041,6 +1053,16 @@
       "upstreamPath": "lab/lite/src/_shared/hpm-jitter-scene.ts",
       "source": "corpus/babylon-lite/lab/lite/src/_shared/hpm-jitter-scene.ts",
       "sha256": "ede241f7e57858db2b0fd1c2d25f30472ab523c2bd0c06c9b212194faa872fe3"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/player-sprite.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/player-sprite.ts",
+      "sha256": "64faadf9f812d5a4cf8df382a9210eb07e1b445682b58220b17d21a21f2a122c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/player-lite-sprite.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/player-lite-sprite.ts",
+      "sha256": "6e5ad30bcbfeb2a63f62b33f019b449145db39cb6c3232eed65e847670e5875d"
     },
     {
       "upstreamPath": "lab/lite/src/_shared/sprite-atlas-image.ts",

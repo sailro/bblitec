@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-77 corpus scenes remain unregistered; measured scenes
+75 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -233,8 +233,8 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (46 scenes):** 17, 20,
-51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
+**Integrate first (43 scenes):** 17, 20,
+51-53, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
 140, 149, 156, 165, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
@@ -409,9 +409,9 @@ integrated.
     struct, a `Map<string, T>`, and the runtime IWAD read none of this
     repository has. `appendSpriteAtlasFrames` sits behind the same gap.
   - the billboard arms past the two orientations, two depth paths and the
-    custom shader that scenes 54, 55, 56, 57, 94 and 98 measure. Scene 118
-    needs `marker.name`; scene 59 wants the sprite animation manager; scene
-    206 is a cutout system behind large-world rendering.
+    custom shader that scenes 54-57, 59, 94 and 98 measure. Scene 118
+    needs `marker.name`; scene 206 is a cutout system behind large-world
+    rendering.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
   - Scene 51: accept the reached explicit `msaaSamples: 1`; its browser-derived
     `1 | 4` selection now folds to `1` for the bare reference query, with the
@@ -419,7 +419,6 @@ integrated.
   - Scene 52: `onSceneDispose`, then the HUD-over-scene composition the native
     renderers refuse.
   - Scene 53: depth-hosted layers, then `spriteBlendOpaque`.
-  - Scene 58: its `PLAYER_SPRITE_URL` module constant, then sprite animation.
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
 - [ ] Extend node materials past the slice scenes 60-63, 67-71, 77-82, 84, 85,

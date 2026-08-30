@@ -2130,6 +2130,35 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene58",
+        name: "Scene 58 - Sprite2D Frame Animation",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene58.ts",
+        title: "Babylon Lite Native - Sprite2D Animation",
+        parity: {
+            // The scene's own frozen pose, which its pinned parity spec
+            // drives it at: the manager steps on a counted loop of fixed
+            // 1/60 s steps, so both sides land on the same frame.
+            referenceSearch: "?seekTime=0.72",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [18, 23, 31],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene59",
+        name: "Scene 59 - Billboard Sprite Frame Animation",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene59.ts",
+        title: "Babylon Lite Native - Billboard Sprite Animation",
+        parity: {
+            referenceSearch: "?seekTime=0.72",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [18, 23, 31],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene60",
         name: "Scene 60 - NME Flat Colour",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene60.ts",
