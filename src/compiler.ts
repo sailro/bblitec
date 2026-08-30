@@ -221,6 +221,7 @@ export type {
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import { runtimeOnlyIntrinsics } from "./compiler/intrinsics/registry.js";
 import type { ClusteredContainerState } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import {
@@ -7467,10 +7468,15 @@ class Compiler
             if (ts.isCallExpression(node)) {
                 const callee = this.unwrap(node.expression);
                 if (ts.isIdentifier(callee)) {
-                    if (this.symbols.importedName(callee) !== undefined) {
+                    const imported = this.symbols.importedName(callee);
+                    if (
+                        imported !== undefined &&
+                        !runtimeOnlyIntrinsics.has(imported)
+                    ) {
                         required = true;
                         return;
                     }
+                    if (imported !== undefined) return;
                     for (const declaration of
                         this.symbols.valueSymbol(callee)?.declarations ?? []) {
                         if (ts.isVariableDeclaration(declaration)) {
