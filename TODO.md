@@ -409,9 +409,9 @@ integrated.
     struct, a `Map<string, T>`, and the runtime IWAD read none of this
     repository has. `appendSpriteAtlasFrames` sits behind the same gap.
   - the billboard arms past the two orientations, two depth paths and the
-    custom shader that scenes 54, 55, 56, 57, 94 and 98 measure. Scene 118
-    needs `marker.name`; scene 59 wants the sprite animation manager; scene
-    206 is a cutout system behind large-world rendering.
+    custom shader that scenes 54-57, 59, 94 and 98 measure. Scene 118
+    needs `marker.name`; scene 206 is a cutout system behind large-world
+    rendering.
 - [ ] The sprite cluster past Scene 50, each its measured first blocker:
   - Scene 51: accept the reached explicit `msaaSamples: 1`; its browser-derived
     `1 | 4` selection now folds to `1` for the bare reference query, with the

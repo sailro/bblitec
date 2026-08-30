@@ -1177,9 +1177,10 @@ so the animation core stays ignorant of which family it drives and only the
 families a scene actually built are linked. The timing is a Babylon
 compatibility contract rather than an implementation detail: an EXACT delay
 does not step, each update advances at most one frame, and the accumulator
-keeps its remainder. Those statements are asserted against the pin's own
-source at generation, because getting one wrong shifts every animated sprite
-by a frame and nothing else would say so.
+keeps its remainder. Getting one wrong shifts every animated sprite by a
+frame and nothing else would say so, so the stepper is not transcribed: it
+is lowered from the pin's own declaration, and the emitted arithmetic is
+that declaration's.
 
 `addSprite2D` is what names a sprite for one. It is the pin's stable id over
 a moving index, and the indirection is load-bearing: a removal swaps the last
