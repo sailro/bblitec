@@ -1068,6 +1068,18 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
     assert.match(lowered.source, /build_render_plan/);
     assert.match(
         lowered.source,
+        /void initialize_composition_feature_rows\(Engine& engine\)/,
+    );
+    assert.match(
+        lowered.source,
+        /mesh\.composition_feature_row = next_row\+\+;/,
+    );
+    assert.match(
+        lowered.source,
+        /engine\.meshes\[mesh\.feature_source_mesh\][\s\S]*?\.composition_feature_row;/,
+    );
+    assert.match(
+        lowered.source,
         /item\.bucket == RenderBucket::alpha_blend \|\|\s*item\.transmissive/,
     );
     assert.match(lowered.source, /build_render_draw_lists/);

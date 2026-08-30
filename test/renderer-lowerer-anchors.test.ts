@@ -495,12 +495,17 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
     assert.match(
         plan.source,
         // The row accumulates in double -- `mesh.position` is the record's
-        // own width -- and narrows once, so the pinned statement is wrapped
-        // in the single store rather than spelled into a float lane.
-        /parent\[0\] \* mesh\.position\.x \+ parent\[4\] \* mesh\.position\.y \+\s*\r?\n\s*parent\[8\] \* mesh\.position\.z \+ parent\[12\] \+\s*\r?\n\s*mesh\.outer_position\.x\),/,
+        // own width -- and narrows once before the imported root's outer
+        // rotation and translation are applied.
+        /parent\[0\] \* mesh\.position\.x \+ parent\[4\] \* mesh\.position\.y \+\s*\r?\n\s*parent\[8\] \* mesh\.position\.z \+ parent\[12\]\),/,
     );
-    assert.match(plan.source, /parent\[13\] \+\s*\r?\n\s*mesh\.outer_position\.y\),/);
-    assert.match(plan.source, /parent\[14\] \+\s*\r?\n\s*mesh\.outer_position\.z\),/);
+    assert.match(
+        plan.source,
+        /rotate_outer_point\(\s*local_center, mesh\.outer_rotation\)/,
+    );
+    assert.match(plan.source, /rotated_center\.x \+ mesh\.outer_position\.x/);
+    assert.match(plan.source, /rotated_center\.y \+ mesh\.outer_position\.y/);
+    assert.match(plan.source, /rotated_center\.z \+ mesh\.outer_position\.z/);
     // The bounds-center derivation and its euler helper are gone; the
     // anchored comparator and view-forward distance stay.
     assert.ok(!plan.source.includes("rotate_euler"));

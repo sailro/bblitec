@@ -341,6 +341,29 @@ export function compileAdaptations(
         });
     }
 
+    if (features.includes("shadow:csm-single-map")) {
+        adaptations.push({
+            id: "csm-single-map-near-cascade",
+            category: "rendering",
+            sourceSemantics:
+                "The pinned CSM generator allocates a depth-texture array, " +
+                "fits one shadow map to each camera-frustum cascade, and " +
+                "selects or blends cascades in the receiver by view depth.",
+            nativeSemantics:
+                "The native PCF resource seam retains the pin's first " +
+                "camera-fitted cascade in one 2D depth map. Its split formula, " +
+                "float view-projection inversion, clone-aware caster Z fit, " +
+                "texel snap, bias, and PCF kernel stay source-derived; farther " +
+                "coverage and cross-cascade blending are omitted.",
+            risk: "high",
+            validation: [
+                "Racer frame 180 parity on SDL_GPU and Dawn",
+                "focused CSM factory and lowering compiler tests",
+                "upstream _computeCsmCascades source-shape assertions",
+            ],
+        });
+    }
+
     if (features.includes("audio:engine")) {
         adaptations.push({
             id: "substituted-audio-engine",

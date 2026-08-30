@@ -744,7 +744,9 @@ export class HandleCollections {
         const unwrapped = this.context.unwrap(expression);
         const value = ts.isIdentifier(unwrapped)
             ? this.context.lookupOptional(unwrapped)
-            : ts.isCallExpression(unwrapped)
+            : ts.isCallExpression(unwrapped) ||
+                ts.isPropertyAccessExpression(unwrapped) ||
+                ts.isElementAccessExpression(unwrapped)
               ? this.context.compileValue(unwrapped)
               : undefined;
         return value?.kind === "tuple"
@@ -952,6 +954,59 @@ export class HandleCollections {
             return resolved;
         }
         return this.runtimeFind(target, predicate);
+    }
+
+    /**
+     * The reached recursive `findNode(root, name)` walk over an imported
+     * synthetic root. Native glTF loading has already flattened that root's
+     * renderable descendants into AssetRecord::meshes, in traversal order,
+     * so the DFS result is the first mesh record with the requested name.
+     */
+    public compileAssetDescendantNameSearch(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        if (callee.text !== "findNode" || call.arguments.length !== 2) {
+            return undefined;
+        }
+        const root = this.context.compileValue(call.arguments[0]!);
+        if (root.kind !== "asset-root") return undefined;
+        const name = this.context.compileStringLiteral(call.arguments[1]!);
+        const engine = this.context.requireEngine(root, call);
+        const result = this.context.allocateTemporaryCppName(
+            "asset_descendant_match",
+        );
+        const found = this.context.allocateTemporaryCppName(
+            "asset_descendant_found",
+        );
+        const item = this.context.allocateTemporaryCppName(
+            "asset_descendant_mesh",
+        );
+        this.context.emit(`bbl::MeshHandle ${result}{};`);
+        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        this.context.emit(
+            `for (const bbl::MeshHandle ${item} : ` +
+                `${engine}.assets[${root.cpp}.value].meshes) {`,
+        );
+        this.context.increaseIndent();
+        this.context.emit(
+            `if (${engine}.meshes[${item}.value].name == ` +
+                `${this.context.cppString(name)}) {`,
+        );
+        this.context.increaseIndent();
+        this.context.emit(`${result} = ${item};`);
+        this.context.emit(`${found} = true;`);
+        this.context.emit("break;");
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        return {
+            kind: "mesh",
+            cpp: result,
+            engineCpp: engine,
+            optionalFoundCpp: found,
+        };
     }
 
     /** The emitted search loop — the pre-concept lowering, byte for byte. */

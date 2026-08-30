@@ -96,6 +96,7 @@ enum class AudioParamName : std::uint8_t {
     Detune,
     Q,
     Pan,
+    PlaybackRate,
 };
 
 /**
@@ -178,6 +179,11 @@ AudioBufferHandle audio_create_buffer(
     std::uint32_t frames,
     double sample_rate);
 
+/** Decode a packaged audio file at the context's sample rate. */
+AudioBufferHandle audio_decode_file(
+    AudioContextHandle context,
+    const std::string& path);
+
 /** `buffer.getChannelData(channel)`: a mutable view into retained PCM. */
 bbl::js::F32Array& audio_buffer_channel(
     AudioBufferHandle buffer,
@@ -188,6 +194,9 @@ AudioNodeHandle audio_create_buffer_source(AudioContextHandle context);
 
 /** `source.buffer = buffer`. */
 void audio_set_buffer(AudioNodeHandle source, AudioBufferHandle buffer);
+
+/** `source.loop = enabled`. */
+void audio_set_loop(AudioNodeHandle source, bool enabled);
 
 // -- graph ---------------------------------------------------------------
 

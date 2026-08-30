@@ -97,6 +97,8 @@ export interface CompileManifest {
   standardMaterialPlugins: MaterialPluginManifest[][];
   /** Every scene-code material creation, any family, for the handle count. */
   sceneMaterialCount: number;
+  /** glTF load count at each scene material creation, across all families. */
+  sceneMaterialGltfAssetsBefore?: number[];
   sceneMeshes: SceneMeshManifest[];
   /** Scene-code lights added outside a repeating/deferred callback, in
    *  scene order. When `dynamicSceneLights` is false this is the complete
@@ -113,6 +115,9 @@ export interface CompileManifest {
   shadowGenerators: ShadowGeneratorManifest[];
   /** The `sceneMeshes` entries `mesh.receiveShadows = true` marked. */
   shadowReceiverMeshes: number[];
+  /** A runtime handle collection may mark imported or otherwise dynamic
+   *  meshes as receivers, so composition must retain both receiver states. */
+  dynamicShadowReceivers: boolean;
 }
 
 /**
@@ -987,6 +992,7 @@ export type ValueKind =
   | "sprite-custom-shader"
   | "billboard-custom-shader"
   | "billboard-system"
+  | "billboard-sprite"
   | "sprite-renderer"
   | "splat-mesh"
   /**
@@ -1100,6 +1106,8 @@ export interface Value {
    * Any native mutation clears this snapshot before subsequent reads.
    */
   staticHandleElements?: Value[];
+  /** Root binding whose static handle snapshot this parameter alias shares. */
+  staticHandleElementsOwner?: Value;
   /**
    * Keep this lookup nullable when it initializes a local even if
    * TypeScript reports the binding itself as non-nullable.
@@ -1146,6 +1154,8 @@ export interface Value {
   nativeCallbackReturnType?: DataType;
   /** Scope-carrying record a function-valued property was read from. */
   callbackRecordOwner?: Value;
+  /** Constructed class identity, retained when an inlined return wraps Value. */
+  classDeclaration?: ts.ClassDeclaration;
   /** The concrete native texture record produced by a texture factory. */
   textureStorage?: "file" | "pixels" | "solid" | "render";
   textureFile?: {
@@ -1533,6 +1543,7 @@ export type Feature =
   | "navigation:recast"
   | "audio:engine"
   | "audio:buffer-source"
+  | "audio:decoded-buffer"
   | "audio:oscillator"
   | "audio:biquad-filter"
   | "audio:stereo-panner"
@@ -1552,6 +1563,7 @@ export type Feature =
   | "shadow:esm"
   | "shadow:pcf"
   | "shadow:pcf-directional"
+  | "shadow:csm-single-map"
   | "shadow:task"
   | "sprite:2d"
   | "sprite:uv-scroll"

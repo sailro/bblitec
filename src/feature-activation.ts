@@ -120,13 +120,11 @@ export interface FeatureActivationInputs {
      */
     pinnedMaxLights?: number;
     /**
-     * The variant-key interleave guards' inputs, exactly as the CLI
-     * checked them: for each scene-code mesh / PBR material in creation
-     * order, how many glTF assets had loaded when it was created,
-     * against the scene's glTF asset total. The runtime keys the
-     * variant table by creation-order handle, so a creation before a
-     * later load would interleave the key — the CLI refuses generation
-     * instead, and the two rows record that the check ran clean.
+     * The variant-key interleave inputs: for each scene-code mesh / PBR
+     * material in creation order, how many glTF assets had loaded when it
+     * was created, against the scene's glTF asset total. The runtime keys the
+     * variant table by creation-order handle, so the compose layer uses these
+     * counts to reproduce interleaving and the rows record which path ran.
      * Optional: the rows are emitted only when the caller records the
      * counts.
      */
@@ -569,6 +567,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/shadow/pcf-directional-shadow-generator.ts",
         consumers: ["features.cmake"],
     },
+    // The pin allocates a depth-texture array and one camera-fitted map per
+    // cascade. The native resource seam retains its first cascade in the PCF
+    // family's single sampled depth texture, so this distinct row gates that
+    // factory and records the adaptation in fidelity.json.
+    "shadow:csm-single-map": {
+        provenance: "src/shadow/csm-directional-shadow-generator.ts",
+        consumers: ["features.cmake", "fidelity.json"],
+    },
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
         consumers: CMAKE,
@@ -686,6 +692,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "the reached Web Audio graph creates an AudioBuffer, writes its " +
             "channel data, and plays it through an AudioBufferSourceNode",
+        consumers: CMAKE,
+    },
+    "audio:decoded-buffer": {
+        provenance:
+            "the reached Web Audio graph fetches an encoded packaged file " +
+            "and decodes it through BaseAudioContext.decodeAudioData",
         consumers: CMAKE,
     },
     "audio:oscillator": {
@@ -2176,11 +2188,10 @@ function compositionRows(
 }
 
 /**
- * One variant-key interleave guard's row. The counts are the same
- * per-creation `gltfAssetsBefore` values the CLI guard compared, so a
- * derivation that says the refusal fired while generation proceeded is
- * the guard and the table drifting apart — a loud failure, like
- * `checkedRow`.
+ * One variant-key creation-order row. The counts are the per-creation
+ * `gltfAssetsBefore` values the compose layer uses to place scene rows among
+ * glTF rows. An interleaved input records the composition path; an ordered
+ * input records that the former refusal condition was checked and absent.
  */
 function interleaveRow(
     name: string,
@@ -2189,14 +2200,19 @@ function interleaveRow(
     gltfAssetCount: number,
     upstreamProvenance: string,
 ): FeatureActivationRow {
-    if (counts.some((before) => before !== gltfAssetCount)) {
-        throw new Error(
-            `feature-activation: row '${name}' derives a fired ` +
-                `interleave refusal (a scene-code ${kind} was created ` +
-                `before a later glTF load) but generation proceeded; ` +
-                `the cli.ts guard no longer mirrors the activation ` +
-                `table. Update src/feature-activation.ts beside the ` +
-                `guard.`,
+    const interleaved = counts.some(
+        (before) => before !== gltfAssetCount,
+    );
+    if (interleaved) {
+        return row(
+            name,
+            "composition",
+            true,
+            `composed ${counts.length} scene-code ${kind} creation(s) ` +
+                `through ${gltfAssetCount} glTF load(s) in their recorded ` +
+                "handle order",
+            upstreamProvenance,
+            ["variant table"],
         );
     }
     return row(
@@ -2332,13 +2348,12 @@ function refusalRows(
                     "native-architecture: the generated variant table " +
                         "keys renderables by creation-order mesh handle " +
                         "(each glTF load appends its renderables in the " +
-                        "pinned loader's node-order walk, then scene-code " +
-                        "builders append; recordSceneMesh in compiler.ts " +
-                        "records gltfAssetsBefore per creation); the pin " +
-                        "composes shaders at run time and keys no static " +
-                        "table, so a scene-code mesh created before a " +
-                        "later glTF load refuses at generation instead of " +
-                        "mis-keying the table",
+                        "pinned loader's node-order walk while scene-code " +
+                        "builders append where reached; recordSceneMesh in " +
+                        "compiler.ts records gltfAssetsBefore per creation, " +
+                        "and compose-pipeline.ts interleaves those rows); " +
+                        "the pin composes shaders at run time and keys no " +
+                        "static table",
                 ),
                 interleaveRow(
                     "refusal:scene-material-interleave",
@@ -2347,13 +2362,12 @@ function refusalRows(
                     inputs.interleave.gltfAssetCount,
                     "native-architecture: the generated variant table " +
                         "keys materials by creation-order handle (each " +
-                        "glTF load appends its materials, then scene-code " +
-                        "creations append; compilePbrMaterialOptions " +
-                        "records gltfAssetsBefore per creation); the pin " +
-                        "composes per-material at run time and keys no " +
-                        "static table, so a scene-code PBR material " +
-                        "created before a later glTF load refuses at " +
-                        "generation instead of mis-keying the table",
+                        "glTF load and scene-code creation appends where " +
+                        "reached; compilePbrMaterialOptions records " +
+                        "gltfAssetsBefore per creation, and " +
+                        "compose-pipeline.ts maps those rows to absolute " +
+                        "handles); the pin composes per-material at run " +
+                        "time and keys no static table",
                 ),
             ]),
         row(

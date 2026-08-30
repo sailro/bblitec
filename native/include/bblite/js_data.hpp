@@ -868,6 +868,13 @@ relative_slice_bounds(
     return value;
 }
 
+[[nodiscard]] inline double string_index_of(
+    const std::string& value,
+    const std::string& search) {
+    const auto index = value.find(search);
+    return index == std::string::npos ? -1.0 : static_cast<double>(index);
+}
+
 // JavaScript string iteration yields one Unicode code point as a string.
 // Native strings are UTF-8, so retain each complete encoded sequence.
 [[nodiscard]] inline Array<std::string> string_characters(
@@ -1187,6 +1194,36 @@ template <typename T, std::size_t Extent>
 using F32Array = std::vector<float>;
 using U16Array = std::vector<std::uint16_t>;
 using U32Array = std::vector<std::uint32_t>;
+
+// src/math/mat4-compose.ts + mat4-compose-into.ts: JavaScript evaluates the
+// quaternion products in double precision, then each Float32Array store
+// narrows once. Keep that boundary explicit here.
+[[nodiscard]] inline F32Array mat4_compose(
+    double tx, double ty, double tz,
+    double qx, double qy, double qz, double qw,
+    double sx, double sy, double sz) {
+    const double xx = qx * qx, yy = qy * qy, zz = qz * qz;
+    const double xy = qx * qy, xz = qx * qz, yz = qy * qz;
+    const double wx = qw * qx, wy = qw * qy, wz = qw * qz;
+    F32Array result(16);
+    result[0] = static_cast<float>((1.0 - 2.0 * (yy + zz)) * sx);
+    result[1] = static_cast<float>(2.0 * (xy + wz) * sx);
+    result[2] = static_cast<float>(2.0 * (xz - wy) * sx);
+    result[3] = 0.0f;
+    result[4] = static_cast<float>(2.0 * (xy - wz) * sy);
+    result[5] = static_cast<float>((1.0 - 2.0 * (xx + zz)) * sy);
+    result[6] = static_cast<float>(2.0 * (yz + wx) * sy);
+    result[7] = 0.0f;
+    result[8] = static_cast<float>(2.0 * (xz + wy) * sz);
+    result[9] = static_cast<float>(2.0 * (yz - wx) * sz);
+    result[10] = static_cast<float>((1.0 - 2.0 * (xx + yy)) * sz);
+    result[11] = 0.0f;
+    result[12] = static_cast<float>(tx);
+    result[13] = static_cast<float>(ty);
+    result[14] = static_cast<float>(tz);
+    result[15] = 1.0f;
+    return result;
+}
 
 // ECMAScript ToUint32: modulo 2^32 with truncation toward zero.
 [[nodiscard]] inline std::uint32_t to_uint32(double value) {

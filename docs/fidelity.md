@@ -215,6 +215,17 @@ The light-space basis, the spot volume from `light.angle`, the 4x4 multiply and
 the bias are each lowered from their own declarations, and the cone angle is
 written wherever `cos_half_angle` is.
 
+**CSM retains the pin's first cascade in a single-map adaptation.** The source
+factory creates a depth-texture array, computes one camera-frustum fit per
+cascade, and has receivers choose or blend by view depth. Native's PCF seam has
+one 2D sampled depth texture per generator, so it retains the first
+camera-fitted map. The split formula, float view-projection inversion,
+clone-aware caster Z fit, texel snap and unbiased-receiver/biased-caster matrix
+split remain source-derived. Farther cascades and cross-cascade blending are
+omitted. The scene records `csm-single-map-near-cascade` at high risk rather
+than reporting the resource
+as a texture array it did not create.
+
 **A receiver is a composed variant, not a uniform lane.**
 `_computeMeshFeatures(mesh, receiveShadows)` turns `mesh.receiveShadows &&
 hasSomeShadows` into `MSH_RECEIVE_SHADOWS`, and `rebuildSingle` splices
@@ -223,6 +234,12 @@ thin-instance one — so the varyings, the group-2 bindings and the nine-tap
 comparison filter are named after each light's index in `scene.lights`. The
 depth-only view of the same mesh drops the bit, because `rebuildSingle` derives
 `receiveShadows` as `!shadowOutput && ...`.
+
+A generation-known mesh closes to one receiver variant. A mesh reached through
+a runtime handle collection has no stable scene-row identity, so composition
+retains both variants and the assignment writes the live record lane used to
+select between them. Imported meshes follow that dynamic route rather than
+being silently excluded.
 
 That group 2 costs SDL_GPU a uniform slot it does not have — scene, lights,
 mesh and mat spend all four before `shadowInfo_N` arrives — so it takes the
@@ -1045,6 +1062,14 @@ rather than reading the frame camera's.
 
 ### glTF geometry
 
+**An external image URI inside a GLB becomes an embedded image buffer view.**
+Packaging resolves the URI relative to the GLB, appends the exact image bytes
+after the existing BIN data with four-byte alignment, and rewrites only the
+image JSON to `bufferView` plus its MIME type. The original BIN chunk and all
+existing buffer-view offsets remain unchanged, so geometry parsing sees the
+source container while the native loader needs no adjacent file at run time.
+Racer's `models/Textures/colormap.png` gates that path.
+
 **A quantized glTF is dequantized by the pin's own hook, at generation.**
 `KHR_mesh_quantization` is implemented upstream as a single `preParse` that
 rewrites every quantized accessor into a freshly appended tightly-packed
@@ -1625,11 +1650,11 @@ running.
 ## Physics contract
 
 **The pinned physics layer is generated; the solver under it is not the
-pin's, and that is the only divergence here a measurement cannot close.**
+pin's, and that is the physics divergence a measurement cannot close.**
 
-Everything else this repository records is bit-faithful by construction — a
-fold whose shape is the contract, or a value executed in the engine the
-golden runs it in. A substituted rigid-body solver is neither. Havok V2 and
+Ordinary physics lowerings are bit-faithful by construction — a fold whose
+shape is the contract, or a value executed in the engine the golden runs it
+in. A substituted rigid-body solver is neither. Havok V2 and
 Bullet resolve contacts and converge their constraint solvers differently,
 so a body's pose after N steps is a *different number* rather than a
 rounding of the same one, and the difference compounds with every bounce.
@@ -1678,6 +1703,17 @@ catch, and `setPhysicsShapeMaterial`'s static-friction default, which is what
 licenses the emitted aggregate writing one friction into both material
 channels. Scene 40 directly gates the translated centre, ground extents, and
 sphere radius on both backends.
+
+**Racer extends the reached seam without bypassing that step order.** Shape
+membership masks are installed on Bullet's broadphase proxy, filtered
+raycasts use the source membership/collide-with pair, and linear velocity is
+read after the preceding solver step. `applyPhysicsBodyForce` integrates the
+source force over the world's fixed step before entering the existing impulse
+path, preserving the caller's application point. Collision contacts are
+snapshotted after Bullet steps, classified as STARTED/CONTINUED/FINISHED
+against the prior snapshot, and delivered through the pin's after-step list;
+the scene therefore never runs application code from inside the solver's
+manifold callback.
 
 ### What a substituted solver is measured by
 
@@ -1826,17 +1862,21 @@ refuses rather than averaging.
 
 ### The freeze
 
-**A scene freezes itself, and both sides honour the same freeze.** Every
-corpus physics scene counts its own steps and calls `stopEngine` from a
-zero-delay `setTimeout` at the step its `?captureFrame=` names. Both are
+**A scene freezes itself, and both sides honour the same freeze.** The small
+corpus physics scenes count their own steps and call `stopEngine` from a
+zero-delay `setTimeout` at the step their `?captureFrame=` names. Both are
 lowered rather than erased: `stopEngine` is a flag the frame conductor reads,
 and `setTimeout(cb, 0)` is a one-shot callback it drains after the frame's own
 — the boundary a browser runs a zero-delay timeout at. Once stopped the
 conductor advances nothing and keeps presenting the frozen frame while a
-capture is pending. Seventeen of the corpus's twenty-one `setTimeout` sites
-pass 0, which is the reached slice; the four real waits (scenes 44, 48, 156,
-173) refuse rather than becoming "next frame", which would be a different
-scene.
+capture is pending.
+
+Non-zero `setTimeout` uses the conductor's double-precision monotonic clock
+and fires once on the first frame boundary at or after its deadline. A
+recursive callback is heap-owned by the engine after its defining scope
+returns; scheduling itself again does not leave a reference to dead stack
+storage. Racer exercises that real-delay path for its countdown/reset logic
+while the physics world continues stepping.
 
 ## Audio contract
 
@@ -1851,16 +1891,22 @@ hknp)` takes its solver as a parameter, audio takes the *browser* — so
 sound sub-graph, ramp shapes and the sound state machine stay Babylon
 behaviour.
 
-**No corpus scene reaches it.** The reach is upstream's seven *game* demos,
-which use the Lite engine for lifecycle only (`createAudioEngineAsync`,
-`engine.audioContext`, `createSoundSourceAsync`,
-`unlockAudioEngineAsync`) and then build their own raw Web Audio graph on
-the context they are handed. The eighth consumer is `audio-demo.ts`, the
-audio module's own Tier-4 showcase, and it is the one place
-`createSoundAsync`/`playSound`, the microphone, the visualizer and the
-unmute UI are reached at all; upstream marks it manual and
-non-deterministic, never a gate. Nothing published is gated on audio, and
-the slice is a prototype: [TODO](../TODO.md) carries what remains.
+**Racer is the first published application gate to reach decoded buffers.**
+It creates the Lite audio engine and source bus, fetches four pinned Ogg clips,
+decodes them, and builds looping engine/skid sources plus one-shot impacts from
+the returned `AudioBuffer`s. Generation recognizes that helper by its
+`fetch(url)` plus `ctx.decodeAudioData(...)` body and requires a static asset
+URL; native packages the same encoded bytes and LabSound/libnyquist decodes
+them at the context's sample rate. The graph retains loop, playback-rate,
+gain, connect/disconnect, start/stop and `onended` behavior. This is asset
+materialization, not a silent replacement with an oscillator.
+
+The other reached consumers use the Lite engine for lifecycle
+(`createAudioEngineAsync`, `engine.audioContext`, `createSoundSourceAsync`,
+`unlockAudioEngineAsync`) and then build their own raw Web Audio graph on the
+context they are handed. `audio-demo.ts`, the module's Tier-4 showcase, still
+keeps the microphone, visualizer and unmute UI outside deterministic gates;
+those surfaces refuse by name.
 
 **The platformer also reaches the browser timer that drives its music.** Its
 30 ms `setInterval` is a look-ahead scheduler: each wake reads

@@ -973,6 +973,8 @@ struct PhysicsAggregateOptions {
     js::Nullable<double> friction{};
     js::Nullable<double> restitution{};
     pal::PhysicsShapeHandle shape{};
+    js::Nullable<double> radius{};
+    js::Nullable<Vec3d> extents{};
 };
 
 /**
@@ -1004,6 +1006,29 @@ struct PhysicsAggregate {
     PhysicsShape shape{};
 };
 
+enum class PhysicsCollisionType {
+    STARTED,
+    CONTINUED,
+    FINISHED,
+};
+
+struct PhysicsCollisionInfo {
+    PhysicsCollisionType type = PhysicsCollisionType::FINISHED;
+    Vec3d point{};
+    Vec3d normal{};
+    double impulse = 0.0;
+};
+
+[[nodiscard]] const char* physics_collision_type_name(
+    PhysicsCollisionType type);
+
+struct PhysicsRaycastResult {
+    bool has_hit = false;
+    Vec3d hit_point{};
+    Vec3d hit_normal{};
+    double hit_distance = 0.0;
+};
+
 /**
  * ${havokModule} \`PhysicsWorld\`. The pin keeps \`_hknp\` beside
  * \`_hkWorld\`; here the module is the PAL and only the world handle
@@ -1022,6 +1047,7 @@ struct PhysicsWorld {
      * is what the gate reads.
      */
     double fixed_delta_ms = 0.0;
+    double step_seconds = 0.0;
     std::vector<std::function<void(float)>> after_step;
 };
 
@@ -1068,6 +1094,31 @@ void apply_physics_impulse(
     PhysicsBody body,
     Vec3d impulse,
     std::optional<Vec3d> point);
+void set_physics_shape_filter_membership_mask(
+    PhysicsWorldHandle world,
+    PhysicsShape shape,
+    std::uint32_t membership_mask);
+[[nodiscard]] Vec3d get_physics_body_linear_velocity(
+    PhysicsWorldHandle world,
+    PhysicsBody body);
+void apply_physics_body_force(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    Vec3d force,
+    Vec3d location);
+void set_physics_body_collision_events_enabled(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    bool enabled);
+void on_physics_collision(
+    PhysicsWorldHandle world,
+    std::function<void(const PhysicsCollisionInfo&)> callback);
+[[nodiscard]] PhysicsRaycastResult physics_raycast(
+    PhysicsWorldHandle world,
+    Vec3d from,
+    Vec3d to,
+    std::uint32_t membership,
+    std::uint32_t collide_with);
 
 }  // namespace bbl::upstream
 `;
@@ -1260,6 +1311,7 @@ void step_world(PhysicsWorld& world, double delta_ms) {
         return;
     }
     const double dt = std::min(step_ms, physics_max_step_ms) / 1000.0;
+    world.step_seconds = dt;
 
     Engine& engine = *world.engine;
     for (const PhysicsBody& body : world.bodies) {
@@ -1420,6 +1472,103 @@ void apply_physics_impulse(
         {impulse.x, impulse.y, impulse.z});
 }
 
+void set_physics_shape_filter_membership_mask(
+    PhysicsWorldHandle handle,
+    PhysicsShape shape,
+    std::uint32_t membership_mask) {
+    (void)physics_world_record(handle);
+    pal::physics_shape_set_filter_membership_mask(
+        shape.handle, membership_mask);
+}
+
+Vec3d get_physics_body_linear_velocity(
+    PhysicsWorldHandle handle,
+    PhysicsBody body) {
+    PhysicsWorld& world = physics_world_record(handle);
+    const PhysicsBody& live = physics_body_record(world, body);
+    const std::array<double, 3> velocity =
+        pal::physics_body_get_linear_velocity(live.handle);
+    return Vec3d{velocity[0], velocity[1], velocity[2]};
+}
+
+void apply_physics_body_force(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    Vec3d force,
+    Vec3d location) {
+    PhysicsWorld& world = physics_world_record(handle);
+    const double dt = world.step_seconds;
+    apply_physics_impulse(
+        handle,
+        body,
+        Vec3d{force.x * dt, force.y * dt, force.z * dt},
+        std::optional<Vec3d>{location});
+}
+
+void set_physics_body_collision_events_enabled(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    bool enabled) {
+    PhysicsWorld& world = physics_world_record(handle);
+    const PhysicsBody& live = physics_body_record(world, body);
+    pal::physics_body_set_collision_events_enabled(live.handle, enabled);
+}
+
+const char* physics_collision_type_name(PhysicsCollisionType type) {
+    switch (type) {
+        case PhysicsCollisionType::STARTED: return "STARTED";
+        case PhysicsCollisionType::CONTINUED: return "CONTINUED";
+        case PhysicsCollisionType::FINISHED: return "FINISHED";
+    }
+    return "FINISHED";
+}
+
+void on_physics_collision(
+    PhysicsWorldHandle handle,
+    std::function<void(const PhysicsCollisionInfo&)> callback) {
+    on_physics_after_step(
+        handle,
+        [handle, callback = std::move(callback)](float) {
+            const PhysicsWorld& world = physics_world_record(handle);
+            for (const pal::PhysicsCollisionEvent& event :
+                 pal::physics_world_collision_events(world.handle)) {
+                const PhysicsCollisionType type =
+                    event.type == pal::PhysicsCollisionEventType::started
+                        ? PhysicsCollisionType::STARTED
+                        : event.type == pal::PhysicsCollisionEventType::continued
+                            ? PhysicsCollisionType::CONTINUED
+                            : PhysicsCollisionType::FINISHED;
+                callback(PhysicsCollisionInfo{
+                    type,
+                    Vec3d{event.point[0], event.point[1], event.point[2]},
+                    Vec3d{event.normal[0], event.normal[1], event.normal[2]},
+                    event.impulse,
+                });
+            }
+        });
+}
+
+PhysicsRaycastResult physics_raycast(
+    PhysicsWorldHandle handle,
+    Vec3d from,
+    Vec3d to,
+    std::uint32_t membership,
+    std::uint32_t collide_with) {
+    const PhysicsWorld& world = physics_world_record(handle);
+    const pal::PhysicsRaycastResult hit = pal::physics_world_raycast(
+        world.handle,
+        {from.x, from.y, from.z},
+        {to.x, to.y, to.z},
+        membership,
+        collide_with);
+    return PhysicsRaycastResult{
+        hit.has_hit,
+        Vec3d{hit.point[0], hit.point[1], hit.point[2]},
+        Vec3d{hit.normal[0], hit.normal[1], hit.normal[2]},
+        hit.distance,
+    };
+}
+
 PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle handle,
     MeshHandle mesh,
@@ -1442,10 +1591,13 @@ PhysicsAggregate create_physics_aggregate(
       switch (type) {
         case PhysicsShapeType::SPHERE:
             shape.handle = pal::physics_shape_create_sphere(
-                {center.x, center.y, center.z}, sphere_radius(sized));
+                {center.x, center.y, center.z},
+                options.radius ? *options.radius : sphere_radius(sized));
             break;
         case PhysicsShapeType::BOX: {
-            const Vec3d extents = box_extents(sized);
+            const Vec3d extents = options.extents
+                ? *options.extents
+                : box_extents(sized);
             shape.handle = pal::physics_shape_create_box(
                 {center.x, center.y, center.z},
                 {0.0, 0.0, 0.0, 1.0},

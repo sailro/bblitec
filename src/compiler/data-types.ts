@@ -21,6 +21,7 @@ export type HandleKind =
   | "material"
   | "physics-body"
   | "physics-shape"
+  | "billboard-sprite"
   | "sprite-layer"
   | "sprite-atlas"
   | "texture"
@@ -35,6 +36,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
   "physics-shape": "bbl::upstream::PhysicsShape",
+  "billboard-sprite": "bbl::BillboardSpriteHandle",
   "sprite-layer": "bbl::Sprite2DLayerHandle",
   "sprite-atlas": "bbl::SpriteAtlasHandle",
   texture: "bbl::PixelsTexture",
@@ -51,6 +53,7 @@ export function isHandleKind(kind: string): kind is HandleKind {
 const pinnedHandleTypes: Record<string, HandleKind> = {
   Mesh: "mesh",
   AnimationGroup: "animation-group",
+  BillboardSpriteHandle: "billboard-sprite",
   Camera: "camera",
   Material: "material",
   PhysicsBody: "physics-body",
@@ -318,6 +321,7 @@ export class DataTypeRegistry {
   private readonly enumNames = new Set<string>();
   /** String-union enums that actually receive a runtime string value. */
   private readonly runtimeEnumParsers = new Set<string>();
+  private readonly runtimeEnumSerializers = new Set<string>();
   /** Named data types that reached emitted C++ rather than a type probe. */
   private readonly emittedNamedTypes = new Set<string>();
   private readonly tables = new Map<ts.Node, DataTableDefinition>();
@@ -872,6 +876,23 @@ export class DataTypeRegistry {
     return `bblscene::${dataType.name}_from_string(${cpp})`;
   }
 
+  /** Converts a runtime string-literal union back to its JavaScript text. */
+  public enumToStringCpp(
+    dataType: DataType & { kind: "enum" },
+    cpp: string,
+    node: ts.Node,
+  ): string {
+    const definition = [...this.enumsByKey.values()].find(
+      (entry) => entry.name === dataType.name,
+    );
+    if (!definition) {
+      this.fail(node, `Unknown enum '${dataType.name}'.`);
+    }
+    this.emittedNamedTypes.add(dataType.name);
+    this.runtimeEnumSerializers.add(dataType.name);
+    return `bblscene::${dataType.name}_to_string(${cpp})`;
+  }
+
   /**
    * A struct's field types, or an empty list when the struct is not
    * registered. Unlike `structFields` this asks a question rather
@@ -1207,6 +1228,18 @@ export class DataTypeRegistry {
           "",
         );
       }
+      if (this.runtimeEnumSerializers.has(definition.name)) {
+        lines.push(
+          `inline std::string ${definition.name}_to_string(${definition.name} value) {`,
+          ...definition.members.map(
+            (member) =>
+              `    if (value == ${definition.name}::${this.enumMemberIdentifier(definition, member)}) return ${JSON.stringify(member)};`,
+          ),
+          `    throw std::runtime_error("Invalid ${definition.name} enum value.");`,
+          "}",
+          "",
+        );
+      }
     }
     const emitted = new Set<string>();
     const structs = [...this.structsByKey.values()].filter((definition) =>
@@ -1320,6 +1353,9 @@ export class DataTypeRegistry {
       }
     }
     for (const name of this.runtimeEnumParsers) {
+      enums.add(name);
+    }
+    for (const name of this.runtimeEnumSerializers) {
       enums.add(name);
     }
     return { structs, enums };

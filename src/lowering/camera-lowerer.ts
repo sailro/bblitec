@@ -736,17 +736,26 @@ Vec3 transform_bounds_point(Vec3 point, const MeshRecord& mesh) {
         point.z * mesh.scaling.z,
     };
     point = rotate_bounds_point(point, mesh.rotation);
+    point = Vec3{
+        static_cast<float>(
+            static_cast<double>(point.x) + mesh.position.x),
+        static_cast<float>(
+            static_cast<double>(point.y) + mesh.position.y),
+        static_cast<float>(
+            static_cast<double>(point.z) + mesh.position.z),
+    };
+    point = rotate_bounds_point(point, mesh.outer_rotation);
     // The translation is the record's double; the sum is taken at that
     // width and stored once, as every other consumer of it does.
     return Vec3{
         static_cast<float>(
-            static_cast<double>(point.x) + mesh.position.x +
+            static_cast<double>(point.x) +
             static_cast<double>(mesh.outer_position.x)),
         static_cast<float>(
-            static_cast<double>(point.y) + mesh.position.y +
+            static_cast<double>(point.y) +
             static_cast<double>(mesh.outer_position.y)),
         static_cast<float>(
-            static_cast<double>(point.z) + mesh.position.z +
+            static_cast<double>(point.z) +
             static_cast<double>(mesh.outer_position.z)),
     };
 }

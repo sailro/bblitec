@@ -197,6 +197,64 @@ test("audio node factories publish independent link features", () => {
     assert.match(result.cpp, /bbl::pal::audio_state\(/);
 });
 
+test("runs successful nullable audio constructors and preserves source loops", () => {
+    const result = compileSource(`
+        import {
+            createAudioEngineAsync,
+            createEngine,
+            type AudioEngine,
+        } from "@babylonjs/lite";
+
+        class LoopingSound {
+            private readonly _engine: AudioEngine | null;
+            private readonly _ctx: BaseAudioContext | null;
+            private readonly _source: AudioBufferSourceNode | null;
+
+            private constructor(
+                engine: AudioEngine | null,
+                ctx: BaseAudioContext | null,
+                source: AudioBufferSourceNode | null,
+            ) {
+                this._engine = engine;
+                this._ctx = ctx;
+                this._source = source;
+                if (ctx) {
+                    const unlock = (): void => this._start();
+                    window.addEventListener("keydown", unlock, { once: true });
+                }
+            }
+
+            static async create(): Promise<LoopingSound> {
+                try {
+                    const engine = await createAudioEngineAsync();
+                    const ctx = engine.audioContext;
+                    const source = ctx.createBufferSource();
+                    return new LoopingSound(engine, ctx, source);
+                } catch {
+                    return new LoopingSound(null, null, null);
+                }
+            }
+
+            private _start(): void {
+                if (!this._source) return;
+                this._source.loop = true;
+                this._source.playbackRate.value = 0.75;
+                this._source.start();
+            }
+        }
+
+        await createEngine({});
+        await LoopingSound.create();
+    `);
+
+    assert.match(result.cpp, /bbl::on_key_down\(/);
+    assert.match(result.cpp, /bbl::pal::audio_set_loop\([^;]*, true\);/);
+    assert.match(
+        result.cpp,
+        /AudioParamName::PlaybackRate\), 0\.75f\);/,
+    );
+});
+
 test("preserves Web Audio writes and nullable class resource assignments", () => {
     const result = compileSource(`
         import {
@@ -879,6 +937,43 @@ test("emits plain-data user functions once as native functions", () => {
         result.cpp,
         /return v_fn0_result;/,
     );
+});
+
+test("stabilizes stored record representation before native parameter emission", () => {
+    const result = compileSource(`
+        interface Archive {
+            names: Map<string, number>;
+            bytes: Uint8Array;
+        }
+        interface Holder { archive: Archive }
+
+        function indexOf(archive: Archive, name: string): number {
+            return archive.names.get(name) ?? -1;
+        }
+        function parse(seed: string | number): Archive {
+            const names = new Map<string, number>();
+            names.set(String(seed), 3);
+            return {
+                names,
+                bytes: new Uint8Array(4),
+            };
+        }
+
+        const archive = parse("START");
+        const index = indexOf(archive, "START");
+        const holder: Holder = { archive };
+    `);
+
+    assert.match(
+        result.cpp,
+        /using Archive = std::shared_ptr<ArchiveData>;/,
+    );
+    assert.match(
+        result.cpp,
+        /double indexOf\(bblscene::Archive v_fn\d+_archive, std::string v_fn\d+_name\)/,
+    );
+    assert.match(result.cpp, /v_fn\d+_archive->names\.get\(/);
+    assert.doesNotMatch(result.cpp, /v_fn\d+_archive\.names/);
 });
 
 test("supports early returns in native data functions", () => {
@@ -3726,7 +3821,7 @@ test("preserves inferred object identity through container storage", () => {
 
     assert.match(
         result.cpp,
-        /bblscene::Record\d+ v_image = std::make_shared<bblscene::Record\d+Data>/,
+        /bblscene::Image v_image = std::make_shared<bblscene::ImageData>/,
     );
     assert.match(result.cpp, /v_image->frame/);
 });
@@ -3915,6 +4010,44 @@ test("keeps an inferred static handle list available to render composition", () 
     assert.doesNotMatch(result.cpp, /Array<bbl::MeshHandle> v_casters/);
 });
 
+test("records the camera-fitted single-map adaptation for CSM shadows", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createCsmDirectionalShadowGenerator,
+            createDirectionalLight,
+            createEngine,
+            createSceneContext,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const light = createDirectionalLight([-1, -2, -1], 1);
+            addToScene(scene, light);
+            createCsmDirectionalShadowGenerator(engine, light, {
+                mapSize: 2048,
+                numCascades: 4,
+                lambda: 0.6,
+                bias: 0.00008,
+                darkness: 0.2,
+            });
+        }
+
+        void main();
+    `);
+
+    assert.ok(result.manifest.features.includes("shadow:csm-single-map"));
+    assert.ok(!result.manifest.features.includes("shadow:pcf-directional"));
+    assert.match(result.cpp, /create_csm_directional_shadow_generator/);
+    assert.match(result.cpp, /CsmDirectionalShadowOptions\{/);
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "csm-single-map-near-cascade",
+        ),
+    );
+});
+
 test("updates a shadow task from a runtime subset of its composed casters", () => {
     const result = compileSource(`
         import {
@@ -4098,6 +4231,110 @@ test("lowers recursive plain-data functions natively", () => {
     assert.match(
         result.cpp,
         /return bblscene::recurse\(\(v_\w*value - 1\.0\)\);/,
+    );
+});
+
+test("retains recursive timer callbacks after their source scope returns", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        function startCountdown(): void {
+            let count = 0;
+            const tick = (): void => {
+                count++;
+                if (count < 4) setTimeout(tick, 700);
+            };
+            tick();
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            startCountdown();
+        }
+        main();
+    `);
+    assert.match(
+        result.cpp,
+        /std::make_shared<std::function<void\(\)>>\(\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_engine\.native_callback_owners\.push_back\(/,
+    );
+    assert.match(
+        result.cpp,
+        /auto& bbl_recursive_\w+ = \*bbl_recursive_\w+_owner;/,
+    );
+});
+
+test("keeps synchronous recursive callbacks local to native data functions", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        function triangular(limit: number): number {
+            let total = 0;
+            const visit = (value: number): void => {
+                if (value <= 0) return;
+                total += value;
+                visit(value - 1);
+            };
+            visit(limit);
+            return total;
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const total = triangular(3);
+        }
+        main();
+    `);
+
+    const definition = result.cpp.match(
+        /double triangular\([^]*?\n\}/,
+    )?.[0];
+    assert.ok(definition);
+    assert.match(
+        definition,
+        /std::function<void\(double\)> v_fn\d+_visit/,
+    );
+    assert.doesNotMatch(definition, /native_callback_owners|v_engine/);
+});
+
+test("snapshots scalar members of records retained by classes", () => {
+    const result = compileSource(`
+        import { createBox, createEngine, type Mesh } from "@babylonjs/lite";
+
+        interface Vehicle { body: Mesh; element: HTMLElement; bodyRestY: number }
+        function makeVehicle(body: Mesh): Vehicle {
+            return {
+                body,
+                element: document.createElement("div"),
+                bodyRestY: body.position.y,
+            };
+        }
+        class Controller {
+            private readonly vehicle: Vehicle;
+            constructor(vehicle: Vehicle) { this.vehicle = vehicle; }
+            value(): number { return this.vehicle.bodyRestY; }
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const body = createBox(engine, 1);
+            const vehicle = makeVehicle(body);
+            const controller = new Controller(vehicle);
+            body.position.y = 10;
+            body.position.y = controller.value();
+        }
+        main();
+    `);
+    assert.match(
+        result.cpp,
+        /double v_\w*return_makeVehicle_bodyRestY_\d+ = v_engine\.meshes\[v_\w*body\.value\]\.position\.y;/,
+    );
+    assert.equal(
+        (result.cpp.match(/return_makeVehicle_bodyRestY/g) ?? []).length,
+        2,
     );
 });
 
@@ -4931,6 +5168,26 @@ test("retains a static false through a readonly receiveShadows parameter", () =>
     `);
 
     assert.doesNotMatch(result.cpp, /receives_shadows = true/);
+});
+
+test("retains both shadow receiver variants for runtime mesh parameters", () => {
+    const result = compileSource(`
+        import { createEngine, createSphere, type Mesh } from "@babylonjs/lite";
+        function configure(meshes: Mesh[]): void {
+            meshes.pop();
+            for (const mesh of meshes) mesh.receiveShadows = true;
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const mesh = createSphere(engine, { diameter: 1 });
+            const meshes: Mesh[] = [mesh];
+            configure(meshes);
+        }
+        void main();
+    `);
+
+    assert.equal(result.manifest.dynamicShadowReceivers, true);
+    assert.match(result.cpp, /\.receives_shadows = true;/);
 });
 
 test("lowers setCameraLimits with the fields present in the pinned options record", () => {

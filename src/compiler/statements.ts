@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
+    isHandleKind,
     isDataTuple,
     tupleComponents,
     type DataIterationElement,
@@ -1046,7 +1047,6 @@ export class StatementLowerer {
             !ts.isNumericLiteral(
                 declaration.initializer,
             ) ||
-            Number(declaration.initializer.text) !== 0 ||
             !ts.isBinaryExpression(statement.condition) ||
             statement.condition.operatorToken.kind !==
                 ts.SyntaxKind.LessThanToken ||
@@ -1064,6 +1064,10 @@ export class StatementLowerer {
             statement.incrementor.operand.text !==
                 declaration.name.text
         ) {
+            return false;
+        }
+        const start = Number(declaration.initializer.text);
+        if (!Number.isInteger(start) || start < 0) {
             return false;
         }
         const indexBinding = declaration.name;
@@ -1137,7 +1141,7 @@ export class StatementLowerer {
             );
         }
         for (
-            let index = 0;
+            let index = start;
             index < length.staticNumber;
             index += 1
         ) {
@@ -1245,6 +1249,26 @@ export class StatementLowerer {
         }
         if (
             this.emitTupleForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
+        // A handle vector whose static snapshot was invalidated by a spread
+        // append (for example, an accumulated set of imported meshes) must
+        // iterate its native contents. Looking only through the identifier
+        // to its original `[]` initializer would incorrectly unroll zero
+        // iterations and erase the body.
+        const runtimeHandleTarget = ts.isIdentifier(
+            context.unwrap(statement.expression),
+        )
+            ? context.dataIterationTarget(statement.expression)
+            : undefined;
+        if (
+            runtimeHandleTarget?.element.kind === "handle" &&
+            this.emitRuntimeForOf(
                 context,
                 statement,
                 declaration,
@@ -1467,7 +1491,16 @@ export class StatementLowerer {
         value: Value,
     ): void {
         if (ts.isIdentifier(name)) {
-            context.bindLocalValue(name, value);
+            // A statically unrolled handle loop aliases the same JavaScript
+            // object stored in the tuple. Keep the Value object itself so
+            // generation-time identity facts learned in the body (notably a
+            // light's scene slot) are visible through every alias after the
+            // loop. Plain-data lanes still get native iteration storage.
+            if (isHandleKind(value.kind) || value.kind === "light") {
+                context.bindCompileTimeValue(name, value);
+            } else {
+                context.bindLocalValue(name, value);
+            }
             return;
         }
         if (!ts.isArrayBindingPattern(name)) {
@@ -1917,6 +1950,26 @@ export class StatementLowerer {
                 target,
             );
         }
+        if (
+            target.kind === "asset-root" &&
+            (owner.name.text === "position" ||
+                owner.name.text === "rotation")
+        ) {
+            const components = this.setCallComponents(
+                context,
+                call,
+                3,
+                `${owner.name.text}.set`,
+            );
+            const engine = context.requireEngine(target, call);
+            components.forEach((component, axis) =>
+                context.emit(
+                    `bbl::set_asset_root_${owner.name.text}_component(` +
+                        `${engine}, ${target.cpp}, ${axis}u, ${component});`,
+                ),
+            );
+            return true;
+        }
         if (target.kind === "transform-node") {
             // A node's TRS lanes are the same ObservableVec3/ObservableQuat
             // a mesh's are -- upstream a TransformNode IS a SceneNode -- so
@@ -1974,19 +2027,11 @@ export class StatementLowerer {
                 call,
                 4,
                 "rotationQuaternion.set",
+                "float",
             );
             const engine = context.requireEngine(target, call);
             context.emit(
-                `${engine}.meshes[${target.cpp}.value].rotation_quaternion = bbl::Vec4{${components.join(", ")}};`,
-            );
-            // The pinned mesh composes its world matrix from the quaternion
-            // once one is set; the flag is what selects that path over the
-            // Euler rotation, exactly as the property-animation writer does.
-            context.emit(
-                `${engine}.meshes[${target.cpp}.value].has_rotation_quaternion = true;`,
-            );
-            context.emit(
-                `++${engine}.meshes[${target.cpp}.value].transform_version;`,
+                `bbl::set_mesh_rotation_quaternion(${engine}, ${target.cpp}, bbl::Vec4{${components.join(", ")}});`,
             );
             return true;
         }
@@ -2108,6 +2153,19 @@ export class StatementLowerer {
         ) {
             const spread = call.arguments[0] as ts.SpreadElement;
             const value = context.compileValue(spread.expression);
+            if (
+                value.kind === "tuple" &&
+                value.tupleElements?.length === arity &&
+                value.tupleElements.every(
+                    (element) => element.kind === "number",
+                )
+            ) {
+                return value.tupleElements.map((element) =>
+                    precision === "float"
+                        ? `static_cast<float>(${element.cpp})`
+                        : element.cpp,
+                );
+            }
             if (!isDataTuple(value, arity)) {
                 context.fail(
                     spread,

@@ -93,14 +93,15 @@ test("a scene freezes itself: setTimeout defers, stopEngine stops", () => {
     assert.match(main, /v_simulatedFrames >= \(\*v_captureAfterFrames\)/);
 });
 
-test("a non-zero setTimeout delay refuses rather than becoming next frame", () => {
-    // Four corpus scenes (44, 48, 156, 173) pass a real wait. Rounding one
-    // to the next frame would be a different scene, so it refuses.
-    refuses(
+test("a non-zero setTimeout delay uses the elapsed-time queue", () => {
+    const main = sceneWith(
         `onBeforeRender(scene, () => {
             window.setTimeout(() => { stopEngine(engine); }, 1000);
         });`,
-        "Only a zero-delay setTimeout is lowered",
+    );
+    assert.match(
+        main,
+        /bbl::set_timeout\(v_engine, \[&\]\(\) \{\s*bbl::stop_engine\(v_engine\);\s*\}, 1000\)/,
     );
 });
 

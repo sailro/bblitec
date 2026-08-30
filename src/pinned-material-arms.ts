@@ -583,6 +583,10 @@ export async function composeRenderableVariants(
         materialView?: "no-color" | "esm-shadow";
         /** Attribute sets a runtime-created mesh can carry this material on. */
         meshFeatureSets?: readonly number[];
+        /** Shadow slots supplied to variants whose mesh feature set receives. */
+        shadowLights?: readonly ShadowLightSlot[];
+        /** Whether a light may exclude individual meshes. */
+        perMeshLightLists?: boolean;
     } = {},
     geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
@@ -610,6 +614,9 @@ export async function composeRenderableVariants(
     }
     const subjects = await materialSubjects(document, scene);
     const variants: PinnedRenderableVariant[] = [];
+    const receiveBit = scene.shadowLights && scene.shadowLights.length > 0
+        ? await pinnedReceiveShadowsBit()
+        : 0;
     for (const subject of subjects) {
         // A material no primitive references still composes, at the attribute
         // set a primitive would have to have: scene code can assign it to a
@@ -617,6 +624,16 @@ export async function composeRenderableVariants(
         for (const meshFeatures of
             scene.meshFeatureSets ?? featureSets.get(subject.index) ?? [0]) {
             for (const arm of arms) {
+                if (
+                    receiveBit !== 0 &&
+                    (meshFeatures & receiveBit) !== 0 &&
+                    !pinnedReceiverReachesArm(
+                        arm.lightMode,
+                        scene.perMeshLightLists === true,
+                    )
+                ) {
+                    continue;
+                }
                 const materialViewOptions = scene.materialView === "no-color"
                     ? {
                         passFeatures2: (
@@ -633,6 +650,9 @@ export async function composeRenderableVariants(
                     ...materialViewOptions,
                     meshFeatures,
                     uv2Mask: subject.uv2Mask,
+                    ...(scene.shadowLights
+                        ? { shadowLights: scene.shadowLights }
+                        : {}),
                 });
                 variants.push({
                     materialIndex: materialIndexBase + subject.index,

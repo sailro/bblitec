@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { staticSceneLightArms } from "../src/compose-pipeline.js";
+import {
+    dynamicCasterFeatureSets,
+    staticSceneLightArms,
+} from "../src/compose-pipeline.js";
+
+test("dynamic caster views retain imported and scene mesh feature arms", () => {
+    assert.deepEqual(
+        dynamicCasterFeatureSets([1], [0], [16]),
+        [0, 1, 16, 17],
+    );
+});
 
 test("static scene light arms retain the shadow-receiver multi-light path", () => {
     assert.deepEqual(staticSceneLightArms([], false), {

@@ -42,6 +42,9 @@ export interface PhysicsIntrinsicContext
   expectSameEngine(left: Value, right: Value, node: ts.Node): void;
   expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
   compileFrameCallback(expression: ts.Expression): string;
+  compilePhysicsCollisionCallback(expression: ts.Expression): string;
+  allocateTemporaryCppName(label: string): string;
+  emit(line: string): void;
 }
 
 /**
@@ -56,7 +59,14 @@ const PRIMITIVE_SHAPE_TYPES = ["SPHERE", "CAPSULE", "CYLINDER", "BOX"] as const;
 const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, "CONVEX_HULL"] as const;
 
 /** The `PhysicsAggregateOptions` fields the reached slice lowers. */
-const AGGREGATE_OPTIONS = ["mass", "friction", "restitution", "shape"] as const;
+const AGGREGATE_OPTIONS = [
+  "mass",
+  "friction",
+  "restitution",
+  "shape",
+  "radius",
+  "extents",
+] as const;
 
 export function compilePhysicsIntrinsic(
   context: PhysicsIntrinsicContext,
@@ -227,6 +237,126 @@ export function compilePhysicsIntrinsic(
       };
     }
 
+    case "setPhysicsShapeFilterMembershipMask": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const shape = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(shape, "physics-shape", call.arguments[1]!);
+      context.expectSameEngine(world, shape, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_shape_filter_membership_mask(` +
+          `${world.cpp}, ${shape.cpp}, ` +
+          `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[2]!, "double")}))`,
+      };
+    }
+
+    case "getPhysicsBodyLinearVelocity": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      const velocity = context.allocateTemporaryCppName("physics_velocity");
+      context.emit(
+        `const bbl::Vec3d ${velocity} = ` +
+          `bbl::upstream::get_physics_body_linear_velocity(${world.cpp}, ${body.cpp});`,
+      );
+      return vec3Record(velocity);
+    }
+
+    case "applyPhysicsBodyForce": {
+      context.expectArgumentCount(call, 4, 4);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::apply_physics_body_force(` +
+          `${world.cpp}, ${body.cpp}, ` +
+          `${context.compileVec3(call.arguments[2]!, "double")}, ` +
+          `${context.compileVec3(call.arguments[3]!, "double")})`,
+      };
+    }
+
+    case "setPhysicsBodyCollisionEventsEnabled": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_collision_events_enabled(` +
+          `${world.cpp}, ${body.cpp}, ${context.compileBoolean(call.arguments[2]!)})`,
+      };
+    }
+
+    case "onPhysicsCollision": {
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::on_physics_collision(` +
+          `${world.cpp}, ${context.compilePhysicsCollisionCallback(call.arguments[1]!)})`,
+      };
+    }
+
+    case "physicsRaycast": {
+      context.expectArgumentCount(call, 3, 4);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      let membership = "0xffffffffu";
+      let collideWith = "0xffffffffu";
+      if (call.arguments[3]) {
+        const options = context.expectObjectLiteral(call.arguments[3]);
+        validateObjectProperties(
+          context,
+          options,
+          ["membership", "collideWith", "shouldHitTriggers"],
+          "A physics raycast option outside the reached filter slice.",
+        );
+        const membershipExpression = context.objectProperty(options, "membership");
+        const collideExpression = context.objectProperty(options, "collideWith");
+        const triggers = context.objectProperty(options, "shouldHitTriggers");
+        if (triggers && context.compileBoolean(triggers) !== "false") {
+          context.fail(triggers, "Physics raycasts against trigger bodies are not reached.");
+        }
+        if (membershipExpression) {
+          membership = `static_cast<std::uint32_t>(${context.compileNumber(membershipExpression, "double")})`;
+        }
+        if (collideExpression) {
+          collideWith = `static_cast<std::uint32_t>(${context.compileNumber(collideExpression, "double")})`;
+        }
+      }
+      const result = context.allocateTemporaryCppName("physics_raycast");
+      context.emit(
+        `const bbl::upstream::PhysicsRaycastResult ${result} = ` +
+          `bbl::upstream::physics_raycast(${world.cpp}, ` +
+          `${context.compileVec3(call.arguments[1]!, "double")}, ` +
+          `${context.compileVec3(call.arguments[2]!, "double")}, ` +
+          `${membership}, ${collideWith});`,
+      );
+      return {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+          hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
+          hitPoint: vec3Record(`${result}.hit_point`),
+        },
+      };
+    }
+
     case "applyPhysicsImpulse": {
       context.expectArgumentCount(call, 3, 4);
       const world = context.compileValue(call.arguments[0]!);
@@ -249,6 +379,18 @@ export function compilePhysicsIntrinsic(
     default:
       return undefined;
   }
+}
+
+function vec3Record(cpp: string): Value {
+  return {
+    kind: "record",
+    cpp: "",
+    recordProperties: {
+      x: { kind: "number", cpp: `${cpp}.x` },
+      y: { kind: "number", cpp: `${cpp}.y` },
+      z: { kind: "number", cpp: `${cpp}.z` },
+    },
+  };
 }
 
 function compileImpulsePoint(
@@ -371,11 +513,17 @@ function compileAggregateOptions(
   if (shape) {
     context.expectKind(shape, "physics-shape", shapeExpression!);
   }
+  const radius = optional("radius");
+  const extentsExpression = context.objectProperty(object, "extents");
+  const extents = extentsExpression
+    ? `bbl::js::Nullable<bbl::Vec3d>{${context.compileVec3(extentsExpression, "double")}}`
+    : "bbl::js::Nullable<bbl::Vec3d>{}";
   return (
     `bbl::upstream::PhysicsAggregateOptions{` +
     `${mass}, ` +
     `${optional("friction")}, ` +
     `${optional("restitution")}, ` +
-    `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}}`
+    `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}, ` +
+    `${radius}, ${extents}}`
   );
 }

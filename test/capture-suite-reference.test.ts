@@ -8,10 +8,26 @@ import {
 import { resolve } from "node:path";
 import test from "node:test";
 import {
+    bundledDemoAssetPath,
     createSuiteSceneServer,
     fixedAnimationFrameScript,
     pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
+
+test("maps an unbundled nested demo asset URL to its bundle-relative file", () => {
+    assert.equal(
+        bundledDemoAssetPath(
+            "/corpus/babylon-lite/lab/lite/src/demos/racer/racer/models/track.glb",
+        ),
+        "corpus/babylon-lite/lab/lite/src/demos/racer/models/track.glb",
+    );
+    assert.equal(
+        bundledDemoAssetPath(
+            "/corpus/babylon-lite/lab/lite/src/demos/racer/models/track.glb",
+        ),
+        undefined,
+    );
+});
 
 test("relocates the shared Havok binary to pinned lab/public root", () => {
     assert.equal(

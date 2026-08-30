@@ -44,6 +44,37 @@ void run_deferred_callbacks(Engine& engine) {
     }
 }
 
+double set_timeout(
+    Engine& engine,
+    std::function<void()> callback,
+    double delay_ms) {
+    if (!std::isfinite(delay_ms) || delay_ms < 0.0) {
+        throw std::runtime_error("setTimeout requires a finite non-negative delay.");
+    }
+    const std::uint64_t id = engine.next_timeout_id++;
+    engine.timeout_callbacks.push_back(Engine::TimeoutCallback{
+        id,
+        pal::performance_milliseconds() + delay_ms,
+        std::move(callback),
+    });
+    return static_cast<double>(id);
+}
+
+void run_timeout_callbacks(Engine& engine) {
+    const double now_ms = engine.animation_frame_timestamp_ms;
+    std::vector<std::function<void()>> due;
+    std::erase_if(
+        engine.timeout_callbacks,
+        [&](Engine::TimeoutCallback& timeout) {
+            if (now_ms < timeout.due_ms) return false;
+            due.push_back(std::move(timeout.callback));
+            return true;
+        });
+    for (const auto& callback : due) {
+        callback();
+    }
+}
+
 double set_interval(
     Engine& engine,
     std::function<void()> callback,

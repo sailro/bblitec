@@ -2815,6 +2815,21 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: adHocCaptureEnvironment(),
         },
     },
+    {
+        id: "racer",
+        name: "Racer",
+        source: "corpus/babylon-lite/lab/lite/src/demos/racer.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Racer",
+        parity: {
+            referenceFrame: 180,
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
+            backgroundColor: [158, 204, 235],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
 ];
 
 /**

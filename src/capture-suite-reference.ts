@@ -80,6 +80,26 @@ export function pinnedLabPublicAssetPath(requestPath: string): string {
         : relative;
 }
 
+/**
+ * Recover a demo-public URL when an unbundled nested module repeats the demo
+ * directory. Upstream serves every demo module from one bundle URL, so
+ * `racer/track.ts` resolving `./racer/models/...` lands beside `racer.ts`.
+ * The reference harness serves the exact modules separately; that same URL
+ * consequently contains `.../demos/racer/racer/...`. Prefer the literal path
+ * first, because applications such as Tetris intentionally commit that shape,
+ * and use this bundle-equivalent alias only when the repeated path is absent.
+ */
+export function bundledDemoAssetPath(requestPath: string): string | undefined {
+    const relative = requestPath.replace(/^\/+/, "").replaceAll("\\", "/");
+    const marker = "lab/lite/src/demos/";
+    const markerIndex = relative.indexOf(marker);
+    if (markerIndex < 0) return undefined;
+    const prefix = relative.slice(0, markerIndex + marker.length);
+    const parts = relative.slice(prefix.length).split("/");
+    if (parts.length < 3 || parts[0] !== parts[1]) return undefined;
+    return `${prefix}${[parts[0], ...parts.slice(2)].join("/")}`;
+}
+
 export type SuiteSourceTransform = (source: string) => string;
 
 /**
@@ -354,6 +374,22 @@ ${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></scrip
                 );
                 return;
             }
+        }
+        const bundledRelative = bundledDemoAssetPath(relative);
+        const bundledPath = bundledRelative === undefined
+            ? undefined
+            : resolve(root, bundledRelative);
+        if (
+            bundledPath !== undefined &&
+            bundledPath.startsWith(`${root}${sep}`) &&
+            existsSync(bundledPath) &&
+            statSync(bundledPath).isFile()
+        ) {
+            response.writeHead(200, {
+                "Content-Type": mimeType(bundledPath),
+            });
+            response.end(readFileSync(bundledPath));
+            return;
         }
         if (!path.startsWith(`${root}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {
             // Pinned lab/public assets back every scene source: corpus

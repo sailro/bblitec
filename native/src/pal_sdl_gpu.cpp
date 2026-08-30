@@ -6381,6 +6381,7 @@ bool run_gpu_engine(Engine& engine) {
 #endif
 
         cpu_startup_mark("environment-background");
+        upstream::initialize_composition_feature_rows(engine);
         upstream::RenderPlan render_plan =
             upstream::build_render_plan(scene, engine);
         // Every item's kind and variant against the generated tables
@@ -7155,6 +7156,17 @@ bool run_gpu_engine(Engine& engine) {
                                 pinned_matrices.data(),
                                 active_count *
                                     sizeof(pinned_matrices.front()));
+                        }
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+                        if (
+                            gpu_mesh.instance_colors &&
+                            mesh.instance_colors.size() >=
+                                active_count * 4) {
+                            frame_buffer_uploads.update(
+                                gpu_mesh.instance_colors,
+                                mesh.instance_colors.data(),
+                                active_count * 4 * sizeof(float));
                         }
 #endif
                     }
@@ -7945,6 +7957,29 @@ bool run_gpu_engine(Engine& engine) {
                         0,
                         0);
                 };
+#if BBLITE_HAS_BILLBOARDS
+                const auto draw_task_billboards = [&](
+                                                        SDL_GPURenderPass* pass,
+                                                        BillboardDepthMode mode,
+                                                        const std::array<float, 16>& view_projection,
+                                                        const std::array<float, 16>& view) {
+                    for (const BillboardPass& billboard :
+                         state.billboard_passes) {
+                        if (
+                            engine.billboard_systems[
+                                billboard.system.value].depth_mode != mode) {
+                            continue;
+                        }
+                        record_billboard_pass(
+                            command,
+                            pass,
+                            engine,
+                            billboard,
+                            view_projection,
+                            view);
+                    }
+                };
+#endif
                 const auto draw_scene = [&](
                                           SDL_GPURenderPass* task_pass,
                                           SDL_GPUGraphicsPipeline* grid_opaque,
@@ -7974,7 +8009,10 @@ bool run_gpu_engine(Engine& engine) {
                                           [[maybe_unused]] const
                                               ShadowGeneratorRecord*
                                                   shadow_generator =
-                                                      nullptr) {
+                                                      nullptr,
+                                          [[maybe_unused]] bool
+                                              draw_scene_billboard_stages =
+                                                  false) {
                     bool scene_matrix_bound = true;
                     // One dispatch for both passes; only the sources
                     // differ (`secondary_pipeline_for`).
@@ -8429,6 +8467,15 @@ bool run_gpu_engine(Engine& engine) {
                         }
                     };
                     draw_list(draw_lists.opaque);
+#if BBLITE_HAS_BILLBOARDS
+                    if (draw_scene_billboard_stages) {
+                        draw_task_billboards(
+                            task_pass,
+                            BillboardDepthMode::cutout,
+                            draw_matrix,
+                            *draw_pass_matrices.view);
+                    }
+#endif
                     draw_list(draw_lists.transparent);
                 };
 
@@ -8792,12 +8839,21 @@ bool run_gpu_engine(Engine& engine) {
                             task_draw_lists[handle.value],
                             nullptr,
                             nullptr,
-                            nullptr);
+                            nullptr,
+                            nullptr,
+                            task.render.scene_stages);
                         if (task.render.scene_stages) {
                             draw_task_ground(
                                 task_pass,
                                 task_matrix,
                                 task_camera);
+#if BBLITE_HAS_BILLBOARDS
+                            draw_task_billboards(
+                                task_pass,
+                                BillboardDepthMode::transparent,
+                                task_matrix,
+                                task_view);
+#endif
                         }
                         SDL_EndGPURenderPass(task_pass);
                         continue;

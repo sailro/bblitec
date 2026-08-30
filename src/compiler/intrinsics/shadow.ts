@@ -96,6 +96,25 @@ const pcfDirectionalOptions = [
 ] as const;
 
 /**
+ * The CSM factory's public configuration. Native retains the camera-fitted
+ * first cascade in one 2D PCF depth map; cascade-only controls are still
+ * validated and evaluated so the adaptation boundary stays honest.
+ */
+const csmDirectionalOptions = [
+    "mapSize",
+    "numCascades",
+    "lambda",
+    "cascadeBlendPercentage",
+    "stabilizeCascades",
+    "shadowMaxZ",
+    "bias",
+    "worldSpaceBias",
+    "darkness",
+    "frustumEdgeFalloff",
+    "forceRefreshEveryFrame",
+] as const;
+
+/**
  * The options `createEsmDirectionalShadowGenerator` takes.
  *
  * Three of them decide generated artifacts rather than run-time values:
@@ -205,6 +224,34 @@ const shadowGeneratorFactories: Readonly<
         // Both: the resources, the receiver arm and the caster pass are the
         // PCF family's, and the second names which factory to emit.
         features: ["shadow:pcf", "shadow:pcf-directional"],
+    },
+    createCsmDirectionalShadowGenerator: {
+        // The native adaptation is the camera-fitted first cascade in one
+        // directional PCF map. Keeping the manifest kind truthful is
+        // important: composition must bind the texture layout that was
+        // actually emitted, not the pin's 2D-array layout.
+        kind: "pcf-directional",
+        lightKind: "directional",
+        article: "A CSM directional shadow generator",
+        options: csmDirectionalOptions,
+        emitted: [
+            "mapSize",
+            "numCascades",
+            "lambda",
+            "bias",
+            "darkness",
+        ],
+        defaults: {
+            mapSize: "bbl::upstream::csm_default_map_size",
+            numCascades: "bbl::upstream::csm_default_num_cascades",
+            lambda: "bbl::upstream::csm_default_lambda",
+            bias: "bbl::upstream::csm_default_bias",
+            darkness: "bbl::upstream::csm_default_darkness",
+        },
+        generationResolved: ["mapSize", "numCascades"],
+        factory: "bbl::create_csm_directional_shadow_generator",
+        optionsStruct: "bbl::CsmDirectionalShadowOptions",
+        features: ["shadow:pcf", "shadow:csm-single-map"],
     },
     createEsmDirectionalShadowGenerator: {
         kind: "esm-directional",
@@ -341,6 +388,7 @@ export function compileShadowIntrinsic(
     switch (importedName) {
         case "createPcfSpotlightShadowGenerator":
         case "createPcfDirectionalShadowGenerator":
+        case "createCsmDirectionalShadowGenerator":
         case "createEsmDirectionalShadowGenerator":
             return compileShadowGeneratorFactory(
                 context,

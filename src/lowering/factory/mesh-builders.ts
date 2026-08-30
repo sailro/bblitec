@@ -2668,6 +2668,33 @@ void set_thin_instance_count(
     record.instance_version += 1;
 }
 
+// src/mesh/thin-instance.ts setThinInstanceMatrix: overwrite one matrix in
+// the adopted caller array and mark its pool version dirty. Native uploads
+// the mirrored pool as one buffer, so the version is the complete dirty
+// signal even though the pin records a one-slot range.
+void set_thin_instance_matrix(
+    Engine& engine,
+    MeshHandle mesh,
+    double index,
+    const std::vector<float>& matrix) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced || record.instance_source == nullptr) {
+        throw std::runtime_error(
+            "setThinInstanceMatrix requires thin instances bound by setThinInstances.");
+    }
+    const std::size_t slot = static_cast<std::size_t>(index);
+    if (slot >= record.instance_matrices.size() || matrix.size() < 16) {
+        throw std::runtime_error(
+            "setThinInstanceMatrix exceeds its established matrix pool.");
+    }
+    std::copy_n(matrix.data(), 16, record.instance_matrices[slot].data());
+    std::copy_n(
+        matrix.data(),
+        16,
+        record.instance_source->data() + slot * 16);
+    record.instance_version += 1;
+}
+
 // src/mesh/thin-instance.ts flushThinInstances: mark the whole active
 // range dirty after direct array manipulation (_dirtyMin = 0,
 // _dirtyMax = count). The pinned helper non-null asserts

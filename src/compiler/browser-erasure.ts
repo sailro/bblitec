@@ -171,6 +171,7 @@ export class BrowserErasure {
             if (
                 [
                     "console",
+                    "devicePixelRatio",
                     "document",
                     "globalThis",
                     "performance",
@@ -401,6 +402,14 @@ export class BrowserErasure {
             };
         }
         if (ts.isIdentifier(unwrapped)) {
+            if (
+                unwrapped.text === "devicePixelRatio" &&
+                this.isDefaultBrowserGlobal(unwrapped)
+            ) {
+                // Native has no CSS/backing-store split. Its single surface
+                // corresponds to the browser reference at DPR 1.
+                return { kind: "number", value: 1 };
+            }
             return this.context.lookupOptional(unwrapped)
                 ?.browserValue;
         }
@@ -430,6 +439,34 @@ export class BrowserErasure {
                 kind: "string",
                 value: this.context.referenceSearch(),
             };
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "tabIndex" &&
+            this.context.isBrowserDomValue(unwrapped.expression)
+        ) {
+            // Native keyboard events target the SDL surface directly. Treat
+            // that surface as the focusable canvas the entry page establishes.
+            return { kind: "number", value: 0 };
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "matches" &&
+            ts.isCallExpression(unwrapped.expression) &&
+            ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
+            unwrapped.expression.expression.name.text === "matchMedia" &&
+            this.browserGlobalNamed(
+                unwrapped.expression.expression.expression,
+            )?.text === "window" &&
+            unwrapped.expression.arguments.length === 1 &&
+            this.evaluateBrowserValue(
+                unwrapped.expression.arguments[0]!,
+            )?.kind === "string"
+        ) {
+            // The native executable is an SDL desktop surface with mouse
+            // hover and a fine pointer. A coarse/no-hover media query is the
+            // source's touch-layout fork, so its native value is false.
+            return { kind: "boolean", value: false };
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
             const operand = this.evaluateBrowserValue(

@@ -1,0 +1,38 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Share AudioBuffer allocation and LabSound bus wiring between explicit buffer creation and encoded-file decoding.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the glTF renderable feature sets already parsed for PBR composition when assembling the mixed Standard-material mesh table.",
+      "applied": true
+    },
+    {
+      "summary": "Remove the unused string-literal compiler callback from the audio call context.",
+      "applied": true
+    },
+    {
+      "summary": "Update stale audio-decode and creation-order commentary and tests to describe the implemented packaged decode and glTF interleaving paths.",
+      "applied": true
+    },
+    {
+      "summary": "Keep engine-handle collection searches and observable transform writes on their dedicated lowering paths instead of the generalized plain-data path.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the existing bind-vertex stream for wheel-local glTF geometry instead of adding local position, normal, and tangent fields to every model vertex.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse one constructor resource-kind set instead of allocating an identical set for every successful constructor parameter binding.",
+      "applied": true
+    }
+  ]
+}
