@@ -123,13 +123,22 @@ test("lowers the truncating bitwise-or the pin uses as a cast", () => {
     assert.match(emitted, /static_cast<std::int32_t>/);
 });
 
-test("refuses a bitwise-or that is not the pin's truncation", () => {
-    assert.throws(
-        () =>
-            lower("const key = value | 7;", [
-                ["value", { cpp: "value", type: "scalar" }],
-            ]),
-        /Unsupported pinned bitwise expression/,
+test("keeps a bitwise-or on JavaScript's own int32 coercion", () => {
+    // `x | 0` stays the pin's one-term truncation, and a real OR -- the
+    // cluster tile mask's `maskData[i] | bit` -- coerces BOTH sides through
+    // ToInt32 before masking, which is what makes bit 31 negative there and
+    // the `Uint32Array` store wrap it back.
+    assert.match(
+        lower("const key = value | 0;", [
+            ["value", { cpp: "value", type: "scalar" }],
+        ]),
+        /static_cast<double>\(static_cast<std::int32_t>\(value\)\)/,
+    );
+    assert.match(
+        lower("const key = value | 7;", [
+            ["value", { cpp: "value", type: "scalar" }],
+        ]),
+        /static_cast<std::int32_t>\(value\) \| static_cast<std::int32_t>\(7/,
     );
 });
 
