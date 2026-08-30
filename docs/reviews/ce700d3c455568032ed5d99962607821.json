@@ -1,0 +1,66 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "each backend derived its own upload extent from `texels` and `data_texture_width`, so two copies of a rule the pin writes once; the container now carries `upload_region`, which is `writeDataTexture`'s own `height > 1 ? width : min(texels, width)` and the precomputed rows, and neither backend derives an extent",
+      "applied": true
+    },
+    {
+      "summary": "`refresh_clustered_lights` rebuilt the frame's view and projection from the camera, duplicating `build_view_matrix` and `build_scene_projection` that both callers had already evaluated three lines above; it takes the two matrices and the camera's planes, which are also the dirty key it compares",
+      "applied": true
+    },
+    {
+      "summary": "the three data textures were excused from the material texture-slot table by a `sceneOwnedVariantTextures` set and then resolved in both PALs by comparing binding-name strings -- the exact per-slot rule hand-kept in a PAL that the table exists to remove; they are `MaterialTextureSource` rows now, scene-owned exactly as the environment cube and BRDF LUT are, and both string-compare blocks are gone",
+      "applied": true
+    },
+    {
+      "summary": "`runtimeOnlyIntrinsics` named two clustered factories from the registry, which otherwise knows no feature's names; each family declares its own runtime-only entry points and the registry composes them",
+      "applied": true
+    },
+    {
+      "summary": "the mask's bitwise OR was a hand-rolled `static_cast<std::int32_t>` pair, which is undefined for a double outside int32 range -- precisely the sign bit the 32nd light in a batch rides on; it lowers through `bbl::js::bitwise_or`, the operator that carries ToInt32/ToUint32",
+      "applied": true
+    },
+    {
+      "summary": "`compileVec3`'s new data-tuple arm re-implemented `dataTupleComponents` and `tupleComponents` inline; `tupleComponents` takes the precision its sink reads at and both callers share it",
+      "applied": true
+    },
+    {
+      "summary": "the clustered intrinsics carried a local `validateOptions` that re-walked an object literal's properties; it routes through the shared `validateObjectProperties`, which also accepts a shorthand property the local one silently refused",
+      "applied": true
+    },
+    {
+      "summary": "`parameterKinds.record` hardcoded `ClusteredLight` in a table that is meant to be free of any one feature's names, and a `signChoice` kind existed only to carry an annotation the general `annotation` override already carries; the caller supplies `cppType`, and the kind is gone",
+      "applied": true
+    },
+    {
+      "summary": "the spot data layout's stride was re-typed as a literal 3 beside the pin's own `_stride: 3`; `namedPropertyInitializer` reads it from the object `spotSupport._create` returns, so a pin that moves the layout fails generation",
+      "applied": true
+    },
+    {
+      "summary": "Dawn's descriptors were value-initialized rather than using the `WGPU_*_INIT` macros every other creation in that PAL uses, and no create was checked; all four are checked through `dawn_error` now",
+      "applied": true
+    },
+    {
+      "summary": "Dawn wrote the params buffer every frame, above the version check -- upstream writes it inside the very branch that rebinned, so a still camera now costs one matrix comparison and no queue write at all",
+      "applied": true
+    },
+    {
+      "summary": "`release_clustered_lights` had no caller while every other GPU resource in that state was released on shutdown; it is wired into `release(GpuState&)`",
+      "applied": true
+    },
+    {
+      "summary": "the four new source files were absent from the source map in docs/architecture.md",
+      "applied": true
+    },
+    {
+      "summary": "inserting `stampClusteredLightState` between `materialSubjects` and its doc comment orphaned that block; the function moved above it",
+      "applied": true
+    }
+  ]
+}
