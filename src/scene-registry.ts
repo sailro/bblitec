@@ -1534,6 +1534,38 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene179",
+        name: "Scene 179 - Clustered Sponza Lights",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene179.ts",
+        title: "Babylon Lite Native - Clustered Sponza Lights",
+        parity: {
+            // A thousand clustered point lights over Khronos Sponza, binned
+            // into 64x64 screen tiles and 16 depth slices every frame. Both
+            // backends render it byte-identically to the browser, so the
+            // ceilings sit just above zero.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene166",
+        name: "Scene 166 - Clustered Sponza Spot Lights",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene166.ts",
+        title: "Babylon Lite Native - Clustered Sponza Spot Lights",
+        parity: {
+            // The spot arm of the same field: each light adds the pin's
+            // glTF-style smooth cone on top of the shared range falloff, and
+            // the container's stride widens from two texels to three, which
+            // is what makes it a different composed fragment.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene100",
         name: "Scene 100 - Havok Collision Event",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene100.ts",

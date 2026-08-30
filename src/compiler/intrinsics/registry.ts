@@ -22,6 +22,7 @@ import {
 } from "./light.js";
 import {
     compileClusteredLightIntrinsic,
+    runtimeOnlyClusteredLightIntrinsics,
     type ClusteredLightIntrinsicContext,
 } from "./clustered-light.js";
 import {
@@ -110,16 +111,11 @@ export interface IntrinsicContext
  * baked simulation step -- and emitting the body once inside C++ would record
  * one of those for many run-time iterations.
  *
- * These record none. A clustered light is appended to a container the native
- * side owns, and the only compile-time fact about that container -- whether a
- * spot was ever created, which decides which extension composes the fragment
- * -- follows from the call being REACHED, not from how many times it runs.
- * So a loop filling a thousand of them stays the `for` the pin itself writes,
- * rather than a thousand copies of one statement.
+ * A family whose intrinsics record none says so in its own module, which is
+ * where the reason for it lives; this composes what they declare.
  */
 export const runtimeOnlyIntrinsics: ReadonlySet<string> = new Set([
-    "createClusteredPointLight",
-    "createClusteredSpotLight",
+    ...runtimeOnlyClusteredLightIntrinsics,
 ]);
 
 type IntrinsicCompiler = (

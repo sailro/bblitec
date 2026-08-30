@@ -236,10 +236,15 @@ export function passesByReference(
  * free to repeat -- a call, or anything else with an effect -- binds it to a
  * local first and passes the local.
  */
-export function tupleComponents(base: string, arity: number): string[] {
-  return Array.from(
-    { length: arity },
-    (_unused, index) => `static_cast<float>(${base}[${index}])`,
+export function tupleComponents(
+  base: string,
+  arity: number,
+  precision: "float" | "double" = "float",
+): string[] {
+  return Array.from({ length: arity }, (_unused, index) =>
+    precision === "float"
+      ? `static_cast<float>(${base}[${index}])`
+      : `${base}[${index}]`,
   );
 }
 

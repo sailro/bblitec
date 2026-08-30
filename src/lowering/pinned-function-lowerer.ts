@@ -42,7 +42,6 @@ export interface PinnedFunctionParameter {
         | "matrix"
         | "mat4Const"
         | "numberArray"
-        | "signChoice"
         | "u32Buffer"
         | "record";
     /**
@@ -66,6 +65,11 @@ export interface PinnedFunctionParameter {
      * land on.
      */
     binding?: PinnedBinding;
+    /**
+     * The C++ type a `record` parameter binds by const reference. Required
+     * for that kind and ignored by the others, whose type follows the kind.
+     */
+    cppType?: string;
 }
 
 const parameterKinds: Readonly<
@@ -105,21 +109,12 @@ const parameterKinds: Readonly<
         annotation: "Uint32Array",
         declare: (cpp) => `std::vector<std::uint32_t>& ${cpp}`,
     },
-    // A record the body reads named members off. The caller supplies the
-    // binding, because it owns the native record the members land on.
+    // A record the body reads named members off. The caller supplies both
+    // the annotation and the C++ type, because it owns the native record the
+    // members land on -- this table stays free of any one feature's names.
     record: {
         annotation: "",
-        declare: (cpp) => `const ClusteredLight& ${cpp}`,
-    },
-    // A numeric-literal union standing for "one of these two numbers": the
-    // pin's `side: -1 | 1` on `projectedSphereEdge`, which narrows the
-    // parameter for its callers and is a plain number to the arithmetic. It
-    // is its own kind rather than `number` because the annotation is what
-    // gets checked, and accepting `number` here would accept a pin that
-    // widened the parameter.
-    signChoice: {
-        annotation: "-1 | 1",
-        declare: (cpp) => `double ${cpp}`,
+        declare: (cpp) => `const auto& ${cpp}`,
     },
 };
 
@@ -425,6 +420,8 @@ export function lowerPinnedFunction(
         fixedTupleCalls?: ReadonlyMap<string, number>;
         /** See `PinnedNumericScope.booleanAnd`. */
         booleanAnd?: boolean;
+        /** See `PinnedNumericScope.booleanOr`. */
+        booleanOr?: boolean;
         /**
          * Bindings keyed by the SOURCE TEXT the body reads them through,
          * for a member of a record parameter: the translator resolves
@@ -476,7 +473,17 @@ export function lowerPinnedFunction(
                         : "scalar",
             },
         );
-        signature.push(kind.declare(spec.cpp));
+        signature.push(
+            spec.cppType
+                ? `const ${spec.cppType}& ${spec.cpp}`
+                : kind.declare(spec.cpp),
+        );
+        if (spec.kind === "record" && !spec.cppType) {
+            context.contractError(
+                parameter,
+                `A record parameter needs its C++ type: '${spec.pinned}'.`,
+            );
+        }
     });
     for (const [text, binding] of options.memberBindings ?? []) {
         bindings.set(text, binding);
@@ -491,6 +498,7 @@ export function lowerPinnedFunction(
             ? { fixedTupleCalls: options.fixedTupleCalls }
             : {}),
         ...(options.booleanAnd ? { booleanAnd: true } : {}),
+        ...(options.booleanOr ? { booleanOr: true } : {}),
         ...(options.returns === "void"
             ? {}
             : {

@@ -1861,13 +1861,13 @@ export class PinnedNumericLowerer {
                 // `1 << (lightIndex % 32)`. JavaScript coerces both sides
                 // through ToInt32 before masking -- so bit 31 is NEGATIVE
                 // there -- and the `Uint32Array` store then wraps it back.
-                // Saying that in the emitted form is what reproduces the
-                // 32nd light in a batch; the same shape `&` above takes.
+                // `bbl::js::bitwise_or` is that operator, ToUint32 and all;
+                // a bare `static_cast<std::int32_t>` of a double outside
+                // int32 range is not, which is precisely the sign bit the
+                // 32nd light in a batch rides on.
                 return (
-                    `static_cast<double>(static_cast<std::int32_t>(` +
-                    `${this.expression(node.left)}) | ` +
-                    `static_cast<std::int32_t>(` +
-                    `${this.expression(node.right)}))`
+                    `bbl::js::bitwise_or(${this.expression(node.left)}, ` +
+                    `${this.expression(node.right)})`
                 );
             }
             case ts.SyntaxKind.LessThanLessThanToken:

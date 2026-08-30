@@ -124,6 +124,14 @@ export class StaticEvaluator {
         if (resolved?.kind === "record") {
             return this.vec3FromRecord(resolved, unwrapped, precision);
         }
+        // A `[number, number, number]` local whose elements are computed --
+        // scene 166 draws each component from a PRNG -- is a data tuple
+        // rather than a compile-time one, so its lanes are read by index at
+        // the sink's own width rather than folded.
+        const dataTuple = this.dataTupleComponents(unwrapped, 3, precision);
+        if (dataTuple) {
+            return `${type}{${dataTuple.join(", ")}}`;
+        }
         const tuple = this.tupleElements(unwrapped, 3);
         if (tuple) {
             return `${type}{${tuple
@@ -1323,6 +1331,7 @@ export class StaticEvaluator {
     private dataTupleComponents(
         expression: ts.Expression,
         length: number,
+        precision: "float" | "double" = "float",
     ): string[] | undefined {
         if (
             !ts.isIdentifier(expression) &&
@@ -1335,7 +1344,7 @@ export class StaticEvaluator {
         if (!isDataTuple(value, length)) {
             return undefined;
         }
-        return tupleComponents(value.cpp, length);
+        return tupleComponents(value.cpp, length, precision);
     }
 
     private numberValue(

@@ -38,6 +38,7 @@ import {
     type PinnedComposeOptions,
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
+import type { PinnedClusteredMarker } from "./pinned-clustered-lights.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
@@ -273,16 +274,6 @@ export function gltfLinearImageProcessing(document: JsonObject): boolean {
 }
 
 /**
- * The composer's material-shaped input for every material in a document.
- *
- * Shared by the arms scan, the variant space and the compose gate so all
- * three compose the same material: the animated-pointer scans decide whether
- * a factor becomes a uniform or a constant, and a variant built without them
- * is a different fragment. The gate consuming this construction — instead of
- * a copy of it — is what keeps a new animated pointer or loader flag from
- * silently unsyncing the gate from generation.
- */
-/**
  * Stamps what `addClusteredLightContainer` stamps.
  *
  * The pin walks `scene.meshes` at that call and writes `_clusteredLightState`
@@ -300,11 +291,22 @@ function stampClusteredLightState(
     clustered: { hasSpots: boolean } | undefined,
 ): void {
     if (!clustered) return;
-    input["_clusteredLightState"] = clustered.hasSpots
+    const marker: PinnedClusteredMarker = clustered.hasSpots
         ? { _hasSpots: true }
         : {};
+    input["_clusteredLightState"] = marker;
 }
 
+/**
+ * The composer's material-shaped input for every material in a document.
+ *
+ * Shared by the arms scan, the variant space and the compose gate so all
+ * three compose the same material: the animated-pointer scans decide whether
+ * a factor becomes a uniform or a constant, and a variant built without them
+ * is a different fragment. The gate consuming this construction — instead of
+ * a copy of it — is what keeps a new animated pointer or loader flag from
+ * silently unsyncing the gate from generation.
+ */
 export async function materialSubjects(
     document: JsonObject,
     scene: {

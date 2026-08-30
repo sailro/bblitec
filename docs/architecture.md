@@ -81,6 +81,10 @@ Primary source ownership:
 | `src/pinned-post-process.ts` | runs a post-process factory and `getShaderModule` so a pass deploys the browser's module; runs a composite's factory for the chain it builds |
 | `src/post-process-effects.ts` | per effect: which options reach the composed text, which scalars its writer reads, which textures bind after the source |
 | `src/pinned-pbr-variants.ts` | registers the PBR extensions in the pin's order and composes a variant |
+| `src/pinned-clustered-lights.ts` | the clustered light field's two PBR extensions, lifted from the module that registers them |
+| `src/lowering/clustered-light-lowerer.ts` | the field's arithmetic, folded from its own bodies: the sizing constants, the five scalar helpers, the sphere-to-tile cull and the per-light assignment |
+| `src/lowering/clustered-light-runtime.ts` | the field's behaviour around them: the container's sizing, the per-frame re-bin against the frame's own two matrices, and the scene's four entry points |
+| `src/compiler/intrinsics/clustered-light.ts` | which of those entry points a scene reached, and the one compile-time fact among them — whether the container ever held a spot |
 | `src/pinned-node-material.ts` | runs the pin's node-material compiler over an NME graph against a recording device, refusing every arm outside the reached slice |
 | `src/pinned-node-particle.ts` | runs the pin's node-particle parser, builder and CPU simulation in the browser and returns the frozen particle state |
 | `src/lowering/node-particle-lowerer.ts` | the folded half: the billboard and pure-2D bridges and their three blend mappings, from their own declarations over the baked state |
@@ -137,6 +141,7 @@ Primary source ownership:
 | `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's pinned recastnavigation commit, replaying `generateSoloNavMesh`, the Detour query and the crowd |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
+| `native/src/pal_sdl_gpu_clustered.hpp` | the clustered field's three SDL_GPU data textures and their shared sampler, uploaded at the extents the container was sized to |
 | `native/src/pal_sdl_gpu_sprite.cpp` | the pure-2D sprite pass on SDL_GPU — its own translation unit, since a sprite-only scene generates no camera or render-plan headers |
 | `native/src/pal_sdl_gpu_effect.cpp` | the fullscreen-effect frame driver on SDL_GPU, a separate translation unit for the same reason |
 | `native/src/pal_dawn_effect.cpp` | the same driver on Dawn |
@@ -145,6 +150,7 @@ Primary source ownership:
 | `native/src/pal_sdl_gpu_effect.hpp` | the SDL_GPU effect pass mechanics both its `.cpp` driver and the scene renderer's frame-graph task draw through |
 | `native/src/pal_dawn_effect.hpp` | the Dawn effect pass mechanics, likewise shared by its driver and the frame graph |
 | `native/src/pal_dawn_shared.hpp` | Dawn-only device, surface and swapchain bring-up, WGSL module loading, and the surface capture every driver screenshots through |
+| `native/src/pal_dawn_clustered.hpp` | the same three data textures on Dawn, plus the params buffer its uniform block binds |
 | `native/src/pal_dawn_sprite.cpp` | the same sprite pass on Dawn |
 | `native/src/pal_dawn.cpp` | Dawn (WebGPU) resources, uploads, pipelines, readback, submission |
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, and deformation uniforms shared byte-identically by both GPU backends |

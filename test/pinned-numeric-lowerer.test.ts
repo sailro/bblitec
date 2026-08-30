@@ -138,7 +138,7 @@ test("keeps a bitwise-or on JavaScript's own int32 coercion", () => {
         lower("const key = value | 7;", [
             ["value", { cpp: "value", type: "scalar" }],
         ]),
-        /static_cast<std::int32_t>\(value\) \| static_cast<std::int32_t>\(7/,
+        /bbl::js::bitwise_or\(value, 7/,
     );
 });
 

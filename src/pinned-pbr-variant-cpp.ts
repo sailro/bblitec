@@ -512,6 +512,7 @@ interface VariantBinding {
     kind:
         | "texture2d"
         | "texture2dLoad"
+        | "texture2dUint"
         | "textureCube"
         // The shadow receiver's two: a PCF map is a depth texture read
         // through a comparison sampler, an ESM map an ordinary float one
@@ -650,6 +651,13 @@ export function variantBindings(
                 ? "textureCube"
                 : type.startsWith("texture_depth")
                 ? "textureDepth2d"
+                // An integer texture is `textureLoad`ed by construction --
+                // WebGPU has no sampler for one -- and its sample type is
+                // its own, which the layout has to say rather than assume
+                // unfilterable float. The clustered slice and tile-mask
+                // textures are the reached pair.
+                : /^texture_2d<u32>/.test(type)
+                ? "texture2dUint"
                 : type.startsWith("texture_")
                 ? (sampled ? "texture2d" : "texture2dLoad")
                 : type === "sampler_comparison"
@@ -1171,6 +1179,9 @@ enum class PinnedBindingKind {
     // Read with textureLoad rather than sampled: rgba32float, which WebGPU
     // refuses to bind as filterable. The pin's bone palette is one.
     texture2dLoad,
+    // An integer texture, read with textureLoad: texture_2d<u32>, whose
+    // sample type WebGPU names Uint rather than UnfilterableFloat.
+    texture2dUint,
     textureCube,
     // The shadow receiver's two: a PCF map is a depth texture read through a
     // comparison sampler, an ESM one an ordinary float texture read through
@@ -1928,6 +1939,9 @@ export interface MaterialTextureSlotFeatures {
      *  (std-reflection-fragment.ts `rT`/`rS`), so the record's
      *  reflection_texture needs a mesh slot. */
     standardReflection: boolean;
+    /** A composed variant binds the clustered light field's three data
+     *  textures, which the scene's container owns rather than a material. */
+    clusteredLights: boolean;
 }
 
 /** One emitted row; `slot: null` marks a scene-owned resource. */
@@ -1957,23 +1971,6 @@ interface MaterialSlotRow {
  * the Standard bump and 2D reflection pairs, each appended after
  * everything before it so no existing slot index moves when one appears.
  */
-/**
- * Group-1 textures a composed variant declares that no MATERIAL owns.
- *
- * The slot table below pairs a texture with a sampler and fills it from a
- * material record field. The clustered light field's three are none of those:
- * they belong to the container, they carry no sampler because the fragment
- * `textureLoad`s them, and two are integer formats a sampler could not serve.
- * Upstream binds them from the extension's own `bind` hook, which appends to
- * group 1 after the material's own pairs, so each backend binds them from the
- * container's GPU state at the same place.
- */
-const sceneOwnedVariantTextures: ReadonlySet<string> = new Set([
-    "clusteredLights",
-    "clusteredCells",
-    "clusteredIndices",
-]);
-
 function materialTextureSlotRows(
     features: MaterialTextureSlotFeatures,
 ): { mesh: MaterialSlotRow[]; state: MaterialSlotRow[] } {
@@ -2194,6 +2191,39 @@ function materialTextureSlotRows(
         textureName: "boneSampler",
         samplerName: "",
     });
+    if (features.clusteredLights) {
+        // The clustered field's three, which the scene's CONTAINER owns:
+        // scene-owned rows exactly as the environment cube and the BRDF LUT
+        // are, and named here for the same reason -- so each backend resolves
+        // them through the one table rather than by comparing binding names
+        // of its own. Each is `textureLoad`ed and carries no sampler, and two
+        // are integer formats a sampler could not serve; upstream binds them
+        // from the extension's own `bind` hook, which appends to group 1
+        // after the material's own pairs.
+        state.push(
+            {
+                source: "clustered_lights",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "clusteredLights",
+                samplerName: "",
+            },
+            {
+                source: "clustered_cells",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "clusteredCells",
+                samplerName: "",
+            },
+            {
+                source: "clustered_indices",
+                srgb: "linear",
+                fallback: "white",
+                textureName: "clusteredIndices",
+                samplerName: "",
+            },
+        );
+    }
     return { mesh, state };
 }
 
@@ -2235,8 +2265,7 @@ export function materialTextureSlotsHeader(
         ) {
             if (
                 binding.kind === "storageBuffer" ||
-                binding.kind === "uniformBuffer" ||
-                sceneOwnedVariantTextures.has(binding.name)
+                binding.kind === "uniformBuffer"
             ) {
                 continue;
             }
@@ -2330,6 +2359,12 @@ enum class MaterialTextureSource {
     scene_color,
     /** The skinned variants' rgba32float bone palette (textureLoad). */
     bone_palette,
+    /** The clustered field's per-light payload (rgba32float, textureLoad). */
+    clustered_lights,
+    /** Its per-slice light range (rgba32uint, textureLoad). */
+    clustered_cells,
+    /** Its per-tile light mask (r32uint, textureLoad). */
+    clustered_indices,
 };
 
 enum class MaterialTextureSrgb {

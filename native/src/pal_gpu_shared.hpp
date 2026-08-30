@@ -716,6 +716,9 @@ inline const TextureData* material_slot_texture(
         case Source::brdf_lut:
         case Source::scene_color:
         case Source::bone_palette:
+        case Source::clustered_lights:
+        case Source::clustered_cells:
+        case Source::clustered_indices:
             return nullptr;
     }
     return nullptr;

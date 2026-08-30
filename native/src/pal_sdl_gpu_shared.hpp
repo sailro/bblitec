@@ -665,6 +665,48 @@ inline void update_buffer(
 }
 
 /**
+ * Copy bytes into a texture that already exists.
+ *
+ * The upload half of `upload_2d_texture` below, split out because a payload
+ * that changes per frame -- the clustered light field's three data textures --
+ * needs the copy without a second allocation.
+ */
+inline void upload_2d_texture_into(
+    SDL_GPUDevice* device,
+    SDL_GPUTexture* texture,
+    const void* bytes,
+    std::size_t byte_size,
+    std::uint32_t width,
+    std::uint32_t height,
+    const char* label,
+    bool generate_mipmaps = false) {
+    SDL_GPUTransferBufferCreateInfo transfer_info{};
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = static_cast<Uint32>(byte_size);
+    SDL_GPUTransferBuffer* transfer =
+        SDL_CreateGPUTransferBuffer(device, &transfer_info);
+    if (!transfer) gpu_error(label);
+    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+    if (!mapped) gpu_error(label);
+    std::memcpy(mapped, bytes, byte_size);
+    SDL_UnmapGPUTransferBuffer(device, transfer);
+
+    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
+    if (!command) gpu_error(label);
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    const SDL_GPUTextureTransferInfo source{transfer, 0, width, height};
+    const SDL_GPUTextureRegion destination{
+        texture, 0, 0, 0, 0, 0, width, height, 1};
+    SDL_UploadToGPUTexture(copy, &source, &destination, false);
+    SDL_EndGPUCopyPass(copy);
+    if (generate_mipmaps) {
+        SDL_GenerateMipmapsForGPUTexture(command, texture);
+    }
+    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error(label);
+    SDL_ReleaseGPUTransferBuffer(device, transfer);
+}
+
+/**
  * Collect small buffer creates and rewrites into one SDL_GPU copy pass.
  *
  * Dynamic scenes can add or animate hundreds of independent meshes in one
@@ -848,31 +890,15 @@ inline SDL_GPUTexture* upload_2d_texture(
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
     if (!texture) gpu_error(label);
 
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = static_cast<Uint32>(byte_size);
-    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
-    if (!transfer) gpu_error(label);
-    void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
-    if (!mapped) gpu_error(label);
-    std::memcpy(mapped, bytes, byte_size);
-    SDL_UnmapGPUTransferBuffer(device, transfer);
-
-    SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(device);
-    if (!command) gpu_error(label);
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    const SDL_GPUTextureTransferInfo source{
-        transfer, 0, width, height};
-    const SDL_GPUTextureRegion destination{
-        texture, 0, 0, 0, 0, 0,
-        width, height, 1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, false);
-    SDL_EndGPUCopyPass(copy);
-    if (texture_info.num_levels > 1) {
-        SDL_GenerateMipmapsForGPUTexture(command, texture);
-    }
-    if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error(label);
-    SDL_ReleaseGPUTransferBuffer(device, transfer);
+    upload_2d_texture_into(
+        device,
+        texture,
+        bytes,
+        byte_size,
+        width,
+        height,
+        label,
+        texture_info.num_levels > 1);
     return texture;
 }
 

@@ -22,9 +22,11 @@
 import ts from "typescript";
 import type { ClusteredContainerState, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { validateObjectProperties } from "../option-helpers.js";
 
 export interface ClusteredLightIntrinsicContext extends IntrinsicCallContext {
     fail(node: ts.Node, message: string): never;
+    propertyName(name: ts.PropertyName): string | undefined;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -48,28 +50,40 @@ export interface ClusteredLightIntrinsicContext extends IntrinsicCallContext {
     ): void;
 }
 
+/**
+ * The two factories a large counted loop may call without being unrolled.
+ *
+ * Both reached scenes fill a thousand lights from a seeded PRNG inside such a
+ * loop. Neither factory records generation-owned state: a light is appended
+ * to a container the native side owns, and the only compile-time fact about
+ * that container -- whether a spot was ever created, which decides which
+ * extension composes the fragment -- follows from the call being REACHED, not
+ * from how many times it runs. So the loop stays the `for` the pin itself
+ * writes rather than a thousand copies of one statement.
+ */
+export const runtimeOnlyClusteredLightIntrinsics: readonly string[] = [
+    "createClusteredPointLight",
+    "createClusteredSpotLight",
+];
+
 /** The pinned option names each factory reads, refusing anything else. */
 const containerOptions = ["horizontalTiles", "verticalTiles", "zSlices"];
 const pointOptions = ["position", "diffuse", "range", "intensity"];
 const spotOptions = [...pointOptions, "direction", "angle"];
 
+/** The shared refusal, phrased the way every other factory phrases it. */
 function validateOptions(
     context: ClusteredLightIntrinsicContext,
     literal: ts.ObjectLiteralExpression,
     allowed: readonly string[],
     what: string,
 ): void {
-    for (const property of literal.properties) {
-        const name = property.name && ts.isIdentifier(property.name)
-            ? property.name.text
-            : undefined;
-        if (!name || !allowed.includes(name)) {
-            context.fail(
-                property,
-                `${what} takes only ${allowed.join(", ")}.`,
-            );
-        }
-    }
+    validateObjectProperties(
+        context,
+        literal,
+        allowed,
+        `${what} takes only ${allowed.join(", ")}.`,
+    );
 }
 
 function containerValue(
@@ -105,6 +119,7 @@ function appendLight(
                 "and its own refresh throws rather than growing either.",
         );
     }
+    const engine = context.requireDefaultEngine(call);
     const literal = context.expectObjectLiteral(call.arguments[1]!);
     validateOptions(
         context,
@@ -124,6 +139,7 @@ function appendLight(
     // Each `??` is resolved where the pin resolves it, so nothing downstream
     // restates a default: `range ?? 1`, `intensity ?? 1`, `angle ?? PI / 2`.
     const arguments_ = [
+        engine,
         container.cpp,
         context.compileVec3(required("position"), "double"),
         context.compileVec3(required("diffuse"), "double"),
@@ -220,6 +236,7 @@ export function compileClusteredLightIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::add_clustered_light_container(` +
+                    `${context.requireDefaultEngine(call)}, ` +
                     `${scene.cpp}, ${container.cpp})`,
             };
         }

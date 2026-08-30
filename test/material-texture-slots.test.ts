@@ -27,6 +27,7 @@ const noFeatures: MaterialTextureSlotFeatures = {
     occlusionUv2: false,
     standardBump: false,
     standardReflection: false,
+    clusteredLights: false,
 };
 
 /** A composed-variant fixture carrying just the group-1 declarations. */
@@ -119,6 +120,7 @@ test("extension rows append in the pinned registration order", () => {
             occlusionUv2: true,
             standardBump: true,
             standardReflection: true,
+            clusteredLights: true,
         },
         [],
         "test",
