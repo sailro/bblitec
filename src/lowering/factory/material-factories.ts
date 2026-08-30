@@ -821,8 +821,16 @@ void set_material_base_color_file(
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
 // features are opt-in setters that flag an existing material and
 // register their fragment extension.
-void set_pbr_unlit(Engine& engine, MaterialHandle material) {
+void set_pbr_unlit(
+    Engine& engine,
+    MaterialHandle material,
+    std::optional<Color3> unlit_color) {
     engine.materials[material.value].unlit = true;
+    // The pin guards the store, so a call without a tint leaves whatever
+    // tint the material already carries rather than resetting it.
+    if (unlit_color) {
+        engine.materials[material.value].unlit_color = *unlit_color;
+    }
 }
 
 void set_pbr_emissive(

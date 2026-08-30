@@ -256,6 +256,11 @@ export function compileAssetIntrinsic(
                 source,
                 "gltf",
             );
+            // One record can back several containers, because assets are
+            // keyed by source. A fact generation stamps on the record
+            // reaches all of them, so the count is what lets such a fact
+            // refuse instead of widening silently.
+            asset.containerCount = (asset.containerCount ?? 0) + 1;
             context.reachFeature("loader:gltf", call);
             context.reachFeature("renderer:pbr", call);
             return {

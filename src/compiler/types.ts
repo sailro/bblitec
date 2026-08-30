@@ -306,6 +306,18 @@ export interface SceneMeshManifest {
   standardMaterial?: true;
   /** A material read from an asset mesh can be assigned to this row. */
   assetPbrMaterial?: true;
+  /**
+   * The container a PROVEN whole-list flatten is walking, on the member it
+   * bound and on what is read off that member.
+   *
+   * A loaded material has no compile-time identity of its own, so a setter
+   * reaching one can only name the document its container composes. That is
+   * sound only when the loop is known to reach every renderable, which is
+   * why this rides the flatten walk's own binding and not the generic
+   * collection loop: `getContainerMeshes(a)` bound to a variable, or
+   * `a.meshes ?? []`, iterate the same handles without that proof.
+   */
+  assetWholeMeshList?: CompileAsset;
   /** For `from-data` meshes: which optional streams the call passes, in
    *  the pin's own argument order (uvs, uv2s, tangents, colors). */
   hasUv2?: boolean;
@@ -754,6 +766,26 @@ export interface CompileAsset {
    * carrying the pin's run-time variant table.
    */
   selectedVariant?: string;
+  /**
+   * The `setPbrUnlit` a scene applied to this container's own materials,
+   * with the optional linear-RGB tint it passed.
+   *
+   * A loaded material has no scene-side record to stamp, so the fact is
+   * kept on the container: generation composes its materials from the
+   * document, and the unlit fragment is chosen there. The setter is
+   * accepted only over the container's whole flattened mesh list, which is
+   * what makes the fact the container's rather than one material's.
+   */
+  sceneUnlit?: { tint?: readonly [number, number, number] };
+  /**
+   * How many `loadGltf` calls this record backs.
+   *
+   * Assets are keyed by source, so loading one URL twice yields two
+   * containers over one record. Anything generation stamps on the record
+   * therefore reaches both, which a per-container fact must refuse rather
+   * than silently widen.
+   */
+  containerCount?: number;
 }
 
 export type GeometryTextureTypeName =
@@ -1238,6 +1270,18 @@ export interface Value {
   scenePbrMaterialIndex?: number;
   /** This material was read from a mesh whose identity came from an asset. */
   assetPbrMaterial?: true;
+  /**
+   * The container a PROVEN whole-list flatten is walking, on the member it
+   * bound and on what is read off that member.
+   *
+   * A loaded material has no compile-time identity of its own, so a setter
+   * reaching one can only name the document its container composes. That is
+   * sound only when the loop is known to reach every renderable, which is
+   * why this rides the flatten walk's own binding and not the generic
+   * collection loop: `getContainerMeshes(a)` bound to a variable, or
+   * `a.meshes ?? []`, iterate the same handles without that proof.
+   */
+  assetWholeMeshList?: CompileAsset;
   /**
    * A `createStandardMaterial` result, which is the family question
    * `material.plugins` has to answer: the pin's Standard plugin bridge

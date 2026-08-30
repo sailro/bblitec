@@ -1,8 +1,8 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
-import { staticColor3Value } from "./material-options.js";
+import { requiredStaticColor3 } from "./material-options.js";
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
@@ -40,6 +40,11 @@ export interface MaterialIntrinsicContext
     ): void;
     recordScenePbrNoColorView(sourceIndex: number | undefined): number;
     recordScenePbrUnlit(index: number | undefined): void;
+    recordAssetSceneUnlit(
+        asset: CompileAsset,
+        tint: readonly [number, number, number] | undefined,
+        node: ts.Node,
+    ): void;
     recordScenePbrSkybox(index: number | undefined): void;
     recordScenePbrGammaAlbedo(index: number | undefined): void;
     recordSceneMaterialSlot(): number;
@@ -746,20 +751,14 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            const colorExpression = call.arguments[1]!;
-            const channels = staticColor3Value(context, colorExpression);
-            if (
-                !channels ||
-                channels.some((channel) => !Number.isFinite(channel))
-            ) {
-                context.fail(
-                    colorExpression,
-                    "setPbrEmissive requires a static linear RGB colour.",
-                );
-            }
-            const color = context.compileColor3(colorExpression);
+            const emissive = requiredStaticColor3(
+                context,
+                call.arguments[1]!,
+                "setPbrEmissive requires a static linear RGB colour.",
+            );
+            const color = emissive.cpp;
             context.recordScenePbrEmissive(
-                channels,
+                emissive.channels,
                 material.scenePbrMaterialIndex,
             );
             context.reachFeature("material:emissive", call);
@@ -792,48 +791,86 @@ export function compileMaterialIntrinsic(
             return { kind: "void", cpp: "" };
         }
 
-        case "setPbrUnlit":
-        case "setPbrSkybox": {
-            // src/material/pbr/set-unlit.ts and set-skybox.ts: the
-            // optional PBR features are opt-in setters that flag the
-            // material after creation and register their fragment
-            // extension. The reached subset takes the material alone
-            // (setPbrUnlit's optional unlitColor tint is unreached).
-            context.expectArgumentCount(call, 1, 1);
-            const material =
-                context.compileValue(call.arguments[0]!);
+        case "setPbrUnlit": {
+            // src/material/pbr/set-unlit.ts: an opt-in setter that flags the
+            // material after creation, registers its fragment extension, and
+            // stores the linear-RGB tint that fragment multiplies the base
+            // colour by — the pin guarding that store, so an omitted tint
+            // leaves whatever the material already carries.
+            context.expectArgumentCount(call, 1, 2);
+            const material = context.compileValue(call.arguments[0]!);
             context.expectKind(
                 material,
                 "material",
                 call.arguments[0]!,
             );
-            if (importedName === "setPbrUnlit") {
+            // The setters are emitted into the PBR material factory's own
+            // translation unit, so a scene that only stamps a loaded
+            // material — never creating one — still needs that unit.
+            context.reachFeature("material:pbr", call);
+            const tintExpression = call.arguments[1];
+            const tint = tintExpression
+                ? requiredStaticColor3(
+                      context,
+                      tintExpression,
+                      "setPbrUnlit's tint must be a static linear RGB colour: it is written into the material UBO the fragment reads.",
+                  )
+                : undefined;
+            // A material read off a loaded mesh has no scene-side record to
+            // stamp: its unlit arm is composed from the document. The fact
+            // is the container's, and `assetWholeMeshList` is the proof that
+            // the walk reaching this material reaches every one of them.
+            const container = material.assetPbrMaterial
+                ? material.assetWholeMeshList
+                : undefined;
+            if (container) {
+                context.recordAssetSceneUnlit(
+                    container,
+                    tint?.channels,
+                    call,
+                );
+            } else {
                 context.recordScenePbrUnlit(
                     material.scenePbrMaterialIndex,
                 );
             }
-            if (importedName === "setPbrSkybox") {
-                context.recordScenePbrSkybox(
-                    material.scenePbrMaterialIndex,
-                );
-                // Skybox mode is composed by the transmission-capable
-                // renderer (its uniform block carries the skybox
-                // option), which the createPbrMaterial `skyboxMode`
-                // option used to reach before it became a setter.
-                context.reachFeature("renderer:transmission", call);
-            }
-            const nativeSetter =
-                importedName === "setPbrUnlit"
-                    ? "set_pbr_unlit"
-                    : "set_pbr_skybox";
             return {
                 kind: "void",
                 cpp:
-                    `bbl::${nativeSetter}(` +
-                    `${context.requireEngine(
-                        material,
-                        call,
-                    )}, ${material.cpp})`,
+                    "bbl::set_pbr_unlit(" +
+                    `${context.requireEngine(material, call)}, ` +
+                    material.cpp +
+                    (tint ? `, ${tint.cpp}` : "") +
+                    ")",
+            };
+        }
+
+        case "setPbrSkybox": {
+            // src/material/pbr/set-skybox.ts: the same shape as
+            // `setPbrUnlit` above, taking the material alone.
+            context.expectArgumentCount(call, 1, 1);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            context.reachFeature("material:pbr", call);
+            context.recordScenePbrSkybox(
+                material.scenePbrMaterialIndex,
+            );
+            // Skybox mode is composed by the transmission-capable renderer
+            // (its uniform block carries the skybox option), which the
+            // createPbrMaterial `skyboxMode` option used to reach before it
+            // became a setter.
+            context.reachFeature("renderer:transmission", call);
+            return {
+                kind: "void",
+                cpp:
+                    "bbl::set_pbr_skybox(" +
+                    `${context.requireEngine(material, call)}, ` +
+                    material.cpp +
+                    ")",
             };
         }
 

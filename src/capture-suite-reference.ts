@@ -377,6 +377,16 @@ ${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></scrip
     >();
     return createServer(async (request, response) => {
         const url = new URL(request.url ?? "/", "http://127.0.0.1");
+        // Chromium asks for this on every page it opens. Without an arm it
+        // falls all the way through to the pinned-asset fetch below, so each
+        // capture pays a raw.githubusercontent.com round trip to be told the
+        // lab has no favicon either, and then logs the 404 through the
+        // console-error hook as though a scene had failed.
+        if (url.pathname === "/favicon.ico") {
+            response.writeHead(204);
+            response.end();
+            return;
+        }
         if (url.pathname === "/scene.html") {
             response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
             response.end(html);

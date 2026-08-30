@@ -829,7 +829,16 @@ export function readProperty(
     owner.sceneMeshIndex === undefined &&
     owner.scenePbrMaterialIndex === undefined &&
     !owner.standardMaterial
-      ? { assetPbrMaterial: true as const }
+      ? {
+          assetPbrMaterial: true as const,
+          // The container a proven whole-list walk is visiting, when this
+          // mesh came from one. A loaded material has no scene-side record
+          // to stamp, so this is the only compile-time identity a setter
+          // reaching it has: the document whose materials compose.
+          ...(owner.assetWholeMeshList
+            ? { assetWholeMeshList: owner.assetWholeMeshList }
+            : {}),
+        }
       : {}),
     ...(rule.carriesShadowGenerator && owner.shadowGeneratorIndex !== undefined
       ? { shadowGeneratorIndex: owner.shadowGeneratorIndex }

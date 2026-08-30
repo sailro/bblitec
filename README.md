@@ -16,7 +16,7 @@ Unsupported syntax and APIs fail at compile time with source locations.
 | [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene11-banner.png" alt="Scene 11" width="170">](docs/status.md#curated-parity-scenes) |
 | [<img src="docs/images/scenes/tetris.png" alt="Tetris demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/doom.png" alt="Doom demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/racer.png" alt="Racer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/littlest-tokyo.png" alt="Littlest Tokyo demo" width="170">](docs/status.md#upstream-application-gates) |
 
-*A few of the 173 curated parity scenes and 9 demos, compiled to native C++
+*A few of the 174 curated parity scenes and 9 demos, compiled to native C++
 and rendered on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points

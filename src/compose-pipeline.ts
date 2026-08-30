@@ -493,9 +493,27 @@ export async function composeScenePipeline({
     for (const [assetIndex, asset] of gltfAssets.entries()) {
         const materialIndexBase = assetMaterialBases[assetIndex]!;
         const path = resolve(outputPath, "assets", asset.output);
+        // The scene facts every material sees, plus the ones this container
+        // alone carries: `setPbrUnlit` over its own flattened mesh list is
+        // the container's, not the scene's, so it travels with the asset.
+        const assetComposeOptions = {
+            ...sceneComposeOptions,
+            ...(asset.sceneUnlit
+                ? { sceneUnlit: asset.sceneUnlit }
+                : {}),
+        };
+        // The variant composer additionally takes the asset's selected
+        // `KHR_materials_variants` name, which the material composer's own
+        // options bag does not carry.
+        const assetVariantOptions = {
+            ...assetComposeOptions,
+            ...(asset.selectedVariant
+                ? { selectedVariant: asset.selectedVariant }
+                : {}),
+        };
         const composed = await composeGltfMaterials(
             path,
-            sceneComposeOptions,
+            assetComposeOptions,
         );
         assetMetallicReflectanceRegistered ||= composed.some(
             (material) => material.metallicReflectanceRegistered,
@@ -506,10 +524,7 @@ export async function composeScenePipeline({
             sceneArms,
             materialIndexBase,
             {
-                ...sceneComposeOptions,
-                ...(asset.selectedVariant
-                    ? { selectedVariant: asset.selectedVariant }
-                    : {}),
+                ...assetVariantOptions,
                 ...(dynamicReceiverBits.length > 0
                     ? {
                           meshFeatureSets: expandRuntimeMeshFeatureSets(
@@ -539,10 +554,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        ...sceneComposeOptions,
-                        ...(asset.selectedVariant
-                            ? { selectedVariant: asset.selectedVariant }
-                            : {}),
+                        ...assetVariantOptions,
                         meshFeatureSets: assetMaterialMeshFeatures,
                     },
                     geometryTasks,
@@ -556,10 +568,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        ...sceneComposeOptions,
-                        ...(asset.selectedVariant
-                            ? { selectedVariant: asset.selectedVariant }
-                            : {}),
+                        ...assetVariantOptions,
                         materialView,
                         meshFeatureSets: dynamicCasterFeatureSets(
                             gltfRenderableFeatureSets[assetIndex] ?? [],
