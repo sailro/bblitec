@@ -1,4 +1,8 @@
 import ts from "typescript";
+import {
+    handleValueKinds,
+    nullableHandleKinds,
+} from "./types.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
     isHandleKind,
@@ -145,6 +149,10 @@ export interface StatementLoweringContext {
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
     emit(line: string): void;
+    rebindVariable(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
     increaseIndent(): void;
     decreaseIndent(): void;
     pushScope(cppPrefix: string): void;
@@ -1833,6 +1841,44 @@ export class StatementLowerer {
                     operator === "=" &&
                     context.emitDataAssignment(unwrapped)
                 ) {
+                    return;
+                } else if (
+                    handleValueKinds.has(target.kind) &&
+                    operator === "=" &&
+                    ts.isIdentifier(context.unwrap(unwrapped.left)) &&
+                    context.unwrap(unwrapped.right).kind !==
+                        ts.SyntaxKind.NullKeyword
+                ) {
+                    // Point a handle name at a different handle of the same
+                    // kind. The storage is one number, so the emitted
+                    // assignment is a copy -- but the identity the compiler
+                    // holds beside it decides composition, so it moves with
+                    // the assignment rather than being left behind.
+                    const right = context.compileValue(unwrapped.right);
+                    if (right.kind !== target.kind) {
+                        context.fail(
+                            unwrapped.right,
+                            `A ${target.kind} name takes another ` +
+                                `${target.kind}, received ${right.kind}.`,
+                        );
+                    }
+                    context.emit(`${target.cpp} = ${right.cpp};`);
+                    context.rebindVariable(
+                        context.unwrap(unwrapped.left) as ts.Identifier,
+                        right,
+                    );
+                    return;
+                } else if (
+                    nullableHandleKinds.has(target.kind) &&
+                    operator === "=" &&
+                    context.unwrap(unwrapped.right).kind ===
+                        ts.SyntaxKind.NullKeyword
+                ) {
+                    // Clearing one is the scene saying it no longer holds
+                    // what it dropped -- the removal itself was the call
+                    // before this. The zero handle is that "no longer", and
+                    // it is the same storage the guard beside it reads.
+                    context.emit(`${target.cpp} = {};`);
                     return;
                 } else if (
                     target.kind === "json-null" &&

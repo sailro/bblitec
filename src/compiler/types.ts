@@ -971,6 +971,10 @@ export type ValueKind =
   // call takes the crowd rather than the plugin.
   | "navigation"
   | "navigation-crowd"
+  // One obstacle a tile-cache navmesh holds. `ObstacleHandle` is opaque
+  // upstream too -- the only thing a scene does with one is hand it back
+  // to `removeObstacle` -- so it is a kind rather than a record.
+  | "navigation-obstacle"
   // The Web Audio family. The seam is the pin's own: `src/audio/*.ts`
   // reaches the browser through `AudioContext`/`GainNode`/`AudioParam`
   // and nothing else, so those are the handles -- the same shape
@@ -1136,6 +1140,51 @@ export interface VariableBinding {
   value: Value;
   /** The native storage belongs to an application frame callback. */
   frameLocal?: boolean;
+  /**
+   * Set where a nested callback pointed this handle at something else.
+   *
+   * The storage is shared, so after such a rebind this binding's `value`
+   * describes an identity the storage may no longer hold -- it depends on
+   * whether the callback ran. Reading it out here is refused rather than
+   * guessed; the depth is kept so the message can name where.
+   */
+  rebindingScopeDepth?: number;
+}
+
+/**
+ * Handle kinds a scene may hold as `T | null`.
+ *
+ * Upstream hands these back as an object or `null`, and a scene that can
+ * drop one keeps it in a `let` it tests and clears. The port carries them
+ * as handles, so the null is the zero handle -- Detour never issues that
+ * reference and neither does any allocator here -- and both the guard and
+ * the clear read the SAME storage: the variable the binding made, not the
+ * expression that filled it. That is why this is keyed by kind rather
+ * than carried as a rendered string on the value.
+ */
+export const nullableHandleKinds: ReadonlySet<ValueKind> = new Set<
+  ValueKind
+>(["navigation-obstacle"]);
+
+/**
+ * Value kinds whose C++ storage is one handle, so a name holding one may
+ * be pointed at another.
+ *
+ * Not every kind qualifies: a `data` local owns its bytes and a material
+ * value carries composition state a copy would not move. These are the
+ * ones a reached scene reassigns, each of which is a `{value}` handle the
+ * engine resolves at the read.
+ */
+export const handleValueKinds: ReadonlySet<ValueKind> = new Set<ValueKind>([
+  "mesh",
+  "navigation-obstacle",
+]);
+
+/** The guard a scene's own `if (handle)` compiles to. */
+export function nullableHandleTruthiness(value: Value): string | undefined {
+  return nullableHandleKinds.has(value.kind)
+    ? `${value.cpp}.value != 0u`
+    : undefined;
 }
 
 export interface Value {

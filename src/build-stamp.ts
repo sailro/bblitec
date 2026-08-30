@@ -348,6 +348,7 @@ export function incompatibleCacheEntries(
     const sticky = [
         "CMAKE_GENERATOR",
         "CMAKE_CXX_COMPILER",
+        "CMAKE_C_COMPILER",
         "CMAKE_MAKE_PROGRAM",
         "CMAKE_TOOLCHAIN_FILE",
         "VCPKG_INSTALLED_DIR",

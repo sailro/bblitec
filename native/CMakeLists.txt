@@ -66,7 +66,12 @@ if(BBLITE_SDL_DIR AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
     endif()
 endif()
 
-project(babylon_lite_native LANGUAGES CXX)
+# C joins C++ for one file: the FastLZ codec the tile-cache navmesh
+# compresses its layers with, which is C and is taken from the pinned
+# recastnavigation commit rather than transcribed. Same toolchain, same
+# strict-float flags -- one more language front end, not one more
+# dependency.
+project(babylon_lite_native LANGUAGES CXX C)
 
 set(BBLITE_GENERATED_SHADER_DIR "${BBLITE_GENERATED_DIR}/upstream/shaders")
 set(BBLITE_BUILD_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/bblite-shaders")
@@ -649,6 +654,32 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
             RecastNavigation::DetourTileCache
             RecastNavigation::DebugUtils
     )
+    # The two RecastDemo files the overlay port installs as sources rather
+    # than as a library: the triangle partition a tile-cache build
+    # rasterizes through and the codec its compressor wraps. They are
+    # third-party sources, so they compile without this project's
+    # warnings-as-errors and with the port's own strict float, which is
+    # what the wasm reference is built with. Both flags are the MSVC
+    # spellings clang-cl takes, which is the only compiler this build
+    # configures on the platform the overlay port targets.
+    find_path(
+        BBLITE_RECAST_TILE_CACHE_SRC
+        NAMES ChunkyTriMesh.cpp
+        PATH_SUFFIXES share/recastnavigation/tile-cache-src
+        REQUIRED
+    )
+    target_sources(
+        bblite_native
+        PRIVATE
+            "${BBLITE_RECAST_TILE_CACHE_SRC}/ChunkyTriMesh.cpp"
+            "${BBLITE_RECAST_TILE_CACHE_SRC}/fastlz.c"
+    )
+    set_source_files_properties(
+        "${BBLITE_RECAST_TILE_CACHE_SRC}/ChunkyTriMesh.cpp"
+        "${BBLITE_RECAST_TILE_CACHE_SRC}/fastlz.c"
+        PROPERTIES COMPILE_OPTIONS "/W0;/fp:strict"
+    )
+
 endif()
 
 # The Web Audio engine is reached only through `bblite/pal_audio.hpp`,

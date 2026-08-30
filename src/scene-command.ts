@@ -1125,6 +1125,12 @@ async function runSceneBuild(
         configureArguments.push(
             `-DCMAKE_MAKE_PROGRAM=${windows.ninja}`,
             `-DCMAKE_CXX_COMPILER=${windows.compiler}`,
+            // The one C file in the build -- the tile-cache codec -- takes
+            // the same compiler as everything else. clang-cl chooses the
+            // language by extension, and CMake refuses a build that mixes
+            // its two front-end variants, so naming it is what keeps the
+            // toolchain single.
+            `-DCMAKE_C_COMPILER=${windows.compiler}`,
         );
     }
     if (vcpkg) {

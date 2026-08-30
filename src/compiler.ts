@@ -5971,10 +5971,35 @@ class Compiler
                     index,
                     binding.frameLocal === true,
                 );
+                this.refusePoisonedRebind(identifier, binding);
                 return binding.value;
             }
         }
         return undefined;
+    }
+
+    /**
+     * A read of a handle a nested callback pointed somewhere else.
+     *
+     * The storage the outer name reads is the one that callback wrote, but
+     * whether it wrote is a run-time question -- so the identity this
+     * binding still carries describes the value only on one of the two
+     * paths. Composition is decided from that identity, so a wrong guess
+     * would stamp a material onto the wrong mesh with nothing to show for
+     * it; refusing is what makes the rebind safe to allow at all.
+     */
+    private refusePoisonedRebind(
+        identifier: ts.Identifier,
+        binding: VariableBinding,
+    ): void {
+        if (binding.rebindingScopeDepth === undefined) return;
+        this.fail(
+            identifier,
+            `'${identifier.text}' is read after a nested callback pointed ` +
+                "it at a different handle, so which one it names depends " +
+                "on whether that callback ran. Read it inside the callback, " +
+                "or keep the new handle in its own name.",
+        );
     }
 
     private refuseDeadDeferredCapture(
@@ -6352,6 +6377,7 @@ class Compiler
                     index,
                     binding.frameLocal === true,
                 );
+                this.refusePoisonedRebind(identifier, binding);
                 return binding.value;
             }
         }
@@ -6359,6 +6385,59 @@ class Compiler
             identifier,
             `Unknown or unsupported variable '${identifier.text}'.`,
         );
+    }
+
+    /**
+     * Point a handle variable at a different handle of the same kind.
+     *
+     * A handle's C++ storage is one number, so the assignment itself is a
+     * copy -- but the value the compiler holds beside it carries generation
+     * identity (which scene mesh a material stamps, which slot a variant
+     * table is keyed by), and that identity moves with the assignment. So
+     * the binding is replaced, not just the storage.
+     *
+     * A rebind inside a nested callback rebinds only for the rest of that
+     * callback, because on the path where the callback never runs the outer
+     * variable still names what it always did. The outer binding is left
+     * POISONED rather than updated: its storage now holds a handle its
+     * identity does not describe, so the next outer read fails by name
+     * instead of stamping the wrong mesh.
+     */
+    public rebindVariable(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void {
+        const symbol = this.symbols.valueSymbol(identifier);
+        if (!symbol) {
+            this.fail(
+                identifier,
+                `Unable to resolve variable '${identifier.text}'.`,
+            );
+        }
+        const owner = [...this.variableScopes]
+            .reverse()
+            .find((scope) => scope.has(symbol));
+        if (!owner) {
+            this.fail(
+                identifier,
+                `Unable to resolve variable '${identifier.text}'.`,
+            );
+        }
+        const innermost = this.variableScopes.at(-1)!;
+        const binding = owner.get(symbol)!;
+        const rebound = {
+            ...binding,
+            value: { ...value, cpp: binding.value.cpp },
+        };
+        if (owner === innermost) {
+            owner.set(symbol, rebound);
+            return;
+        }
+        owner.set(symbol, {
+            ...binding,
+            rebindingScopeDepth: this.variableScopes.length,
+        });
+        innermost.set(symbol, rebound);
     }
 
     public defineVariable(

@@ -46,4 +46,26 @@ vcpkg_fixup_pkgconfig()
 vcpkg_copy_pdbs()
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 
+# Two files the library targets do not carry, which the tile-cache build
+# reaches for: `rcChunkyTriMesh` -- the spatial partition
+# `generateTileCache` rasterizes each tile through -- and the FastLZ codec
+# its `dtTileCacheCompressor` wraps. Both live under `RecastDemo/`, which
+# `RECASTNAVIGATION_DEMO=OFF` does not build, so they are installed as
+# sources and compiled by the consumer. Taking them from THIS commit is
+# the point: the tile layers the native build compresses and the triangle
+# partition it rasterizes are the wasm reference's own, not a
+# transcription of them.
+file(
+    INSTALL
+        "${SOURCE_PATH}/RecastDemo/Include/ChunkyTriMesh.h"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.h"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/include/recastnavigation"
+)
+file(
+    INSTALL
+        "${SOURCE_PATH}/RecastDemo/Source/ChunkyTriMesh.cpp"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.c"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/share/recastnavigation/tile-cache-src"
+)
+
 vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/License.txt")

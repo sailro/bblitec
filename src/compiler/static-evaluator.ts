@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
+import { nullableHandleTruthiness } from "./types.js";
 import {
     isDataTuple,
     tupleComponents,
@@ -359,6 +360,10 @@ export class StaticEvaluator {
                 // refuses an index the graph built no system for, so by the
                 // time generation succeeds the guard is settled.
                 return "true";
+            }
+            const nullable = nullableHandleTruthiness(value);
+            if (nullable) {
+                return nullable;
             }
             if (value.truthinessCpp) {
                 return value.truthinessCpp;

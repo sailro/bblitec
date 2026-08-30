@@ -71,15 +71,17 @@ const NAV_MESH_NUMBER_PARAMS: readonly (readonly [string, string])[] = [
     ["maxVertsPerPoly", "max_verts_per_poly"],
     ["detailSampleDist", "detail_sample_dist"],
     ["detailSampleMaxError", "detail_sample_max_error"],
+    // The tile-cache arm's three. `maxObstacles > 0` is what selects that
+    // arm, and the other two are read only once it has been.
+    ["tileSize", "tile_size"],
+    ["expectedLayersPerTile", "expected_layers_per_tile"],
+    ["maxObstacles", "max_obstacles"],
 ];
 
 const NAV_MESH_PARAM_NAMES = [
     ...NAV_MESH_NUMBER_PARAMS.map(([name]) => name),
     "keepIntermediates",
-    "maxObstacles",
-    "tileSize",
     "doNotReverseIndices",
-    "expectedLayersPerTile",
     "offMeshConnections",
 ];
 
@@ -230,6 +232,83 @@ export function compileNavigationIntrinsic(
                         .map((mesh) => mesh.cpp)
                         .join(", ")}}, ` +
                     `${parameters})`,
+            };
+        }
+
+        case "addBoxObstacle":
+        case "addCylinderObstacle": {
+            // Both take the plugin and a position; the box then takes half
+            // extents and a rotation about Y, the cylinder a radius and a
+            // height. The pin's own two shapes, and each ends in the same
+            // full cache update the entry point below runs alone.
+            const box = importedName === "addBoxObstacle";
+            context.expectArgumentCount(call, 4, 4);
+            const plugin = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                plugin,
+                "navigation",
+                call.arguments[0]!,
+            );
+            const position = context.compileVec3(
+                call.arguments[1]!,
+                "double",
+            );
+            const second = box
+                ? context.compileVec3(call.arguments[2]!, "double")
+                : context.compileNumber(call.arguments[2]!, "double");
+            const third = context.compileNumber(
+                call.arguments[3]!,
+                "double",
+            );
+            return {
+                kind: "navigation-obstacle",
+                cpp:
+                    `bbl::upstream::add_${box ? "box" : "cylinder"}` +
+                    `_obstacle(${plugin.cpp}, ${position}, ` +
+                    `${second}, ${third})`,
+            };
+        }
+
+        case "removeObstacle": {
+            context.expectArgumentCount(call, 2, 2);
+            const plugin = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                plugin,
+                "navigation",
+                call.arguments[0]!,
+            );
+            const obstacle = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                obstacle,
+                "navigation-obstacle",
+                call.arguments[1]!,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::upstream::remove_obstacle(` +
+                    `${plugin.cpp}, ${obstacle.cpp})`,
+            };
+        }
+
+        case "updateNavMeshObstacles": {
+            // Every add and remove already ran this, so a scene calling it
+            // afterwards settles a cache that is already settled -- one
+            // `update` that reports nothing pending. It is emitted rather
+            // than folded away because the pin emits it, and because the
+            // day an add stops waiting this is what would carry the wait.
+            context.expectArgumentCount(call, 1, 1);
+            const plugin = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                plugin,
+                "navigation",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::upstream::update_nav_mesh_obstacles(` +
+                    `${plugin.cpp})`,
             };
         }
 
@@ -605,26 +684,22 @@ function validateNavMeshParams(
         context,
         options,
         NAV_MESH_PARAM_NAMES,
-        "Reached navmesh builds support the solo Recast config keys.",
+        "Reached navmesh builds support the solo and tile-cache Recast " +
+            "config keys.",
     );
-    // The tile-cache and tiled arms have no record plumbing yet; a
-    // zero literal is the solo arm by the pin's own dispatch and is
-    // dropped, anything else refuses by name.
-    for (const gate of ["maxObstacles", "tileSize"] as const) {
-        const value = context.objectProperty(options, gate);
-        if (!value) continue;
-        const literal = context.unwrap(value);
-        if (
-            !ts.isNumericLiteral(literal) ||
-            Number(literal.text) !== 0
-        ) {
-            context.fail(
-                value,
-                `createNavMesh with ${gate} > 0 builds a ` +
-                    `${gate === "maxObstacles" ? "tile-cache" : "tiled"} ` +
-                    "navmesh, which is not lowered yet; the solo arm is.",
-            );
-        }
+    // The pin dispatches on `maxObstacles` first and `tileSize` second, so
+    // a tiled build is one that asked for tiles WITHOUT obstacles -- and
+    // that middle arm is the one with no reached scene. A zero literal is
+    // the solo arm by the pin's own test and is dropped.
+    const obstacles = staticZeroOrPositive(context, options, "maxObstacles");
+    const tiles = staticZeroOrPositive(context, options, "tileSize");
+    if (obstacles === 0 && tiles !== 0) {
+        context.fail(
+            context.objectProperty(options, "tileSize")!,
+            "createNavMesh with tileSize > 0 and no obstacles builds a " +
+                "tiled navmesh, which is not lowered; the solo and " +
+                "tile-cache arms are.",
+        );
     }
     if (context.objectProperty(options, "doNotReverseIndices")) {
         context.fail(
@@ -633,11 +708,39 @@ function validateNavMeshParams(
                 "reached merge carries the pin's reversed winding.",
         );
     }
-    if (context.objectProperty(options, "expectedLayersPerTile")) {
+    if (obstacles !== 0 && tiles === 0) {
         context.fail(
             options,
-            "createNavMesh's expectedLayersPerTile is not lowered; it " +
-                "sizes the tile cache, and the reached build is solo.",
+            "createNavMesh with maxObstacles > 0 needs a tileSize: the " +
+                "cache is sized in tiles, and the pin's own default of 32 " +
+                "is a size no reached scene relies on.",
         );
     }
+}
+
+/**
+ * A build gate's value where generation can see it, or 0 where the key is
+ * absent.
+ *
+ * Which build arm runs is a compile-time fact -- it decides which PAL entry
+ * point the scene calls and whether the obstacle surface is reachable at
+ * all -- so a gate that is not a static number is refused rather than
+ * guessed.
+ */
+function staticZeroOrPositive(
+    context: NavigationIntrinsicContext,
+    options: ts.ObjectLiteralExpression,
+    name: string,
+): number {
+    const value = context.objectProperty(options, name);
+    if (!value) return 0;
+    const literal = context.unwrap(value);
+    if (!ts.isNumericLiteral(literal)) {
+        context.fail(
+            value,
+            `createNavMesh's ${name} decides which build arm runs, so it ` +
+                "must be a numeric literal.",
+        );
+    }
+    return Number(literal.text);
 }

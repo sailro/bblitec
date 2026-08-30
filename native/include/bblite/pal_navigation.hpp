@@ -86,6 +86,14 @@ struct NavMeshBuildParams {
     std::optional<double> detail_sample_max_error;
     /** Baked into the navmesh as teleport segments; empty means none. */
     std::vector<NavOffMeshConnection> off_mesh_connections;
+    /**
+     * The tile-cache arm's three, which the pinned `createNavMesh` reads
+     * before any of the above: `maxObstacles > 0` selects the arm, and the
+     * other two carry `tileCacheGeneratorConfigDefaults` when absent.
+     */
+    std::optional<double> tile_size;
+    std::optional<double> expected_layers_per_tile;
+    std::optional<double> max_obstacles;
 };
 
 /** One merged-geometry source: world-space positions, reversed winding
@@ -128,6 +136,63 @@ void navigation_create_solo_nav_mesh(
     NavigationHandle plugin,
     const NavMeshGeometry& geometry,
     const NavMeshBuildParams& params);
+
+/**
+ * The tile-cache build (`generateTileCache` semantics).
+ *
+ * A tile-cache navmesh is the same Recast pipeline run per tile, with each
+ * tile's heightfield layers compressed into the cache rather than turned
+ * into polygons straight away: the cache owns the layers, and rebuilding a
+ * tile after an obstacle moves is a decompress-and-remesh of that tile
+ * alone. So the build here is the wrapper's own -- its tile-cache params,
+ * its `dtIlog2(dtNextPow2(...))` tile/poly bit split, its chunky-triangle
+ * partition and its two passes (rasterize every tile into the cache, then
+ * build the initial meshes) -- and the obstacle entry points below are what
+ * the arm exists for. Throws with the wrapper's own failure spelling when a
+ * stage fails.
+ */
+void navigation_create_tile_cache_nav_mesh(
+    NavigationHandle plugin,
+    const NavMeshGeometry& geometry,
+    const NavMeshBuildParams& params);
+
+/** One obstacle in a plugin's tile cache, as `ObstacleHandle` carries one.
+ *  Absent where the pinned factory returns null, which is a refused add. */
+struct NavObstacleHandle {
+    std::uint32_t value = 0;
+};
+
+/**
+ * `addBoxObstacle(position, halfExtents, angle)`: the cache's own oriented
+ * box. Absent when the add failed, which the pinned factory reports as null.
+ */
+std::optional<NavObstacleHandle> navigation_add_box_obstacle(
+    NavigationHandle plugin,
+    NavVec3 position,
+    NavVec3 half_extents,
+    float angle);
+
+/** `addCylinderObstacle(position, radius, height)`, likewise. */
+std::optional<NavObstacleHandle> navigation_add_cylinder_obstacle(
+    NavigationHandle plugin,
+    NavVec3 position,
+    float radius,
+    float height);
+
+/** `removeObstacle`: drop one the cache holds. */
+void navigation_remove_obstacle(
+    NavigationHandle plugin,
+    NavObstacleHandle obstacle);
+
+/**
+ * `updateNavMeshObstacles`: run `tileCache.update()` until it reports no
+ * pending request left.
+ *
+ * Every obstacle entry point above ends with this, because the pinned ones
+ * do -- an add that did not settle would leave the navmesh describing tiles
+ * the obstacle no longer occupies, and the pin refuses to hand that back.
+ */
+void navigation_update_obstacles(NavigationHandle plugin);
 
 /** The wrapper's detail-mesh walk + detached-triangle rebuild. */
 NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin);

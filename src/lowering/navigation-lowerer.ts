@@ -472,6 +472,20 @@ void create_nav_mesh(
     bbl::pal::NavigationHandle plugin,
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
+bbl::pal::NavObstacleHandle add_box_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    Vec3d half_extents,
+    double angle);
+bbl::pal::NavObstacleHandle add_cylinder_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    double radius,
+    double height);
+void remove_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    bbl::pal::NavObstacleHandle obstacle);
+void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin);
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin);
 struct NavRaycastResult {
@@ -623,8 +637,76 @@ void create_nav_mesh(
         }
         vertex_base += geometry.vertices.size();
     }
+    // The pin's own three-way dispatch, in its order: obstacles first --
+    // a cache is what makes them possible -- then tiles, then solo. Only
+    // the first and last are lowered, and the intrinsic refuses the middle
+    // by name rather than letting it fall through to a different navmesh.
+    if (params.max_obstacles.value_or(0.0) > 0.0) {
+        bbl::pal::navigation_create_tile_cache_nav_mesh(
+            plugin, merged, params);
+        return;
+    }
     bbl::pal::navigation_create_solo_nav_mesh(
         plugin, merged, params);
+}
+
+/** A double the port carries, at the float width the seam takes. */
+bbl::pal::NavVec3 nav_vec3(Vec3d value) {
+    return bbl::pal::NavVec3{
+        static_cast<float>(value.x),
+        static_cast<float>(value.y),
+        static_cast<float>(value.z)};
+}
+
+bbl::pal::NavObstacleHandle add_box_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    Vec3d half_extents,
+    double angle) {
+    // A refused add is null upstream, and every reached use of the handle
+    // is a later removeObstacle, so the refusal surfaces here rather than
+    // as a remove that silently names nothing.
+    const std::optional<bbl::pal::NavObstacleHandle> added =
+        bbl::pal::navigation_add_box_obstacle(
+            plugin,
+            nav_vec3(position),
+            nav_vec3(half_extents),
+            static_cast<float>(angle));
+    if (!added) {
+        throw std::runtime_error(
+            "addBoxObstacle failed: the tile cache holds no room for "
+            "another obstacle.");
+    }
+    return *added;
+}
+
+bbl::pal::NavObstacleHandle add_cylinder_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    double radius,
+    double height) {
+    const std::optional<bbl::pal::NavObstacleHandle> added =
+        bbl::pal::navigation_add_cylinder_obstacle(
+            plugin,
+            nav_vec3(position),
+            static_cast<float>(radius),
+            static_cast<float>(height));
+    if (!added) {
+        throw std::runtime_error(
+            "addCylinderObstacle failed: the tile cache holds no room for "
+            "another obstacle.");
+    }
+    return *added;
+}
+
+void remove_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    bbl::pal::NavObstacleHandle obstacle) {
+    bbl::pal::navigation_remove_obstacle(plugin, obstacle);
+}
+
+void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
+    bbl::pal::navigation_update_obstacles(plugin);
 }
 
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
@@ -696,14 +778,8 @@ std::vector<Vec3d> nav_compute_path(
     const std::vector<bbl::pal::NavVec3> path =
         bbl::pal::navigation_compute_path(
             plugin,
-            bbl::pal::NavVec3{
-                static_cast<float>(start_snap.x),
-                static_cast<float>(start_snap.y),
-                static_cast<float>(start_snap.z)},
-            bbl::pal::NavVec3{
-                static_cast<float>(end_snap.x),
-                static_cast<float>(end_snap.y),
-                static_cast<float>(end_snap.z)});
+            nav_vec3(start_snap),
+            nav_vec3(end_snap));
     std::vector<Vec3d> out;
     out.reserve(path.size());
     for (const bbl::pal::NavVec3& point : path) {
