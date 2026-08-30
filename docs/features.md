@@ -102,6 +102,14 @@ second stage changes phase with the backend. Where the cut falls in each is
 The reachable subset of TypeScript that lowers to C++20, from one statically
 analyzable entry file against one engine.
 
+- **The entry point.** A local `function main` whose body is the program, or
+  the top-level statements where a file declares none. A scene whose entry is
+  an imported async helper ends in `helper(...).catch(<reporter>)`: the call
+  is the program and the `.catch` is the browser's unhandled-rejection
+  reporting, which a native program does by aborting — so the reporter is
+  erased, exactly as the `main` form's own trailing `.catch` already is. A
+  handler that touched Babylon state would be a recovery path rather than a
+  report, and refuses.
 - **Modules and functions.** Local imports and re-exports, module constants,
   dependency-ordered top-level initializers (including private state observed
   through exports and cross-module registrars),

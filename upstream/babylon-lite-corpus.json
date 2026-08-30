@@ -971,6 +971,18 @@
       "sha256": "e5fb11fcd749a511cda1eecd99381cc43a1c4d9256d91d1dad8fa45e53e0536d"
     },
     {
+      "id": "scene200",
+      "upstreamPath": "lab/lite/src/lite/scene200.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene200.ts",
+      "sha256": "05098fd90feacd0aca54deeae2ac5d09de580dab89ef00033e56932be13249bf"
+    },
+    {
+      "id": "scene201",
+      "upstreamPath": "lab/lite/src/lite/scene201.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene201.ts",
+      "sha256": "e07edb8c503be98a3412bf55ba9a3e07625b2355f8f1408bbaff8fb5c3108372"
+    },
+    {
       "id": "scene202",
       "upstreamPath": "lab/lite/src/lite/scene202.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene202.ts",
@@ -1024,6 +1036,11 @@
       "upstreamPath": "lab/lite/src/shared/scene252-stdmorph.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene252-stdmorph.ts",
       "sha256": "b6956a3222183bf612246f64892b315be698d7ceb40b8d594762428eedcc1bad"
+    },
+    {
+      "upstreamPath": "lab/lite/src/_shared/hpm-jitter-scene.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/_shared/hpm-jitter-scene.ts",
+      "sha256": "ede241f7e57858db2b0fd1c2d25f30472ab523c2bd0c06c9b212194faa872fe3"
     },
     {
       "upstreamPath": "lab/lite/src/_shared/sprite-atlas-image.ts",

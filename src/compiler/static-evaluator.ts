@@ -383,6 +383,22 @@ export class StaticEvaluator {
                 return value.cpp;
             }
         }
+        // A comparison is one lowerer's job, and this file already reaches
+        // it for a conditional's own test: `compileCondition` folds the
+        // static string, number and boolean arms alike, so asking it here
+        // is what keeps an option position and an `if` reading the same
+        // expression the same way.
+        //
+        // Only a SETTLED answer is taken. Callers here read the returned
+        // text as a decision -- the line family selects a variant on
+        // `=== "true"` -- so handing one an unsettled comparison would read
+        // as a silent `false` where the refusal below names the expression.
+        if (ts.isBinaryExpression(unwrapped)) {
+            const condition = this.compileCondition(unwrapped);
+            if (condition === "true" || condition === "false") {
+                return condition;
+            }
+        }
         this.fail(unwrapped, "Expected a boolean literal.");
     }
 

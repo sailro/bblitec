@@ -181,6 +181,7 @@ export interface ExpressionContext
     isBrowserOnlyExpression(
         expression: ts.Expression,
     ): boolean;
+    isBrowserOnlyHandler(handler: ts.Expression): boolean;
     isDeferredCallbackCall(call: ts.CallExpression): boolean;
     compileFrameCallback(
         expression: ts.Expression,
@@ -1612,28 +1613,14 @@ export class ExpressionLowerer {
             call.arguments[1]!,
         );
         if (delay !== 0) {
-            const callbackExpression = this.context.unwrap(
-                call.arguments[0]!,
-            );
-            const body =
-                ts.isArrowFunction(callbackExpression) ||
-                ts.isFunctionExpression(callbackExpression)
-                    ? callbackExpression.body
-                    : undefined;
-            const browserOnly = body
-                ? ts.isBlock(body)
-                    ? body.statements.every(
-                          (statement) =>
-                              ts.isExpressionStatement(statement) &&
-                              this.context.isBrowserOnlyExpression(
-                                  statement.expression,
-                              ),
-                      )
-                    : this.context.isBrowserOnlyExpression(body)
-                : false;
-            if (browserOnly) {
+            if (
+                this.context.isBrowserOnlyHandler(
+                    this.context.unwrap(call.arguments[0]!),
+                )
+            ) {
                 return { kind: "void", cpp: "" };
             }
+
             if (delay === undefined || !Number.isFinite(delay) || delay < 0) {
                 this.context.fail(
                     call.arguments[1]!,

@@ -4,8 +4,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { suiteBrowserModule } from "../src/capture-suite-reference.js";
 import {
+    getScene,
     scenes,
 } from "../src/scene-registry.js";
+import { compareImages, compareRegion } from "../src/parity.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
 
@@ -177,4 +179,61 @@ test("keeps exact-source corpus references immutable", () => {
             `${reference.id} capture query differs from golden provenance.`,
         );
     }
+});
+
+/**
+ * The pin's own LWR proof gate, replayed over this port's two goldens.
+ *
+ * Scenes 200 and 201 are one measurement of a flag, not two of a scene:
+ * they differ in exactly one thing -- `useHighPrecisionMatrix` and
+ * `useFloatingOrigin` off against on -- and
+ * `tests/lite/unit/hpm-divergence.test.ts` upstream asserts what that
+ * difference has to look like. Each scene's own parity gate says the port
+ * matches the browser; only this says the two are not the same picture,
+ * which is the failure that would leave both gates passing while the
+ * precision path did nothing.
+ *
+ * Both of the pin's guards are kept, because they catch different things:
+ * a golden that is only clear colour means the HPM path drew nothing (the
+ * blank-render regression its comment names), and a cross-golden MAD at or
+ * under 1.0 means the offset is being undone downstream. Each is measured
+ * through the parity module the scene gates themselves use -- `compareImages`
+ * is already the pin's own metric, the mean over RGB per pixel over the
+ * whole image -- and against the background each scene's registry entry
+ * declares rather than a second copy of that colour.
+ */
+test("keeps the high-precision-matrix pair diverging", () => {
+    const gateOf = (id: string) => {
+        const gate = getScene(id).parity;
+        assert.ok(gate, `${id} must carry a parity gate.`);
+        return gate;
+    };
+    const off = gateOf("scene200");
+    const on = gateOf("scene201");
+    for (const gate of [off, on]) {
+        // `compareRegion` classifies against the registry's own background,
+        // so an image compared with itself counts the pixels that left it:
+        // the pin's non-blank guard, at this repo's own threshold.
+        const drawn = compareRegion(
+            gate.reference.path,
+            gate.reference.path,
+            gate.backgroundColor,
+            gate.backgroundThreshold,
+        );
+        assert.ok(
+            drawn.regionPixels / drawn.totalPixels > 0.01,
+            `${gate.reference.path} is almost entirely background, so the ` +
+                "precision path drew nothing.",
+        );
+    }
+    const { mad, maxDiff } = compareImages(
+        off.reference.path,
+        on.reference.path,
+    );
+    assert.ok(
+        mad > 1.0,
+        `scenes 200 and 201 differ by MAD ${mad.toFixed(3)} (max ` +
+            `${maxDiff}), at or under the pin's own 1.0 gate: the ` +
+            "high-precision-matrix flag is not changing what is drawn.",
+    );
 });

@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-79 corpus scenes remain unregistered; measured scenes
+77 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -233,9 +233,9 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (48 scenes):** 17, 20,
+**Integrate first (46 scenes):** 17, 20,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
-140, 149, 156, 165, 200, 201, 211, 214, 215, 218, 219,
+140, 149, 156, 165, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118), and display-only
@@ -736,17 +736,11 @@ integrated.
     read five times. Neither has a shared home to call, and each copy keys
     differently, so the shared form needs a key-function parameter; it is an
     extraction across five unrelated modules rather than a call.
-- [ ] Scenes 200, 201: lower the high-precision-matrix helper promise chain.
-- [ ] Scenes 200, 201, 208, 209: the large-world bakes that remain.
+- [ ] Scenes 208, 209: the large-world bakes that remain.
   Read `docs/lite/architecture/35-large-world-rendering.md` in the pinned
   clone first — it is the specification for this entry and names the scene
-  behind every bake. Each remaining scene adds one bake: 208 the node-material mesh world, 209 Havok's
-  multi-region simulation. 200 and
-  201 are the same far-from-origin scene with the mode off and on, and their
-  captures MUST diverge (the pin's own parity spec requires cross-golden
-  MAD >= 5.0), so they are the pair that proves the path is engaged rather
-  than a scene that merely renders; their own first blocker is the
-  high-precision-matrix helper promise chain, filed above.
+  behind every bake. Each remaining scene adds one bake: 208 the
+  node-material mesh world, 209 Havok's multi-region simulation.
   **The doc drifts from the source in two places, and the source decides
   both.** It describes a `scene._floatingOriginOffset` mirror with a
   per-frame `updateFloatingOriginOffset`, which the pinned
