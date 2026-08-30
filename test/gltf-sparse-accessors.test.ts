@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
+import {
+    encodeUnsignedShortJoints,
+    resolveGeometryExtensions,
+} from "../src/compressed-geometry.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 
 /**
@@ -75,5 +78,34 @@ test("passes an asset with no sparse accessor through byte-for-byte", async () =
     assert.deepEqual(
         Buffer.from(await resolveGeometryExtensions(plain, "plain.glb")),
         Buffer.from(plain),
+    );
+});
+
+test("re-encodes Draco joint integers without signed wrapping", () => {
+    assert.deepEqual(
+        encodeUnsignedShortJoints(
+            new Int32Array([0, 1, 255, 256, 65535]),
+            "skin.glb",
+            "JOINTS_0",
+        ),
+        new Uint16Array([0, 1, 255, 256, 65535]),
+    );
+    assert.throws(
+        () =>
+            encodeUnsignedShortJoints(
+                new Int32Array([-1]),
+                "skin.glb",
+                "JOINTS_0",
+            ),
+        /outside the unsigned-short range/,
+    );
+    assert.throws(
+        () =>
+            encodeUnsignedShortJoints(
+                new Int32Array([65536]),
+                "skin.glb",
+                "JOINTS_1",
+            ),
+        /outside the unsigned-short range/,
     );
 });

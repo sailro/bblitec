@@ -489,6 +489,7 @@ export interface UserFunctionIr {
 export interface UserFunctionContext {
     readonly dataTypes: DataTypeRegistry;
     compileValue(expression: ts.Expression): Value;
+    compileCondition(expression: ts.Expression): string;
     isBrowserOnlyExpression(expression: ts.Expression): boolean;
     compileForDataSink(
         expression: ts.Expression,
@@ -1310,6 +1311,67 @@ export class UserFunctionLowerer {
             arguments_.slice(0, ir.parameters.length),
             callNode,
         );
+    }
+
+    /** Invokes an Array predicate with JavaScript truthiness at its return. */
+    public compilePredicateWithValues(
+        context: UserFunctionContext,
+        declaration:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression
+            | ts.MethodDeclaration,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value {
+        const ir = ts.isIdentifier(declaration)
+            ? this.resolve(
+                  declaration,
+                  (node, message) => context.fail(node, message),
+              )
+            : this.irFor(
+                  declaration,
+                  "callback",
+                  (node, message) => context.fail(node, message),
+              );
+        if (!ir?.returnExpression || ir.needsValueLambda) {
+            context.fail(
+                declaration,
+                "Array predicates require a final return expression without early value returns.",
+            );
+        }
+        if (this.active.has(ir.declaration)) {
+            context.fail(callNode, "Recursive Array predicates are not supported.");
+        }
+        this.active.add(ir.declaration);
+        context.pushScope(context.allocateUserFunctionPrefix());
+        try {
+            ir.parameters.forEach((parameter, index) => {
+                const argument = arguments_[index];
+                const value =
+                    argument ??
+                    (parameter.declaration.initializer
+                        ? context.compileValue(
+                              parameter.declaration.initializer,
+                          )
+                        : context.fail(
+                              parameter.declaration,
+                              "Array predicate parameter requires an argument or default.",
+                          ));
+                this.bindParameter(context, parameter, value);
+            });
+            for (const statement of ir.statements) {
+                context.emitStatement(statement);
+            }
+            return {
+                kind: "boolean",
+                cpp: context.compileCondition(ir.returnExpression),
+                dataType: { kind: "boolean" },
+            };
+        } finally {
+            context.popScope();
+            this.active.delete(ir.declaration);
+        }
     }
 
     public compileReference(

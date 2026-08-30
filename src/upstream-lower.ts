@@ -762,6 +762,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             new SceneLowerer(context).lowerCore({
                 fog: features.includes("renderer:fog"),
                 parenting: features.includes("mesh:parenting"),
+                visibility: features.includes("mesh:visible"),
                 geometryAccess: features.includes("mesh:geometry-access"),
                 managedAnimationGroups: features.includes(
                     "animation:managed-groups",
@@ -1839,6 +1840,7 @@ ${composed.wgsl}`,
         if (
             features.includes("mesh:box") ||
             features.includes("mesh:from-data") ||
+            features.includes("mesh:update-positions") ||
             features.includes("mesh:ground") ||
             features.includes("mesh:ground-heightmap") ||
             features.includes("mesh:morph-targets") ||

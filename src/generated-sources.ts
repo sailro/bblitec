@@ -237,6 +237,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:extrude",
             "mesh:tube",
             "mesh:from-data",
+            "mesh:update-positions",
             "mesh:ground",
             "mesh:ground-heightmap",
             "mesh:morph-targets",

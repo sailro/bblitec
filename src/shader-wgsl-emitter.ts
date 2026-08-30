@@ -1,4 +1,5 @@
 import { shaderSamplerName } from "./shader-material-programs.js";
+import { shaderSystemUniformType } from "./shader-ir.js";
 import type {
     ShaderExpression,
     ShaderIrProgram,
@@ -87,29 +88,44 @@ function emitUniformBlock(
     block: ShaderUniformBlockReflection | undefined,
 ): string | undefined {
     if (!block) return undefined;
-    if (block.systemMatrices.length > 0 && block.members.length > 0) {
-        throw new Error(
-            "Native WGSL does not yet support mixed system and custom uniform blocks.",
-        );
-    }
     const group = block.stage === "vertex" ? 1 : 3;
-    if (block.systemMatrices.length > 0) {
+    if (block.systemMatrices.length > 0 && block.members.length === 0) {
         // The caller's own WGSL names these fields, so the struct is
         // written in the order the uniforms were declared rather than in
         // any order of this port's choosing.
         return `struct ShaderSystemUniforms {
 ${block.systemMatrices
-    .map((name) => `    ${name}: mat4x4<f32>,`)
+    .map((name) => `    ${name}: ${shaderSystemUniformType(name)},`)
     .join("\n")}
 }
 @group(${group}) @binding(0) var<uniform> shaderSystem: ShaderSystemUniforms;`;
     }
     return `struct ShaderUniforms {
+${block.systemMatrices
+    .map((name) => `    ${name}: ${shaderSystemUniformType(name)},`)
+    .join("\n")}
 ${block.members
     .map(({ name, type }) => `    ${name}: ${type},`)
     .join("\n")}
 }
 @group(${group}) @binding(0) var<uniform> shaderUniforms: ShaderUniforms;`;
+}
+
+function specializeMixedUniformRoot(
+    source: string,
+    block: ShaderUniformBlockReflection | undefined,
+): string {
+    if (
+        !block ||
+        block.systemMatrices.length === 0 ||
+        block.members.length === 0
+    ) {
+        return source;
+    }
+    // The native PAL deliberately packs one stage block. Preserve the pin's
+    // declaration order in that block and address both of the pin's logical
+    // roots through the one native binding.
+    return source.replaceAll("shaderSystem.", "shaderUniforms.");
 }
 
 /**
@@ -161,7 +177,7 @@ export function emitNativeWgslProgram(
           ].join("\n")
         : undefined;
     if (module.rawSource !== undefined) {
-        return [
+        return specializeMixedUniformRoot([
             "// Native-specialized WGSL generated from the bblitec shader surface.",
             emitUniformBlock(block),
             emitSamplerBindings(program, stage),
@@ -171,7 +187,7 @@ export function emitNativeWgslProgram(
             "",
         ]
             .filter((value): value is string => value !== undefined)
-            .join("\n");
+            .join("\n"), block);
     }
     const moduleStructs = module.structs.map((struct) =>
         [
@@ -186,7 +202,7 @@ export function emitNativeWgslProgram(
         module.entryPoint.returnAttribute?.kind === "location"
             ? `@location(${module.entryPoint.returnAttribute.value}) `
             : "";
-    return [
+    return specializeMixedUniformRoot([
         "// Native-specialized WGSL generated from the bblitec typed shader IR.",
         emitUniformBlock(block),
         emitSamplerBindings(program, stage),
@@ -201,5 +217,5 @@ export function emitNativeWgslProgram(
         ...emitStatements(module.entryPoint.statements, "    "),
         "}",
         "",
-    ].filter((value): value is string => value !== undefined).join("\n");
+    ].filter((value): value is string => value !== undefined).join("\n"), block);
 }

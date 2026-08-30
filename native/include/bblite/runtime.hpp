@@ -19,6 +19,8 @@ template <typename T>
 class Array;
 template <typename T>
 class Nullable;
+template <std::size_t N>
+class Tuple;
 class U8Array;
 }
 
@@ -87,11 +89,15 @@ struct PlatformKeyboardEvent {
     bool repeat = false;
 };
 
-/** Browser-neutral mouse-button data delivered by the platform event loop. */
+/** Browser-neutral mouse data delivered by the platform event loop. */
 struct PlatformMouseEvent {
     double button = 0.0;
+    double buttons = 0.0;
     double client_x = 0.0;
     double client_y = 0.0;
+    double movement_x = 0.0;
+    double movement_y = 0.0;
+    double delta_y = 0.0;
 };
 
 struct MeshHandle {
@@ -945,8 +951,72 @@ struct CompressedTexture {
     std::vector<CompressedMipLevel> mips;
 };
 
+/**
+ * Immutable-in-practice texture payload with copy-on-write value semantics.
+ *
+ * Texture objects are freely copied into material slots. Sharing their byte
+ * backing keeps those copies O(1), while a later loader mutation still
+ * detaches and preserves the old value-shaped behavior.
+ */
+class SharedTextureBytes {
+public:
+    using Storage = std::vector<std::uint8_t>;
+    using iterator = Storage::iterator;
+    using const_iterator = Storage::const_iterator;
+
+    SharedTextureBytes() : storage_(std::make_shared<Storage>()) {}
+    SharedTextureBytes(Storage bytes)
+        : storage_(std::make_shared<Storage>(std::move(bytes))) {}
+
+    SharedTextureBytes& operator=(Storage bytes) {
+        storage_ = std::make_shared<Storage>(std::move(bytes));
+        return *this;
+    }
+
+    [[nodiscard]] bool empty() const { return storage_->empty(); }
+    [[nodiscard]] std::size_t size() const { return storage_->size(); }
+    [[nodiscard]] const std::uint8_t* data() const { return storage_->data(); }
+    [[nodiscard]] std::uint8_t* data() {
+        detach();
+        return storage_->data();
+    }
+    [[nodiscard]] const_iterator begin() const { return storage_->begin(); }
+    [[nodiscard]] const_iterator end() const { return storage_->end(); }
+    [[nodiscard]] iterator begin() {
+        detach();
+        return storage_->begin();
+    }
+    [[nodiscard]] iterator end() {
+        detach();
+        return storage_->end();
+    }
+    [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const {
+        return (*storage_)[index];
+    }
+    [[nodiscard]] std::uint8_t& operator[](std::size_t index) {
+        detach();
+        return (*storage_)[index];
+    }
+
+    template <typename Iterator>
+    void assign(Iterator first, Iterator last) {
+        storage_ = std::make_shared<Storage>(first, last);
+    }
+
+    [[nodiscard]] operator const Storage&() const { return *storage_; }
+
+private:
+    void detach() {
+        if (storage_.use_count() != 1) {
+            storage_ = std::make_shared<Storage>(*storage_);
+        }
+    }
+
+    std::shared_ptr<Storage> storage_;
+};
+
 struct TextureData {
-    std::vector<std::uint8_t> bytes;
+    SharedTextureBytes bytes;
     // When both are non-zero, `bytes` are RGBA texels at this size rather
     // than an encoded image. `createTexture2DFromPixels` hands over the
     // caller's own bytes where every loader hands over a file, and the pin
@@ -1010,7 +1080,7 @@ struct FileTexture {
  * the caller's rather than an image header's.
  */
 struct PixelsTexture {
-    std::vector<std::uint8_t> rgba;
+    SharedTextureBytes rgba;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     TextureSamplerState sampler{};
@@ -1107,6 +1177,8 @@ struct ModelGeometry {
     // way, so the loader records it separately.
     Vec3 world_bounds_min{};
     Vec3 world_bounds_max{};
+    /** Bumped after each in-place procedural position upload. */
+    std::uint64_t position_version = 0;
 };
 
 /**
@@ -2443,6 +2515,15 @@ struct Engine {
         mouse_down_callbacks;
     std::vector<std::function<void(const PlatformMouseEvent&)>>
         mouse_up_callbacks;
+    std::vector<std::function<void(const PlatformMouseEvent&)>>
+        mouse_move_callbacks;
+    std::vector<std::function<void(const PlatformMouseEvent&)>>
+        mouse_wheel_callbacks;
+    std::vector<std::function<void()>> mouse_cancel_callbacks;
+    std::vector<std::function<void()>> pointer_lock_change_callbacks;
+    /** Desired and applied equivalents of the browser pointer-lock state. */
+    bool pointer_lock_requested = false;
+    bool pointer_locked = false;
     std::vector<std::function<void(bool)>> visibility_change_callbacks;
     /**
      * Application-owned `requestAnimationFrame` callbacks registered before
@@ -2473,6 +2554,8 @@ struct Engine {
     /** Whether original meshes and their clones have stable feature rows. */
     bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
+    /** Creation-ordered handles retained for source values that escape scope. */
+    std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
     std::vector<TransformNodeRecord> transform_nodes;
     std::vector<CameraRecord> cameras;
@@ -2525,6 +2608,17 @@ struct Engine {
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;
 };
+
+inline MaterialHandle remember_scene_material(
+    Engine& engine,
+    std::size_t slot,
+    MaterialHandle material) {
+    if (engine.scene_material_slots.size() <= slot) {
+        engine.scene_material_slots.resize(slot + 1u);
+    }
+    engine.scene_material_slots[slot] = material;
+    return material;
+}
 
 struct EnvironmentState {
     bool has_irradiance = false;
@@ -2888,6 +2982,13 @@ MeshHandle create_mesh_from_data(
     const std::vector<float>& uvs2,
     const std::vector<float>& tangents,
     const std::vector<float>& colors);
+void update_mesh_positions(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& positions,
+    double vertex_offset,
+    double vertex_count,
+    double source_vertex_offset);
 // The matrices parameter is a non-const lvalue reference on purpose: the
 // record keeps aliasing the caller's array for later per-frame updates
 // (the pinned setThinInstances adopts the array by reference), so a
@@ -3024,6 +3125,22 @@ void set_shader_uniform_value(
     float v1,
     float v2,
     float v3);
+template <typename... Values>
+void set_scene_shader_uniform_value(
+    Engine& engine,
+    std::size_t slot,
+    std::uint32_t offset,
+    Values... values) {
+    if (slot >= engine.scene_material_slots.size() ||
+        engine.scene_material_slots[slot].value == invalid_handle) {
+        return;
+    }
+    set_shader_uniform_value(
+        engine,
+        engine.scene_material_slots[slot],
+        offset,
+        values...);
+}
 void set_shader_texture(
     Engine& engine,
     MaterialHandle material,
@@ -3413,6 +3530,20 @@ void on_mouse_down(
 void on_mouse_up(
     Engine& engine,
     std::function<void(const PlatformMouseEvent&)> callback);
+void on_mouse_move(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback);
+void on_mouse_wheel(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback);
+void on_mouse_cancel(
+    Engine& engine,
+    std::function<void()> callback);
+void on_pointer_lock_change(
+    Engine& engine,
+    std::function<void()> callback);
+void request_pointer_lock(Engine& engine);
+void exit_pointer_lock(Engine& engine);
 void on_visibility_change(
     Engine& engine,
     std::function<void(bool)> callback);
@@ -3889,6 +4020,11 @@ void set_mesh_parent(
     Engine& engine,
     MeshHandle child,
     MeshHandle parent);
+/** src/scene/visibility.ts setMeshVisible cascade. */
+void set_mesh_visible(
+    Engine& engine,
+    MeshHandle mesh,
+    bool visible);
 [[nodiscard]] std::vector<float> mesh_cpu_positions(
     const Engine& engine,
     MeshHandle mesh);
@@ -3920,7 +4056,7 @@ GpuPickerHandle create_gpu_picker(Scene& scene);
 /** A picked scene node asserted to the pinned `Mesh` type. */
 [[nodiscard]] MeshHandle picked_mesh(const PickingInfo& info);
 /** The basic pick's nullable world point in the plain-data model. */
-[[nodiscard]] js::Nullable<std::array<double, 3>> picked_point(
+[[nodiscard]] js::Nullable<js::Tuple<3>> picked_point(
     const PickingInfo& info);
 /** Populate basic picking's world-space `pickedPoint` from its depth lane. */
 void populate_picked_point(

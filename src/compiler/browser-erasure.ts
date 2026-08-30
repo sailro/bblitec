@@ -38,6 +38,9 @@ export interface BrowserErasureContext {
     ): boolean;
     isBrowserDomValue(expression: ts.Expression): boolean;
     isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
+    isBrowserOnlyNullableClassFactoryCall(
+        call: ts.CallExpression,
+    ): boolean;
     /** Runtime visibility callback parameter, while compiling its body. */
     platformDocumentHidden(): string | undefined;
     /** The query string the reference pose is captured at. */
@@ -140,6 +143,9 @@ export class BrowserErasure {
         if (this.isPlatformTimeCall(unwrapped)) {
             return false;
         }
+        if (this.isPlatformPointerLockCall(unwrapped)) {
+            return false;
+        }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "hidden" &&
@@ -235,6 +241,13 @@ export class BrowserErasure {
             );
         }
         if (ts.isCallExpression(unwrapped)) {
+            if (
+                this.context.isBrowserOnlyNullableClassFactoryCall(
+                    unwrapped,
+                )
+            ) {
+                return true;
+            }
             if (
                 ts.isPropertyAccessExpression(
                     unwrapped.expression,
@@ -368,6 +381,29 @@ export class BrowserErasure {
         );
     }
 
+    /** Browser pointer-lock requests backed by SDL relative mouse mode. */
+    private isPlatformPointerLockCall(
+        expression: ts.Expression,
+    ): expression is ts.CallExpression {
+        if (
+            !ts.isCallExpression(expression) ||
+            expression.arguments.length !== 0 ||
+            !ts.isPropertyAccessExpression(expression.expression)
+        ) {
+            return false;
+        }
+        const receiver = expression.expression.expression;
+        const method = expression.expression.name.text;
+        return (
+            (method === "requestPointerLock" &&
+                this.context.isBrowserDomValue(receiver)) ||
+            (method === "exitPointerLock" &&
+                ts.isIdentifier(receiver) &&
+                receiver.text === "document" &&
+                this.context.isDefaultLibraryIdentifier(receiver))
+        );
+    }
+
     public evaluateBrowserCondition(
         expression: ts.Expression,
     ): boolean | undefined {
@@ -439,6 +475,17 @@ export class BrowserErasure {
                 kind: "string",
                 value: this.context.referenceSearch(),
             };
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            unwrapped.expression.name.text === "style" &&
+            this.context.isBrowserDomValue(unwrapped)
+        ) {
+            // CSS state has no native object. Treat a read as absent so a
+            // HUD's own idempotence guard (style.display === "flex") folds
+            // away while its DOM writes erase through the ordinary path.
+            return { kind: "null" };
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
@@ -599,6 +646,16 @@ export class BrowserErasure {
             return undefined;
         }
         if (ts.isCallExpression(unwrapped)) {
+            if (
+                this.context.isBrowserOnlyNullableClassFactoryCall(
+                    unwrapped,
+                )
+            ) {
+                // A native build has no instance of a DOM-only class. Model
+                // the erased nullable factory as its absent branch so guards
+                // over the result remain deterministic.
+                return { kind: "null" };
+            }
             if (
                 ts.isPropertyAccessExpression(
                     unwrapped.expression,

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <charconv>
 #include <cmath>
@@ -30,6 +31,26 @@
 #include <vector>
 
 namespace bbl::js {
+
+/** Runs a JavaScript finally block on every exit from its native scope. */
+template <typename F>
+class Finally {
+  public:
+    explicit Finally(F action) : action_(std::move(action)) {}
+    Finally(const Finally&) = delete;
+    Finally& operator=(const Finally&) = delete;
+    Finally(Finally&&) = delete;
+    Finally& operator=(Finally&&) = delete;
+    ~Finally() noexcept(noexcept(action_())) { action_(); }
+
+  private:
+    F action_;
+};
+
+template <typename F>
+[[nodiscard]] Finally<std::decay_t<F>> finally(F&& action) {
+    return Finally<std::decay_t<F>>(std::forward<F>(action));
+}
 
 /**
  * JavaScript ArrayBuffer storage for scene-owned binary data.
@@ -75,6 +96,8 @@ class U8Array {
           length_(length) {}
     explicit U8Array(const ArrayBuffer& buffer)
         : storage_(buffer.storage()), length_(buffer.byte_length()) {}
+    U8Array(const ArrayBuffer& buffer, std::size_t byte_offset)
+        : U8Array(buffer, byte_offset, buffer.byte_length() - byte_offset) {}
     U8Array(
         const ArrayBuffer& buffer,
         std::size_t byte_offset,
@@ -156,6 +179,13 @@ class DataView {
     }
 
     [[nodiscard]] std::size_t byte_length() const { return length_; }
+    [[nodiscard]] std::uint8_t get_uint8(std::size_t offset) const {
+        require(offset, 1);
+        return (*storage_)[offset_ + offset];
+    }
+    [[nodiscard]] std::int8_t get_int8(std::size_t offset) const {
+        return static_cast<std::int8_t>(get_uint8(offset));
+    }
     [[nodiscard]] std::uint16_t get_uint16(
         std::size_t offset,
         bool little_endian) const {
@@ -190,6 +220,11 @@ class DataView {
         std::size_t offset,
         bool little_endian) const {
         return static_cast<std::int32_t>(get_uint32(offset, little_endian));
+    }
+    [[nodiscard]] float get_float32(
+        std::size_t offset,
+        bool little_endian) const {
+        return std::bit_cast<float>(get_uint32(offset, little_endian));
     }
 
   private:
@@ -408,6 +443,31 @@ class RegExp {
         return groups;
     }
 
+    [[nodiscard]] Array<std::string> split(
+        const std::string& input) const {
+        Array<std::string> result;
+        std::sregex_token_iterator part(input.begin(), input.end(), expression_, -1);
+        const std::sregex_token_iterator end;
+        for (; part != end; ++part) result.push_back(part->str());
+        return result;
+    }
+
+    [[nodiscard]] std::string replace(
+        const std::string& input,
+        const std::string& replacement) const {
+        return std::regex_replace(
+            input,
+            expression_,
+            replacement,
+            global_
+                ? std::regex_constants::format_default
+                : std::regex_constants::format_first_only);
+    }
+
+    [[nodiscard]] bool test(const std::string& input) {
+        return exec(input).has_value();
+    }
+
     double last_index = 0.0;
 
   private:
@@ -620,6 +680,14 @@ class Map {
             ? MapGetResult<V>::missing()
             : MapGetResult<V>::found(entry->second->value.second);
     }
+    template <typename OptionalKey>
+        requires std::is_same_v<OptionalKey, K>
+    [[nodiscard]] typename MapGetResult<V>::Type get(
+        const Nullable<OptionalKey>& key) const {
+        return key.has_value()
+            ? get(*key)
+            : MapGetResult<V>::missing();
+    }
     [[nodiscard]] V& at(const K& key) {
         const auto entry = find(key);
         if (entry == storage_->index.end()) {
@@ -702,6 +770,24 @@ class Map {
     std::shared_ptr<Storage> storage_ =
         std::make_shared<Storage>();
 };
+
+/** Immediate snapshot of JavaScript Map.prototype.values iteration order. */
+template <typename K, typename V>
+[[nodiscard]] inline Array<V> map_values(const Map<K, V>& map) {
+    Array<V> values;
+    values.reserve(map.size());
+    for (const auto& entry : map) values.push_back(entry.second);
+    return values;
+}
+
+/** Immediate snapshot of JavaScript Map.prototype.keys iteration order. */
+template <typename K, typename V>
+[[nodiscard]] inline Array<K> map_keys(const Map<K, V>& map) {
+    Array<K> keys;
+    keys.reserve(map.size());
+    for (const auto& entry : map) keys.push_back(entry.first);
+    return keys;
+}
 
 template <typename T>
 class Set {
@@ -799,8 +885,58 @@ class Set {
 template <typename T>
 using Span = std::span<T>;
 
+/**
+ * Fixed-length JavaScript numeric array storage.
+ *
+ * A TypeScript tuple is still an Array object: assigning it to another field
+ * or record preserves identity, while `[...tuple]` explicitly makes a copy.
+ * Keeping the fixed extent avoids the allocation and bounds metadata of the
+ * general Array wrapper without losing that reference behavior.
+ */
 template <std::size_t N>
-using Tuple = std::array<double, N>;
+class Tuple {
+  public:
+    using Storage = std::array<double, N>;
+    using iterator = typename Storage::iterator;
+    using const_iterator = typename Storage::const_iterator;
+
+    Tuple() : values_(std::make_shared<Storage>()) {}
+    Tuple(std::initializer_list<double> values)
+        : values_(std::make_shared<Storage>()) {
+        if (values.size() != N) {
+            throw std::runtime_error("Tuple initializer has the wrong length.");
+        }
+        std::copy(values.begin(), values.end(), values_->begin());
+    }
+    Tuple(Storage values)
+        : values_(std::make_shared<Storage>(std::move(values))) {}
+
+    [[nodiscard]] double& operator[](std::size_t index) {
+        return (*values_)[index];
+    }
+    [[nodiscard]] const double& operator[](std::size_t index) const {
+        return (*values_)[index];
+    }
+    [[nodiscard]] constexpr std::size_t size() const { return N; }
+    [[nodiscard]] double* data() { return values_->data(); }
+    [[nodiscard]] const double* data() const { return values_->data(); }
+    [[nodiscard]] iterator begin() { return values_->begin(); }
+    [[nodiscard]] const_iterator begin() const { return values_->begin(); }
+    [[nodiscard]] iterator end() { return values_->end(); }
+    [[nodiscard]] const_iterator end() const { return values_->end(); }
+
+    [[nodiscard]] Tuple clone() const {
+        return Tuple{*values_};
+    }
+
+  private:
+    std::shared_ptr<Storage> values_;
+};
+
+template <std::size_t N>
+[[nodiscard]] inline Tuple<N> clone_tuple(const Tuple<N>& tuple) {
+    return tuple.clone();
+}
 
 // Primitive number interpolation for JavaScript template strings. The
 // finite path uses the shortest round-trippable spelling supplied by
@@ -866,6 +1002,31 @@ relative_slice_bounds(
         }
     }
     return value;
+}
+
+[[nodiscard]] inline std::string string_lower(std::string value) {
+    for (char& character : value) {
+        if (character >= 'A' && character <= 'Z') {
+            character = static_cast<char>(character - 'A' + 'a');
+        }
+    }
+    return value;
+}
+
+[[nodiscard]] inline std::string string_trim(const std::string& value) {
+    const auto whitespace = [](unsigned char character) {
+        return character == ' ' || character == '\t' || character == '\n' ||
+            character == '\r' || character == '\f' || character == '\v';
+    };
+    std::size_t begin = 0;
+    while (begin < value.size() && whitespace(static_cast<unsigned char>(value[begin]))) {
+        ++begin;
+    }
+    std::size_t end = value.size();
+    while (end > begin && whitespace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+    return value.substr(begin, end - begin);
 }
 
 [[nodiscard]] inline double string_index_of(
@@ -936,6 +1097,14 @@ relative_slice_bounds(
         : std::numeric_limits<double>::quiet_NaN();
 }
 
+[[nodiscard]] inline std::string string_at(
+    const std::string& value,
+    std::size_t index) {
+    return index < value.size()
+        ? std::string(1, value[index])
+        : std::string{};
+}
+
 [[nodiscard]] inline double number_from_string(
     const std::string& value) {
     const char* begin = value.c_str();
@@ -967,6 +1136,16 @@ relative_slice_bounds(
     return std::string(
         1,
         static_cast<char>(code));
+}
+
+[[nodiscard]] inline std::string string_from_char_codes(
+    std::initializer_list<double> values) {
+    std::string result;
+    result.reserve(values.size());
+    for (const double value : values) {
+        result += string_from_char_code(value);
+    }
+    return result;
 }
 
 [[nodiscard]] inline std::string string_pad_start(
@@ -1024,6 +1203,19 @@ template <typename T>
         begin_value,
         end_value);
     return Array<T>(values.begin() + begin, values.begin() + end);
+}
+
+/** `%TypedArray%.prototype.slice` for the vector-backed numeric views. */
+template <typename T>
+[[nodiscard]] inline std::vector<T> typed_array_slice(
+    const std::vector<T>& values,
+    double begin_value,
+    double end_value) {
+    const auto [begin, end] = relative_slice_bounds(
+        values.size(),
+        begin_value,
+        end_value);
+    return std::vector<T>(values.begin() + begin, values.begin() + end);
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
@@ -1193,7 +1385,9 @@ template <typename T, std::size_t Extent>
 // JavaScript typed arrays reached by the compiled subset.
 using F32Array = std::vector<float>;
 using U16Array = std::vector<std::uint16_t>;
+using I16Array = std::vector<std::int16_t>;
 using U32Array = std::vector<std::uint32_t>;
+using I32Array = std::vector<std::int32_t>;
 
 // src/math/mat4-compose.ts + mat4-compose-into.ts: JavaScript evaluates the
 // quaternion products in double precision, then each Float32Array store
@@ -1300,6 +1494,17 @@ using U32Array = std::vector<std::uint32_t>;
     return static_cast<std::uint16_t>(to_uint32(value));
 }
 
+[[nodiscard]] inline std::int32_t to_int32(double value) {
+    return uint32_as_int32(to_uint32(value));
+}
+
+[[nodiscard]] inline std::int16_t to_int16(double value) {
+    const std::uint16_t wrapped = to_uint16(value);
+    return wrapped <= 0x7fffu
+        ? static_cast<std::int16_t>(wrapped)
+        : static_cast<std::int16_t>(static_cast<std::int32_t>(wrapped) - 0x10000);
+}
+
 [[nodiscard]] inline std::uint8_t to_uint8(double value) {
     return static_cast<std::uint8_t>(to_uint32(value));
 }
@@ -1329,8 +1534,16 @@ inline void array_fill(U8Array& values, std::uint8_t value) {
     return U16Array(static_cast<std::size_t>(count), 0u);
 }
 
+[[nodiscard]] inline I16Array i16_array_sized(double count) {
+    return I16Array(static_cast<std::size_t>(count), 0);
+}
+
 [[nodiscard]] inline U32Array u32_array_sized(double count) {
     return U32Array(static_cast<std::size_t>(count), 0u);
+}
+
+[[nodiscard]] inline I32Array i32_array_sized(double count) {
+    return I32Array(static_cast<std::size_t>(count), 0);
 }
 
 template <typename Output, typename Values, typename Convert>
@@ -1351,6 +1564,11 @@ template <typename Values>
 }
 
 template <typename Values>
+[[nodiscard]] inline I16Array i16_array_from(const Values& values) {
+    return typed_array_from_values<I16Array>(values, to_int16);
+}
+
+template <typename Values>
 [[nodiscard]] inline F32Array f32_array_from(const Values& values) {
     return typed_array_from_values<F32Array>(values, [](double value) {
         return static_cast<float>(value);
@@ -1360,6 +1578,11 @@ template <typename Values>
 template <typename Values>
 [[nodiscard]] inline U32Array u32_array_from(const Values& values) {
     return typed_array_from_values<U32Array>(values, to_uint32);
+}
+
+template <typename Values>
+[[nodiscard]] inline I32Array i32_array_from(const Values& values) {
+    return typed_array_from_values<I32Array>(values, to_int32);
 }
 
 /**

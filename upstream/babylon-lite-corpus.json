@@ -1540,6 +1540,565 @@
       ]
     },
     {
+      "id": "quake",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/quake.ts",
+      "reference": {
+        "source": "reference/quake/babylon-lite-golden.png",
+        "sha256": "922572421ddc72247ab075c9a3cfc4d98c6e1ef2426256054dbef398ea50e415"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake.ts",
+          "sha256": "ff145b0298f2787785291d474ee2b9b63feec4a74fc72b7b480a3a0772c810ee"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/audio/sound.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/audio/sound.ts",
+          "sha256": "6c8402c2477c9a806751316bced8ea394f3e0772452a41d30d7b11bc3f54d080"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/bsp/parse-bsp.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/bsp/parse-bsp.ts",
+          "sha256": "c76df0f551b0769c541a46059b4e594f6e3f1375596303c9a5834631e71d97a8"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/combat/grenades.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/combat/grenades.ts",
+          "sha256": "69e7a0f7c448cab2d1c00479fba283e941e7760cf6142a822573dea06120997e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/combat/monsters.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/combat/monsters.ts",
+          "sha256": "03a9c5d1a279b5ccaec0b4f54dcb8f65e51a4843aa289b58a5a89b9c80b911cc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/combat/weapons.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/combat/weapons.ts",
+          "sha256": "66a0b894069c09ef0929d75b26b629dca78326b8e305a7d21768b8b498e7fd30"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/entities/mover-system.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/entities/mover-system.ts",
+          "sha256": "610eaefaf25ee392857b38868cf1f8f5f442954840066a8ac32ca2c8b959ae1a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/entities/parse-entities.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/entities/parse-entities.ts",
+          "sha256": "133aa5a1624f0bb41bdf5cb64bf1d5a07ba940a9459305cdadf85ee5ed0f859b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/geometry/build-geometry.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/geometry/build-geometry.ts",
+          "sha256": "cffda90a578016b4632d8f67e7d9c0aa4d00004faaad8cf8190a6402e8f2b241"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/geometry/lightmap.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/geometry/lightmap.ts",
+          "sha256": "8e77f3923c3c395b3091c1960f95391635e3f72b3ae93f6cac970610209d5b18"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/hud/sbar.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/hud/sbar.ts",
+          "sha256": "33758542df5db535fa375d25d035df46fedb4cd3f38afa2037724778a0b0e779"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/palette.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/palette.ts",
+          "sha256": "b259117e0231bd039dc10c035687847f91378b1300fcf781ba7b0796c311f8b6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/physics/collision.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/physics/collision.ts",
+          "sha256": "9c7223071971b0a502b575dd7db39436ee090dadbce36083ea5a25fff3667145"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/items.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/items.ts",
+          "sha256": "6b56a74db28b803d895a4b2aff9cb36723073b0d37262c0bee07ad952d7c608b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/mdl.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/mdl.ts",
+          "sha256": "5107d5c3126bcbd67e4d348b16d91afedce3548fbbebbced4f9d7d7aae7c4775"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/quake-material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/quake-material.ts",
+          "sha256": "35244c9ebf39d1f4aaa7fc0c227a1dea1c26e7dd9ac249d86a633f55ceac80f6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/sky-material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/sky-material.ts",
+          "sha256": "c009e603da3b69076efa19f13bc5aa0a2238c2ef3d07bc7697412b7751d017dd"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/texture-cache.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/texture-cache.ts",
+          "sha256": "1e101e7c021c465de08c71fcdcf49032f0d2862049d576b150862a2797a40d70"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/viewmodel.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/viewmodel.ts",
+          "sha256": "d999796a1a10d7afc976fb69f8473668abc331d3a25cdf1ff2794094d10e5fa8"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/quake/render/wad2.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/wad2.ts",
+          "sha256": "c910a243c6a87332ad439066335271418e8cde42878ff482ecdf641e937f7d7e"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/COPYING.txt",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/COPYING.txt",
+          "sha256": "c3426ae10fd52ab1a3c3d4de4f2fae60543403e3cfd09ae5dc2ec16ae4717d28"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/CREDITS.txt",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/CREDITS.txt",
+          "sha256": "60b632851de3e5d02cb96ed158ff06700ced1c9fb6425f2d5d10509392021bd0"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/gfx.wad",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/gfx.wad",
+          "sha256": "5f3e49ad8e30215caa723cb845b97595eae42db794d2b666e9ce150bff88f819"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/lq_e1m1.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/lq_e1m1.bsp",
+          "sha256": "5f9ffd2460566574260f1b7782066f0e5e2cded75d0ded5eb3122c9b133c3047"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_batt0.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_batt0.bsp",
+          "sha256": "4d7f5cfcfa90ea45556a6db1fa11067782f9b927f665ca90b93a9149ef8ce9d8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_batt1.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_batt1.bsp",
+          "sha256": "c9ca787865b8038addd5f78ea88389626aa29f6cdd89164d2723859fc676554c"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_bh10.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_bh10.bsp",
+          "sha256": "ae58043f8629aa9fd5a9509313a23b582e15d2c19f0e228b1fd30665965c1858"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_bh100.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_bh100.bsp",
+          "sha256": "1843c8df4544afce14cd28f84a0ef094ff3d554760ec43b89cc8d0f1798ae674"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_bh25.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_bh25.bsp",
+          "sha256": "d5f9f8d072257175aabd473d696e66ff508c823f3a43009c9eb9007ca6de5570"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_explob.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_explob.bsp",
+          "sha256": "f43bee7d477774f682af5e1a51157ddb9189baceaf5577a0e8b6e409fd31cea8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_nail0.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_nail0.bsp",
+          "sha256": "58ca61158d9dbe00af77a5874dba2f81b74851407975edf900aacef256dce4d5"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_nail1.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_nail1.bsp",
+          "sha256": "a47753dede3ad610248fce17bd1d3791b3177ee74c1b5b74c408948dda20fcb7"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_rock0.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_rock0.bsp",
+          "sha256": "40c89b776e889396777f13d9e2f98642edeb2d0ee613b2272557818c95537a14"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_rock1.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_rock1.bsp",
+          "sha256": "7b35dc6bb20f0aa965b14863e73d0f09523892518119f4ca9fa551c00ca801f2"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_shell0.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_shell0.bsp",
+          "sha256": "bb9d3ee18a7ee3f815f7952dae34fea65085adc74f30d820a7d475d4fe1cd89b"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/maps/b_shell1.bsp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/maps/b_shell1.bsp",
+          "sha256": "7e5f24e8c5df657ee629da108b056d5741926eddc18979c5c28a21cbe4a1668d"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/palette.lmp",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/palette.lmp",
+          "sha256": "6b20b5bc4ea965ef1852b05670d043ca16148a0ecad4e63028121c8aebc268fe"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/armor.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/armor.mdl",
+          "sha256": "eeefab2ffdfdf898c666f1ed79a2ff0b74557558230e14d2f051db9f158dce3d"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/dog.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/dog.mdl",
+          "sha256": "0f34b3b1b4b76c5b4be17b7ebab4e4793ad246572044eac9b948f7f54dd3eb49"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/g_light.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/g_light.mdl",
+          "sha256": "af505cd66d11baca88030d666204f0195152ea2d8a140403044c6986772ca470"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/g_nail.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/g_nail.mdl",
+          "sha256": "e9a425c9acb51f9be52c3e29524988f269fcf643098ea00e8006ffe6455332ac"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/g_nail2.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/g_nail2.mdl",
+          "sha256": "7fae5d10554fc66b9afb5f5d17fc998c1ad968fe5dba561fd8aac46e0d9ade85"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/g_rock.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/g_rock.mdl",
+          "sha256": "fb7336d98a26e6d75daec954ff04990ffa2f4a45501cbb283fe64663132b97b2"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/g_rock2.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/g_rock2.mdl",
+          "sha256": "0871584e49f7d6530d583333b6793fa6ca405abf98a2220b96ec2a6636c3b2a4"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/g_shot.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/g_shot.mdl",
+          "sha256": "4103efdaab9561171ad34e4e6e8cb77b80f88a53c85539843118a21651e9c0ad"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/grenade.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/grenade.mdl",
+          "sha256": "447e1893c1f264853ac77eab0f03d4b08fdc06cfe0ccac74ddfde1d34c27d954"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/invisibl.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/invisibl.mdl",
+          "sha256": "56150e3989e85f852ae283d6828beed09188fac60eaa80b3452e0e0f8a963b99"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/invulner.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/invulner.mdl",
+          "sha256": "5305334768e250cc4f262c2fbdfe13ec5a3028a2ba0a400228be8345c48f49c8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/quaddama.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/quaddama.mdl",
+          "sha256": "4f1ee2005b90be2022f224a3c0a17ece1fcb61177b30e9ba30629cd97e01caaa"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/soldier.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/soldier.mdl",
+          "sha256": "6eead93ff27eb884e5cd09b1c213ff52d125f9c41a9964b1eb069d405579b00d"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/suit.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/suit.mdl",
+          "sha256": "1be92a3ebc4d7917c74430888a846d6fb88f92f803807e205374a3a1e340abd6"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/v_nail.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/v_nail.mdl",
+          "sha256": "d7cc9cbfe5f1f7c7a8ae79e29eef34d6b025c5dfb8c716ea149f292a04f65c76"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/v_nail2.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/v_nail2.mdl",
+          "sha256": "012825cc55d604e97ab2306087a1764faf4c716d9f11ce64381cd83de70b8d6a"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/v_rock.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/v_rock.mdl",
+          "sha256": "0132ae6581a43ffdbcc0c24574a2bf0c61b47bef683cc01ab5bd77156082124e"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/v_shot.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/v_shot.mdl",
+          "sha256": "e748490b53f53c415c89e4fdcb148ad3223925c2d6e0300492e64a1ccb31ffcc"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/progs/v_shot2.mdl",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/progs/v_shot2.mdl",
+          "sha256": "2c75e5b40a405ae5cb2af28f63197de44bc5fd188fcec31d621c67c877fd55a8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/dog/dattack1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/dog/dattack1.wav",
+          "sha256": "ad1ca6e82347a45eafea14fbdb857030406b7d70a06887fd970cf851e37c4b1d"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/dog/ddeath.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/dog/ddeath.wav",
+          "sha256": "55f748075fc893dfc32e94b19fbff1f3632f09ce2e16b46cc7b4e5754ad84ef8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/dog/dpain1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/dog/dpain1.wav",
+          "sha256": "493e40a695fe0850972044d4b20508d0d45f9735f3de70383a283b1b52a1f3ad"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/dog/dsight.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/dog/dsight.wav",
+          "sha256": "74a9969517e051fb13f77ee425d4f77a3773b1b4cf9b60d98dc3cf4e8cdba27f"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/doors/baseuse.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/doors/baseuse.wav",
+          "sha256": "451fb48fcd251fa7a1e23fa440dfc69aa588796d6750492a04eaca93ee13f6ee"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/doors/doormv1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/doors/doormv1.wav",
+          "sha256": "de9abbadb3bda24dcda39e5424d7cd18af6d488bd31d6ae5749c8bf7093c00ef"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/doors/drclos4.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/doors/drclos4.wav",
+          "sha256": "302d4d5377c7102089e98195aa411a2dd221a3e09196b28c1035ea09f11a98d0"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/armor1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/armor1.wav",
+          "sha256": "553e1a816712c319fec12565c3a410c3f0b759e6f6eba47ec9eef745432d4494"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/damage.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/damage.wav",
+          "sha256": "02317ccbe2c1884ae6dc335e70118f90286d1f590d1d9c80dd45ae24f5261928"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/health1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/health1.wav",
+          "sha256": "f90fbea0d99bb51398b2a07d891d88f8abebe231cc2ffe6c021dcdd599315c5e"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/inv1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/inv1.wav",
+          "sha256": "0c144ecd64da17b560606e116268a6821703215222258e099f42ac7c5e86ca4f"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/protect.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/protect.wav",
+          "sha256": "e61ccc5a12327b93be7c9be6f8f43c803057353a2ca434c15e76753397502821"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/r_item2.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/r_item2.wav",
+          "sha256": "c6c01e57a20791a77c1eaf41203d75f390074276e70bb176b2bf44aea2d35619"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/items/suit.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/items/suit.wav",
+          "sha256": "b55ccb3a4286034d97a6726e31db3e6d09b076bb7074aeca3e6f92e979e59eb1"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/death1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/death1.wav",
+          "sha256": "456dcea373dac2e915f10c584daca7365fa803929eeef46fd320e1d4ae4b440d"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/death2.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/death2.wav",
+          "sha256": "231b808657288a6612a793e171d61db227f500b49c13a6795ce651a6322d42f5"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/death3.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/death3.wav",
+          "sha256": "5c7bcd28cf6fe1da5d4f33b38bbc4f7f9b0b42cd3e2528a8891addf514a47f8a"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/death4.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/death4.wav",
+          "sha256": "1c6502ebcaf77faefade06dde13af53c325ac129610d609d2ed21909d4b81bd8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/death5.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/death5.wav",
+          "sha256": "743cf34221ff0a1135ef4d9b3efdf23200dcf85709fda7624a0fcabf93ef163c"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/pain1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/pain1.wav",
+          "sha256": "f168d411c4586b05dd215552489a47632f2fb3dc48b659f420f1b445b458cfb2"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/pain2.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/pain2.wav",
+          "sha256": "647a6939f8c592d346ede3c55a93f7f1b5a0cba02b85c6a7c2e8fbab7f1019df"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/pain3.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/pain3.wav",
+          "sha256": "857bfbf8576be9a158183583a2c99d886d3c8c3685eb5562c797dda43e61db50"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/pain4.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/pain4.wav",
+          "sha256": "051410e07344931d5d461ce025b41fdd5d33f433ed0fa3e97d0378d82ae19fa1"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/pain5.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/pain5.wav",
+          "sha256": "6122a5a84f38493baf4a738193c5188b5e03295ba16e4af861c240f222a5f1df"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/player/pain6.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/player/pain6.wav",
+          "sha256": "78234221176d076b53d562b3b4bb990b1b5f4ef5e182fdb72eb2c5287b7b6bcc"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/soldier/death1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/soldier/death1.wav",
+          "sha256": "f0532633620acdcb059ca4f95e442e953a674d70ed3c88a0de381d733a3633d8"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/soldier/pain1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/soldier/pain1.wav",
+          "sha256": "af192a8cedab55aa0cf61970d11bc949c69133513d6bb2816e606257d1fea6b4"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/soldier/pain2.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/soldier/pain2.wav",
+          "sha256": "2ee5bc530f33fe85873b2ac874d957952d5c95e8995d162ca0888d8b6ecc125e"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/soldier/sattck1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/soldier/sattck1.wav",
+          "sha256": "10ac0ca64ccaf923a49e0c266eaeb4e66db0c0247abc6bb52862818402b74c63"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/soldier/sight1.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/soldier/sight1.wav",
+          "sha256": "a49b2bfdabb584804c062a047dec22f91288fd71319d991613d3451b5fded24e"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/bounce.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/bounce.wav",
+          "sha256": "0532d5538f11bdcac0613c07b63ef6c4eec7e2919399bb24177f7fa55fa05323"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/grenade.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/grenade.wav",
+          "sha256": "22550bb08115daf4edf06c06bd07f9aa873ef3a3e78732effd5b0e86f4577fc6"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/guncock.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/guncock.wav",
+          "sha256": "10ac0ca64ccaf923a49e0c266eaeb4e66db0c0247abc6bb52862818402b74c63"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/lock4.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/lock4.wav",
+          "sha256": "865713c81d2cbac6791d448fabf10659088b96d8c526687374a56e8257396322"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/pkup.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/pkup.wav",
+          "sha256": "8901ca2daedbebc5fec1382cc6cf8f8bae0e27761769a88cbd94814ca74f1534"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/r_exp3.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/r_exp3.wav",
+          "sha256": "1e8f88abe043d8efc62e5de092984926b281c38f6d70092c678c79e1b8fda251"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/rocket1i.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/rocket1i.wav",
+          "sha256": "cc4fc1a71adf600fb187b5a2e9a0641e936598f3541ccc88f1c2fc736a3c7630"
+        },
+        {
+          "upstreamPath": "lab/public/librequake/sound/weapons/shotgn2.wav",
+          "origin": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/full.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/librequake/sound/weapons/shotgn2.wav",
+          "sha256": "2f2655266bf8e5fab75aa96bdead9a25b154cf6b2b3f4bfc8c1c5ee1ee8b05af"
+        }
+      ]
+    },
+    {
       "id": "torus-states",
       "entry": "corpus/babylon-lite/lab/lite/src/demos/torus-states.ts",
       "reference": {
@@ -2032,6 +2591,51 @@
           "upstreamPath": "lab/public/littlest-tokyo/LittlestTokyo.glb",
           "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo/LittlestTokyo.glb",
           "sha256": "3504289bfb183f0cfef0f1606c9c7764a0fe642f8aba67c0eed46a6f5563b77c"
+        }
+      ]
+    },
+    {
+      "id": "bath-day",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/bath-day.ts",
+      "reference": {
+        "source": "reference/bath-day/babylon-lite-golden.png",
+        "sha256": "60cc48484cfb252beb2f61d3391ce69a12b0b36f6f781e3d6c98743b526fe9e6"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/bath-day.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/bath-day.ts",
+          "sha256": "4d2cda8fc7782111bc52134693a87a8aec1ccb4023634368878641aafcfeb2d2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/bath_day.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/bath_day.glb",
+          "sha256": "95b7cc47197f15e68e4322ebebdcacb21ac27911e9ac77b2dc4f385eb2dac936"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        },
+        {
+          "upstreamPath": "lab/public/draco_decoder.js",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/draco_decoder.js",
+          "sha256": "e8049906ef3f8f75d3456c22a3f31bfdfe5b5b5bd09ccdec613b9e9a49d554d8"
+        },
+        {
+          "upstreamPath": "lab/public/draco_decoder.wasm",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/draco_decoder.wasm",
+          "sha256": "2516a4e43526d71787bf2f678f951329f7f858f8f15f42d4bc9e370b31a0da3a"
         }
       ]
     }

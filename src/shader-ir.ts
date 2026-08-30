@@ -716,12 +716,29 @@ function parseRawModule(
  * and an unreached arm is one this port would be guessing at.
  */
 export const shaderSystemMatrixTable = [
-    { name: "world", enumerator: "world" },
-    { name: "worldView", enumerator: "world_view" },
-    { name: "view", enumerator: "view" },
-    { name: "projection", enumerator: "projection" },
-    { name: "viewProjection", enumerator: "view_projection" },
-    { name: "worldViewProjection", enumerator: "world_view_projection" },
+    { name: "world", enumerator: "world", type: "mat4x4<f32>", floatSize: 16 },
+    { name: "worldView", enumerator: "world_view", type: "mat4x4<f32>", floatSize: 16 },
+    { name: "view", enumerator: "view", type: "mat4x4<f32>", floatSize: 16 },
+    { name: "projection", enumerator: "projection", type: "mat4x4<f32>", floatSize: 16 },
+    {
+        name: "viewProjection",
+        enumerator: "view_projection",
+        type: "mat4x4<f32>",
+        floatSize: 16,
+    },
+    {
+        name: "worldViewProjection",
+        enumerator: "world_view_projection",
+        type: "mat4x4<f32>",
+        floatSize: 16,
+    },
+    // WGSL uniform vec3 values occupy one aligned vec4 slot.
+    {
+        name: "cameraPosition",
+        enumerator: "camera_position",
+        type: "vec3<f32>",
+        floatSize: 4,
+    },
 ] as const;
 
 export type ShaderSystemMatrix =
@@ -737,22 +754,41 @@ export function isShaderSystemMatrix(
     return (shaderSystemMatrices as readonly string[]).includes(name);
 }
 
+function shaderSystemUniformRow(
+    name: ShaderSystemMatrix,
+): (typeof shaderSystemMatrixTable)[number] {
+    const row = shaderSystemMatrixTable.find(
+        (candidate) => candidate.name === name,
+    );
+    if (!row) throw new Error(`Unknown shader system uniform '${name}'.`);
+    return row;
+}
+
 /** The C++ enumerator for a system matrix; total over the table. */
 export function shaderSystemMatrixEnumerator(
     name: ShaderSystemMatrix,
 ): string {
-    const row = shaderSystemMatrixTable.find(
-        (candidate) => candidate.name === name,
-    );
-    if (!row) {
-        throw new Error(`Unknown shader system matrix '${name}'.`);
-    }
-    return row.enumerator;
+    return shaderSystemUniformRow(name).enumerator;
+}
+
+export function shaderSystemUniformType(
+    name: ShaderSystemMatrix,
+): ShaderType {
+    return shaderSystemUniformRow(name).type;
+}
+
+export function shaderSystemUniformFloatSize(
+    name: ShaderSystemMatrix,
+): number {
+    return shaderSystemUniformRow(name).floatSize;
 }
 
 function parseUniformSignature(signature: string): { name: string; type: ShaderType } {
     if (isShaderSystemMatrix(signature)) {
-        return { name: signature, type: "mat4x4<f32>" };
+        return {
+            name: signature,
+            type: shaderSystemUniformType(signature),
+        };
     }
     const separator = signature.indexOf(":");
     if (separator < 1) throw new Error(`Invalid shader uniform '${signature}'.`);
@@ -901,7 +937,11 @@ function reflectUniformBlock(
     );
     if (systemMatrices.length === 0 && custom.length === 0) return undefined;
 
-    let slot = systemMatrices.length * 4;
+    let slot = systemMatrices.reduce(
+        (sum, name) =>
+            sum + shaderSystemUniformFloatSize(name) / 4,
+        0,
+    );
     let component = 0;
     const members: ShaderUniformMemberReflection[] = [];
     for (const uniform of custom) {
@@ -943,7 +983,8 @@ export function lowerWgslShaderProgram(
 ): ShaderIrProgram {
     const complexModule = (text: string): boolean =>
         /(^|\n)\s*(?:const\s+|fn\s+)/.test(text) ||
-        /\bfor\s*\(/.test(text);
+        /\bfor\s*\(/.test(text) ||
+        /\bvar\s+[A-Za-z_][A-Za-z0-9_]*\s*=/.test(text);
     const lowerModule = (
         text: string,
         stage: ShaderStage,

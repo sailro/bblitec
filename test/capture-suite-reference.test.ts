@@ -10,6 +10,7 @@ import test from "node:test";
 import {
     bundledDemoAssetPath,
     createSuiteSceneServer,
+    flattenedBundledDemoAssetPath,
     fixedAnimationFrameScript,
     pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
@@ -27,6 +28,27 @@ test("maps an unbundled nested demo asset URL to its bundle-relative file", () =
         ),
         undefined,
     );
+});
+
+test("maps a nested module asset URL to the bundle directory", () => {
+    const root = mkdtempSync(resolve(".capture-suite-flat-"));
+    const asset = resolve(
+        root,
+        "lab/lite/src/demos/librequake/maps/item.bsp",
+    );
+    try {
+        mkdirSync(resolve(asset, ".."), { recursive: true });
+        writeFileSync(asset, "asset");
+        assert.equal(
+            flattenedBundledDemoAssetPath(
+                "/lab/lite/src/demos/quake/render/librequake/maps/item.bsp",
+                root,
+            ),
+            "lab/lite/src/demos/librequake/maps/item.bsp",
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
 });
 
 test("relocates the shared Havok binary to pinned lab/public root", () => {

@@ -71,6 +71,7 @@ export interface MeshIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileCondition(expression: ts.Expression): string;
     reachJsData(): void;
     expectObjectLiteral(
         expression: ts.Expression,
@@ -219,6 +220,19 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "setMeshVisible": {
+            context.expectArgumentCount(call, 2, 2);
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            context.reachFeature("mesh:visible", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_mesh_visible(` +
+                    `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
+                    `${context.compileCondition(call.arguments[1]!)})`,
+            };
+        }
         case "mat4Compose": {
             context.expectArgumentCount(call, 10, 10);
             context.reachJsData();
@@ -357,6 +371,36 @@ export function compileMeshIntrinsic(
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
                 directMorphCompatible: true,
+            };
+        }
+
+        case "updateMeshPositions": {
+            context.expectArgumentCount(call, 3, 6);
+            const engine = context.compileValue(call.arguments[0]!);
+            const mesh = context.compileValue(call.arguments[1]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[1]!);
+            context.expectSameEngine(engine, mesh, call);
+            const positions = context.compileTypedArrayArgument(
+                call.arguments[2]!,
+                "f32array",
+            );
+            const vertexOffset = call.arguments[3]
+                ? context.compileNumber(call.arguments[3], "double")
+                : "0.0";
+            const vertexCount = call.arguments[4]
+                ? context.compileNumber(call.arguments[4], "double")
+                : "std::numeric_limits<double>::quiet_NaN()";
+            const sourceVertexOffset = call.arguments[5]
+                ? context.compileNumber(call.arguments[5], "double")
+                : "0.0";
+            context.reachFeature("mesh:update-positions", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::update_mesh_positions(${engine.cpp}, ${mesh.cpp}, ` +
+                    `${positions}, ${vertexOffset}, ${vertexCount}, ` +
+                    `${sourceVertexOffset})`,
             };
         }
 

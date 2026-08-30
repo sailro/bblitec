@@ -58,7 +58,11 @@ import {
     type NativeCaptureResult,
 } from "./capture-native.js";
 import { compareImages } from "./parity.js";
-import { resolveScene, scenes } from "./scene-registry.js";
+import {
+    resolveScene,
+    scenes,
+    type SceneDefinition,
+} from "./scene-registry.js";
 import { holdDistLock } from "./dist-lock.js";
 import { runNeutralityReport } from "./scene-neutrality.js";
 import {
@@ -91,6 +95,7 @@ import {
     validationShaderOutput,
     writeValidationCheckpoint,
 } from "./validation-resume.js";
+import { runConcurrently } from "./run-concurrently.js";
 
 function run(
     command: string,
@@ -240,7 +245,7 @@ async function compile(idOrSource: string): Promise<void> {
             runBuffered({}, (run) =>
                 run(process.execPath, compilerArguments(scene)),
             ),
-        "compiled",
+        { completed: "compiled" },
     );
 }
 
@@ -271,6 +276,14 @@ async function parity(
     if (parsed.gpuDebug) enableGpuDebug();
     if (idOrSource === "all") {
         const measured = scenes.filter((scene) => scene.parity);
+        const audioScenes: SceneDefinition[] = [];
+        const parallelScenes: SceneDefinition[] = [];
+        for (const scene of measured) {
+            (sceneUsesNativeFeature(scene, "audio:engine")
+                ? audioScenes
+                : parallelScenes
+            ).push(scene);
+        }
         // One child process per scene, not one promise.
         //
         // A differential run selects its backend through
@@ -297,7 +310,8 @@ async function parity(
             concurrencyOverride("BBLITE_PARALLEL_PARITY") ?? 8;
         if (inFlight > 1) {
             console.log(
-                `Measuring ${measured.length} scenes, ${inFlight} at a time.`,
+                `Measuring ${measured.length} scenes, ${inFlight} at a time ` +
+                    `(${audioScenes.length} audio scenes serialized).`,
             );
         }
         // The children are scene-command.js processes themselves; the
@@ -308,39 +322,71 @@ async function parity(
             ...process.env,
             BBLITE_DIST_LOCK_HELD: "1",
         };
-        await runConcurrently(
-            measured,
-            inFlight,
-            (scene) => scene.id,
-            (scene) =>
-                runBuffered(
-                    {
-                        buffer: inFlight > 1,
-                        // The settle that has always followed a measured
-                        // run on Windows; per worker rather than per
-                        // scene.
-                        ...(process.platform === "win32"
-                            ? { settleMs: 500 }
-                            : {}),
-                    },
-                    (run) =>
-                        run(
-                            process.execPath,
-                            [
-                                resolve("dist/src/scene-command.js"),
-                                "parity",
-                                scene.id,
-                                ...(differential
-                                    ? ["--differential"]
-                                    : passthrough),
-                                ...(parsed.gpuDebug
-                                    ? ["--gpu-debug"]
-                                    : []),
-                            ],
-                            childEnvironment,
-                        ),
-                ),
-            "measured within their gates",
+        const measureBatch = async (
+            batch: readonly SceneDefinition[],
+            limit: number,
+        ): Promise<void> =>
+            runConcurrently(
+                batch,
+                limit,
+                (scene) => scene.id,
+                (scene) =>
+                    runBuffered(
+                        {
+                            buffer: limit > 1,
+                            // The settle that has always followed a measured
+                            // run on Windows; per worker rather than per
+                            // scene.
+                            ...(process.platform === "win32"
+                                ? { settleMs: 500 }
+                                : {}),
+                        },
+                        (run) =>
+                            run(
+                                process.execPath,
+                                [
+                                    resolve("dist/src/scene-command.js"),
+                                    "parity",
+                                    scene.id,
+                                    ...(differential
+                                        ? ["--differential"]
+                                        : passthrough),
+                                    ...(parsed.gpuDebug
+                                        ? ["--gpu-debug"]
+                                        : []),
+                                ],
+                                childEnvironment,
+                            ),
+                    ),
+                {
+                    // A saturated adapter can occasionally reject one child
+                    // even though the same scene is healthy in isolation.
+                    // Drain the parallel batch, then give only those failures
+                    // one exclusive attempt. A repeat still fails the sweep.
+                    retryFailuresSequentially: limit > 1,
+                },
+            );
+        // LabSound owns a process-global hardware device. Separate native
+        // processes do not make simultaneous contexts safe on Windows: the
+        // contexts can race while tearing down and both exit with an access
+        // violation. Keep the GPU-only bulk parallel, then give each scene
+        // whose generated manifest reaches audio:engine exclusive ownership.
+        const failures: string[] = [];
+        for (const [batch, limit] of [
+            [parallelScenes, inFlight],
+            [audioScenes, 1],
+        ] as const) {
+            try {
+                await measureBatch(batch, limit);
+            } catch (error) {
+                failures.push((error as Error).message);
+            }
+        }
+        if (failures.length > 0) {
+            throw new Error(failures.join("\n  "));
+        }
+        console.log(
+            `All ${measured.length} scenes measured within their gates.`,
         );
         return;
     }
@@ -357,19 +403,26 @@ async function build(idOrSource: string): Promise<void> {
     const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
     const reachesAudio =
         idOrSource === "all" ||
-        selected.some((scene) => {
-            const features = resolve(scene.output, "features.cmake");
-            return (
-                existsSync(features) &&
-                readFileSync(features, "utf8").includes("audio:engine")
-            );
-        });
+        selected.some((scene) =>
+            sceneUsesNativeFeature(scene, "audio:engine"),
+        );
     requireDevelopmentPreflight({
         browser: false,
         labSound: reachesAudio,
         shaders: false,
     });
     await buildScenes(selected);
+}
+
+function sceneUsesNativeFeature(
+    scene: SceneDefinition,
+    feature: string,
+): boolean {
+    const features = resolve(scene.output, "features.cmake");
+    return (
+        existsSync(features) &&
+        readFileSync(features, "utf8").includes(feature)
+    );
 }
 
 /**
@@ -402,59 +455,6 @@ function concurrencyOverride(name: string): number | undefined {
         );
     }
     return parsed;
-}
-
-/**
- * Runs `body` over every item, `limit` at a time.
- *
- * A failure does not cancel the work already running: the rest is allowed
- * to finish so one broken item cannot hide the state of the others, and
- * every failure is reported together at the end. That matters most for a
- * registry-wide run, where the useful answer is which scenes failed
- * rather than which one failed first.
- */
-async function runConcurrently<T>(
-    items: readonly T[],
-    limit: number,
-    describe: (item: T) => string,
-    body: (item: T) => Promise<void>,
-    /**
-     * What a clean sweep should say it did ("built", "measured within
-     * their gates"). A run that only speaks up to complain reads as green
-     * whenever its verdict scrolls past or a pipeline swallows its exit
-     * code, so a whole-registry pass states the positive result too.
-     */
-    completed?: string,
-): Promise<void> {
-    const queue = [...items];
-    const failures: string[] = [];
-    const worker = async (): Promise<void> => {
-        for (;;) {
-            const item = queue.shift();
-            if (item === undefined) return;
-            try {
-                await body(item);
-            } catch (error) {
-                failures.push(
-                    `${describe(item)}: ${(error as Error).message}`,
-                );
-            }
-        }
-    };
-    await Promise.all(
-        Array.from(
-            { length: Math.max(1, Math.min(limit, queue.length)) },
-            worker,
-        ),
-    );
-    if (failures.length > 0) {
-        throw new Error(
-            `${failures.length} of ${items.length} failed:\n  ${failures.join("\n  ")}`,
-        );
-    }
-    if (completed !== undefined && items.length > 1) {
-        console.log(`All ${items.length} scenes ${completed}.`);
-    }
 }
 
 /**
@@ -531,7 +531,7 @@ async function buildScenes(
         inFlight,
         (scene) => scene.id,
         (scene) => runSceneBuild(scene, jobsPerScene, true),
-        "built",
+        { completed: "built" },
     );
 }
 

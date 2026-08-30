@@ -2591,6 +2591,79 @@ MeshHandle create_mesh_from_data(
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
+// src/mesh/mesh-factories.ts updateMeshPositions/writeVertexAttributeRange:
+// validate the tightly-packed source/destination vertex ranges before
+// publishing one new geometry version. The PAL keeps the existing GPU buffer
+// and consumes this version in its ordinary pre-draw upload pass.
+void update_mesh_positions(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& positions,
+    double vertex_offset_value,
+    double vertex_count_value,
+    double source_vertex_offset_value) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh handle.");
+    }
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (record.geometry >= engine.geometries.size()) {
+        throw std::runtime_error(
+            "mesh attribute updates require procedural geometry");
+    }
+    const std::size_t aliases = static_cast<std::size_t>(std::count_if(
+        engine.meshes.begin(),
+        engine.meshes.end(),
+        [&](const MeshRecord& candidate) {
+            return candidate.geometry == record.geometry;
+        }));
+    if (aliases > 1) {
+        throw std::runtime_error(
+            "mesh attribute updates require unshared geometry: " +
+            record.name);
+    }
+    const double source_vertex_count_value =
+        static_cast<double>(positions.size()) / 3.0;
+    const double count_value = std::isnan(vertex_count_value)
+        ? source_vertex_count_value - source_vertex_offset_value
+        : vertex_count_value;
+    const auto valid_index = [](double value) {
+        return std::isfinite(value) && value >= 0.0 &&
+            std::trunc(value) == value;
+    };
+    if (
+        positions.size() % 3 != 0 ||
+        !valid_index(vertex_offset_value) ||
+        !valid_index(source_vertex_offset_value) ||
+        !valid_index(count_value) ||
+        source_vertex_offset_value + count_value >
+            source_vertex_count_value) {
+        throw std::runtime_error(
+            "mesh attribute update requires a valid tightly-packed vertex range");
+    }
+    ModelGeometry& geometry = engine.geometries[record.geometry];
+    const std::size_t vertex_offset =
+        static_cast<std::size_t>(vertex_offset_value);
+    const std::size_t source_vertex_offset =
+        static_cast<std::size_t>(source_vertex_offset_value);
+    const std::size_t count = static_cast<std::size_t>(count_value);
+    if (vertex_offset + count > geometry.vertices.size()) {
+        throw std::runtime_error(
+            "mesh attribute update requires a valid destination vertex range");
+    }
+    if (count == 0) return;
+    for (std::size_t index = 0; index < count; ++index) {
+        const std::size_t source = (source_vertex_offset + index) * 3;
+        ModelVertex& vertex = geometry.vertices[vertex_offset + index];
+        vertex.position = Vec3{
+            positions[source],
+            positions[source + 1],
+            positions[source + 2]};
+        vertex.local_position = vertex.position;
+    }
+    ++geometry.position_version;
+    ++record.transform_version;
+}
+
 namespace {
 
 // Copy [0, count) instances from the bound caller array into the record's

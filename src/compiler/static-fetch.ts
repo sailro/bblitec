@@ -6,6 +6,8 @@
 // values an equivalent literal would have produced. No browser Response or
 // JSON parser leaks into the native program.
 import ts from "typescript";
+import { readdirSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
@@ -14,7 +16,10 @@ import type { CompileAsset, Value } from "./types.js";
 
 export interface StaticFetchContext {
     readonly options: { fileName: string };
+    compileValue(expression: ts.Expression): Value;
+    unwrap(expression: ts.Expression): ts.Expression;
     compileStringLiteral(expression: ts.Expression): string;
+    staticAssetUrlCandidates(): readonly string[];
     cppString(value: string): string;
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     registerAsset(
@@ -39,6 +44,16 @@ export function compileStaticFetch(
             "Generation-time fetch requires exactly one static URL argument.",
         );
     }
+    const dynamic = compileDynamicDirectoryFetch(
+        context,
+        call.arguments[0]!,
+    );
+    if (dynamic) return dynamic;
+    const selected = compileDynamicCandidateFetch(
+        context,
+        call.arguments[0]!,
+    );
+    if (selected) return selected;
     if (ts.isIdentifier(call.arguments[0]!)) {
         const bound = context.lookupOptional(call.arguments[0]!);
         if (bound && bound.staticString === undefined) {
@@ -60,6 +75,87 @@ export function compileStaticFetch(
     };
 }
 
+/**
+ * Packages a finite set of module-relative asset URLs for a runtime selection.
+ * Demos commonly put immutable asset URLs in descriptor tables, collect a
+ * reached subset in a Set, and fetch the selected string later. The native
+ * lookup stays closed: only generation-known, readable files are packaged and
+ * every other runtime key throws.
+ */
+function compileDynamicCandidateFetch(
+    context: StaticFetchContext,
+    expression: ts.Expression,
+): Value | undefined {
+    const selected = context.compileValue(expression);
+    if (
+        selected.staticString !== undefined ||
+        !(
+            selected.kind === "string" ||
+            (selected.kind === "data" &&
+                selected.dataType?.kind === "string")
+        )
+    ) {
+        return undefined;
+    }
+    const discovered = context.staticAssetUrlCandidates().flatMap(
+        (logicalSource) => {
+            const source = resolveBundledAsset(
+                logicalSource,
+                context.options.fileName,
+            );
+            try {
+                readAssetBytesSync(source, context.options.fileName);
+                return [{ logicalSource, source }];
+            } catch {
+                const directory = resolve(
+                    dirname(resolve(context.options.fileName)),
+                    source,
+                );
+                try {
+                    const logicalBase = logicalSource.endsWith("/")
+                        ? logicalSource
+                        : `${logicalSource}/`;
+                    return listFiles(directory).map((file) => ({
+                        logicalSource:
+                            logicalBase +
+                            relative(directory, file)
+                                .split(sep)
+                                .join("/"),
+                        source: file,
+                    }));
+                } catch {
+                    return [];
+                }
+            }
+        },
+    );
+    const candidates = new Map<
+        string,
+        { logicalSource: string; source: string }
+    >();
+    for (const candidate of discovered) {
+        if (!candidates.has(candidate.logicalSource)) {
+            candidates.set(candidate.logicalSource, candidate);
+        }
+    }
+    if (candidates.size === 0) return undefined;
+    const entries = [...candidates.values()].map(({ logicalSource, source }) => {
+        const asset = context.registerAsset(source, "binary");
+        return `{${context.cppString(logicalSource)}, ${context.cppString(asset.output)}}`;
+    });
+    context.reachJsData();
+    return {
+        kind: "static-fetch-response",
+        cpp: "",
+        dynamicAssetPathCpp:
+            `([&](const std::string& key) -> std::string { ` +
+            `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
+            `auto found = paths.get(key); ` +
+            `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
+            `return bbl::asset_path(found.value()); })(${selected.cpp})`,
+    };
+}
+
 export function compileStaticFetchMethod(
     context: StaticFetchContext,
     call: ts.CallExpression,
@@ -70,6 +166,16 @@ export function compileStaticFetchMethod(
     if (method === "arrayBuffer") {
         if (call.arguments.length !== 0) {
             context.fail(call, "Response.arrayBuffer() takes no arguments.");
+        }
+        if (owner.dynamicAssetPathCpp) {
+            return {
+                kind: "data",
+                cpp:
+                    "bbl::js::ArrayBuffer(bbl::pal::read_binary_file(" +
+                    `${owner.dynamicAssetPathCpp}))`,
+                dataType: { kind: "arraybuffer" },
+                dynamicAssetPathCpp: owner.dynamicAssetPathCpp,
+            };
         }
         if (!owner.staticString) {
             context.fail(call.expression, "Fetched response has no static source.");
@@ -137,6 +243,121 @@ export function compileStaticFetchMethod(
         );
     }
     return jsonValue(context, parsed, call);
+}
+
+/**
+ * Packages a closed local directory for `fetch(BASE + runtimeName)`. The
+ * generated lookup maps the source's relative name to the deterministic
+ * packaged filename; consumers such as audio decode receive the resolved
+ * native path without adding a network fetcher.
+ */
+function compileDynamicDirectoryFetch(
+    context: StaticFetchContext,
+    expression: ts.Expression,
+): Value | undefined {
+    const unwrapped = context.unwrap(expression);
+    let logicalPrefix: string | undefined;
+    let suffix: Value | undefined;
+    let prefixNode: ts.Node = unwrapped;
+    if (
+        ts.isBinaryExpression(unwrapped) &&
+        unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken
+    ) {
+        const prefix = context.compileValue(unwrapped.left);
+        logicalPrefix = prefix.staticString;
+        suffix = context.compileValue(unwrapped.right);
+        prefixNode = unwrapped.left;
+    } else if (ts.isTemplateExpression(unwrapped)) {
+        let prefix = unwrapped.head.text;
+        for (const [index, span] of unwrapped.templateSpans.entries()) {
+            const value = context.compileValue(span.expression);
+            if (value.staticString !== undefined) {
+                prefix += value.staticString + span.literal.text;
+                continue;
+            }
+            if (
+                index !== unwrapped.templateSpans.length - 1 ||
+                span.literal.text.length !== 0
+            ) {
+                return undefined;
+            }
+            logicalPrefix = prefix;
+            suffix = value;
+            prefixNode = unwrapped;
+        }
+    } else {
+        return undefined;
+    }
+    if (logicalPrefix === undefined || !suffix) return undefined;
+    if (
+        suffix.kind !== "string" &&
+        !(
+            suffix.kind === "data" &&
+            suffix.dataType?.kind === "string"
+        )
+    ) {
+        return undefined;
+    }
+    const logicalBase = logicalPrefix.endsWith("/")
+        ? logicalPrefix
+        : `${logicalPrefix}/`;
+    const resolvedBase = resolveBundledAsset(
+        logicalBase,
+        context.options.fileName,
+    );
+    const directory = resolve(
+        dirname(resolve(context.options.fileName)),
+        resolvedBase,
+    );
+    let files: string[];
+    try {
+        files = listFiles(directory).sort();
+    } catch (error: unknown) {
+        context.fail(
+            prefixNode,
+            `Dynamic fetch base '${logicalBase}' is not a readable local asset directory: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
+        );
+    }
+    if (files.length === 0) {
+        context.fail(
+            prefixNode,
+            `Dynamic fetch base '${logicalBase}' contains no files.`,
+        );
+    }
+    const entries = files.map((file) => {
+        const key = relative(directory, file).split(sep).join("/");
+        const asset = context.registerAsset(
+            `${logicalBase}${key}`,
+            "binary",
+        );
+        return `{${context.cppString(key)}, ${context.cppString(asset.output)}}`;
+    });
+    context.reachJsData();
+    return {
+        kind: "static-fetch-response",
+        cpp: "",
+        dynamicAssetPathCpp:
+            `([&](const std::string& key) -> std::string { ` +
+            `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
+            `auto found = paths.get(key); ` +
+            `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
+            `return bbl::asset_path(found.value()); })(${suffix.cpp})`,
+    };
+}
+
+function listFiles(directory: string): string[] {
+    const result: string[] = [];
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = resolve(directory, entry.name);
+        if (entry.isDirectory()) {
+            result.push(...listFiles(path));
+        } else if (entry.isFile()) {
+            result.push(path);
+        }
+    }
+    return result;
 }
 
 export function staticFetchProperty(

@@ -82,6 +82,7 @@ export interface StatementLoweringContext {
     compileValue(expression: ts.Expression): Value;
     compileCondition(expression: ts.Expression): string;
     isBrowserOnlyExpression(expression: ts.Expression): boolean;
+    isDeferredCallbackCall(call: ts.CallExpression): boolean;
     isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compileNumber(
         expression: ts.Expression,
@@ -595,13 +596,17 @@ export class StatementLowerer {
                 "Non-empty switch cases must end with break or return.",
             );
         }
-        for (const statement of statements) {
-            const nested =
-                this.findSwitchBoundBreak(statement);
-            if (nested) {
+        const nestedBreak = statements
+            .map((statement) => this.findSwitchBoundBreak(statement))
+            .find((candidate) => candidate !== undefined);
+        if (nestedBreak) {
+            const nestedContinue = statements
+                .map((statement) => this.findSwitchBoundContinue(statement))
+                .find((candidate) => candidate !== undefined);
+            if (nestedContinue) {
                 context.fail(
-                    nested,
-                    "A switch break is only supported as the final case statement.",
+                    nestedContinue,
+                    "A switch case with an early break cannot also continue an enclosing loop.",
                 );
             }
         }
@@ -610,8 +615,20 @@ export class StatementLowerer {
             context.allocateBlockPrefix(),
         );
         try {
+            if (nestedBreak) {
+                // The switch itself was lowered to an if/else chain. A
+                // single-iteration scope restores the one missing control
+                // boundary so an early case `break` still skips the rest of
+                // that case without escaping an enclosing loop.
+                context.emit("do {");
+                context.increaseIndent();
+            }
             for (const statement of statements) {
                 this.emit(context, statement);
+            }
+            if (nestedBreak) {
+                context.decreaseIndent();
+                context.emit("} while (false);");
             }
         } finally {
             context.popScope();
@@ -646,6 +663,29 @@ export class StatementLowerer {
                 ts.isBreakStatement(node) &&
                 !node.label
             ) {
+                found = node;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(statement);
+        return found;
+    }
+
+    /** A continue that crosses the switch and binds to an enclosing loop. */
+    private findSwitchBoundContinue(
+        statement: ts.Statement,
+    ): ts.ContinueStatement | undefined {
+        let found: ts.ContinueStatement | undefined;
+        const visit = (node: ts.Node): void => {
+            if (
+                found ||
+                ts.isIterationStatement(node, false) ||
+                ts.isFunctionLike(node)
+            ) {
+                return;
+            }
+            if (ts.isContinueStatement(node) && !node.label) {
                 found = node;
                 return;
             }
@@ -743,6 +783,20 @@ export class StatementLowerer {
         }
         if (!ts.isExpressionStatement(statement)) return false;
         const expression = context.unwrap(statement.expression);
+        const effect = ts.isVoidExpression(expression)
+            ? context.unwrap(expression.expression)
+            : expression;
+        if (
+            ts.isCallExpression(effect) &&
+            effect.arguments.length === 0 &&
+            context.isBrowserOnlyExpression(effect)
+        ) {
+            // Pointer-lock and similar zero-argument DOM effects are often
+            // written behind their own browser-only state guard, sometimes
+            // with `void` to discard the promise. The native input bridge has
+            // no browser object on which that effect could be observed.
+            return true;
+        }
         if (
             ts.isCallExpression(expression) &&
             ts.isIdentifier(expression.expression) &&
@@ -832,6 +886,25 @@ export class StatementLowerer {
         ) {
             return true;
         }
+        if (
+            ts.isCallExpression(expression) &&
+            ts.isPropertyAccessExpression(expression.expression) &&
+            browserLocal(expression.expression.expression) &&
+            expression.expression.name.text === "addEventListener" &&
+            expression.arguments.length >= 2 &&
+            pure(expression.arguments[0]!) &&
+            (ts.isArrowFunction(expression.arguments[1]!) ||
+                ts.isFunctionExpression(expression.arguments[1]!)) &&
+            expression.arguments.slice(2).every(pure)
+        ) {
+            // The callback is reachable only through the browser handle that
+            // owns this registration. Native has no such event source, so
+            // mutations captured by the callback are unreachable too. Do not
+            // require the callback body itself to be browser-only: UI handlers
+            // often toggle native state that remains at its initialized value
+            // when the control does not exist.
+            return true;
+        }
         return (
             ts.isCallExpression(expression) &&
             (ts.isPropertyAccessExpression(expression.expression) ||
@@ -846,14 +919,32 @@ export class StatementLowerer {
      * cannot initialize), so a binding-free JavaScript catch maps directly
      * to C++ `catch (...)`. Catch bindings remain outside the value model.
      *
-     * A finally block is still accepted only when it erases. Emitting one
-     * faithfully on every normal, caught, and exceptional exit needs a scope
-     * guard; the existing erasing cleanup cases need no such machinery.
+     * A finally block is a scope guard, so it runs on normal completion,
+     * early return, and exception just as the JavaScript block does.
      */
     private emitTry(
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
+        const finallyGuard = statement.finallyBlock
+            ? this.captureFinallyGuard(
+                  context,
+                  statement.finallyBlock,
+              )
+            : undefined;
+        if (finallyGuard) {
+            context.reachJsData();
+            context.emit("{");
+            context.increaseIndent();
+            const guard = context.allocateTemporaryCppName("finally");
+            context.emit(
+                `[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`,
+            );
+            context.increaseIndent();
+            for (const line of finallyGuard) context.emit(line);
+            context.decreaseIndent();
+            context.emit("});");
+        }
         if (statement.catchClause) {
             if (
                 statement.catchClause.variableDeclaration
@@ -892,23 +983,9 @@ export class StatementLowerer {
                 context.decreaseIndent();
             }
             context.emit("}");
-            if (statement.finallyBlock) {
-                const finalizer = context.captureEmittedLines(() => {
-                    this.emitScopedBody(
-                        context,
-                        statement.finallyBlock!,
-                    );
-                });
-                const finalEmission = finalizer.find(
-                    (line) => line.trim().length > 0,
-                );
-                if (finalEmission !== undefined) {
-                    context.fail(
-                        statement.finallyBlock,
-                        "A finally block is lowered only when it erases to " +
-                            `nothing; this one emits '${finalEmission.trim()}'.`,
-                    );
-                }
+            if (finallyGuard) {
+                context.decreaseIndent();
+                context.emit("}");
             }
             return;
         }
@@ -920,19 +997,25 @@ export class StatementLowerer {
             );
         }
         this.emitScopedBody(context, statement.tryBlock);
-        const finalizer = context.captureEmittedLines(() => {
-            this.emitScopedBody(
-                context,
-                statement.finallyBlock!,
-            );
-        });
-        const emitted = finalizer.find((line) => line.trim().length > 0);
-        if (emitted !== undefined) {
-            context.fail(
-                statement.finallyBlock,
-                "A finally block is lowered only when it erases to " +
-                    `nothing; this one emits '${emitted.trim()}'.`,
-            );
+        if (finallyGuard) {
+            context.decreaseIndent();
+            context.emit("}");
+        }
+    }
+
+    private captureFinallyGuard(
+        context: StatementLoweringContext,
+        block: ts.Block,
+    ): string[] {
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            return context.captureEmittedLines(() => {
+                for (const statement of block.statements) {
+                    this.emit(context, statement);
+                }
+            });
+        } finally {
+            context.popScope();
         }
     }
 
@@ -1790,6 +1873,26 @@ export class StatementLowerer {
                 ) {
                     return;
                 }
+                const rightExpression = context.unwrap(unwrapped.right);
+                if (
+                    target.kind === "number" &&
+                    operator === "=" &&
+                    ts.isCallExpression(rightExpression) &&
+                    context.isDeferredCallbackCall(rightExpression)
+                ) {
+                    const scheduled = context.compileValue(rightExpression);
+                    if (scheduled.kind === "void") {
+                        if (scheduled.cpp) context.emit(`${scheduled.cpp};`);
+                        return;
+                    }
+                    context.expectKind(
+                        scheduled,
+                        "number",
+                        rightExpression,
+                    );
+                    context.emit(`${target.cpp} = ${scheduled.cpp};`);
+                    return;
+                }
                 if (target.kind === "number") {
                     const right = context.compileNumber(
                         unwrapped.right,
@@ -1832,6 +1935,17 @@ export class StatementLowerer {
                     context.emit(
                         `${target.cpp} ${operator} ${value.cpp};`,
                     );
+                } else if (
+                    target.kind === "audio-node" &&
+                    operator === "="
+                ) {
+                    const value = context.compileValue(unwrapped.right);
+                    context.expectKind(
+                        value,
+                        "audio-node",
+                        unwrapped.right,
+                    );
+                    context.emit(`${target.cpp} = ${value.cpp};`);
                 } else if (
                     target.kind === "data" &&
                     operator === "=" &&

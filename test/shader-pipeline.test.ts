@@ -293,3 +293,67 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
         /lineColor: vec4<f32>/,
     );
 });
+
+test("packs camera position and custom values into one native stage block", () => {
+    const program = lowerWgslShaderProgram({
+        name: "sky-camera",
+        vertexSource: `struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+};
+
+@vertex
+fn mainVertex(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+    return out;
+}`,
+        fragmentSource: `struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+};
+
+@fragment
+fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
+    let eye = shaderSystem.cameraPosition;
+    return vec4<f32>(eye, shaderUniforms.sky.w);
+}`,
+        attributes: ["position"],
+        uniforms: [
+            "worldViewProjection",
+            "cameraPosition",
+            "sky:vec4<f32>",
+        ],
+        needAlphaBlending: false,
+        needAlphaTesting: false,
+        backFaceCulling: false,
+        depthWrite: true,
+    });
+    assert.deepEqual(
+        program.reflection.uniformBlocks.map(
+            ({ stage, size, systemMatrices, members }) => ({
+                stage,
+                size,
+                systemMatrices,
+                members: members.map(({ name, offset }) => ({ name, offset })),
+            }),
+        ),
+        [
+            {
+                stage: "vertex",
+                size: 64,
+                systemMatrices: ["worldViewProjection"],
+                members: [],
+            },
+            {
+                stage: "fragment",
+                size: 32,
+                systemMatrices: ["cameraPosition"],
+                members: [{ name: "sky", offset: 16 }],
+            },
+        ],
+    );
+    const fragment = emitNativeWgslProgram(program, "fragment");
+    assert.match(fragment, /cameraPosition: vec3<f32>/);
+    assert.match(fragment, /sky: vec4<f32>/);
+    assert.match(fragment, /shaderUniforms\.cameraPosition/);
+    assert.doesNotMatch(fragment, /shaderSystem\.cameraPosition/);
+});

@@ -128,6 +128,7 @@ import {
 } from "./compiler/data-types.js";
 import {
     ExpressionLowerer,
+    PURE_NUMBER_FORMATTERS,
     type ExpressionContext,
 } from "./compiler/expressions.js";
 import {
@@ -328,6 +329,7 @@ class Compiler
         ts.SourceFile,
         boolean
     >();
+    private staticAssetUrlCandidateCache: readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
     private readonly nativeFunctionPrototypes: string[] =
         [];
@@ -657,6 +659,36 @@ class Compiler
                     this.checker.getTypeAtLocation(node.name),
                     node,
                 );
+            } else if (
+                ts.isVariableDeclaration(node) &&
+                node.type
+            ) {
+                // Mapping an explicitly stored container eagerly marks any
+                // object-valued entries as shared references. Do this before
+                // function bodies are emitted so an earlier object literal
+                // cannot use value syntax for a type that a later Map/Array
+                // declaration makes reference-backed.
+                this.dataTypes.fromTsType(
+                    this.checker.getTypeFromTypeNode(node.type),
+                    node.type,
+                );
+            } else if (
+                ts.isParameter(node) &&
+                (ts.isConstructorDeclaration(node.parent) ||
+                    ts.isMethodDeclaration(node.parent))
+            ) {
+                // Class argument binding preserves JavaScript object identity.
+                // Predeclare that representation before helpers returning the
+                // same structural type are lowered.
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(node),
+                    node,
+                );
+                if (dataType?.kind === "struct") {
+                    this.dataTypes.markStoredObjectReferences(
+                        dataType,
+                    );
+                }
             } else if (ts.isPropertyDeclaration(node)) {
                 const dataType = this.dataTypes.fromTsType(
                     this.checker.getTypeAtLocation(node),
@@ -2639,6 +2671,11 @@ class Compiler
         if (enumMember) {
             return enumMember;
         }
+        const staticField =
+            this.classLowerer.resolveStaticField(expression);
+        if (staticField?.initializer) {
+            return this.compileValue(staticField.initializer);
+        }
         if (
             expression.name.text === "hidden" &&
             ts.isIdentifier(ownerExpression) &&
@@ -2738,19 +2775,31 @@ class Compiler
         if (owner.kind === "platform-mouse-event") {
             if (
                 property === "button" ||
+                property === "buttons" ||
                 property === "clientX" ||
                 property === "clientY" ||
                 property === "offsetX" ||
-                property === "offsetY"
+                property === "offsetY" ||
+                property === "movementX" ||
+                property === "movementY" ||
+                property === "deltaY"
             ) {
                 return {
                     kind: "number",
                     cpp:
                         property === "button"
                             ? `${owner.cpp}.button`
+                            : property === "buttons"
+                              ? `${owner.cpp}.buttons`
                             : property === "clientX" || property === "offsetX"
                               ? `${owner.cpp}.client_x`
-                              : `${owner.cpp}.client_y`,
+                            : property === "clientY" || property === "offsetY"
+                              ? `${owner.cpp}.client_y`
+                            : property === "movementX"
+                              ? `${owner.cpp}.movement_x`
+                            : property === "movementY"
+                              ? `${owner.cpp}.movement_y`
+                              : `${owner.cpp}.delta_y`,
                     dataType: { kind: "number" },
                 };
             }
@@ -3209,7 +3258,14 @@ class Compiler
 
     public compileShaderMaterialOptions(
         expression: ts.Expression,
-    ): { name: string; id: number } {
+    ): {
+        name: string;
+        id: number;
+        dynamicUniforms?: Array<{
+            offset: number;
+            components: string[];
+        }>;
+    } {
         return compileShaderMaterialOptions(this, expression);
     }
 
@@ -3397,6 +3453,12 @@ class Compiler
      */
     public isBrowserOnlyLocalCall(call: ts.CallExpression): boolean {
         const callee = this.unwrap(call.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            this.isBrowserOnlyNullableClassFactoryCall(call)
+        ) {
+            return true;
+        }
         if (!ts.isIdentifier(callee)) return false;
         const declaration = this.symbols
             .valueSymbol(callee)
@@ -3464,6 +3526,132 @@ class Compiler
             return false;
         }
         const source = declaration.getSourceFile();
+        return this.isBrowserUtilitySource(source);
+    }
+
+    /**
+     * A static factory for a nullable DOM-only class has no native object to
+     * construct. This recognizes the deliberately narrow shape used by
+     * optional browser overlays: the class lives in a module with no Babylon
+     * imports, owns at least one DOM field, and exposes no native-readable
+     * public state (only void methods).
+     */
+    public isBrowserOnlyNullableClassFactoryCall(
+        call: ts.CallExpression,
+    ): boolean {
+        const callee = this.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const owner = this.unwrap(callee.expression);
+        if (!ts.isIdentifier(owner)) return false;
+        const symbol = this.symbols.valueSymbol(owner);
+        const target =
+            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? this.checker.getAliasedSymbol(symbol)
+                : symbol;
+        const declaration = target?.declarations?.find(
+            ts.isClassDeclaration,
+        );
+        if (!declaration) return false;
+        const method = declaration.members.find(
+            (member): member is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(member) &&
+                ts.isIdentifier(member.name) &&
+                member.name.text === callee.name.text &&
+                (ts.getCombinedModifierFlags(member) &
+                    ts.ModifierFlags.Static) !==
+                    0,
+        );
+        if (!method?.body) return false;
+
+        const result = this.checker.getAwaitedType(
+            this.checker.getTypeAtLocation(call),
+        );
+        if (!result || (result.flags & ts.TypeFlags.Union) === 0) {
+            return false;
+        }
+        const resultMembers = (result as ts.UnionType).types;
+        const nullable = resultMembers.some(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+                0,
+        );
+        const concrete = resultMembers.filter(
+            (member) =>
+                (member.flags &
+                    (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) ===
+                0,
+        );
+        if (
+            !nullable ||
+            concrete.length !== 1 ||
+            !(concrete[0]!.symbol?.declarations ?? []).includes(
+                declaration,
+            )
+        ) {
+            return false;
+        }
+
+        const isPrivateOrProtected = (member: ts.ClassElement): boolean =>
+            (ts.getCombinedModifierFlags(member) &
+                (ts.ModifierFlags.Private |
+                    ts.ModifierFlags.Protected)) !==
+            0;
+        const isStatic = (member: ts.ClassElement): boolean =>
+            (ts.getCombinedModifierFlags(member) &
+                ts.ModifierFlags.Static) !==
+            0;
+        const domOwned = declaration.members.some(
+            (member) =>
+                ts.isPropertyDeclaration(member) &&
+                this.typeComesFromDom(
+                    this.checker.getTypeAtLocation(member),
+                ),
+        );
+        if (!domOwned) return false;
+
+        const publicSurfaceIsWriteOnly = declaration.members.every(
+            (member) => {
+                if (
+                    isStatic(member) ||
+                    isPrivateOrProtected(member) ||
+                    ts.isConstructorDeclaration(member)
+                ) {
+                    return true;
+                }
+                if (!ts.isMethodDeclaration(member)) return false;
+                const signature =
+                    this.checker.getSignatureFromDeclaration(member);
+                return (
+                    signature !== undefined &&
+                    (this.checker.getReturnTypeOfSignature(signature)
+                        .flags &
+                        ts.TypeFlags.Void) !==
+                        0
+                );
+            },
+        );
+        return (
+            publicSurfaceIsWriteOnly &&
+            this.isBrowserUtilitySource(declaration.getSourceFile())
+        );
+    }
+
+    private typeComesFromDom(type: ts.Type): boolean {
+        const members =
+            (type.flags & ts.TypeFlags.Union) !== 0
+                ? (type as ts.UnionType).types
+                : [type];
+        return members.some((member) =>
+            (member.symbol?.declarations ?? []).some((declaration) =>
+                /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
+                    declaration.getSourceFile().fileName,
+                ),
+            ),
+        );
+    }
+
+    private isBrowserUtilitySource(source: ts.SourceFile): boolean {
         const cached = this.browserUtilitySources.get(source);
         if (cached !== undefined) return cached;
         let reachesBabylon = false;
@@ -3655,6 +3843,42 @@ class Compiler
             if (right === identity) return left;
             return `(${left} ${isAnd ? "&&" : "||"} ${right})`;
         }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken)
+        ) {
+            const isPointerLockElement = (
+                operand: ts.Expression,
+            ): boolean => {
+                const value = this.unwrap(operand);
+                return (
+                    ts.isPropertyAccessExpression(value) &&
+                    value.name.text === "pointerLockElement" &&
+                    ts.isIdentifier(value.expression) &&
+                    value.expression.text === "document" &&
+                    this.isDefaultLibraryIdentifier(value.expression)
+                );
+            };
+            const isCanvas = (operand: ts.Expression): boolean => {
+                const value = this.unwrap(operand);
+                return ts.isIdentifier(value) && this.isCanvasElement(value);
+            };
+            if (
+                (isPointerLockElement(unwrapped.left) &&
+                    isCanvas(unwrapped.right)) ||
+                (isCanvas(unwrapped.left) &&
+                    isPointerLockElement(unwrapped.right))
+            ) {
+                const locked = `${this.requireDefaultEngine(unwrapped)}.pointer_locked`;
+                return unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken
+                    ? locked
+                    : `!(${locked})`;
+            }
+        }
         if (this.isBrowserOnlyExpression(unwrapped)) {
             const condition =
                 this.evaluateBrowserCondition(unwrapped);
@@ -3712,7 +3936,9 @@ class Compiler
                     ["DataView", "dataview"],
                     ["Uint8Array", "u8array"],
                     ["Uint16Array", "u16array"],
+                    ["Int16Array", "i16array"],
                     ["Uint32Array", "u32array"],
+                    ["Int32Array", "i32array"],
                     ["Float32Array", "f32array"],
                 ]).get(unwrapped.right.text);
                 if (expected) {
@@ -4257,8 +4483,151 @@ class Compiler
                 resolved,
             );
             if (generated !== undefined) return generated;
+            const callee = this.unwrap(resolved.expression);
+            if (ts.isIdentifier(callee)) {
+                const declaration = resolveFunctionDeclaration(
+                    this.checker,
+                    callee,
+                    (node, message) => this.fail(node, message),
+                );
+                const body = declaration?.body;
+                const onlyStatement = body && ts.isBlock(body)
+                    ? body.statements[0]
+                    : undefined;
+                const returned = body && !ts.isBlock(body)
+                    ? body
+                    : body && ts.isBlock(body) && body.statements.length === 1 &&
+                        onlyStatement && ts.isReturnStatement(onlyStatement)
+                      ? onlyStatement.expression
+                      : undefined;
+                if (
+                    returned &&
+                    (ts.isTemplateExpression(returned) ||
+                        ts.isStringLiteral(returned) ||
+                        ts.isNoSubstitutionTemplateLiteral(returned))
+                ) {
+                    // This is a generation-time source factory, so keep its
+                    // numeric arguments in the inliner's static domain. The
+                    // ordinary value path is allowed to hoist a plain-data
+                    // string helper into a native function, which would turn
+                    // the shader source into a runtime string after the
+                    // variant table has already been generated.
+                    const arguments_ = resolved.arguments.map((argument) =>
+                        this.compileValue(
+                            this.alwaysUsedParameterDefault(argument) ??
+                                argument,
+                        ));
+                    const value = declaration &&
+                        !ts.isFunctionDeclaration(declaration)
+                        ? this.userFunctions.compileCallbackWithValues(
+                              this,
+                              declaration,
+                              arguments_,
+                              resolved,
+                          )
+                        : this.userFunctions.compile(
+                              this,
+                              resolved,
+                              callee,
+                          );
+                    if (value?.staticString !== undefined) {
+                        return value.staticString;
+                    }
+                }
+            }
         }
         return this.evaluator.compileStringLiteral(expression);
+    }
+
+    /** Literal calls to the pinned module-asset helper across reached sources. */
+    public staticAssetUrlCandidates(): readonly string[] {
+        if (this.staticAssetUrlCandidateCache) {
+            return this.staticAssetUrlCandidateCache;
+        }
+        const candidates = new Set<string>();
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isCallExpression(node) &&
+                node.arguments.length === 2 &&
+                (ts.isStringLiteral(node.arguments[0]!) ||
+                    ts.isNoSubstitutionTemplateLiteral(
+                        node.arguments[0]!,
+                    ))
+            ) {
+                const url = this.moduleRelativeAssetUrl(node);
+                if (url !== undefined) candidates.add(url);
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const source of this.sourceFiles()) {
+            visit(source);
+        }
+        this.staticAssetUrlCandidateCache = [...candidates].sort();
+        return this.staticAssetUrlCandidateCache;
+    }
+
+    /**
+     * The initializer of a parameter which every source call omits.
+     *
+     * A shader-source factory can sit inside a wrapper that native-function
+     * lowering has already parameterized. If the wrapper's parameter is
+     * nevertheless omitted at every call, JavaScript always observes its
+     * default and generation may retain that value instead of losing it to
+     * the native signature.
+     */
+    private alwaysUsedParameterDefault(
+        expression: ts.Expression,
+    ): ts.Expression | undefined {
+        const node = this.unwrap(expression);
+        if (!ts.isIdentifier(node)) return undefined;
+        const symbol = this.symbols.valueSymbol(node);
+        const parameter = symbol?.valueDeclaration &&
+            ts.isParameter(symbol.valueDeclaration)
+            ? symbol.valueDeclaration
+            : symbol?.declarations?.find(ts.isParameter);
+        if (!parameter?.initializer || !ts.isFunctionLike(parameter.parent)) {
+            return undefined;
+        }
+        const owner = parameter.parent;
+        const index = owner.parameters.indexOf(parameter);
+        if (index < 0) return undefined;
+        let reachedCall = false;
+        let passedExplicitly = false;
+        const ownerName = ts.isFunctionDeclaration(owner)
+            ? owner.name
+            : ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)
+              ? owner.parent && ts.isVariableDeclaration(owner.parent) &&
+                    ts.isIdentifier(owner.parent.name)
+                  ? owner.parent.name
+                  : undefined
+              : undefined;
+        const ownerSymbol = ownerName
+            ? this.symbols.valueSymbol(ownerName)
+            : undefined;
+        const visit = (candidate: ts.Node): void => {
+            if (passedExplicitly) return;
+            if (
+                ts.isCallExpression(candidate) &&
+                (this.checker.getResolvedSignature(candidate)?.declaration ===
+                    owner ||
+                    (ownerSymbol !== undefined &&
+                        ts.isIdentifier(this.unwrap(candidate.expression)) &&
+                        this.symbols.valueSymbol(
+                            this.unwrap(candidate.expression) as ts.Identifier,
+                        ) === ownerSymbol))
+            ) {
+                reachedCall = true;
+                if (candidate.arguments.length > index) {
+                    passedExplicitly = true;
+                    return;
+                }
+            }
+            ts.forEachChild(candidate, visit);
+        };
+        for (const source of this.sourceFiles()) visit(source);
+        return reachedCall && !passedExplicitly
+            ? parameter.initializer
+            : undefined;
     }
 
     /**
@@ -4299,6 +4668,9 @@ class Compiler
             moduleParameter.text,
         );
         if (!replacements) return undefined;
+        if (ts.isTemplateExpression(resolved.arguments[0]!)) {
+            return undefined;
+        }
         const path = this.evaluator.compileStringLiteral(
             resolved.arguments[0]!,
         );
@@ -4309,6 +4681,77 @@ class Compiler
         return url.origin === "https://bblite.invalid"
             ? `${url.pathname}${url.search}${url.hash}`
             : url.href;
+    }
+
+    /** Runtime final segment of the same pure module-relative URL helper. */
+    public compileDynamicModuleRelativeAssetUrl(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const resolved = this.resolveStaticExpression(expression);
+        if (
+            !ts.isCallExpression(resolved) ||
+            !ts.isIdentifier(resolved.expression) ||
+            resolved.arguments.length !== 2 ||
+            !this.isImportMetaUrl(resolved.arguments[1]!)
+        ) {
+            return undefined;
+        }
+        const declaration = this.symbols
+            .valueSymbol(resolved.expression)
+            ?.declarations?.find(ts.isFunctionDeclaration);
+        if (!declaration?.body || declaration.parameters.length !== 2) {
+            return undefined;
+        }
+        const pathParameter = declaration.parameters[0]!.name;
+        const moduleParameter = declaration.parameters[1]!.name;
+        if (
+            !ts.isIdentifier(pathParameter) ||
+            !ts.isIdentifier(moduleParameter)
+        ) {
+            return undefined;
+        }
+        const replacements = this.moduleUrlPathReplacements(
+            declaration.body,
+            pathParameter.text,
+            moduleParameter.text,
+        );
+        if (!replacements) return undefined;
+        const path = this.unwrap(resolved.arguments[0]!);
+        if (
+            !ts.isTemplateExpression(path) ||
+            path.templateSpans.length !== 1 ||
+            path.templateSpans[0]!.literal.text.length !== 0
+        ) {
+            return undefined;
+        }
+        const suffix = this.compileValue(
+            path.templateSpans[0]!.expression,
+        );
+        if (
+            suffix.kind !== "string" &&
+            !(
+                suffix.kind === "data" &&
+                suffix.dataType?.kind === "string"
+            )
+        ) {
+            return undefined;
+        }
+        const url = new URL(
+            path.head.text,
+            "https://bblite.invalid/",
+        );
+        for (const [search, replacement] of replacements) {
+            url.pathname = url.pathname.replace(search, replacement);
+        }
+        const prefix =
+            url.origin === "https://bblite.invalid"
+                ? `${url.pathname}${url.search}${url.hash}`
+                : url.href;
+        return {
+            kind: "data",
+            cpp: `(${this.cppString(prefix)} + ${suffix.cpp})`,
+            dataType: { kind: "string" },
+        };
     }
 
     private isImportMetaUrl(expression: ts.Expression): boolean {
@@ -4530,6 +4973,121 @@ class Compiler
 
     public compileStaticString(expression: ts.Expression): string {
         return this.compileStringLiteral(expression);
+    }
+
+    /**
+     * A shader stage's generation-time text, with a runtime numeric template
+     * constant lifted into a material uniform when necessary.
+     *
+     * LibreQuake builds one vertex source by formatting its mover depth bias.
+     * Native pipelines are generated ahead of the BSP parse, so the equivalent
+     * representation is one pipeline whose material block receives that float
+     * when the material is created.
+     */
+    public compileShaderSource(expression: ts.Expression): {
+        source: string;
+        dynamicUniforms: Array<{
+            name: string;
+            type: "f32";
+            components: string[];
+        }>;
+    } {
+        const resolved = this.resolveStaticExpression(expression);
+        if (
+            !ts.isCallExpression(resolved) ||
+            !ts.isIdentifier(this.unwrap(resolved.expression))
+        ) {
+            return {
+                source: this.compileStaticString(expression),
+                dynamicUniforms: [],
+            };
+        }
+        const callee = this.unwrap(resolved.expression) as ts.Identifier;
+        const declaration = resolveFunctionDeclaration(
+            this.checker,
+            callee,
+            (node, message) => this.fail(node, message),
+        );
+        const body = declaration?.body;
+        if (
+            !declaration ||
+            !body ||
+            ts.isBlock(body) ||
+            !ts.isTemplateExpression(body) ||
+            body.templateSpans.length !== 1
+        ) {
+            return {
+                source: this.compileStaticString(expression),
+                dynamicUniforms: [],
+            };
+        }
+        const span = body.templateSpans[0]!;
+        const formatted = this.unwrap(span.expression);
+        if (
+            !ts.isCallExpression(formatted) ||
+            !ts.isPropertyAccessExpression(formatted.expression) ||
+            !PURE_NUMBER_FORMATTERS.has(
+                formatted.expression.name.text,
+            ) ||
+            !ts.isIdentifier(formatted.expression.expression)
+        ) {
+            return {
+                source: this.compileStaticString(expression),
+                dynamicUniforms: [],
+            };
+        }
+        const formatter = formatted.expression;
+        const parameterIndex = declaration.parameters.findIndex(
+            ({ name }) =>
+                ts.isIdentifier(name) &&
+                this.symbols.valueSymbol(name) ===
+                    this.symbols.valueSymbol(
+                        formatter.expression as ts.Identifier,
+                    ),
+        );
+        const argument = parameterIndex >= 0
+            ? resolved.arguments[parameterIndex] ??
+                declaration.parameters[parameterIndex]!.initializer
+            : undefined;
+        if (!argument) {
+            return {
+                source: this.compileStaticString(expression),
+                dynamicUniforms: [],
+            };
+        }
+
+        const marker = "__BBL_DYNAMIC_SHADER_FLOAT__";
+        const templated = body.head.text + marker + span.literal.text;
+        const declarationPattern = new RegExp(
+            `(^|\\n)([ \\t]*)const\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*f32\\s*=\\s*${marker}\\s*;[ \\t]*(?=\\n|$)`,
+        );
+        const match = declarationPattern.exec(templated);
+        if (!match) {
+            return {
+                source: this.compileStaticString(expression),
+                dynamicUniforms: [],
+            };
+        }
+        const constant = match[3]!;
+        const uniformName = "bblDynamicDepthBias";
+        const withoutDeclaration = templated.replace(
+            declarationPattern,
+            match[1]!,
+        );
+        const source = withoutDeclaration.replace(
+            new RegExp(`\\b${constant}\\b`, "g"),
+            `shaderUniforms.${uniformName}`,
+        );
+        return {
+            source,
+            dynamicUniforms: [
+                {
+                    name: uniformName,
+                    type: "f32",
+                    components: [this.compileNumber(argument)],
+                },
+            ],
+        };
     }
 
     public resolveStaticExpression(
@@ -5148,6 +5706,43 @@ class Compiler
      * declarations whose name appears nowhere else, so a local that IS read
      * keeps the warning that would catch a lowering bug.
      */
+    private markUnreadNumericLocals(): void {
+        const declarations: Array<{
+            index: number;
+            name: string;
+        }> = [];
+        for (let index = 0; index < this.body.length; index += 1) {
+            const match = this.body[index]!.match(
+                /^\s*(?:static\s+)?double\s+(v_[A-Za-z0-9_]+)\s*=/,
+            );
+            if (match) {
+                declarations.push({ index, name: match[1]! });
+            }
+        }
+        for (const declaration of declarations) {
+            const token = new RegExp(`\\b${declaration.name}\\b`);
+            const target = new RegExp(
+                `(?:\\+\\+|--)\\s*${declaration.name}\\b|` +
+                    `\\b${declaration.name}\\b\\s*(?:\\+\\+|--|[+\\-*/%]?=)`,
+                "g",
+            );
+            const read = this.body.some((line, index) => {
+                if (index === declaration.index || !token.test(line)) {
+                    return false;
+                }
+                return token.test(line.replace(target, ""));
+            });
+            if (!read) {
+                this.body[declaration.index] = this.body[
+                    declaration.index
+                ]!.replace(
+                    /(^\s*)(?=(?:static\s+)?double\s)/,
+                    "$1[[maybe_unused]] ",
+                );
+            }
+        }
+    }
+
     /** How many lines the body stream holds, for a caller that may undo. */
 
     public registerNativeFunction(
@@ -5781,12 +6376,37 @@ class Compiler
             callee.name.text === "preventDefault" &&
             call.arguments.length === 0 &&
             ts.isIdentifier(receiver) &&
-            this.lookupOptional(receiver)?.kind ===
-                "platform-keyboard-event"
+            (this.lookupOptional(receiver)?.kind ===
+                "platform-keyboard-event" ||
+                this.lookupOptional(receiver)?.kind ===
+                    "platform-mouse-event")
         ) {
             // The native window already owns key dispatch; there is no
             // browser default action to cancel.
             return { kind: "void", cpp: "" };
+        }
+        if (
+            callee.name.text === "requestPointerLock" &&
+            call.arguments.length === 0 &&
+            ts.isIdentifier(receiver) &&
+            this.isCanvasElement(receiver)
+        ) {
+            return {
+                kind: "void",
+                cpp: `bbl::request_pointer_lock(${this.requireDefaultEngine(call)})`,
+            };
+        }
+        if (
+            callee.name.text === "exitPointerLock" &&
+            call.arguments.length === 0 &&
+            ts.isIdentifier(receiver) &&
+            receiver.text === "document" &&
+            this.isDefaultLibraryIdentifier(receiver)
+        ) {
+            return {
+                kind: "void",
+                cpp: `bbl::exit_pointer_lock(${this.requireDefaultEngine(call)})`,
+            };
         }
         return undefined;
     }
@@ -5888,7 +6508,7 @@ class Compiler
         }
         const engine = this.requireDefaultEngine(call);
         if (
-            target === "window" &&
+            (target === "window" || target === "canvas") &&
             (event === "keydown" || event === "keyup")
         ) {
             const parameter =
@@ -5947,6 +6567,48 @@ class Compiler
             );
             this.emit(
                 `bbl::on_mouse_${event === "mousedown" || event === "pointerdown" ? "down" : "up"}(${engine}, ${lambda});`,
+            );
+            return true;
+        }
+        if (
+            (target === "window" || target === "canvas") &&
+            (event === "pointermove" || event === "wheel")
+        ) {
+            const parameter =
+                this.allocateTemporaryCppName("mouse_event");
+            const lambda = this.compilePlatformCallback(
+                callback,
+                {
+                    cppType: "const bbl::PlatformMouseEvent&",
+                    name: parameter,
+                },
+                [
+                    {
+                        kind: "platform-mouse-event",
+                        cpp: parameter,
+                        readOnly: true,
+                    },
+                ],
+                undefined,
+                once,
+            );
+            this.emit(
+                `bbl::on_mouse_${event === "pointermove" ? "move" : "wheel"}(${engine}, ${lambda});`,
+            );
+            return true;
+        }
+        if (
+            (target === "window" || target === "canvas") &&
+            event === "pointercancel"
+        ) {
+            this.emit(
+                `bbl::on_mouse_cancel(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
+            );
+            return true;
+        }
+        if (target === "document" && event === "pointerlockchange") {
+            this.emit(
+                `bbl::on_pointer_lock_change(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
             );
             return true;
         }
@@ -6960,6 +7622,23 @@ class Compiler
         );
     }
 
+    public compilePredicateWithValues(
+        declaration:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression
+            | ts.MethodDeclaration,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value {
+        return this.userFunctions.compilePredicateWithValues(
+            this,
+            declaration,
+            arguments_,
+            callNode,
+        );
+    }
+
     /**
      * Register the callback shape emitted by the pinned collision-event walk.
      *
@@ -7459,9 +8138,20 @@ class Compiler
     /** Which material a scene-code mesh was assigned, by its mesh index. */
     public recordSceneMeshMaterial(
         meshIndex: number,
-        material: { pbrMaterial: number | null; nodeMaterial: number | null },
+        material: {
+            pbrMaterial: number | null;
+            nodeMaterial: number | null;
+            standardMaterial: boolean;
+        },
     ): void {
-        this.sceneMeshMaterials.set(meshIndex, material);
+        this.sceneMeshMaterials.set(meshIndex, {
+            pbrMaterial: material.pbrMaterial,
+            nodeMaterial: material.nodeMaterial,
+        });
+        if (material.standardMaterial) {
+            const mesh = this.sceneMeshes[meshIndex];
+            if (mesh) mesh.standardMaterial = true;
+        }
         if (material.pbrMaterial !== null) {
             const meshes = this.scenePbrMaterialMeshes.get(
                 material.pbrMaterial,
@@ -8000,6 +8690,7 @@ class Compiler
 
     private renderCpp(features: Feature[]): string {
         this.hoistEngineContinuation();
+        this.markUnreadNumericLocals();
         return renderMainCpp({
             features,
             jsDataReached: this.jsDataReached,

@@ -465,6 +465,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/mesh-factories.ts",
         consumers: CMAKE,
     },
+    "mesh:update-positions": {
+        provenance: "src/mesh/mesh-factories.ts (updateMeshPositions)",
+        consumers: CMAKE,
+    },
     "mesh:ground": {
         provenance: "src/mesh/create-ground.ts",
         consumers: CMAKE,

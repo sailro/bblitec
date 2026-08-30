@@ -101,7 +101,9 @@ export type DataType =
   | { kind: "u8array" }
   | { kind: "f32array" }
   | { kind: "u16array" }
-  | { kind: "u32array" };
+  | { kind: "i16array" }
+  | { kind: "u32array" }
+  | { kind: "i32array" };
 
 /**
  * The element exposed by a native data-container `for...of` loop.
@@ -114,6 +116,8 @@ export type DataIterationElement =
 export interface DataStructField {
   name: string;
   type: DataType;
+  /** A discriminated-union field absent from at least one inactive arm. */
+  defaultWhenMissing?: boolean;
 }
 
 interface DataStructDefinition {
@@ -153,9 +157,8 @@ function declaredInBabylonLite(symbol: ts.Symbol): boolean {
  * Whether a compiled value is a plain-data numeric tuple of `arity`.
  *
  * The data model gives an annotated `[number, number, number]` a
- * `bbl::js::Tuple<3>` -- a `std::array<double, 3>` -- rather than the
- * compile-time tuple an in-place literal produces, so every reader of a
- * tuple-valued option has to recognise both.
+ * `bbl::js::Tuple<3>` rather than the compile-time tuple an in-place literal
+ * produces, so every reader of a tuple-valued option has to recognise both.
  */
 export function isDataTuple(
   value: { kind: string; dataType?: DataType },
@@ -169,7 +172,13 @@ export function isDataTuple(
 }
 
 /** The typed-array kinds this model carries, as one narrowing test. */
-export type TypedArrayKind = "u8array" | "f32array" | "u16array" | "u32array";
+export type TypedArrayKind =
+  | "u8array"
+  | "f32array"
+  | "u16array"
+  | "i16array"
+  | "u32array"
+  | "i32array";
 
 /**
  * Whether a data type is one of them.
@@ -185,7 +194,9 @@ export function isTypedArrayType(
     dataType?.kind === "u8array" ||
     dataType?.kind === "f32array" ||
     dataType?.kind === "u16array" ||
-    dataType?.kind === "u32array"
+    dataType?.kind === "i16array" ||
+    dataType?.kind === "u32array" ||
+    dataType?.kind === "i32array"
   );
 }
 
@@ -199,8 +210,12 @@ export function typedArrayStoreExpression(
       return `bbl::js::to_uint8(${value})`;
     case "u16array":
       return `bbl::js::to_uint16(${value})`;
+    case "i16array":
+      return `bbl::js::to_int16(${value})`;
     case "u32array":
       return `bbl::js::to_uint32(${value})`;
+    case "i32array":
+      return `bbl::js::to_int32(${value})`;
     case "f32array":
       return `static_cast<float>(${value})`;
   }
@@ -264,7 +279,9 @@ export function dataTypesEqual(left: DataType, right: DataType): boolean {
     case "u8array":
     case "f32array":
     case "u16array":
+    case "i16array":
     case "u32array":
+    case "i32array":
       return true;
     case "handle":
       return left.handle === (right as { handle: string }).handle;
@@ -469,7 +486,7 @@ export class DataTypeRegistry {
       return { kind: "string" };
     }
     if ((type.flags & ts.TypeFlags.Union) !== 0) {
-      return this.fromUnionType(type as ts.UnionType);
+      return this.fromUnionType(type as ts.UnionType, node);
     }
     if ((type.flags & ts.TypeFlags.Intersection) !== 0) {
       return this.fromStructType(type, node);
@@ -514,8 +531,14 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "Uint16Array") {
       return { kind: "u16array" };
     }
+    if (type.symbol?.name === "Int16Array") {
+      return { kind: "i16array" };
+    }
     if (type.symbol?.name === "Uint32Array") {
       return { kind: "u32array" };
+    }
+    if (type.symbol?.name === "Int32Array") {
+      return { kind: "i32array" };
     }
     const pinnedHandle = type.symbol
       ? pinnedHandleTypes[type.symbol.name]
@@ -527,6 +550,17 @@ export class DataTypeRegistry {
     if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
       const reference = type as ts.TypeReference;
       const target = reference.target;
+      if (type.symbol?.name === "Promise") {
+        const [resolvedType] = this.checker.getTypeArguments(reference);
+        if (!resolvedType) return undefined;
+        // Reached async work executes synchronously in the native lowering.
+        // A promise retained in a data container therefore stores its
+        // resolved value, preserving cache/get/set behavior without adding a
+        // second scheduler or a host Promise object.
+        return (resolvedType.flags & ts.TypeFlags.Void) !== 0
+          ? { kind: "boolean" }
+          : this.fromTsType(resolvedType, node);
+      }
       if ((target.objectFlags & ts.ObjectFlags.Tuple) !== 0) {
         return this.fromTupleType(reference, node);
       }
@@ -587,7 +621,10 @@ export class DataTypeRegistry {
     return this.fromStructType(type, node);
   }
 
-  private fromUnionType(type: ts.UnionType): DataType | undefined {
+  private fromUnionType(
+    type: ts.UnionType,
+    node: ts.Node,
+  ): DataType | undefined {
     const members = type.types;
     if (
       members.every(
@@ -619,7 +656,140 @@ export class DataTypeRegistry {
         members.map((member) => (member as ts.StringLiteralType).value),
       );
     }
-    return undefined;
+    return this.fromDiscriminatedObjectUnion(type, node);
+  }
+
+  /**
+   * A closed object union as one native struct: the tag is an enum and fields
+   * which exist only in one arm receive an inert default in the other arms.
+   * TypeScript's discriminant narrowing guarantees those inactive fields are
+   * never observed by valid source code.
+   */
+  private fromDiscriminatedObjectUnion(
+    type: ts.UnionType,
+    node: ts.Node,
+  ): DataType | undefined {
+    if (
+      type.types.length < 2 ||
+      type.types.some(
+        (member) => (member.flags & ts.TypeFlags.Object) === 0,
+      )
+    ) {
+      return undefined;
+    }
+    const propertiesByMember = type.types.map((member) =>
+      this.checker.getPropertiesOfType(member));
+    const discriminant = propertiesByMember[0]!.find((property) => {
+      const values = propertiesByMember.map((properties) => {
+        const candidate = properties.find(
+          ({ name }) => name === property.name,
+        );
+        if (!candidate) return undefined;
+        const declaration =
+          candidate.valueDeclaration ?? candidate.declarations?.[0];
+        const value = this.checker.getTypeOfSymbolAtLocation(
+          candidate,
+          declaration ?? node,
+        );
+        return (value.flags & ts.TypeFlags.StringLiteral) !== 0
+          ? (value as ts.StringLiteralType).value
+          : undefined;
+      });
+      return (
+        values.every((value) => value !== undefined) &&
+        new Set(values).size === type.types.length
+      );
+    });
+    if (!discriminant) return undefined;
+
+    const identity = this.structIdentity(type);
+    const completed = this.structTypesByIdentity.get(identity);
+    if (completed) return completed;
+    const preferredName = type.aliasSymbol?.name;
+    const name = this.uniqueName(
+      preferredName
+        ? sanitizeIdentifier(preferredName)
+        : `Record${++this.anonymousStructIndex}`,
+      this.structNames,
+    );
+    const propertyNames: string[] = [];
+    for (const properties of propertiesByMember) {
+      for (const property of properties) {
+        if (!propertyNames.includes(property.name)) {
+          propertyNames.push(property.name);
+        }
+      }
+    }
+    const fields: DataStructField[] = [];
+    for (const propertyName of propertyNames) {
+      const propertyTypes = propertiesByMember.flatMap((properties) => {
+        const property = properties.find(
+          ({ name: candidate }) => candidate === propertyName,
+        );
+        if (!property) return [];
+        const declaration =
+          property.valueDeclaration ?? property.declarations?.[0];
+        return [
+          this.checker.getTypeOfSymbolAtLocation(
+            property,
+            declaration ?? node,
+          ),
+        ];
+      });
+      let mapped: DataType | undefined;
+      if (
+        propertyTypes.length === type.types.length &&
+        propertyTypes.every(
+          (propertyType) =>
+            (propertyType.flags & ts.TypeFlags.StringLiteral) !== 0,
+        )
+      ) {
+        mapped = this.registerEnum(
+          type,
+          propertyTypes.map(
+            (propertyType) =>
+              (propertyType as ts.StringLiteralType).value,
+          ),
+        );
+      } else {
+        const candidates = propertyTypes.map((propertyType) =>
+          this.fromTsType(propertyType, node));
+        const first = candidates[0];
+        if (
+          !first ||
+          candidates.some(
+            (candidate) =>
+              !candidate || !dataTypesEqual(candidate, first),
+          )
+        ) {
+          return undefined;
+        }
+        mapped = first;
+      }
+      fields.push({
+        name: sanitizeIdentifier(propertyName),
+        type: this.markStoredObjectReferences(mapped),
+        ...(propertyTypes.length < type.types.length
+          ? { defaultWhenMissing: true }
+          : {}),
+      });
+    }
+    const key = fields
+      .map(
+        (field) =>
+          `${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}`,
+      )
+      .join(",");
+    const existing = this.structsByKey.get(key);
+    if (existing) {
+      const result = { kind: "struct" as const, name: existing.name };
+      this.structTypesByIdentity.set(identity, result);
+      return result;
+    }
+    this.structsByKey.set(key, { name, fields });
+    const result = { kind: "struct" as const, name };
+    this.structTypesByIdentity.set(identity, result);
+    return result;
   }
 
   private fromTupleType(
@@ -763,12 +933,35 @@ export class DataTypeRegistry {
    * already was.
    */
   private fromRecordType(type: ts.Type, node: ts.Node): DataType | undefined {
-    if (type.aliasSymbol?.name !== "Record") {
+    const directRecordAlias = type.aliasSymbol?.name === "Record";
+    const namedRecordAlias = (type.aliasSymbol?.declarations ?? []).some(
+      (declaration) =>
+        ts.isTypeAliasDeclaration(declaration) &&
+        ts.isTypeReferenceNode(declaration.type) &&
+        ts.isIdentifier(declaration.type.typeName) &&
+        declaration.type.typeName.text === "Record",
+    );
+    if (!directRecordAlias && !namedRecordAlias) {
       return undefined;
     }
     const [keyType, valueType] = type.aliasTypeArguments ?? [];
     if (!keyType || !valueType) {
-      return undefined;
+      const stringValue = this.checker.getIndexTypeOfType(
+        type,
+        ts.IndexKind.String,
+      );
+      const numberValue = stringValue
+        ? undefined
+        : this.checker.getIndexTypeOfType(type, ts.IndexKind.Number);
+      const indexedValue = stringValue ?? numberValue;
+      if (!indexedValue) return undefined;
+      const element = this.fromTsType(indexedValue, node);
+      if (!element) return undefined;
+      return {
+        kind: "map",
+        key: stringValue ? { kind: "string" } : { kind: "number" },
+        value: this.markStoredObjectReferences(element),
+      };
     }
     const key = this.fromTsType(keyType, node);
     const element = this.fromTsType(valueType, node);
@@ -1057,12 +1250,13 @@ export class DataTypeRegistry {
     dimensions: number[],
     compileLeaf: (expression: ts.Expression) => number,
   ): string {
-    // Every level is a std::array aggregate, so each level carries the
-    // double-brace form instead of relying on brace elision.
+    // The innermost numeric row is a JavaScript tuple and every outer level
+    // is a std::array aggregate. Preserve the aggregate's double braces while
+    // constructing the row through Tuple's initializer-list constructor.
     if (dimensions.length === 1) {
-      return `{{${literal.elements
+      return `{${literal.elements
         .map((element) => doubleLiteral(compileLeaf(element)))
-        .join(", ")}}}`;
+        .join(", ")}}`;
     }
     return `{{${literal.elements
       .map((element) =>
@@ -1076,8 +1270,8 @@ export class DataTypeRegistry {
   }
 
   public tableCppType(dimensions: number[]): string {
-    let cpp = "double";
-    for (let index = dimensions.length - 1; index >= 0; index -= 1) {
+    let cpp = `bbl::js::Tuple<${dimensions.at(-1)!}>`;
+    for (let index = dimensions.length - 2; index >= 0; index -= 1) {
       cpp = `std::array<${cpp}, ${dimensions[index]}>`;
     }
     return cpp;
@@ -1132,8 +1326,12 @@ export class DataTypeRegistry {
         return "bbl::js::F32Array";
       case "u16array":
         return "bbl::js::U16Array";
+      case "i16array":
+        return "bbl::js::I16Array";
       case "u32array":
         return "bbl::js::U32Array";
+      case "i32array":
+        return "bbl::js::I32Array";
     }
   }
 
@@ -1177,8 +1375,12 @@ export class DataTypeRegistry {
         return "f32";
       case "u16array":
         return "u16";
+      case "i16array":
+        return "i16";
       case "u32array":
         return "u32";
+      case "i32array":
+        return "i32";
     }
   }
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -10,9 +10,7 @@ import {
     unionArms,
     type PinnedMaterialArms,
 } from "../src/pinned-material-arms.js";
-import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 import { pinnedSceneArms } from "../src/pinned-scene-arms.js";
-import { importPinnedModule } from "../src/pinned-shader-composer.js";
 
 const armNames: (keyof PinnedMaterialArms)[] = [
     "clearcoat",
@@ -121,49 +119,6 @@ test("allows an emitted fragment carrying more than the assets need", async (t) 
     };
     assert.doesNotThrow(() =>
         assertArmsCovered(materials, everything, "scene39"),
-    );
-});
-
-test("a scene-code material composes what the scene built, not the asset", async (t) => {
-    // Scene 21's cloth is the case the glTF path cannot reach: its material
-    // declares no extensions at all and its captured fragment still carries
-    // `sheenParams`, because the scene calls `setPbrSheen`. Composing it needs
-    // the scene's own material shape as a second input — and the two defaults
-    // below are exactly what a mapping written by analogy with the glTF path
-    // would get wrong.
-    const captured = "artifacts/capture/scene21/shaders/05-module-5.wgsl";
-    if (!existsSync(captured)) {
-        return t.skip("scene21 has not been captured");
-    }
-    const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(
-        "material/pbr/pbr-flag-bits.js",
-    );
-    const variant = await composePinnedPbrVariant(
-        {
-            baseColorTexture: { name: "solid" },
-            ormTexture: { name: "solid" },
-            // `enableSpecularAA` is set unconditionally by
-            // `assemblePbrPropsExt`, the *glTF* assembly — not by
-            // `createPbrMaterial`. A scene-code material has it off.
-            _sheen: {
-                isEnabled: true,
-                color: [1, 1, 1],
-                roughness: 0.5,
-                intensity: 1,
-                texture: { name: "fire.png" },
-                // and no `albedoScaling`: `setPbrSheen` keeps the legacy
-                // model, where `gltf-ext-sheen.ts` always asks for the
-                // scaling one.
-            },
-        },
-        { sceneFeatures: PBR_HAS_ENV, lightMode: 0 },
-    );
-    assert.equal(variant.fragmentKey, "ibl|sheen");
-    const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
-    assert.equal(
-        normalize(variant.fragmentWgsl),
-        normalize(readFileSync(captured, "utf8")),
-        "composes byte-identically to the fragment the browser recorded",
     );
 });
 

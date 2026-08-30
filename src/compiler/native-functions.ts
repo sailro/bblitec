@@ -9,6 +9,7 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import {
+    isSupportedFunction,
     parameterIsReadOnly,
     resolveFunctionDeclaration,
     type SupportedFunction,
@@ -138,6 +139,10 @@ export function captureDataFunctionBody(
  * native. Handle-touching helpers stay on the inline lowerer.
  */
 export class NativeFunctionLowerer {
+    private readonly generationTimeFetchCache = new Map<
+        SupportedFunction,
+        boolean
+    >();
     private readonly signatures = new Map<
         SupportedFunction,
         NativeFunctionSignature
@@ -377,6 +382,14 @@ export class NativeFunctionLowerer {
             this.rejected.add(declaration);
             return undefined;
         }
+        if (this.containsShaderMaterialCreation(declaration)) {
+            // Shader source and fixed-function state are consumed while the
+            // variant table is generated. Keep a wrapper that creates one
+            // on the inline path so defaults and literal parameters remain
+            // compile-time values instead of native function parameters.
+            this.rejected.add(declaration);
+            return undefined;
+        }
         if (this.containsEntryEngineOperation(declaration)) {
             // Timers enqueue work on the entry engine. A namespace-scope
             // data helper has no engine parameter to use, so it must remain
@@ -484,17 +497,67 @@ export class NativeFunctionLowerer {
 
     private containsGenerationTimeFetch(
         declaration: SupportedFunction,
+        active = new Set<SupportedFunction>(),
+    ): boolean {
+        const cached = this.generationTimeFetchCache.get(declaration);
+        if (cached !== undefined) return cached;
+        if (active.has(declaration)) return false;
+        active.add(declaration);
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (ts.isCallExpression(node)) {
+                if (
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "fetch"
+                ) {
+                    found = true;
+                    return;
+                }
+                const called = this.context.checker
+                    .getResolvedSignature(node)
+                    ?.declaration;
+                if (
+                    isSupportedFunction(called) &&
+                    this.containsGenerationTimeFetch(called, active)
+                ) {
+                    found = true;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration.body ?? declaration);
+        active.delete(declaration);
+        this.generationTimeFetchCache.set(declaration, found);
+        return found;
+    }
+
+    private containsShaderMaterialCreation(
+        declaration: SupportedFunction,
     ): boolean {
         let found = false;
         const visit = (node: ts.Node): void => {
             if (found) return;
-            if (
-                ts.isCallExpression(node) &&
-                ts.isIdentifier(node.expression) &&
-                node.expression.text === "fetch"
-            ) {
-                found = true;
-                return;
+            if (ts.isCallExpression(node)) {
+                if (
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "createShaderMaterial"
+                ) {
+                    found = true;
+                    return;
+                }
+                const called = this.context.checker
+                    .getResolvedSignature(node)
+                    ?.declaration;
+                if (
+                    called?.getSourceFile().isDeclarationFile &&
+                    ts.isFunctionDeclaration(called) &&
+                    called.name?.text === "createShaderMaterial"
+                ) {
+                    found = true;
+                    return;
+                }
             }
             ts.forEachChild(node, visit);
         };

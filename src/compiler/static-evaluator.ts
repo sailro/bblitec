@@ -1340,9 +1340,8 @@ export class StaticEvaluator {
      *
      * A colour table written with an explicit `[number, number, number][]`
      * annotation is data rather than a compile-time table, so its element
-     * arrives as a `bbl::js::Tuple<3>` — a `std::array<double, 3>`. The
-     * components round at the sink, which is where the pin's own
-     * `Float32Array` store rounds them.
+     * arrives as a `bbl::js::Tuple<3>`. The components round at the sink,
+     * which is where the pin's own `Float32Array` store rounds them.
      */
     private dataTupleComponents(
         expression: ts.Expression,
@@ -1396,7 +1395,9 @@ export class StaticEvaluator {
             ts.isPropertyAccessExpression(
                 unwrapped.expression,
             ) &&
-            unwrapped.expression.name.text === "toFixed" &&
+            ["toFixed", "toPrecision", "toExponential"].includes(
+                unwrapped.expression.name.text,
+            ) &&
             unwrapped.arguments.length <= 1
         ) {
             const staticContext = {
@@ -1419,15 +1420,37 @@ export class StaticEvaluator {
                       staticContext,
                       unwrapped.arguments[0],
                   )
-                : 0;
+                : undefined;
+            const method = unwrapped.expression.name.text;
+            if (number !== undefined && digits === undefined) {
+                return method === "toFixed"
+                    ? number.toFixed()
+                    : method === "toPrecision"
+                      ? number.toPrecision()
+                      : number.toExponential();
+            }
             if (
                 number !== undefined &&
                 digits !== undefined &&
-                Number.isInteger(digits) &&
-                digits >= 0 &&
-                digits <= 100
+                Number.isInteger(digits)
             ) {
-                return number.toFixed(digits);
+                if (method === "toFixed" && digits >= 0 && digits <= 100) {
+                    return number.toFixed(digits);
+                }
+                if (
+                    method === "toPrecision" &&
+                    digits >= 1 &&
+                    digits <= 100
+                ) {
+                    return number.toPrecision(digits);
+                }
+                if (
+                    method === "toExponential" &&
+                    digits >= 0 &&
+                    digits <= 100
+                ) {
+                    return number.toExponential(digits);
+                }
             }
         }
         if (

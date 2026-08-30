@@ -5,6 +5,8 @@ export interface PromiseLoweringContext {
     compileValue(expression: ts.Expression): Value;
     emitStatement(statement: ts.Statement): void;
     emit(line: string): void;
+    increaseIndent(): void;
+    decreaseIndent(): void;
     bindLocalValue(
         identifier: ts.Identifier,
         value: Value,
@@ -24,6 +26,20 @@ export function compileImmediatePromise(
         ts.isPropertyAccessExpression(call.expression) &&
         ts.isIdentifier(call.expression.expression) &&
         call.expression.expression.text === "Promise" &&
+        call.expression.name.text === "resolve"
+    ) {
+        if (call.arguments.length !== 1) {
+            context.fail(
+                call,
+                "Immediate Promise.resolve requires one value.",
+            );
+        }
+        return context.compileValue(call.arguments[0]!);
+    }
+    if (
+        ts.isPropertyAccessExpression(call.expression) &&
+        ts.isIdentifier(call.expression.expression) &&
+        call.expression.expression.text === "Promise" &&
         call.expression.name.text === "all"
     ) {
         if (call.arguments.length !== 1) {
@@ -35,6 +51,17 @@ export function compileImmediatePromise(
         const argument = call.arguments[0]!;
         if (!ts.isArrayLiteralExpression(argument)) {
             const iterable = context.compileValue(argument);
+            if (
+                iterable.kind === "data" &&
+                iterable.dataType?.kind === "vector"
+            ) {
+                // Native array callbacks execute eagerly. By the time the
+                // vector reaches Promise.all every immediate promise in it
+                // has settled and all callback side effects have run.
+                return isDestructured(call)
+                    ? iterable
+                    : { kind: "void", cpp: "" };
+            }
             if (iterable.kind !== "tuple" || !iterable.tupleElements) {
                 context.fail(
                     argument,
@@ -80,12 +107,14 @@ export function compileImmediatePromise(
         }
         return { kind: "tuple", cpp: "", tupleElements: elements };
     }
-    if (
-        !ts.isPropertyAccessExpression(call.expression) ||
-        call.expression.name.text !== "then"
-    ) {
+    if (!ts.isPropertyAccessExpression(call.expression)) {
         return undefined;
     }
+    const method = call.expression.name.text;
+    if (method === "catch") {
+        return compileImmediateCatch(context, call);
+    }
+    if (method !== "then") return undefined;
     if (call.arguments.length !== 1) {
         context.fail(
             call,
@@ -103,12 +132,13 @@ export function compileImmediatePromise(
         );
     }
     if (
-        callback.parameters.length !== 1 ||
-        !ts.isIdentifier(callback.parameters[0]!.name)
+        callback.parameters.length > 1 ||
+        (callback.parameters.length === 1 &&
+            !ts.isIdentifier(callback.parameters[0]!.name))
     ) {
         context.fail(
             callback,
-            "Immediate promise callback requires one identifier parameter.",
+            "Immediate promise callback accepts zero parameters or one identifier parameter.",
         );
     }
     const value = context.compileValue(
@@ -116,10 +146,13 @@ export function compileImmediatePromise(
     );
     context.pushScope(context.allocateBlockPrefix());
     try {
-        context.bindLocalValue(
-            callback.parameters[0]!.name,
-            value,
-        );
+        const parameter = callback.parameters[0];
+        if (parameter) {
+            context.bindLocalValue(
+                parameter.name as ts.Identifier,
+                value,
+            );
+        }
         if (ts.isBlock(callback.body)) {
             for (const statement of callback.body.statements) {
                 context.emitStatement(statement);
@@ -134,6 +167,77 @@ export function compileImmediatePromise(
         context.popScope();
     }
     return { kind: "void", cpp: "" };
+}
+
+/**
+ * Native async work is immediate, but it may still throw. A value-less
+ * promise catch therefore maps to a native try/catch and returns a boolean
+ * settlement token when source code retains the promise for memoization.
+ */
+function compileImmediateCatch(
+    context: PromiseLoweringContext,
+    call: ts.CallExpression,
+): Value {
+    const callee = call.expression;
+    if (!ts.isPropertyAccessExpression(callee)) {
+        context.fail(call, "Immediate promise catch requires a property call.");
+    }
+    if (call.arguments.length !== 1) {
+        context.fail(call, "Immediate promise catch requires one callback.");
+    }
+    const callback = call.arguments[0]!;
+    if (
+        (!ts.isArrowFunction(callback) &&
+            !ts.isFunctionExpression(callback)) ||
+        callback.parameters.length !== 0
+    ) {
+        context.fail(
+            callback,
+            "Immediate promise catch requires a zero-parameter inline callback.",
+        );
+    }
+    const settled = context.allocateTemporaryCppName(
+        "promise_settled",
+    );
+    context.emit(`[[maybe_unused]] bool ${settled} = true;`);
+    context.emit("try {");
+    context.increaseIndent();
+    const value = context.compileValue(
+        callee.expression,
+    );
+    if (value.kind !== "void") {
+        context.fail(
+            callee.expression,
+            "Immediate promise catch currently supports Promise<void> work.",
+        );
+    }
+    emitValue(context, value);
+    context.decreaseIndent();
+    context.emit("} catch (...) {");
+    context.increaseIndent();
+    context.emit(`${settled} = false;`);
+    context.pushScope(context.allocateBlockPrefix());
+    try {
+        if (ts.isBlock(callback.body)) {
+            for (const statement of callback.body.statements) {
+                context.emitStatement(statement);
+            }
+        } else {
+            emitValue(
+                context,
+                context.compileValue(callback.body),
+            );
+        }
+    } finally {
+        context.popScope();
+    }
+    context.decreaseIndent();
+    context.emit("}");
+    return {
+        kind: "boolean",
+        cpp: settled,
+        dataType: { kind: "boolean" },
+    };
 }
 
 /**

@@ -779,6 +779,7 @@ async function main(): Promise<void> {
         runtimeMeshFeatures,
         standardComposition,
         standardRenderableMeshFeatures,
+        standardRuntimeMeshFeatures,
         nodeVariants,
     } = await composeScenePipeline({
         result,
@@ -985,8 +986,8 @@ async function main(): Promise<void> {
                 pinnedStandardSelectors: standardComposition.selectors,
                 standardRenderableMeshFeatures:
                     standardRenderableMeshFeatures ?? [],
-                ...(runtimeMeshFeatures !== undefined
-                    ? { standardRuntimeMeshFeatures: runtimeMeshFeatures }
+                ...(standardRuntimeMeshFeatures !== undefined
+                    ? { standardRuntimeMeshFeatures }
                     : {}),
             }
             : {}),

@@ -10,6 +10,7 @@ export class SceneLowerer {
       /** The scene reaches `enableMirroredMeshes`. */
       mirroredMeshes?: boolean;
       parenting?: boolean;
+      visibility?: boolean;
       geometryAccess?: boolean;
       managedAnimationGroups?: boolean;
       /** The scene reaches `createTransformNode`. */
@@ -260,6 +261,21 @@ void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
 }
 `
         : "";
+    const visibilitySource = options.visibility
+      ? `
+// ${this.context.provenance("src/scene/visibility.ts", "setSubtreeVisible")}
+void set_mesh_visible(
+    Engine& engine,
+    MeshHandle mesh,
+    bool visible) {
+    MeshRecord& record = engine.meshes.at(mesh.value);
+    record.visible = visible;
+    for (const MeshHandle child : record.children) {
+        set_mesh_visible(engine, child, visible);
+    }
+}
+`
+      : "";
     // src/scene/transform-node.ts createTransformNode and the
     // ObservableVec3/ObservableQuat setters a scene writes on the node
     // it made. Each setter is the field write plus the version bump a
@@ -1008,6 +1024,38 @@ void on_mouse_up(
     engine.mouse_up_callbacks.push_back(std::move(callback));
 }
 
+void on_mouse_move(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback) {
+    engine.mouse_move_callbacks.push_back(std::move(callback));
+}
+
+void on_mouse_wheel(
+    Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback) {
+    engine.mouse_wheel_callbacks.push_back(std::move(callback));
+}
+
+void on_mouse_cancel(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.mouse_cancel_callbacks.push_back(std::move(callback));
+}
+
+void on_pointer_lock_change(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.pointer_lock_change_callbacks.push_back(std::move(callback));
+}
+
+void request_pointer_lock(Engine& engine) {
+    engine.pointer_lock_requested = true;
+}
+
+void exit_pointer_lock(Engine& engine) {
+    engine.pointer_lock_requested = false;
+}
+
 void on_visibility_change(
     Engine& engine,
     std::function<void(bool)> callback) {
@@ -1034,7 +1082,7 @@ void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
-${fogSource}${meshDirtySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
+${fogSource}${meshDirtySource}${visibilitySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
 } // namespace bbl
 `,
     };

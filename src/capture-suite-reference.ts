@@ -100,6 +100,47 @@ export function bundledDemoAssetPath(requestPath: string): string | undefined {
     return `${prefix}${[parts[0], ...parts.slice(2)].join("/")}`;
 }
 
+/**
+ * Recover an asset URL emitted by a nested module when the upstream demo
+ * bundler would have given every module the demo bundle's directory.
+ *
+ * Unlike the repeated-directory case above, a module such as
+ * `quake/render/items.ts` can resolve `./librequake/maps/...` as
+ * `quake/render/librequake/maps/...` in the unbundled harness even though the
+ * bundle resolves it as `librequake/maps/...`. The source text does not expose
+ * where its module directory ends and its asset path begins, so test each
+ * progressively flattened path and accept only an existing repository file.
+ * Literal and repeated-directory paths are still preferred by the server.
+ */
+export function flattenedBundledDemoAssetPath(
+    requestPath: string,
+    root = resolve("."),
+): string | undefined {
+    const relativePath = requestPath
+        .replace(/^\/+/, "")
+        .replaceAll("\\", "/");
+    const marker = "lab/lite/src/demos/";
+    const markerIndex = relativePath.indexOf(marker);
+    if (markerIndex < 0) return undefined;
+    const prefix = relativePath.slice(
+        0,
+        markerIndex + marker.length,
+    );
+    const parts = relativePath.slice(prefix.length).split("/");
+    for (let omitted = 1; omitted < parts.length - 1; omitted += 1) {
+        const candidate = `${prefix}${parts.slice(omitted).join("/")}`;
+        const candidatePath = resolve(root, candidate);
+        if (
+            candidatePath.startsWith(`${root}${sep}`) &&
+            existsSync(candidatePath) &&
+            statSync(candidatePath).isFile()
+        ) {
+            return candidate;
+        }
+    }
+    return undefined;
+}
+
 export type SuiteSourceTransform = (source: string) => string;
 
 /**
@@ -406,6 +447,20 @@ ${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></scrip
                 "Content-Type": mimeType(bundledPath),
             });
             response.end(readFileSync(bundledPath));
+            return;
+        }
+        const flattenedRelative = flattenedBundledDemoAssetPath(
+            relative,
+            root,
+        );
+        const flattenedPath = flattenedRelative === undefined
+            ? undefined
+            : resolve(root, flattenedRelative);
+        if (flattenedPath !== undefined) {
+            response.writeHead(200, {
+                "Content-Type": mimeType(flattenedPath),
+            });
+            response.end(readFileSync(flattenedPath));
             return;
         }
         if (!path.startsWith(`${root}${sep}`) || !existsSync(path) || !statSync(path).isFile()) {

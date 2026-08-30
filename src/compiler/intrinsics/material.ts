@@ -110,7 +110,14 @@ export interface MaterialIntrinsicContext
     ): CompiledSubsurfaceOptions;
     compileShaderMaterialOptions(
         expression: ts.Expression,
-    ): { name: string; id: number };
+    ): {
+        name: string;
+        id: number;
+        dynamicUniforms?: Array<{
+            offset: number;
+            components: string[];
+        }>;
+    };
     reachLinearDepthMaterial(
         node: ts.Node,
         options: { near: number; far: number },
@@ -169,12 +176,21 @@ function compileShaderUniformWrite(
             call.arguments[2]!,
             count,
         );
+    const engine = context.requireEngine(material, call);
+    if (material.sceneMaterialSlot !== undefined) {
+        return {
+            kind: "void",
+            cpp:
+                `bbl::set_scene_shader_uniform_value(` +
+                `${engine}, ${material.sceneMaterialSlot}u, ${offset}u, ` +
+                `${components.join(", ")})`,
+        };
+    }
     return {
         kind: "void",
         cpp:
             `bbl::set_shader_uniform_value(` +
-            `${context.requireEngine(material, call)}, ` +
-            `${material.cpp}, ${offset}u, ` +
+            `${engine}, ${material.cpp}, ${offset}u, ` +
             `${components.join(", ")})`,
     };
 }
@@ -520,7 +536,7 @@ export function compileMaterialIntrinsic(
         }
 
         case "createShaderMaterial": {
-            context.recordSceneMaterialSlot();
+            const materialSlot = context.recordSceneMaterialSlot();
             context.expectArgumentCount(call, 1, 1);
             const engine =
                 context.requireDefaultEngine(call);
@@ -530,13 +546,30 @@ export function compileMaterialIntrinsic(
                 );
             context.reachFeature("material:shader", call);
             context.reachFeature("renderer:pbr", call);
+            let materialCpp =
+                `bbl::remember_scene_material(${engine}, ` +
+                `${materialSlot}u, ` +
+                `bbl::create_shader_material(${engine}, ${variant.id}u))`;
+            if (variant.dynamicUniforms?.length) {
+                const material = context.allocateTemporaryCppName(
+                    "shader_material",
+                );
+                context.emit(`const auto ${material} = ${materialCpp};`);
+                for (const uniform of variant.dynamicUniforms) {
+                    context.emit(
+                        `bbl::set_shader_uniform_value(${engine}, ` +
+                            `${material}, ${uniform.offset}u, ` +
+                            `${uniform.components.join(", ")});`,
+                    );
+                }
+                materialCpp = material;
+            }
             return {
                 kind: "material",
-                cpp:
-                    `bbl::create_shader_material(${engine}, ` +
-                    `${variant.id}u)`,
+                cpp: materialCpp,
                 engineCpp: engine,
                 shaderVariant: variant.name,
+                sceneMaterialSlot: materialSlot,
             };
         }
 

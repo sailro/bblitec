@@ -2813,7 +2813,21 @@ inline std::string standard_variant_request(
     const upstream::RenderDrawCommand& draw) {
     const StandardVariantKey key = standard_variant_key(engine, draw);
     if (!key.resolved) {
-        return "no key: the draw names no composable Standard material";
+        if (draw.item.material.value >= engine.materials.size()) {
+            return "no key: material handle " +
+                std::to_string(draw.item.material.value) + " exceeds " +
+                std::to_string(engine.materials.size()) +
+                " runtime materials";
+        }
+        return "no key: runtime material flags standard=" +
+            std::to_string(
+                engine.materials[draw.item.material.value].standard_material) +
+            ", shader=" +
+            std::to_string(
+                engine.materials[draw.item.material.value].shader_material) +
+            ", draw kind=" +
+            std::to_string(static_cast<std::uint32_t>(
+                draw.item.material_kind));
     }
     return "features " + std::to_string(key.features) + ", mesh features " +
         std::to_string(key.mesh_features);
@@ -4256,6 +4270,7 @@ inline bool block_is_shared_scene_matrix(
         case upstream::ShaderSystemMatrix::world_view_projection:
         case upstream::ShaderSystemMatrix::view:
         case upstream::ShaderSystemMatrix::projection:
+        case upstream::ShaderSystemMatrix::camera_position:
             return false;
     }
     return false;
@@ -4285,7 +4300,32 @@ struct ShaderPassMatrices {
     const std::array<float, 16>* world = nullptr;
     const std::array<float, 16>* world_view = nullptr;
     const std::array<float, 16>* world_view_projection = nullptr;
+    const std::array<float, 4>* camera_position = nullptr;
 };
+
+/** Camera position in the same absolute/eye-relative frame as shader world. */
+inline std::array<float, 4> shader_camera_position(
+    const Scene& scene,
+    const Engine& engine,
+    const CameraRecord& camera) {
+    const Vec3d eye = upstream::arc_rotate_eye_position(camera);
+#if BBLITE_FLOATING_ORIGIN
+    const Vec3d origin = floating_origin_offset(scene, engine);
+    return {
+        static_cast<float>(eye.x - origin.x),
+        static_cast<float>(eye.y - origin.y),
+        static_cast<float>(eye.z - origin.z),
+        0.0f};
+#else
+    (void)scene;
+    (void)engine;
+    return {
+        static_cast<float>(eye.x),
+        static_cast<float>(eye.y),
+        static_cast<float>(eye.z),
+        0.0f};
+#endif
+}
 
 /**
  * One custom-shader stage block: declared system matrices followed by the
@@ -4308,14 +4348,14 @@ inline std::vector<float> shader_stage_block_floats(
     std::vector<float> floats(block.float_size, 0.0f);
     std::size_t head = 0;
     const auto copy_from =
-        [&](const float* source, const char* name) {
+        [&](const float* source, std::size_t count, const char* name) {
         if (!source) {
             throw std::runtime_error(
                 std::string("A shader material declares the '") + name +
                 "' system uniform in a pass that renders with no such "
                 "matrix.");
         }
-        std::copy_n(source, 16, floats.begin() + head);
+        std::copy_n(source, count, floats.begin() + head);
     };
     for (const upstream::ShaderSystemMatrix matrix : block.system_matrices) {
         // No default arm: a new enumerator has to be given a source here
@@ -4324,36 +4364,54 @@ inline std::vector<float> shader_stage_block_floats(
             case upstream::ShaderSystemMatrix::world:
                 copy_from(
                     pass.world ? pass.world->data() : identity.data(),
+                    16,
                     "world");
+                head += 16;
                 break;
             case upstream::ShaderSystemMatrix::world_view:
                 copy_from(
                     pass.world_view
                         ? pass.world_view->data()
                         : nullptr,
+                    16,
                     "worldView");
+                head += 16;
                 break;
             case upstream::ShaderSystemMatrix::view:
                 copy_from(
-                    pass.view ? pass.view->data() : nullptr, "view");
+                    pass.view ? pass.view->data() : nullptr, 16, "view");
+                head += 16;
                 break;
             case upstream::ShaderSystemMatrix::projection:
                 copy_from(
-                    pass.projection ? pass.projection->data() : nullptr,
+                    pass.projection ? pass.projection->data() : nullptr, 16,
                     "projection");
+                head += 16;
                 break;
             case upstream::ShaderSystemMatrix::view_projection:
-                copy_from(pass.view_projection, "viewProjection");
+                copy_from(pass.view_projection, 16, "viewProjection");
+                head += 16;
                 break;
             case upstream::ShaderSystemMatrix::world_view_projection:
                 copy_from(
                     pass.world_view_projection
                         ? pass.world_view_projection->data()
                         : pass.view_projection,
+                    16,
                     "worldViewProjection");
+                head += 16;
+                break;
+            case upstream::ShaderSystemMatrix::camera_position:
+                copy_from(
+                    pass.camera_position
+                        ? pass.camera_position->data()
+                        : nullptr,
+                    3,
+                    "cameraPosition");
+                // vec3 uniform members consume one 16-byte slot.
+                head += 4;
                 break;
         }
-        head += 16;
     }
     for (const std::array<std::uint32_t, 3>& gather : block.gather) {
         for (std::uint32_t index = 0; index < gather[2]; ++index) {

@@ -302,6 +302,8 @@ export interface SpriteCustomShaderManifest {
 export interface SceneMeshManifest {
   kind: string;
   gltfAssetsBefore: number;
+  /** This creation site is assigned a scene-code Standard material. */
+  standardMaterial?: true;
   /** A material read from an asset mesh can be assigned to this row. */
   assetPbrMaterial?: true;
   /** For `from-data` meshes: which optional streams the call passes, in
@@ -1440,10 +1442,12 @@ export interface Value {
    * descriptor because that is what the layer or system is handed.
    */
   spriteCustomTextures?: string[];
-  /** One-based program index; zero is the stock sprite/billboard shader. */
-  spriteCustomShaderIndex?: number;
-  shaderVariant?: string;
-  animationFrameRate?: string;
+    /** One-based program index; zero is the stock sprite/billboard shader. */
+    spriteCustomShaderIndex?: number;
+    shaderVariant?: string;
+    /** Stable creation slot for a scene-owned material that escapes a scope. */
+    sceneMaterialSlot?: number;
+    animationFrameRate?: string;
   animationDuration?: string;
   /**
    * Which object kind an `animation-clip` value's paths bind to. A
@@ -1460,6 +1464,8 @@ export interface Value {
   /** A value bound by a native runtime iteration, not a static unroll. */
   runtimeIteration?: true;
   staticString?: string;
+  /** Runtime path selected from a compiler-packaged closed asset directory. */
+  dynamicAssetPathCpp?: string;
   /** Parsed payload carried only by a generation-time fetch response. */
   staticJson?: unknown;
   tupleElements?: Value[];
@@ -1591,6 +1597,7 @@ export type Feature =
   | "material:standard-vertex-colors"
   | "mesh:box"
   | "mesh:from-data"
+  | "mesh:update-positions"
   | "mesh:ground"
   | "mesh:ground-heightmap"
   | "mesh:lines"
