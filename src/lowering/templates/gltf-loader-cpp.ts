@@ -1416,6 +1416,7 @@ MaterialHandle load_material(
     const JsonArray& samplers,
     bool animated_base_color) {
     MaterialRecord material;
+    material.name = string_or(material_json, "name");
     material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
     material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {

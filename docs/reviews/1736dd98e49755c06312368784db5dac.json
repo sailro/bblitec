@@ -1,0 +1,18 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "fixed-frame marker injection validated by searching the output text and could accept an unrelated pre-existing marker; compare the transformed source to its input so only a successful replacement passes",
+      "applied": true
+    },
+    {
+      "summary": "the fused mesh-material search retained a mutable selected value plus an unreachable post-loop failure, and evaluated a projected optional material's property predicate before guarding the handle; retain only the derived asset flag and emit the property predicate inside the optional-handle guard",
+      "applied": true
+    }
+  ]
+}

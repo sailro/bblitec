@@ -4753,6 +4753,27 @@ test("folds the browser canvas guard around a void-wrapped auto-run", () => {
     );
 });
 
+test("erases optional DOM-local writes without dropping adjacent native state", () => {
+    const result = compileSource(`
+        let enabled = false;
+        const button = document.getElementById("toggle") as HTMLButtonElement | null;
+        function setEnabled(on: boolean): void {
+            enabled = on;
+            if (button) {
+                button.textContent = on ? "enabled" : "disabled";
+                button.setAttribute("aria-pressed", String(on));
+            }
+        }
+        setEnabled(true);
+    `);
+
+    assert.match(result.cpp, /v_enabled = v_fn\d+_on;/);
+    assert.doesNotMatch(
+        result.cpp,
+        /button|textContent|setAttribute|aria-pressed/,
+    );
+});
+
 test("uses JavaScript truthiness for browser query values in conditions", () => {
     const source = `
         import {
@@ -7521,6 +7542,46 @@ test("writes lighting-only environment rotation into native scene state", () => 
     );
 });
 
+test("accepts the DDS loader's inert skybox and ground skip flags", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            loadDdsEnvironment,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            await loadDdsEnvironment(scene, "/studio.dds", {
+                brdfUrl: "/brdf-lut.png",
+                skipSkybox: true,
+                skipGround: true,
+            });
+        }
+    `);
+
+    assert.ok(result.manifest.features.includes("environment:ibl"));
+    assert.ok(result.manifest.features.includes("environment:dds"));
+    assert.deepEqual(
+        result.manifest.assets.map(({ source, kind }) => ({ source, kind })),
+        [
+            {
+                source: pinnedAssetUrl("lab/public/studio.dds"),
+                kind: "dds-environment",
+            },
+            {
+                source: pinnedAssetUrl(
+                    "packages/babylon-lite/assets/brdf-lut.png",
+                ),
+                kind: "texture",
+            },
+        ],
+    );
+    assert.match(result.cpp, /bbl::load_dds_environment\(/);
+    assert.doesNotMatch(result.cpp, /skipSkybox|skipGround/);
+});
+
 test("does not activate IBL from environment rotation alone", () => {
     const result = compileSource(`
         import {
@@ -8531,4 +8592,83 @@ test("a mesh search by name selects at run time, with an indexed fallback and th
     // composes into the scene's own not-found guard.
     assert.match(result.cpp, /_present_\d+ = \w+ < v_scene\.meshes\.size\(\)/);
     assert.match(result.cpp, /_found_\d+ \|\| \w*_present_\d+/);
+});
+
+test("fuses a mesh-material map/find and replaces an asset occlusion texture before startup", () => {
+    const result = compileSource(
+        `
+        import {
+            addToScene,
+            createEngine,
+            createSceneContext,
+            createSolidTexture2D,
+            loadGltf,
+            rebuildMaterial,
+            registerScene,
+            startEngine,
+        } from "@babylonjs/lite";
+        import type { PbrMaterialProps } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const asset = await loadGltf(engine, "/model.glb");
+            addToScene(scene, asset);
+            await registerScene(scene);
+            const material = scene.meshes
+                .map((mesh) => mesh.material)
+                .find((candidate): candidate is PbrMaterialProps =>
+                    !!candidate && candidate.name === "metalmat",
+                );
+            if (material?.occlusionTexture) {
+                material.occlusionTexture =
+                    createSolidTexture2D(engine, 1, 1, 1);
+                rebuildMaterial(scene, material, {
+                    rebuildFrameGraph: true,
+                });
+            }
+            await startEngine(engine);
+        }
+
+        void main();
+        `,
+        { fileName: "examples/material-map-find.ts" },
+    );
+
+    assert.match(result.cpp, /for \(const bbl::MeshHandle/);
+    assert.match(
+        result.cpp,
+        /\.materials\[[^\]]+\]\.name/,
+    );
+    assert.match(
+        result.cpp,
+        /if \([^\n]*material\.value != bbl::invalid_handle[^\n]*\) \{\n\s+auto [^\n]+;\n\s+const bbl::js::Nullable<std::string>[^\n]*\.materials\[/,
+    );
+    assert.match(result.cpp, /optional_compare[^\n]*== "metalmat"/);
+    assert.match(result.cpp, /bbl::set_pbr_occlusion_solid_texture\(/);
+    assert.doesNotMatch(result.cpp, /rebuild_material/);
+});
+
+test("refuses rebuildMaterial after native startup has begun", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSceneContext,
+                    rebuildMaterial,
+                    startEngine,
+                } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    const material = createPbrMaterial({});
+                    await startEngine(engine);
+                    rebuildMaterial(scene, material);
+                }
+                void main();
+            `),
+        /live GPU material resource replacement/,
+    );
 });

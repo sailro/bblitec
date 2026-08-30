@@ -95,6 +95,7 @@ export function browserCaptureStaleness(
         scene.source,
         meta.seekSeconds ?? undefined,
         scene.parity?.referenceAnimationGroups,
+        scene.parity?.referenceFrame,
     );
     if (meta.moduleSha256 !== current) {
         return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
@@ -310,6 +311,7 @@ export async function runInstrumentedCapture(
         undefined,
         seekSeconds,
         animationGroups,
+        scene.parity?.referenceFrame,
     );
     const server = createSuiteSceneServer(
         moduleSource,
@@ -439,6 +441,7 @@ export async function runInstrumentedCapture(
                     scene.source,
                     seekSeconds,
                     animationGroups,
+                    scene.parity?.referenceFrame,
                 ),
                 goldenIdentity,
                 ...(skipDrawIndexCount !== 0

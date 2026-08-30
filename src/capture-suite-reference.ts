@@ -133,6 +133,7 @@ export function suiteBrowserModule(
     transform?: SuiteSourceTransform,
     captureTimeSeconds?: number,
     captureAnimationGroups?: string[],
+    fixedAnimationFrame?: number,
 ): string {
     const input = readFileSync(resolve(sourcePath), "utf8");
     const transformed = transform ? transform(input) : input;
@@ -174,7 +175,21 @@ export function suiteBrowserModule(
               "await startEngine(engine);",
               'await startEngine(engine); canvas.dataset.ready = "true";',
           );
-    return browserHarness().transpileForBrowser(readySource, sourcePath);
+    const fixedFrameSource = fixedAnimationFrame === undefined
+        ? readySource
+        : readySource.replace(
+              "await startEngine(engine);",
+              'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);',
+          );
+    if (
+        fixedAnimationFrame !== undefined &&
+        fixedFrameSource === readySource
+    ) {
+        throw new Error(
+            `Fixed-frame capture could not mark startEngine in '${sourcePath}'.`,
+        );
+    }
+    return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
 }
 
 /**
@@ -190,6 +205,7 @@ export function suiteBrowserModuleDigest(
     sourcePath: string,
     captureTimeSeconds?: number,
     captureAnimationGroups?: string[],
+    fixedAnimationFrame?: number,
 ): string {
     return createHash("sha256")
         .update(
@@ -198,6 +214,7 @@ export function suiteBrowserModuleDigest(
                 undefined,
                 captureTimeSeconds,
                 captureAnimationGroups,
+                fixedAnimationFrame,
             ),
         )
         .digest("hex");
@@ -480,7 +497,7 @@ const nativeCancelRaf = window.cancelAnimationFrame.bind(window);
 const step = 1000 / 60;
 const target = ${targetFrame};
 let frame = -1;
-let readyFrame = -1;
+let engineStartFrame = -1;
 let now = 0;
 let nextId = 1;
 let scheduled = false;
@@ -495,25 +512,37 @@ const schedule = () => {
         scheduled = false;
         flushing = true;
         frame += 1;
-        now = frame * step;
+        const canvas = document.getElementById("renderCanvas");
+        if (
+            engineStartFrame < 0 &&
+            canvas?.dataset.fixedEngineStarting === "true"
+        ) {
+            engineStartFrame = frame;
+        }
+        // Native initialization is synchronous and its deterministic clock
+        // starts with the render loop. Keep browser initialization at the
+        // same zero epoch even when async pipeline work consumes RAF turns.
+        now = engineStartFrame < 0
+            ? 0
+            : (frame - engineStartFrame) * step;
         const due = Array.from(callbacks.entries());
         callbacks.clear();
         for (const [id, callback] of due) {
             if (id > 0) callback(now);
         }
-        const canvas = document.getElementById("renderCanvas");
         if (canvas) {
-            if (readyFrame < 0 && canvas.dataset.ready === "true") {
-                readyFrame = frame;
-            }
-            const captureFrame = readyFrame < 0
+            const captureFrame = engineStartFrame < 0
                 ? -1
-                : frame - readyFrame + 1;
+                : frame - engineStartFrame;
             canvas.dataset.fixedAnimationFrame = String(frame);
             canvas.dataset.fixedCaptureFrame = String(captureFrame);
             canvas.dataset.fixedAnimationCallbacks = String(due.length);
         }
-        if (readyFrame >= 0 && frame - readyFrame + 1 >= target) {
+        if (
+            canvas?.dataset.ready === "true" &&
+            engineStartFrame >= 0 &&
+            frame - engineStartFrame >= target
+        ) {
             flushing = false;
             done = true;
         } else {
@@ -571,6 +600,7 @@ export async function captureSuiteReference(
         transform,
         captureTimeSeconds,
         captureAnimationGroups,
+        options.fixedAnimationFrame,
     );
     const server = createSuiteSceneServer(moduleSource, {
         ...options,

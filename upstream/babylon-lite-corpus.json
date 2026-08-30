@@ -1925,6 +1925,46 @@
           "sha256": "371590cb06875916ee1ab783217a2b8680ef792fbc358937e917afdfa413a1f1"
         }
       ]
+    },
+    {
+      "id": "littlest-tokyo",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
+      "reference": {
+        "source": "reference/littlest-tokyo/babylon-lite-golden.png",
+        "sha256": "a25ce9e3681f01650ec4d40fccc336616a35272ac95638bde3b1a6d25b1fc3e2"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/littlest-tokyo.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
+          "sha256": "10994a29bd4cfa8912c65ad799e87e391680ff90ba77e760e8652550791ac08f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        },
+        {
+          "upstreamPath": "lab/public/littlest-tokyo/CREDITS.txt",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo/CREDITS.txt",
+          "sha256": "af7bc72c2aade5ef83dd68a4c011e904596746de3ee72e1dc199cba7ab7b0354"
+        },
+        {
+          "upstreamPath": "lab/public/littlest-tokyo/LittlestTokyo.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo/LittlestTokyo.glb",
+          "sha256": "3504289bfb183f0cfef0f1606c9c7764a0fe642f8aba67c0eed46a6f5563b77c"
+        }
+      ]
     }
   ]
 }

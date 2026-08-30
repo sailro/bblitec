@@ -85,7 +85,7 @@ interface PropertyRead {
    */
   optionalHandle?: true;
   /** Presence expression for an optional value whose owner is not a handle. */
-  optionalFound?: (ownerCpp: string) => string;
+  optionalFound?: (ownerCpp: string, engineCpp?: string) => string;
   /** JavaScript object/typed-array truthiness for a retained native value. */
   alwaysTruthy?: true;
   /**
@@ -515,6 +515,27 @@ const propertyRules: readonly PropertyRule[] = [
     optionalHandle: true,
   },
   {
+    // Material is the polymorphic source object, and every loader copies
+    // its authored name onto it. A mapped walk over `scene.meshes` uses this
+    // field to find one shared glTF material before mutating its texture.
+    owner: "material",
+    property: "name",
+    value: "data",
+    dataType: { kind: "string" },
+    record: ["materials", "name"],
+  },
+  {
+    // The separate UV2 occlusion carrier. The texture record itself is only
+    // observed for presence in reached source; the subsequent assignment
+    // replaces it through the dedicated material setter.
+    owner: "material",
+    property: "occlusionTexture",
+    value: "texture",
+    record: ["materials", "occlusion_texture"],
+    optionalFound: (ownerCpp, engineCpp) =>
+      `${engineCpp}.materials[${ownerCpp}.value].occlusion_texture.has_image()`,
+  },
+  {
     // The corpus creates a generator, assigns it to its light, and then
     // reads it back off the light to register the casters -- so this
     // read has to resolve the same manifest entry the assignment stored.
@@ -828,7 +849,7 @@ export function readProperty(
         }
       : {}),
     ...(rule.optionalFound
-      ? { optionalFoundCpp: rule.optionalFound(owner.cpp) }
+      ? { optionalFoundCpp: rule.optionalFound(owner.cpp, engineCpp) }
       : {}),
     ...(rule.alwaysTruthy ? { truthinessCpp: "true" } : {}),
     ...(rule.helperReturnsFreshData

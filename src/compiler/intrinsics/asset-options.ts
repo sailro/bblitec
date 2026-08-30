@@ -97,8 +97,8 @@ export function compileEnvironmentOptions(
 /**
  * `loadDdsEnvironment` takes a required `brdfUrl` plus `skipSkybox` and
  * `skipGround`, which it accepts and never acts on — it creates neither.
- * Rejecting them keeps a scene that sets one from compiling as though it
- * had been honoured.
+ * The native DDS loader has the same contract, so the skip flags need no
+ * emitted state but remain valid options at the source boundary.
  */
 export function compileDdsEnvironmentOptions(
     context: AssetOptionContext,
@@ -108,8 +108,8 @@ export function compileDdsEnvironmentOptions(
     validateObjectProperties(
         context,
         object,
-        ["brdfUrl"],
-        "Reached DDS environment options support brdfUrl.",
+        ["brdfUrl", "skipSkybox", "skipGround"],
+        "DDS environment options support brdfUrl, skipSkybox, and skipGround.",
     );
     const brdfUrl = context.objectProperty(object, "brdfUrl");
     return brdfUrl ? context.compileStringLiteral(brdfUrl) : "";
