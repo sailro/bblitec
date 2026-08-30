@@ -119,9 +119,9 @@ option(
     OFF
 )
 
-# Offline WAV capture is a development/parity facility. It is the only
-# reached audio path that needs RecorderNode/libnyquist, so shipping builds
-# leave it out unless a caller explicitly opts back in.
+# Offline WAV capture is a development/parity facility. It needs
+# RecorderNode/libnyquist, while reached decoded audio also keeps libnyquist.
+# Shipping builds leave capture out unless a caller explicitly opts back in.
 if(BBLITE_MINSIZE)
     set(BBLITE_AUDIO_CAPTURE_DEFAULT OFF)
 else()
@@ -212,6 +212,18 @@ add_executable(
     ${BBLITE_RUNTIME_SOURCES}
     ${BBLITE_GENERATED_SOURCES}
 )
+
+if(MSVC)
+    # Lowered value-returning lambdas keep a defensive fallthrough throw after
+    # their translated control flow. LTCG can prove that some of those guards
+    # are unreachable and reports C4702 late in the link; suppress that one
+    # diagnostic only for generated application code, while the PAL remains
+    # warning-clean under /W4 /WX.
+    set_source_files_properties(
+        "${BBLITE_GENERATED_DIR}/main.cpp"
+        PROPERTIES COMPILE_OPTIONS "/wd4702"
+    )
+endif()
 
 if(BBLITE_GENERATED_SHADER_FILES)
     # The snapshot is ordered before the executable by a target dependency,
@@ -442,6 +454,14 @@ if(BBLITE_BACKEND_DAWN)
     endif()
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=0)
+endif()
+
+if(SDL3_FOUND)
+    # SDL3_image's static WebP fallback currently reports webp_FOUND while
+    # find_dependency(WebP) checks WebP_FOUND. Prefer libwebp's exported config
+    # targets when that optional dependency is present, so the fallback is not
+    # reached and static WebP scenes configure correctly.
+    find_package(WebP CONFIG QUIET)
 endif()
 
 if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
@@ -705,7 +725,8 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
                 FATAL_ERROR
                 "A minimal audio build requires the static-CRT LabSound "
                 "variant. Build it with tools/build-labsound.ps1 "
-                "-StaticRuntime and point BBLITE_LABSOUND_DIR at that install."
+                "-StaticRuntime (plus -EnableCodecs for decoded audio) and "
+                "point BBLITE_LABSOUND_DIR at that install."
             )
         endif()
     endif()
@@ -718,7 +739,7 @@ if("audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             FATAL_ERROR
             "An audio build without capture/codecs requires the core-only "
             "LabSound variant. Build it with tools/build-labsound.ps1 "
-            "-CoreOnly (also implied by -StaticRuntime)."
+            "-CoreOnly (-StaticRuntime implies it unless -EnableCodecs is set)."
         )
     endif()
     # SYSTEM: LabSound's headers are not warning-clean under /W4, and

@@ -26,6 +26,7 @@ param(
     [string]$OutputDirectory = "",
     [switch]$StaticRuntime,
     [switch]$CoreOnly,
+    [switch]$EnableCodecs,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -33,17 +34,28 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Workspace) {
     $Workspace = if ($StaticRuntime) {
-        ".cache\labsound-static"
+        if ($EnableCodecs) {
+            ".cache\labsound-static-codecs"
+        } else {
+            ".cache\labsound-static"
+        }
     } else {
         ".cache\labsound"
     }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($StaticRuntime) {
-        "artifacts\tools\labsound-static"
+        if ($EnableCodecs) {
+            "artifacts\tools\labsound-static-codecs"
+        } else {
+            "artifacts\tools\labsound-static"
+        }
     } else {
         "artifacts\tools\labsound"
     }
+}
+if ($CoreOnly -and $EnableCodecs) {
+    throw "-CoreOnly and -EnableCodecs are mutually exclusive."
 }
 $pin = Get-Content (Join-Path $root "upstream\labsound.json") -Raw |
     ConvertFrom-Json
@@ -87,7 +99,7 @@ Sync-PinnedCheckout `
     $pin.dependencies.libnyquist.commit `
     "libnyquist"
 
-$coreOnlyBuild = $CoreOnly -or $StaticRuntime
+$coreOnlyBuild = $CoreOnly -or ($StaticRuntime -and -not $EnableCodecs)
 if ($coreOnlyBuild) {
     $corePatch = Join-Path $root "tools\patches\labsound-core-only.patch"
     git -C $source apply --check $corePatch
@@ -108,9 +120,13 @@ $configureArguments = @(
     "-DLIBNYQUIST_BUILD_EXAMPLE=OFF"
 )
 if ($StaticRuntime) {
+    $cppFlags = '/O1 /Ob1 /DNDEBUG /Gw /GL'
+    if ($coreOnlyBuild) {
+        $cppFlags += ' /DLABSOUND_CORE_ONLY'
+    }
     $configureArguments += @(
         '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>',
-        '-DCMAKE_CXX_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG /Gw /GL /DLABSOUND_CORE_ONLY',
+        "-DCMAKE_CXX_FLAGS_RELEASE=$cppFlags",
         '-DCMAKE_C_FLAGS_RELEASE=/O1 /Ob1 /DNDEBUG /Gw /GL'
     )
 }
