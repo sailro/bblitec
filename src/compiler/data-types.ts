@@ -26,7 +26,8 @@ export type HandleKind =
   | "sprite-atlas"
   | "texture"
   | "skeleton"
-  | "bone";
+  | "bone"
+  | "navigation-obstacle";
 
 const handleCppTypes: Record<HandleKind, string> = {
   mesh: "bbl::MeshHandle",
@@ -42,6 +43,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   texture: "bbl::PixelsTexture",
   skeleton: "bbl::SkeletonHandle",
   bone: "bbl::BoneHandle",
+  "navigation-obstacle": "bbl::pal::NavObstacleHandle",
 };
 
 /** Whether a compiler value kind is one of the data model's copyable handles. */
@@ -64,6 +66,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Texture2D: "texture",
   Skeleton: "skeleton",
   Bone: "bone",
+  ObstacleHandle: "navigation-obstacle",
 };
 
 export type DataType =

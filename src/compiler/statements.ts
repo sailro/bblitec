@@ -145,6 +145,10 @@ export interface StatementLoweringContext {
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
     emit(line: string): void;
+    rebindVariable(
+        identifier: ts.Identifier,
+        value: Value,
+    ): void;
     increaseIndent(): void;
     decreaseIndent(): void;
     pushScope(cppPrefix: string): void;
@@ -1833,6 +1837,29 @@ export class StatementLowerer {
                     operator === "=" &&
                     context.emitDataAssignment(unwrapped)
                 ) {
+                    return;
+                } else if (
+                    isHandleKind(target.kind) &&
+                    operator === "=" &&
+                    ts.isIdentifier(context.unwrap(unwrapped.left)) &&
+                    context.unwrap(unwrapped.right).kind !==
+                        ts.SyntaxKind.NullKeyword
+                ) {
+                    // Point a handle name at a different handle of the
+                    // same kind; `rebindVariable` carries what that means.
+                    const right = context.compileValue(unwrapped.right);
+                    if (right.kind !== target.kind) {
+                        context.fail(
+                            unwrapped.right,
+                            `A ${target.kind} name takes another ` +
+                                `${target.kind}, received ${right.kind}.`,
+                        );
+                    }
+                    context.emit(`${target.cpp} = ${right.cpp};`);
+                    context.rebindVariable(
+                        context.unwrap(unwrapped.left) as ts.Identifier,
+                        right,
+                    );
                     return;
                 } else if (
                     target.kind === "json-null" &&

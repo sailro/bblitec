@@ -124,6 +124,10 @@ export const featureSources: Record<Feature, string[]> = {
     // library-behind-a-fixed-entry-point boundary the physics PAL
     // draws.
     "navigation:recast": ["src/pal_navigation_recast.cpp"],
+    // The tile-cache arm lives in the same translation unit the recast
+    // feature already brings; what the feature adds is the library behind
+    // it and the half of that file the guard compiles.
+    "navigation:tile-cache": [],
     // The Web Audio surface the pinned `src/audio/*.ts` calls on the
     // browser -- `AudioContext`, `GainNode`, `AudioParam` and their
     // siblings. Same boundary as the two above: a third-party engine

@@ -46,7 +46,25 @@ import { LoweredSource, LoweringContext } from "./context.js";
  * living twice.
  */
 export function pinnedRecastConfigDefaults(): ReadonlyMap<string, number> {
-    return wrapperNumericDefaults("recastConfigDefaults");
+    return wrapperNumericDefaults(
+        "recastConfigDefaults",
+        "@recast-navigation/core/dist/index.mjs",
+    );
+}
+
+/**
+ * `tileCacheGeneratorConfigDefaults`' own three, which live in the
+ * generators package rather than core.
+ *
+ * It spreads `recastConfigDefaults` and then adds `tileSize`,
+ * `expectedLayersPerTile` and `maxObstacles`; a spread carries no property
+ * assignment, so what this reads is exactly the arm's own.
+ */
+export function pinnedTileCacheDefaults(): ReadonlyMap<string, number> {
+    return wrapperNumericDefaults(
+        "tileCacheGeneratorConfigDefaults",
+        "@recast-navigation/generators/dist/index.mjs",
+    );
 }
 
 /**
@@ -72,11 +90,10 @@ export const PINNED_AGENT_PARAM_DEFAULTS: readonly (readonly [
 
 function wrapperNumericDefaults(
     variableName: string,
+    moduleSpecifier: string,
 ): ReadonlyMap<string, number> {
     const require = createRequire(import.meta.url);
-    const modulePath = require.resolve(
-        "@recast-navigation/core/dist/index.mjs",
-    );
+    const modulePath = require.resolve(moduleSpecifier);
     const file = ts.createSourceFile(
         modulePath,
         readFileSync(modulePath, "utf8"),
@@ -103,11 +120,18 @@ function wrapperNumericDefaults(
     visit(file);
     if (!literal) {
         throw new Error(
-            `@recast-navigation/core no longer declares ${variableName} as an object literal.`,
+            `${moduleSpecifier} no longer declares ${variableName} as an ` +
+                "object literal.",
         );
     }
     const defaults = new Map<string, number>();
     for (const property of literal.properties) {
+        // A table built by spreading another one contributes its OWN keys
+        // here and nothing else, which is what makes the tile-cache arm's
+        // three readable apart from the solo defaults they extend.
+        if (ts.isSpreadAssignment(property)) {
+            continue;
+        }
         if (
             !ts.isPropertyAssignment(property) ||
             !ts.isIdentifier(property.name) ||
@@ -128,7 +152,13 @@ function wrapperNumericDefaults(
 export class NavigationLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerNavigation(): LoweredSource {
+    /**
+     * @param tileCache Whether a reached `createNavMesh` asked for
+     * obstacles. Generation decided the build arm; this is that decision
+     * arriving, so the emitted source carries one call and one surface
+     * rather than a run-time test of a fact already settled.
+     */
+    public lowerNavigation(tileCache: boolean): LoweredSource {
         const modulePath = "src/navigation/navigation.ts";
         const symbolName = "createNavMesh";
 
@@ -167,6 +197,22 @@ export class NavigationLowerer {
         if (packageDefaults.size !== bakedDefaults.length) {
             throw new Error(
                 "recastConfigDefaults grew a key the PAL does not bake.",
+            );
+        }
+
+        // The tile-cache arm's own default, gated the same way. Only one of
+        // that table's three reaches the PAL: `tileSize` and `maxObstacles`
+        // are what generation proves before the arm is chosen at all, so a
+        // default for either would answer a question already asked.
+        const tileCacheDefaults = pinnedTileCacheDefaults();
+        if (tileCacheDefaults.get("expectedLayersPerTile") !== 4) {
+            throw new Error(
+                "@recast-navigation/generators' " +
+                    "tileCacheGeneratorConfigDefaults." +
+                    "expectedLayersPerTile is " +
+                    `${tileCacheDefaults.get("expectedLayersPerTile")}, ` +
+                    "but pal_navigation_recast.cpp bakes 4. Move the PAL " +
+                    "constant with the package.",
             );
         }
 
@@ -397,6 +443,7 @@ export class NavigationLowerer {
         );
         for (const key of wrapperNumericDefaults(
             "crowdAgentParamsDefaults",
+            "@recast-navigation/core/dist/index.mjs",
         ).keys()) {
             if (!suppliedAgentKeys.has(key)) {
                 throw new Error(
@@ -454,6 +501,80 @@ export class NavigationLowerer {
             );
         }
 
+        // The obstacle surface belongs to the tile cache: a solo
+        // build has no cache for it to act on, so a scene that did
+        // not ask for one carries neither the entry points nor the
+        // PAL half behind them.
+        const obstacleDeclarations = tileCache
+            ? `bbl::pal::NavObstacleHandle add_box_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    Vec3d half_extents,
+    double angle);
+bbl::pal::NavObstacleHandle add_cylinder_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    double radius,
+    double height);
+void remove_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    bbl::pal::NavObstacleHandle obstacle);
+void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin);`
+            : "";
+        const obstacleDefinitions = tileCache
+            ? `bbl::pal::NavObstacleHandle add_box_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    Vec3d half_extents,
+    double angle) {
+    // A refused add is null upstream, and every reached use of the handle
+    // is a later removeObstacle, so the refusal surfaces here rather than
+    // as a remove that silently names nothing.
+    const std::optional<bbl::pal::NavObstacleHandle> added =
+        bbl::pal::navigation_add_box_obstacle(
+            plugin,
+            nav_vec3(position),
+            nav_vec3(half_extents),
+            static_cast<float>(angle));
+    if (!added) {
+        throw std::runtime_error(
+            "addBoxObstacle failed: the tile cache holds no room for "
+            "another obstacle.");
+    }
+    return *added;
+}
+
+bbl::pal::NavObstacleHandle add_cylinder_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    Vec3d position,
+    double radius,
+    double height) {
+    const std::optional<bbl::pal::NavObstacleHandle> added =
+        bbl::pal::navigation_add_cylinder_obstacle(
+            plugin,
+            nav_vec3(position),
+            static_cast<float>(radius),
+            static_cast<float>(height));
+    if (!added) {
+        throw std::runtime_error(
+            "addCylinderObstacle failed: the tile cache holds no room for "
+            "another obstacle.");
+    }
+    return *added;
+}
+
+void remove_obstacle(
+    bbl::pal::NavigationHandle plugin,
+    bbl::pal::NavObstacleHandle obstacle) {
+    bbl::pal::navigation_remove_obstacle(plugin, obstacle);
+}
+
+void update_nav_mesh_obstacles(bbl::pal::NavigationHandle plugin) {
+    bbl::pal::navigation_update_obstacles(plugin);
+}
+`
+            : "";
+
         return {
             modulePath,
             symbolName,
@@ -472,6 +593,7 @@ void create_nav_mesh(
     bbl::pal::NavigationHandle plugin,
     const std::vector<MeshHandle>& meshes,
     const bbl::pal::NavMeshBuildParams& params);
+${obstacleDeclarations}
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin);
 struct NavRaycastResult {
@@ -623,9 +745,25 @@ void create_nav_mesh(
         }
         vertex_base += geometry.vertices.size();
     }
-    bbl::pal::navigation_create_solo_nav_mesh(
+    // The pin dispatches on maxObstacles here; generation already did,
+    // and the arm it proved is the one emitted -- so a scene that builds a
+    // cache carries no solo call, and one that does not carries neither
+    // the tile-cache call nor the obstacle surface behind it.
+    bbl::pal::navigation_create_${
+        tileCache ? "tile_cache_nav_mesh" : "solo_nav_mesh"
+    }(
         plugin, merged, params);
 }
+
+/** A double the port carries, at the float width the seam takes. */
+bbl::pal::NavVec3 nav_vec3(Vec3d value) {
+    return bbl::pal::NavVec3{
+        static_cast<float>(value.x),
+        static_cast<float>(value.y),
+        static_cast<float>(value.z)};
+}
+
+${obstacleDefinitions}
 
 bbl::pal::NavDebugGeometry create_debug_nav_mesh_geometry(
     bbl::pal::NavigationHandle plugin) {
@@ -696,14 +834,8 @@ std::vector<Vec3d> nav_compute_path(
     const std::vector<bbl::pal::NavVec3> path =
         bbl::pal::navigation_compute_path(
             plugin,
-            bbl::pal::NavVec3{
-                static_cast<float>(start_snap.x),
-                static_cast<float>(start_snap.y),
-                static_cast<float>(start_snap.z)},
-            bbl::pal::NavVec3{
-                static_cast<float>(end_snap.x),
-                static_cast<float>(end_snap.y),
-                static_cast<float>(end_snap.z)});
+            nav_vec3(start_snap),
+            nav_vec3(end_snap));
     std::vector<Vec3d> out;
     out.reserve(path.size());
     for (const bbl::pal::NavVec3& point : path) {

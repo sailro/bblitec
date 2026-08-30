@@ -138,7 +138,8 @@ Primary source ownership:
 | `native/include/bblite/pal_audio.hpp` | the Web Audio contract: the browser surface the pinned audio module calls, which is the seam the pin itself draws |
 | `native/src/pal_audio_labsound.cpp` | that surface over LabSound, a fork of WebKit's own WebAudio ([fidelity](fidelity.md#audio-contract)) |
 | `native/src/pal_audio_sdl_device.hpp` | SDL3 behind LabSound's `lab::AudioDevice`, so the platform stream stays SDL like every other service here |
-| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's pinned recastnavigation commit, replaying `generateSoloNavMesh`, the Detour query and the crowd |
+| `native/src/pal_navigation_recast.cpp` | that surface over the wrapper's pinned recastnavigation commit, replaying `generateSoloNavMesh` and `generateTileCache`, the Detour query, the tile cache's obstacles and the crowd |
+| `native/vcpkg-overlay-ports/recastnavigation/tile-cache/` | the two RecastDemo files `generateTileCache` reaches for, built from the pinned commit into a library of their own rather than transcribed |
 | `native/src/pal_sdl_gpu.cpp` | SDL_GPU resources, uploads, pipelines, readback, submission |
 | `native/src/pal_sdl_gpu_shared.hpp` | SDL_GPU-only mechanics: window/device/swapchain bring-up, shader load, buffer/texture upload, sampler, PNG readback |
 | `native/src/pal_sdl_gpu_clustered.hpp` | the clustered field's three SDL_GPU data textures and their shared sampler, uploaded at the extents the container was sized to |

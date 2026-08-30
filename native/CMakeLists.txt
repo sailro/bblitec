@@ -649,6 +649,18 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
             RecastNavigation::DetourTileCache
             RecastNavigation::DebugUtils
     )
+    # The tile-cache arm's own dependency: the two RecastDemo files the
+    # overlay port builds into a library from the same pinned commit. Only
+    # a scene that asked for obstacles links it, which is the same fact
+    # that decided which build call was emitted.
+    if("navigation:tile-cache" IN_LIST BBLITE_RUNTIME_FEATURES)
+        target_link_libraries(
+            bblite_native PRIVATE RecastNavigation::RecastNavigationTileCache
+        )
+        target_compile_definitions(
+            bblite_native PRIVATE BBLITE_HAS_NAV_TILE_CACHE=1
+        )
+    endif()
 endif()
 
 # The Web Audio engine is reached only through `bblite/pal_audio.hpp`,

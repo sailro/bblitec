@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-81 corpus scenes remain unregistered; measured scenes
+79 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -233,17 +233,14 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (50 scenes):** 17, 20,
+**Integrate first (48 scenes):** 17, 20,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
-140, 149, 156, 165, 172, 173, 200, 201, 211, 214, 215, 218, 219,
+140, 149, 156, 165, 200, 201, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118), and display-only
-gizmos (223). The navigation scenes moved here
-when the toolset did: 170, 171, 174 and 175 are integrated, and what 172
-and 173 still
-want is compiler contracts and the wrapper's tile-cache arm, not a new
-platform boundary.
+gizmos (223). Every navigation scene the corpus carries is now
+integrated.
 
 **Defer (26 scenes):** 41, 42, 44-49, 101-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
@@ -905,28 +902,6 @@ earlier compiler error.
     every body control past creation (impulse, velocity, motion-type
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
-- [ ] Scenes 172 and 173: extend the navigation slice past what scenes
-  170, 171, 174 and 175 measure. The subsystem is the `navigation:recast`
-  PAL over the wrapper's own pinned recastnavigation commit, and it now
-  carries the solo-navmesh build over both mesh kinds, off-mesh
-  connections, debug geometry, `raycast`, `getClosestPoint`, `computePath`
-  and a Detour crowd a scene places, drives and reads
-  ([features](docs/features.md)). What remains is each scene's own
-  surface, refused by name today, measured by stripped probe at this pin
-  rather than read off the first blocker.
-  - **Both need the tile cache**: `maxObstacles > 0` selects the
-    wrapper's `generateTileCache` build, `addBoxObstacle` /
-    `addCylinderObstacle` / `removeObstacle` / `updateNavMeshObstacles`,
-    and — before any of that — the obstacle wireframes both scenes draw,
-    which want by-reference data arguments and static tuple indexing.
-    173 additionally toggles an obstacle a second after ready, which its
-    own `?freeze=1` branch never schedules.
-  - Unreached by any corpus scene and unlowered: `getAgentVelocity`,
-    `findClosestPointWithin`,
-    `findRandomPoint`, `findRandomPointAroundCircle`,
-    `setNavigationRandomSeed`, `navRayBlocked`, `disposeNavigationPlugin`,
-    and `addAgent`'s `reachRadius` (which the pinned module declares and
-    forwards nowhere).
 - [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
   through `CanvasRenderingContext2D`, not Babylon Lite rendering. First blocker:
   animation manager options past `engine`.

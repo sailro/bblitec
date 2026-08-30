@@ -1491,8 +1491,16 @@ the wrapper's spread is fully overridden, and what generation checks is
 that this stays true — a package that grows a twelfth default fails
 naming it.
 
-The reached slice: a solo navmesh built from the numeric config subset of
-`createNavMesh`, over either mesh kind the corpus casts from. The merge
+The reached slice: a navmesh built from the numeric config subset of
+`createNavMesh`, over either mesh kind the corpus casts from. Which of the
+pin's three build arms runs is a compile-time fact: `maxObstacles > 0`
+builds a **tile cache**, anything else builds solo, and the middle arm --
+tiles without obstacles -- refuses by name, as does a gate generation
+cannot fold. Upstream asks that question again at run time; here it is
+asked once, at generation, and the answer reaches the build as
+`navigation:tile-cache`. A scene that never asked for an obstacle emits no
+tile-cache call, carries none of the obstacle surface, compiles none of the
+PAL half behind it and links none of the library that half needs. The merge
 applies each caster's own `worldMatrix` as the pin does, and where that
 matrix already is decides the arm: a glTF-imported mesh's vertices carry
 the loader-baked mirrored world (measured equal to the pin's stream on
@@ -1513,10 +1521,31 @@ point) at those same half-extents; and a **crowd** — `createNavCrowd`,
 `addAgent` with the pinned module's own `?? 7` / `?? 0` parameter
 defaults resolved before the wrapper's spread sees them, and
 `getAgentPosition` reading the agent's `npos` with the pin's `{0, 0, 0}`
-for an index the crowd never held. Tiled meshes, the tile cache and
-obstacles, off-mesh connections, `agentGoto`, `updateNavCrowd`,
-`computePath` and the rest of the query family refuse at generation by
-name.
+for an index the crowd never held.
+
+A tile-cache build carries the obstacle surface with it. Where the solo arm
+turns each tile's layers into polygons once, the cache keeps the layers
+compressed and re-meshes only the tiles an obstacle covers, which is what
+makes `addBoxObstacle`, `addCylinderObstacle` and `removeObstacle` possible
+at all; each ends by running the cache's update until nothing is pending,
+exactly as the pinned entry points do, and `updateNavMeshObstacles` is that
+same wait on its own. Two RecastDemo files the library targets do not carry
+-- the triangle partition each tile rasterizes through and the FastLZ codec
+its compressor wraps -- are built by the overlay port into a library of
+their own, from the pinned commit and under the port's own strict float
+rather than transcribed here, so the tiles the native build compresses are
+the ones the reference does.
+
+An obstacle handle is nullable the way upstream's is: a refused add is a
+`null` there and a throw here, because every reached use hands the handle
+back to `removeObstacle`, and a scene that drops one clears its name to the
+zero handle the guard beside it reads.
+
+What no corpus scene reaches and this port therefore does not lower:
+`getAgentVelocity`, `findClosestPointWithin`, `findRandomPoint`,
+`findRandomPointAroundCircle`, `setNavigationRandomSeed`, `navRayBlocked`,
+`disposeNavigationPlugin`, `createNavMeshFromSources`, and `addAgent`'s
+`reachRadius`, which the pinned module declares and forwards nowhere.
 
 ### Frame graph
 

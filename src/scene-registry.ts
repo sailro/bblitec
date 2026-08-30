@@ -1080,6 +1080,66 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene172",
+        name: "Scene 172 - Navigation Tile Cache Obstacles",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene172.ts",
+        title: "Babylon Lite Native - Navigation Tile Cache Obstacles",
+        parity: {
+            // The scene's own frozen pose, as 171 and 174 take: without
+            // it the agent is mid-walk and the two sides sample the
+            // crowd a different number of milliseconds in.
+            referenceSearch: "?freeze=1",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene173",
+        name: "Scene 173 - Navigation Obstacle Toggle",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene173.ts",
+        title: "Babylon Lite Native - Navigation Obstacle Toggle",
+        parity: {
+            // Frozen for the crowd, as 172 is -- and the freeze also
+            // withholds the one-second obstacle toggle, so the pose both
+            // sides measure is the pre-toggle navmesh the scene's own
+            // header names as its reference.
+            referenceSearch: "?freeze=1",
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        // Retires when a corpus scene removes an obstacle without depending
+        // on wall-clock time: 173 reaches `removeObstacle` and the nullable
+        // handle it holds one in, but only inside the branch its own
+        // `?freeze=1` pose folds away.
+        id: "regression-nav-obstacles",
+        name: "Regression - Navigation Obstacle Removal",
+        source: "examples/regression-nav-obstacles.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Navigation Obstacle Removal",
+        buildDirectory:
+            "native/build-regression-nav-obstacles-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-nav-obstacles/" +
+                    "babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-nav-obstacles",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene174",
         name: "Scene 174 - Navigation Off-Mesh Connections",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene174.ts",

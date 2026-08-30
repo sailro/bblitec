@@ -46,4 +46,39 @@ vcpkg_fixup_pkgconfig()
 vcpkg_copy_pdbs()
 file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 
+# The tile-cache build reaches for two files the library targets do not
+# carry, both under the `RecastDemo/` tree `RECASTNAVIGATION_DEMO=OFF` does
+# not build. They are compiled into a library of their own here, from THIS
+# commit and under this port's own strict float, rather than handed to the
+# consumer as sources -- `tile-cache/CMakeLists.txt` beside this file says
+# what they are and why they live here.
+set(TILE_CACHE_SOURCE "${CURRENT_BUILDTREES_DIR}/tile-cache-src")
+file(
+    COPY
+        "${CMAKE_CURRENT_LIST_DIR}/tile-cache/CMakeLists.txt"
+        "${SOURCE_PATH}/RecastDemo/Include/ChunkyTriMesh.h"
+        "${SOURCE_PATH}/RecastDemo/Source/ChunkyTriMesh.cpp"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.h"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.c"
+    DESTINATION "${TILE_CACHE_SOURCE}"
+)
+file(
+    COPY
+        "${SOURCE_PATH}/RecastDemo/Include/ChunkyTriMesh.h"
+        "${SOURCE_PATH}/RecastDemo/Contrib/fastlz/fastlz.h"
+    DESTINATION "${CURRENT_PACKAGES_DIR}/include/recastnavigation"
+)
+vcpkg_cmake_configure(SOURCE_PATH "${TILE_CACHE_SOURCE}")
+vcpkg_cmake_install()
+file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/share")
+
+# The package's own config brings the tile-cache target with it, so a
+# consumer that found recastnavigation has already found this.
+file(
+    APPEND "${CURRENT_PACKAGES_DIR}/share/recastnavigation/recastnavigation-config.cmake"
+    "
+include(\"\${CMAKE_CURRENT_LIST_DIR}/recastnavigation-tile-cache-targets.cmake\")
+"
+)
+
 vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/License.txt")
