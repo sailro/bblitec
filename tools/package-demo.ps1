@@ -71,11 +71,13 @@ if ($runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
 $jpegReached = $true
 $webpReached = $false
 $audioReached = $false
+$audioDecoded = $false
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
 $featuresPath = Join-Path $root "generated\$Scene\features.cmake"
 if (Test-Path $featuresPath) {
     $featuresText = Get-Content $featuresPath -Raw
     $audioReached = $featuresText -match '"audio:engine"'
+    $audioDecoded = $featuresText -match '"audio:decoded-buffer"'
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
         $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
@@ -92,14 +94,18 @@ if (-not $executable) {
 $runtimeDirectory = Split-Path -Parent $executable
 $shaderSource = Join-Path $runtimeDirectory "shaders"
 $assetSource = Join-Path $runtimeDirectory "assets"
-foreach ($required in @($executable, $shaderSource, $assetSource)) {
+foreach ($required in @($executable, $shaderSource)) {
     if (-not (Test-Path $required)) {
         throw "Required shipping input not found: $required"
     }
 }
 
 $backendToken = $backend.ToLowerInvariant().Replace("_", "-")
-$outputRootPath = Join-Path $root $OutputRoot
+$outputRootPath = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
+    [System.IO.Path]::GetFullPath($OutputRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $root $OutputRoot))
+}
 $packageName = "bblitec-$Scene-$backendToken-windows-x64"
 $packageDirectory = Join-Path $outputRootPath $packageName
 $archivePath = Join-Path $outputRootPath "$packageName.zip"
@@ -127,7 +133,9 @@ if ($sdlShared -or $dawnShared) {
     throw "Shipping requires the fully static mini dependencies; runtime DLLs were found beside $executable."
 }
 
-Copy-Item (Join-Path $assetSource "*") $assets -Recurse
+if (Test-Path $assetSource) {
+    Copy-Item (Join-Path $assetSource "*") $assets -Recurse
+}
 
 # The runtime reads only its compiled backend's shader formats:
 # The portable Windows launcher below pins SDL_GPU to D3D12, so SDL_GPU loads
@@ -195,7 +203,7 @@ if ($audioReached) {
         "LabSound-LICENSE.txt",
         "LabSound-COPYING.txt"
     )
-    if ($audioCapture) {
+    if ($audioCapture -or $audioDecoded) {
         $audioNotices += @(
             "libnyquist-LICENSE.txt",
             "libnyquist-COPYING.txt"

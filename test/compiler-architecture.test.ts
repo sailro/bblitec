@@ -1076,6 +1076,14 @@ test("keeps reached Havok body defaults and convex mass frames in the Bullet PAL
         bullet,
         /stabilize_contacting_bodies[\s\S]{0,4500}ISLAND_SLEEPING/,
     );
+    assert.match(
+        bullet,
+        /has_custom_filter[\s\S]{0,900}addRigidBody\(entry\.body\.get\(\)\)/,
+    );
+    assert.match(
+        bullet,
+        /membership_mask != 0xffffffffu[\s\S]{0,100}collide_mask != 0xffffffffu/,
+    );
 });
 
 test("releases Dawn mesh dependents before their owned resources", () => {

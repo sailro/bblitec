@@ -710,6 +710,7 @@ Build the trimmed dependencies once:
 pwsh -File tools\build-sdl-min.ps1
 pwsh -File tools\build-dawn-min.ps1
 pwsh -File tools\build-labsound.ps1 -StaticRuntime
+pwsh -File tools\build-labsound.ps1 -StaticRuntime -EnableCodecs
 ```
 
 `build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
@@ -724,8 +725,11 @@ that directory as `BBLITE_SDL_DIR`.
 Scenes reaching `audio:engine` also point `BBLITE_LABSOUND_DIR` at the separate
 `artifacts\tools\labsound-static` install. The ordinary development LabSound
 build uses the dynamic CRT and is deliberately rejected by a mini build.
-The static build is core-only: LabSound's global all-node registry, HRTF file
-loader, debug encoder, libnyquist archive, and libnyquist notices are absent.
+The default static build is core-only: LabSound's global all-node registry,
+HRTF file loader, debug encoder, libnyquist archive, and libnyquist notices are
+absent. A scene reaching `audio:decoded-buffer` instead uses the separate
+`artifacts\tools\labsound-static-codecs` install produced by
+`-StaticRuntime -EnableCodecs`; its package retains libnyquist and its notices.
 `BBLITE_AUDIO_CAPTURE` defaults to `OFF` under `BBLITE_MINSIZE`; explicitly
 enabling it is the opt-in that restores the recorder/codec link and notices.
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,

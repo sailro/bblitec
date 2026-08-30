@@ -81,6 +81,10 @@ test("minimal mode has dedicated MSVC and clang-cl size flags", () => {
     assert.match(block, /\/clang:-Oz \/clang:-flto/);
     assert.match(block, /\/O1 \/Ob1 \/GL \/Gw/);
     assert.match(block, /\/STACK:8388608/);
+    assert.match(
+        cmake,
+        /main\.cpp"\s+PROPERTIES COMPILE_OPTIONS "\/wd4702"/,
+    );
     assert.match(block, /PRIVATE -Os -ffunction-sections/);
 });
 
@@ -100,6 +104,8 @@ test("shipping packages require the trimmed static build", () => {
     assert.match(script, /MultiThreaded/);
     assert.match(script, /single backend/);
     assert.match(script, /generated scene id/);
+    assert.match(script, /IsPathRooted\(\$OutputRoot\)/);
+    assert.match(script, /if \(Test-Path \$assetSource\)/);
     assert.doesNotMatch(script, /numbered scene id/);
     assert.doesNotMatch(script, /run-\$Scene-dawn/);
 });
@@ -119,6 +125,7 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
 test("minimal audio dependencies use a static runtime and ship their notices", () => {
     const builder = readFileSync("tools/build-labsound.ps1", "utf8");
     assert.match(builder, /\[switch\]\$StaticRuntime/);
+    assert.match(builder, /\[switch\]\$EnableCodecs/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-labsound-features\.cmake/);
     assert.match(builder, /libnyquist-COPYING\.txt/);
@@ -137,9 +144,10 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
 
     const packager = readFileSync("tools/package-demo.ps1", "utf8");
     assert.match(packager, /\$audioReached/);
+    assert.match(packager, /\$audioDecoded/);
     assert.match(packager, /LabSound-LICENSE\.txt/);
     assert.match(packager, /libnyquist-COPYING\.txt/);
-    assert.match(packager, /if \(\$audioCapture\)/);
+    assert.match(packager, /if \(\$audioCapture -or \$audioDecoded\)/);
 });
 
 test("shader compilation gates non-target formats", () => {

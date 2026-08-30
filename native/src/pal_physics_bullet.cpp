@@ -412,14 +412,26 @@ void flush_pending_readds(WorldEntry& world_entry, std::uint32_t world) {
             entry.shape > 0 && entry.shape < shapes().size()
                 ? &shapes()[entry.shape]
                 : nullptr;
-        world_entry.world->addRigidBody(
-            entry.body.get(),
-            shape
-                ? static_cast<int>(shape->membership_mask)
-                : -1,
-            shape
-                ? static_cast<int>(shape->collide_mask)
-                : -1);
+        const bool has_custom_filter =
+            shape &&
+            (shape->membership_mask != 0xffffffffu ||
+             shape->collide_mask != 0xffffffffu);
+        if (has_custom_filter) {
+            world_entry.world->addRigidBody(
+                entry.body.get(),
+                static_cast<int>(shape->membership_mask),
+                static_cast<int>(shape->collide_mask));
+        } else {
+            // Bullet's default overload assigns StaticFilter to immovable
+            // bodies and excludes StaticFilter from their mask. Passing the
+            // equivalent all-bits application defaults through the explicit
+            // overload discards that motion-type filter, making every pair
+            // of touching static shards run collision detection forever.
+            // Keep explicit groups only for scenes which actually authored
+            // a filter (Racer); the default path is both the intended Bullet
+            // behavior and what lets Break Meshes keep intact shards static.
+            world_entry.world->addRigidBody(entry.body.get());
+        }
         entry.in_world = true;
         if (!entry.start_asleep) {
             entry.body->activate(true);
