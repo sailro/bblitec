@@ -168,6 +168,17 @@ The README states the measured counts once. A curated scene is a `sceneNNN`
 entry, while exact upstream applications carry their own source origin;
 primitives and project-owned regression gates are separate categories.
 
+A scene whose meaning lies in its RELATIONSHIP to another owns one more
+thing: an assertion over both goldens, in `test/corpus-scenes.test.ts`.
+Scenes 200 and 201 are the case — the same world with the
+high-precision-matrix path off and on — and each one's own parity gate would
+pass unchanged if that path did nothing at all, because each is only
+compared against its own reference. What proves the path is engaged is the
+distance BETWEEN the two goldens, so that is asserted where a recapture will
+meet it. Upstream states the same constraint in
+`tests/lite/unit/hpm-divergence.test.ts`, and the assertion here is that
+gate replayed rather than a threshold of this project's own.
+
 Thresholds are set by measurement, not by intent: register with loose values,
 measure both backends, then tighten to just above what was measured. Scenes
 where Dawn is structurally closer to the golden carry their own

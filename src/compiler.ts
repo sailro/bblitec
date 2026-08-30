@@ -823,16 +823,152 @@ class Compiler
             return main.body!.statements;
         }
 
-        const statements = this.sourceFile.statements.filter(
-            (statement) =>
-                !ts.isImportDeclaration(statement) &&
-                !ts.isFunctionDeclaration(statement) &&
-                !ts.isExportDeclaration(statement),
-        );
+        const statements = this.sourceFile.statements
+            .filter(
+                (statement) =>
+                    !ts.isImportDeclaration(statement) &&
+                    !ts.isFunctionDeclaration(statement) &&
+                    !ts.isExportDeclaration(statement),
+            )
+            .map((statement) => this.unwrapEntryReporter(statement));
         if (statements.length === 0) {
             this.failAtFile("Expected top-level scene statements or a function named main with a body.");
         }
         return statements;
+    }
+
+    /**
+     * `entry(...).catch(<reporter>)`, which is how a scene whose entry is an
+     * imported async helper ends.
+     *
+     * The `main` form above erases the same wrapper by never treating it as
+     * entry text: the body becomes the program and the trailing
+     * `main().catch(console.error)` goes with the declaration. A scene with
+     * no `main` has no body to take, so the chain IS the program -- and the
+     * `.catch` on it is the browser's unhandled-rejection reporting, which a
+     * native program does by aborting. Both forms therefore record the same
+     * adaptation.
+     *
+     * This is an entry-point rule, so it is applied to entry text once per
+     * compile rather than to every `.catch` a program contains: mid-scene,
+     * a rejection handler is a recovery path and lowering it away would be
+     * a silent change of meaning.
+     */
+    /**
+     * Whether a callback only reports: its body observes or mutates browser
+     * state and nothing else.
+     *
+     * The entry reporter and `setTimeout`'s browser-only arm ask this of the
+     * same shapes, so it is one question with one answer.
+     *
+     * NOT `statementIsBrowserOnly`, which looks deeper but answers a
+     * different question: it is what decides whether a statement inside a
+     * RETAINED function may be erased, and it deliberately excludes console
+     * and document so an unresolved guard stays a refusal rather than
+     * swallowing a nested call. Reporting is exactly what those globals do.
+     */
+    /**
+     * `<boolean> === <boolean>` where both sides settle at generation.
+     *
+     * Returns the answer as `"true"`/`"false"`, or nothing where either side
+     * is a run-time value -- in which case the comparison arms below emit
+     * one, exactly as they did before.
+     */
+    private foldBooleanComparison(
+        expression: ts.BinaryExpression,
+    ): string | undefined {
+        const equals =
+            expression.operatorToken.kind ===
+            ts.SyntaxKind.EqualsEqualsEqualsToken;
+        if (
+            !equals &&
+            expression.operatorToken.kind !==
+                ts.SyntaxKind.ExclamationEqualsEqualsToken
+        ) {
+            return undefined;
+        }
+        const settled = (side: ts.Expression): string | undefined => {
+            if (
+                (this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(side),
+                ).flags &
+                    ts.TypeFlags.BooleanLike) ===
+                0
+            ) {
+                return undefined;
+            }
+            const resolved = this.evaluator.resolveStaticExpression(side);
+            if (resolved.kind === ts.SyntaxKind.TrueKeyword) return "true";
+            if (resolved.kind === ts.SyntaxKind.FalseKeyword) return "false";
+            const value = ts.isIdentifier(resolved)
+                ? this.lookupOptional(resolved)
+                : ts.isPropertyAccessExpression(resolved)
+                  ? this.compilePropertyAccess(resolved)
+                  : undefined;
+            return value?.kind === "boolean" &&
+                (value.cpp === "true" || value.cpp === "false")
+                ? value.cpp
+                : undefined;
+        };
+        const left = settled(expression.left);
+        const right = settled(expression.right);
+        if (left === undefined || right === undefined) {
+            return undefined;
+        }
+        return String((left === right) === equals);
+    }
+
+    public isBrowserOnlyHandler(handler: ts.Expression): boolean {
+        const body =
+            ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
+                ? handler.body
+                : undefined;
+        if (body && ts.isBlock(body)) {
+            return body.statements.every(
+                (statement) =>
+                    ts.isExpressionStatement(statement) &&
+                    this.isBrowserOnlyExpression(statement.expression),
+            );
+        }
+        // A concise body is the expression itself; anything that is not a
+        // function literal is asked directly, which lets a bare
+        // `console.error` pass and a named recovery routine not.
+        return this.isBrowserOnlyExpression(body ?? handler);
+    }
+
+    private unwrapEntryReporter(statement: ts.Statement): ts.Statement {
+        if (!ts.isExpressionStatement(statement)) return statement;
+        const call = this.unwrap(statement.expression);
+        if (
+            !ts.isCallExpression(call) ||
+            !ts.isPropertyAccessExpression(call.expression) ||
+            call.expression.name.text !== "catch" ||
+            call.arguments.length !== 1
+        ) {
+            return statement;
+        }
+        const promise = this.unwrap(call.expression.expression);
+        if (
+            !ts.isCallExpression(promise) ||
+            this.checker.getAwaitedType(
+                this.checker.getTypeAtLocation(promise),
+            ) === this.checker.getTypeAtLocation(promise)
+        ) {
+            return statement;
+        }
+        const handler = this.unwrap(call.arguments[0]!);
+        if (!this.isBrowserOnlyHandler(handler)) {
+            this.fail(
+                handler,
+                "A scene's entry may end in `.catch(<reporter>)`, whose " +
+                    "handler reports and nothing more -- a native program " +
+                    "reports a rejection by aborting. This handler does " +
+                    "something else, which would be a recovery path the " +
+                    "native entry has no place to run.",
+            );
+        }
+        this.hasMainEntry = true;
+        return ts.factory.createExpressionStatement(promise);
     }
 
     public emitStatement(statement: ts.Statement): void {
@@ -3600,6 +3736,17 @@ class Compiler
                 );
             if (handles) {
                 return handles;
+            }
+            // Two booleans compared for identity, which is how a shared
+            // module normalizes an optional flag its caller may have left
+            // out (`opts.useFloatingOrigin === true`). Asked before the
+            // arms that would EMIT a comparison, because where both sides
+            // settle at generation the answer settles with them -- and an
+            // option that decides a lowering needs that answer, not an
+            // expression computing it at run time.
+            const foldedBoolean = this.foldBooleanComparison(unwrapped);
+            if (foldedBoolean) {
+                return foldedBoolean;
             }
             const typed =
                 this.dataLowerer.equalityComparison(
