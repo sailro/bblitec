@@ -21,6 +21,11 @@ import {
     type LightIntrinsicContext,
 } from "./light.js";
 import {
+    compileClusteredLightIntrinsic,
+    runtimeOnlyClusteredLightIntrinsics,
+    type ClusteredLightIntrinsicContext,
+} from "./clustered-light.js";
+import {
     compileEffectIntrinsic,
     type EffectIntrinsicContext,
 } from "./effect.js";
@@ -82,6 +87,7 @@ export interface IntrinsicContext
         AudioIntrinsicContext,
         CameraIntrinsicContext,
         EngineIntrinsicContext,
+        ClusteredLightIntrinsicContext,
         LightIntrinsicContext,
         LineIntrinsicContext,
         MaterialIntrinsicContext,
@@ -96,6 +102,22 @@ export interface IntrinsicContext
         SpriteIntrinsicContext,
         EffectIntrinsicContext {}
 
+/**
+ * Intrinsics a large counted loop may call without being unrolled.
+ *
+ * `requiresStaticIteration` unrolls any loop whose body reaches the pinned
+ * package, because lowering such a call usually records generation-owned
+ * state -- a composed variant, a scene mesh slot, a materialized asset, a
+ * baked simulation step -- and emitting the body once inside C++ would record
+ * one of those for many run-time iterations.
+ *
+ * A family whose intrinsics record none says so in its own module, which is
+ * where the reason for it lives; this composes what they declare.
+ */
+export const runtimeOnlyIntrinsics: ReadonlySet<string> = new Set([
+    ...runtimeOnlyClusteredLightIntrinsics,
+]);
+
 type IntrinsicCompiler = (
     context: IntrinsicContext,
     importedName: string,
@@ -106,6 +128,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileEngineIntrinsic,
     compileCameraIntrinsic,
     compileLightIntrinsic,
+    compileClusteredLightIntrinsic,
     compileMeshIntrinsic,
     compileLineIntrinsic,
     compileSceneIntrinsic,

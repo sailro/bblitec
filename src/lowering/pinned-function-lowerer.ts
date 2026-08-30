@@ -41,12 +41,35 @@ export interface PinnedFunctionParameter {
         | "mat4"
         | "matrix"
         | "mat4Const"
-        | "numberArray";
+        | "numberArray"
+        | "u32Buffer"
+        | "record";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
      * where C++ forbids it (`near`/`far` are Windows macro names).
      */
     cpp: string;
+    /**
+     * The annotation to check, where the kind's own is not what the pin
+     * spells. `Uint32Array` and `Float32Array` both bind a typed buffer the
+     * body stores through, and the kind is what decides the store's width;
+     * the annotation is what proves the pin still spells it that way.
+     */
+    annotation?: string;
+    /**
+     * The binding to give the body, where the kind's default is not it.
+     *
+     * A record parameter is the case: the translator reads scalars, and a
+     * pinned body that takes a whole object reads named members off it. The
+     * caller owns those spellings because it owns the native record they
+     * land on.
+     */
+    binding?: PinnedBinding;
+    /**
+     * The C++ type a `record` parameter binds by const reference. Required
+     * for that kind and ignored by the others, whose type follows the kind.
+     */
+    cppType?: string;
 }
 
 const parameterKinds: Readonly<
@@ -78,6 +101,20 @@ const parameterKinds: Readonly<
     numberArray: {
         annotation: "ArrayLike<number>",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+    },
+    // A typed buffer the body indexes and stores through, sized by its
+    // caller rather than fixed at sixteen. The store's width is the kind's:
+    // `u32Buffer` rounds where the pin's `Uint32Array` store rounds.
+    u32Buffer: {
+        annotation: "Uint32Array",
+        declare: (cpp) => `std::vector<std::uint32_t>& ${cpp}`,
+    },
+    // A record the body reads named members off. The caller supplies both
+    // the annotation and the C++ type, because it owns the native record the
+    // members land on -- this table stays free of any one feature's names.
+    record: {
+        annotation: "",
+        declare: (cpp) => `const auto& ${cpp}`,
     },
 };
 
@@ -379,8 +416,20 @@ export function lowerPinnedFunction(
         recordCalls?: ReadonlyMap<string, readonly string[]>;
         /** See `PinnedNumericScope.tupleCalls`. */
         tupleCalls?: ReadonlyMap<string, number>;
+        /** See `PinnedNumericScope.fixedTupleCalls`. */
+        fixedTupleCalls?: ReadonlyMap<string, number>;
         /** See `PinnedNumericScope.booleanAnd`. */
         booleanAnd?: boolean;
+        /** See `PinnedNumericScope.booleanOr`. */
+        booleanOr?: boolean;
+        /**
+         * Bindings keyed by the SOURCE TEXT the body reads them through,
+         * for a member of a record parameter: the translator resolves
+         * `light.position` by that text, so binding it is what lets the
+         * body index it. The caller owns the spelling because it owns the
+         * native record the member lands on.
+         */
+        memberBindings?: ReadonlyMap<string, PinnedBinding>;
     },
 ): string {
     const { file, declaration } = context.functionDeclaration(
@@ -399,34 +448,57 @@ export function lowerPinnedFunction(
     declaration.parameters.forEach((parameter, index) => {
         const spec = parameters[index]!;
         const kind = parameterKinds[spec.kind];
+        const annotation = spec.annotation ?? kind.annotation;
         if (
             !ts.isIdentifier(parameter.name) ||
             parameter.name.text !== spec.pinned ||
-            parameter.type?.getText(file) !== kind.annotation
+            parameter.type?.getText(file) !== annotation
         ) {
             context.contractError(
                 parameter,
                 `Expected pinned ${symbolName} parameter ${index} to be ` +
-                    `'${spec.pinned}: ${kind.annotation}'.`,
+                    `'${spec.pinned}: ${annotation}'.`,
             );
         }
-        bindings.set(spec.pinned, {
-            cpp: spec.cpp,
-            type: matrixKinds.has(spec.kind)
-                ? "f32"
-                : spec.kind === "boolean"
-                  ? "bool"
-                  : "scalar",
-        });
-        signature.push(kind.declare(spec.cpp));
+        bindings.set(
+            spec.pinned,
+            spec.binding ?? {
+                cpp: spec.cpp,
+                type: matrixKinds.has(spec.kind)
+                    ? "f32"
+                    : spec.kind === "boolean"
+                      ? "bool"
+                      : spec.kind === "u32Buffer"
+                        ? "u32"
+                        : "scalar",
+            },
+        );
+        signature.push(
+            spec.cppType
+                ? `const ${spec.cppType}& ${spec.cpp}`
+                : kind.declare(spec.cpp),
+        );
+        if (spec.kind === "record" && !spec.cppType) {
+            context.contractError(
+                parameter,
+                `A record parameter needs its C++ type: '${spec.pinned}'.`,
+            );
+        }
     });
+    for (const [text, binding] of options.memberBindings ?? []) {
+        bindings.set(text, binding);
+    }
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: options.calls ?? new Map(),
         ...(options.matrixCalls ? { matrixCalls: options.matrixCalls } : {}),
         ...(options.recordCalls ? { recordCalls: options.recordCalls } : {}),
         ...(options.tupleCalls ? { tupleCalls: options.tupleCalls } : {}),
+        ...(options.fixedTupleCalls
+            ? { fixedTupleCalls: options.fixedTupleCalls }
+            : {}),
         ...(options.booleanAnd ? { booleanAnd: true } : {}),
+        ...(options.booleanOr ? { booleanOr: true } : {}),
         ...(options.returns === "void"
             ? {}
             : {

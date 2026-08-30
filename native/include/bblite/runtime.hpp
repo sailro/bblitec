@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -188,6 +189,10 @@ struct ShadowGeneratorHandle {
     std::uint32_t value = invalid_handle;
 };
 
+struct ClusteredLightContainerHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 struct GpuPickerHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -236,6 +241,101 @@ struct PickingInfo {
  */
 struct GpuPickerRecord {
     bool disposed = false;
+};
+
+/** One light in a clustered container, at the pin's own resolved defaults. */
+struct ClusteredLight {
+    std::array<double, 3> position{};
+    std::array<double, 3> diffuse{};
+    double range = 1.0;
+    double intensity = 1.0;
+    /** Spot only; a point light leaves the cone unset. */
+    std::array<double, 3> direction{};
+    double angle = 0.0;
+    bool spot = false;
+};
+
+/**
+ * A clustered light field: a large point/spot set binned into screen tiles
+ * and depth slices so a PBR fragment can shade hundreds of lights.
+ *
+ * The sizing fields below are baked when the container is added -- the pin
+ * fixes both the light capacity and the point-versus-spot stride there, and
+ * its own refresh throws rather than growing either.
+ */
+struct ClusteredLightContainer {
+    double horizontal_tiles = 64.0;
+    double vertical_tiles = 64.0;
+    double z_slices = 16.0;
+    std::vector<ClusteredLight> lights;
+    /** Set when any light in the container is a spot. */
+    bool has_spots = false;
+
+    std::uint32_t tile_count_x = 1;
+    std::uint32_t tile_count_y = 1;
+    std::uint32_t slice_count = 1;
+    std::uint32_t data_texture_width = 1;
+    std::uint32_t light_texels = 1;
+    std::uint32_t mask_texels = 1;
+    /** The rows each payload occupies, so no backend derives an extent. */
+    std::uint32_t light_rows = 1;
+    std::uint32_t slice_rows = 1;
+    std::uint32_t mask_rows = 1;
+
+    /** Three texels per light once the container holds a spot. */
+    [[nodiscard]] std::uint32_t stride() const {
+        return has_spots ? 3u : 2u;
+    }
+
+    /** The extent one payload's upload covers. */
+    struct UploadRegion {
+        std::uint32_t width;
+        std::uint32_t height;
+    };
+
+    /**
+     * The pin's own `writeDataTexture` region, so neither backend invents one.
+     *
+     * A payload that fits in a single row is uploaded only as wide as it is
+     * long; past that the rows are full width. Nothing outside the region is
+     * read -- the fragment's `textureLoad` never walks past the active texel
+     * count -- so this is the pin's rule kept rather than a correctness
+     * requirement, and keeping it is what makes a backend's upload comparable
+     * to a browser capture of the same frame.
+     */
+    [[nodiscard]] UploadRegion upload_region(
+        std::uint32_t texels,
+        std::uint32_t rows) const {
+        const std::uint32_t height = std::max(1u, rows);
+        return {
+            height > 1 ? data_texture_width
+                       : std::max(1u, std::min(texels, data_texture_width)),
+            height,
+        };
+    }
+
+    /** The three data-texture payloads and the params block. */
+    std::vector<float> light_data;
+    std::vector<std::uint32_t> slice_data;
+    std::vector<std::uint32_t> mask_data;
+    /** Six u32 lanes and two f32 ones: the pin's ArrayBuffer(32), both ways. */
+    std::array<std::uint32_t, 8> params{};
+    /** Bumped whenever a refresh rewrote a payload. */
+    std::uint64_t upload_version = 0;
+
+    /**
+     * The pin's own dirty key, in the terms this port has for it.
+     *
+     * Upstream compares camera identity, `_cameraChangeKey`, the target
+     * extent and the effective aspect -- four proxies for one question: does
+     * this frame project lights into different tiles than the last did. The
+     * two matrices the cull reads answer it directly, and the light half of
+     * that key folds away because nothing here can mutate a light after
+     * creating it.
+     */
+    std::array<float, 16> last_view{};
+    std::array<float, 16> last_proj{};
+    bool binned = false;
 };
 
 enum class PrimitiveKind {
@@ -2333,6 +2433,14 @@ struct Engine {
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SpriteRenderTextureRecord> sprite_render_textures;
     std::vector<SplatMeshRecord> splat_meshes;
+    /**
+     * The clustered light fields this engine holds.
+     *
+     * Plain records like every other collection here. What is GENERATED is
+     * the behaviour over them -- the sizing `addClusteredLightContainer`
+     * bakes and the per-frame binning, both from `src/light/clustered.ts`.
+     */
+    std::vector<ClusteredLightContainer> clustered_light_containers;
     std::vector<EffectWrapperRecord> effect_wrappers;
     std::vector<EffectRendererRecord> effect_renderers;
     std::vector<ShadowGeneratorRecord> shadow_generators;
@@ -2420,6 +2528,15 @@ struct Scene {
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
+    /**
+     * The clustered light field this scene was given, if it was given one.
+     *
+     * `addClusteredLightContainer` stores its container on the scene and
+     * stamps every material present, which is what makes the composed
+     * fragment read it. Only the handle is here; the container is a
+     * generated record.
+     */
+    ClusteredLightContainerHandle clustered_lights{};
     std::vector<std::function<void(float)>> before_render;
     std::vector<std::function<void(float)>> animation_seekers;
     /**

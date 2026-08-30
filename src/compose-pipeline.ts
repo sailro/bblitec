@@ -256,6 +256,14 @@ export async function composeScenePipeline({
         // `transmission_enabled` from the same disjunction), and the pin
         // marks every material linear either way.
         specializationFeatures.assetTransmission;
+    // The scene's clustered light field, if it added one. It travels beside
+    // `linearImageProcessing` because it is the same kind of fact: a scene
+    // property every material composed for this scene has to see.
+    const clusteredLights = result.manifest.clusteredLights;
+    const sceneComposeOptions = {
+        linearImageProcessing,
+        ...(clusteredLights ? { clusteredLights } : {}),
+    };
     // The runtime keys the variant table by material handle, which is
     // creation order: each glTF load appends its materials, and a scene
     // material appends where its `createPbrMaterial` runs. The recorded glTF
@@ -484,9 +492,10 @@ export async function composeScenePipeline({
     for (const [assetIndex, asset] of gltfAssets.entries()) {
         const materialIndexBase = assetMaterialBases[assetIndex]!;
         const path = resolve(outputPath, "assets", asset.output);
-        const composed = await composeGltfMaterials(path, {
-            linearImageProcessing,
-        });
+        const composed = await composeGltfMaterials(
+            path,
+            sceneComposeOptions,
+        );
         assetMetallicReflectanceRegistered ||= composed.some(
             (material) => material.metallicReflectanceRegistered,
         );
@@ -496,7 +505,7 @@ export async function composeScenePipeline({
             sceneArms,
             materialIndexBase,
             {
-                linearImageProcessing,
+                ...sceneComposeOptions,
                 ...(asset.selectedVariant
                     ? { selectedVariant: asset.selectedVariant }
                     : {}),
@@ -529,7 +538,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        linearImageProcessing,
+                        ...sceneComposeOptions,
                         ...(asset.selectedVariant
                             ? { selectedVariant: asset.selectedVariant }
                             : {}),
@@ -546,7 +555,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        linearImageProcessing,
+                        ...sceneComposeOptions,
                         ...(asset.selectedVariant
                             ? { selectedVariant: asset.selectedVariant }
                             : {}),

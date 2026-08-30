@@ -608,6 +608,21 @@ else()
     )
 endif()
 
+# The clustered light field binds a params block and three data textures into
+# the composed PBR fragment's own group, from the container the scene holds.
+# A scene that never adds one carries none of it.
+if("light:clustered" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_CLUSTERED_LIGHTS=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_CLUSTERED_LIGHTS=0
+    )
+endif()
+
 # The solver is reached only through `bblite/pal_physics.hpp`, whose
 # implementation is one translation unit the feature list selects
 # (`featureSources`). Nothing generated names Bullet.

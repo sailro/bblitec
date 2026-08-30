@@ -31,6 +31,10 @@
 #endif
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#include <bblite/upstream/clustered_light.hpp>
+#include "pal_dawn_clustered.hpp"
+#endif
 
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
@@ -468,6 +472,10 @@ struct DawnPostProcessTask {
 #endif
 
 struct DawnState : DawnDevice {
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+    /** The clustered light field's params buffer and three data textures. */
+    DawnClusteredLights clustered;
+#endif
     // Transmission scenes render the frame in linear rgba16float and
     // apply image processing at the end; everything else targets the
     // surface format directly.
@@ -1856,9 +1864,15 @@ WGPUBindGroupLayoutEntry variant_layout_entry(
             break;
         default:
             // An rgba32float texture read with textureLoad cannot be bound
-            // as filterable; the pin's bone palette is exactly that.
+            // as filterable; the pin's bone palette is exactly that. An
+            // INTEGER texture is a third case -- WebGPU has no sampler for
+            // one at all -- and the clustered slice and tile-mask pair are
+            // the reached ones.
             layout_entry.texture.sampleType =
                 binding.kind ==
+                        upstream::PinnedBindingKind::texture2dUint
+                    ? WGPUTextureSampleType_Uint
+                : binding.kind ==
                         upstream::PinnedBindingKind::texture2dLoad ||
                     depth_emissive
                     ? WGPUTextureSampleType_UnfilterableFloat
@@ -2952,6 +2966,17 @@ PinnedResource pinned_resource_for(
                 return PinnedResource{mesh.views[0], mesh.samplers[0]};
             case upstream::MaterialTextureSource::bone_palette:
                 return PinnedResource{mesh.pinned_bone_view, nullptr};
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+            // The clustered field's three, from the container the scene
+            // holds. Each is `textureLoad`ed, so none carries a sampler at
+            // all on this backend.
+            case upstream::MaterialTextureSource::clustered_lights:
+                return PinnedResource{state.clustered.lights, nullptr};
+            case upstream::MaterialTextureSource::clustered_cells:
+                return PinnedResource{state.clustered.cells, nullptr};
+            case upstream::MaterialTextureSource::clustered_indices:
+                return PinnedResource{state.clustered.indices, nullptr};
+#endif
             default:
                 break;
         }
@@ -3067,6 +3092,21 @@ WGPUBindGroup build_pinned_draw_group(
                         "generator's shadow params.");
                 }
                 group_entry.size = upstream::shadow_params_block_bytes;
+                entries.push_back(group_entry);
+                continue;
+            }
+#endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+            // The clustered field's params block, from the container the
+            // scene holds rather than from this material.
+            if (binding.name == "clusteredLightParams") {
+                group_entry.buffer = state.clustered.params;
+                if (!group_entry.buffer) {
+                    dawn_error(
+                        "a clustered draw reached the encode before its "
+                        "container's params buffer.");
+                }
+                group_entry.size = sizeof(std::uint32_t) * 8;
                 entries.push_back(group_entry);
                 continue;
             }
@@ -9752,6 +9792,24 @@ bool run_dawn_engine(Engine& engine) {
                     static_cast<float>(width),
                     static_cast<float>(height));
             }
+        }
+#endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+        // The cluster binning, in the place the splat sort runs and for the
+        // same reason: it reads this frame's camera and the draws below read
+        // what it wrote.
+        if (ClusteredLightContainer* clustered =
+                upstream::clustered_container(
+                    engine, scene.clustered_lights)) {
+            upload_dawn_clustered(
+                state.device,
+                state.queue,
+                *clustered,
+                frame_view,
+                frame_projection,
+                camera.near_plane,
+                camera.far_plane,
+                state.clustered);
         }
 #endif
 #if BBLITE_HAS_BILLBOARDS

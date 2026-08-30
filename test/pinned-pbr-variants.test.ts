@@ -20,6 +20,11 @@ test("registers every PBR extension the pin owns", async () => {
         "alpha-test",
         "anisotropy",
         "clearcoat",
+        // The clustered light field: both `detect` hooks answer zero without
+        // a `_clusteredLightState` marker, so registering them is inert for
+        // every scene that never reaches the feature.
+        "clustered-lights",
+        "clustered-spot-lights",
         "emissive-color",
         "gamma-albedo",
         "ibl",

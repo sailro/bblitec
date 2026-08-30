@@ -118,6 +118,16 @@ export interface CompileManifest {
   /** A runtime handle collection may mark imported or otherwise dynamic
    *  meshes as receivers, so composition must retain both receiver states. */
   dynamicShadowReceivers: boolean;
+  /**
+   * The clustered light field this scene added, if it added one.
+   *
+   * `addClusteredLightContainer` stamps `_clusteredLightState` onto every
+   * material present, which is what each clustered extension's `detect`
+   * reads -- so composition needs to know the scene reached it, and whether
+   * a spot was ever created, since that decides which of the two extensions
+   * takes the material and with it the data layout the fragment reads.
+   */
+  clusteredLights?: { hasSpots: boolean };
 }
 
 /**
@@ -940,6 +950,12 @@ export type ValueKind =
   // nothing. Bodies and shapes are opaque native values that may travel
   // through the demo's arrays and maps just like mesh handles do.
   | "physics-engine-module"
+  // The clustered light field. The container is a native record and its
+  // lights are built by the emitted loop, as upstream builds them; only
+  // whether a spot was created is compile-time, because that decides which
+  // extension composes the fragment.
+  | "clustered-light-container"
+  | "clustered-light"
   | "physics-world"
   | "physics-aggregate"
   | "physics-body"
@@ -1042,6 +1058,32 @@ export type ValueKind =
  * exists to stop: a kind added to one silently fell through to the generic
  * emit in the other and produced a declaration with no initializer.
  */
+/**
+ * The one compile-time fact about a clustered light container: whether the
+ * scene reaches `createClusteredSpotLight`.
+ *
+ * Everything else about the container is a run-time value. Both reached
+ * scenes fill 1000 lights from a seeded PRNG inside a counted loop, which
+ * lowers to a native `for` rather than an unrolled table, so the rows are
+ * built by the emitted code exactly as the pin builds them.
+ *
+ * Whether a spot was ever created is different in kind, because it decides
+ * COMPOSITION: `_enableClusteredSpotSupport` installs the stride-3 layout and
+ * registers the spot extension, whose `detect` then takes the material over
+ * from the point one. The pin reaches that at the spot factory, so this port
+ * reads it there too.
+ */
+export interface ClusteredContainerState {
+  hasSpots: boolean;
+  /**
+   * Set once `addClusteredLightContainer` has built the GPU state. A light
+   * created after that point refuses, because the pin bakes both the light
+   * capacity and the point-versus-spot layout there and its own refresh
+   * throws rather than growing either.
+   */
+  frozen: boolean;
+}
+
 export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
   return (
     kind === "tuple" ||
@@ -1445,6 +1487,17 @@ export interface Value {
     rotationSet: boolean;
     hasTexturedSkybox: boolean;
   };
+  /**
+   * Shared across compiler aliases of one clustered light container.
+   *
+   * The rows accumulate as scene code calls `createClusteredPointLight` /
+   * `createClusteredSpotLight`, and `addClusteredLightContainer` freezes
+   * them: the pin's own `buildClusteredLightGpuState` bakes the light
+   * capacity and the point-versus-spot data layout there and throws if
+   * either grows, so a light created afterwards refuses at generation
+   * rather than reaching a state that cannot hold it.
+   */
+  clusteredContainerState?: ClusteredContainerState;
   browserValue?:
     | { kind: "boolean"; value: boolean }
     | { kind: "number"; value: number }
@@ -1491,6 +1544,9 @@ export type Feature =
   | "light:directional"
   | "light:point"
   | "light:spot"
+  // The clustered point/spot field: its own PAL translation unit, the
+  // three data textures and the params block the composed fragment reads.
+  | "light:clustered"
   | "loader:babylon"
   | "loader:gltf"
   | "loader:gltf-variants"

@@ -5,6 +5,7 @@ import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { EngineLowerer } from "./lowering/engine-lowerer.js";
+import { lowerClusteredLights } from "./lowering/clustered-light-runtime.js";
 import { LightLowerer } from "./lowering/light-lowerer.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";
 import { FrameGraphContextLowerer } from "./lowering/frame-graph-context-lowerer.js";
@@ -740,6 +741,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     occlusionUv2: options.occlusionUv2,
                     standardBump: options.standardBump,
                     standardReflection,
+                    clusteredLights:
+                        pbrBindingNames.has("clusteredLights"),
                 },
                 options.pinnedVariants ?? [],
                 "src/pinned-pbr-variant-cpp.ts materialTextureSlotsHeader",
@@ -915,6 +918,14 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 "upstream/src/light_spot.cpp",
                 new LightLowerer(context).lowerSpotFactory(),
                 generated,
+            );
+        }
+        if (features.includes("light:clustered")) {
+            this.writeSource(
+                "upstream/src/clustered_light.cpp",
+                lowerClusteredLights(context),
+                generated,
+                "upstream/include/bblite/upstream/clustered_light.hpp",
             );
         }
         if (features.includes("animation:gltf-groups")) {

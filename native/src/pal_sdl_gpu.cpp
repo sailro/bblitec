@@ -20,6 +20,9 @@
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#include <bblite/upstream/clustered_light.hpp>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -58,6 +61,9 @@
 #include <SDL3/SDL_gpu.h>
 #include <SDL3_image/SDL_image.h>
 #include "pal_sdl_gpu_shared.hpp"
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+#include "pal_sdl_gpu_clustered.hpp"
+#endif
 #endif
 
 #ifndef BBLITE_GPU_SHADER_DIR
@@ -670,6 +676,10 @@ struct PinnedResource {
 #endif
 
 struct GpuState {
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+    /** The clustered light field's three data textures and their sampler. */
+    ClusteredLightGpu clustered;
+#endif
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
     SDL_GPUGraphicsPipeline* grid_pipeline = nullptr;
@@ -1166,6 +1176,17 @@ const GpuState::EsmBlur* esm_caster_params_for(
             // The pin's transmission grab: the 1024x1024 mip-chained scene
             // colour copied out mid-pass, sampled trilinear-anisotropic.
             return {state.transmission_color, state.transmission_sampler};
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+        // The clustered field's three, from the container the scene holds.
+        // Each is `textureLoad`ed, so the sampler beside it is the one SDL
+        // requires as a pair and the shader never consults.
+        case upstream::MaterialTextureSource::clustered_lights:
+            return {state.clustered.lights, state.clustered.sampler};
+        case upstream::MaterialTextureSource::clustered_cells:
+            return {state.clustered.cells, state.clustered.sampler};
+        case upstream::MaterialTextureSource::clustered_indices:
+            return {state.clustered.indices, state.clustered.sampler};
+#endif
         default:
             return {};
     }
@@ -1676,6 +1697,21 @@ void draw_pinned_variant(
                 return {
                     blur->params.data(),
                     blur->params.size() * sizeof(float),
+                };
+            }
+        }
+#endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+        // The clustered field's params block. It belongs to the container
+        // the scene was given rather than to this material, which is why it
+        // resolves here and not through the material slot table.
+        if (block == "clusteredLightParams") {
+            if (const ClusteredLightContainer* container =
+                    upstream::clustered_container(
+                        engine, scene.clustered_lights)) {
+                return {
+                    container->params.data(),
+                    container->params.size() * sizeof(std::uint32_t),
                 };
             }
         }
@@ -4193,6 +4229,9 @@ void release(GpuState& state) {
         release_splat_pass(state.device, splat);
     }
     state.splat_passes.clear();
+#endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+    release_clustered_lights(state.device, state.clustered);
 #endif
     for (GpuMesh& mesh : state.meshes) {
         release_gpu_mesh(state, mesh);
@@ -7441,6 +7480,23 @@ bool run_gpu_engine(Engine& engine) {
             for (SplatPass& splat : state.splat_passes) {
                 upload_splat_pass(
                     state.device, engine, splat, frame_view);
+            }
+#endif
+#if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
+            // The cluster binning, in the same place the splat sort runs and
+            // for the same reason: it reads this frame's camera and the draw
+            // below reads what it wrote.
+            if (ClusteredLightContainer* clustered =
+                    upstream::clustered_container(
+                        engine, scene.clustered_lights)) {
+                upload_clustered_lights(
+                    state.device,
+                    *clustered,
+                    frame_view,
+                    frame_projection,
+                    camera.near_plane,
+                    camera.far_plane,
+                    state.clustered);
             }
 #endif
             // The render capture describes CPU state alone, so it is

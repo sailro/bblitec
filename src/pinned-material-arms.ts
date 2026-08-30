@@ -38,6 +38,7 @@ import {
     type PinnedComposeOptions,
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
+import type { PinnedClusteredMarker } from "./pinned-clustered-lights.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
@@ -273,6 +274,30 @@ export function gltfLinearImageProcessing(document: JsonObject): boolean {
 }
 
 /**
+ * Stamps what `addClusteredLightContainer` stamps.
+ *
+ * The pin walks `scene.meshes` at that call and writes `_clusteredLightState`
+ * onto every material present, which is the only thing either clustered
+ * extension's `detect` reads. `_hasSpots` is set by the GPU state when the
+ * container held spot lights, and it decides WHICH extension takes the
+ * material: the point one answers `state && !state._hasSpots`, because the
+ * spot shader's stride-3 layout carries point lights too.
+ *
+ * Both reached scenes load their glTF before the call, so every material the
+ * asset carries is present for it.
+ */
+function stampClusteredLightState(
+    input: PinnedMaterialInput,
+    clustered: { hasSpots: boolean } | undefined,
+): void {
+    if (!clustered) return;
+    const marker: PinnedClusteredMarker = clustered.hasSpots
+        ? { _hasSpots: true }
+        : {};
+    input["_clusteredLightState"] = marker;
+}
+
+/**
  * The composer's material-shaped input for every material in a document.
  *
  * Shared by the arms scan, the variant space and the compose gate so all
@@ -284,7 +309,11 @@ export function gltfLinearImageProcessing(document: JsonObject): boolean {
  */
 export async function materialSubjects(
     document: JsonObject,
-    scene: { linearImageProcessing?: boolean } = {},
+    scene: {
+        linearImageProcessing?: boolean;
+        /** The clustered light field the scene added, if it added one. */
+        clusteredLights?: { hasSpots: boolean };
+    } = {},
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
     // need: this is the one async choke point through which production
@@ -344,6 +373,7 @@ export async function materialSubjects(
                 metallicReflectanceRegistered = true;
             },
         });
+        stampClusteredLightState(input, scene.clusteredLights);
         const drawn = primitiveOf.get(index);
         subjects.push({
             index,
@@ -371,6 +401,7 @@ export async function materialSubjects(
             animatedEmissive: false,
             animatedUvTransform: false,
         });
+        stampClusteredLightState(input, scene.clusteredLights);
         subjects.push({
             index: materials.length,
             name: "default material",
@@ -393,7 +424,10 @@ export async function materialSubjects(
  */
 export async function composeGltfMaterials(
     path: string,
-    scene: { linearImageProcessing?: boolean } = {},
+    scene: {
+        linearImageProcessing?: boolean;
+        clusteredLights?: { hasSpots: boolean };
+    } = {},
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbView(path);
     if (!document) return [];
@@ -577,6 +611,8 @@ export async function composeRenderableVariants(
     materialIndexBase = 0,
     scene: {
         linearImageProcessing?: boolean;
+        /** The clustered light field the scene added, if it added one. */
+        clusteredLights?: { hasSpots: boolean };
         /** The `KHR_materials_variants` this scene selected on the asset. */
         selectedVariant?: string;
         /** Compose a caster view keyed by the source material handle. */

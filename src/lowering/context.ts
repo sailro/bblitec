@@ -810,6 +810,38 @@ export class LoweringContext {
     }
 
     /**
+     * The initializer of a named property, wherever in a module it is
+     * written.
+     *
+     * `moduleScopeConstant` reaches a top-level `const`; this reaches a
+     * property of an object literal nested anywhere inside one — the shape
+     * `spotSupport._create` returns, whose `_stride` decides a data layout
+     * both sides of the port read. The first match wins, and a module that
+     * declares the name twice is a contract error at the caller rather than
+     * a silent choice here.
+     */
+    public namedPropertyInitializer(
+        file: ts.SourceFile,
+        name: string,
+    ): ts.Expression | undefined {
+        let found: ts.Expression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (
+                ts.isPropertyAssignment(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === name
+            ) {
+                found = node.initializer;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(file);
+        return found;
+    }
+
+    /**
      * The two sides of a pinned `<left> ?? <right>` default.
      *
      * Every lowerer that anchors a pinned default splits this expression, and

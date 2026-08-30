@@ -20,6 +20,7 @@ import {
 } from "./pinned-shader-composer.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
+import { pinnedClusteredLightExtensions } from "./pinned-clustered-lights.js";
 import type { PinnedToneMapping } from "./pinned-tone-mapping.js";
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
@@ -173,6 +174,14 @@ async function registerPbrExtensions(): Promise<void> {
             ) => void;
         }>("material/pbr/pbr-geometry-output-shader.js");
         geometry._ensurePbrGeometryExt(() => activeGeometryAttachments);
+        // The clustered light field's two exts, lifted out of their modules
+        // because upstream registers them from scene calls that need a device
+        // (`src/pinned-clustered-lights.ts` carries the argument). Both
+        // `detect` hooks answer zero for a material with no
+        // `_clusteredLightState`, so this is inert for every other scene.
+        for (const ext of await pinnedClusteredLightExtensions()) {
+            flags._registerPbrExt(ext);
+        }
     })();
     return registered;
 }

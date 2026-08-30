@@ -207,6 +207,16 @@ export interface PinnedNumericScope {
      */
     tupleCalls?: ReadonlyMap<string, number>;
     /**
+     * Calls returning a FIXED tuple the body binds whole and then indexes,
+     * as `const bounds = projectedSphereBounds(...)` then `bounds[0]`.
+     *
+     * `tupleCalls` above serves the destructuring form and `listCalls` the
+     * growable one; this is the third, and it is the one that must not
+     * allocate: the cluster cull runs it once per light per frame, so it
+     * lands in a `std::array` sized by the arity the caller declares.
+     */
+    fixedTupleCalls?: ReadonlyMap<string, number>;
+    /**
      * Calls whose result is a small numeric RECORD, and which members the
      * body may read off one (`const q = _quatFromRotationBasis(...)`, then
      * `q.x`).
@@ -747,6 +757,26 @@ export class PinnedNumericLowerer {
                 lines.push(
                     `${indent}${isConst ? "const " : ""}` +
                         `std::array<float, 16> ${name} = ` +
+                        `${this.expression(declaration.initializer)};`,
+                );
+                continue;
+            }
+            const fixedTupleArity =
+                this.scope.fixedTupleCalls &&
+                    ts.isCallExpression(initializer) &&
+                    ts.isIdentifier(initializer.expression)
+                    ? this.scope.fixedTupleCalls.get(
+                        initializer.expression.text,
+                    )
+                    : undefined;
+            if (fixedTupleArity !== undefined) {
+                this.scope.bindings.set(name, {
+                    cpp: name,
+                    type: "f64-buffer",
+                });
+                lines.push(
+                    `${indent}${isConst ? "const " : ""}` +
+                        `std::array<double, ${fixedTupleArity}> ${name} = ` +
                         `${this.expression(declaration.initializer)};`,
                 );
                 continue;
@@ -1814,19 +1844,30 @@ export class PinnedNumericLowerer {
                 // refuses rather than guessing which meaning is wanted.
                 return this.fail(node, "value-selecting '&&'");
             case ts.SyntaxKind.BarToken: {
-                // `x | 0` is the pin's truncation to a 32-bit integer. Any
-                // other bitwise use would need JS's full ToInt32 wrap and is
-                // refused rather than approximated.
+                // `x | 0` is the pin's truncation to a 32-bit integer, and
+                // says so in one term rather than two.
                 const right = this.unwrap(node.right);
                 if (
-                    !ts.isNumericLiteral(right) ||
-                    Number(right.text) !== 0
+                    ts.isNumericLiteral(right) &&
+                    Number(right.text) === 0
                 ) {
-                    this.fail(node, "bitwise expression");
+                    return (
+                        `static_cast<double>(static_cast<std::int32_t>(` +
+                        `${this.expression(node.left)}))`
+                    );
                 }
+                // A real bitwise OR, which the cluster tile mask needs:
+                // `maskData[i] = maskData[i] | bit`, where the bit is
+                // `1 << (lightIndex % 32)`. JavaScript coerces both sides
+                // through ToInt32 before masking -- so bit 31 is NEGATIVE
+                // there -- and the `Uint32Array` store then wraps it back.
+                // `bbl::js::bitwise_or` is that operator, ToUint32 and all;
+                // a bare `static_cast<std::int32_t>` of a double outside
+                // int32 range is not, which is precisely the sign bit the
+                // 32nd light in a batch rides on.
                 return (
-                    `static_cast<double>(static_cast<std::int32_t>(` +
-                    `${this.expression(node.left)}))`
+                    `bbl::js::bitwise_or(${this.expression(node.left)}, ` +
+                    `${this.expression(node.right)})`
                 );
             }
             case ts.SyntaxKind.LessThanLessThanToken:

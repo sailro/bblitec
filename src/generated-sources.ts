@@ -111,6 +111,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["light:spot"],
     },
     {
+        source: "upstream/src/clustered_light.cpp",
+        features: ["light:clustered"],
+    },
+    {
         source: "upstream/src/image_skybox.cpp",
         features: ["background:image-skybox"],
     },

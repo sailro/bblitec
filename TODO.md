@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-83 corpus scenes remain unregistered; measured scenes
+81 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -189,7 +189,6 @@ leading candidates at this pin:
 
 | Scenes | Contracts | What they are |
 | --- | ---: | --- |
-| 166 + 179 | 1 | the clustered-light subsystem. Measured by strip probe: with the clustered calls replaced by an ordinary point light, 179 compiles clean, so the closure-returning PRNG and the `if (mesh.material)` walk that once ranked beside it are both lowered |
 | 167 | 4 | the same truthiness; `uAng` on a `loadTexture2D` texture; `enablePbrLightmap`/`setPbrLightmap`; folding a runtime `scene.meshes` walk into a compile-time material selection |
 | 129 | — | `splat.name`, then `createGpuPicker`/`pickAsync` |
 
@@ -209,7 +208,6 @@ families that arrived with the release. Read it as a capability list.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
-| 166 | `if (mesh.material)`, then scene 179's `usePhysicalLightFalloff` write | clustered spot lights |
 | 167 | `enablePbrLightmap` | the opt-in PBR lightmap extension |
 | 186 | `corners.flat` | opt-in PBR local cubemap blending |
 | 187 | a non-literal string argument | SMAA |
@@ -235,9 +233,9 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (52 scenes):** 17, 20,
+**Integrate first (50 scenes):** 17, 20,
 51-53, 58, 59, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
-140, 149, 156, 165, 172, 173, 179, 200, 201, 211, 214, 215, 218, 219,
+140, 149, 156, 165, 172, 173, 200, 201, 211, 214, 215, 218, 219,
 223, 226, 229, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118), and display-only

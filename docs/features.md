@@ -72,6 +72,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Asset loading and upload](#asset-loading-and-upload) | Run | glTF/`.babylon`/`.env` parsing, image decode, mips, samplers |
 | [Geometry and meshes](#geometry-and-meshes) | Run | primitives, typed-array meshes, thin instances, transforms |
 | [Lights](#lights) | Run | directional, hemispheric, point, spot; per-mesh light sets |
+| [Clustered lights](#clustered-lights) | Compile → Run | which fragment a clustered container composes; the per-frame binning and its three data textures |
 | [Materials and material state](#materials-and-material-state) | Run | Standard, PBR, Grid, no-color views, alpha and extension state |
 | [Node materials](#node-materials) | Compile → Run | a Babylon NME graph compiled by the pin's own emitter at generation; its draw and its blocks at run time |
 | [Material plugins](#material-plugins) | Compile | a scene's own WGSL spliced into the PBR or Standard fragment by the pin's own bridges |
@@ -797,6 +798,48 @@ through an emitted entry point that stores the pair from the pin's own
 creation through the pin's own `ObservableVec3` semantics — whole-vector and
 reached point component writes both rebuild that kind's local matrix, and
 vectors no reached scene writes fail by name.
+
+### Clustered lights
+
+A clustered light container is a large point/spot field the pin bins into
+screen-space tiles and depth slices so a PBR fragment can shade hundreds of
+lights without looping over all of them. It is not the `scene.lights` path:
+those pack into the shared lights UBO, while a container owns three data
+textures and a params block of its own, bound into the composed fragment's
+group by the pin's own extension hooks.
+
+**Compile time: which fragment composes.** Registering the two clustered PBR
+extensions makes `_computePbrMaterialFeatures` set bit 13 or 14 for a material
+carrying `_clusteredLightState`, which `addClusteredLightContainer` stamps on
+every material present. Whether the container ever held a SPOT decides which
+of the two takes it, because the spot shader's stride-3 layout carries point
+lights too (`w < 0` in the third texel means point) — so the point extension
+answers `state && !state._hasSpots`.
+
+**Run time: everything else.** The container and its lights are native
+records the emitted scene fills, because a reached scene builds a thousand
+lights inside a loop. Each frame re-bins them against the live camera through
+the pin's own `addLightToClusters`, folded from its AST along with the sphere
+projection, the slice index and the tile-mask arithmetic; the three payloads
+upload only when that pass rewrote one. That pass costs about 950
+microseconds on a frame the camera moved and nothing at all on one it did
+not, nearly all of it in the per-tile inner loop — whose iteration order is
+the pin's, because the body is lowered from that declaration rather than
+written here.
+
+The dirty key is this port's rather than the pin's: upstream compares camera
+identity, a change counter, the target extent and the effective aspect — four
+proxies for one question, does this frame project lights into different tiles
+than the last did — and the two matrices the cull reads answer it directly.
+A scene giving its camera a viewport would need the other half of
+`getEffectiveAspectRatio`; none does, and the light half of that key folds
+away because nothing here can mutate a light after creating it.
+
+What refuses at generation, by name: `markClusteredLightContainerDirty` and
+the in-place edits behind it, a light created after the container was added
+(the pin bakes the light capacity and the point-versus-spot layout there and
+its own refresh throws rather than growing either), a second container on one
+scene, and an empty container.
 
 ### Materials and material state
 
