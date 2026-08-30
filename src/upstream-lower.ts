@@ -41,6 +41,9 @@ import {
 } from "./lowering/node-particle-lowerer.js";
 import { SpriteLowerer } from "./lowering/sprite-lowerer.js";
 import {
+    SpriteAnimationLowerer,
+} from "./lowering/sprite-animation-lowerer.js";
+import {
     billboardFragmentWgsl,
     billboardVertexWgsl,
 } from "./shader-builtins-billboard.js";
@@ -1178,6 +1181,16 @@ ${wgsl}`,
             this.tree.write(
                 "upstream/include/bblite/upstream/sprite_layer.hpp",
                 new SpriteLowerer(context).lowerCore().header,
+            );
+        }
+        if (features.includes("sprite:animation")) {
+            this.writeSource(
+                "upstream/src/sprite_animation.cpp",
+                new SpriteAnimationLowerer(context).lowerSpriteAnimation(
+                    features.includes("sprite:billboard"),
+                ),
+                generated,
+                "upstream/include/bblite/upstream/sprite_animation.hpp",
             );
         }
         if (features.includes("sprite:2d")) {

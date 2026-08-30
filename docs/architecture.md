@@ -92,6 +92,7 @@ Primary source ownership:
 | `src/lowering/linear-depth-lowerer.ts` | `createLinearDepthMaterial`, folded from the factory that builds it — stages, declarations and fixed-function state |
 | `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's parser lowered to C++, its format table, and the suffix selection and URL rewrite generation folds |
 | `src/basis-transcode.ts` | the pinned Basis loader run in headless Chromium, packaged as a KTX1 container |
+| `src/lowering/sprite-animation-lowerer.ts` | the sprite frame stepper: the pin's own timing rule transcribed under a gate that asserts each of its statements is still written there, plus the tagged target the two families share |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/pinned-picking-shaders.ts` | the two modules a GPU pick draws through, composed by running the pin's own builders |
 | `src/lowering/picking-lowerer.ts` | the picker's bookkeeping; every answer belongs to the backend that owns the buffers |

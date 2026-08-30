@@ -173,6 +173,58 @@ struct BillboardSpriteHandle {
     std::uint32_t id = invalid_handle;
 };
 
+/** Which sprite family a frame animation drives. */
+enum class SpriteAnimationTargetKind : std::uint8_t {
+    sprite_2d,
+    billboard,
+};
+
+/**
+ * The sprite a frame animation drives.
+ *
+ * Upstream this is a closure triple -- `setFrame`, `remove`, `isAlive` --
+ * built by whichever family's adapter created it, which is how the animation
+ * core stays ignorant of both. A closure is not a thing this port carries, so
+ * the same decoupling is a tagged handle: the kind chooses the family and the
+ * three operations dispatch on it in one place.
+ */
+struct SpriteAnimationTarget {
+    SpriteAnimationTargetKind kind = SpriteAnimationTargetKind::sprite_2d;
+    /** `sprite_2d`: the layer and the sprite's stable id within it. */
+    Sprite2DLayerHandle layer{};
+    std::uint32_t sprite_id = 0;
+    /** `billboard`: the system and the sprite's stable id inside it. */
+    BillboardSpriteHandle billboard{};
+};
+
+/** One frame-range animation, field for field as the pin declares it. */
+struct SpriteFrameAnimation {
+    SpriteAnimationTarget target{};
+    double from = 0.0;
+    double to = 0.0;
+    double current = 0.0;
+    bool loop = false;
+    double delay_ms = 1.0;
+    double accumulated_ms = 0.0;
+    bool animation_started = true;
+    bool remove_when_finished = false;
+};
+
+/**
+ * A set of frame animations advanced in lockstep.
+ *
+ * `fixedDeltaMs` is the pin's own override: zero means the manager takes the
+ * caller's delta, which is what a seek loop of fixed steps relies on.
+ */
+struct SpriteAnimationManagerRecord {
+    std::vector<SpriteFrameAnimation> animations;
+    double fixed_delta_ms = 0.0;
+};
+
+struct SpriteAnimationManagerHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 struct EffectWrapperHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -1440,6 +1492,13 @@ struct Sprite2DLayerRecord {
     // by two floats per sprite and stashes the attribute the pipeline pushes.
     // A layer that never scrolls keeps the narrow layout and ships none of it.
     bool uv_scroll = false;
+    // sprite-2d-handle.ts: a stable id per sprite over a moving index, so a
+    // name a scene holds survives the swap a removal performs. Empty until
+    // the first `addSprite2D`, which is what keeps a layer that only ever
+    // indexes carrying none of it.
+    std::uint32_t next_sprite_id = 1;
+    std::unordered_map<std::uint32_t, std::uint32_t> sprite_id_to_index;
+    std::vector<std::uint32_t> sprite_index_to_id;
     // sprite-custom-shader.ts: a layer built with a descriptor draws the
     // composed program and binds the fx block beside its layer block. The
     // pin reaches both through a hook that is null until a descriptor
@@ -2429,6 +2488,8 @@ struct Engine {
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
+    /** The sprite frame-animation managers a scene created. */
+    std::vector<SpriteAnimationManagerRecord> sprite_animation_managers;
     std::vector<BillboardSystemRecord> billboard_systems;
     std::vector<SpriteRendererRecord> sprite_renderers;
     std::vector<SpriteRenderTextureRecord> sprite_render_textures;
@@ -3635,6 +3696,13 @@ void update_billboard_sprite(
     BillboardSpriteHandle handle,
     BillboardSpriteProps props);
 
+void set_billboard_sprite_frame(
+    Engine& engine,
+    BillboardSpriteHandle handle,
+    double frame);
+bool billboard_sprite_alive(
+    const Engine& engine,
+    BillboardSpriteHandle handle);
 void remove_billboard_sprite(
     Engine& engine,
     BillboardSpriteHandle handle);
@@ -3713,6 +3781,24 @@ void update_sprite_2d_index(
 void clear_sprite_2d_layer(
     Engine& engine,
     Sprite2DLayerHandle layer);
+/** The handle family: a stable id over the moving index above. */
+double add_sprite_2d(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    Sprite2DProps props);
+void set_sprite_2d_frame_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    double sprite_id,
+    double frame);
+void remove_sprite_2d_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    double sprite_id);
+bool sprite_2d_id_alive(
+    const Engine& engine,
+    Sprite2DLayerHandle layer,
+    double sprite_id);
 EffectWrapperHandle create_effect_wrapper(
     Engine& engine,
     std::uint32_t variant);

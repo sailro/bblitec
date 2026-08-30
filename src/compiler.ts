@@ -7129,6 +7129,8 @@ class Compiler
             stored.animationDuration =
                 `${cppName}.duration`;
         }
+        if (identifier.text === "seekTimeSeconds") {
+        }
         this.defineVariable(identifier, stored);
     }
 

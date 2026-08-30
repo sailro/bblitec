@@ -1169,6 +1169,32 @@ per-sprite instance writes, and the straight-alpha blend, on both GPU
 backends from one generated WGSL pair. The pinned renderer split and
 instance layout are in [fidelity](fidelity.md#shader-contract).
 
+A **frame animation** drives either family. `createSpriteAnimationManager`
+holds a set of ranges and `updateSpriteAnimationManager` advances all of
+them by one step, over a target the pin builds as a closure triple --
+`setFrame`, `remove`, `isAlive` -- and this port carries as a tagged handle,
+so the animation core stays ignorant of which family it drives and only the
+families a scene actually built are linked. The timing is a Babylon
+compatibility contract rather than an implementation detail: an EXACT delay
+does not step, each update advances at most one frame, and the accumulator
+keeps its remainder. Those statements are asserted against the pin's own
+source at generation, because getting one wrong shifts every animated sprite
+by a frame and nothing else would say so.
+
+`addSprite2D` is what names a sprite for one. It is the pin's stable id over
+a moving index, and the indirection is load-bearing: a removal swaps the last
+sprite into the freed slot, so an animation holding a raw index would drive
+whichever sprite the swap moved. `removeWhenFinished` is what performs such a
+removal, at the end of a non-looping range.
+
+Both reached scenes register at their own `?seekTime=` pose and drive the
+manager from a counted loop of fixed steps -- the pin's own parity spec does
+the same -- so `attachSpriteAnimationsToScene` and
+`attachSpriteAnimationsToRenderer`, which install the same stepper on a render
+loop, refuse by name. So do the manager's `fixedDeltaMs` and `onUpdate`
+options and an animation's `onEnd` callback, which would run scene code from
+inside the stepper.
+
 A sprite already added can be edited and a layer emptied.
 `updateSprite2DIndex` rewrites one slot from a `Partial<Sprite2DProps>`,
 every omitted field keeping the value already there, and
