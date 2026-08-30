@@ -8205,38 +8205,25 @@ class Compiler
         if (mesh) mesh.thinInstanceColors = true;
     }
 
-    /** The scene-local shader program a scene-code mesh was assigned. */
-    public recordSceneMeshShaderVariant(
-        meshIndex: number | undefined,
-        variantName: string,
-    ): void {
-        if (meshIndex === undefined) return;
-        const mesh = this.sceneMeshes[meshIndex];
-        if (mesh) mesh.shaderVariant = variantName;
-    }
-
     /**
      * Settles each scene-local shader program's instanced form.
      *
-     * The pin never asks the material: `shader-thin-instance.ts` reads the
-     * MESH -- `hasColor` is `!!ti.colors && material._tic != 0` -- and
-     * builds the instanced pipeline with the extra `VertexInput` lanes.
-     * A material is created before it is assigned and before the mesh gets
-     * its instances, so nothing at the `createShaderMaterial` call can know
-     * this; it is settled once, after the entry is compiled, from the pairs
-     * recorded on the way through.
+     * The pin builds the instanced pipeline from the MESH -- `hasColor` is
+     * `!!ti.colors && material._tic != 0`, and this port refuses the `_tic`
+     * key, so the mesh decides outright -- and it builds one pipeline per
+     * renderable, keyed `"" + +hasColor`. This port bakes one variant into
+     * the material record instead, so the lanes are settled once, after the
+     * entry, from the pairs recorded on the way through.
      */
     private settleShaderThinInstances(): void {
         for (const [variant, colors] of shaderThinInstanceLanes(
             this.sceneMeshes,
-            (message) => {
-                throw new Error(message);
-            },
+            (message) => this.failAtFile(message),
         )) {
-            const program = this.reachedShaderPrograms.find(
-                (candidate) => candidate.name === variant,
+            const program = this.reachedShaderProgram(
+                variant,
+                this.sourceFile,
             );
-            if (!program) continue;
             program.useThinInstances = true;
             if (colors) program.useThinInstanceColors = true;
         }
@@ -8249,6 +8236,7 @@ class Compiler
             pbrMaterial: number | null;
             nodeMaterial: number | null;
             standardMaterial: boolean;
+            sceneShaderVariant?: string | undefined;
         },
     ): void {
         this.sceneMeshMaterials.set(meshIndex, {
@@ -8258,6 +8246,10 @@ class Compiler
         if (material.standardMaterial) {
             const mesh = this.sceneMeshes[meshIndex];
             if (mesh) mesh.standardMaterial = true;
+        }
+        if (material.sceneShaderVariant !== undefined) {
+            const mesh = this.sceneMeshes[meshIndex];
+            if (mesh) mesh.shaderVariant = material.sceneShaderVariant;
         }
         if (material.pbrMaterial !== null) {
             const meshes = this.scenePbrMaterialMeshes.get(

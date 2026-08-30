@@ -260,6 +260,9 @@ export function compileShaderMaterialOptions(
     // takes the position the reach order gives it, which is what a name
     // generation cannot settle already took.
     const nameExpression = context.objectProperty(object, "name");
+    // An absent name has no node of its own, so the options object is what
+    // a refusal about the name points at.
+    const nameNode = nameExpression ?? object;
     const staticName = nameExpression
         ? context.compileValue(nameExpression).staticString
         : undefined;
@@ -272,7 +275,7 @@ export function compileShaderMaterialOptions(
         : `scene-shader-${context.reachedShaderPrograms.length}`;
     if (slug.length === 0) {
         context.fail(
-            nameExpression ?? object,
+            nameNode,
             "Scene-local shader material names must contain letters or digits.",
         );
     }
@@ -282,7 +285,7 @@ export function compileShaderMaterialOptions(
         )
     ) {
         context.fail(
-            nameExpression ?? object,
+            nameNode,
             `Shader material name '${slug}' collides with a predeclared variant.`,
         );
     }
@@ -810,41 +813,54 @@ function stringArraysEqual(left: string[], right: string[]): boolean {
  * Which scene-local shader programs draw instanced, and which of those also
  * read the per-instance colour stream.
  *
- * The pin decides this from the MESH: `shader-thin-instance.ts` reads
- * `mesh.thinInstances` for the matrix lanes and `!!ti.colors` for the colour
- * one, never the material. A program's lanes are declared in the prelude its
- * stage compiles against, so upstream a material drawn both ways is two
- * pipeline variants keyed `"" + +hasColor`. One emitted program cannot carry
- * both preludes, so that refuses rather than picking one.
+ * The pin builds one pipeline per renderable and keys it `"" + +hasColor`,
+ * where `hasColor` is `!!ti.colors && material._tic != 0` -- so both axes
+ * are the mesh's, `_tic` being an opt-out this port refuses. This port bakes
+ * one variant into the material record, which is why a material whose meshes
+ * disagree on either axis refuses rather than picking a side: the pin would
+ * compose two programs there. The line family shows the shape a
+ * generalization would take, naming each permutation (`-ti`, `-tic`) as its
+ * own variant; nothing reached needs it.
  */
 export function shaderThinInstanceLanes(
     meshes: readonly SceneMeshManifest[],
     fail: (message: string) => never,
 ): ReadonlyMap<string, boolean> {
-    const instanced = new Map<string, boolean>();
-    const plain = new Set<string>();
+    const lanes = new Map<string, boolean>();
+    const seen = new Map<string, SceneMeshManifest>();
     for (const mesh of meshes) {
         const variant = mesh.shaderVariant;
         if (variant === undefined) continue;
-        if (mesh.thinInstances === undefined) {
-            plain.add(variant);
+        if (mesh.thinInstances === "possible") {
+            fail(
+                `Shader material '${variant}' is on a mesh that may acquire ` +
+                    "thin instances from a frame callback; the instanced " +
+                    "lanes are declared in the prelude the stage compiles " +
+                    "against, so the form has to be settled before the draw " +
+                    "exists.",
+            );
+        }
+        const first = seen.get(variant);
+        if (first === undefined) {
+            seen.set(variant, mesh);
+            if (mesh.thinInstances !== undefined) {
+                lanes.set(variant, mesh.thinInstanceColors === true);
+            }
             continue;
         }
-        instanced.set(
-            variant,
-            (instanced.get(variant) ?? false) ||
-                mesh.thinInstanceColors === true,
-        );
-    }
-    for (const variant of instanced.keys()) {
-        if (plain.has(variant)) {
+        // Both axes decide the prelude, so both have to agree across the
+        // meshes one baked variant serves.
+        if (
+            first.thinInstances !== mesh.thinInstances ||
+            first.thinInstanceColors !== mesh.thinInstanceColors
+        ) {
             fail(
-                `Shader material '${variant}' is drawn both with and ` +
-                    "without thin instances; the instanced lanes are " +
-                    "declared in the prelude the stage compiles against, " +
-                    "so one program cannot serve both.",
+                `Shader material '${variant}' is drawn on meshes that ` +
+                    "disagree about thin instances; the lanes are declared " +
+                    "in the prelude the stage compiles against, so one " +
+                    "baked variant cannot serve both.",
             );
         }
     }
-    return instanced;
+    return lanes;
 }

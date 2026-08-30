@@ -18,7 +18,6 @@ import {
 import test from "node:test";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
-import { shaderThinInstanceLanes } from "../src/compiler/shader-material.js";
 
 /** A curated asset URL served from the pinned upstream tree; derived from
  *  the pin so a version bump does not churn these assertions. */
@@ -5430,70 +5429,67 @@ ${extra}
 test("names a scene-local shader material the reach order gives it", () => {
     // The pin's `name` is optional and it composes nothing from it, so a
     // scene that names nothing still gets a variant identity.
-    const result = compileSource(instancedShaderSource(""));
+    const [program] = compileSource(instancedShaderSource(""))
+        .manifest.customShaderPrograms;
 
-    assert.equal(
-        result.manifest.shaderVariants.includes("scene-shader-0"),
-        true,
-    );
+    assert.equal(program?.name, "scene-shader-0");
 });
 
 test("declares a shader material's instance lanes from the mesh", () => {
     // The pin reads the MESH for both lanes -- `mesh.thinInstances` for the
-    // matrices and `!!ti.colors` for the colour -- never the material, so a
-    // mesh carrying no colour stream declares only the four matrix lanes.
-    const lanes = shaderThinInstanceLanes(
-        [
-            { kind: "box", gltfAssetsBefore: 0, shaderVariant: "a",
-              thinInstances: "always" },
-            { kind: "box", gltfAssetsBefore: 0, shaderVariant: "b",
-              thinInstances: "always", thinInstanceColors: true },
-            { kind: "box", gltfAssetsBefore: 0, shaderVariant: "c" },
-        ],
-        (message) => {
-            throw new Error(message);
-        },
-    );
+    // matrices and `!!ti.colors` for the colour -- so a mesh carrying no
+    // colour stream declares only the four matrix lanes.
+    const [plain] = compileSource(instancedShaderSource(""))
+        .manifest.customShaderPrograms;
+    const [colored] = compileSource(
+        instancedShaderSource(
+            "        setThinInstanceColors(box, new Float32Array(4));",
+        ),
+    ).manifest.customShaderPrograms;
 
-    assert.equal(lanes.get("a"), false);
-    assert.equal(lanes.get("b"), true);
-    assert.equal(lanes.has("c"), false);
+    assert.equal(plain?.useThinInstances, true);
+    assert.equal(plain?.useThinInstanceColors, undefined);
+    assert.equal(colored?.useThinInstances, true);
+    assert.equal(colored?.useThinInstanceColors, true);
+});
+
+test("leaves a line material's own instanced form alone", () => {
+    // The line family settles both flags from its own options and names the
+    // permutation, so the mesh-driven settlement must not reach it.
+    const [program] = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createLineMaterial,
+            setThinInstances,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.material = createLineMaterial({
+                color: { r: 1, g: 0, b: 0, a: 1 },
+            });
+            setThinInstances(box, new Float32Array(16), 1);
+        }
+    `).manifest.customShaderPrograms;
+
+    assert.equal(program?.name, "line-material");
+    assert.equal(program?.useThinInstances, false);
 });
 
 test("refuses one shader material drawn both instanced and plain", () => {
     // The lanes are declared in the prelude the stage compiles against, so
-    // upstream this is two pipeline variants; one program cannot be both.
+    // upstream this is two pipelines; one baked variant cannot be both.
     assert.throws(
         () =>
-            compileSource(`
-                import {
-                    createBox,
-                    createEngine,
-                    createShaderMaterial,
-                    setThinInstances,
-                } from "@babylonjs/lite";
-
-                const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
-@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*vec4<f32>(input.position,1.0);return out;}\`;
-                const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
-@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
-
-                async function main() {
-                    const engine = await createEngine({});
-                    const material = createShaderMaterial({
-                        vertexSource,
-                        fragmentSource,
-                        attributes: ["position"],
-                        uniforms: ["viewProjection"],
-                    });
-                    const instanced = createBox(engine);
-                    instanced.material = material;
-                    setThinInstances(instanced, new Float32Array(16), 1);
-                    const plain = createBox(engine);
-                    plain.material = material;
-                }
-            `),
-        /drawn both with and without thin instances/,
+            compileSource(
+                instancedShaderSource(
+                    "        const plain = createBox(engine);\n" +
+                        "        plain.material = material;",
+                ),
+            ),
+        /disagree about thin instances/,
     );
 });
 

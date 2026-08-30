@@ -712,7 +712,13 @@ already bound for the transcribed `useThinInstanceColors` path and now bind
 for the composed variants too.
 
 **Where that lane sits is the pin's, and it is taken rather than
-restated.** `createThinInstanceFragment` declares each attribute's
+restated** -- for the Standard and PBR families, whose fragment declares it.
+The scene-local ShaderMaterial family is the exception: the pin appends its
+lanes at `material.attributes.length` in a prelude string, and this port
+declares them at the fixed 16-20 the line family already uses. Nothing
+observable rides the numbers, because the port synthesizes the whole
+`VertexInput` there rather than splicing the pin's prelude.
+`createThinInstanceFragment` declares each attribute's
 `_bufferGroup`, `_arrayStride`, `_stepMode` and `_offset` -- `ti-matrix` at
 stride 64 for the four world columns, `ti-color` at 16 for the RGBA lane --
 while the composed WGSL keeps only the location, the name and the type. So

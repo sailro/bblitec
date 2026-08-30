@@ -574,6 +574,7 @@ export function compileMaterialIntrinsic(
                 cpp: materialCpp,
                 engineCpp: engine,
                 shaderVariant: variant.name,
+                sceneShaderVariant: variant.name,
                 sceneMaterialSlot: materialSlot,
             };
         }

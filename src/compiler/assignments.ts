@@ -406,16 +406,13 @@ export function lightScalarSetter(
 export interface AssignmentContext extends DeterministicRandomContext {
   readonly checker: ts.TypeChecker;
   /** Which material a scene-code mesh was assigned, by its mesh index. */
-  recordSceneMeshShaderVariant(
-    meshIndex: number | undefined,
-    variantName: string,
-  ): void;
   recordSceneMeshMaterial(
     meshIndex: number,
     material: {
       pbrMaterial: number | null;
       nodeMaterial: number | null;
       standardMaterial: boolean;
+      sceneShaderVariant?: string | undefined;
     },
   ): void;
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
@@ -1282,15 +1279,6 @@ export function emitPropertyAssignment(
       if (material.standardMaterial) {
         target.standardMaterial = true;
       }
-      // Which scene-local shader program the mesh draws through. The pin
-      // reads the mesh, not the material, to decide the instanced form, so
-      // the pair has to be recorded before either can be settled.
-      if (material.shaderVariant !== undefined) {
-        context.recordSceneMeshShaderVariant(
-          target.sceneMeshIndex,
-          material.shaderVariant,
-        );
-      }
       // The pair the caster list resolves against. Upstream reads
       // `mesh.material` when the shadow pass builds, so a scene may
       // name its casters before assigning their materials -- which is
@@ -1301,6 +1289,9 @@ export function emitPropertyAssignment(
           pbrMaterial: material.scenePbrMaterialIndex ?? null,
           nodeMaterial: material.nodeMaterialIndex ?? null,
           standardMaterial: material.standardMaterial === true,
+          // Only a scene-local program: the other families that carry a
+          // variant settle their own instanced form from their options.
+          sceneShaderVariant: material.sceneShaderVariant,
         });
         if (material.assetPbrMaterial) {
           context.recordSceneMeshAssetPbrMaterial(target.sceneMeshIndex);
