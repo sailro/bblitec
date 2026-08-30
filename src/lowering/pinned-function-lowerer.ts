@@ -41,7 +41,8 @@ export interface PinnedFunctionParameter {
         | "mat4"
         | "matrix"
         | "mat4Const"
-        | "numberArray";
+        | "numberArray"
+        | "signChoice";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
      * where C++ forbids it (`near`/`far` are Windows macro names).
@@ -78,6 +79,16 @@ const parameterKinds: Readonly<
     numberArray: {
         annotation: "ArrayLike<number>",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
+    },
+    // A numeric-literal union standing for "one of these two numbers": the
+    // pin's `side: -1 | 1` on `projectedSphereEdge`, which narrows the
+    // parameter for its callers and is a plain number to the arithmetic. It
+    // is its own kind rather than `number` because the annotation is what
+    // gets checked, and accepting `number` here would accept a pin that
+    // widened the parameter.
+    signChoice: {
+        annotation: "-1 | 1",
+        declare: (cpp) => `double ${cpp}`,
     },
 };
 
