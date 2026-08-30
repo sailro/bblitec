@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-84 corpus scenes remain unregistered; measured scenes
+83 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -189,14 +189,12 @@ leading candidates at this pin:
 
 | Scenes | Contracts | What they are |
 | --- | ---: | --- |
-| 166 + 179 | 3 | `if (mesh.material)` truthiness; a closure-returning function (also blocks 20, 214, 215); the clustered-light subsystem |
+| 166 + 179 | 1 | the clustered-light subsystem. Measured by strip probe: with the clustered calls replaced by an ordinary point light, 179 compiles clean, so the closure-returning PRNG and the `if (mesh.material)` walk that once ranked beside it are both lowered |
 | 167 | 4 | the same truthiness; `uAng` on a `loadTexture2D` texture; `enablePbrLightmap`/`setPbrLightmap`; folding a runtime `scene.meshes` walk into a compile-time material selection |
 | 129 | — | `splat.name`, then `createGpuPicker`/`pickAsync` |
 
-`if (mesh.material)` is the shared contract across 166, 167 and 179; the hook
-is `Value.optionalFoundCpp`/`truthinessCpp`, which `compileBoolean` already
-consults. Families by distinct scenes their calls touch anywhere in a chain:
-the physics body/shape surface 7 (deferred), `createTransformNode` 6,
+Families by distinct scenes their calls touch anywhere in a chain:
+the physics body/shape surface 6 (deferred), `createTransformNode` 6,
 the navigation tile cache 4, `createUtilityLayer` 4 (deferred), the GPU picker
 3 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses by
 design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
@@ -249,7 +247,7 @@ and 173 still
 want is compiler contracts and the wrapper's tile-cache arm, not a new
 platform boundary.
 
-**Defer (27 scenes):** 41, 42, 44-49, 100-106, 153, 164, 180, 181,
+**Defer (26 scenes):** 41, 42, 44-49, 101-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
@@ -379,7 +377,9 @@ platform boundary.
   wants more besides: 18 the shadow family, 90 CSG and a canvas2D data URL
   built in the entry file, 272 `cloneTransformNode` and
   `createSolidTexture2D`.
-- [ ] Scene 20: lower an arrow function bound to a name and used as a value.
+- [ ] Scene 20: accept a `setPbrEmissive` colour the scene computes. Its
+  arrow-returning PRNG lowers, so what refuses now is the emissive setter's
+  static-colour requirement.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
@@ -602,8 +602,8 @@ platform boundary.
     several light-space passes per light, is where it stops being.
 - [ ] Scenes 66, 72, 214, 215, 271: what each still wants beside the
   shadow generator above — 66 morph deltas behind a gzip graph, 72 an NME
-  `blockLoader`, 214/215 the cascaded generator plus `createTorusKnot` and
-  mulberry32 closures, 271 `unregisterScene` and a frame yield.
+  `blockLoader`, 214/215 the cascaded generator plus `createTorusKnot` (their
+  mulberry32 closures lower), 271 `unregisterScene` and a frame yield.
 - [ ] Correct SDL_image's greyscale palette in the dependency rather than
   at the PAL boundary. A PNG with no `PLTE` of its own is expanded over a
   ramp SDL_image builds as `(i * 255) / ncolors` (`IMG_libpng.c`), where the
@@ -867,18 +867,18 @@ platform boundary.
 These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
-- [ ] Scenes 41-49, 100-106, 209: finish the physics lane. **Scene 40 is
-  integrated and published** -- the first corpus physics scene, frozen at
-  the pin's own `?captureFrame=120` and measured on both backends. What
-  remains is one capability per scene, and none of it is shared plumbing
-  any more.
+- [ ] Scenes 41-49, 101-106, 209: finish the physics lane. **Scenes 40 and
+  100 are integrated and published** -- 40 the sphere drop and 100 the same
+  drop with a registered collision event, both frozen at the pin's own
+  `?captureFrame=120` and measured on both backends. What remains is one
+  capability per scene, and none of it is shared plumbing any more.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
     an aggregate `radius`/`extents` (42, 45, and both want more besides --
     `cloneTransformNode` and `applyPhysicsBodyForce`);
     a Color3 shape (44); an unresolved variable (46);
     `createGroundFromHeightMap` (47); `createPhysicsBody` (48); a
-    four-argument call (49); `setPhysicsBodyCollisionEventsEnabled` (100);
+    four-argument call (49);
     `createPhysicsShape` (101, 102); a `new Map` with no concrete type
     arguments (103); an unsupported
     constructor expression (104, 105); `PhysicsMotionType` read as a value

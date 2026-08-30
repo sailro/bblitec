@@ -168,6 +168,7 @@ import {
 import {
     parameterIsReadOnly,
     resolveFunctionDeclaration,
+    rootIdentifier,
     type UserFunctionContext,
     UserFunctionLowerer,
 } from "./compiler/user-functions.js";
@@ -1920,20 +1921,10 @@ class Compiler
         const aliases = new Set<ts.Symbol>([initial]);
         const source = identifier.getSourceFile();
 
-        const rootIdentifier = (
-            expression: ts.Expression,
-        ): ts.Identifier | undefined => {
-            let current = this.unwrap(expression);
-            while (
-                ts.isPropertyAccessExpression(current) ||
-                ts.isElementAccessExpression(current)
-            ) {
-                current = this.unwrap(current.expression);
-            }
-            return ts.isIdentifier(current) ? current : undefined;
-        };
         const isAlias = (expression: ts.Expression): boolean => {
-            const root = rootIdentifier(expression);
+            const root = rootIdentifier(expression, (inner) =>
+                this.unwrap(inner),
+            );
             return (
                 root !== undefined &&
                 aliases.has(this.symbols.valueSymbol(root)!)
@@ -5710,7 +5701,10 @@ class Compiler
                 this.allocateTemporaryCppName("key_event");
             const lambda = this.compilePlatformCallback(
                 callback,
-                `[[maybe_unused]] const bbl::PlatformKeyboardEvent& ${parameter}`,
+                {
+                    cppType: "const bbl::PlatformKeyboardEvent&",
+                    name: parameter,
+                },
                 [
                     {
                         kind: "platform-keyboard-event",
@@ -5728,7 +5722,7 @@ class Compiler
         }
         if (target === "window" && event === "pointerdown") {
             this.emit(
-                `bbl::on_pointer_down(${engine}, ${this.compilePlatformCallback(callback, "", [], undefined, once)});`,
+                `bbl::on_pointer_down(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
             );
             return true;
         }
@@ -5743,7 +5737,10 @@ class Compiler
                 this.allocateTemporaryCppName("mouse_event");
             const lambda = this.compilePlatformCallback(
                 callback,
-                `[[maybe_unused]] const bbl::PlatformMouseEvent& ${parameter}`,
+                {
+                    cppType: "const bbl::PlatformMouseEvent&",
+                    name: parameter,
+                },
                 [
                     {
                         kind: "platform-mouse-event",
@@ -5766,7 +5763,7 @@ class Compiler
             const parameter =
                 this.allocateTemporaryCppName("document_hidden");
             this.emit(
-                `bbl::on_visibility_change(${engine}, ${this.compilePlatformCallback(callback, `bool ${parameter}`, [], parameter, once)});`,
+                `bbl::on_visibility_change(${engine}, ${this.compilePlatformCallback(callback, { cppType: "bool", name: parameter }, [], parameter, once)});`,
             );
             return true;
         }
@@ -5838,9 +5835,16 @@ class Compiler
         }
     }
 
+    /**
+     * A platform event callback, with the pin's own parameter announced
+     * unused: the signature belongs to the event, not to whether this
+     * scene's handler happens to read it. Rendered here rather than at each
+     * caller, because the one caller that spelled it by hand was the one that
+     * forgot the attribute.
+     */
     private compilePlatformCallback(
         callback: ts.Expression,
-        cppParameter: string,
+        parameter: { cppType: string; name: string } | undefined,
         values: readonly Value[],
         documentHiddenCpp?: string,
         once = false,
@@ -5906,6 +5910,9 @@ class Compiler
         const onceName = once
             ? this.allocateTemporaryCppName("event_once")
             : undefined;
+        const cppParameter = parameter
+            ? `[[maybe_unused]] ${parameter.cppType} ${parameter.name}`
+            : "";
         const prefix = onceName
             ? `            if (${onceName}) return;\n            ${onceName} = true;\n`
             : "";
@@ -6528,6 +6535,52 @@ class Compiler
         return value;
     }
 
+    /**
+     * The stronger guarantee: bind every leaf of a value, bare scalars
+     * included, so nothing emitted after this point can move it.
+     *
+     * **A lowering that emits statements while producing a value binds that
+     * value; it does not splice it.** `enumMapLiteral`
+     * (`src/compiler/data-lowering.ts`) states the same rule for the slots of a
+     * reordered `Record` literal, and the inlined-call return is the other
+     * place it has to hold: the caller decides which guarantee it needs by
+     * calling this or `materializeEscapingValue`, rather than either policy
+     * taking a mode flag.
+     *
+     * The leaf is deliberately not shared with `materializeRecordScalars`
+     * below. That one gives a record member a native home, so it emits a
+     * mutable local and folds a static value into a literal; this one refuses
+     * a folded value outright and emits `const`. One line each, and the
+     * difference is the contract rather than an accident.
+     */
+    public pinValueToTemporary(value: Value, label: string): Value {
+        if (value.kind === "record") {
+            return this.materializeRecordScalars(value, label, true);
+        }
+        if (value.kind === "tuple" && value.tupleElements) {
+            return {
+                ...value,
+                tupleElements: value.tupleElements.map((element, index) =>
+                    this.pinValueToTemporary(element, `${label}_${index}`),
+                ),
+            };
+        }
+        // A folded value is already a constant, so it is left alone -- and has
+        // to be, since its width belongs to the sink that consumes it
+        // ([fidelity](../docs/fidelity.md#numeric-width)).
+        const cppType =
+            value.kind === "number" && value.staticNumber === undefined
+                ? "double"
+                : value.kind === "boolean" &&
+                    value.staticBoolean === undefined
+                  ? "bool"
+                  : undefined;
+        if (!cppType) return value;
+        const cppName = this.allocateTemporaryCppName(label);
+        this.emit(`const ${cppType} ${cppName} = ${value.cpp};`);
+        return { ...value, cpp: cppName };
+    }
+
     /** Materialize scalar members when a compile-time record escapes. */
     private materializeRecordScalars(
         record: Value,
@@ -6714,8 +6767,13 @@ class Compiler
                     }
                 });
                 const indent = "    ".repeat(2);
+                // The signature is the pin's, so the parameter stays whether
+                // the body reads it or not -- scene 100's collision handler
+                // logs and writes a dataset flag, both of which erase, so it
+                // reads nothing at all. Announced unused unconditionally, as
+                // `compileFrameCallback` announces its delta.
                 emitted.push(
-                    `${indent}${deferred.cppName} = [&](const bbl::upstream::PhysicsCollisionInfo& ${event}) {`,
+                    `${indent}${deferred.cppName} = [&]([[maybe_unused]] const bbl::upstream::PhysicsCollisionInfo& ${event}) {`,
                     ...lines.map((line) => `    ${line}`),
                     `${indent}};`,
                 );

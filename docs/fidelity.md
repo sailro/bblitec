@@ -1664,9 +1664,13 @@ so a body's pose after N steps is a *different number* rather than a
 rounding of the same one, and the difference compounds with every bounce.
 It is recorded per scene as `substituted-physics-solver`, at `high` risk,
 and it means a physics scene's threshold can never be driven toward zero.
-Scene 40 carries one, measured just above the distance between the two
+Scenes 40 and 100 carry one, measured just above the distance between the two
 solvers: it gates this port's own solver against that distance rather than
-asserting agreement with the pinned one.
+asserting agreement with the pinned one. They are the same drop at the same
+`?captureFrame=120`, so their ceilings are the same measurement rather than
+two — what 100 adds is the collision surface
+(`setPhysicsBodyCollisionEventsEnabled` and an `onPhysicsCollision` handler)
+compiling, running and leaving the frame where 40 leaves it.
 
 **Why the substitution, and why at this seam.** `createHavokWorld(scene,
 hknp)` takes the solver module as a parameter and the pinned layer calls

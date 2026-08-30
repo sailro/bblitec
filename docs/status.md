@@ -26,11 +26,13 @@ A scene that does not reach zero carries a recorded adaptation: every
 generated scene writes a `fidelity.json` giving the source and native
 semantics side by side, with its risk and validation.
 
-**One row measures something else.** Scene 40 links a different rigid-body
-solver than the golden ran, so its number is the distance between two solvers
-at a moving pose, not the distance between this port and Babylon Lite, and no
-threshold on it can be driven to zero
-([fidelity](fidelity.md#physics-contract)).
+**Two rows measure something else.** Scenes 40 and 100 link a different
+rigid-body solver than the golden ran, so their number is the distance between
+two solvers at a moving pose, not the distance between this port and Babylon
+Lite, and no threshold on them can be driven to zero
+([fidelity](fidelity.md#physics-contract)). They are the same pose, and the
+two goldens are byte-identical, which is what makes 100's row a measurement of
+its collision event rather than a second copy of 40's.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -110,6 +112,7 @@ threshold on it can be driven to zero
 | 97 | <img src="images/scenes/scene97.png" alt="Scene 97 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the opt-in `spriteBlendMultiply` descriptor over a non-black clear, where the sprites darken and tint the background rather than covering it |
 | 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the opt-in `billboardBlendAdditive` descriptor: overlapping billboards stack and brighten instead of occluding, over depth-tested boxes |
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | opt-in bone control over a skinned glTF added entity by entity: `setBoneVisible` collapses a joint sub-tree to zero scale, and the eager bake recomposes the skin from the file's rest hierarchy with no animation running |
+| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | **Not a fidelity number,** for the reason above scene 40's row. Scene 40 plus a registered collision event: `setPhysicsBodyCollisionEventsEnabled` on the falling body and an `onPhysicsCollision` handler whose whole body erases. It is the same drop at the same pose, against a golden byte-identical to 40's, so what this row gates is the collision surface compiling and running -- the numbers beside it are 40's |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | render-target colour as a Standard diffuse texture, per-pass material override |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | no-color material views, depth targets |
 | 120 | <img src="images/scenes/scene120.png" alt="Scene 120 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | 345,217 Gaussian splats from a `.ply`: the pin's parser executed at generation, its covariance build and back-to-front counting sort folded from their own AST, and its EWA projection extracted from the bundled WGSL |
