@@ -192,6 +192,15 @@ blocks and `if`/`else` branches own
 nested symbol scopes and unique native names, so legal TypeScript shadowing
 does not leak or collide.
 
+An inlined call emits its body where the call sits and splices its returned
+expression at the use site, so the two are separated by whatever the caller
+emits between them. A call that both writes state outliving the frame — a
+captured binding, or one reached through a by-reference parameter — *and*
+returns an expression reading it therefore binds that value to a native local
+first: `set(rnd(), rnd(), rnd())` must read three states, not the last one
+three times. A return over the function's own locals needs no such snapshot,
+because the inline frame gives each call its own storage for them.
+
 The plain-data model keeps JavaScript container identity where it is observable:
 arrays, maps, sets, recursive records, and borrowed typed-array views retain
 shared or referenced native storage; composite function parameters use the same

@@ -18,6 +18,93 @@ export type SupportedFunction =
     | ts.ArrowFunction
     | ts.MethodDeclaration;
 
+/** The four declaration shapes this compiler inlines, as one narrowing. */
+export function isSupportedFunction(
+    node: ts.Node | undefined,
+): node is SupportedFunction {
+    return (
+        node !== undefined &&
+        (ts.isFunctionDeclaration(node) ||
+            ts.isFunctionExpression(node) ||
+            ts.isArrowFunction(node) ||
+            ts.isMethodDeclaration(node))
+    );
+}
+
+/** Strip the type-only and grouping wrappers around an expression. */
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+    let current = expression;
+    while (
+        ts.isParenthesizedExpression(current) ||
+        ts.isAsExpression(current) ||
+        ts.isTypeAssertionExpression(current) ||
+        ts.isNonNullExpression(current) ||
+        ts.isSatisfiesExpression(current)
+    ) {
+        current = current.expression;
+    }
+    return current;
+}
+
+/**
+ * The identifier a property/element-access chain is rooted at, if any.
+ *
+ * The unwrap has to run BETWEEN chain steps, not only once: `(a as X).b[i]`
+ * roots at `a`. Every mutation walk in this compiler depends on that, so the
+ * loop lives here once; `Compiler.inferredObjectIsMutated` passes its own
+ * `unwrap`, which additionally records the `await` expressions it stripped.
+ */
+export function rootIdentifier(
+    expression: ts.Expression,
+    unwrap: (expression: ts.Expression) => ts.Expression =
+        unwrapExpression,
+): ts.Identifier | undefined {
+    let current = unwrap(expression);
+    while (
+        ts.isPropertyAccessExpression(current) ||
+        ts.isElementAccessExpression(current)
+    ) {
+        current = unwrap(current.expression);
+    }
+    return ts.isIdentifier(current) ? current : undefined;
+}
+
+/**
+ * The three shapes that write through a target this walk is tracking: an
+ * assignment, an increment, and a method call that is not read-only.
+ *
+ * `parameterIsReadOnly` and `returnedValueCanMove` ask different questions of
+ * the root — "is it this parameter" and "does it outlive the call" — but they
+ * recognize a write the same way, and both consult `readOnlyDataMethods` to do
+ * it, so a family added there has to reach one place rather than two.
+ */
+function writesThroughRoot(
+    node: ts.Node,
+    isTarget: (expression: ts.Expression) => boolean,
+): boolean {
+    if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    ) {
+        return isTarget(node.left);
+    }
+    if (
+        (ts.isPrefixUnaryExpression(node) ||
+            ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+            node.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+        return isTarget(node.operand);
+    }
+    return (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        !readOnlyDataMethods.has(node.expression.name.text) &&
+        isTarget(node.expression.expression)
+    );
+}
+
 /** Conservatively determines whether a function leaves a parameter unchanged. */
 export function parameterIsReadOnly(
     checker: ts.TypeChecker,
@@ -30,19 +117,6 @@ export function parameterIsReadOnly(
     if (active.has(symbol)) return true;
     active.add(symbol);
     const aliases = new Set<ts.Symbol>([symbol]);
-    const unwrap = (expression: ts.Expression): ts.Expression => {
-        let current = expression;
-        while (
-            ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isTypeAssertionExpression(current) ||
-            ts.isNonNullExpression(current) ||
-            ts.isSatisfiesExpression(current)
-        ) {
-            current = current.expression;
-        }
-        return current;
-    };
     const namesParameter = (node: ts.Node): boolean =>
         ts.isIdentifier(node) &&
         aliases.has(checker.getSymbolAtLocation(node)!);
@@ -62,55 +136,17 @@ export function parameterIsReadOnly(
     const rootNamesParameter = (
         expression: ts.Expression,
     ): boolean => {
-        let current = unwrap(expression);
-        while (
-            ts.isPropertyAccessExpression(current) ||
-            ts.isElementAccessExpression(current)
-        ) {
-            current = unwrap(current.expression);
-        }
-        return namesParameter(current);
+        const root = rootIdentifier(expression);
+        return root !== undefined && namesParameter(root);
     };
     let readOnly = true;
     const visit = (node: ts.Node): void => {
         if (!readOnly) return;
-        if (
-            ts.isBinaryExpression(node) &&
-            node.operatorToken.kind >=
-                ts.SyntaxKind.FirstAssignment &&
-            node.operatorToken.kind <=
-                ts.SyntaxKind.LastAssignment &&
-            rootNamesParameter(node.left)
-        ) {
-            readOnly = false;
-            return;
-        }
-        if (
-            (ts.isPrefixUnaryExpression(node) ||
-                ts.isPostfixUnaryExpression(node)) &&
-            (node.operator === ts.SyntaxKind.PlusPlusToken ||
-                node.operator ===
-                    ts.SyntaxKind.MinusMinusToken) &&
-            rootNamesParameter(node.operand)
-        ) {
+        if (writesThroughRoot(node, rootNamesParameter)) {
             readOnly = false;
             return;
         }
         if (ts.isCallExpression(node)) {
-            if (
-                ts.isPropertyAccessExpression(
-                    node.expression,
-                ) &&
-                rootNamesParameter(
-                    node.expression.expression,
-                ) &&
-                !readOnlyDataMethods.has(
-                    node.expression.name.text,
-                )
-            ) {
-                readOnly = false;
-                return;
-            }
             const signature = checker.getResolvedSignature(node);
             const called = signature?.declaration;
             for (const [index, argument] of node.arguments.entries()) {
@@ -130,12 +166,7 @@ export function parameterIsReadOnly(
                 }
                 const calledParameter = called?.parameters[index];
                 if (
-                    !called ||
-                    !(
-                        ts.isFunctionDeclaration(called) ||
-                        ts.isFunctionExpression(called) ||
-                        ts.isArrowFunction(called)
-                    ) ||
+                    !isSupportedFunction(called) ||
                     !calledParameter ||
                     !ts.isIdentifier(calledParameter.name) ||
                     !parameterIsReadOnly(
@@ -181,6 +212,151 @@ export function parameterIsReadOnly(
     visit(declaration.body);
     active.delete(symbol);
     return readOnly;
+}
+
+/**
+ * The expression a supported function's own final `return` yields, if any.
+ *
+ * The one definition of "what this function returns": `irFor` reads it for the
+ * IR's `returnExpression` and the snapshot predicate reads it for the value it
+ * has to protect, so the two cannot drift apart.
+ */
+function finalReturnExpression(
+    declaration: SupportedFunction,
+): ts.Expression | undefined {
+    const body = declaration.body;
+    if (!body) return undefined;
+    if (!ts.isBlock(body)) return body;
+    const final = body.statements.at(-1);
+    return final && ts.isReturnStatement(final)
+        ? final.expression
+        : undefined;
+}
+
+/**
+ * Conservatively determines whether an inlined call's returned value can be
+ * moved by a later call in the same expression.
+ *
+ * The inline lowerer splices a call's returned expression at its use site while
+ * emitting the body's statements where the call was, so the two are separated:
+ * `set(next(), next(), next())` emits three counter advances and then reads the
+ * counter three times, and every component takes the LAST state. Two conditions
+ * have to hold together for that, and both are checked here, because either one
+ * alone covers most reached functions:
+ *
+ * - the returned expression READS state that outlives one call — a binding the
+ *   module declares above the function (what a returned closure keeps), or one
+ *   of its own parameters, which passes by native reference; and
+ * - the body WRITES such a binding.
+ *
+ * A return over the function's own locals is already snapshotted, because the
+ * inline frame gives each call its own native storage for them. That is the
+ * difference between the two PRNGs the corpus carries: mulberry32 returns an
+ * expression over its own `t`, while scene 179's `seededRandom` returns one
+ * over the captured `s`, and only the second needs the temporary.
+ *
+ * The read half is checked first: it walks one expression where the write half
+ * walks the whole body and every callee's body, and it answers false often
+ * enough to skip a fifth of those walks on doom and two thirds on racer.
+ */
+function returnedValueCanMove(
+    checker: ts.TypeChecker,
+    declaration: SupportedFunction,
+    active = new Set<SupportedFunction>(),
+): boolean {
+    const body = declaration.body;
+    const returnExpression = finalReturnExpression(declaration);
+    if (!body || !returnExpression) return false;
+    if (active.has(declaration)) return false;
+    // State that outlives one inline frame. A name from outside the module --
+    // `Math`, an imported intrinsic -- is not state this compiler can move at
+    // all, which is what keeps `Math.hypot(x, y)` from reading as a write.
+    const ownFile = declaration.getSourceFile();
+    const namesSharedBinding = (identifier: ts.Identifier): boolean => {
+        const declarations = checker.getSymbolAtLocation(identifier)
+            ?.declarations;
+        if (!declarations || declarations.length === 0) return false;
+        return declarations.some(
+            (node) =>
+                (ts.isVariableDeclaration(node) ||
+                    ts.isBindingElement(node) ||
+                    ts.isParameter(node)) &&
+                node.getSourceFile() === ownFile &&
+                ts.findAncestor(node, (n) => n === body) === undefined,
+        );
+    };
+    if (!readsSharedBinding(returnExpression, namesSharedBinding)) {
+        return false;
+    }
+    active.add(declaration);
+    try {
+        return writesSharedBinding(
+            checker,
+            body,
+            (expression) => {
+                const root = rootIdentifier(expression);
+                // A computed target this walk cannot resolve is assumed shared.
+                return !root || namesSharedBinding(root);
+            },
+            active,
+        );
+    } finally {
+        active.delete(declaration);
+    }
+}
+
+/** Whether an expression reads a binding `namesShared` recognizes. */
+function readsSharedBinding(
+    expression: ts.Expression,
+    namesShared: (identifier: ts.Identifier) => boolean,
+): boolean {
+    let reads = false;
+    const visit = (node: ts.Node): void => {
+        if (reads) return;
+        if (ts.isPropertyAccessExpression(node)) {
+            // Only the object side is a value read; the member name is not.
+            visit(node.expression);
+            return;
+        }
+        if (ts.isIdentifier(node)) {
+            if (namesShared(node)) reads = true;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(expression);
+    return reads;
+}
+
+/** Whether a function body writes through a root `isShared` recognizes. */
+function writesSharedBinding(
+    checker: ts.TypeChecker,
+    body: ts.Node,
+    isShared: (expression: ts.Expression) => boolean,
+    active: Set<SupportedFunction>,
+): boolean {
+    let writes = false;
+    const visit = (node: ts.Node): void => {
+        if (writes) return;
+        if (writesThroughRoot(node, isShared)) {
+            writes = true;
+            return;
+        }
+        if (ts.isCallExpression(node)) {
+            const called = checker.getResolvedSignature(node)
+                ?.declaration;
+            if (
+                isSupportedFunction(called) &&
+                returnedValueCanMove(checker, called, active)
+            ) {
+                writes = true;
+                return;
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(body);
+    return writes;
 }
 
 /**
@@ -297,6 +473,17 @@ export interface UserFunctionIr {
     needsWrapper: boolean;
     needsValueLambda: boolean;
     needsLocalNative: boolean;
+    /**
+     * The call's returned scalar must be pinned before the next call moves it.
+     *
+     * It rides the IR rather than being recomputed in `lower()` because
+     * `irFor` caches per declaration while `lower()` runs per call site: the
+     * walk behind it then runs once per function (measured: 356 walks for 356
+     * distinct declarations across the corpus) instead of once per call. A
+     * recursive group omits it -- those lower to real native functions whose
+     * return already lands in a local.
+     */
+    returnNeedsSnapshot?: boolean;
 }
 
 export interface UserFunctionContext {
@@ -322,6 +509,10 @@ export interface UserFunctionContext {
         value: Value,
     ): void;
     materializeEscapingValue(
+        value: Value,
+        label: string,
+    ): Value;
+    pinValueToTemporary(
         value: Value,
         label: string,
     ): Value;
@@ -1231,17 +1422,18 @@ export class UserFunctionLowerer {
                 context.decreaseIndent();
                 context.emit("} while (false);");
             }
-            return ir.returnExpression
-                ? {
-                      ...context.materializeEscapingValue(
-                          context.compileValue(
-                              ir.returnExpression,
-                          ),
-                          `return_${ir.name}`,
-                      ),
-                      requiresExplicitDiscard: true,
-                  }
-                : { kind: "void", cpp: "" };
+            if (!ir.returnExpression) return { kind: "void", cpp: "" };
+            const returned = context.compileValue(ir.returnExpression);
+            const label = `return_${ir.name}`;
+            return {
+                // A body that wrote state outliving the frame returns an
+                // expression OVER that state, so it is read here rather than
+                // at the use site, where the next call would have moved it.
+                ...(ir.returnNeedsSnapshot
+                    ? context.pinValueToTemporary(returned, label)
+                    : context.materializeEscapingValue(returned, label)),
+                requiresExplicitDiscard: true,
+            };
         } finally {
             context.popScope();
             this.active.delete(ir.declaration);
@@ -1306,6 +1498,10 @@ export class UserFunctionLowerer {
                 needsWrapper: false,
                 needsValueLambda: false,
                 needsLocalNative: false,
+                returnNeedsSnapshot: returnedValueCanMove(
+                    this.checker,
+                    declaration,
+                ),
                 returnExpression: body,
             };
             this.cache.set(declaration, conciseIr);
@@ -1355,6 +1551,10 @@ export class UserFunctionLowerer {
             needsWrapper,
             needsValueLambda,
             needsLocalNative,
+            returnNeedsSnapshot: returnedValueCanMove(
+                this.checker,
+                declaration,
+            ),
             ...(!needsValueLambda && finalReturn?.expression
                 ? {
                       returnExpression:

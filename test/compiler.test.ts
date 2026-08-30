@@ -1344,6 +1344,72 @@ test("materializes an inferred array before a runtime element read", () => {
     assert.equal((result.cpp.match(/bbl::js::random_js\(\)/g) ?? []).length, 1);
 });
 
+test("snapshots a returned value the next call in the same expression moves", () => {
+    // Scene 179's `seededRandom` shape: the returned arrow advances the state
+    // it closes over and returns an expression READING that state, so three
+    // draws in one argument list must not all read the final value.
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        function seededRandom(seed: number): () => number {
+            let s = seed >>> 0;
+            return () => {
+                s = (1664525 * s + 1013904223) >>> 0;
+                return s / 0x100000000;
+            };
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const rnd = seededRandom(7);
+            const box = createBox(engine);
+            box.position.set(rnd(), rnd(), rnd());
+        }
+    `);
+
+    const snapshots = [
+        ...result.cpp.matchAll(
+            /const double (v_bblite_return_\w+) = \(v_\w+_s \/ 4294967296\.0\);/g,
+        ),
+    ].map(([, name]) => name);
+    assert.equal(snapshots.length, 3);
+    assert.equal(new Set(snapshots).size, 3);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `position = bbl::Vec3d\\{${snapshots[0]!}, ${snapshots[1]!}, ${snapshots[2]!}\\}`,
+        ),
+    );
+});
+
+test("leaves a returned value its own locals already snapshot", () => {
+    // The corpus's other PRNG: mulberry32 advances `a` but returns an
+    // expression over `t`, a local the inline frame allocates per call, so the
+    // splice is already safe and no temporary is introduced.
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        function mulberry32(seed: number): () => number {
+            let a = seed >>> 0;
+            return () => {
+                a = (a + 0x6d2b79f5) | 0;
+                let t = Math.imul(a ^ (a >>> 15), 1 | a);
+                t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+            };
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const rand = mulberry32(1337);
+            const box = createBox(engine);
+            box.position.set(rand(), rand(), rand());
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /v_bblite_return_/);
+});
+
 test("rebinds a vector from a helper proven to return a fresh array", () => {
     const result = compileSource(`
         function clipped(input: number[]): number[] {

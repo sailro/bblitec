@@ -1534,6 +1534,39 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene100",
+        name: "Scene 100 - Havok Collision Event",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene100.ts",
+        title: "Babylon Lite Native - Physics Collision Event",
+        parity: {
+            // Scene 40 plus a registered collision event, and the pin's own
+            // spec (`tests/lite/parity/scenes/
+            // scene100-physics-collision.spec.ts`) says so: "the collision
+            // event is non-visual, so the captured frame is identical to
+            // scene 40". It serves the same `?captureFrame=120` and waits on
+            // the same `captureReady` flag. This row is what puts the
+            // collision surface -- `setPhysicsBodyCollisionEventsEnabled` and
+            // an `onPhysicsCollision` handler whose whole body erases -- under
+            // a corpus gate rather than only under Racer's.
+            referenceSearch: "?captureFrame=120",
+            // The golden is byte-identical to scene 40's, which is why the
+            // ceiling is: it is the same measurement, and the same
+            // solver-distance reasoning -- docs/fidelity.md#physics-contract.
+            // The file is kept separate rather than pointed at scene 40's
+            // because `parity --recapture-reference` writes through this path,
+            // and a shared one would let a scene 100 refresh overwrite scene
+            // 40's evidence. `reference/exact-corpus-manifest.json` records
+            // both digests, so the identity stays checked.
+            maxFullMad: 0.333,
+            maxForegroundMad: 0.778,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "130",
+            },
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",
