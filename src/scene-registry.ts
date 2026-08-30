@@ -2723,6 +2723,30 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene200",
+        name: "Scene 200 - High-Precision Matrix Off",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene200.ts",
+        title: "Babylon Lite Native - HPM Jitter",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene201",
+        name: "Scene 201 - High-Precision Matrix On",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene201.ts",
+        title: "Babylon Lite Native - HPM Jitter",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene202",
         name: "Scene 202 - Floating Origin Point Light",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene202.ts",

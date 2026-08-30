@@ -383,6 +383,30 @@ export class StaticEvaluator {
                 return value.cpp;
             }
         }
+        // `<boolean> === true`, which is how a shared module normalizes an
+        // optional flag its caller may have left out. Both sides are
+        // booleans, so JavaScript's identity comparison is C++'s -- and
+        // where both settle at generation the answer settles with them,
+        // which is what an option that DECIDES a lowering needs.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.ExclamationEqualsEqualsToken)
+        ) {
+            const negated =
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.ExclamationEqualsEqualsToken;
+            const left = this.compileBoolean(unwrapped.left);
+            const right = this.compileBoolean(unwrapped.right);
+            const settled = (value: string): boolean =>
+                value === "true" || value === "false";
+            if (settled(left) && settled(right)) {
+                return String((left === right) !== negated);
+            }
+            return `((${left}) ${negated ? "!=" : "=="} (${right}))`;
+        }
         this.fail(unwrapped, "Expected a boolean literal.");
     }
 

@@ -1941,7 +1941,68 @@ export class ExpressionLowerer {
         return conditional;
     }
 
+    /**
+     * `<async entry>(...).catch(<reporter>)`, which is how a scene with no
+     * local `main` ends.
+     *
+     * A scene that declares its own `main` never reaches this: the compiler
+     * takes that function's BODY as the program and the trailing
+     * `main().catch(console.error)` is dropped with the declaration. A scene
+     * whose entry is an imported async function has no such body to take, so
+     * the chain is the program -- and the `.catch` on it is the browser's
+     * unhandled-rejection reporting, which a native program does by
+     * aborting. So the promise call is compiled and the reporter is erased,
+     * exactly as the `main` form already erases its own.
+     *
+     * The handler must be browser-only for that to hold. One that touched
+     * Babylon state would be a recovery path, not a report, and falls
+     * through to the refusal below.
+     */
+    private compileSettledPromiseChain(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const callee = this.context.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "catch" ||
+            call.arguments.length !== 1
+        ) {
+            return undefined;
+        }
+        const promise = this.context.unwrap(callee.expression);
+        if (!ts.isCallExpression(promise)) {
+            return undefined;
+        }
+        const handler = this.context.unwrap(call.arguments[0]!);
+        const body =
+            ts.isArrowFunction(handler) || ts.isFunctionExpression(handler)
+                ? handler.body
+                : undefined;
+        const reports = body
+            ? ts.isBlock(body)
+                ? body.statements.every(
+                      (statement) =>
+                          ts.isExpressionStatement(statement) &&
+                          this.context.isBrowserOnlyExpression(
+                              statement.expression,
+                          ),
+                  )
+                : this.context.isBrowserOnlyExpression(body)
+            : this.context.isBrowserOnlyExpression(handler);
+        if (!reports) {
+            return undefined;
+        }
+        return this.context.compileValue(promise);
+    }
+
     private compileCall(call: ts.CallExpression): Value {
+        // Before any probe below, because several of them compile a
+        // property-access receiver to see what it is -- and this receiver
+        // is the program.
+        const settled = this.compileSettledPromiseChain(call);
+        if (settled) {
+            return settled;
+        }
         const platform = this.context.compilePlatformCall(call);
         if (platform) {
             return platform;
