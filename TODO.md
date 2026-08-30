@@ -248,19 +248,6 @@ platform boundary.
 **Defer (26 scenes):** 41, 42, 44-49, 101-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
 
-- [ ] Extend the clustered light field past what scenes 166 and 179 measure.
-  The shipped slice is a container built before it is added, binned every
-  frame against the live camera. Each remaining item fails by name:
-  `markClusteredLightContainerDirty` and every in-place edit behind it (no
-  reached scene mutates a light, so the pin's `snapshotLight` change scan is
-  not ported and the container version is not read); a light created after
-  `addClusteredLightContainer`, which the pin's own GPU state refuses to grow
-  for; and a second container on one scene, since the pin stores one on
-  `scene._clusteredLightContainer` and stamps every material present.
-  The dirty key is also this port's rather than the pin's four proxies: it
-  compares the two matrices the cull reads, because `CameraRecord` carries
-  neither a change counter nor a viewport. A scene giving its camera a
-  viewport would need `getEffectiveAspectRatio`'s other half.
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
   full and 0.28 foreground, identical on both backends. The composed fragment
   is byte-identical to the browser's and the pose is not a clock offset, so

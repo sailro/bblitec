@@ -827,6 +827,14 @@ not, nearly all of it in the per-tile inner loop — whose iteration order is
 the pin's, because the body is lowered from that declaration rather than
 written here.
 
+The dirty key is this port's rather than the pin's: upstream compares camera
+identity, a change counter, the target extent and the effective aspect — four
+proxies for one question, does this frame project lights into different tiles
+than the last did — and the two matrices the cull reads answer it directly.
+A scene giving its camera a viewport would need the other half of
+`getEffectiveAspectRatio`; none does, and the light half of that key folds
+away because nothing here can mutate a light after creating it.
+
 What refuses at generation, by name: `markClusteredLightContainerDirty` and
 the in-place edits behind it, a light created after the container was added
 (the pin bakes the light capacity and the point-versus-spot layout there and
