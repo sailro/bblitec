@@ -1957,6 +1957,23 @@ interface MaterialSlotRow {
  * the Standard bump and 2D reflection pairs, each appended after
  * everything before it so no existing slot index moves when one appears.
  */
+/**
+ * Group-1 textures a composed variant declares that no MATERIAL owns.
+ *
+ * The slot table below pairs a texture with a sampler and fills it from a
+ * material record field. The clustered light field's three are none of those:
+ * they belong to the container, they carry no sampler because the fragment
+ * `textureLoad`s them, and two are integer formats a sampler could not serve.
+ * Upstream binds them from the extension's own `bind` hook, which appends to
+ * group 1 after the material's own pairs, so each backend binds them from the
+ * container's GPU state at the same place.
+ */
+const sceneOwnedVariantTextures: ReadonlySet<string> = new Set([
+    "clusteredLights",
+    "clusteredCells",
+    "clusteredIndices",
+]);
+
 function materialTextureSlotRows(
     features: MaterialTextureSlotFeatures,
 ): { mesh: MaterialSlotRow[]; state: MaterialSlotRow[] } {
@@ -2218,7 +2235,8 @@ export function materialTextureSlotsHeader(
         ) {
             if (
                 binding.kind === "storageBuffer" ||
-                binding.kind === "uniformBuffer"
+                binding.kind === "uniformBuffer" ||
+                sceneOwnedVariantTextures.has(binding.name)
             ) {
                 continue;
             }

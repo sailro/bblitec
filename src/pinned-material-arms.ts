@@ -282,9 +282,36 @@ export function gltfLinearImageProcessing(document: JsonObject): boolean {
  * a copy of it — is what keeps a new animated pointer or loader flag from
  * silently unsyncing the gate from generation.
  */
+/**
+ * Stamps what `addClusteredLightContainer` stamps.
+ *
+ * The pin walks `scene.meshes` at that call and writes `_clusteredLightState`
+ * onto every material present, which is the only thing either clustered
+ * extension's `detect` reads. `_hasSpots` is set by the GPU state when the
+ * container held spot lights, and it decides WHICH extension takes the
+ * material: the point one answers `state && !state._hasSpots`, because the
+ * spot shader's stride-3 layout carries point lights too.
+ *
+ * Both reached scenes load their glTF before the call, so every material the
+ * asset carries is present for it.
+ */
+function stampClusteredLightState(
+    input: PinnedMaterialInput,
+    clustered: { hasSpots: boolean } | undefined,
+): void {
+    if (!clustered) return;
+    input["_clusteredLightState"] = clustered.hasSpots
+        ? { _hasSpots: true }
+        : {};
+}
+
 export async function materialSubjects(
     document: JsonObject,
-    scene: { linearImageProcessing?: boolean } = {},
+    scene: {
+        linearImageProcessing?: boolean;
+        /** The clustered light field the scene added, if it added one. */
+        clusteredLights?: { hasSpots: boolean };
+    } = {},
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
     // need: this is the one async choke point through which production
@@ -344,6 +371,7 @@ export async function materialSubjects(
                 metallicReflectanceRegistered = true;
             },
         });
+        stampClusteredLightState(input, scene.clusteredLights);
         const drawn = primitiveOf.get(index);
         subjects.push({
             index,
@@ -371,6 +399,7 @@ export async function materialSubjects(
             animatedEmissive: false,
             animatedUvTransform: false,
         });
+        stampClusteredLightState(input, scene.clusteredLights);
         subjects.push({
             index: materials.length,
             name: "default material",
@@ -393,7 +422,10 @@ export async function materialSubjects(
  */
 export async function composeGltfMaterials(
     path: string,
-    scene: { linearImageProcessing?: boolean } = {},
+    scene: {
+        linearImageProcessing?: boolean;
+        clusteredLights?: { hasSpots: boolean };
+    } = {},
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbView(path);
     if (!document) return [];
@@ -577,6 +609,8 @@ export async function composeRenderableVariants(
     materialIndexBase = 0,
     scene: {
         linearImageProcessing?: boolean;
+        /** The clustered light field the scene added, if it added one. */
+        clusteredLights?: { hasSpots: boolean };
         /** The `KHR_materials_variants` this scene selected on the asset. */
         selectedVariant?: string;
         /** Compose a caster view keyed by the source material handle. */

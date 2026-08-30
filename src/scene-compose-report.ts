@@ -325,7 +325,20 @@ async function reportScene(
     let matched = 0;
     let gaps = 0;
     const subjectRows: ComposeSubjectRow[] = [];
-    for (const { index, name, input, uv2Mask, meshFeatures } of subjects) {
+    // A third scene-owned fact this tool cannot derive from the asset,
+    // swept for the same reason the light mode and the tone mapping are:
+    // `addClusteredLightContainer` stamps `_clusteredLightState` onto every
+    // material present, and whether the container held a spot decides which
+    // extension takes it. Only swept when the capture shows a clustered
+    // fragment, so no other scene composes three inputs per candidate.
+    const clusteredArms: readonly (Record<string, unknown> | undefined)[] =
+        [...captured.values()].some((body) =>
+                body.includes("clusteredLightParams")
+            )
+            ? [undefined, {}, { _hasSpots: true }]
+            : [undefined];
+    for (const { index, name, input: baseInput, uv2Mask, meshFeatures }
+        of subjects) {
         const material = materials[index]!;
 
         let hit: { file: string; label: string } | undefined;
@@ -334,7 +347,11 @@ async function reportScene(
         let closest = -1;
         let composable = false;
         let refusal: unknown;
-        for (const candidate of candidates) {
+        for (const candidate of candidates)
+        for (const clustered of clusteredArms) {
+            const input = clustered === undefined
+                ? baseInput
+                : { ...baseInput, _clusteredLightState: clustered };
             // An arm this material cannot compose UNDER is not an answer to
             // the question the sweep asks, and it is not a finding either:
             // the pin's own `refraction` fragment declares a dependency on

@@ -118,6 +118,16 @@ export interface CompileManifest {
   /** A runtime handle collection may mark imported or otherwise dynamic
    *  meshes as receivers, so composition must retain both receiver states. */
   dynamicShadowReceivers: boolean;
+  /**
+   * The clustered light field this scene added, if it added one.
+   *
+   * `addClusteredLightContainer` stamps `_clusteredLightState` onto every
+   * material present, which is what each clustered extension's `detect`
+   * reads -- so composition needs to know the scene reached it, and whether
+   * a spot was ever created, since that decides which of the two extensions
+   * takes the material and with it the data layout the fragment reads.
+   */
+  clusteredLights?: { hasSpots: boolean };
 }
 
 /**

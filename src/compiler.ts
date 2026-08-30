@@ -604,6 +604,14 @@ class Compiler
                 sceneLightKinds: this.sceneLightKinds,
                 dynamicSceneLights: this.dynamicSceneLights,
                 mutableToneMappingEnabled: this.mutableToneMappingEnabled,
+                ...(this.clusteredContainer
+                    ? {
+                          clusteredLights: {
+                              hasSpots:
+                                  this.clusteredContainer.hasSpots,
+                          },
+                      }
+                    : {}),
                 shadowGenerators: this.shadowGenerators.map((generator) => ({
                     ...generator,
                     // The caster's material as the mesh finally carried it,
