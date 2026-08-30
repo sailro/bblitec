@@ -38,6 +38,7 @@ import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import type { DataType } from "./data-types.js";
 import { requireGroupSource } from "./intrinsics/animation.js";
+import { resolveFunctionDeclaration } from "./user-functions.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -65,6 +66,13 @@ export interface HandleCollectionTarget {
     elementKind: ValueKind;
     elementCppType: string;
     engineCpp: string;
+    /**
+     * The loaded container the members belong to, for a collection read off
+     * one. A member carries it so a setter reaching the whole collection can
+     * name the document whose materials generation must compose — which a
+     * runtime handle alone never says.
+     */
+    asset?: CompileAsset;
 }
 
 /** What emitting a loop over one of those collections needs. */
@@ -109,6 +117,7 @@ export function emitHandleCollectionLoop<
             kind: target.elementKind,
             cpp: item,
             engineCpp: target.engineCpp,
+            ...(target.asset ? { asset: target.asset } : {}),
         });
         emitBody(context);
     } finally {
@@ -367,10 +376,67 @@ export class HandleCollections {
                 elementKind: info.elementKind,
                 elementCppType: info.elementCppType,
                 engineCpp: info.engineCpp,
+                ...(info.asset ? { asset: info.asset } : {}),
             };
         }
         return this.resolveExpressionTarget(expression)
             ?.target;
+    }
+
+    /**
+     * `<walk>(container)` where `<walk>` is proven to be the pin's own
+     * container flatten, as the asset's mesh collection.
+     *
+     * The pin exports that walk as `getContainerMeshes`, and a scene that
+     * writes its own copy is asking for the same list. Answering with the
+     * asset's materialized meshes is what keeps the entity hierarchy —
+     * which native loading resolves away rather than allocating handles for
+     * — out of the lowering. Without this the call inlines, and its body
+     * refuses at `container.entities`, naming a tree that does not exist.
+     */
+    public assetFlattenedMeshesIterationTarget(
+        expression: ts.Expression,
+    ): HandleCollectionTarget | undefined {
+        const call = this.context.unwrap(expression);
+        if (
+            !ts.isCallExpression(call) ||
+            call.arguments.length !== 1 ||
+            !ts.isIdentifier(call.expression)
+        ) {
+            return undefined;
+        }
+        const declaration = resolveFunctionDeclaration(
+            this.context.checker,
+            call.expression,
+            (node, message) => this.context.fail(node, message),
+        );
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !isImportedMeshFlattenWalk(declaration)
+        ) {
+            return undefined;
+        }
+        const owner = this.context.compileValue(
+            call.arguments[0]!,
+        );
+        if (owner.kind !== "asset") {
+            return undefined;
+        }
+        const collection = this.assetMeshCollection(owner, call)
+            .handleCollection;
+        if (!collection) {
+            return undefined;
+        }
+        return {
+            property: collection.property,
+            temporaryLabel: collection.temporaryLabel,
+            containerCpp: collection.containerCpp,
+            elementKind: collection.elementKind,
+            elementCppType: collection.elementCppType,
+            engineCpp: collection.engineCpp,
+            ...(collection.asset ? { asset: collection.asset } : {}),
+        };
     }
 
     /** `getContainerMeshes(container)` as the asset's flattened mesh list. */
@@ -1757,4 +1823,299 @@ export function isRecursiveImportedMeshWalk(
         return undefined;
     }
     return assignment;
+}
+
+/** Whether an expression is the read `<name>.<property>`. */
+function isPropertyReadOf(
+    expression: ts.Expression,
+    name: ts.Identifier,
+    property: string,
+): boolean {
+    const current = unwrapWalkExpression(expression);
+    if (
+        !ts.isPropertyAccessExpression(current) ||
+        current.name.text !== property
+    ) {
+        return false;
+    }
+    const owner = unwrapWalkExpression(current.expression);
+    return ts.isIdentifier(owner) && owner.text === name.text;
+}
+
+/** A `const <name> = <initializer>;` statement, as its two halves. */
+function singleConstDeclaration(
+    statement: ts.Statement,
+):
+    | { name: ts.Identifier; initializer: ts.Expression }
+    | undefined {
+    if (
+        !ts.isVariableStatement(statement) ||
+        statement.declarationList.declarations.length !== 1
+    ) {
+        return undefined;
+    }
+    const declaration =
+        statement.declarationList.declarations[0]!;
+    return ts.isIdentifier(declaration.name) &&
+        declaration.initializer
+        ? {
+              name: declaration.name,
+              initializer: declaration.initializer,
+          }
+        : undefined;
+}
+
+/**
+ * The single argument of `<collection>.push(...)`, when the call spreads
+ * or does not spread it as asked.
+ */
+function pushedArgument(
+    expression: ts.Expression | undefined,
+    collection: ts.Identifier,
+    spread: boolean,
+): ts.Expression | undefined {
+    const current =
+        expression && unwrapWalkExpression(expression);
+    if (
+        !current ||
+        !ts.isCallExpression(current) ||
+        current.arguments.length !== 1 ||
+        !isPropertyReadOf(current.expression, collection, "push")
+    ) {
+        return undefined;
+    }
+    const argument = current.arguments[0]!;
+    if (ts.isSpreadElement(argument) !== spread) {
+        return undefined;
+    }
+    return unwrapWalkExpression(
+        ts.isSpreadElement(argument)
+            ? argument.expression
+            : argument,
+    );
+}
+
+/** The `if (<test>) <body>` one walk arm is, with no `else`. */
+function guardedArm(
+    statement: ts.Statement,
+): { test: ts.Expression; body: ts.Statement } | undefined {
+    return ts.isIfStatement(statement) && !statement.elseStatement
+        ? {
+              test: statement.expression,
+              body: statement.thenStatement,
+          }
+        : undefined;
+}
+
+/** Whether a statement is `continue;`, block-wrapped or bare. */
+function isContinueArm(statement: ts.Statement): boolean {
+    return ts.isBlock(statement)
+        ? statement.statements.length === 1 &&
+              ts.isContinueStatement(statement.statements[0]!)
+        : ts.isContinueStatement(statement);
+}
+
+/**
+ * `<node>.children?.length`, the descent guard the walk tests. The `?.`
+ * binds to the `length` read, not to `children`, so the optional token
+ * sits on the outer access and the inner one is a plain read.
+ */
+function isOptionalChildrenLength(
+    expression: ts.Expression,
+    node: ts.Identifier,
+): boolean {
+    const current = unwrapWalkExpression(expression);
+    if (
+        !ts.isPropertyAccessExpression(current) ||
+        current.name.text !== "length" ||
+        !current.questionDotToken
+    ) {
+        return false;
+    }
+    return isPropertyReadOf(current.expression, node, "children");
+}
+
+/**
+ * Proves the worklist spelling of the pin's own `getContainerMeshes`: a
+ * stack seeded from the container's entities, an arm collecting the nodes
+ * that carry renderable fields, and an arm pushing their children.
+ *
+ * The pin exports that flatten, and the generated loader has already
+ * performed it into `AssetRecord::meshes`. What this proves is therefore
+ * not the walk's ORDER — a worklist pops from the end, so it reaches
+ * siblings in reverse, which is not the loader's document order — but its
+ * SET: every node reachable from the container's entities whose renderable
+ * fields are present. As for the recursive visitor above, the flat order
+ * need not claim to be the hierarchy's, because the `for...of` consuming
+ * the result acts on each mesh independently.
+ *
+ * Returns the container parameter the proven walk flattens.
+ */
+export function isImportedMeshFlattenWalk(
+    declaration: ts.FunctionDeclaration,
+): ts.Identifier | undefined {
+    if (
+        !declaration.body ||
+        declaration.parameters.length !== 1 ||
+        !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        declaration.body.statements.length !== 4
+    ) {
+        return undefined;
+    }
+    const container = declaration.parameters[0]!
+        .name as ts.Identifier;
+    const [collected, worklist, loop, returned] =
+        declaration.body.statements;
+
+    // `const meshes: Mesh[] = []` — the result, empty before the walk.
+    const out = singleConstDeclaration(collected!);
+    const empty = out && unwrapWalkExpression(out.initializer);
+    if (
+        !out ||
+        !empty ||
+        !ts.isArrayLiteralExpression(empty) ||
+        empty.elements.length !== 0
+    ) {
+        return undefined;
+    }
+
+    // `const stack = [...container.entities]` — seeded from every root, so
+    // the walk covers the whole container and not one entity's subtree.
+    const stack = singleConstDeclaration(worklist!);
+    const seed = stack && unwrapWalkExpression(stack.initializer);
+    if (
+        !stack ||
+        !seed ||
+        !ts.isArrayLiteralExpression(seed) ||
+        seed.elements.length !== 1 ||
+        !ts.isSpreadElement(seed.elements[0]!) ||
+        !isPropertyReadOf(
+            seed.elements[0]!.expression,
+            container,
+            "entities",
+        )
+    ) {
+        return undefined;
+    }
+
+    // `while (stack.length > 0)` — drained, so no reachable node is left.
+    if (!ts.isWhileStatement(loop!)) {
+        return undefined;
+    }
+    const test = unwrapWalkExpression(loop.expression);
+    const bound =
+        ts.isBinaryExpression(test) &&
+        unwrapWalkExpression(test.right);
+    if (
+        !ts.isBinaryExpression(test) ||
+        test.operatorToken.kind !== ts.SyntaxKind.GreaterThanToken ||
+        !isPropertyReadOf(test.left, stack.name, "length") ||
+        !bound ||
+        !ts.isNumericLiteral(bound) ||
+        bound.text !== "0"
+    ) {
+        return undefined;
+    }
+
+    // `return meshes` — the collected list, unfiltered and unsorted.
+    const result =
+        ts.isReturnStatement(returned!) &&
+        returned.expression &&
+        unwrapWalkExpression(returned.expression);
+    if (
+        !result ||
+        !ts.isIdentifier(result) ||
+        result.text !== out.name.text
+    ) {
+        return undefined;
+    }
+
+    const body = walkBodyStatements(loop);
+    if (body.length !== 4) {
+        return undefined;
+    }
+
+    // `const node = stack.pop()` — the worklist is consumed, never re-read.
+    const popped = singleConstDeclaration(body[0]!);
+    const pop = popped && unwrapWalkExpression(popped.initializer);
+    if (
+        !popped ||
+        !pop ||
+        !ts.isCallExpression(pop) ||
+        pop.arguments.length !== 0 ||
+        !isPropertyReadOf(pop.expression, stack.name, "pop")
+    ) {
+        return undefined;
+    }
+    const node = popped.name;
+
+    // `if (!node) { continue; }` — the hole a `pop()` past the end would
+    // yield, skipped rather than collected.
+    const emptyArm = guardedArm(body[1]!);
+    const emptyTest =
+        emptyArm && unwrapWalkExpression(emptyArm.test);
+    const emptyOperand =
+        emptyTest &&
+        ts.isPrefixUnaryExpression(emptyTest) &&
+        unwrapWalkExpression(emptyTest.operand);
+    if (
+        !emptyArm ||
+        !emptyTest ||
+        !ts.isPrefixUnaryExpression(emptyTest) ||
+        emptyTest.operator !== ts.SyntaxKind.ExclamationToken ||
+        !emptyOperand ||
+        !ts.isIdentifier(emptyOperand) ||
+        emptyOperand.text !== node.text ||
+        !isContinueArm(emptyArm.body)
+    ) {
+        return undefined;
+    }
+
+    // `if ("_gpu" in node && "material" in node) meshes.push(node)` — the
+    // renderable test. A loaded mesh carries both fields and a transform
+    // node carries neither, so this selects the loader's mesh records.
+    const collectArm = guardedArm(body[2]!);
+    if (!collectArm) {
+        return undefined;
+    }
+    const probes = logicalAndOperands(collectArm.test);
+    const collected_ = pushedArgument(
+        singleExpressionStatement(collectArm.body),
+        out.name,
+        false,
+    );
+    if (
+        probes.length !== 2 ||
+        !probes.some((probe) =>
+            isPropertyPresenceProbe(probe, node, "_gpu"),
+        ) ||
+        !probes.some((probe) =>
+            isPropertyPresenceProbe(probe, node, "material"),
+        ) ||
+        !collected_ ||
+        !ts.isIdentifier(collected_) ||
+        collected_.text !== node.text
+    ) {
+        return undefined;
+    }
+
+    // `if (node.children?.length) stack.push(...node.children)` — the
+    // descent, through the same property the pin's visitor recurses.
+    const descendArm = guardedArm(body[3]!);
+    const descend =
+        descendArm &&
+        pushedArgument(
+            singleExpressionStatement(descendArm.body),
+            stack.name,
+            true,
+        );
+    if (
+        !descendArm ||
+        !isOptionalChildrenLength(descendArm.test, node) ||
+        !descend ||
+        !isPropertyReadOf(descend, node, "children")
+    ) {
+        return undefined;
+    }
+    return container;
 }

@@ -493,9 +493,18 @@ export async function composeScenePipeline({
     for (const [assetIndex, asset] of gltfAssets.entries()) {
         const materialIndexBase = assetMaterialBases[assetIndex]!;
         const path = resolve(outputPath, "assets", asset.output);
+        // The scene facts every material sees, plus the ones this container
+        // alone carries: `setPbrUnlit` over its own flattened mesh list is
+        // the container's, not the scene's, so it travels with the asset.
+        const assetComposeOptions = {
+            ...sceneComposeOptions,
+            ...(asset.sceneUnlit
+                ? { sceneUnlit: asset.sceneUnlit }
+                : {}),
+        };
         const composed = await composeGltfMaterials(
             path,
-            sceneComposeOptions,
+            assetComposeOptions,
         );
         assetMetallicReflectanceRegistered ||= composed.some(
             (material) => material.metallicReflectanceRegistered,
@@ -506,7 +515,7 @@ export async function composeScenePipeline({
             sceneArms,
             materialIndexBase,
             {
-                ...sceneComposeOptions,
+                ...assetComposeOptions,
                 ...(asset.selectedVariant
                     ? { selectedVariant: asset.selectedVariant }
                     : {}),
@@ -539,7 +548,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        ...sceneComposeOptions,
+                        ...assetComposeOptions,
                         ...(asset.selectedVariant
                             ? { selectedVariant: asset.selectedVariant }
                             : {}),
@@ -556,7 +565,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        ...sceneComposeOptions,
+                        ...assetComposeOptions,
                         ...(asset.selectedVariant
                             ? { selectedVariant: asset.selectedVariant }
                             : {}),

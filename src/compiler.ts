@@ -5977,6 +5977,14 @@ class Compiler
     }
 
     /** An imported root's flattened descendants — the concept's walk target. */
+    public assetFlattenedMeshesIterationTarget(
+        expression: ts.Expression,
+    ): HandleCollectionTarget | undefined {
+        return this.handleCollections.assetFlattenedMeshesIterationTarget(
+            expression,
+        );
+    }
+
     public assetRootChildrenIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined {
@@ -6088,6 +6096,43 @@ class Compiler
             );
         }
         asset.selectedVariant = variantName;
+    }
+
+    /**
+     * Records the `setPbrUnlit` a scene applied to a loaded container's
+     * materials.
+     *
+     * The pin's setter flags the material object, and its extension's
+     * `detect` reads that flag when the variant is composed — so for a
+     * loaded material the flag has to reach generation, not just the
+     * record. It is kept on the container because the reached shape is a
+     * walk over every renderable it carries; a single loaded material has
+     * no compile-time identity a setter could name.
+     */
+    public recordAssetSceneUnlit(
+        asset: CompileAsset,
+        tint: readonly [number, number, number] | undefined,
+        node: ts.Node,
+    ): void {
+        const existing = asset.sceneUnlit;
+        const same =
+            !existing ||
+            (existing.tint === undefined && tint === undefined) ||
+            (existing.tint !== undefined &&
+                tint !== undefined &&
+                existing.tint.every(
+                    (channel, lane) => channel === tint[lane],
+                ));
+        if (!same) {
+            this.fail(
+                node,
+                "setPbrUnlit already tinted this container's materials " +
+                    "differently; generation composes one unlit arm per " +
+                    "document, so a second tint would need the tint to be a " +
+                    "per-material record read.",
+            );
+        }
+        asset.sceneUnlit = tint ? { tint } : {};
     }
 
     public resolveBundledAsset(source: string): string {

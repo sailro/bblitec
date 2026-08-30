@@ -754,6 +754,17 @@ export interface CompileAsset {
    * carrying the pin's run-time variant table.
    */
   selectedVariant?: string;
+  /**
+   * The `setPbrUnlit` a scene applied to this container's own materials,
+   * with the optional linear-RGB tint it passed.
+   *
+   * A loaded material has no scene-side record to stamp, so the fact is
+   * kept on the container: generation composes its materials from the
+   * document, and the unlit fragment is chosen there. The setter is
+   * accepted only over the container's whole flattened mesh list, which is
+   * what makes the fact the container's rather than one material's.
+   */
+  sceneUnlit?: { tint?: readonly [number, number, number] };
 }
 
 export type GeometryTextureTypeName =

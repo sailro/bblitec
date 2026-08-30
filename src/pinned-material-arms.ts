@@ -298,6 +298,30 @@ function stampClusteredLightState(
 }
 
 /**
+ * Stamps what a scene-code `setPbrUnlit` over a container's meshes stamps.
+ *
+ * The pin's setter writes `_unlit` on the material object and the unlit
+ * extension's `detect` reads exactly that, so a material a scene marked
+ * after loading composes the same arm the loader's `KHR_materials_unlit`
+ * would have. The tint follows only when the call supplied one, because the
+ * pin guards its store the same way and the writer's `?? [1, 1, 1]` is what
+ * an unsupplied tint means.
+ *
+ * The fact is the container's: the setter is accepted only over its whole
+ * flattened mesh list, so every material a renderable carries is stamped.
+ */
+function stampSceneUnlit(
+    input: PinnedMaterialInput,
+    unlit: { tint?: readonly [number, number, number] } | undefined,
+): void {
+    if (!unlit) return;
+    input["_unlit"] = true;
+    if (unlit.tint) {
+        input["_unlitColor"] = [...unlit.tint];
+    }
+}
+
+/**
  * The composer's material-shaped input for every material in a document.
  *
  * Shared by the arms scan, the variant space and the compose gate so all
@@ -313,6 +337,9 @@ export async function materialSubjects(
         linearImageProcessing?: boolean;
         /** The clustered light field the scene added, if it added one. */
         clusteredLights?: { hasSpots: boolean };
+        /** The `setPbrUnlit` this scene applied to the container's own
+         *  materials, with the tint it passed. */
+        sceneUnlit?: { tint?: readonly [number, number, number] };
     } = {},
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
@@ -374,6 +401,7 @@ export async function materialSubjects(
             },
         });
         stampClusteredLightState(input, scene.clusteredLights);
+        stampSceneUnlit(input, scene.sceneUnlit);
         const drawn = primitiveOf.get(index);
         subjects.push({
             index,
@@ -402,6 +430,7 @@ export async function materialSubjects(
             animatedUvTransform: false,
         });
         stampClusteredLightState(input, scene.clusteredLights);
+        stampSceneUnlit(input, scene.sceneUnlit);
         subjects.push({
             index: materials.length,
             name: "default material",
@@ -427,6 +456,7 @@ export async function composeGltfMaterials(
     scene: {
         linearImageProcessing?: boolean;
         clusteredLights?: { hasSpots: boolean };
+        sceneUnlit?: { tint?: readonly [number, number, number] };
     } = {},
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbView(path);
@@ -613,6 +643,9 @@ export async function composeRenderableVariants(
         linearImageProcessing?: boolean;
         /** The clustered light field the scene added, if it added one. */
         clusteredLights?: { hasSpots: boolean };
+        /** The `setPbrUnlit` this scene applied to the container's own
+         *  materials, with the tint it passed. */
+        sceneUnlit?: { tint?: readonly [number, number, number] };
         /** The `KHR_materials_variants` this scene selected on the asset. */
         selectedVariant?: string;
         /** Compose a caster view keyed by the source material handle. */

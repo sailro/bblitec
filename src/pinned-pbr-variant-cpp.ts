@@ -278,12 +278,13 @@ const extensionWriters: ReadonlyArray<{
         baseField: "unlitColor",
         propertySources: {
             _unlit: "material.unlit",
-            // The pin's own unlit tint. Nothing in the loader or the
-            // scene-code setters writes it, so our records do not carry it and
-            // the read folds to the pin's `?? [1, 1, 1]` default.
-            _unlitColor: null,
+            // The pin's own unlit tint, which `setPbrUnlit` takes as its
+            // optional second argument. The record defaults to the pin's own
+            // `?? [1, 1, 1]`, so a material nothing tinted writes what the
+            // folded default used to.
+            _unlitColor: "material.unlit_color",
         },
-        vectorProperties: {},
+        vectorProperties: { _unlitColor: 3 },
     },
     {
         modulePath: "src/material/pbr/fragments/emissive-fragment.ts",

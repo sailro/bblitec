@@ -829,7 +829,14 @@ export function readProperty(
     owner.sceneMeshIndex === undefined &&
     owner.scenePbrMaterialIndex === undefined &&
     !owner.standardMaterial
-      ? { assetPbrMaterial: true as const }
+      ? {
+          assetPbrMaterial: true as const,
+          // The container the mesh was walked out of, when the walk named
+          // one. A loaded material has no scene-side record to stamp, so
+          // this is the only compile-time identity a setter reaching it
+          // has: the document whose materials generation composes.
+          ...(owner.asset ? { asset: owner.asset } : {}),
+        }
       : {}),
     ...(rule.carriesShadowGenerator && owner.shadowGeneratorIndex !== undefined
       ? { shadowGeneratorIndex: owner.shadowGeneratorIndex }

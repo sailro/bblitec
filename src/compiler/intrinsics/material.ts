@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { Value } from "../types.js";
+import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
 import { staticColor3Value } from "./material-options.js";
@@ -40,6 +40,11 @@ export interface MaterialIntrinsicContext
     ): void;
     recordScenePbrNoColorView(sourceIndex: number | undefined): number;
     recordScenePbrUnlit(index: number | undefined): void;
+    recordAssetSceneUnlit(
+        asset: CompileAsset,
+        tint: readonly [number, number, number] | undefined,
+        node: ts.Node,
+    ): void;
     recordScenePbrSkybox(index: number | undefined): void;
     recordScenePbrGammaAlbedo(index: number | undefined): void;
     recordSceneMaterialSlot(): number;
@@ -797,9 +802,14 @@ export function compileMaterialIntrinsic(
             // src/material/pbr/set-unlit.ts and set-skybox.ts: the
             // optional PBR features are opt-in setters that flag the
             // material after creation and register their fragment
-            // extension. The reached subset takes the material alone
-            // (setPbrUnlit's optional unlitColor tint is unreached).
-            context.expectArgumentCount(call, 1, 1);
+            // extension. `setPbrUnlit` also takes the linear-RGB tint its
+            // fragment multiplies the base colour by; `setPbrSkybox`
+            // takes the material alone.
+            context.expectArgumentCount(
+                call,
+                1,
+                importedName === "setPbrUnlit" ? 2 : 1,
+            );
             const material =
                 context.compileValue(call.arguments[0]!);
             context.expectKind(
@@ -807,7 +817,18 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            if (importedName === "setPbrUnlit") {
+            // The setters are emitted into the PBR material factory's own
+            // translation unit, so a scene that only stamps a loaded
+            // material — never creating one — still needs that unit.
+            context.reachFeature("material:pbr", call);
+            // A material read off a loaded mesh has no scene-side record;
+            // its unlit arm is composed from the document, so the fact is
+            // recorded on the container the walk named instead.
+            const loadedContainer =
+                material.assetPbrMaterial && material.asset
+                    ? material.asset
+                    : undefined;
+            if (importedName === "setPbrUnlit" && !loadedContainer) {
                 context.recordScenePbrUnlit(
                     material.scenePbrMaterialIndex,
                 );
@@ -826,6 +847,40 @@ export function compileMaterialIntrinsic(
                 importedName === "setPbrUnlit"
                     ? "set_pbr_unlit"
                     : "set_pbr_skybox";
+            // The pin stores the tint only when one is supplied, so an
+            // omitted argument emits no third argument either and the
+            // material keeps whatever tint it already carries.
+            const tintExpression = call.arguments[1];
+            let tint = "";
+            let tintChannels:
+                | readonly [number, number, number]
+                | undefined;
+            if (tintExpression) {
+                const channels = staticColor3Value(
+                    context,
+                    tintExpression,
+                );
+                if (
+                    !channels ||
+                    channels.some(
+                        (channel) => !Number.isFinite(channel),
+                    )
+                ) {
+                    context.fail(
+                        tintExpression,
+                        "setPbrUnlit's tint must be a static linear RGB colour: it is written into the material UBO the fragment reads.",
+                    );
+                }
+                tint = `, ${context.compileColor3(tintExpression)}`;
+                tintChannels = channels;
+            }
+            if (loadedContainer) {
+                context.recordAssetSceneUnlit(
+                    loadedContainer,
+                    tintChannels,
+                    call,
+                );
+            }
             return {
                 kind: "void",
                 cpp:
@@ -833,7 +888,7 @@ export function compileMaterialIntrinsic(
                     `${context.requireEngine(
                         material,
                         call,
-                    )}, ${material.cpp})`,
+                    )}, ${material.cpp}${tint})`,
             };
         }
 

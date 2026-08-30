@@ -1948,6 +1948,11 @@ struct MaterialRecord {
     // exists; ours is on the core path, so the value simply rides here.
     float occlusion_strength = 1.0f;
     bool unlit = false;
+    // setPbrUnlit's optional linear-RGB tint (src/material/pbr/set-unlit.ts).
+    // The pin stores it only when the caller supplies one and the writer
+    // reads `_unlitColor ?? [1, 1, 1]`, so an absent tint is the identity
+    // this default already is.
+    Color3 unlit_color{1.0f, 1.0f, 1.0f};
     bool no_color = false;
     /** Original material copied into a no-colour/ESM view. */
     MaterialHandle source_material{};
@@ -3159,7 +3164,10 @@ void set_alpha_to_coverage(
     Engine& engine,
     MaterialHandle material,
     bool enabled);
-void set_pbr_unlit(Engine& engine, MaterialHandle material);
+void set_pbr_unlit(
+    Engine& engine,
+    MaterialHandle material,
+    std::optional<Color3> unlit_color = std::nullopt);
 void set_pbr_skybox(Engine& engine, MaterialHandle material);
 void set_pbr_occlusion_solid_texture(
     Engine& engine,

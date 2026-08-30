@@ -2628,6 +2628,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene229",
+        name: "Scene 229 - Triangle Without Indices",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene229.ts",
+        title: "Babylon Lite Native - Triangle Without Indices",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene25",
         name: "Scene 25 - KTX Compressed Texture",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene25.ts",

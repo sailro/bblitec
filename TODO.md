@@ -160,7 +160,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-75 corpus scenes remain unregistered; measured scenes
+74 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -233,10 +233,10 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (43 scenes):** 17, 20,
+**Integrate first (42 scenes):** 17, 20,
 51-53, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
 140, 149, 156, 165, 211, 214, 215, 218, 219,
-223, 226, 229, 231, 241, 261, 269, 271, 275, 300.
+223, 226, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118), and display-only
 gizmos (223). Every navigation scene the corpus carries is now
@@ -269,7 +269,6 @@ integrated.
   post-deformation outer matrix; animated morph clones need shared weights
   with an independent node world; and direct mesh/other transform-node clone
   shapes remain explicitly refused.
-- [ ] Scene 229: lower the reached spread element.
 - [ ] Extend the Standard UV transform past what scene 282 measures. The
   channel writer is lowered from the pin's own AST, so the arithmetic covers
   all seven channels, but three inputs the fold does not reach would force a

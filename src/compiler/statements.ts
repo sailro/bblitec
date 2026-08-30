@@ -52,6 +52,9 @@ export interface StatementLoweringContext {
     assetEntitiesIterationTarget(
         expression: ts.Expression,
     ): Value | undefined;
+    assetFlattenedMeshesIterationTarget(
+        expression: ts.Expression,
+    ): HandleCollectionTarget | undefined;
     assetRootChildrenIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
@@ -1418,6 +1421,15 @@ export class StatementLowerer {
             return;
         }
         if (
+            this.emitAssetFlattenedMeshesForOf(
+                context,
+                statement,
+                declaration,
+            )
+        ) {
+            return;
+        }
+        if (
             this.emitHandleCollectionForOf(
                 context,
                 statement,
@@ -1561,6 +1573,53 @@ export class StatementLowerer {
                     loopContext,
                     branch.elseStatement!,
                 );
+            },
+        );
+        return true;
+    }
+
+    /**
+     * Lowers `for (const mesh of <walk>(container))`, where the walk is
+     * proven to be the pin's own container flatten.
+     *
+     * The body runs once per renderable, over the meshes native loading
+     * already flattened. `break`/`continue` would make the loop's order
+     * observable, and a worklist reaches siblings in the reverse of the
+     * loader's document order, so both are refused rather than lowered
+     * against an order this walk never promised.
+     */
+    private emitAssetFlattenedMeshesForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const target =
+            context.assetFlattenedMeshesIterationTarget(
+                statement.expression,
+            );
+        if (!target) {
+            return false;
+        }
+        if (!ts.isIdentifier(declaration.name)) {
+            context.fail(
+                declaration.name,
+                "Walking a container's flattened meshes requires an identifier binding.",
+            );
+        }
+        if (this.bindsEnclosingLoop(statement.statement)) {
+            context.fail(
+                statement,
+                "break/continue in a container's mesh walk is not lowered: the walk collects a set, and stopping partway through would depend on an order it does not fix.",
+            );
+        }
+        emitHandleCollectionLoop(
+            context,
+            target,
+            declaration.name,
+            (loopContext) => {
+                for (const nested of bodyStatements(statement)) {
+                    this.emit(loopContext, nested);
+                }
             },
         );
         return true;
