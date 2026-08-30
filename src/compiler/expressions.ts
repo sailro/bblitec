@@ -2139,6 +2139,17 @@ export class ExpressionLowerer {
             if (arrayFrom) {
                 return arrayFrom;
             }
+            // Resolve engine-handle searches before the plain-data method
+            // probe compiles their owner. A fused `meshes.map(...).find(...)`
+            // has no native intermediate array for that probe to lower.
+            const found =
+                this.context.handleCollections.compileFind(
+                    call,
+                    callee,
+                );
+            if (found) {
+                return found;
+            }
             const method =
                 this.context.dataLowerer.compileDataMethodCall(
                     call,
@@ -2176,14 +2187,6 @@ export class ExpressionLowerer {
                 );
             if (handlePush) {
                 return handlePush;
-            }
-            const found =
-                this.context.handleCollections.compileFind(
-                    call,
-                    callee,
-                );
-            if (found) {
-                return found;
             }
             const staticMethod =
                 this.context.classLowerer.resolveStaticMethod(callee);

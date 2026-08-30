@@ -324,7 +324,7 @@ test("keeps extracted option and manifest blocks in their modules", () => {
         [
             "src/compiler/intrinsics/asset-options.ts",
             [
-                /Reached DDS environment options support brdfUrl\./,
+                /DDS environment options support brdfUrl, skipSkybox, and skipGround\./,
                 /HDR faceSize must be a power of two/,
             ],
         ],

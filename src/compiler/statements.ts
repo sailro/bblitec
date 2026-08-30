@@ -82,6 +82,7 @@ export interface StatementLoweringContext {
     compileValue(expression: ts.Expression): Value;
     compileCondition(expression: ts.Expression): string;
     isBrowserOnlyExpression(expression: ts.Expression): boolean;
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -738,10 +739,101 @@ export class StatementLowerer {
         }
         if (!ts.isExpressionStatement(statement)) return false;
         const expression = context.unwrap(statement.expression);
-        return (
+        if (
             ts.isCallExpression(expression) &&
             ts.isIdentifier(expression.expression) &&
             context.isBrowserOnlyExpression(expression)
+        ) {
+            return true;
+        }
+
+        // UI helpers commonly retain native state while guarding writes to
+        // an optional DOM element. Erase those guarded writes only when the
+        // receiver is a local already classified as a browser handle and all
+        // values being written are side-effect-free. This deliberately does
+        // not generalize to browser globals such as console/document: their
+        // unresolved guards remain refusals rather than silently swallowing
+        // arbitrary calls nested in an argument.
+        const browserLocal = (candidate: ts.Expression): boolean => {
+            const value = context.unwrap(candidate);
+            if (ts.isIdentifier(value)) {
+                return context.lookupOptional(value)?.kind === "browser";
+            }
+            return (
+                (ts.isPropertyAccessExpression(value) ||
+                    ts.isElementAccessExpression(value)) &&
+                browserLocal(value.expression)
+            );
+        };
+        const pure = (candidate: ts.Expression): boolean => {
+            const value = context.unwrap(candidate);
+            if (
+                ts.isIdentifier(value) ||
+                ts.isLiteralExpression(value) ||
+                value.kind === ts.SyntaxKind.TrueKeyword ||
+                value.kind === ts.SyntaxKind.FalseKeyword ||
+                value.kind === ts.SyntaxKind.NullKeyword ||
+                value.kind === ts.SyntaxKind.ThisKeyword
+            ) {
+                return true;
+            }
+            if (ts.isPrefixUnaryExpression(value)) {
+                return pure(value.operand);
+            }
+            if (ts.isBinaryExpression(value)) {
+                return (
+                    !ASSIGNMENT_OPERATORS.has(value.operatorToken.kind) &&
+                    pure(value.left) &&
+                    pure(value.right)
+                );
+            }
+            if (ts.isConditionalExpression(value)) {
+                return (
+                    pure(value.condition) &&
+                    pure(value.whenTrue) &&
+                    pure(value.whenFalse)
+                );
+            }
+            if (ts.isTemplateExpression(value)) {
+                return value.templateSpans.every((span) =>
+                    pure(span.expression),
+                );
+            }
+            if (
+                ts.isPropertyAccessExpression(value) ||
+                ts.isElementAccessExpression(value)
+            ) {
+                return (
+                    pure(value.expression) &&
+                    (!ts.isElementAccessExpression(value) ||
+                        !value.argumentExpression ||
+                        pure(value.argumentExpression))
+                );
+            }
+            return (
+                ts.isCallExpression(value) &&
+                ts.isIdentifier(value.expression) &&
+                ["Boolean", "Number", "String"].includes(
+                    value.expression.text,
+                ) &&
+                context.isDefaultLibraryIdentifier(value.expression) &&
+                value.arguments.every(pure)
+            );
+        };
+        if (
+            ts.isBinaryExpression(expression) &&
+            expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            browserLocal(expression.left) &&
+            pure(expression.right)
+        ) {
+            return true;
+        }
+        return (
+            ts.isCallExpression(expression) &&
+            (ts.isPropertyAccessExpression(expression.expression) ||
+                ts.isElementAccessExpression(expression.expression)) &&
+            browserLocal(expression.expression.expression) &&
+            expression.arguments.every(pure)
         );
     }
 

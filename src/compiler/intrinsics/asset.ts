@@ -837,8 +837,8 @@ export function compileAssetIntrinsic(
             // irradiance harmonics projected out of mip 0. Both halves are
             // settled by the asset, so both are compiled into the package
             // the runtime reads. The pinned loader takes no skybox or
-            // ground of its own — `skipSkybox`/`skipGround` are the only
-            // other options it accepts and no reached scene sets them.
+            // ground of its own — `skipSkybox`/`skipGround` are accepted
+            // but deliberately ignored by both the pin and this adapter.
             context.expectArgumentCount(call, 2, 3);
             const scene =
                 context.compileValue(call.arguments[0]!);

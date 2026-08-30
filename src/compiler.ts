@@ -7464,6 +7464,10 @@ class Compiler
         return stringLiteral(value);
     }
 
+    public engineHasStarted(): boolean {
+        return this.engineStartMark !== undefined;
+    }
+
     public emit(line: string): void {
         this.body.push(`${"    ".repeat(this.indentLevel)}${line}`);
     }

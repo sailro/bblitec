@@ -799,6 +799,7 @@ SolidTexture create_solid_texture(
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <utility>
 
 namespace bbl {
@@ -883,6 +884,22 @@ void set_pbr_subsurface(
 
 void set_pbr_skybox(Engine& engine, MaterialHandle material) {
     engine.materials[material.value].skybox_mode = true;
+}
+
+void set_pbr_occlusion_solid_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const SolidTexture& texture) {
+    if (material.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid PBR material handle.");
+    }
+    MaterialRecord& record = engine.materials[material.value];
+    TextureData replacement;
+    replacement.bytes.assign(texture.texel.begin(), texture.texel.end());
+    replacement.rgba_width = 1;
+    replacement.rgba_height = 1;
+    record.occlusion_texture = std::move(replacement);
+    record.has_occlusion_texture = true;
 }
 
 // src/material/pbr/fragments/clearcoat-fragment.ts#writeClearcoatUBO leaves

@@ -49,7 +49,8 @@ test("builds a registration-ordered fixed browser RAF clock", () => {
     assert.match(script, /const due = Array\.from\(callbacks\.entries\(\)\)/);
     assert.match(script, /for \(const \[id, callback\] of due\)/);
     assert.match(script, /value: \(\) => now/);
-    assert.match(script, /frame - readyFrame \+ 1/);
+    assert.match(script, /frame - engineStartFrame/);
+    assert.match(script, /fixedEngineStarting/);
     assert.match(script, /queueMicrotask\(\(\) =>/);
     assert.throws(() => fixedAnimationFrameScript(0), /Invalid fixed animation frame/);
     assert.throws(() => fixedAnimationFrameScript(1.5), /Invalid fixed animation frame/);

@@ -2830,6 +2830,21 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+    {
+        id: "littlest-tokyo",
+        name: "Littlest Tokyo",
+        source: "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Littlest Tokyo",
+        parity: {
+            referenceFrame: 180,
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.02,
+            backgroundColor: [213, 204, 195],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
 ];
 
 /**

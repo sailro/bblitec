@@ -43,7 +43,7 @@ test("registers unique generated scene targets", () => {
                 sourceOrigin === "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["tetris", "doom", "torus-states", "platformer", "break-meshes", "racer"],
+        ["tetris", "doom", "torus-states", "platformer", "break-meshes", "racer", "littlest-tokyo"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is
@@ -108,6 +108,12 @@ test("registers unique generated scene targets", () => {
     assert.equal(getScene("racer").parity?.referenceFrame, 180);
     assert.equal(
         getScene("racer").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
+        "180",
+    );
+    assert.equal(getScene("littlest-tokyo").parity?.referenceFrame, 180);
+    assert.equal(
+        getScene("littlest-tokyo").parity?.nativeEnvironment
+            ?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
     assert.equal(

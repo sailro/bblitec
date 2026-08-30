@@ -33,6 +33,7 @@ export interface MaterialIntrinsicContext
     extends IntrinsicCallContext,
         ObjectValidationContext,
         PositiveIntegerContext {
+    engineHasStarted(): boolean;
     recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
         index: number | undefined,
@@ -1198,6 +1199,50 @@ export function compileMaterialIntrinsic(
             context.reachFeature("material:standard", call);
             context.reachFeature("material:standard-vertex-colors", call);
             context.reachFeature("renderer:pbr", call);
+            return { kind: "void", cpp: "" };
+        }
+
+        case "rebuildMaterial": {
+            context.expectArgumentCount(call, 2, 3);
+            const scene = context.compileValue(call.arguments[0]!);
+            const material = context.compileValue(call.arguments[1]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[1]!);
+            context.expectSameEngine(scene, material, call);
+            if (context.engineHasStarted()) {
+                context.fail(
+                    call,
+                    "rebuildMaterial after startEngine requires live GPU material resource replacement.",
+                );
+            }
+            if (call.arguments[2]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[2],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    ["rebuildViews", "rebuildFrameGraph"],
+                    "rebuildMaterial options support rebuildViews and rebuildFrameGraph.",
+                );
+                for (const name of [
+                    "rebuildViews",
+                    "rebuildFrameGraph",
+                ]) {
+                    const property = context.objectProperty(options, name);
+                    if (!property) continue;
+                    const value = context.compileBoolean(property);
+                    if (value !== "true" && value !== "false") {
+                        context.fail(
+                            property,
+                            `${name} must be a static boolean.`,
+                        );
+                    }
+                }
+            }
+            // Native material records are uploaded when startEngine builds
+            // the renderer. A pre-start rebuild therefore observes exactly
+            // the final record state without doing any work of its own.
             return { kind: "void", cpp: "" };
         }
 

@@ -916,13 +916,16 @@ export class HandleCollections {
         if (callee.name.text !== "find") {
             return undefined;
         }
+        const mapped = this.mappedMaterialFindSource(
+            callee.expression,
+        );
         const bound = this.boundCollectionValue(
             callee.expression,
         );
-        const target = bound
+        const target = mapped?.target ?? (bound
             ? this.iterationTarget(callee.expression)
             : this.resolveExpressionTarget(callee.expression)
-                  ?.target;
+                  ?.target);
         if (!target) {
             return undefined;
         }
@@ -953,7 +956,123 @@ export class HandleCollections {
         if (resolved) {
             return resolved;
         }
+        if (mapped) {
+            return this.runtimeMappedMaterialFind(
+                target,
+                mapped.selector,
+                predicate,
+            );
+        }
         return this.runtimeFind(target, predicate);
+    }
+
+    /**
+     * `scene.meshes.map((mesh) => mesh.material).find(...)` keeps one loaded
+     * loop rather than materializing a second native array. The pin's `map`
+     * produces references to the same material objects the meshes hold, so
+     * binding the selector result directly into the `find` predicate is the
+     * identical object-identity path with no intermediate storage.
+     */
+    private mappedMaterialFindSource(
+        expression: ts.Expression,
+    ):
+        | {
+              target: HandleCollectionTarget;
+              selector: ts.ArrowFunction;
+          }
+        | undefined {
+        const mapCall = this.context.unwrap(expression);
+        if (
+            !ts.isCallExpression(mapCall) ||
+            !ts.isPropertyAccessExpression(mapCall.expression) ||
+            mapCall.expression.name.text !== "map"
+        ) {
+            return undefined;
+        }
+        const target = this.iterationTarget(
+            mapCall.expression.expression,
+        );
+        if (!target) return undefined;
+        this.context.expectArgumentCount(mapCall, 1, 1);
+        const selector = this.context.unwrap(
+            mapCall.arguments[0]!,
+        );
+        if (
+            !ts.isArrowFunction(selector) ||
+            selector.parameters.length !== 1 ||
+            !ts.isIdentifier(selector.parameters[0]!.name) ||
+            ts.isBlock(selector.body)
+        ) {
+            this.context.fail(
+                mapCall.arguments[0]!,
+                "Mapped handle searches take an expression-bodied arrow with one element parameter.",
+            );
+        }
+        return { target, selector };
+    }
+
+    /** The fused mesh-material projection and loaded material search. */
+    private runtimeMappedMaterialFind(
+        target: HandleCollectionTarget,
+        selector: ts.ArrowFunction,
+        predicate: ts.ArrowFunction,
+    ): Value {
+        const result = this.context.allocateTemporaryCppName(
+            "material_match",
+        );
+        const found = this.context.allocateTemporaryCppName(
+            "material_found",
+        );
+        this.context.emit(`bbl::MaterialHandle ${result}{};`);
+        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        let assetPbrMaterial = false;
+        emitHandleCollectionLoop(
+            this.context,
+            target,
+            selector.parameters[0]!.name as ts.Identifier,
+            (context) => {
+                const selected = context.compileValue(
+                    selector.body as ts.Expression,
+                );
+                context.expectKind(
+                    selected,
+                    "material",
+                    selector.body,
+                );
+                assetPbrMaterial = selected.assetPbrMaterial === true;
+                if (selected.optionalFoundCpp) {
+                    context.emit(`if (${selected.optionalFoundCpp}) {`);
+                    context.increaseIndent();
+                }
+                context.bindLocalValue(
+                    predicate.parameters[0]!.name as ts.Identifier,
+                    selected,
+                );
+                const test = context.compileCondition(
+                    predicate.body as ts.Expression,
+                );
+                context.emit(`if (${test}) {`);
+                context.increaseIndent();
+                context.emit(`${result} = ${selected.cpp};`);
+                context.emit(`${found} = true;`);
+                context.emit("break;");
+                context.decreaseIndent();
+                context.emit("}");
+                if (selected.optionalFoundCpp) {
+                    context.decreaseIndent();
+                    context.emit("}");
+                }
+            },
+        );
+        return {
+            kind: "material",
+            cpp: result,
+            engineCpp: target.engineCpp,
+            optionalFoundCpp: found,
+            ...(assetPbrMaterial
+                ? { assetPbrMaterial: true as const }
+                : {}),
+        };
     }
 
     /**

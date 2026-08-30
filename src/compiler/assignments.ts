@@ -1374,6 +1374,31 @@ export function emitPropertyAssignment(
       return;
     }
 
+    if (target.kind === "material" && property === "occlusionTexture") {
+      requireSimpleAssignment(context, expression, "PBR occlusionTexture");
+      if (!target.assetPbrMaterial) {
+        context.fail(
+          left,
+          "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
+        );
+      }
+      const texture = context.compileValue(expression.right);
+      context.expectKind(texture, "texture", expression.right);
+      if (texture.textureStorage !== "solid") {
+        context.fail(
+          expression.right,
+          "Reached PBR occlusionTexture replacement uses createSolidTexture2D.",
+        );
+      }
+      context.expectSameEngine(target, texture, expression);
+      context.emit(
+        `bbl::set_pbr_occlusion_solid_texture(` +
+          `${context.requireEngine(target, expression)}, ` +
+          `${target.cpp}, ${texture.cpp});`,
+      );
+      return;
+    }
+
     if (target.kind === "material" && property === "diffuseTexture") {
       requireSimpleAssignment(context, expression, "material diffuseTexture");
       const texture = context.compileValue(expression.right);

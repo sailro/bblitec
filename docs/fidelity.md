@@ -1414,11 +1414,15 @@ stage as the bytes on disk.
 camera and CRT grain both advance continuously, so a three-second browser
 settle does not name a reproducible state. The capture harness therefore
 drives `requestAnimationFrame` in registration order on a 60 Hz clock,
-counts from the scene-ready boundary, fixes `performance.now()` to that same
-clock, and freezes after every callback on frame 180 has run. Native derives
+marks the first `startEngine` render as frame zero, fixes `performance.now()`
+to that engine-relative clock, and freezes after every callback on frame 180
+has run. Async browser initialization can consume RAF turns, but time remains
+at zero until the engine starts, matching native's synchronous initialization.
+Native derives
 `BBLITE_SCREENSHOT_FRAME` from that one registry value. This keeps the source
 live—the game loop and shader time still execute—while making the measured
-state identical on both sides. Interactive RAF receives the absolute
+state identical in reference, instrumented, and native captures. Interactive
+RAF receives the absolute
 monotonic timestamp at double precision too; converting it to float would
 quantize a machine with long uptime into runs of zero `dt` followed by jumps,
 which changes the platformer's collision, friction, and stand/crouch/jump

@@ -162,6 +162,7 @@ test("keeps exact-source corpus references immutable", () => {
                     scene.parity.referenceTimeSeconds,
                     scene.parity
                         .referenceAnimationGroups,
+                    scene.parity.referenceFrame,
                 ),
             )
             .digest("hex");

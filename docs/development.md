@@ -808,6 +808,10 @@ The gate waits for `canvas.dataset.ready`, which is set only after awaited
 asset loads, scene registration, and `startEngine`, then captures the canvas
 alone. A slow or failed load therefore times out instead of recording the
 progress bar.
+For a registry scene with `referenceFrame`, the deterministic browser clock
+is zero during async initialization, starts at the engine's first render, and
+freezes at that exact frame; the native screenshot frame is derived from the
+same registry value.
 
 Run a curated scene:
 

@@ -1604,6 +1604,8 @@ struct TextureTransform {
 };
 
 struct MaterialRecord {
+    /** Material.name, copied from the authored asset when one exists. */
+    std::string name;
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
     // Babylon keeps the material-wide alpha separate from the PBR base-color
@@ -2864,6 +2866,10 @@ void set_alpha_to_coverage(
     bool enabled);
 void set_pbr_unlit(Engine& engine, MaterialHandle material);
 void set_pbr_skybox(Engine& engine, MaterialHandle material);
+void set_pbr_occlusion_solid_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const SolidTexture& texture);
 void set_pbr_clearcoat(
     Engine& engine,
     MaterialHandle material,

@@ -136,6 +136,9 @@ analyzable entry file against one engine.
   materialized asset resolves immediately. `window.location.search` reads as
   the query the scene's reference pose is captured at, so a scene that
   branches on one takes the branch its golden was captured under.
+  Locals bound from optional DOM lookups retain their browser-only identity,
+  so property writes and calls on them erase without discarding adjacent
+  native state changes in the same helper.
   `canvas.width`/`canvas.height` lower to the engine's live drawing-buffer
   dimensions. The shared SDL event path updates them in backing-store pixels
   before application callbacks run; SDL_GPU acquires that same extent from
@@ -820,6 +823,16 @@ The mask composes into the fragment rather than uploading, so the loader
 carries only what a UV set cannot express: the dedicated occlusion pair a
 TEXCOORD_1 occlusion binds, and the second ORM sample the orm-unpack split
 takes at occlusion's own transform.
+
+Imported material records retain their glTF `name`, and a mapped mesh-material
+`find` lowers to one runtime traversal with optional presence preserved. A
+pre-start application may inspect the found material's `occlusionTexture` and
+replace that existing PBR slot with a solid texture; the replacement keeps the
+slot's UV-set choice and updates the bytes the startup GPU build consumes.
+`rebuildMaterial` at this pre-start boundary validates its options and emits no
+second rebuild because `startEngine` has not created the GPU material views
+yet. The same call after startup refuses rather than pretending to replace
+live resources.
 
 A Standard `diffuseTexture` takes three sources, because upstream has one
 `Texture2D` whatever built it. A colour render target is how one pass
@@ -1690,7 +1703,7 @@ are tabulated once in [development](development.md#runtime-switches).
 Requested environment grounds and DDS/HDR/solid-colour skyboxes render by
 default and are disabled independently with `BBLITE_GROUND=0` and
 `BBLITE_BACKGROUND=0`. Which skybox arm a scene gets is decided at generation
-from the two URLs and the pinned `skipSkybox` flag
+from the two URLs and the pinned `skipSkybox`/`skipGround` flags
 ([fidelity](fidelity.md#shader-contract) carries the three-way rule).
 
 ## Boundaries

@@ -723,10 +723,12 @@ export class DataLowerer {
             return undefined;
         }
         if (!selected.dataType) {
-            this.context.fail(
-                access,
-                "Optional chaining currently requires a plain-data member or element.",
-            );
+            // Resolved engine properties can be discovered while probing a
+            // condition as a data path, but their resource/value shape is
+            // owned by the normal property compiler. Let that surface lower
+            // the access so it can preserve both the owner's and property's
+            // presence predicates.
+            return undefined;
         }
         const selectedPresent = selected.optionalFoundCpp;
         const combinedPresent = selectedPresent
