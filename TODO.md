@@ -613,7 +613,11 @@ integrated.
   generators, the heightmap ground and the PBR receiver ship —
   47 `createCapsule` and the physics family, 111 a node receiver, and 164
   the ESM generator's remaining options.
-- [ ] Scene 73: support camera viewports.
+- [ ] Scene 73: support camera viewports, then its container flatten. The
+  flatten is written as a recursive closure rather than the worklist the
+  lowering proves, so it needs either a second arrangement of the same
+  contracts or the walk evaluated over the document's node tree at
+  generation, which would accept any pure spelling.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.
 - [ ] Scene 91: support `initializeCsg2Async`.
