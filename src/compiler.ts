@@ -106,6 +106,7 @@ import {
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
+    shaderThinInstanceLanes,
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
     reachedShaderProgram,
@@ -522,6 +523,9 @@ class Compiler
             this.jsRandomReached,
             this.sourceFile,
         );
+        // After the whole entry, because the mesh a shader material ends up
+        // on is what decides its instanced form and either may come first.
+        this.settleShaderThinInstances();
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
         // Emitted in `features` order so the parallel record serializes
@@ -8190,6 +8194,52 @@ class Compiler
             this.fail(node, `Shadow generator ${index} was never recorded.`);
         }
         return { lightIndex: generator.lightIndex };
+    }
+
+    /** Records that a mesh carries the per-instance RGBA stream. */
+    public recordThinInstanceColorMesh(
+        sceneMeshIndex: number | undefined,
+    ): void {
+        if (sceneMeshIndex === undefined) return;
+        const mesh = this.sceneMeshes[sceneMeshIndex];
+        if (mesh) mesh.thinInstanceColors = true;
+    }
+
+    /** The scene-local shader program a scene-code mesh was assigned. */
+    public recordSceneMeshShaderVariant(
+        meshIndex: number | undefined,
+        variantName: string,
+    ): void {
+        if (meshIndex === undefined) return;
+        const mesh = this.sceneMeshes[meshIndex];
+        if (mesh) mesh.shaderVariant = variantName;
+    }
+
+    /**
+     * Settles each scene-local shader program's instanced form.
+     *
+     * The pin never asks the material: `shader-thin-instance.ts` reads the
+     * MESH -- `hasColor` is `!!ti.colors && material._tic != 0` -- and
+     * builds the instanced pipeline with the extra `VertexInput` lanes.
+     * A material is created before it is assigned and before the mesh gets
+     * its instances, so nothing at the `createShaderMaterial` call can know
+     * this; it is settled once, after the entry is compiled, from the pairs
+     * recorded on the way through.
+     */
+    private settleShaderThinInstances(): void {
+        for (const [variant, colors] of shaderThinInstanceLanes(
+            this.sceneMeshes,
+            (message) => {
+                throw new Error(message);
+            },
+        )) {
+            const program = this.reachedShaderPrograms.find(
+                (candidate) => candidate.name === variant,
+            );
+            if (!program) continue;
+            program.useThinInstances = true;
+            if (colors) program.useThinInstanceColors = true;
+        }
     }
 
     /** Which material a scene-code mesh was assigned, by its mesh index. */

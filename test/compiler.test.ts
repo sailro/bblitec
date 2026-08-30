@@ -18,6 +18,7 @@ import {
 import test from "node:test";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
+import { shaderThinInstanceLanes } from "../src/compiler/shader-material.js";
 
 /** A curated asset URL served from the pinned upstream tree; derived from
  *  the pin so a version bump does not churn these assertions. */
@@ -5394,6 +5395,105 @@ ${containerFlattenWalk}
                 function keep(_container: AssetContainer): void {}
             `),
         /is loaded more than once/,
+    );
+});
+
+const instancedShaderSource = (extra: string) => `
+    import {
+        createBox,
+        createEngine,
+        createShaderMaterial,
+        setThinInstanceColors,
+        setThinInstances,
+    } from "@babylonjs/lite";
+
+    const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;let iw=mat4x4<f32>(input.world0,input.world1,input.world2,input.world3);out.position=shaderSystem.viewProjection*(shaderSystem.world*iw)*vec4<f32>(input.position,1.0);return out;}\`;
+    const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+
+    async function main() {
+        const engine = await createEngine({});
+        const material = createShaderMaterial({
+            vertexSource,
+            fragmentSource,
+            attributes: ["position"],
+            uniforms: ["viewProjection", "world"],
+        });
+        const box = createBox(engine);
+        box.material = material;
+        setThinInstances(box, new Float32Array(16), 1);
+${extra}
+    }
+`;
+
+test("names a scene-local shader material the reach order gives it", () => {
+    // The pin's `name` is optional and it composes nothing from it, so a
+    // scene that names nothing still gets a variant identity.
+    const result = compileSource(instancedShaderSource(""));
+
+    assert.equal(
+        result.manifest.shaderVariants.includes("scene-shader-0"),
+        true,
+    );
+});
+
+test("declares a shader material's instance lanes from the mesh", () => {
+    // The pin reads the MESH for both lanes -- `mesh.thinInstances` for the
+    // matrices and `!!ti.colors` for the colour -- never the material, so a
+    // mesh carrying no colour stream declares only the four matrix lanes.
+    const lanes = shaderThinInstanceLanes(
+        [
+            { kind: "box", gltfAssetsBefore: 0, shaderVariant: "a",
+              thinInstances: "always" },
+            { kind: "box", gltfAssetsBefore: 0, shaderVariant: "b",
+              thinInstances: "always", thinInstanceColors: true },
+            { kind: "box", gltfAssetsBefore: 0, shaderVariant: "c" },
+        ],
+        (message) => {
+            throw new Error(message);
+        },
+    );
+
+    assert.equal(lanes.get("a"), false);
+    assert.equal(lanes.get("b"), true);
+    assert.equal(lanes.has("c"), false);
+});
+
+test("refuses one shader material drawn both instanced and plain", () => {
+    // The lanes are declared in the prelude the stage compiles against, so
+    // upstream this is two pipeline variants; one program cannot be both.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createBox,
+                    createEngine,
+                    createShaderMaterial,
+                    setThinInstances,
+                } from "@babylonjs/lite";
+
+                const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.viewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+                const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}\`;
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const material = createShaderMaterial({
+                        vertexSource,
+                        fragmentSource,
+                        attributes: ["position"],
+                        uniforms: ["viewProjection"],
+                    });
+                    const instanced = createBox(engine);
+                    instanced.material = material;
+                    setThinInstances(instanced, new Float32Array(16), 1);
+                    const plain = createBox(engine);
+                    plain.material = material;
+                }
+            `),
+        /drawn both with and without thin instances/,
     );
 });
 

@@ -554,6 +554,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene165",
+        name: "Scene 165 - Shader Material Thin Instances",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene165.ts",
+        title: "Babylon Lite Native - Shader Material Thin Instances",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene163",
         name: "Scene 163 - Shader Alpha Cutout",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",

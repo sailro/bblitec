@@ -88,6 +88,9 @@ export interface MeshIntrinsicContext
     /** Whether a binding emitted now lives as long as the frame loop. */
     isEntryBodyScope(): boolean;
     recordThinInstanceMesh(sceneMeshIndex: number | undefined): void;
+    recordThinInstanceColorMesh(
+        sceneMeshIndex: number | undefined,
+    ): void;
     requireEngine(value: Value, node: ts.Node): string;
     expectSameEngine(
         left: Value,
@@ -477,6 +480,9 @@ export function compileMeshIntrinsic(
                     "f32array",
                 );
             context.reachFeature("mesh:thin-instance-colors", call);
+            // The pin's ShaderMaterial reads this stream's presence off the
+            // mesh to decide its instanced prelude, so the record notes it.
+            context.recordThinInstanceColorMesh(mesh.sceneMeshIndex);
             return {
                 kind: "void",
                 cpp:

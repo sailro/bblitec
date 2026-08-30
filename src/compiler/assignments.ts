@@ -406,6 +406,10 @@ export function lightScalarSetter(
 export interface AssignmentContext extends DeterministicRandomContext {
   readonly checker: ts.TypeChecker;
   /** Which material a scene-code mesh was assigned, by its mesh index. */
+  recordSceneMeshShaderVariant(
+    meshIndex: number | undefined,
+    variantName: string,
+  ): void;
   recordSceneMeshMaterial(
     meshIndex: number,
     material: {
@@ -1277,6 +1281,15 @@ export function emitPropertyAssignment(
       // bridges would read it.
       if (material.standardMaterial) {
         target.standardMaterial = true;
+      }
+      // Which scene-local shader program the mesh draws through. The pin
+      // reads the mesh, not the material, to decide the instanced form, so
+      // the pair has to be recorded before either can be settled.
+      if (material.shaderVariant !== undefined) {
+        context.recordSceneMeshShaderVariant(
+          target.sceneMeshIndex,
+          material.shaderVariant,
+        );
       }
       // The pair the caster list resolves against. Upstream reads
       // `mesh.material` when the shadow pass builds, so a scene may

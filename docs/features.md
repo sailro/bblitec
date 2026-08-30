@@ -785,6 +785,19 @@ primitive's indices at load instead.
 `SceneNode.children` walk are not reached; scene 269 is the scene behind
 them ([TODO](../TODO.md)).
 
+A scene-local shader material draws through a mesh's thin instances. The
+pin decides that from the **mesh**, not the material — its `hasColor` reads
+`mesh.thinInstances.colors` — so the four `world0..3` lanes and the
+`instanceColor` lane are settled after the whole entry is compiled, from the
+material-to-mesh pairs recorded on the way through, and in either source
+order. The lanes are part of the program's identity, because they are
+declared in the prelude the stage compiles against: upstream a material drawn
+both instanced and plain is two pipeline variants keyed on exactly that, so
+one program asked to serve both refuses instead of picking a side. The
+material's `name` is optional, as it is upstream, where it is carried onto the
+material and composed from by nothing; an unnamed one takes the identity its
+reach order gives it.
+
 ### Lights
 
 Directional, hemispheric, point, and spot lights with diffuse and specular

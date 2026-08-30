@@ -326,6 +326,18 @@ export interface SceneMeshManifest {
   /** Whether this exact mesh reaches thin instancing before rendering, or
    *  can acquire it later from a callback. */
   thinInstances?: "always" | "possible";
+  /** Whether the mesh also carries the per-instance RGBA stream. */
+  thinInstanceColors?: true;
+  /**
+   * The scene-local shader variant this mesh was assigned, by name.
+   *
+   * The pin decides a ShaderMaterial's instanced form from the MESH -- its
+   * `hasColor` reads `mesh.thinInstances.colors`, not the material -- so a
+   * program's instanced attributes cannot be settled where the material is
+   * created. Recording the pair lets that be settled once the whole entry
+   * is compiled, in either source order.
+   */
+  shaderVariant?: string;
 }
 
 /**

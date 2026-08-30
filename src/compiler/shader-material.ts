@@ -29,6 +29,7 @@ import type {
     CompiledShaderDefine,
     CompiledShaderProgram,
     CompiledShaderUniformDefault,
+    SceneMeshManifest,
     Value,
 } from "./types.js";
 
@@ -253,18 +254,17 @@ export function compileShaderMaterialOptions(
 
     // Scene-local variant: the entry file's own WGSL compiles through
     // the typed shader IR instead of matching a predeclared program.
+    // The pin's `name` is optional and it carries the string onto the
+    // material without reading it back -- nothing upstream composes from
+    // it. The identity is this port's own, so a scene that names nothing
+    // takes the position the reach order gives it, which is what a name
+    // generation cannot settle already took.
     const nameExpression = context.objectProperty(object, "name");
-    if (!nameExpression) {
-        context.fail(
-            object,
-            "Scene-local shader materials require a name (it becomes the generated variant identity).",
-        );
-    }
-    const nameValue = context.compileValue(
-        nameExpression,
-    );
-    const slug = nameValue.staticString !== undefined
-        ? nameValue.staticString
+    const staticName = nameExpression
+        ? context.compileValue(nameExpression).staticString
+        : undefined;
+    const slug = staticName !== undefined
+        ? staticName
               .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
               .replace(/[^A-Za-z0-9]+/g, "-")
               .replace(/^-+|-+$/g, "")
@@ -272,7 +272,7 @@ export function compileShaderMaterialOptions(
         : `scene-shader-${context.reachedShaderPrograms.length}`;
     if (slug.length === 0) {
         context.fail(
-            nameExpression,
+            nameExpression ?? object,
             "Scene-local shader material names must contain letters or digits.",
         );
     }
@@ -282,7 +282,7 @@ export function compileShaderMaterialOptions(
         )
     ) {
         context.fail(
-            nameExpression,
+            nameExpression ?? object,
             `Shader material name '${slug}' collides with a predeclared variant.`,
         );
     }
@@ -804,4 +804,47 @@ function stringArraysEqual(left: string[], right: string[]): boolean {
         left.length === right.length &&
         left.every((value, index) => value === right[index])
     );
+}
+
+/**
+ * Which scene-local shader programs draw instanced, and which of those also
+ * read the per-instance colour stream.
+ *
+ * The pin decides this from the MESH: `shader-thin-instance.ts` reads
+ * `mesh.thinInstances` for the matrix lanes and `!!ti.colors` for the colour
+ * one, never the material. A program's lanes are declared in the prelude its
+ * stage compiles against, so upstream a material drawn both ways is two
+ * pipeline variants keyed `"" + +hasColor`. One emitted program cannot carry
+ * both preludes, so that refuses rather than picking one.
+ */
+export function shaderThinInstanceLanes(
+    meshes: readonly SceneMeshManifest[],
+    fail: (message: string) => never,
+): ReadonlyMap<string, boolean> {
+    const instanced = new Map<string, boolean>();
+    const plain = new Set<string>();
+    for (const mesh of meshes) {
+        const variant = mesh.shaderVariant;
+        if (variant === undefined) continue;
+        if (mesh.thinInstances === undefined) {
+            plain.add(variant);
+            continue;
+        }
+        instanced.set(
+            variant,
+            (instanced.get(variant) ?? false) ||
+                mesh.thinInstanceColors === true,
+        );
+    }
+    for (const variant of instanced.keys()) {
+        if (plain.has(variant)) {
+            fail(
+                `Shader material '${variant}' is drawn both with and ` +
+                    "without thin instances; the instanced lanes are " +
+                    "declared in the prelude the stage compiles against, " +
+                    "so one program cannot serve both.",
+            );
+        }
+    }
+    return instanced;
 }
