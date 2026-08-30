@@ -408,7 +408,11 @@ export interface AssignmentContext extends DeterministicRandomContext {
   /** Which material a scene-code mesh was assigned, by its mesh index. */
   recordSceneMeshMaterial(
     meshIndex: number,
-    material: { pbrMaterial: number | null; nodeMaterial: number | null },
+    material: {
+      pbrMaterial: number | null;
+      nodeMaterial: number | null;
+      standardMaterial: boolean;
+    },
   ): void;
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
@@ -1283,6 +1287,7 @@ export function emitPropertyAssignment(
         context.recordSceneMeshMaterial(target.sceneMeshIndex, {
           pbrMaterial: material.scenePbrMaterialIndex ?? null,
           nodeMaterial: material.nodeMaterialIndex ?? null,
+          standardMaterial: material.standardMaterial === true,
         });
         if (material.assetPbrMaterial) {
           context.recordSceneMeshAssetPbrMaterial(target.sceneMeshIndex);

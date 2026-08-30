@@ -248,6 +248,15 @@ target_include_directories(
 )
 target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="assets")
 target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="shaders")
+if("mesh:update-positions" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native PRIVATE BBLITE_MESH_POSITION_UPDATE=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native PRIVATE BBLITE_MESH_POSITION_UPDATE=0
+    )
+endif()
 
 if(EXISTS "${BBLITE_GENERATED_DIR}/assets")
     # Deployed by its own always-run target rather than POST_BUILD on the

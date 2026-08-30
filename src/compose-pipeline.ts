@@ -100,6 +100,7 @@ export interface ComposedScenePipeline {
     runtimeMeshFeatures: number | undefined;
     standardComposition: StandardSceneComposition | undefined;
     standardRenderableMeshFeatures: number[] | undefined;
+    standardRuntimeMeshFeatures: number | undefined;
     nodeVariants: readonly NodeVariantManifestEntry[];
 }
 
@@ -721,12 +722,28 @@ export async function composeScenePipeline({
     // the transcribed standard fragment is retired.
     let standardComposition: StandardSceneComposition | undefined;
     let standardRenderableMeshFeatures: number[] | undefined;
+    let standardRuntimeMeshFeatures: number | undefined;
     // The scene-code rows the Standard table keys on: the same walk both
     // families read, sliced to the scene's own meshes.
     const standardSceneMeshFeatures = sceneMeshRows.map(
         (row) => renderableMeshFeatures[row] ?? 0,
     );
     if (result.manifest.features.includes("material:standard")) {
+        const runtimeStandardFeatureValues = result.manifest.sceneMeshes
+            .flatMap((mesh, index) =>
+                mesh.standardMaterial
+                    ? [standardSceneMeshFeatures[index] ?? 0]
+                    : [],
+            );
+        const runtimeStandardFeatureSet = new Set(
+            runtimeStandardFeatureValues,
+        );
+        standardRuntimeMeshFeatures =
+            runtimeStandardFeatureSet.size === 1
+                ? [...runtimeStandardFeatureSet][0]!
+                : result.manifest.sceneMeshes.length === 0
+                  ? await proceduralRenderableFeatures()
+                  : undefined;
         const babylonAssets = result.manifest.assets
             .filter((asset) => asset.kind === "babylon")
             .map((asset) => resolve(outputPath, "assets", asset.output));
@@ -955,6 +972,7 @@ export async function composeScenePipeline({
         runtimeMeshFeatures,
         standardComposition,
         standardRenderableMeshFeatures,
+        standardRuntimeMeshFeatures,
         nodeVariants,
     };
 }

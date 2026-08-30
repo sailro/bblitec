@@ -43,7 +43,7 @@ test("registers unique generated scene targets", () => {
                 sourceOrigin === "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["tetris", "doom", "torus-states", "platformer", "break-meshes", "racer", "littlest-tokyo"],
+        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "littlest-tokyo", "bath-day"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is
@@ -116,6 +116,14 @@ test("registers unique generated scene targets", () => {
             ?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
+    assert.equal(getScene("bath-day").parity?.referenceFrame, 180);
+    assert.equal(
+        getScene("bath-day").parity?.nativeEnvironment
+            ?.BBLITE_SCREENSHOT_FRAME,
+        "180",
+    );
+    assert.equal(getScene("bath-day").parity?.maxFullMad, 0.001);
+    assert.equal(getScene("bath-day").parity?.maxForegroundMad, 0.001);
     assert.equal(
         getScene("tetris").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "181",
@@ -124,6 +132,12 @@ test("registers unique generated scene targets", () => {
         getScene("doom").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "181",
     );
+    assert.equal(
+        getScene("quake").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
+        "181",
+    );
+    assert.equal(getScene("quake").parity?.maxFullMad, 0.001);
+    assert.equal(getScene("quake").parity?.maxForegroundMad, 0.001);
     assert.equal(
         getScene("break-meshes").parity?.nativeEnvironment
             ?.BBLITE_SCREENSHOT_FRAME,
@@ -290,6 +304,11 @@ test("keeps package scene commands registry-driven", () => {
         sceneCommand,
         /`-DBBLITE_DAWN_DIR=\$\{tools\.dawnDirectory\}`/,
     );
+    assert.match(
+        sceneCommand,
+        /sceneUsesNativeFeature\(scene, "audio:engine"\)/,
+    );
+    assert.match(sceneCommand, /\[audioScenes, 1\]/);
     const parityScene = readFileSync("src/parity-scene.ts", "utf8");
     assert.match(parityScene, /windowsHide: true/);
     assert.match(parityScene, /BBLITE_TEST_PASS: "1"/);

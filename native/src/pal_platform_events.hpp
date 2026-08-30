@@ -188,6 +188,138 @@ inline void sync_engine_canvas_size(
     }
 }
 
+// TODO(window-move): adopt SDL's main-callback loop for interactive builds.
+// Conventional SDL_PollEvent loops stall application iteration during the
+// Win32 move/resize modal loop. Do not work around that with re-entrant event
+// watchers, compositor flushes, or temporary window-style changes.
+
+/** Translate SDL's button masks to PointerEvent.buttons. */
+inline double dom_mouse_buttons(SDL_MouseButtonFlags pressed) {
+    return
+        ((pressed & SDL_BUTTON_LMASK) != 0 ? 1.0 : 0.0) +
+        ((pressed & SDL_BUTTON_RMASK) != 0 ? 2.0 : 0.0) +
+        ((pressed & SDL_BUTTON_MMASK) != 0 ? 4.0 : 0.0) +
+        ((pressed & SDL_BUTTON_X1MASK) != 0 ? 8.0 : 0.0) +
+        ((pressed & SDL_BUTTON_X2MASK) != 0 ? 16.0 : 0.0);
+}
+
+/**
+ * Preserve physical button state across SDL relative-mode motion packets.
+ *
+ * On Windows, switching to relative mode while a button is held can produce
+ * motion events whose `state` mask is empty even though no button-up event
+ * occurred. PointerEvent.buttons follows button transitions, so use the SDL
+ * down/up events as the source of truth instead of treating such a motion
+ * packet as a release.
+ */
+inline SDL_MouseButtonFlags& tracked_mouse_buttons() {
+    static SDL_MouseButtonFlags buttons = 0;
+    return buttons;
+}
+
+inline void update_tracked_mouse_button(const SDL_MouseButtonEvent& event) {
+    SDL_MouseButtonFlags& buttons = tracked_mouse_buttons();
+    const SDL_MouseButtonFlags changed = SDL_BUTTON_MASK(event.button);
+    if (event.down) {
+        buttons |= changed;
+    } else {
+        buttons &= ~changed;
+    }
+}
+
+inline void apply_pointer_lock_cursor(bool locked) {
+    if (locked) {
+        SDL_HideCursor();
+        return;
+    }
+    SDL_ShowCursor();
+}
+
+inline const char* pointer_lock_hint(const char* name) {
+    const char* value = SDL_GetHint(name);
+    return value ? value : "<unset>";
+}
+
+inline void trace_pointer_lock_state(
+    std::string_view phase,
+    SDL_Window* window,
+    const Engine& engine) {
+    if (!runtime_trace_enabled()) return;
+    std::cerr
+        << "[bblite trace] pointer-lock phase=" << phase
+        << " requested=" << (engine.pointer_lock_requested ? 1 : 0)
+        << " locked=" << (engine.pointer_locked ? 1 : 0)
+        << " relative="
+        << (window && SDL_GetWindowRelativeMouseMode(window) ? 1 : 0)
+        << " cursor-visible=" << (SDL_CursorVisible() ? 1 : 0)
+        << " relative-cursor-hint="
+        << pointer_lock_hint(SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE)
+        << " system-scale-hint="
+        << pointer_lock_hint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE)
+        << " speed-scale-hint="
+        << pointer_lock_hint(SDL_HINT_MOUSE_RELATIVE_SPEED_SCALE)
+        << '\n';
+}
+
+/**
+ * Apply a pointer-lock request made from an application event callback.
+ *
+ * SDL relative mode is the desktop counterpart of browser pointer lock: it
+ * hides and confines the cursor while reporting unbounded relative motion.
+ * The change callback runs only after SDL accepted the transition, matching
+ * `pointerlockchange` rather than treating a request as immediate success.
+ */
+inline void sync_pointer_lock(SDL_Window* window, Engine& engine) {
+    if (!window) {
+        return;
+    }
+    if (engine.pointer_lock_requested == engine.pointer_locked) {
+        if (engine.pointer_locked) {
+            apply_pointer_lock_cursor(true);
+        }
+        return;
+    }
+    trace_pointer_lock_state("sync-enter", window, engine);
+    if (engine.pointer_lock_requested) {
+        // Browser pointer lock uses the system-adjusted mouse movement unless
+        // unadjustedMovement is explicitly requested. Preserve that contract
+        // and pin SDL's independent speed scale to neutral.
+        SDL_SetHintWithPriority(
+            SDL_HINT_MOUSE_AUTO_CAPTURE,
+            "0",
+            SDL_HINT_OVERRIDE);
+        SDL_SetHintWithPriority(
+            SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE,
+            "1",
+            SDL_HINT_OVERRIDE);
+        SDL_SetHintWithPriority(
+            SDL_HINT_MOUSE_RELATIVE_SPEED_SCALE,
+            "1.0",
+            SDL_HINT_OVERRIDE);
+        SDL_SetHintWithPriority(
+            SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE,
+            "0",
+            SDL_HINT_OVERRIDE);
+    }
+    if (!SDL_SetWindowRelativeMouseMode(
+            window,
+            engine.pointer_lock_requested)) {
+        if (runtime_trace_enabled()) {
+            std::cerr
+                << "[bblite trace] pointer-lock SDL error=\""
+                << SDL_GetError() << "\"\n";
+        }
+        trace_pointer_lock_state("sync-rejected", window, engine);
+        return;
+    }
+    engine.pointer_locked = engine.pointer_lock_requested;
+    apply_pointer_lock_cursor(engine.pointer_locked);
+    trace_pointer_lock_state("sync-applied", window, engine);
+    for (const auto& callback : engine.pointer_lock_change_callbacks) {
+        callback();
+    }
+}
+
 inline void handle_platform_event(
     const SDL_Event& event,
     Engine& engine) {
@@ -220,11 +352,29 @@ inline void handle_platform_event(
     if (
         event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
         event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+        update_tracked_mouse_button(event.button);
+        const SDL_MouseButtonFlags pressed = tracked_mouse_buttons();
         const PlatformMouseEvent mouse_event{
             .button = static_cast<double>(event.button.button - 1),
+            .buttons = dom_mouse_buttons(pressed),
             .client_x = static_cast<double>(event.button.x),
             .client_y = static_cast<double>(event.button.y),
         };
+        if (runtime_trace_enabled()) {
+            std::cerr
+                << "[bblite trace] input mouse-button state="
+                << (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
+                        ? "down"
+                        : "up")
+                << " sdl-button=" << static_cast<int>(event.button.button)
+                << " dom-button=" << mouse_event.button
+                << " sdl-mask=" << static_cast<unsigned long long>(pressed)
+                << " dom-buttons=" << mouse_event.buttons
+                << " requested-before="
+                << (engine.pointer_lock_requested ? 1 : 0)
+                << " locked-before=" << (engine.pointer_locked ? 1 : 0)
+                << '\n';
+        }
         const auto& callbacks =
             event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
                 ? engine.mouse_down_callbacks
@@ -232,6 +382,83 @@ inline void handle_platform_event(
         for (const auto& callback : callbacks) {
             callback(mouse_event);
         }
+        if (runtime_trace_enabled()) {
+            std::cerr
+                << "[bblite trace] input mouse-button callbacks-complete"
+                << " requested-after="
+                << (engine.pointer_lock_requested ? 1 : 0)
+                << " locked-after=" << (engine.pointer_locked ? 1 : 0)
+                << '\n';
+        }
+        sync_pointer_lock(
+            SDL_GetWindowFromID(event.button.windowID),
+            engine);
+        return;
+    }
+    if (event.type == SDL_EVENT_MOUSE_MOTION) {
+        const PlatformMouseEvent mouse_event{
+            .button = -1.0,
+            .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
+            .client_x = static_cast<double>(event.motion.x),
+            .client_y = static_cast<double>(event.motion.y),
+            .movement_x = static_cast<double>(event.motion.xrel),
+            .movement_y = static_cast<double>(event.motion.yrel),
+        };
+        static std::size_t traced_motion_count = 0;
+        if (
+            runtime_trace_enabled() &&
+            traced_motion_count < 32 &&
+            (engine.pointer_lock_requested ||
+             engine.pointer_locked ||
+             event.motion.state != 0)) {
+            ++traced_motion_count;
+            std::cerr
+                << "[bblite trace] input mouse-motion"
+                << " xrel=" << mouse_event.movement_x
+                << " yrel=" << mouse_event.movement_y
+                << " sdl-mask="
+                << static_cast<unsigned long long>(event.motion.state)
+                << " dom-buttons=" << mouse_event.buttons
+                << " requested=" << (engine.pointer_lock_requested ? 1 : 0)
+                << " locked=" << (engine.pointer_locked ? 1 : 0)
+                << '\n';
+        }
+        for (const auto& callback : engine.mouse_move_callbacks) {
+            callback(mouse_event);
+        }
+        sync_pointer_lock(
+            SDL_GetWindowFromID(event.motion.windowID),
+            engine);
+        return;
+    }
+    if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+        // DOM deltaY is positive when scrolling down. SDL's normalized Y is
+        // positive away from the user; natural-scroll devices mark FLIPPED.
+        const double delta_y =
+            event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
+                ? static_cast<double>(event.wheel.y)
+                : -static_cast<double>(event.wheel.y);
+        const PlatformMouseEvent mouse_event{
+            .button = -1.0,
+            .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
+            .client_x = static_cast<double>(event.wheel.mouse_x),
+            .client_y = static_cast<double>(event.wheel.mouse_y),
+            .delta_y = delta_y,
+        };
+        for (const auto& callback : engine.mouse_wheel_callbacks) {
+            callback(mouse_event);
+        }
+        return;
+    }
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+        tracked_mouse_buttons() = 0;
+        for (const auto& callback : engine.mouse_cancel_callbacks) {
+            callback();
+        }
+        engine.pointer_lock_requested = false;
+        sync_pointer_lock(
+            SDL_GetWindowFromID(event.window.windowID),
+            engine);
         return;
     }
     const bool hidden =

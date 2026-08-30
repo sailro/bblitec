@@ -117,6 +117,24 @@ const NODE_FACTORIES: Readonly<
     },
 };
 
+/**
+ * Browser applications sometimes feature-detect an AudioContext factory
+ * before calling it. A factory this native surface implements is present by
+ * construction, so its `typeof` result is the same constant as the browser's.
+ */
+export function isSupportedAudioMethodProperty(
+    context: AudioReceiverContext,
+    expression: ts.Expression,
+): boolean {
+    const property = context.unwrap(expression);
+    if (!ts.isPropertyAccessExpression(property)) return false;
+    const receiver = resolveAudioReceiver(context, property.expression);
+    return Boolean(
+        receiver?.kind === "audio-context" &&
+        NODE_FACTORIES[property.name.text],
+    );
+}
+
 /** `param.<method>(value, time)`. */
 const PARAM_SCHEDULES: Readonly<Record<string, string>> = {
     setValueAtTime: "audio_param_set_value_at_time",
@@ -308,6 +326,32 @@ export function compileAudioMethodCall(
         return undefined;
     }
     const method = callee.name.text;
+    if (
+        receiver.kind === "audio-context" &&
+        method === "decodeAudioData" &&
+        call.arguments.length === 1
+    ) {
+        const encoded = context.compileValue(call.arguments[0]!);
+        if (encoded.dynamicAssetPathCpp) {
+            context.reachFeature("audio:buffer-source", call);
+            context.reachFeature("audio:decoded-buffer", call);
+            const decoded = context.allocateTemporaryCppName(
+                "decoded_audio",
+            );
+            context.emit(
+                `const bbl::pal::AudioBufferHandle ${decoded} = ` +
+                    `bbl::pal::audio_decode_file(${receiver.cpp}, ` +
+                    `${encoded.dynamicAssetPathCpp});`,
+            );
+            return {
+                kind: "audio-buffer",
+                cpp: decoded,
+                dataType: { kind: "handle", handle: "audio-buffer" },
+                optionalFoundCpp: `${decoded}.value != 0u`,
+                audioContextCpp: receiver.cpp,
+            };
+        }
+    }
     refuseAudioName(context, REFUSED_METHODS, method, call, "Web Audio");
 
     if (receiver.kind === "audio-context") {

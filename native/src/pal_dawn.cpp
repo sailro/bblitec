@@ -286,6 +286,7 @@ struct DawnMesh {
     WGPUTextureView reflection = nullptr;
     // Alpha-card shader vertex uniforms (center/angle/depth).
     WGPUBuffer shader_vertex_uniforms = nullptr;
+    std::uint64_t position_version = 0;
     std::uint64_t transform_version = 0;
     bool gpu_world_transform = false;
 #if BBLITE_GPU_DEFORMATION
@@ -7800,6 +7801,20 @@ bool run_dawn_engine(Engine& engine) {
                 : transformed_vertices(engine, geometry, mesh_record);
         DawnMesh mesh;
         if (shader_material) {
+#if BBLITE_MESH_POSITION_UPDATE
+            // Mutable procedural geometry must own its upload instead of
+            // borrowing the immutable shader-geometry cache.
+            mesh.vertices = create_buffer(
+                state,
+                WGPUBufferUsage_Vertex,
+                vertices.data(),
+                vertices.size() * sizeof(GpuVertex));
+            mesh.indices = create_buffer(
+                state,
+                WGPUBufferUsage_Index,
+                geometry.indices.data(),
+                geometry.indices.size() * sizeof(std::uint32_t));
+#else
             mesh.shared_geometry = find_shared_shader_geometry(
                 state.shared_shader_geometries,
                 vertices,
@@ -7828,6 +7843,7 @@ bool run_dawn_engine(Engine& engine) {
             mesh.vertices = mesh.shared_geometry->vertex_buffer;
             mesh.indices = mesh.shared_geometry->index_buffer;
             mesh.owns_geometry_buffers = false;
+#endif
         } else {
             mesh.vertices = create_buffer(
                 state,
@@ -7998,6 +8014,7 @@ bool run_dawn_engine(Engine& engine) {
         }
         mesh.transform_version =
             mesh_record.transform_version;
+        mesh.position_version = geometry.position_version;
         mesh.gpu_world_transform =
             mesh_record.gpu_world_transform;
 
@@ -9658,6 +9675,44 @@ bool run_dawn_engine(Engine& engine) {
                     sizeof(deformation));
             }
 #endif
+#if BBLITE_MESH_POSITION_UPDATE
+            const ModelGeometry& geometry =
+                engine.geometries[item.geometry];
+            if (
+                dawn_mesh.position_version !=
+                geometry.position_version) {
+                const std::vector<GpuVertex> vertices =
+                    item.material_kind ==
+                            upstream::RenderMaterialKind::shader
+                        ? local_vertices(engine, geometry)
+                        : transformed_vertices(engine, geometry, mesh);
+                wgpuQueueWriteBuffer(
+                    state.queue,
+                    dawn_mesh.vertices,
+                    0,
+                    vertices.data(),
+                    vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+                if (dawn_mesh.pinned_vertices) {
+                    const std::vector<GpuVertex> pinned =
+                        pinned_convention_vertices(
+                            vertices,
+                            mesh.mirrored_x);
+                    wgpuQueueWriteBuffer(
+                        state.queue,
+                        dawn_mesh.pinned_vertices,
+                        0,
+                        pinned.data(),
+                        pinned.size() * sizeof(GpuVertex));
+                }
+#endif
+                dawn_mesh.position_version =
+                    geometry.position_version;
+                dawn_mesh.transform_version = mesh.transform_version;
+                dawn_mesh.gpu_world_transform =
+                    mesh.gpu_world_transform;
+            }
+#endif
             if (
                 mesh.gpu_deformation &&
                 !engine.geometries[item.geometry].flat_normals) {
@@ -9762,8 +9817,11 @@ bool run_dawn_engine(Engine& engine) {
                 upstream::camera_world_matrix(camera));
         const std::array<float, 16> frame_projection =
             upstream::build_scene_projection(camera, aspect);
-        const ShaderPassMatrices frame_pass_matrices{
+        const std::array<float, 4> frame_camera_position =
+            shader_camera_position(scene, engine, camera);
+        ShaderPassMatrices frame_pass_matrices{
             matrix.data(), &frame_view, &frame_projection};
+        frame_pass_matrices.camera_position = &frame_camera_position;
 #if BBLITE_HAS_SPLATS
         {
             // Lazily built for the same reason the billboard passes are:
@@ -10338,8 +10396,12 @@ bool run_dawn_engine(Engine& engine) {
                 const std::array<float, 16> task_projection =
                     upstream::build_scene_projection(
                         task_camera, task_aspect);
-                const ShaderPassMatrices task_pass_matrices{
+                const std::array<float, 4> task_camera_position =
+                    shader_camera_position(scene, engine, task_camera);
+                ShaderPassMatrices task_pass_matrices{
                     task_matrix.data(), &task_view, &task_projection};
+                task_pass_matrices.camera_position =
+                    &task_camera_position;
                 if (!shadow_task) {
                     wgpuQueueWriteBuffer(
                         state.queue,
@@ -10381,10 +10443,12 @@ bool run_dawn_engine(Engine& engine) {
                         0,
                         generator.caster_view_projection.data(),
                         64);
-                    const ShaderPassMatrices caster_pass_matrices{
+                    ShaderPassMatrices caster_pass_matrices{
                         generator.caster_view_projection.data(),
                         &generator.caster_view,
                         nullptr};
+                    caster_pass_matrices.camera_position =
+                        &task_camera_position;
                     write_material_uniforms(
                         render_task.draw_lists.opaque,
                         caster_pass_matrices);

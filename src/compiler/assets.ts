@@ -9,7 +9,7 @@
 import ts from "typescript";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { dirname, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
     findRepositoryRoot,
     readUpstreamPin,
@@ -58,6 +58,10 @@ export function registerAsset(
         source,
         context.options.fileName,
     );
+    source = canonicalLocalAssetSource(
+        source,
+        context.options.fileName,
+    );
     const key = `${kind}:${source}:${faceSize ?? ""}`;
     const existing = context.assets.get(key);
     if (existing) {
@@ -71,6 +75,34 @@ export function registerAsset(
     );
     context.assets.set(key, asset);
     return asset;
+}
+
+/**
+ * Gives one repository file one manifest identity regardless of how it was
+ * discovered. Static URLs are normally entry-relative, while a closed
+ * directory scan necessarily discovers absolute filesystem paths. Keeping
+ * the source entry-relative makes manifests portable and lets both routes
+ * share the same packaged payload and output name.
+ */
+function canonicalLocalAssetSource(
+    source: string,
+    entryFileName: string,
+): string {
+    if (
+        isDataUrl(source) ||
+        (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(source) &&
+            !isAbsolute(source))
+    ) {
+        return source;
+    }
+    const entryDirectory = dirname(resolve(entryFileName));
+    const absoluteSource = isAbsolute(source)
+        ? resolve(source)
+        : resolve(entryDirectory, source);
+    if (!existsSync(absoluteSource)) return source;
+    return relative(entryDirectory, absoluteSource)
+        .split(sep)
+        .join("/");
 }
 
 /**

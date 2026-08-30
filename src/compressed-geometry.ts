@@ -42,6 +42,7 @@ const QUANTIZATION_EXTENSION = "KHR_mesh_quantization";
 const SPARSE_FEATURE_ID = "_sparse";
 
 const COMPONENT_FLOAT = 5126;
+const COMPONENT_UNSIGNED_SHORT = 5123;
 const COMPONENT_UNSIGNED_INT = 5125;
 
 /** glTF accessor type names by component count. */
@@ -373,6 +374,33 @@ class BinaryBuilder {
 }
 
 /**
+ * Packs Draco's signed 32-bit joint output into a glTF-valid joint accessor.
+ *
+ * Draco exposes integer attributes through one int32 decoder path, while
+ * glTF permits JOINTS_n to use only unsigned byte or unsigned short. Keep the
+ * decoded values exact and refuse instead of wrapping if an asset exceeds the
+ * wider legal representation.
+ */
+export function encodeUnsignedShortJoints(
+    data: Int32Array,
+    label: string,
+    name: string,
+): Uint16Array {
+    const encoded = new Uint16Array(data.length);
+    for (let index = 0; index < data.length; index += 1) {
+        const value = data[index]!;
+        if (value < 0 || value > 0xffff) {
+            throw new Error(
+                `${label}: Draco '${name}' joint ${value} is outside the ` +
+                    "unsigned-short range.",
+            );
+        }
+        encoded[index] = value;
+    }
+    return encoded;
+}
+
+/**
  * Replaces every Draco-compressed primitive with ordinary accessors.
  *
  * Returns the asset unchanged when it carries no compressed geometry.
@@ -400,7 +428,7 @@ export async function decompressGeometry(
     const binary = new BinaryBuilder(glb.binary);
 
     const addAccessor = (
-        data: Float32Array | Int32Array | Uint32Array,
+        data: Float32Array | Uint16Array | Uint32Array,
         componentCount: number,
         componentType: number,
         count: number,
@@ -486,15 +514,18 @@ export async function decompressGeometry(
                     continue;
                 }
                 if (data instanceof Int32Array) {
-                    // Draco hands joints back as int32, which is not a
-                    // component type glTF allows for JOINTS_n. Re-encoding
-                    // to unsigned short is the obvious fix, but no reached
-                    // asset needs it, so it fails here rather than shipping
-                    // an untested conversion.
-                    throw new Error(
-                        `${label}: Draco '${name}' decodes to int32, which needs ` +
-                            "an unsigned-short re-encode that no reached asset exercises.",
+                    const componentCount =
+                        data.length / decoded.vertexCount;
+                    const existing = accessors[declared[name] ?? -1];
+                    const index = addAccessor(
+                        encodeUnsignedShortJoints(data, label, name),
+                        componentCount,
+                        COMPONENT_UNSIGNED_SHORT,
+                        decoded.vertexCount,
+                        existing,
                     );
+                    declared[name] = index;
+                    continue;
                 }
                 const componentCount = data.length / decoded.vertexCount;
                 const existing = accessors[declared[name] ?? -1];

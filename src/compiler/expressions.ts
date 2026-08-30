@@ -15,6 +15,7 @@ import { doubleLiteral } from "../cpp-literals.js";
 import {
     compileAudioDecodeAssetCall,
     compileAudioMethodCall,
+    isSupportedAudioMethodProperty,
 } from "./audio-surface.js";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
@@ -55,7 +56,7 @@ import type {
  * template as a discarded statement, which is dead work whose only visible
  * trace is the compiler rejecting the discard.
  */
-const PURE_NUMBER_FORMATTERS = new Set([
+export const PURE_NUMBER_FORMATTERS = new Set([
     "toFixed",
     "toPrecision",
     "toExponential",
@@ -164,6 +165,9 @@ export interface ExpressionContext
     moduleRelativeAssetUrl(
         expression: ts.Expression,
     ): string | undefined;
+    compileDynamicModuleRelativeAssetUrl(
+        expression: ts.Expression,
+    ): Value | undefined;
     materializeStaticNativeValue(
         identifier: ts.Identifier,
         value: Value,
@@ -614,7 +618,9 @@ export class ExpressionLowerer {
                     const dynamicString =
                         key.kind === "string" ||
                         (key.kind === "data" &&
-                            key.dataType?.kind === "string");
+                            (key.dataType?.kind === "string" ||
+                                (key.dataType?.kind === "optional" &&
+                                    key.dataType.inner.kind === "string")));
                     const dynamicEnum =
                         key.kind === "data" &&
                         key.dataType?.kind === "enum";
@@ -1254,6 +1260,18 @@ export class ExpressionLowerer {
                 unwrapped.expression,
             );
             if (
+                isSupportedAudioMethodProperty(
+                    this.context,
+                    expression,
+                )
+            ) {
+                return {
+                    kind: "string",
+                    cpp: this.context.cppString("function"),
+                    staticString: "function",
+                };
+            }
+            if (
                 expression.kind === ts.SyntaxKind.NullKeyword
             ) {
                 return {
@@ -1794,6 +1812,8 @@ export class ExpressionLowerer {
             whenTrue.kind === "record" &&
             whenFalse.kind === "record"
         ) {
+            const trueClass = this.context.classOf(whenTrue);
+            const falseClass = this.context.classOf(whenFalse);
             const trueProperties = whenTrue.recordProperties ?? {};
             const falseProperties = whenFalse.recordProperties ?? {};
             const names = Object.keys(trueProperties);
@@ -1816,11 +1836,19 @@ export class ExpressionLowerer {
                     node,
                 );
             }
-            return {
+            const selectedRecord: Value = {
                 kind: "record",
                 cpp: "",
                 recordProperties: selected,
             };
+            if (trueClass && trueClass === falseClass) {
+                selectedRecord.classDeclaration = trueClass;
+                if (whenTrue.recordGetters) {
+                    selectedRecord.recordGetters =
+                        whenTrue.recordGetters;
+                }
+            }
+            return selectedRecord;
         }
         if (
             whenTrue.kind === "handle-collection" &&
@@ -2040,12 +2068,29 @@ export class ExpressionLowerer {
                 callee.name.text === "fromCharCode" &&
                 !this.context.lookupOptional(callee.expression)
             ) {
-                this.context.expectArgumentCount(call, 1, 1);
                 this.context.reachJsData();
                 return {
                     kind: "data",
-                    cpp: `bbl::js::string_from_char_code(${this.context.compileNumber(call.arguments[0]!, "double")})`,
+                    cpp:
+                        call.arguments.length === 0
+                            ? "std::string{}"
+                            : call.arguments.length === 1
+                            ? `bbl::js::string_from_char_code(${this.context.compileNumber(call.arguments[0]!, "double")})`
+                            : `bbl::js::string_from_char_codes({${call.arguments.map((argument) => this.context.compileNumber(argument, "double")).join(", ")}})`,
                     dataType: { kind: "string" },
+                };
+            }
+            if (
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "Number" &&
+                callee.name.text === "isFinite" &&
+                !this.context.lookupOptional(callee.expression)
+            ) {
+                this.context.expectArgumentCount(call, 1, 1);
+                return {
+                    kind: "boolean",
+                    cpp: `std::isfinite(${this.context.compileNumber(call.arguments[0]!, "double")})`,
+                    dataType: { kind: "boolean" },
                 };
             }
             if (callee.name.text === "toString") {
@@ -2061,6 +2106,57 @@ export class ExpressionLowerer {
                         dataType: { kind: "string" },
                     };
                 }
+            }
+            if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
+                this.context.expectArgumentCount(call, 0, 1);
+                const owner = this.compileValue(callee.expression);
+                const number = owner.staticNumber;
+                const digits = call.arguments[0]
+                    ? staticNumberValue(
+                          this.context,
+                          call.arguments[0],
+                      )
+                    : undefined;
+                if (
+                    owner.kind !== "number" ||
+                    number === undefined ||
+                    (call.arguments.length > 0 &&
+                        (digits === undefined ||
+                            !Number.isInteger(digits)))
+                ) {
+                    this.context.fail(
+                        call,
+                        `Number.${callee.name.text} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
+                    );
+                }
+                let text: string;
+                if (callee.name.text === "toFixed") {
+                    if (digits !== undefined && (digits < 0 || digits > 100)) {
+                        this.context.fail(call, "Number.toFixed precision must be between 0 and 100.");
+                    }
+                    text = digits === undefined
+                        ? number.toFixed()
+                        : number.toFixed(digits);
+                } else if (callee.name.text === "toPrecision") {
+                    if (digits !== undefined && (digits < 1 || digits > 100)) {
+                        this.context.fail(call, "Number.toPrecision precision must be between 1 and 100.");
+                    }
+                    text = digits === undefined
+                        ? number.toPrecision()
+                        : number.toPrecision(digits);
+                } else {
+                    if (digits !== undefined && (digits < 0 || digits > 100)) {
+                        this.context.fail(call, "Number.toExponential precision must be between 0 and 100.");
+                    }
+                    text = digits === undefined
+                        ? number.toExponential()
+                        : number.toExponential(digits);
+                }
+                return {
+                    kind: "string",
+                    cpp: this.context.cppString(text),
+                    staticString: text,
+                };
             }
             const staticOwner = this.compileStaticOwner(
                 callee.expression,
@@ -2080,11 +2176,21 @@ export class ExpressionLowerer {
                 );
                 if (mapped) return mapped;
             }
-            const regexpOwner = ts.isIdentifier(callee.expression)
-                ? this.context.lookupOptional(callee.expression)
-                : undefined;
+            const regexpType = this.context.checker.getTypeAtLocation(
+                callee.expression,
+            );
+            const regexpOwner =
+                ts.isIdentifier(callee.expression) &&
+                regexpType.symbol?.name === "RegExp"
+                    ? this.compileValue(callee.expression)
+                    : ts.isIdentifier(callee.expression)
+                      ? this.context.lookupOptional(callee.expression)
+                      : undefined;
             if (regexpOwner?.kind === "regexp") {
-                if (callee.name.text !== "exec") {
+                if (
+                    callee.name.text !== "exec" &&
+                    callee.name.text !== "test"
+                ) {
                     this.context.fail(
                         callee.name,
                         `RegExp method '${callee.name.text}' is not supported.`,
@@ -2096,6 +2202,12 @@ export class ExpressionLowerer {
                     { kind: "string" },
                 );
                 this.context.reachJsData();
+                if (callee.name.text === "test") {
+                    return {
+                        kind: "boolean",
+                        cpp: `${regexpOwner.cpp}.test(${input})`,
+                    };
+                }
                 return {
                     kind: "data",
                     cpp: `${regexpOwner.cpp}.exec(${input})`,
@@ -2197,7 +2309,8 @@ export class ExpressionLowerer {
             if (
                 ts.isIdentifier(receiver) ||
                 receiver.kind === ts.SyntaxKind.ThisKeyword ||
-                ts.isPropertyAccessExpression(receiver)
+                ts.isPropertyAccessExpression(receiver) ||
+                ts.isConditionalExpression(receiver)
             ) {
                 const instance = ts.isIdentifier(receiver)
                     ? this.context.lookupOptional(receiver)
@@ -2396,6 +2509,10 @@ export class ExpressionLowerer {
             );
         }
 
+        const dynamicModuleAsset =
+            this.context.compileDynamicModuleRelativeAssetUrl(call);
+        if (dynamicModuleAsset) return dynamicModuleAsset;
+
         const fetched = this.context.compileStaticFetch(
             call,
             callee,
@@ -2561,6 +2678,25 @@ export class ExpressionLowerer {
             return {
                 kind: "number",
                 cpp: `bbl::js::number_from_string(${value.cpp})`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "optional" &&
+            (value.dataType.inner.kind === "string" ||
+                value.dataType.inner.kind === "number")
+        ) {
+            const present = value.dataType.inner.kind === "string"
+                ? "bbl::js::number_from_string(*v)"
+                : "static_cast<double>(*v)";
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp:
+                    `([&]() { auto v = ${value.cpp}; ` +
+                    `return v.has_value() ? ${present} : ` +
+                    `std::numeric_limits<double>::quiet_NaN(); }())`,
                 dataType: { kind: "number" },
             };
         }

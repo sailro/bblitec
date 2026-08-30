@@ -1688,8 +1688,11 @@ inline void write_render_capture(
         upstream::camera_world_matrix(camera));
     const std::array<float, 16> frame_projection =
         upstream::build_scene_projection(camera, capture_aspect);
-    const ShaderPassMatrices frame_pass_matrices{
+    const std::array<float, 4> frame_camera_position =
+        shader_camera_position(scene, engine, camera);
+    ShaderPassMatrices frame_pass_matrices{
         view_projection.data(), &frame_view, &frame_projection};
+    frame_pass_matrices.camera_position = &frame_camera_position;
     write_draw_list(
         json,
         "opaque",

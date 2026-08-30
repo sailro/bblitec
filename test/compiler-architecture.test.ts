@@ -658,6 +658,28 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /if \(code == "Space"\) return " ";/);
     assert.match(events, /engine\.key_down_callbacks/);
     assert.match(events, /engine\.key_up_callbacks/);
+    assert.match(events, /SDL_EVENT_MOUSE_MOTION/);
+    assert.match(events, /SDL_EVENT_MOUSE_WHEEL/);
+    assert.match(events, /engine\.mouse_move_callbacks/);
+    assert.match(events, /engine\.mouse_wheel_callbacks/);
+    assert.match(events, /SDL_SetWindowRelativeMouseMode/);
+    assert.match(events, /SDL_HINT_MOUSE_AUTO_CAPTURE/);
+    assert.match(events, /SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE/);
+    assert.match(events, /SDL_HINT_MOUSE_RELATIVE_SPEED_SCALE/);
+    assert.match(events, /SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE/);
+    assert.match(events, /SDL_HINT_OVERRIDE/);
+    assert.match(events, /update_tracked_mouse_button\(event\.button\)/);
+    assert.match(
+        events,
+        /\.buttons = dom_mouse_buttons\(tracked_mouse_buttons\(\)\)/,
+    );
+    assert.doesNotMatch(
+        events,
+        /\.buttons = dom_mouse_buttons\(event\.motion\.state\)/,
+    );
+    assert.match(events, /SDL_HideCursor/);
+    assert.match(events, /SDL_ShowCursor/);
+    assert.match(events, /engine\.pointer_lock_change_callbacks/);
     assert.match(events, /SDL_EVENT_WINDOW_RESIZED/);
     assert.match(events, /SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED/);
     assert.match(events, /SDL_GetWindowSizeInPixels/);
@@ -678,6 +700,23 @@ test("forwards DOM-compatible application input through every native loop", () =
         assert.match(loop, /handle_platform_event\(event, engine\);/);
         assert.match(loop, /keyboard_replay\.dispatch\(frame, engine\);/);
     }
+});
+
+test("shares large texture payloads and preserves tuple reference identity", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const data = source("native/include/bblite/js_data.hpp");
+    const materials = source("src/lowering/factory/material-factories.ts");
+
+    assert.match(runtime, /class SharedTextureBytes/);
+    assert.match(runtime, /std::shared_ptr<Storage> storage_/);
+    assert.match(runtime, /storage_\.use_count\(\) != 1/);
+    assert.match(runtime, /struct TextureData \{\s*SharedTextureBytes bytes;/);
+    assert.match(runtime, /struct PixelsTexture \{[\s\S]{0,300}SharedTextureBytes rgba;/);
+    assert.match(materials, /normalized\.data\.bytes = texture\.rgba;/);
+
+    assert.match(data, /class Tuple \{/);
+    assert.match(data, /std::shared_ptr<Storage> values_/);
+    assert.match(data, /inline Tuple<N> clone_tuple/);
 });
 
 test("reports zero delta on the fixed clock's first frame", () => {

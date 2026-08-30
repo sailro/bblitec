@@ -9,6 +9,7 @@ import {
     dataTypesEqual,
     doubleLiteral,
     isTypedArrayType,
+    passesByReference,
     typedArrayStoreExpression,
     type DataIterationElement,
     type DataType,
@@ -168,6 +169,15 @@ export interface DataLoweringContext {
         arguments_: readonly Value[],
         callNode: ts.Node,
     ): Value;
+    compilePredicateWithValues(
+        declaration:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression
+            | ts.MethodDeclaration,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+    ): Value;
     compileSpriteAtlasRecord(
         value: Value,
         node: ts.Node,
@@ -273,7 +283,9 @@ export class DataLowerer {
                 "f32array",
                 "u8array",
                 "u16array",
+                "i16array",
                 "u32array",
+                "i32array",
             ].includes(target.dataType.inner.kind);
         if (!assignable) return undefined;
         const value = this.compileForSink(
@@ -927,7 +939,9 @@ export class DataLowerer {
                 "Float32Array",
                 "Uint8Array",
                 "Uint16Array",
+                "Int16Array",
                 "Uint32Array",
+                "Int32Array",
             ].includes(
                 source.expression.text,
             ) ||
@@ -1261,10 +1275,17 @@ export class DataLowerer {
             // number, an optional handle keeps its engine spelling —
             // instead of a bare "data" every consumer would have to
             // special-case.
-            return this.leafValue(
+            const selected = this.leafValue(
                 `(${temp}.has_value() ? (*${temp}) : ${fallback})`,
                 inner,
             );
+            // The conditional materializes either branch as a new C++ value.
+            // Mark composite results as owned so a local can mutate that
+            // materialization before explicitly storing it back (the common
+            // Map.get(key) ?? [] / push / Map.set grouping idiom).
+            return passesByReference(this.context.dataTypes, inner)
+                ? { ...selected, freshData: true }
+                : selected;
         }
         if (
             left.kind === "number" ||
@@ -1389,6 +1410,16 @@ export class DataLowerer {
                     dataType: { kind: "number" },
                 };
             }
+        }
+        if (
+            dataType.kind === "arraybuffer" &&
+            property === "byteLength"
+        ) {
+            return {
+                kind: "number",
+                cpp: `static_cast<double>(${owner.cpp}.byte_length())`,
+                dataType: { kind: "number" },
+            };
         }
         if (
             dataType.kind === "dataview" &&
@@ -1559,6 +1590,19 @@ export class DataLowerer {
         );
         this.context.reachJsData();
         const nativeIndex = `bbl::js::array_index(${index})`;
+        if (dataType.kind === "string") {
+            if (mode === "write") {
+                this.context.fail(
+                    access,
+                    "String element writes are not supported.",
+                );
+            }
+            return {
+                kind: "string",
+                cpp: `bbl::js::string_at(${owner.cpp}, ${nativeIndex})`,
+                dataType: { kind: "string" },
+            };
+        }
         const indexed =
             dataType.kind === "vector" && mode === "write"
                 ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
@@ -1711,7 +1755,9 @@ export class DataLowerer {
                 "u8array",
                 "f32array",
                 "u16array",
+                "i16array",
                 "u32array",
+                "i32array",
                 "handle",
                 "number",
                 "boolean",
@@ -1877,7 +1923,11 @@ export class DataLowerer {
             return value.objectIdentityCpp;
         }
         return value.dataType?.kind === "struct"
-            ? `std::addressof(${value.cpp})`
+            ? this.context.dataTypes.isReferenceStruct(
+                  value.dataType.name,
+              )
+                ? `${value.cpp}.get()`
+                : `std::addressof(${value.cpp})`
             : undefined;
     }
 
@@ -2645,6 +2695,28 @@ export class DataLowerer {
                             declaration.getSourceFile().fileName,
                         ),
                     );
+            const callbackArguments: Value[] = [
+                elementValue,
+                {
+                    kind: "number",
+                    cpp: `static_cast<double>(${index})`,
+                    dataType: { kind: "number" },
+                },
+                {
+                    ...narrowed,
+                    kind: "data",
+                    cpp: source,
+                    dataType,
+                },
+            ];
+            const predicate = [
+                "find",
+                "findIndex",
+                "filter",
+                "some",
+                "every",
+            ].includes(method) &&
+                !this.callbackReturnsBoolean(callback);
             const result = booleanConstructor
                 ? dataType.element.kind === "boolean"
                     ? {
@@ -2668,30 +2740,43 @@ export class DataLowerer {
                               callback,
                               `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
                           )
-                : this.context.compileCallbackWithValues(
-                      callback,
-                      [
-                          elementValue,
-                    {
-                        kind: "number",
-                        cpp: `static_cast<double>(${index})`,
-                        dataType: { kind: "number" },
-                    },
-                    {
-                        ...narrowed,
-                        kind: "data",
-                        cpp: source,
-                        dataType,
-                    },
-                      ],
-                      call,
-                  );
+                : predicate
+                  ? this.context.compilePredicateWithValues(
+                        callback,
+                        callbackArguments,
+                        call,
+                    )
+                  : this.context.compileCallbackWithValues(
+                        callback,
+                        callbackArguments,
+                        call,
+                    );
             emitBody(result, callback, source, index);
         } finally {
             this.context.popScope();
             this.context.decreaseIndent();
         }
         this.context.emit("}");
+    }
+
+    private callbackReturnsBoolean(
+        callback:
+            | ts.Identifier
+            | ts.ArrowFunction
+            | ts.FunctionExpression,
+    ): boolean {
+        const signature = ts.isIdentifier(callback)
+            ? this.context.checker
+                  .getTypeAtLocation(callback)
+                  .getCallSignatures()[0]
+            : this.context.checker.getSignatureFromDeclaration(callback);
+        return (
+            signature !== undefined &&
+            (this.context.checker.getReturnTypeOfSignature(signature)
+                .flags &
+                ts.TypeFlags.BooleanLike) !==
+                0
+        );
     }
 
     /** Clear a static handle snapshot through any inlined parameter alias. */
@@ -2801,7 +2886,9 @@ export class DataLowerer {
             }
         }
         const dynamicOwner =
-            ts.isCallExpression(callee.expression)
+            ts.isCallExpression(callee.expression) ||
+            ts.isNewExpression(callee.expression) ||
+            ts.isArrayLiteralExpression(callee.expression)
                 ? this.context.compileValue(callee.expression)
                 : ts.isIdentifier(callee.expression)
                   ? (this.context.lookupIdentifierValue(callee.expression) ??
@@ -2809,7 +2896,7 @@ export class DataLowerer {
                   : ts.isStringLiteralLike(callee.expression) ||
                       ts.isTemplateExpression(callee.expression)
                     ? this.context.compileValue(callee.expression)
-                  : undefined;
+                    : undefined;
         const owner =
             this.compileDataPath(
                 callee.expression,
@@ -2951,6 +3038,26 @@ export class DataLowerer {
                     dataType,
                 };
             }
+            if (method === "values" || method === "keys") {
+                if (call.arguments.length !== 0) {
+                    this.context.fail(
+                        call,
+                        `Map.${method} expects no arguments.`,
+                    );
+                }
+                return {
+                    kind: "data",
+                    cpp: `bbl::js::map_${method}(${narrowed.cpp})`,
+                    dataType: {
+                        kind: "vector",
+                        element:
+                            method === "values"
+                                ? dataType.value
+                                : dataType.key,
+                    },
+                    freshData: true,
+                };
+            }
             this.context.fail(
                 callee.name,
                 `Map method '${method}' is not supported.`,
@@ -3051,6 +3158,26 @@ export class DataLowerer {
                     dataType: { kind: "string" },
                 };
             }
+            if (method === "toLowerCase") {
+                if (call.arguments.length !== 0) {
+                    this.context.fail(call, "String.toLowerCase takes no arguments.");
+                }
+                return {
+                    kind: "data",
+                    cpp: `bbl::js::string_lower(${narrowed.cpp})`,
+                    dataType: { kind: "string" },
+                };
+            }
+            if (method === "trim") {
+                if (call.arguments.length !== 0) {
+                    this.context.fail(call, "String.trim takes no arguments.");
+                }
+                return {
+                    kind: "data",
+                    cpp: `bbl::js::string_trim(${narrowed.cpp})`,
+                    dataType: { kind: "string" },
+                };
+            }
             if (method === "slice") {
                 if (call.arguments.length < 1 || call.arguments.length > 2) {
                     this.context.fail(call, "String.slice expects one or two arguments.");
@@ -3072,6 +3199,19 @@ export class DataLowerer {
                         "String.split expects one separator.",
                     );
                 }
+                const separatorValue = this.context.compileValue(
+                    call.arguments[0]!,
+                );
+                if (separatorValue.kind === "regexp") {
+                    return {
+                        kind: "data",
+                        cpp: `${separatorValue.cpp}.split(${narrowed.cpp})`,
+                        dataType: {
+                            kind: "vector",
+                            element: { kind: "string" },
+                        },
+                    };
+                }
                 const separator = this.compileForSink(
                     call.arguments[0]!,
                     { kind: "string" },
@@ -3083,6 +3223,32 @@ export class DataLowerer {
                         kind: "vector",
                         element: { kind: "string" },
                     },
+                };
+            }
+            if (method === "replace") {
+                if (call.arguments.length !== 2) {
+                    this.context.fail(
+                        call,
+                        "String.replace expects a pattern and replacement.",
+                    );
+                }
+                const pattern = this.context.compileValue(
+                    call.arguments[0]!,
+                );
+                if (pattern.kind !== "regexp") {
+                    this.context.fail(
+                        call.arguments[0]!,
+                        "Reached String.replace uses a RegExp pattern.",
+                    );
+                }
+                const replacement = this.compileForSink(
+                    call.arguments[1]!,
+                    { kind: "string" },
+                );
+                return {
+                    kind: "data",
+                    cpp: `${pattern.cpp}.replace(${narrowed.cpp}, ${replacement})`,
+                    dataType: { kind: "string" },
                 };
             }
             if (method === "startsWith") {
@@ -3195,16 +3361,18 @@ export class DataLowerer {
             dataType?.kind === "u8array" &&
             (method === "slice" || method === "subarray")
         ) {
-            if (call.arguments.length < 1 || call.arguments.length > 2) {
+            if (call.arguments.length > 2) {
                 this.context.fail(
                     call,
-                    `Uint8Array.${method} expects one or two arguments.`,
+                    `Uint8Array.${method} expects up to two arguments.`,
                 );
             }
-            const begin = this.context.compileNumber(
-                call.arguments[0]!,
-                "double",
-            );
+            const begin = call.arguments[0]
+                ? this.context.compileNumber(
+                      call.arguments[0],
+                      "double",
+                  )
+                : "0.0";
             const end = call.arguments[1]
                 ? this.context.compileNumber(
                       call.arguments[1],
@@ -3221,8 +3389,66 @@ export class DataLowerer {
             };
         }
         if (
+            isTypedArrayType(dataType) &&
+            dataType.kind !== "u8array" &&
+            method === "slice"
+        ) {
+            if (call.arguments.length > 2) {
+                this.context.fail(
+                    call,
+                    "TypedArray.slice expects up to two arguments.",
+                );
+            }
+            const begin = call.arguments[0]
+                ? this.context.compileNumber(
+                      call.arguments[0],
+                      "double",
+                  )
+                : "0.0";
+            const end = call.arguments[1]
+                ? this.context.compileNumber(
+                      call.arguments[1],
+                      "double",
+                  )
+                : `static_cast<double>(${narrowed.cpp}.size())`;
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp:
+                    `bbl::js::typed_array_slice(${narrowed.cpp}, ` +
+                    `${begin}, ${end})`,
+                dataType,
+            };
+        }
+        if (
             dataType?.kind === "dataview" &&
-            ["getInt16", "getUint16", "getInt32", "getUint32"].includes(method)
+            (method === "getInt8" || method === "getUint8")
+        ) {
+            if (call.arguments.length !== 1) {
+                this.context.fail(
+                    call,
+                    `DataView.${method} expects one argument.`,
+                );
+            }
+            const offset = this.context.compileNumber(
+                call.arguments[0]!,
+                "double",
+            );
+            const nativeMethod = method
+                .replace(/^get/, "get_")
+                .replace(/([a-z])([A-Z])/g, "$1_$2")
+                .toLowerCase();
+            return {
+                kind: "number",
+                cpp:
+                    `static_cast<double>(${narrowed.cpp}.${nativeMethod}(` +
+                    `bbl::js::array_index(${offset})))`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (
+            dataType?.kind === "dataview" &&
+            ["getInt16", "getUint16", "getInt32", "getUint32", "getFloat32"].includes(method)
         ) {
             if (call.arguments.length < 1 || call.arguments.length > 2) {
                 this.context.fail(
@@ -3618,6 +3844,48 @@ export class DataLowerer {
                     "Array.map callback results must belong to the native data model.",
                 );
             }
+            const callback = call.arguments[0]
+                ? this.context.unwrap(call.arguments[0])
+                : undefined;
+            if (
+                call.arguments.length === 1 &&
+                callback &&
+                ts.isIdentifier(callback) &&
+                callback.text === "Number" &&
+                !this.context.lookupIdentifierValue(callback) &&
+                mappedType.element.kind === "number" &&
+                (dataType.element.kind === "string" ||
+                    dataType.element.kind === "number")
+            ) {
+                const source = this.context.allocateTemporaryCppName(
+                    "map_source",
+                );
+                const index = this.context.allocateTemporaryCppName(
+                    "map_index",
+                );
+                const output = this.context.allocateTemporaryCppName(
+                    "map_result",
+                );
+                this.context.emit(`auto&& ${source} = ${narrowed.cpp};`);
+                this.context.emit(`bbl::js::Array<double> ${output};`);
+                this.context.emit(`${output}.reserve(${source}.size());`);
+                this.context.emit(
+                    `for (std::size_t ${index} = 0; ${index} < ${source}.size(); ++${index}) {`,
+                );
+                this.context.increaseIndent();
+                const converted = dataType.element.kind === "string"
+                    ? `bbl::js::number_from_string(${source}[${index}])`
+                    : `static_cast<double>(${source}[${index}])`;
+                this.context.emit(`${output}.push_back(${converted});`);
+                this.context.decreaseIndent();
+                this.context.emit("}");
+                this.registerLocal(output, "owned");
+                return {
+                    kind: "data",
+                    cpp: output,
+                    dataType: mappedType,
+                };
+            }
             const output =
                 this.context.allocateTemporaryCppName(
                     "map_result",
@@ -3637,11 +3905,26 @@ export class DataLowerer {
                     );
                 },
                 (result, callback) => {
-                    const value = this.compileKnownValueForSink(
-                        result,
-                        mappedType.element,
-                        callback,
-                    );
+                    let value: string;
+                    if (
+                        result.kind === "void" &&
+                        mappedType.element.kind === "boolean"
+                    ) {
+                        // Promise<void> is represented by its synchronous
+                        // settlement token. The callback body has already
+                        // run; preserve a concise call expression too, then
+                        // store the fulfilled token consumed by Promise.all.
+                        if (result.cpp.length > 0) {
+                            this.context.emit(`${result.cpp};`);
+                        }
+                        value = "true";
+                    } else {
+                        value = this.compileKnownValueForSink(
+                            result,
+                            mappedType.element,
+                            callback,
+                        );
+                    }
                     this.context.emit(
                         `${output}.push_back(${value});`,
                     );
@@ -4114,7 +4397,7 @@ export class DataLowerer {
 
     /**
      * Compiles supported constructor expressions: `new Array`,
-     * `new Float32Array`, `new Uint8Array`, `new Uint16Array`, and `new Uint32Array` (sized, from a numeric
+     * `new Float32Array`, `new Uint8Array`, `new Uint16Array`, `new Int16Array`, `new Uint32Array`, and `new Int32Array` (sized, from a numeric
      * array literal, or from a number[] value).
      */
     public compileNewExpression(
@@ -4224,7 +4507,9 @@ export class DataLowerer {
             name !== "Float32Array" &&
             name !== "Uint8Array" &&
             name !== "Uint16Array" &&
-            name !== "Uint32Array"
+            name !== "Int16Array" &&
+            name !== "Uint32Array" &&
+            name !== "Int32Array"
         ) {
             return undefined;
         }
@@ -4235,7 +4520,11 @@ export class DataLowerer {
                   ? "u8"
                 : name === "Uint16Array"
                   ? "u16"
-                  : "u32";
+                : name === "Int16Array"
+                  ? "i16"
+                : name === "Uint32Array"
+                  ? "u32"
+                  : "i32";
         const dataType: DataType =
             name === "Float32Array"
                 ? { kind: "f32array" }
@@ -4243,7 +4532,11 @@ export class DataLowerer {
                   ? { kind: "u8array" }
                 : name === "Uint16Array"
                   ? { kind: "u16array" }
-                  : { kind: "u32array" };
+                : name === "Int16Array"
+                  ? { kind: "i16array" }
+                : name === "Uint32Array"
+                  ? { kind: "u32array" }
+                  : { kind: "i32array" };
         this.context.reachJsData();
         const argument = expression.arguments?.[0];
         if (!argument) {
@@ -4253,23 +4546,36 @@ export class DataLowerer {
                 dataType,
             };
         }
-        if ((expression.arguments?.length ?? 0) > 1) {
-            this.context.fail(
-                expression,
-                `new ${name} supports at most one argument.`,
-            );
-        }
         const unwrapped = this.context.unwrap(argument);
         if (name === "Uint8Array") {
             const source = this.compileDataPath(unwrapped, "read") ??
                 this.context.compileValue(unwrapped);
             if (source.dataType?.kind === "arraybuffer") {
+                const arguments_ = expression.arguments ?? [];
+                if (arguments_.length > 3) {
+                    this.context.fail(
+                        expression,
+                        "new Uint8Array over an ArrayBuffer expects an optional byte offset and length.",
+                    );
+                }
+                const offset = arguments_[1]
+                    ? `, bbl::js::array_index(${this.context.compileNumber(arguments_[1], "double")})`
+                    : "";
+                const length = arguments_[2]
+                    ? `, bbl::js::array_index(${this.context.compileNumber(arguments_[2], "double")})`
+                    : "";
                 return {
                     kind: "data",
-                    cpp: `bbl::js::U8Array(${source.cpp})`,
+                    cpp: `bbl::js::U8Array(${source.cpp}${offset}${length})`,
                     dataType,
                 };
             }
+        }
+        if ((expression.arguments?.length ?? 0) > 1) {
+            this.context.fail(
+                expression,
+                `new ${name} supports at most one argument unless Uint8Array views an ArrayBuffer.`,
+            );
         }
         if (ts.isArrayLiteralExpression(unwrapped)) {
             const elements = unwrapped.elements.map(
@@ -4572,6 +4878,16 @@ export class DataLowerer {
                     ? this.narrowOptional(rawValue, unwrapped)
                     : rawValue;
                 if (
+                    value?.kind === "data" &&
+                    value.dataType?.kind === "enum"
+                ) {
+                    return this.context.dataTypes.enumToStringCpp(
+                        value.dataType,
+                        value.cpp,
+                        unwrapped,
+                    );
+                }
+                if (
                     value?.dataType === undefined ||
                     !dataTypesEqual(value.dataType, dataType)
                 ) {
@@ -4736,20 +5052,29 @@ export class DataLowerer {
                 // capture matched the browser's while carrying 27% more
                 // draws. A value whose own type is the inner one needs no
                 // conversion, so it is handed on rather than recompiled.
-                if (
+                const inner = (
                     optional?.kind === "data" &&
                     optional.dataType &&
                     dataTypesEqual(
                         optional.dataType,
                         dataType.inner,
                     )
+                )
+                    ? optional.cpp
+                    : this.compileForSink(
+                          unwrapped,
+                          dataType.inner,
+                      );
+                if (
+                    dataType.inner.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(
+                        dataType.inner.name,
+                    )
                 ) {
-                    return optional.cpp;
+                    return inner;
                 }
-                return this.compileForSink(
-                    unwrapped,
-                    dataType.inner,
-                );
+                this.context.reachJsData();
+                return `${this.context.dataTypes.cppType(dataType)}{${inner}}`;
             }
             case "struct": {
                 if (
@@ -5058,7 +5383,8 @@ export class DataLowerer {
                 const sourceType = this.dataTypeAt(unwrapped);
                 if (
                     sourceType?.kind === "vector" &&
-                    sourceType.element.kind === "struct" &&
+                    (sourceType.element.kind === "struct" ||
+                        sourceType.element.kind === "map") &&
                     dataType.element.kind === "struct" &&
                     !dataTypesEqual(sourceType, dataType)
                 ) {
@@ -5209,7 +5535,9 @@ export class DataLowerer {
             case "u8array":
             case "f32array":
             case "u16array":
-            case "u32array": {
+            case "i16array":
+            case "u32array":
+            case "i32array": {
                 if (ts.isNewExpression(unwrapped)) {
                     const value =
                         this.compileTypedArrayNew(
@@ -5275,6 +5603,16 @@ export class DataLowerer {
                 ) {
                     return value.cpp;
                 }
+                if (
+                    value.kind === "data" &&
+                    value.dataType?.kind === "enum"
+                ) {
+                    return this.context.dataTypes.enumToStringCpp(
+                        value.dataType,
+                        value.cpp,
+                        node,
+                    );
+                }
                 break;
             case "enum":
                 if (value.staticString !== undefined) {
@@ -5326,6 +5664,9 @@ export class DataLowerer {
                                     field.name
                                 ];
                             if (!property) {
+                                if (field.defaultWhenMissing) {
+                                    return "{}";
+                                }
                                 if (
                                     field.type.kind ===
                                     "optional"
@@ -5375,6 +5716,9 @@ export class DataLowerer {
                         .map((field) => {
                             const source = sourceFields.get(field.name);
                             if (!source) {
+                                if (field.defaultWhenMissing) {
+                                    return "{}";
+                                }
                                 if (field.type.kind === "optional") {
                                     return "std::nullopt";
                                 }
@@ -5391,6 +5735,39 @@ export class DataLowerer {
                                 field.type,
                                 node,
                             );
+                        })
+                        .join(", ")}}`;
+                    return this.context.dataTypes.isReferenceStruct(
+                        dataType.name,
+                    )
+                        ? `std::make_shared<bblscene::${dataType.name}Data>(${aggregate})`
+                        : aggregate;
+                }
+                if (
+                    value.kind === "data" &&
+                    value.dataType?.kind === "map" &&
+                    value.dataType.key.kind === "string"
+                ) {
+                    const sourceMap = value.dataType;
+                    const fields = this.context.dataTypes.structFields(
+                        dataType.name,
+                        node,
+                    );
+                    const aggregate = `bblscene::${dataType.name}${this.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
+                        .map((field) => {
+                            if (
+                                field.type.kind !== "optional" ||
+                                !dataTypesEqual(
+                                    sourceMap.value,
+                                    field.type.inner,
+                                )
+                            ) {
+                                this.context.fail(
+                                    node,
+                                    `Open string record cannot project field '${field.name}' into ${dataType.name}; destination fields must be compatible optionals.`,
+                                );
+                            }
+                            return `${value.cpp}.get(${this.context.cppString(field.name)})`;
                         })
                         .join(", ")}}`;
                     return this.context.dataTypes.isReferenceStruct(
@@ -5425,7 +5802,8 @@ export class DataLowerer {
                 if (
                     value.kind === "data" &&
                     value.dataType?.kind === "vector" &&
-                    value.dataType.element.kind === "struct" &&
+                    (value.dataType.element.kind === "struct" ||
+                        value.dataType.element.kind === "map") &&
                     dataType.element.kind === "struct"
                 ) {
                     this.context.reachJsData();
@@ -5460,7 +5838,9 @@ export class DataLowerer {
             case "u8array":
             case "f32array":
             case "u16array":
+            case "i16array":
             case "u32array":
+            case "i32array":
             case "handle":
                 if (
                     dataType.kind === "handle" &&
@@ -5571,6 +5951,31 @@ export class DataLowerer {
             ts.isArrayLiteralExpression(expression)
         ) {
             if (
+                expression.elements.length === 1 &&
+                ts.isSpreadElement(expression.elements[0]!)
+            ) {
+                const spread = this.context.compileValue(
+                    expression.elements[0]!.expression,
+                );
+                if (
+                    spread.dataType &&
+                    dataTypesEqual(spread.dataType, dataType)
+                ) {
+                    return `bbl::js::clone_tuple(${spread.cpp})`;
+                }
+                if (spread.kind === "tuple") {
+                    return this.compileKnownValueForSink(
+                        spread,
+                        dataType,
+                        expression,
+                    );
+                }
+                this.context.fail(
+                    expression.elements[0]!,
+                    `Tuple spread requires a ${dataType.arity}-element numeric tuple.`,
+                );
+            }
+            if (
                 expression.elements.length !==
                 dataType.arity
             ) {
@@ -5589,10 +5994,23 @@ export class DataLowerer {
                 )
                 .join(", ")}}`;
         }
-        const value =
+        const rawValue =
             this.compileDataPath(expression, "read") ??
             this.materializeStaticTable(expression) ??
             this.context.compileValue(expression);
+        const value =
+            dataType.kind !== "optional" &&
+            rawValue.kind === "data" &&
+            rawValue.dataType?.kind === "optional" &&
+            dataTypesEqual(rawValue.dataType.inner, dataType)
+                ? {
+                      ...rawValue,
+                      ...this.leafValue(
+                          `(*${rawValue.cpp})`,
+                          rawValue.dataType.inner,
+                      ),
+                  }
+                : rawValue;
         if (dataType.kind === "tuple" && value.kind === "tuple") {
             return this.compileKnownValueForSink(
                 value,
@@ -5951,6 +6369,9 @@ export class DataLowerer {
         const parts = fields.map((field) => {
             const initializer = provided.get(field.name);
             if (!initializer) {
+                if (field.defaultWhenMissing) {
+                    return "{}";
+                }
                 if (field.type.kind === "optional") {
                     return "std::nullopt";
                 }
@@ -5985,6 +6406,11 @@ export class DataLowerer {
         dataType: DataType & { kind: "struct" },
         parts: readonly string[],
     ): string {
+        // Besides yielding the spelling, cppType records the named type as
+        // emitted so renderPreamble includes its definition. Reference
+        // aggregates below spell the Data shadow directly and would
+        // otherwise bypass that reachability bookkeeping.
+        this.context.dataTypes.cppType(dataType);
         if (
             this.context.dataTypes.isReferenceStruct(
                 dataType.name,
@@ -6231,6 +6657,26 @@ export class DataLowerer {
                 target.dataType.inner.kind === "string" ||
                 target.dataType.inner.kind === "enum" ||
                 target.dataType.inner.kind === "handle" ||
+                (isTypedArrayType(target.dataType.inner) &&
+                    ts.isNewExpression(
+                        this.context.unwrap(expression.right),
+                    )) ||
+                (target.dataType.inner.kind === "u8array" &&
+                    ts.isCallExpression(
+                        this.context.unwrap(expression.right),
+                    ) &&
+                    ts.isPropertyAccessExpression(
+                        (this.context.unwrap(
+                            expression.right,
+                        ) as ts.CallExpression).expression,
+                    ) &&
+                    ["slice", "subarray"].includes(
+                        ((this.context.unwrap(
+                            expression.right,
+                        ) as ts.CallExpression)
+                            .expression as ts.PropertyAccessExpression)
+                            .name.text,
+                    )) ||
                 ts.isObjectLiteralExpression(
                     this.context.unwrap(expression.right),
                 ) ||
@@ -6564,10 +7010,11 @@ export class DataLowerer {
             );
         }
         const targets = left.elements.map((element) => {
-            const target = this.compileDataPath(
-                element,
-                "write",
-            );
+            const target =
+                this.compileDataPath(element, "write") ??
+                (ts.isIdentifier(element)
+                    ? this.context.lookupIdentifierValue(element)
+                    : undefined);
             if (
                 !target ||
                 target.kind !== "number"
@@ -6752,7 +7199,9 @@ export class DataLowerer {
                     element.kind === "u8array" ||
                     element.kind === "f32array" ||
                     element.kind === "u16array" ||
+                    element.kind === "i16array" ||
                     element.kind === "u32array" ||
+                    element.kind === "i32array" ||
                     element.kind === "handle" ||
                     element.kind === "number" ||
                     element.kind === "boolean" ||
@@ -6800,7 +7249,9 @@ export class DataLowerer {
                 "u8array",
                 "f32array",
                 "u16array",
+                "i16array",
                 "u32array",
+                "i32array",
             ].includes(value.dataType.kind)
         ) {
             // JavaScript containers and typed arrays are objects and are
@@ -6812,7 +7263,9 @@ export class DataLowerer {
             (value.kind === "data" &&
                 value.dataType?.kind === "string")
         ) {
-            return `!${value.cpp}.empty()`;
+            return value.kind === "string"
+                ? `!std::string(${value.cpp}).empty()`
+                : `!${value.cpp}.empty()`;
         }
         if (value.truthinessCpp !== undefined) {
             return value.truthinessCpp;
@@ -7117,6 +7570,7 @@ export class DataLowerer {
             this.compileDataPath(expression, "read") ??
             this.materializeStaticTable(expression) ??
             this.callSpanValue(expression) ??
+            this.selectedIterationValue(expression) ??
             this.runtimeArrayLiteral(expression) ??
             (this.dataTypeAt(expression)?.kind === "string"
                 ? this.context.compileValue(expression)
@@ -7209,6 +7663,21 @@ export class DataLowerer {
                 `}`,
             dataType,
         };
+    }
+
+    /** A nullish/conditional container is materialized before range iteration. */
+    private selectedIterationValue(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        const selected =
+            ts.isConditionalExpression(unwrapped) ||
+            (ts.isBinaryExpression(unwrapped) &&
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken);
+        if (!selected) return undefined;
+        const value = this.context.compileValue(unwrapped);
+        return value.kind === "data" ? value : undefined;
     }
 
     private callSpanValue(

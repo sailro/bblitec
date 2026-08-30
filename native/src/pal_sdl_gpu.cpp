@@ -242,6 +242,7 @@ struct GpuMesh {
     SharedComposedMaterialTextures* shared_composed_textures = nullptr;
     std::uint32_t index_count = 0;
     std::uint32_t instance_count = 1;
+    std::uint64_t position_version = 0;
     std::uint64_t transform_version = 0;
     bool gpu_world_transform = false;
 };
@@ -6687,6 +6688,18 @@ bool run_gpu_engine(Engine& engine) {
             };
             GpuMesh gpu_mesh;
             if (shader_material) {
+#if BBLITE_MESH_POSITION_UPDATE
+                // A procedural position stream is mutable and therefore
+                // cannot borrow the immutable shader-geometry cache.
+                gpu_mesh.vertices = upload_mesh_buffer(
+                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                    vertices.data(),
+                    vertices.size() * sizeof(GpuVertex));
+                gpu_mesh.indices = upload_mesh_buffer(
+                    SDL_GPU_BUFFERUSAGE_INDEX,
+                    geometry.indices.data(),
+                    geometry.indices.size() * sizeof(std::uint32_t));
+#else
                 gpu_mesh.shared_geometry = find_shared_shader_geometry(
                     state.shared_shader_geometries,
                     vertices,
@@ -6716,6 +6729,7 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_mesh.indices =
                     gpu_mesh.shared_geometry->index_buffer;
                 gpu_mesh.owns_geometry_buffers = false;
+#endif
             } else {
                 gpu_mesh.vertices = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_VERTEX,
@@ -6827,6 +6841,7 @@ bool run_gpu_engine(Engine& engine) {
                 geometry.indices.size());
             gpu_mesh.transform_version =
                 mesh_record.transform_version;
+            gpu_mesh.position_version = geometry.position_version;
             gpu_mesh.gpu_world_transform =
                 mesh_record.gpu_world_transform;
             const bool standard_material =
@@ -7216,6 +7231,42 @@ bool run_gpu_engine(Engine& engine) {
                         mesh.instance_version;
                 }
 #endif
+#if BBLITE_MESH_POSITION_UPDATE
+                const ModelGeometry& geometry =
+                    engine.geometries[item.geometry];
+                if (
+                    gpu_mesh.position_version !=
+                    geometry.position_version) {
+                    const std::vector<GpuVertex> vertices =
+                        item.material_kind ==
+                                upstream::RenderMaterialKind::shader
+                            ? local_vertices(engine, geometry)
+                            : transformed_vertices(engine, geometry, mesh);
+                    frame_buffer_uploads.update(
+                        gpu_mesh.vertices,
+                        vertices.data(),
+                        vertices.size() * sizeof(GpuVertex));
+#if BBLITE_PBR_VARIANTS > 0
+                    if (gpu_mesh.pinned_vertices) {
+                        const std::vector<GpuVertex> pinned =
+                            pinned_convention_vertices(
+                                vertices,
+                                mesh.mirrored_x);
+                        frame_buffer_uploads.update(
+                            gpu_mesh.pinned_vertices,
+                            pinned.data(),
+                            pinned.size() * sizeof(GpuVertex));
+                    }
+#endif
+                    gpu_mesh.position_version =
+                        geometry.position_version;
+                    // The upload used the current transform as well, so the
+                    // ordinary transform path has nothing left to publish.
+                    gpu_mesh.transform_version = mesh.transform_version;
+                    gpu_mesh.gpu_world_transform =
+                        mesh.gpu_world_transform;
+                }
+#endif
                 if (
                     mesh.gpu_deformation &&
                     !engine.geometries[item.geometry].flat_normals) {
@@ -7455,8 +7506,12 @@ bool run_gpu_engine(Engine& engine) {
                     upstream::camera_world_matrix(camera));
             const std::array<float, 16> frame_projection =
                 upstream::build_scene_projection(camera, aspect);
-            const ShaderPassMatrices frame_pass_matrices{
+            const std::array<float, 4> frame_camera_position =
+                shader_camera_position(scene, engine, camera);
+            ShaderPassMatrices frame_pass_matrices{
                 matrix.data(), &frame_view, &frame_projection};
+            frame_pass_matrices.camera_position =
+                &frame_camera_position;
 #if BBLITE_HAS_BILLBOARDS
             // The sorted order depends on the camera alone, so the upload
             // happens here -- before the frame's command buffer is acquired,
@@ -8589,10 +8644,15 @@ bool run_gpu_engine(Engine& engine) {
                         const std::array<float, 16> task_projection =
                             upstream::build_scene_projection(
                                 task_camera, task_aspect);
-                        const ShaderPassMatrices task_pass_matrices{
+                        const std::array<float, 4> task_camera_position =
+                            shader_camera_position(
+                                scene, engine, task_camera);
+                        ShaderPassMatrices task_pass_matrices{
                             task_matrix.data(),
                             &task_view,
                             &task_projection};
+                        task_pass_matrices.camera_position =
+                            &task_camera_position;
                         if (!shadow_task) {
                             SDL_PushGPUVertexUniformData(
                                 command,
@@ -8657,6 +8717,12 @@ bool run_gpu_engine(Engine& engine) {
                                 0,
                                 generator.caster_view_projection.data(),
                                 sizeof(generator.caster_view_projection));
+                            ShaderPassMatrices caster_pass_matrices{
+                                generator.caster_view_projection.data(),
+                                &generator.caster_view,
+                                nullptr};
+                            caster_pass_matrices.camera_position =
+                                &task_camera_position;
                             draw_scene(
                                 shadow_pass,
                                 nullptr,
@@ -8667,10 +8733,7 @@ bool run_gpu_engine(Engine& engine) {
                                 {},
                                 generator.caster_view_projection,
                                 task_camera,
-                                ShaderPassMatrices{
-                                    generator.caster_view_projection.data(),
-                                    &generator.caster_view,
-                                    nullptr},
+                                caster_pass_matrices,
                                 task_draw_lists[handle.value],
                                 nullptr,
                                 nullptr,

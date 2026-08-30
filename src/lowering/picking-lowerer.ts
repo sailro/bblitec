@@ -121,11 +121,11 @@ MeshHandle picked_mesh(const PickingInfo& info) {
         : MeshHandle{};
 }
 
-js::Nullable<std::array<double, 3>> picked_point(
+js::Nullable<js::Tuple<3>> picked_point(
     const PickingInfo& info) {
     return info.picked_point
-        ? js::Nullable<std::array<double, 3>>{*info.picked_point}
-        : js::Nullable<std::array<double, 3>>{};
+        ? js::Nullable<js::Tuple<3>>{*info.picked_point}
+        : js::Nullable<js::Tuple<3>>{};
 }
 
 // The basic picker still reconstructs \`pickedPoint\`; only \`ray\` is gated by

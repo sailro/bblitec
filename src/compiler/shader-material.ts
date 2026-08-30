@@ -76,6 +76,14 @@ export interface ShaderMaterialContext
     compileStaticString(
         expression: ts.Expression,
     ): string;
+    compileShaderSource(expression: ts.Expression): {
+        source: string;
+        dynamicUniforms: Array<{
+            name: string;
+            type: "f32";
+            components: string[];
+        }>;
+    };
     compileStringLiteral(
         expression: ts.Expression,
     ): string;
@@ -84,7 +92,14 @@ export interface ShaderMaterialContext
 export function compileShaderMaterialOptions(
     context: ShaderMaterialContext,
     expression: ts.Expression,
-): { name: string; id: number } {
+): {
+    name: string;
+    id: number;
+    dynamicUniforms?: Array<{
+        offset: number;
+        components: string[];
+    }>;
+} {
     const object = context.expectObjectLiteral(expression);
     validateObjectProperties(
         context,
@@ -121,13 +136,21 @@ export function compileShaderMaterialOptions(
         );
     }
 
-    const vertexSource =
-        context.compileStaticString(vertexExpression);
-    const fragmentSource =
-        context.compileStaticString(fragmentExpression);
+    const compiledVertex = context.compileShaderSource(vertexExpression);
+    const compiledFragment = context.compileShaderSource(fragmentExpression);
+    const vertexSource = compiledVertex.source;
+    const fragmentSource = compiledFragment.source;
     const attributes = compileStaticStringArray(context, attributesExpression);
-    const { signatures: uniforms, defaults: uniformDefaults } =
+    const { signatures: declaredUniforms, defaults: uniformDefaults } =
         compileShaderUniformSignatures(context, uniformsExpression);
+    const dynamicUniforms = [
+        ...compiledVertex.dynamicUniforms,
+        ...compiledFragment.dynamicUniforms,
+    ];
+    const uniforms = [
+        ...declaredUniforms,
+        ...dynamicUniforms.map(({ name, type }) => `${name}:${type}`),
+    ];
     // `createShaderMaterial` asserts one namespace across the uniform,
     // sampler and define names it generates, so the set is built once here
     // and each normalizer adds its own to it.
@@ -304,8 +327,6 @@ export function compileShaderMaterialOptions(
             `Invalid reached shader material WGSL: ${message}`,
         );
     }
-    const reflection =
-        lowerWgslShaderProgram(sceneProgram).reflection;
     for (const entry of uniformDefaults) {
         const declared = uniforms.find((signature) =>
             signature.startsWith(`${entry.name}:`),
@@ -339,8 +360,21 @@ export function compileShaderMaterialOptions(
             );
         }
     }
-    void reflection;
-    return reachShaderProgram(context, sceneProgram);
+    const reached = reachShaderProgram(context, sceneProgram);
+    const valueLayout = shaderUniformValueLayout(uniforms);
+    return {
+        ...reached,
+        ...(dynamicUniforms.length > 0
+            ? {
+                  dynamicUniforms: dynamicUniforms.map(
+                      ({ name, components }) => ({
+                          offset: valueLayout.get(name)!.offset,
+                          components,
+                      }),
+                  ),
+              }
+            : {}),
+    };
 }
 
 /**
@@ -558,11 +592,19 @@ export function reachShaderProgram(
     context: ShaderMaterialContext,
     program: CompiledShaderProgram,
 ): { name: string; id: number } {
+    const identity = ({ name: _name, ...candidate }: CompiledShaderProgram) =>
+        JSON.stringify(candidate);
+    const programIdentity = identity(program);
     const existing = context.reachedShaderPrograms.findIndex(
-        ({ name }) => name === program.name,
+        (candidate) =>
+            candidate.name === program.name ||
+            identity(candidate) === programIdentity,
     );
     if (existing >= 0) {
-        return { name: program.name, id: existing };
+        return {
+            name: context.reachedShaderPrograms[existing]!.name,
+            id: existing,
+        };
     }
     context.reachedShaderPrograms.push(program);
     return {

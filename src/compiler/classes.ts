@@ -3,7 +3,9 @@ import type {
     DataType,
     DataTypeRegistry,
 } from "./data-types.js";
+import { passesByReference } from "./data-types.js";
 import type { Value } from "./types.js";
+import { parameterIsReadOnly } from "./user-functions.js";
 
 const successfulConstructorResourceKinds = new Set([
     "audio-context",
@@ -46,6 +48,10 @@ export interface ClassLoweringContext {
     ): void;
     endNativeFunctionBody(): void;
     dataValue(cpp: string, dataType: DataType): Value;
+    compileForDataSink(
+        expression: ts.Expression,
+        dataType: DataType,
+    ): string;
     defineThis(instance: Value | undefined): void;
     activeThis(): Value | undefined;
     registerClassInstance(
@@ -74,6 +80,23 @@ export interface ClassLoweringContext {
  * rather than a silently different program.
  */
 export class ClassLowerer {
+    private readonly recursiveMethods = new Map<
+        ts.MethodDeclaration,
+        boolean
+    >();
+    private readonly activeRecursiveMethods = new Map<
+        ts.MethodDeclaration,
+        {
+            instance: Value;
+            cppName: string;
+            parameters: readonly {
+                declaration: ts.ParameterDeclaration;
+                type: DataType;
+            }[];
+            returnType: DataType | undefined;
+        }
+    >();
+
     public constructor(
         private readonly context: ClassLoweringContext,
     ) {}
@@ -129,6 +152,35 @@ export class ClassLowerer {
                 (ts.getCombinedModifierFlags(member) &
                     ts.ModifierFlags.Static) !==
                     0,
+        );
+    }
+
+    /** Resolve a generation-time `static readonly` scalar field. */
+    public resolveStaticField(
+        access: ts.PropertyAccessExpression,
+    ): ts.PropertyDeclaration | undefined {
+        const owner = this.context.unwrap(access.expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const symbol = this.context.checker.getSymbolAtLocation(owner);
+        const target =
+            symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? this.context.checker.getAliasedSymbol(symbol)
+                : symbol;
+        const declaration = (target?.declarations ?? []).find(
+            ts.isClassDeclaration,
+        );
+        if (!declaration) return undefined;
+        return declaration.members.find(
+            (member): member is ts.PropertyDeclaration =>
+                ts.isPropertyDeclaration(member) &&
+                ts.isIdentifier(member.name) &&
+                member.name.text === access.name.text &&
+                member.initializer !== undefined &&
+                (ts.getCombinedModifierFlags(member) &
+                    (ts.ModifierFlags.Static |
+                        ts.ModifierFlags.Readonly)) ===
+                    (ts.ModifierFlags.Static |
+                        ts.ModifierFlags.Readonly),
         );
     }
 
@@ -440,7 +492,10 @@ export class ClassLowerer {
                 if (
                     ts.isPropertyDeclaration(member) &&
                     !member.initializer &&
-                    ts.isIdentifier(member.name)
+                    ts.isIdentifier(member.name) &&
+                    (ts.getCombinedModifierFlags(member) &
+                        ts.ModifierFlags.Static) ===
+                        0
                 ) {
                     const nullable =
                         this.context.bindNullableClassField(
@@ -454,7 +509,10 @@ export class ClassLowerer {
                 if (
                     ts.isPropertyDeclaration(member) &&
                     member.initializer &&
-                    ts.isIdentifier(member.name)
+                    ts.isIdentifier(member.name) &&
+                    (ts.getCombinedModifierFlags(member) &
+                        ts.ModifierFlags.Static) ===
+                        0
                 ) {
                     // Declaring a local gives array and numeric fields
                     // real storage; the record then names that local.
@@ -516,6 +574,21 @@ export class ClassLowerer {
             this.context.fail(
                 method,
                 `Reached method '${methodName}' requires a body.`,
+            );
+        }
+        const activeRecursive = this.activeRecursiveMethods.get(method);
+        if (activeRecursive) {
+            if (activeRecursive.instance !== instance) {
+                this.context.fail(
+                    call,
+                    `Recursive method '${methodName}' cannot switch class instances.`,
+                );
+            }
+            return this.compileRecursiveInvocation(
+                call,
+                activeRecursive.cppName,
+                activeRecursive.parameters,
+                activeRecursive.returnType,
             );
         }
         const signature =
@@ -612,6 +685,15 @@ export class ClassLowerer {
                 this.context.popScope();
             }
         }
+        if (this.methodRecurses(declaration, method)) {
+            return this.compileRecursiveMethod(
+                instance,
+                methodName,
+                call,
+                method,
+                returnType,
+            );
+        }
         this.context.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
@@ -625,7 +707,7 @@ export class ClassLowerer {
             this.context.emit(
                 returnsVoid
                     ? "[&]() -> void {"
-                    : `const auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
+                    : `[[maybe_unused]] const auto ${result} = [&]() -> ${this.context.dataTypes.cppType(returnType!)} {`,
             );
             this.context.increaseIndent();
             this.context.beginNativeFunctionBody(
@@ -653,6 +735,214 @@ export class ClassLowerer {
             this.context.defineThis(previousThis);
             this.context.popScope();
         }
+    }
+
+    /** Emit one native callable for a direct plain-data class recursion. */
+    private compileRecursiveMethod(
+        instance: Value,
+        methodName: string,
+        call: ts.CallExpression,
+        method: ts.MethodDeclaration,
+        returnType: DataType | undefined,
+    ): Value {
+        const parameters = method.parameters.map((parameter) => {
+            if (
+                !ts.isIdentifier(parameter.name) ||
+                parameter.dotDotDotToken
+            ) {
+                this.context.fail(
+                    parameter,
+                    `Recursive method '${methodName}' requires non-rest identifier parameters.`,
+                );
+            }
+            const type = this.context.dataTypes.fromTsType(
+                this.context.checker.getTypeAtLocation(parameter),
+                parameter,
+            );
+            if (!type || this.context.dataTypes.carriesHandle(type)) {
+                this.context.fail(
+                    parameter,
+                    `Recursive method '${methodName}' parameters must contain only plain data.`,
+                );
+            }
+            return { declaration: parameter, type };
+        });
+        if (
+            returnType &&
+            this.context.dataTypes.carriesHandle(returnType)
+        ) {
+            this.context.fail(
+                method,
+                `Recursive method '${methodName}' must return plain data or void.`,
+            );
+        }
+
+        const prefix = this.context.allocateUserFunctionPrefix();
+        const cppName = `${prefix}recursive_method`;
+        const returnCpp = returnType
+            ? this.context.dataTypes.cppType(returnType)
+            : "void";
+        const cppParameters = parameters.map(
+            ({ declaration, type }, index) => {
+                const cppType = this.context.dataTypes.cppType(type);
+                const readOnly = parameterIsReadOnly(
+                    this.context.checker,
+                    method,
+                    declaration.name as ts.Identifier,
+                );
+                const typeCpp = passesByReference(
+                    this.context.dataTypes,
+                    type,
+                )
+                    ? `${readOnly ? "const " : ""}${cppType}&`
+                    : cppType;
+                return {
+                    name: `${prefix}arg_${index}`,
+                    typeCpp,
+                    declaration,
+                    type,
+                    readOnly,
+                };
+            },
+        );
+        this.context.emit(
+            `std::function<${returnCpp}(${cppParameters.map(({ typeCpp }) => typeCpp).join(", ")})> ${cppName};`,
+        );
+        this.context.emit(
+            `${cppName} = [&](${cppParameters.map(({ name, typeCpp }) => `${typeCpp} ${name}`).join(", ")}) -> ${returnCpp} {`,
+        );
+        this.context.increaseIndent();
+        this.context.pushScope(prefix);
+        const previousThis = this.context.activeThis();
+        this.context.defineThis(instance);
+        this.activeRecursiveMethods.set(method, {
+            instance,
+            cppName,
+            parameters,
+            returnType,
+        });
+        this.context.beginNativeFunctionBody(returnType);
+        try {
+            for (const parameter of cppParameters) {
+                this.context.bindParameterValue(
+                    parameter.declaration.name as ts.Identifier,
+                    {
+                        ...this.context.dataValue(
+                            parameter.name,
+                            parameter.type,
+                        ),
+                        ...(parameter.readOnly
+                            ? { readOnly: true as const }
+                            : {}),
+                    },
+                );
+            }
+            for (const statement of method.body!.statements) {
+                this.context.emitStatement(statement);
+            }
+        } finally {
+            this.context.endNativeFunctionBody();
+            this.activeRecursiveMethods.delete(method);
+            this.context.defineThis(previousThis);
+            this.context.popScope();
+            this.context.decreaseIndent();
+        }
+        this.context.emit("};");
+        return this.compileRecursiveInvocation(
+            call,
+            cppName,
+            parameters,
+            returnType,
+        );
+    }
+
+    private compileRecursiveInvocation(
+        call: ts.CallExpression,
+        cppName: string,
+        parameters: readonly {
+            declaration: ts.ParameterDeclaration;
+            type: DataType;
+        }[],
+        returnType: DataType | undefined,
+    ): Value {
+        if (call.arguments.length > parameters.length) {
+            this.context.fail(
+                call,
+                "Recursive method received too many arguments.",
+            );
+        }
+        const argumentsCpp = parameters.map(
+            ({ declaration, type }, index) => {
+                const argument =
+                    call.arguments[index] ?? declaration.initializer;
+                if (!argument) {
+                    this.context.fail(
+                        call,
+                        `Recursive method argument ${index + 1} is required.`,
+                    );
+                }
+                return this.context.compileForDataSink(
+                    argument,
+                    type,
+                );
+            },
+        );
+        const invocation = `${cppName}(${argumentsCpp.join(", ")})`;
+        if (!returnType) {
+            return { kind: "void", cpp: invocation };
+        }
+        return {
+            ...this.context.dataValue(invocation, returnType),
+            requiresExplicitDiscard: true,
+        };
+    }
+
+    private methodRecurses(
+        declaration: ts.ClassDeclaration,
+        method: ts.MethodDeclaration,
+    ): boolean {
+        const cached = this.recursiveMethods.get(method);
+        if (cached !== undefined) return cached;
+        const methods = new Map<string, ts.MethodDeclaration>();
+        for (const member of declaration.members) {
+            if (
+                ts.isMethodDeclaration(member) &&
+                ts.isIdentifier(member.name) &&
+                member.body
+            ) {
+                methods.set(member.name.text, member);
+            }
+        }
+        const callees = (candidate: ts.MethodDeclaration): ts.MethodDeclaration[] => {
+            const found = new Set<ts.MethodDeclaration>();
+            const visit = (node: ts.Node): void => {
+                if (node !== candidate && ts.isFunctionLike(node)) return;
+                if (
+                    ts.isCallExpression(node) &&
+                    ts.isPropertyAccessExpression(node.expression) &&
+                    node.expression.expression.kind ===
+                        ts.SyntaxKind.ThisKeyword
+                ) {
+                    const called = methods.get(node.expression.name.text);
+                    if (called) found.add(called);
+                }
+                ts.forEachChild(node, visit);
+            };
+            visit(candidate.body!);
+            return [...found];
+        };
+        const explored = new Set<ts.MethodDeclaration>();
+        const reachesStart = (candidate: ts.MethodDeclaration): boolean => {
+            if (explored.has(candidate)) return false;
+            explored.add(candidate);
+            return callees(candidate).some(
+                (called) =>
+                    called === method || reachesStart(called),
+            );
+        };
+        const recursive = reachesStart(method);
+        this.recursiveMethods.set(method, recursive);
+        return recursive;
     }
 
     /**
@@ -823,6 +1113,53 @@ export class ClassLowerer {
                 argumentList[index] ??
                 parameter.initializer;
             if (!argument) {
+                if (parameter.questionToken) {
+                    const parameterType =
+                        this.context.dataTypes.fromTsType(
+                            this.context.checker.getTypeAtLocation(
+                                parameter,
+                            ),
+                            parameter,
+                        );
+                    if (parameterType?.kind === "optional") {
+                        this.context.bindParameterValue(
+                            parameter.name,
+                            this.context.dataValue(
+                                `${this.context.dataTypes.cppType(parameterType)}{std::nullopt}`,
+                                parameterType,
+                            ),
+                        );
+                    } else if (
+                        parameterType?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(
+                            parameterType.name,
+                        )
+                    ) {
+                        this.context.bindParameterValue(
+                            parameter.name,
+                            this.context.dataValue(
+                                `${this.context.dataTypes.cppType(parameterType)}{}`,
+                                parameterType,
+                            ),
+                        );
+                    } else {
+                        this.context.bindParameterValue(
+                            parameter.name,
+                            { kind: "json-null", cpp: "" },
+                        );
+                    }
+                    if (
+                        parameterProperties &&
+                        ts.isParameterPropertyDeclaration(
+                            parameter,
+                            declaration,
+                        )
+                    ) {
+                        parameterProperties[parameter.name.text] =
+                            this.context.compileValue(parameter.name);
+                    }
+                    return;
+                }
                 this.context.fail(
                     parameter,
                     `Parameter '${parameter.name.text}' requires an argument or a default.`,
@@ -885,6 +1222,15 @@ export class ClassLowerer {
                     member as ts.Declaration,
                 ) & ts.ModifierFlags.Static) !== 0
             ) {
+                if (
+                    ts.isPropertyDeclaration(member) &&
+                    member.initializer &&
+                    (ts.getCombinedModifierFlags(member) &
+                        ts.ModifierFlags.Readonly) !==
+                        0
+                ) {
+                    continue;
+                }
                 this.context.fail(
                     member,
                     "Static class fields and accessors are outside the supported subset.",

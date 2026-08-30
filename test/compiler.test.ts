@@ -197,6 +197,29 @@ test("audio node factories publish independent link features", () => {
     assert.match(result.cpp, /bbl::pal::audio_state\(/);
 });
 
+test("folds feature detection for supported Web Audio factories", () => {
+    const result = compileSource(`
+        import { createAudioEngineAsync } from "@babylonjs/lite";
+        async function main() {
+            const audio = await createAudioEngineAsync();
+            const ctx = audio.audioContext;
+            const gain = ctx.createGain();
+            let tail: AudioNode = gain;
+            if (typeof ctx.createStereoPanner === "function") {
+                const panner = ctx.createStereoPanner();
+                panner.pan.value = -0.25;
+                tail = panner;
+            }
+            tail.connect(ctx.destination);
+        }
+    `);
+
+    assert.ok(result.manifest.features.includes("audio:stereo-panner"));
+    assert.match(result.cpp, /audio_create_stereo_panner\(/);
+    assert.match(result.cpp, /audio_param_set_value\([^;]*, \(-0\.25f\)\);/);
+    assert.match(result.cpp, /v_tail = v_block\d+_panner;/);
+});
+
 test("runs successful nullable audio constructors and preserves source loops", () => {
     const result = compileSource(`
         import {
@@ -1730,7 +1753,7 @@ test("materializes static tables under runtime indices only", () => {
 
     assert.match(
         result.cpp,
-        /inline const std::array<std::array<double, 2>, 3> WEIGHTS = \{\{\{\{1\.0, 2\.0\}\}, \{\{3\.0, 4\.0\}\}, \{\{5\.0, 6\.0\}\}\}\};/,
+        /inline const std::array<bbl::js::Tuple<2>, 3> WEIGHTS = \{\{\{1\.0, 2\.0\}, \{3\.0, 4\.0\}, \{5\.0, 6\.0\}\}\};/,
     );
     // The table's own lanes are doubles, and so is the local, so the read
     // is written at that width rather than at the default float one.
@@ -1893,6 +1916,23 @@ test("guards a missing open Record key before dereferencing its local", () => {
         result.cpp,
         /double& v_\w*weapon = \*[^;]+\.get\(/,
     );
+});
+
+test("inserts runtime keys through a named open Record alias", () => {
+    const result = compileSource(`
+        type Values = Record<string, string>;
+        function insert(key: string, value: string): Values {
+            const entries: Values = {};
+            entries[key] = value;
+            return entries;
+        }
+        const entries = insert("name", "value");
+        const missing = Number(entries["missing"]) || 0;
+    `);
+
+    assert.match(result.cpp, /bbl::js::Map<std::string, std::string>/);
+    assert.match(result.cpp, /v_fn\d+_entries\.set\(v_fn\d+_key, v_fn\d+_value\);/);
+    assert.match(result.cpp, /std::numeric_limits<double>::quiet_NaN\(\)/);
 });
 
 test("preserves object identity through a dynamic Record lookup", () => {
@@ -2081,6 +2121,39 @@ test("lowers typed values returned by class methods", () => {
         result.cpp,
         /return v_bblite_class_field_n_\d+;/,
     );
+});
+
+test("lowers direct recursive plain-data class methods once", () => {
+    const result = compileSource(`
+        class Counter {
+            sum(n: number): number {
+                if (n <= 0) return 0;
+                return n + this.sum(n - 1);
+            }
+        }
+        const counter = new Counter();
+        const total = counter.sum(3);
+    `);
+
+    assert.match(result.cpp, /std::function<double\(double\)>/);
+    assert.match(result.cpp, /recursive_method\(\(v_.*n - 1\.0\)\)/);
+    assert.ok(result.cpp.length < 20_000);
+});
+
+test("folds static readonly class scalars", () => {
+    const result = compileSource(`
+        class Particle {
+            private static readonly GRAVITY = 520;
+            step(dt: number): number {
+                return Particle.GRAVITY * dt;
+            }
+        }
+        const particle = new Particle();
+        const fall = particle.step(0.5);
+    `);
+
+    assert.match(result.cpp, /return \(520\.0 \* v_fn\d+_dt\);/);
+    assert.doesNotMatch(result.cpp, /class_field_GRAVITY/);
 });
 
 test("rejects class inheritance", () => {
@@ -2671,6 +2744,10 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
         const count = data.length;
         const indices = new Uint32Array([0, 1, 2]);
         indices[0] = 7;
+        const signed = new Int32Array([-1, 2147483648]);
+        signed[0] = 4294967295;
+        const signedShorts = new Int16Array([-1, 32768]);
+        signedShorts[0] = 65535;
         const zeros = new Float32Array(8);
     `);
 
@@ -2702,6 +2779,85 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
         result.cpp,
         /bbl::js::f32_array_sized\(8\.0\)/,
     );
+    assert.match(
+        result.cpp,
+        /bbl::js::i32_array_from\(bbl::js::Array<double>\{\(-1\.0\), 2147483648\.0\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_signed\[bbl::js::array_index\(0\.0\)\] = bbl::js::to_int32\(4294967295\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::i16_array_from\(bbl::js::Array<double>\{\(-1\.0\), 32768\.0\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_signedShorts\[bbl::js::array_index\(0\.0\)\] = bbl::js::to_int16\(65535\.0\);/,
+    );
+});
+
+test("defaults omitted Uint8Array slice and subarray bounds", () => {
+    const result = compileSource(`
+        const source = new Uint8Array([1, 2, 3]);
+        const copy = source.slice();
+        const view = source.subarray();
+        const buffer = source.buffer;
+        const tail = new Uint8Array(buffer, 1);
+        const middle = new Uint8Array(buffer, 1, 1).slice();
+    `);
+
+    assert.match(
+        result.cpp,
+        /v_source\.slice\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(v_source\.size\(\)\)\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /v_source\.subarray\(bbl::js::array_index\(0\.0\), bbl::js::array_index\(static_cast<double>\(v_source\.size\(\)\)\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::U8Array\(v_buffer, bbl::js::array_index\(1\.0\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::U8Array\(v_buffer, bbl::js::array_index\(1\.0\), bbl::js::array_index\(1\.0\)\)\.slice/,
+    );
+});
+
+test("copies vector-backed typed arrays through slice", () => {
+    const result = compileSource(`
+        const source = new Float32Array([1, 2, 3]);
+        const copy = source.slice();
+        const tail = source.slice(-2);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::typed_array_slice\(v_source, 0\.0, static_cast<double>\(v_source\.size\(\)\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::typed_array_slice\(v_source, \(-2\.0\), static_cast<double>\(v_source\.size\(\)\)\)/,
+    );
+});
+
+test("rebinds optional typed arrays from fresh constructors", () => {
+    const result = compileSource(`
+        let bytes: Uint8Array | null = null;
+        bytes = new Uint8Array(4).slice();
+        let signed: Int32Array | null = null;
+        signed = new Int32Array(2);
+    `);
+
+    assert.match(
+        result.cpp,
+        /v_bytes = bbl::js::Nullable<bbl::js::U8Array>\{bbl::js::u8_array_sized\(4\.0\)\.slice/,
+    );
+    assert.match(
+        result.cpp,
+        /v_signed = bbl::js::Nullable<bbl::js::I32Array>\{bbl::js::i32_array_sized\(2\.0\)\};/,
+    );
 });
 
 test("distinguishes omitted and explicit zero DataView lengths", () => {
@@ -2709,6 +2865,10 @@ test("distinguishes omitted and explicit zero DataView lengths", () => {
         const bytes = new Uint8Array(4);
         const remaining = new DataView(bytes.buffer, 2);
         const empty = new DataView(bytes.buffer, 2, 0);
+        const totalBytes = bytes.buffer.byteLength;
+        const byte = remaining.getUint8(0);
+        const signed = remaining.getInt8(0);
+        const scalar = remaining.getFloat32(0, true);
     `);
 
     assert.match(
@@ -2719,6 +2879,41 @@ test("distinguishes omitted and explicit zero DataView lengths", () => {
         result.cpp,
         /bbl::js::DataView\(v_bytes\.buffer\(\), bbl::js::array_index\(2\.0\), bbl::js::array_index\(0\.0\)\);/,
     );
+    assert.match(result.cpp, /v_remaining\.get_uint8\(bbl::js::array_index\(0\.0\)\)/);
+    assert.match(result.cpp, /v_bytes\.buffer\(\)\.byte_length\(\)/);
+    assert.match(result.cpp, /v_remaining\.get_int8\(bbl::js::array_index\(0\.0\)\)/);
+    assert.match(result.cpp, /v_remaining\.get_float32\(bbl::js::array_index\(0\.0\), true\)/);
+});
+
+test("indexes runtime strings as one-character strings", () => {
+    const result = compileSource(`
+        function opening(text: string, index: number): boolean {
+            return text[index] === "{" && text.toLowerCase() === text;
+        }
+        const found = opening("{}", 0);
+    `);
+
+    assert.match(
+        result.cpp,
+        /std::string\(bbl::js::string_at\(v_fn\d+_text, bbl::js::array_index\(v_fn\d+_index\)\)\) == std::string\("\{"\)/,
+    );
+    assert.match(result.cpp, /bbl::js::string_lower\(v_fn\d+_text\)/);
+});
+
+test("narrows guarded optional strings before trim", () => {
+    const result = compileSource(`
+        function clean(value: string | undefined): string {
+            if (!value) return "";
+            return value.trim();
+        }
+        const cleaned = clean(" value ");
+        const words = cleaned.split(/\\s+/);
+        const numbers = "1 2".split(/\\s+/).map(Number);
+    `);
+
+    assert.match(result.cpp, /bbl::js::string_trim\(\(\*v_fn\d+_value\)\)/);
+    assert.match(result.cpp, /bbl::js::RegExp\("\\\\s\+", false, false\)\.split\(v_cleaned\)/);
+    assert.match(result.cpp, /bbl::js::number_from_string\(v_bblite_map_source_\d+\[v_bblite_map_index_\d+\]\)/);
 });
 
 test("inlines function-valued parameters at their call sites", () => {
@@ -4840,6 +5035,28 @@ test("erases optional DOM-local writes without dropping adjacent native state", 
     );
 });
 
+test("erases event callbacks owned by an optional DOM local", () => {
+    const result = compileSource(`
+        let enabled = true;
+        const button = document.getElementById("toggle") as HTMLButtonElement | null;
+        if (button) {
+            button.addEventListener("click", () => {
+                enabled = !enabled;
+                button.textContent = enabled ? "enabled" : "disabled";
+            });
+        }
+        if (enabled) {
+            const reached = 1;
+        }
+    `);
+
+    assert.match(result.cpp, /bool v_enabled = true;/);
+    assert.doesNotMatch(
+        result.cpp,
+        /button|addEventListener|textContent/,
+    );
+});
+
 test("uses JavaScript truthiness for browser query values in conditions", () => {
     const source = `
         import {
@@ -5224,6 +5441,21 @@ test("stores mesh visibility in the live mesh record", () => {
     assert.ok(result.manifest.features.includes("mesh:visible"));
 });
 
+test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
+    const result = compileSource(`
+        import { createBox, createEngine, setMeshVisible } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const anchor = createBox(engine, 0.05);
+            setMeshVisible(anchor, false);
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /bbl::set_mesh_visible\([^;]*, false\)/);
+    assert.ok(result.manifest.features.includes("mesh:visible"));
+});
+
 test("stores and fills a nullable mesh local", () => {
     const result = compileSource(`
         import { createEngine, createSphere, type Mesh } from "@babylonjs/lite";
@@ -5593,6 +5825,18 @@ test("lowers boolean negation in value position", () => {
     assert.match(result.cpp, /if \(v_muted\)/);
 });
 
+test("swaps mutable numeric locals through destructuring", () => {
+    const result = compileSource(`
+        let left = 1;
+        let right = 2;
+        [left, right] = [right, left];
+    `);
+
+    assert.equal((result.cpp.match(/const double .*swap/g) ?? []).length, 2);
+    assert.match(result.cpp, /v_left = .*swap/);
+    assert.match(result.cpp, /v_right = .*swap/);
+});
+
 test("folds static n-ary Math extrema before browser short circuiting", () => {
     const result = compileSource(`
         import { createBox, createEngine } from "@babylonjs/lite";
@@ -5633,6 +5877,251 @@ test("erases imported browser helpers with only browser and static inputs", () =
             ({ id }) => id === "browser-setup-erasure",
         ),
     );
+});
+
+test("erases nullable DOM-only class factories as absent native objects", () => {
+    const result = compileSource(
+        `
+            import { createBox, createEngine } from "@babylonjs/lite";
+            import { BrowserHud } from "./fixtures/compiler-modules/browser-hud.js";
+
+            async function main() {
+                const engine = await createEngine({});
+                const hud = await BrowserHud.create();
+                if (hud) {
+                    hud.update(42);
+                }
+                createBox(engine);
+            }
+        `,
+        { fileName: "test/compiler-multi-file-entry.ts" },
+    );
+
+    assert.match(result.cpp, /bbl::create_box/);
+    assert.doesNotMatch(result.cpp, /fetch|BrowserHud|hud\.bin/);
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "browser-setup-erasure",
+        ),
+    );
+});
+
+test("stores immediately resolved promise values in data maps", () => {
+    const result = compileSource(`
+        async function load(): Promise<number> {
+            return 3;
+        }
+        const pending = new Map<string, Promise<number>>();
+        pending.set("item", load());
+        const loaded = pending.get("item");
+    `);
+
+    assert.match(result.cpp, /bbl::js::Map<std::string, double>/);
+    assert.match(result.cpp, /\.set\([^,]+, bblscene::load\(\)\)/);
+});
+
+test("settles Promise.all over an eagerly mapped native array", () => {
+    const result = compileSource(`
+        const loaded: string[] = [];
+        const unique = new Map<string, string>();
+        unique.set("one", "one");
+        unique.set("two", "two");
+        async function loadAll(): Promise<void> {
+            await Promise.all([...unique.values()].map(async (name) => {
+                loaded.push(name);
+            }));
+        }
+        void loadAll();
+    `);
+
+    assert.match(result.cpp, /for \(std::size_t/);
+    assert.match(result.cpp, /v_loaded\.push_back/);
+    assert.doesNotMatch(result.cpp, /Promise/);
+});
+
+test("projects open string records into optional struct parameters", () => {
+    const result = compileSource(`
+        type Entity = Record<string, string>;
+        interface SpawnEnt {
+            classname?: string;
+            origin?: string;
+        }
+        function spawn(entities: SpawnEnt[]): number {
+            return entities.length;
+        }
+        const entities: Entity[] = [{ classname: "monster" }];
+        const count = spawn(entities);
+    `);
+
+    assert.match(result.cpp, /project_result/);
+    assert.match(result.cpp, /\.get\("classname"\)/);
+    assert.match(result.cpp, /\.get\("origin"\)/);
+});
+
+test("runs data cleanup in finally across an early return", () => {
+    const result = compileSource(`
+        const pending = new Map<string, number>();
+        function load(): number {
+            try {
+                return 3;
+            } finally {
+                pending.delete("item");
+            }
+        }
+        const loaded = load();
+    `);
+
+    assert.match(result.cpp, /bbl::js::finally\(\[&\]\(\) \{/);
+    assert.match(result.cpp, /v_pending\.erase\("item"\)/);
+});
+
+test("packages a closed directory for runtime-selected audio fetches", () => {
+    const result = compileSource(
+        `
+            import { createAudioEngineAsync } from "@babylonjs/lite";
+
+            async function loadSound(ctx: BaseAudioContext, name: string) {
+                const response = await fetch(
+                    "fixtures/compiler-modules/dynamic-audio/" + name
+                );
+                return ctx.decodeAudioData(await response.arrayBuffer());
+            }
+
+            async function main() {
+                const audio = await createAudioEngineAsync();
+                await loadSound(audio.audioContext, "tone.wav");
+            }
+            main();
+        `,
+        { fileName: "test/compiler-dynamic-audio-entry.ts" },
+    );
+
+    assert.equal(result.manifest.assets.length, 1);
+    assert.match(result.cpp, /Unknown packaged asset/);
+    assert.match(result.cpp, /audio_decode_file/);
+});
+
+test("deduplicates static and directory-discovered module assets", () => {
+    const result = compileSource(
+        `
+            import { moduleAssetUrl } from "./fixtures/compiler-modules/asset-url-helper.js";
+
+            const soundRoot = moduleAssetUrl(
+                "./fixtures/compiler-modules/dynamic-audio",
+                import.meta.url,
+            );
+            const tone = moduleAssetUrl(
+                "./fixtures/compiler-modules/dynamic-audio/tone.wav",
+                import.meta.url,
+            );
+
+            async function load(url: string): Promise<ArrayBuffer> {
+                const response = await fetch(url);
+                return response.arrayBuffer();
+            }
+
+            async function main(): Promise<void> {
+                const sounds = new Set([tone]);
+                for (const url of sounds) await load(url);
+            }
+            void soundRoot;
+            void main();
+        `,
+        { fileName: "test/compiler-module-audio-entry.ts" },
+    );
+
+    assert.equal(result.manifest.assets.length, 1);
+    assert.equal(
+        result.manifest.assets[0]?.source,
+        "fixtures/compiler-modules/dynamic-audio/tone.wav",
+    );
+    assert.equal(
+        result.cpp.split(result.manifest.assets[0]!.output).length - 1,
+        1,
+    );
+});
+
+test("preserves numeric tuple identity except through array spread", () => {
+    const result = compileSource(`
+        type V3 = [number, number, number];
+        interface Bounds { mins: V3; }
+        const source: Bounds = { mins: [1, 2, 3] };
+        const alias: V3 = source.mins;
+        const copy: V3 = [...source.mins];
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::Tuple<3>& v_alias = v_source\.mins;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Tuple<3> v_copy = bbl::js::clone_tuple\(v_source\.mins\);/,
+    );
+});
+
+test("tests runtime strings against RegExp values", () => {
+    const result = compileSource(`
+        const items = /^(item_|weapon_)/;
+        function isItem(name: string): boolean {
+            return items.test(name);
+        }
+        const found = isItem("item_shells");
+    `);
+
+    assert.match(result.cpp, /\.test\(/);
+});
+
+test("mutates a Map array fallback before storing it back", () => {
+    const result = compileSource(`
+        const groups = new Map<string, number[]>();
+        const key = "items";
+        const list = groups.get(key) ?? [];
+        list.push(3);
+        groups.set(key, list);
+    `);
+
+    assert.match(result.cpp, /v_list\.push_back\(3\.0\)/);
+    assert.match(result.cpp, /v_groups\.set\("items", v_list\)/);
+});
+
+test("serializes a runtime string enum for a string Set lookup", () => {
+    const result = compileSource(`
+        type Kind = "door" | "button";
+        const kinds = new Set(["door", "button"]);
+        function includes(kind: Kind): boolean {
+            return kinds.has(kind);
+        }
+        const runtimeKind: Kind = Math.random() > 0.5 ? "door" : "button";
+        const found = includes(runtimeKind);
+    `);
+
+    assert.match(result.cpp, /Kind_to_string/);
+    assert.match(result.cpp, /v_kinds\.has\(/);
+});
+
+test("coerces Array predicate return expressions with JavaScript truthiness", () => {
+    const result = compileSource(`
+        interface Entry { name: string; bytes: Uint8Array | null; }
+        const entries: Entry[] = [{ name: "sky", bytes: new Uint8Array(2) }];
+        const index = entries.findIndex(
+            (entry) => entry && entry.name.startsWith("sky") && entry.bytes
+        );
+    `);
+
+    assert.match(result.cpp, /find_index_result/);
+});
+
+test("keeps early boolean returns in block Array predicates", () => {
+    const result = compileSource(`
+        const values = [1, 2, 3];
+        const positive = values.filter((value) => {
+            if (value < 2) return false;
+            return value > 0;
+        });
+    `);
+
+    assert.match(result.cpp, /filter_result/);
 });
 
 test("erases decoder-base setup rooted at import.meta.url", () => {
@@ -5752,6 +6241,67 @@ test("maps canvas pointer offsets to its platform-relative coordinates", () => {
     assert.match(result.cpp, /\.button/);
     assert.doesNotMatch(result.cpp, /offset[XY]/);
     assert.match(result.cpp, /\[\[maybe_unused\]\] double v_fn\d+_state/);
+});
+
+test("lowers focusable-canvas FPS controls and pointer lock", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            await createEngine(canvas);
+            let key = "";
+            let locked = false;
+            let yaw = 0;
+            let wheel = 0;
+            document.addEventListener("pointerlockchange", () => {
+                locked = document.pointerLockElement === canvas;
+            });
+            canvas.addEventListener("keydown", (event) => {
+                key = event.code;
+            });
+            canvas.addEventListener("keyup", () => {
+                key = "";
+            });
+            canvas.addEventListener("pointerdown", (event) => {
+                if ((event.buttons & 2) && document.pointerLockElement !== canvas) {
+                    void canvas.requestPointerLock();
+                }
+            });
+            canvas.addEventListener("pointerup", (event) => {
+                if (!(event.buttons & 2) && document.pointerLockElement === canvas) {
+                    document.exitPointerLock();
+                }
+            });
+            canvas.addEventListener("pointermove", (event) => {
+                if (locked) yaw += event.movementX + event.movementY;
+            });
+            canvas.addEventListener("wheel", (event) => {
+                event.preventDefault();
+                wheel += event.deltaY;
+            });
+            canvas.addEventListener("pointercancel", () => {
+                locked = false;
+            });
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::on_key_down/);
+    assert.match(result.cpp, /bbl::on_key_up/);
+    assert.match(result.cpp, /bbl::on_mouse_move/);
+    assert.match(result.cpp, /bbl::on_mouse_wheel/);
+    assert.match(result.cpp, /bbl::on_mouse_cancel/);
+    assert.match(result.cpp, /bbl::on_pointer_lock_change/);
+    assert.match(result.cpp, /bbl::request_pointer_lock/);
+    assert.match(result.cpp, /bbl::exit_pointer_lock/);
+    assert.match(result.cpp, /\.pointer_locked/);
+    assert.match(result.cpp, /\.movement_x/);
+    assert.match(result.cpp, /\.movement_y/);
+    assert.match(result.cpp, /\.delta_y/);
+    assert.doesNotMatch(
+        result.cpp,
+        /addEventListener|requestPointerLock|exitPointerLock|preventDefault/,
+    );
 });
 
 test("keeps callback-local declarations inside platform listeners", () => {
@@ -6952,6 +7502,54 @@ test("reaches a shader material's samplers and defines", () => {
     assert.match(result.cpp, /bbl::set_shader_texture\([^)]*, 0u,/);
 });
 
+test("folds a numeric shader source factory at its reached call", () => {
+    const result = compileSource(`
+        import { createEngine, createShaderMaterial } from "babylon-lite";
+
+        const vertexSource = (depthBias: number) => \`struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+        };
+        const DEPTH_BIAS: f32 = \${depthBias.toExponential(6)};
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+            var out: VertexOutput;
+            out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+            out.position.z = out.position.z + DEPTH_BIAS / out.position.w;
+            return out;
+        }\`;
+        const fragmentSource = \`@fragment fn mainFragment() -> @location(0) vec4<f32> {
+            return vec4<f32>(1.0);
+        }\`;
+
+        function makeMaterial(depthBias = 0) {
+            return createShaderMaterial({
+                name: "numeric-source-factory",
+                vertexSource: vertexSource(depthBias),
+                fragmentSource,
+                attributes: ["position"],
+                uniforms: ["worldViewProjection"],
+            });
+        }
+
+        async function main() {
+            await createEngine({});
+            makeMaterial();
+        }
+    `);
+
+    assert.match(
+        result.manifest.customShaderPrograms[0]?.vertexSource ?? "",
+        /shaderUniforms\.bblDynamicDepthBias/,
+    );
+    assert.deepEqual(
+        result.manifest.customShaderPrograms[0]?.uniforms,
+        ["worldViewProjection", "bblDynamicDepthBias:f32"],
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\([^)]*depthBias\)\);/,
+    );
+});
+
 test("preserves shader-material identity through a typed class field", () => {
     const result = compileSource(`
         import {
@@ -7000,7 +7598,7 @@ test("preserves shader-material identity through a typed class field", () => {
     assert.deepEqual(result.manifest.shaderVariants, ["class-owned"]);
     assert.match(
         result.cpp,
-        /bbl::set_shader_uniform_value\([^;]*, 0u, 2\.4f\);/,
+        /bbl::set_scene_shader_uniform_value\([^;]*, 0u, 0u, 2\.4f\);/,
     );
 });
 
