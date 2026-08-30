@@ -136,15 +136,6 @@ export async function withBrowserPage<T>(
                   }
                 : undefined,
         );
-        // Chromium asks every page it opens for `/favicon.ico`, which no
-        // server here has any reason to hold. Left alone it 404s, and the
-        // console-error hook below reports that as a scene failure would be
-        // reported -- the same line on every capture, saying nothing about
-        // the scene. Answering it here rather than in one server covers the
-        // servers that would otherwise each have to know about it.
-        await page.route("**/favicon.ico", (route) =>
-            route.fulfill({ status: 204, body: "" }),
-        );
         const pageErrorPrefix = options.pageErrorPrefix;
         if (pageErrorPrefix !== undefined) {
             page.on("pageerror", (error) => {

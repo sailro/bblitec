@@ -5976,15 +5976,21 @@ class Compiler
         );
     }
 
-    /** An imported root's flattened descendants — the concept's walk target. */
+    /**
+     * A proven container flatten's mesh collection, with the container it
+     * flattened — the licence a whole-list setter needs.
+     */
     public assetFlattenedMeshesIterationTarget(
         expression: ts.Expression,
-    ): HandleCollectionTarget | undefined {
+    ):
+        | { target: HandleCollectionTarget; asset: CompileAsset }
+        | undefined {
         return this.handleCollections.assetFlattenedMeshesIterationTarget(
             expression,
         );
     }
 
+    /** An imported root's flattened descendants — the concept's walk target. */
     public assetRootChildrenIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined {
@@ -6106,24 +6112,30 @@ class Compiler
      * `detect` reads that flag when the variant is composed — so for a
      * loaded material the flag has to reach generation, not just the
      * record. It is kept on the container because the reached shape is a
-     * walk over every renderable it carries; a single loaded material has
-     * no compile-time identity a setter could name.
+     * proven walk over every renderable it carries; a single loaded
+     * material has no compile-time identity a setter could name.
      */
     public recordAssetSceneUnlit(
         asset: CompileAsset,
         tint: readonly [number, number, number] | undefined,
         node: ts.Node,
     ): void {
+        // The record is shared by every `loadGltf` of one source, so a
+        // second container would compose unlit without ever being walked.
+        if ((asset.containerCount ?? 0) > 1) {
+            this.fail(
+                node,
+                `'${asset.output}' is loaded more than once, and the unlit ` +
+                    "arm is composed per document rather than per container, " +
+                    "so stamping one container would compose the others " +
+                    "unlit too.",
+            );
+        }
         const existing = asset.sceneUnlit;
-        const same =
-            !existing ||
-            (existing.tint === undefined && tint === undefined) ||
-            (existing.tint !== undefined &&
-                tint !== undefined &&
-                existing.tint.every(
-                    (channel, lane) => channel === tint[lane],
-                ));
-        if (!same) {
+        if (
+            existing &&
+            existing.tint?.join() !== tint?.join()
+        ) {
             this.fail(
                 node,
                 "setPbrUnlit already tinted this container's materials " +

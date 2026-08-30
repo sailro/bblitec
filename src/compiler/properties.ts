@@ -831,11 +831,13 @@ export function readProperty(
     !owner.standardMaterial
       ? {
           assetPbrMaterial: true as const,
-          // The container the mesh was walked out of, when the walk named
-          // one. A loaded material has no scene-side record to stamp, so
-          // this is the only compile-time identity a setter reaching it
-          // has: the document whose materials generation composes.
-          ...(owner.asset ? { asset: owner.asset } : {}),
+          // The container a proven whole-list walk is visiting, when this
+          // mesh came from one. A loaded material has no scene-side record
+          // to stamp, so this is the only compile-time identity a setter
+          // reaching it has: the document whose materials compose.
+          ...(owner.assetWholeMeshList
+            ? { assetWholeMeshList: owner.assetWholeMeshList }
+            : {}),
         }
       : {}),
     ...(rule.carriesShadowGenerator && owner.shadowGeneratorIndex !== undefined

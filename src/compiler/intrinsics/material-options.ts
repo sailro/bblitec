@@ -217,6 +217,32 @@ export function staticColor3Value(
         : [r, g, b];
 }
 
+/**
+ * A setter's linear-RGB argument as both halves its callers need: the
+ * channels generation composes the fragment from, and the emitted colour.
+ *
+ * `setPbrEmissive` and `setPbrUnlit` each write a colour into the material
+ * UBO their own pinned extension reads, so both refuse the same way — a
+ * channel generation cannot settle would compose one fragment and upload
+ * another.
+ */
+export function requiredStaticColor3(
+    context: Parameters<typeof staticColor3Value>[0] & {
+        compileColor3(expression: ts.Expression): string;
+    },
+    expression: ts.Expression,
+    message: string,
+): { cpp: string; channels: readonly [number, number, number] } {
+    const channels = staticColor3Value(context, expression);
+    if (
+        !channels ||
+        channels.some((channel) => !Number.isFinite(channel))
+    ) {
+        context.fail(expression, message);
+    }
+    return { cpp: context.compileColor3(expression), channels };
+}
+
 function requiredStaticFiniteNumber(
     context: MaterialOptionContext,
     expression: ts.Expression | undefined,

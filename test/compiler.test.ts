@@ -5253,6 +5253,150 @@ test("materializes direct browser primitive call arms", () => {
     assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
 });
 
+const containerFlattenWalk = `
+        function collectMeshes(container: AssetContainer): Mesh[] {
+            const out: Mesh[] = [];
+            const stack: unknown[] = [...container.entities];
+            while (stack.length > 0) {
+                const node = stack.pop() as { _gpu?: unknown; material?: unknown; children?: unknown[] } | undefined;
+                if (!node) {
+                    continue;
+                }
+                if ("_gpu" in node && "material" in node) {
+                    out.push(node as unknown as Mesh);
+                }
+                if (node.children?.length) {
+                    stack.push(...node.children);
+                }
+            }
+            return out;
+        }
+`;
+
+test("lowers a proven container flatten to the loader's own mesh list", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+            setPbrUnlit,
+        } from "@babylonjs/lite";
+        import type { AssetContainer, Mesh, PbrMaterialProps } from "@babylonjs/lite";
+${containerFlattenWalk}
+        async function main() {
+            const engine = await createEngine({});
+            const asset = await loadGltf(engine, "model.glb");
+            for (const mesh of collectMeshes(asset)) {
+                setPbrUnlit(mesh.material as PbrMaterialProps, [0.5, 0.5, 0.5]);
+            }
+        }
+    `);
+
+    // The walk is answered by the asset's flattened meshes, so nothing in
+    // the emitted body walks an entity tree the loader resolved away.
+    assert.match(result.cpp, /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/);
+    assert.match(result.cpp, /set_pbr_unlit\(.*bbl::Color3\{0\.5f, 0\.5f, 0\.5f\}\)/);
+});
+
+test("refuses a container flatten whose renderable test is not the walk's", () => {
+    // The same walk with `"_gpu" in node` alone: it would also collect a
+    // node the loader made no mesh record for, so the proof must not accept
+    // it and the body refuses where it reads the entity tree.
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, loadGltf } from "@babylonjs/lite";
+                import type { AssetContainer, Mesh } from "@babylonjs/lite";
+
+                function collectMeshes(container: AssetContainer): Mesh[] {
+                    const out: Mesh[] = [];
+                    const stack: unknown[] = [...container.entities];
+                    while (stack.length > 0) {
+                        const node = stack.pop() as { _gpu?: unknown; children?: unknown[] } | undefined;
+                        if (!node) {
+                            continue;
+                        }
+                        if ("_gpu" in node) {
+                            out.push(node as unknown as Mesh);
+                        }
+                        if (node.children?.length) {
+                            stack.push(...node.children);
+                        }
+                    }
+                    return out;
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const asset = await loadGltf(engine, "model.glb");
+                    for (const mesh of collectMeshes(asset)) {
+                        keep(mesh);
+                    }
+                }
+
+                function keep(_mesh: Mesh): void {}
+            `),
+        /container\.entities/,
+    );
+});
+
+test("licenses the container-wide unlit stamp only from the proven walk", () => {
+    // `getContainerMeshes` yields the same handles, but a bound result is
+    // just a collection: nothing says the loop that follows reaches all of
+    // it, and the unlit arm composes per document.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    getContainerMeshes,
+                    loadGltf,
+                    setPbrUnlit,
+                } from "@babylonjs/lite";
+                import type { PbrMaterialProps } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const asset = await loadGltf(engine, "model.glb");
+                    const meshes = getContainerMeshes(asset);
+                    for (const mesh of meshes) {
+                        setPbrUnlit(mesh.material as PbrMaterialProps);
+                    }
+                }
+            `),
+        /setPbrUnlit names no scene-code PBR material/,
+    );
+});
+
+test("refuses a container-wide unlit stamp on a twice-loaded asset", () => {
+    // Both containers share one asset record, and the unlit arm is composed
+    // from the document, so stamping the first would compose the second
+    // unlit as well.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    loadGltf,
+                    setPbrUnlit,
+                } from "@babylonjs/lite";
+                import type { AssetContainer, Mesh, PbrMaterialProps } from "@babylonjs/lite";
+${containerFlattenWalk}
+                async function main() {
+                    const engine = await createEngine({});
+                    const left = await loadGltf(engine, "model.glb");
+                    const right = await loadGltf(engine, "model.glb");
+                    keep(right);
+                    for (const mesh of collectMeshes(left)) {
+                        setPbrUnlit(mesh.material as PbrMaterialProps, [0.5, 0.5, 0.5]);
+                    }
+                }
+
+                function keep(_container: AssetContainer): void {}
+            `),
+        /is loaded more than once/,
+    );
+});
+
 test("exposes only the pinned glTF container root entity", () => {
     const result = compileSource(`
         import {

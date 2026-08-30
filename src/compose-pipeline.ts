@@ -502,6 +502,15 @@ export async function composeScenePipeline({
                 ? { sceneUnlit: asset.sceneUnlit }
                 : {}),
         };
+        // The variant composer additionally takes the asset's selected
+        // `KHR_materials_variants` name, which the material composer's own
+        // options bag does not carry.
+        const assetVariantOptions = {
+            ...assetComposeOptions,
+            ...(asset.selectedVariant
+                ? { selectedVariant: asset.selectedVariant }
+                : {}),
+        };
         const composed = await composeGltfMaterials(
             path,
             assetComposeOptions,
@@ -515,10 +524,7 @@ export async function composeScenePipeline({
             sceneArms,
             materialIndexBase,
             {
-                ...assetComposeOptions,
-                ...(asset.selectedVariant
-                    ? { selectedVariant: asset.selectedVariant }
-                    : {}),
+                ...assetVariantOptions,
                 ...(dynamicReceiverBits.length > 0
                     ? {
                           meshFeatureSets: expandRuntimeMeshFeatureSets(
@@ -548,10 +554,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        ...assetComposeOptions,
-                        ...(asset.selectedVariant
-                            ? { selectedVariant: asset.selectedVariant }
-                            : {}),
+                        ...assetVariantOptions,
                         meshFeatureSets: assetMaterialMeshFeatures,
                     },
                     geometryTasks,
@@ -565,10 +568,7 @@ export async function composeScenePipeline({
                     sceneArms,
                     materialIndexBase,
                     {
-                        ...assetComposeOptions,
-                        ...(asset.selectedVariant
-                            ? { selectedVariant: asset.selectedVariant }
-                            : {}),
+                        ...assetVariantOptions,
                         materialView,
                         meshFeatureSets: dynamicCasterFeatureSets(
                             gltfRenderableFeatureSets[assetIndex] ?? [],

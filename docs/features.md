@@ -871,10 +871,19 @@ colour by. A **loaded** material is stampable too, over the flattened mesh
 list a container walk yields: the pin's own `getContainerMeshes` flattens the
 entity hierarchy to its renderables, and a scene writing that walk itself
 lowers to the loader's own mesh records, which are that same flatten already
-performed. Such a material has no scene-side record for the composer to read,
-so the fact is kept on the container and its document composes the unlit arm
-— which is why the setter is accepted over a container's whole mesh list and
-not over one material a runtime handle happens to name.
+performed. What the lowering proves of such a walk is its reach and its
+selection — every node under the container's entities, collecting the ones
+the loader made mesh records for — and deliberately not its order, since a
+worklist reaches siblings in the reverse of document order.
+
+A loaded material has no scene-side record for the composer to read, so the
+fact is kept on the container and its document composes the unlit arm. That
+widening is sound only where the walk demonstrably reaches every renderable,
+so the licence is minted by the proven loop itself: the same handles reached
+through a bound `getContainerMeshes` result, or `container.meshes ?? []`,
+carry no such proof and refuse. A container whose asset record backs a second
+`loadGltf` of the same URL refuses too, because one document composes for
+both.
 
 Each glTF texture slot samples the UV set its own `textureInfo` selects —
 base colour, metallic-roughness, normal, emissive, spec-gloss and occlusion —

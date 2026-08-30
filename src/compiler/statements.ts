@@ -8,6 +8,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import type {
+    CompileAsset,
     CompiledNodeParticles,
     Value,
     ValueKind,
@@ -54,7 +55,9 @@ export interface StatementLoweringContext {
     ): Value | undefined;
     assetFlattenedMeshesIterationTarget(
         expression: ts.Expression,
-    ): HandleCollectionTarget | undefined;
+    ):
+        | { target: HandleCollectionTarget; asset: CompileAsset }
+        | undefined;
     assetRootChildrenIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
@@ -1580,31 +1583,32 @@ export class StatementLowerer {
 
     /**
      * Lowers `for (const mesh of <walk>(container))`, where the walk is
-     * proven to be the pin's own container flatten.
+     * proven to flatten the container to its renderables.
      *
      * The body runs once per renderable, over the meshes native loading
      * already flattened. `break`/`continue` would make the loop's order
      * observable, and a worklist reaches siblings in the reverse of the
      * loader's document order, so both are refused rather than lowered
      * against an order this walk never promised.
+     *
+     * The binding carries the container itself, which is the licence a
+     * setter with no per-material compile-time identity needs: the loop
+     * demonstrably reaches every renderable, so a fact stamped from inside
+     * it is the container's. That is why the licence is minted here rather
+     * than on the collection — the same handles reached through
+     * `getContainerMeshes(a)` or `a.meshes ?? []` carry no such proof.
      */
     private emitAssetFlattenedMeshesForOf(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        const target =
+        const resolved =
             context.assetFlattenedMeshesIterationTarget(
                 statement.expression,
             );
-        if (!target) {
+        if (!resolved) {
             return false;
-        }
-        if (!ts.isIdentifier(declaration.name)) {
-            context.fail(
-                declaration.name,
-                "Walking a container's flattened meshes requires an identifier binding.",
-            );
         }
         if (this.bindsEnclosingLoop(statement.statement)) {
             context.fail(
@@ -1612,15 +1616,12 @@ export class StatementLowerer {
                 "break/continue in a container's mesh walk is not lowered: the walk collects a set, and stopping partway through would depend on an order it does not fix.",
             );
         }
-        emitHandleCollectionLoop(
+        this.emitCollectionForOfBody(
             context,
-            target,
-            declaration.name,
-            (loopContext) => {
-                for (const nested of bodyStatements(statement)) {
-                    this.emit(loopContext, nested);
-                }
-            },
+            statement,
+            declaration,
+            resolved.target,
+            { assetWholeMeshList: resolved.asset },
         );
         return true;
     }
@@ -1791,17 +1792,18 @@ export class StatementLowerer {
      * asset's meshes and groups are added by the generated loader — so this
      * stays a real loop rather than being unrolled.
      */
-    private emitHandleCollectionForOf(
+    /**
+     * The body both handle-collection `for...of` arms emit: the binding
+     * check, the native loop, and the source body re-emitted once per
+     * member. Only what licenses the loop differs between them.
+     */
+    private emitCollectionForOfBody(
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
-    ): boolean {
-        const target = context.handleCollectionIterationTarget(
-            statement.expression,
-        );
-        if (!target) {
-            return false;
-        }
+        target: HandleCollectionTarget,
+        extraBinding?: Partial<Value>,
+    ): void {
         if (!ts.isIdentifier(declaration.name)) {
             context.fail(
                 declaration.name,
@@ -1817,6 +1819,26 @@ export class StatementLowerer {
                     this.emit(loopContext, nested);
                 }
             },
+            extraBinding,
+        );
+    }
+
+    private emitHandleCollectionForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const target = context.handleCollectionIterationTarget(
+            statement.expression,
+        );
+        if (!target) {
+            return false;
+        }
+        this.emitCollectionForOfBody(
+            context,
+            statement,
+            declaration,
+            target,
         );
         return true;
     }
