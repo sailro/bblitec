@@ -323,6 +323,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(src/loader-gltf/gltf-feature-lights-punctual.ts)",
         consumers: ["features.cmake", "variant table"],
     },
+    "light:clustered": {
+        provenance:
+            "src/light/clustered.ts, with the spot arm behind " +
+            "src/light/clustered-spot-support.ts",
+        consumers: ["features.cmake", "variant table"],
+    },
     "loader:babylon": {
         provenance: "src/loader-babylon/load-babylon.ts",
         consumers: CMAKE,

@@ -221,6 +221,7 @@ export type {
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import type { ClusteredContainerState } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import {
     shaderMaterialPrograms,
@@ -351,6 +352,8 @@ class Compiler
     > = [new Map()];
     private readonly cppNamePrefixes: string[] = [""];
     private readonly features = new Set<Feature>(["core"]);
+    /** The clustered container this scene added, if it added one. */
+    private clusteredContainer: ClusteredContainerState | undefined;
     private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
     public readonly assetPayloads = new Map<string, string>();
@@ -7308,6 +7311,30 @@ class Compiler
      * entry file by its option name, an imported file by its program
      * name.
      */
+    /**
+     * Records that this scene composes the clustered light fragment.
+     *
+     * Only `hasSpots` reaches composition -- it decides which of the pin's
+     * two extensions detects a material, and with it the data layout the
+     * fragment reads -- so that is what travels to the compose pipeline.
+     */
+    public reachClusteredContainer(
+        state: ClusteredContainerState,
+        node: ts.Node,
+    ): void {
+        if (
+            this.clusteredContainer &&
+            this.clusteredContainer.hasSpots !== state.hasSpots
+        ) {
+            this.fail(
+                node,
+                "Two clustered light containers disagree about spot " +
+                    "lights: the composed fragment carries one data layout.",
+            );
+        }
+        this.clusteredContainer = state;
+    }
+
     public reachFeature(feature: Feature, site?: ts.Node): void {
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {

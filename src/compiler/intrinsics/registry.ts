@@ -21,6 +21,10 @@ import {
     type LightIntrinsicContext,
 } from "./light.js";
 import {
+    compileClusteredLightIntrinsic,
+    type ClusteredLightIntrinsicContext,
+} from "./clustered-light.js";
+import {
     compileEffectIntrinsic,
     type EffectIntrinsicContext,
 } from "./effect.js";
@@ -82,6 +86,7 @@ export interface IntrinsicContext
         AudioIntrinsicContext,
         CameraIntrinsicContext,
         EngineIntrinsicContext,
+        ClusteredLightIntrinsicContext,
         LightIntrinsicContext,
         LineIntrinsicContext,
         MaterialIntrinsicContext,
@@ -106,6 +111,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileEngineIntrinsic,
     compileCameraIntrinsic,
     compileLightIntrinsic,
+    compileClusteredLightIntrinsic,
     compileMeshIntrinsic,
     compileLineIntrinsic,
     compileSceneIntrinsic,

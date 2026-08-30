@@ -37,6 +37,7 @@ export const featureSources: Record<Feature, string[]> = {
     "light:directional": [],
     "light:point": [],
     "light:spot": [],
+    "light:clustered": [],
     "loader:babylon": [],
     "loader:gltf": [],
     "loader:gltf-variants": [],
