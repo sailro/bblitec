@@ -5647,6 +5647,34 @@ class Compiler
     }
 
     /**
+     * Runs a shape probe, keeping what it emitted only when it answers.
+     *
+     * A lowering that asks "is this expression a tuple / a data container"
+     * answers by RESOLVING the expression, and resolving a call compiles
+     * it — so a probe that then declines leaves the call's whole inlined
+     * body in the stream, and the shape that does answer compiles the same
+     * call a second time. The first copy is unreachable, and unreachable is
+     * not free: `break-meshes` fractured every mesh twice and retained 304
+     * orphaned meshes for the copy nothing read. Neither gate could see it,
+     * because an orphan is never drawn and `bbl::js::Array` has a
+     * non-trivial destructor, so the unused-variable warnings stay silent.
+     *
+     * Indentation is left where it is, unlike `captureEmittedLines`: a kept
+     * line stays exactly where the probe emitted it.
+     */
+    public probeEmission<T>(
+        probe: () => T,
+        answered: (result: T) => boolean,
+    ): T {
+        const start = this.body.length;
+        const result = probe();
+        if (!answered(result)) {
+            this.body.splice(start);
+        }
+        return result;
+    }
+
+    /**
      * Runs an emission body with indentation reset to column zero and
      * returns the produced lines, removing them from the main body stream.
      * Native function definitions and for-headers use this.

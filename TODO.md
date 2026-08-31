@@ -76,19 +76,22 @@ act on it — not what was tried.
 ## P1 — Runtime and validation
 
 - [ ] Gate the corpus against the upstream tree, not only against its own
-  manifest. `test/corpus-scenes.test.ts` and `test/corpus-goldens.test.ts`
-  hash every corpus file against `upstream/babylon-lite-corpus.json`, whose
-  digests are written FROM those same files, so an edit to a corpus source
-  and to its digest together passes both gates. That is measured, not
-  hypothetical: `lab/lite/src/demos/break-mesh.ts` carried a hand rewrite of
-  `FVertex` and `Plane` from interfaces to tuples with both gates green, and
-  the rewrite changed nothing — the restored upstream source measures
-  0.000/0.000 on both backends and its browser capture is byte-identical to
-  the committed golden. What unblocks it is where the upstream bytes come
-  from: a second recorded digest is no evidence while one writer produces
-  both, so either the pin-migration step derives every digest from
-  `BabylonJS/Babylon-Lite` at `sourceVersion` by construction, or the check
-  fetches that tree and is therefore not a unit test.
+  manifest. Every digest in `upstream/babylon-lite-corpus.json` is written from
+  the corpus file it describes, so an edit to a file and to its digest together
+  passes every gate: `test/corpus-scenes.test.ts` hashes `scenes` and `modules`,
+  `test/corpus-goldens.test.ts` hashes `applications[].files`, and neither has
+  seen an upstream byte. `reference/exact-corpus-manifest.json` records a second
+  digest for `sceneNNN` alone and one hand writes both, so more recorded copies
+  do not close it. One application file diverged from upstream for its whole
+  life in the repository with the suite green.
+  What unblocks it is a decision about shape rather than a missing capability.
+  `downloadCached` (`src/asset-download-cache.ts`) already fetches
+  `raw.githubusercontent.com/BabylonJS/Babylon-Lite/<sourceVersion>/<upstreamPath>`
+  and seeds from a clone, and 358 of the 456 hashed entries determine that URL
+  from `upstreamPath` alone. But the published package ships no `lab/` sources,
+  so `UpstreamSourceStore` cannot serve them and the check belongs beside
+  `status:verify` in the `verify-*` family rather than in the unit suite. The 77
+  entries that are members of pinned release archives need an extract arm.
 
 - [ ] Fold the hand-typed matrix-times-vector and determinant copies onto
   one emitted pair. `transform_position`/`transform_direction`
