@@ -669,6 +669,7 @@ class GeneratedSourceWriter {
         assertFloatingOriginCapabilities(features);
         const shadows = shadowCapabilities(shadowInputs);
         const nodeEsmCasters = shadowInputs.nodeEsmCasters > 0;
+        const nodePcfCasters = (shadowInputs.nodePcfCasters ?? 0) > 0;
         this.tree.write(
             "upstream/include/bblite/upstream/render_capabilities.hpp",
             `#pragma once
@@ -1922,6 +1923,7 @@ ${composed.wgsl}`,
                 factories.lowerNoColorMaterialViews(
                     features.includes("shadow:esm"),
                     nodeEsmCasters,
+                    nodePcfCasters,
                 ),
                 generated,
             );
@@ -2004,6 +2006,7 @@ ${composed.wgsl}`,
                     context,
                     features,
                     nodeEsmCasters,
+                    nodePcfCasters,
                 ),
                 generated,
             );
@@ -2339,11 +2342,14 @@ ${shadow.blurFragmentWgsl}`,
                         family: "node",
                     });
                 }
-                // The ESM caster is a second module of the same graph, so
-                // it deploys the same way: twice, once per entry point.
-                const caster = variant.composed.esmCaster;
+                // A caster is a second module of the same graph, so it
+                // deploys the same way: twice, once per entry point.
+                const caster = variant.composed.caster;
                 if (caster) {
-                    const stems = nodeCasterStageStems(variant.index);
+                    const stems = nodeCasterStageStems(
+                        variant.index,
+                        caster.kind,
+                    );
                     for (
                         const stem of [stems.vertexStem, stems.fragmentStem]
                     ) {

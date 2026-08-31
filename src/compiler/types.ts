@@ -1220,18 +1220,33 @@ export interface VariableBinding {
   reboundInNestedScope?: true;
 }
 
+/**
+ * Generation-time identity and topology state for one light handle.
+ *
+ * A Value is copied whenever a resource is bound to another local or an
+ * inlined function parameter. Keeping this state behind one shared object
+ * makes those copies name the same JavaScript light instead of accidentally
+ * treating Value object identity as resource identity.
+ */
+export interface LightIdentity {
+  /** Current `scene.lights` slot, absent while the light is not in the scene. */
+  sceneLightIndex?: number;
+  /** Generator assigned through `light.shadowGenerator`, when present. */
+  shadowGeneratorIndex?: number;
+}
+
 export interface Value {
   kind: ValueKind;
   cpp: string;
   /**
-   * The exact handle members held by a native array at this point in the
-   * source walk. Explicitly typed handle arrays need runtime identity, but
-   * an initial complete list can still close generated render variants.
-   * Any native mutation clears this snapshot before subsequent reads.
+   * Exact members held by a native array at this point in the source walk.
+   * Runtime storage preserves JavaScript array semantics while this complete
+   * snapshot lets generation-only consumers iterate known handles or records.
+   * Any mutation generation cannot enumerate clears it.
    */
-  staticHandleElements?: Value[];
-  /** Root binding whose static handle snapshot this parameter alias shares. */
-  staticHandleElementsOwner?: Value;
+  staticElements?: Value[];
+  /** Root binding whose static element snapshot this parameter alias shares. */
+  staticElementsOwner?: Value;
   /**
    * Keep this lookup nullable when it initializes a local even if
    * TypeScript reports the binding itself as non-nullable.
@@ -1340,18 +1355,11 @@ export interface Value {
    * order, and the scene meshes follow in creation order.
    */
   sceneMeshIndex?: number;
+  /** Stable identity shared by every Value alias of one light handle. */
+  lightIdentity?: LightIdentity;
   /**
-   * Which `scene.lights` slot a light was added at. The pin's shadow
-   * receiver fragment names its per-light varyings and bindings by that
-   * index (`shadowTex_0`, `shadowFactors[0]`), so it is composition
-   * input rather than a runtime lookup.
-   */
-  sceneLightIndex?: number;
-  /**
-   * Which `shadowGenerators` entry a light was given, so
-   * `setShadowTaskCasterMeshes(light.shadowGenerator, ...)` reaches the
-   * record the assignment stored -- the same object identity
-   * `scenePbrMaterialIndex` carries for a material.
+   * Which `shadowGenerators` entry this generator value names. A light's
+   * assigned generator lives on `lightIdentity` so aliases observe it too.
    */
   shadowGeneratorIndex?: number;
   /**

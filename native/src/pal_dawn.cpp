@@ -5600,14 +5600,18 @@ WGPUBindGroupLayout node_draw_layout_for(
     }
 #if BBLITE_NODE_SHADOWS
     if (caster) {
-        // The caster's own single row: `nmeShadowParams`, read only by the
-        // depth code the ESM view appended to the fragment half.
-        WGPUBindGroupLayoutEntry params = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        params.binding = entry.caster.params_binding;
-        params.visibility = WGPUShaderStage_Fragment;
-        params.buffer.type = WGPUBufferBindingType_Uniform;
-        params.buffer.minBindingSize = upstream::shadow_params_block_bytes;
-        entries.push_back(params);
+#if BBLITE_SHADOWS_ESM
+        if (entry.caster.esm) {
+            // The ESM caster adds one row; the PCF no-colour compile adds
+            // none and keeps only the graph's shared bindings above.
+            WGPUBindGroupLayoutEntry params = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            params.binding = entry.caster.params_binding;
+            params.visibility = WGPUShaderStage_Fragment;
+            params.buffer.type = WGPUBufferBindingType_Uniform;
+            params.buffer.minBindingSize = upstream::shadow_params_block_bytes;
+            entries.push_back(params);
+        }
+#endif
     } else {
         // The receiver's rows, continuing the graph's own binding run
         // rather than opening a group of their own -- but each is the same
@@ -5754,14 +5758,18 @@ WGPURenderPipeline node_variant_pipeline(
     descriptor.vertex.buffers = &vertex_layout;
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
-    // The backFaceCulling the graph declared, through the same shared
-    // decode as the other families: the reached slice composes no blend,
-    // so the kind carries nothing else.
+    const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    const bool transparent = traits.transparent && !shadow_pass && !caster;
+    // The graph's culling and alpha-combine state, decoded through the same
+    // shared kind table as the other families. Shadow views force the pin's
+    // alpha mode 0 and therefore keep depth writes and no colour blending.
     descriptor.primitive.cullMode =
-        dawn_cull_mode(pipeline_kind_traits(kind).cull);
+        dawn_cull_mode(traits.cull);
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     apply_pass_depth_state(depth_stencil, shadow_pass);
-    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+    depth_stencil.depthWriteEnabled = transparent
+        ? WGPUOptionalBool_False
+        : WGPUOptionalBool_True;
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
@@ -5776,11 +5784,17 @@ WGPURenderPipeline node_variant_pipeline(
                 .format);
     }
 #endif
+    WGPUBlendState blend{};
+    if (transparent) {
+        blend = blend_state_from(transparent_blend);
+        color_target.blend = &blend;
+    }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = state.node_fragment_modules[slot];
     fragment.entryPoint = string_view("fs_main");
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
+    const bool pcf_caster = caster && !entry.caster.esm;
+    fragment.targetCount = pcf_caster ? 0 : 1;
+    fragment.targets = pcf_caster ? nullptr : &color_target;
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
@@ -5929,18 +5943,21 @@ WGPUBindGroup build_node_draw_group(
     }
 #if BBLITE_NODE_SHADOWS
     if (caster) {
-        // The caster's own single row: the block `shadow_params_block`
-        // built for the generator this view was made for.
-        WGPUBindGroupEntry params = WGPU_BIND_GROUP_ENTRY_INIT;
-        params.binding = entry.caster.params_binding;
-        params.buffer = esm_caster_params_buffer(state, material);
-        if (!params.buffer) {
-            dawn_error(
-                "a node caster draw reached the encode before its "
-                "generator's shadow params.");
+#if BBLITE_SHADOWS_ESM
+        if (entry.caster.esm) {
+            // PCF's NODE_NO_COLOR_OUTPUT module adds no caster-only row.
+            WGPUBindGroupEntry params = WGPU_BIND_GROUP_ENTRY_INIT;
+            params.binding = entry.caster.params_binding;
+            params.buffer = esm_caster_params_buffer(state, material);
+            if (!params.buffer) {
+                dawn_error(
+                    "a node caster draw reached the encode before its "
+                    "generator's shadow params.");
+            }
+            params.size = upstream::shadow_params_block_bytes;
+            entries.push_back(params);
         }
-        params.size = upstream::shadow_params_block_bytes;
-        entries.push_back(params);
+#endif
     } else if (entry.shadow_binding_count > 0) {
         // The receiver's rows, in the GRAPH's own group 1 -- whether a
         // given mesh receives is the `meshU.receivesShadow` lane, not a
@@ -7847,8 +7864,8 @@ bool run_dawn_engine(Engine& engine) {
     }
 
     upstream::RenderPlan render_plan;
-    std::uint64_t synced_mesh_membership_version =
-        scene.mesh_membership_version;
+    std::uint64_t synced_render_topology_version =
+        scene.render_topology_version;
     // For the post-registration family guard the topology update runs,
     // exactly as the SDL backend tracks it.
     std::uint32_t synced_material_family_mask =
@@ -8230,6 +8247,9 @@ bool run_dawn_engine(Engine& engine) {
         return mesh;
     };
     const auto rebuild_task_draw_lists = [&] {
+        if (state.render_tasks.size() < engine.frame_tasks.size()) {
+            state.render_tasks.resize(engine.frame_tasks.size());
+        }
         for (const TaskHandle handle : scene.tasks) {
             if (handle.value >= engine.frame_tasks.size()) {
                 throw std::runtime_error(
@@ -8243,6 +8263,13 @@ bool run_dawn_engine(Engine& engine) {
             }
             DawnRenderTask& render_task =
                 state.render_tasks[handle.value];
+            if (!render_task.view_projection) {
+                render_task.view_projection = create_buffer(
+                    state,
+                    WGPUBufferUsage_Uniform,
+                    nullptr,
+                    64);
+            }
             render_task.draw_lists =
                 upstream::build_render_task_draw_lists(
                     render_plan.items,
@@ -9570,8 +9597,8 @@ bool run_dawn_engine(Engine& engine) {
 #endif
         bool topology_updated = false;
         if (
-            scene.mesh_membership_version !=
-            synced_mesh_membership_version) {
+            scene.render_topology_version !=
+            synced_render_topology_version) {
             const std::size_t previous_item_count =
                 render_plan.items.size();
             // The table half of the SDL backend's post-registration
@@ -9602,8 +9629,8 @@ bool run_dawn_engine(Engine& engine) {
             state.meshes = std::move(updated_meshes);
             render_plan = std::move(updated_plan);
             rebuild_task_draw_lists();
-            synced_mesh_membership_version =
-                scene.mesh_membership_version;
+            synced_render_topology_version =
+                scene.render_topology_version;
             synced_material_family_mask = scene.material_family_mask;
             const std::size_t shader_item_count =
                 static_cast<std::size_t>(std::count_if(
@@ -9657,7 +9684,7 @@ bool run_dawn_engine(Engine& engine) {
             // the same predicate the draw lists ask.
             //
             // Sound because visibility can only reach the draw lists
-            // through a mesh_membership_version bump, and the rebuild that
+            // through a render_topology_version bump, and the rebuild that
             // bump triggers runs earlier in this same frame -- so the
             // frame a mesh starts drawing is a frame this loop writes it.
             const bool mesh_uniform_item =
@@ -9981,12 +10008,14 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
 #endif
+        const bool capture_ready =
+            frame >= screenshot_frame && !topology_updated &&
+            captures.drains_resolved();
         // Written from the same plan, camera and matrix the uploads
         // below read, so the two backends' captures are comparable to
         // each other as well as to the browser's.
         if (
-            frame >= screenshot_frame &&
-            !topology_updated &&
+            capture_ready &&
             !captures.render_capture_saved &&
             !frame_options.render_capture_path.empty()) {
             write_render_capture(
@@ -10802,7 +10831,8 @@ bool run_dawn_engine(Engine& engine) {
                     // Which of the graph's two compiled views: an ESM caster
                     // view carries the bit its own factory set.
                     const bool node_caster =
-                        node_material && node_material->esm_shadow;
+                        node_material &&
+                        (node_material->esm_shadow || node_material->no_color);
                     DawnDrawState& node_state = node_entry->second;
                     const std::size_t node_slot = pal::node_variant_slot(
                         draw.item.shader_variant,
@@ -12462,10 +12492,9 @@ bool run_dawn_engine(Engine& engine) {
 #endif
 
         const bool capture_frame =
-            frame >= screenshot_frame &&
+            capture_ready &&
             !captures.screenshot_saved &&
-            !screenshot_path.empty() &&
-            !topology_updated;
+            !screenshot_path.empty();
         WGPUBuffer readback = nullptr;
         const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
         if (capture_frame) {
@@ -12543,9 +12572,6 @@ bool run_dawn_engine(Engine& engine) {
         }
         if (readback) wgpuBufferRelease(readback);
 
-        const bool capture_ready =
-            frame >= screenshot_frame && !topology_updated &&
-            captures.drains_resolved();
         if (
             capture_ready && !captures.id_buffer_saved &&
             !id_buffer_path.empty()) {

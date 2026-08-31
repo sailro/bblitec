@@ -228,7 +228,7 @@ omitted. The scene records `csm-single-map-near-cascade` at high risk rather
 than reporting the resource
 as a texture array it did not create.
 
-**A receiver is a composed variant, not a uniform lane.**
+**A Standard or PBR receiver is a composed variant, not a uniform lane.**
 `_computeMeshFeatures(mesh, receiveShadows)` turns `mesh.receiveShadows &&
 hasSomeShadows` into `MSH_RECEIVE_SHADOWS`, and `rebuildSingle` splices
 `createStdShadowFragment(slots)` after the vertex-colour fragment and before the
@@ -242,6 +242,15 @@ a runtime handle collection has no stable scene-row identity, so composition
 retains both variants and the assignment writes the live record lane used to
 select between them. Imported meshes follow that dynamic route rather than
 being silently excluded.
+
+The node family follows the pin's other contract. `node-shadow.ts` continues
+the graph's group-1 allocation with one reflected texture/sampler/info triple
+per shadow light, while the live `meshU.receivesShadow` lane mixes the factor
+per draw. For a PCF caster the pin recompiles the graph with
+`NODE_NO_COLOR_OUTPUT`; `createNodeNoColorMaterialView` selects that module,
+the PAL creates no colour target, and the graph's vertex and morph-storage
+bindings still feed the standard-Z depth pass. Scene 66 gates the receiving
+ground, the deformed caster and the empty-morph caster through this one path.
 
 That group 2 costs SDL_GPU a uniform slot it does not have — scene, lights,
 mesh and mat spend all four before `shadowInfo_N` arrives — so it takes the
@@ -867,7 +876,7 @@ the cached render bundle is RECORDED; `render-task.ts` re-records only on
 `scene._renderableVersion`, the visibility epoch, or an empty bundle list.
 This port records no bundles and caches the draw lists on the same rule --
 `append_draw` drops an invisible mesh and both backends rebuild the plan and
-its lists on `mesh_membership_version` -- so for an OPAQUE mesh the two defer
+its lists on `render_topology_version` -- so for an OPAQUE mesh the two defer
 identically. The `regression-mesh-flags` gate measures both ends of that: a
 mesh hidden before the draw lists are built shows the one behind it, and a
 mesh hidden two frames after the scene's last membership change stays drawn
@@ -1329,14 +1338,27 @@ are not lowered, so generation bakes what the pin's own writer would have
 written. And the **mesh block rides the identity world** where the pin passes
 `mesh.worldMatrix`, because a scene-code mesh bakes its node transform into its
 vertices here — the same argument the Standard family's draws already make, and
-the same one that keeps `receivesShadow` at the pin's default, since
-`receiveShadows` has no lowered setter.
+the node mesh block now writes the live `receiveShadows` value into
+`receivesShadow`, where the pin mixes each composed light's factor rather than
+selecting a second graph variant.
 
-The graph itself arrives two ways and each gets the answer it deserves. A
+The graph itself arrives three ways and each gets the answer it deserves. A
 module exporting the document as a literal is read as data, which is the fold
 and cannot drift. A module that builds its graph at load — id counters,
 spread-composed inputs, arrays it pushes into — is code this compiler does not
-lower, so it is executed instead, under Node.
+lower, so it is executed instead, under Node. A source-owned static
+gzip/base64 document is data too: generation structurally recognizes the
+`atob`/`Uint8Array`/`Blob`/gzip `DecompressionStream`/`Response.json()` chain,
+decodes it, and folds the pure compatibility walk that fills an absent
+connection `inputName` from `name`. A dynamic payload or wider transform does
+not inherit that privilege.
+
+The textures handed to composition are likewise a closed static record.
+Scene 66 gates a sanitized, generation-known computed key written during its
+graph scan; Scene 72 gates `{ ...fallback, ...loaded }`, with later loaded
+entries replacing fallbacks in JavaScript order. The compiler preserves the
+resource handles beside that complete key snapshot rather than treating either
+source as a run-time string dictionary.
 
 An optional scene `blockLoader` is not executed. Its accepted form is closed
 and validated in the scene AST: one local function, one class-name switch,
@@ -1344,11 +1366,18 @@ string cases that each return the `emitter` export from one pinned
 `material/node/blocks/*.js` dynamic import, and one throwing default. The
 validated class-to-module table is what composition receives; a missing class
 still throws there, while a callback, fallthrough, alternate export or
-non-pinned module refuses at generation. Scene 83 gates both the closed table
-and the pin's resulting normal/AO graph. Its solid AO texture also gates the
+non-pinned module refuses at generation. Scene 72 gates the full 18-emitter
+PBR table; Scene 83 gates the smaller closed table and the pin's resulting
+normal/AO graph. Its solid AO texture also gates the
 only texture normalization beside an ordinary file: the factory's RGBA texel
 becomes a 1x1 file-texture record with the pin's clamp, bilinear and no-mipmap
 sampler, while other texture storage kinds refuse.
+
+The graph transcript also owns fixed-function alpha state. When its parser
+sets `needsAlphaBlending` under Babylon alpha-combine mode 2, both PALs select
+the shared source-over tuple and disable depth writes for the colour draw.
+Other alpha modes refuse, and a PCF no-colour caster remains a depth-writing
+shadow pass rather than inheriting the colour draw's transparency.
 
 That last word is the whole difference from the two executed asset kinds
 beside it. A drawn atlas and a computed pixel buffer produce *pixels*, so they

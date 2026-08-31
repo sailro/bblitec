@@ -89,6 +89,23 @@ NodeMaterialTexture node_material_texture(
 
 NodeMaterialTexture node_material_texture(
     std::string name,
+    const PixelsTexture& texture) {
+    FileTexture normalized;
+    normalized.data.bytes = texture.rgba;
+    normalized.data.rgba_width = texture.width;
+    normalized.data.rgba_height = texture.height;
+    normalized.data.sampler = texture.sampler;
+    normalized.data.uv_transform = texture.uv_transform;
+    normalized.data.uv_invert_y = texture.uv_invert_y;
+    normalized.width = texture.width;
+    normalized.height = texture.height;
+    return node_material_texture(
+        std::move(name),
+        std::move(normalized));
+}
+
+NodeMaterialTexture node_material_texture(
+    std::string name,
     const SolidTexture& texture) {
     FileTexture normalized;
     normalized.data.bytes.assign(
@@ -111,6 +128,16 @@ NodeMaterialTexture node_material_texture(
         std::move(normalized));
 }
 
+NodeMaterialTexture node_material_texture(
+    std::string name,
+    const StoredTexture& texture) {
+    return std::visit(
+        [&](const auto& stored) {
+            return node_material_texture(std::move(name), stored);
+        },
+        texture);
+}
+
 // The graph was compiled at generation by the pin's own emitter and
 // pipeline builder; what remains at run time is which composed program a
 // draw uses, and the fixed-function state that program was built with.
@@ -124,6 +151,9 @@ MaterialHandle create_node_material(
     material.node_material = true;
     material.shader_variant = variant;
     material.double_sided = !entry.back_face_culling;
+    material.alpha_mode = entry.alpha_blending
+        ? MaterialAlphaMode::blend
+        : MaterialAlphaMode::opaque;
     // The graph's declared bindings, in the pin's own allocation order,
     // resolved by name against what the scene supplied -- the join
     // parseNodeMaterialFromSnippet performs when it fills _textureSlots.
@@ -1598,7 +1628,9 @@ MaterialHandle create_standard_material(Engine& engine) {
     public lowerNoColorMaterialViews(
         esmShadows = false,
         nodeEsmCasters = false,
+        nodePcfCasters = false,
     ): LoweredSource {
+        const nodeCasters = nodeEsmCasters || nodePcfCasters;
         const standardModule = "src/material/standard/no-color-view.ts";
         const esmModule = "src/material/standard/esm-shadow-view.ts";
         const pbrModule = "src/material/pbr/no-color-view.ts";
@@ -1708,6 +1740,9 @@ MaterialHandle create_standard_material(Engine& engine) {
                     : "") +
                 (nodeEsmCasters
                     ? ",createNodeEsmShadowMaterialView"
+                    : "") +
+                (nodeCasters
+                    ? ",createNodeNoColorMaterialView"
                     : ""),
             header: "",
             source: `// ${this.context.provenance(
@@ -1758,6 +1793,29 @@ MaterialHandle create_pbr_no_color_material_view(
     MaterialHandle source) {
     return create_no_color_material_view(engine, source, false);
 }
+${!nodeCasters ? "" : `
+MaterialHandle create_node_no_color_material_view(
+    Engine& engine,
+    MaterialHandle source) {
+    if (source.value >= engine.materials.size()) {
+        throw std::runtime_error("Invalid source material handle.");
+    }
+    const MaterialRecord& source_record = engine.materials[source.value];
+    if (!source_record.node_material) {
+        throw std::runtime_error(
+            "Node no-color material view does not match its source.");
+    }
+    MaterialRecord view = source_record;
+    view.no_color = true;
+    view.source_material =
+        source_record.source_material.value == invalid_handle
+            ? source
+            : source_record.source_material;
+    engine.materials.push_back(std::move(view));
+    return MaterialHandle{
+        static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+`}
 ${!esmShadows ? "" : `
 // The ESM caster's view, one body for all three families. Same inheritance
 // as the no-colour view above, a different pass bit: each family's own

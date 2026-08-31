@@ -1119,6 +1119,24 @@
       "upstreamPath": "lab/lite/src/lite/scene20.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene20.ts",
       "sha256": "47a1165f8eca3317b56708d3a847d97a4a5f68b5fcf6883e722bb54c0fe9622d"
+    },
+    {
+      "id": "scene66",
+      "upstreamPath": "lab/lite/src/lite/scene66.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene66.ts",
+      "sha256": "bcb7f35d3878271a860817c1306d5a35ec2d9f44fe47548986ed038a831fca6e"
+    },
+    {
+      "id": "scene72",
+      "upstreamPath": "lab/lite/src/lite/scene72.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene72.ts",
+      "sha256": "216529825783acd170f67a62da0850c09a09e299d47a882683ac0b3b769bfa51"
+    },
+    {
+      "id": "scene271",
+      "upstreamPath": "lab/lite/src/lite/scene271.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene271.ts",
+      "sha256": "9e46a2455178f137c96a2b954b2abe8f7928a6895ca39c904a241f8dc614113d"
     }
   ],
   "modules": [
@@ -1341,6 +1359,21 @@
       "upstreamPath": "lab/lite/src/shared/scene65-nme.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene65-nme.ts",
       "sha256": "d9298ae88c2e6fcd875bf64b4b44077589615ab5853da3968c5b7734d828f0da"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/nme-compression.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/nme-compression.ts",
+      "sha256": "44d62dc3d0978db58ba7c45edee2961d2aefba8400509c6a8ed18dcbe9b0a331"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene66-nme.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene66-nme.ts",
+      "sha256": "b3ff66567bb1e31e43ce260e953931b63785107c6aee6e70fdc6c2de1de91983"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene72-nme.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene72-nme.ts",
+      "sha256": "134bfc96ae0113a5f7820a07063efa5904e7e9e28a3d06de7f563e231a43c79f"
     }
   ],
   "applications": [

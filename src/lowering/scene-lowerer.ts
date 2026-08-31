@@ -465,7 +465,7 @@ void enable_mirrored_meshes(Scene& scene) {
             // through a rebuild. The pin raises enqueueMaterialSwap for
             // it; here the render plan is where a pipeline is
             // chosen, and its membership version is what rebuilds it.
-            ++watched->mesh_membership_version;
+            ++watched->render_topology_version;
         }
     });
 }
@@ -952,7 +952,7 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     if (mesh.value >= scene.engine->meshes.size()) throw std::runtime_error("Invalid mesh handle.");
     scene.meshes.push_back(mesh);
-    ++scene.mesh_membership_version;
+    ++scene.render_topology_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
 }
@@ -1038,13 +1038,47 @@ void remove_from_scene(Scene& scene, MeshHandle mesh) {
         });
     if (found == scene.meshes.end()) return;
     scene.meshes.erase(found);
-    ++scene.mesh_membership_version;
+    ++scene.render_topology_version;
+}
+
+// Light removal is a topology mutation rather than a light-record disposal:
+// handles stay stable in the engine, while the scene list and receiver render
+// plan are rebuilt from the surviving membership. An old shadow task stays
+// scheduled until the replacement rebuild succeeds, matching the pin's
+// failure-safe retirement order.
+void remove_from_scene(Scene& scene, LightHandle light) {
+    require_scene_engine(scene);
+    const auto found = std::find_if(
+        scene.lights.begin(),
+        scene.lights.end(),
+        [light](const LightHandle candidate) {
+            return candidate.value == light.value;
+        });
+    if (found == scene.lights.end()) return;
+    if (light.value < scene.engine->lights.size()) {
+        const LightRecord& record = scene.engine->lights[light.value];
+        const ShadowGeneratorHandle generator = record.shadow_generator;
+        if (
+            generator.value < scene.engine->shadow_generators.size() &&
+            std::none_of(
+                scene.pending_shadow_retirements.begin(),
+                scene.pending_shadow_retirements.end(),
+                [generator](const ShadowGeneratorHandle candidate) {
+                    return candidate.value == generator.value;
+                })) {
+            scene.pending_shadow_retirements.push_back(generator);
+        }
+    }
+    scene.lights.erase(found);
+    scene.topology_rebuild_pending = true;
+    ++scene.render_topology_version;
 }
 
 void add_to_scene(Scene& scene, LightHandle light) {
     require_scene_engine(scene);
     if (light.value >= scene.engine->lights.size()) throw std::runtime_error("Invalid light handle.");
     scene.lights.push_back(light);
+    ++scene.render_topology_version;
 }
 
 namespace {
@@ -1316,6 +1350,56 @@ void register_scene(Scene& scene) {
     if (found == scene.engine->registered_scenes.end()) {
         scene.engine->registered_scenes.push_back(&scene);
     }
+}
+
+void unregister_scene(Scene& scene) {
+    require_scene_engine(scene);
+    scene.engine->registered_scenes.erase(
+        std::remove(
+            scene.engine->registered_scenes.begin(),
+            scene.engine->registered_scenes.end(),
+            &scene),
+        scene.engine->registered_scenes.end());
+}
+
+void rebuild_scene_renderables(Scene& scene) {
+    require_scene_engine(scene);
+    for (const ShadowGeneratorHandle generator :
+         scene.pending_shadow_retirements) {
+        if (generator.value >= scene.engine->shadow_generators.size()) {
+            continue;
+        }
+        const bool still_active = std::any_of(
+            scene.lights.begin(),
+            scene.lights.end(),
+            [&](const LightHandle light) {
+                return
+                    light.value < scene.engine->lights.size() &&
+                    scene.engine->lights[light.value]
+                            .shadow_generator.value == generator.value;
+            });
+        if (still_active) continue;
+        ShadowGeneratorRecord& shadow =
+            scene.engine->shadow_generators[generator.value];
+        const TaskHandle task = shadow.task;
+        scene.tasks.erase(
+            std::remove_if(
+                scene.tasks.begin(),
+                scene.tasks.end(),
+                [task](const TaskHandle candidate) {
+                    return candidate.value == task.value;
+                }),
+            scene.tasks.end());
+        shadow.task = TaskHandle{};
+        for (LightRecord& light : scene.engine->lights) {
+            if (light.shadow_generator.value == generator.value) {
+                light.shadow_generator = ShadowGeneratorHandle{};
+            }
+        }
+    }
+    scene.pending_shadow_retirements.clear();
+    scene.topology_rebuild_pending = false;
+    ++scene.render_topology_version;
 }
 
 void enable_scene_transmission(Scene& scene) {

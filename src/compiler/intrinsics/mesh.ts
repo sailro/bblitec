@@ -113,14 +113,20 @@ export interface MeshIntrinsicContext
     fail(node: ts.Node, message: string): never;
 }
 
-/** A Vec3d expression from a tuple element: a record's x/y/z lanes at
- *  JS-double width, through the evaluator's one record-to-vector home. */
+/** A Vec3d expression from a statically known path element: its x/y/z lanes
+ *  at JS-double width, through the compiler's one record-to-vector home. */
 function vec3RecordCpp(
     context: MeshIntrinsicContext,
     element: Value,
     node: ts.Node,
 ): string {
-    if (element.kind !== "record") {
+    if (
+        element.kind !== "record" &&
+        !(
+            element.kind === "data" &&
+            element.dataType?.kind === "struct"
+        )
+    ) {
         context.fail(
             node,
             `Tube path elements must be Vec3 records, received ${element.kind}.`,
@@ -145,19 +151,23 @@ function compileVec3PathArray(
     if (rows) {
         return (
             `std::vector<std::vector<bbl::Vec3d>>{${rows
-                .map((row) =>
-                    row.tupleElements
+                .map((row) => {
+                    const points =
+                        row.tupleElements ??
+                        row.staticElementsOwner?.staticElements ??
+                        row.staticElements;
+                    return points
                         ? vec3PointsCpp(
                               context,
-                              row.tupleElements,
+                              points,
                               expression,
                           )
                         : context.fail(
                               expression,
                               "Each ribbon path must be a list of Vec3 " +
                                   "records.",
-                          ),
-                )
+                          );
+                })
                 .join(", ")}}`
         );
     }

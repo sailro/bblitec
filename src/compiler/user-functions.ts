@@ -458,6 +458,35 @@ export function resolveFunctionDeclaration(
     return declaration;
 }
 
+/**
+ * Resolve only a function this lowerer could call directly, without turning a
+ * speculative call-graph walk into the diagnostic site.
+ *
+ * Some local calls are consumed by an earlier source-shape lowerer (compressed
+ * JSON is one); those declarations may deliberately use language outside the
+ * generic user-function surface.  Recursive-group discovery needs to ignore
+ * them and let the real call dispatch decide, while an actually reached
+ * unsupported call still fails through `resolveFunctionDeclaration` itself.
+ */
+function probeSupportedFunctionDeclaration(
+    checker: ts.TypeChecker,
+    identifier: ts.Identifier,
+): SupportedFunction | undefined {
+    const unsupported = {};
+    try {
+        return resolveFunctionDeclaration(
+            checker,
+            identifier,
+            () => {
+                throw unsupported;
+            },
+        );
+    } catch (error) {
+        if (error === unsupported) return undefined;
+        throw error;
+    }
+}
+
 export interface UserFunctionParameterIr {
     declaration: ts.ParameterDeclaration;
     name: ts.BindingName;
@@ -642,7 +671,6 @@ export class UserFunctionLowerer {
         );
         const recursiveGroup = this.recursiveGroup(
             ir.declaration,
-            (node, message) => context.fail(node, message),
         );
         if (recursiveGroup) {
             return this.lowerRecursiveGroup(
@@ -887,12 +915,11 @@ export class UserFunctionLowerer {
     /** Finds the strongly connected call-graph component containing root. */
     private recursiveGroup(
         root: SupportedFunction,
-        fail: Fail,
     ): readonly SupportedFunction[] | undefined {
         const cached = this.recursiveGroupCache.get(root);
         if (cached !== undefined) return cached ?? undefined;
         const direct = (declaration: SupportedFunction) =>
-            this.directCalls(declaration, fail);
+            this.directCalls(declaration);
         const reachable = new Set<SupportedFunction>();
         const collect = (declaration: SupportedFunction): void => {
             if (reachable.has(declaration)) return;
@@ -941,7 +968,6 @@ export class UserFunctionLowerer {
 
     private directCalls(
         declaration: SupportedFunction,
-        fail: Fail,
     ): ReadonlySet<SupportedFunction> {
         const cached = this.directCallCache.get(declaration);
         if (cached) return cached;
@@ -953,10 +979,9 @@ export class UserFunctionLowerer {
                 ts.isCallExpression(node) &&
                 ts.isIdentifier(node.expression)
             ) {
-                const called = resolveFunctionDeclaration(
+                const called = probeSupportedFunctionDeclaration(
                     this.checker,
                     node.expression,
-                    fail,
                 );
                 if (called) callees.add(called);
                 if (
@@ -964,10 +989,9 @@ export class UserFunctionLowerer {
                     node.arguments[0] &&
                     ts.isIdentifier(node.arguments[0])
                 ) {
-                    const scheduled = resolveFunctionDeclaration(
+                    const scheduled = probeSupportedFunctionDeclaration(
                         this.checker,
                         node.arguments[0],
-                        fail,
                     );
                     if (scheduled) callees.add(scheduled);
                 }

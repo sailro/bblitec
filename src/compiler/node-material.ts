@@ -505,36 +505,19 @@ function compileTextures(
     expression: ts.Expression | undefined,
 ): readonly NodeMaterialTexture[] {
     if (!expression) return [];
-    const record = context.expectObjectLiteral(expression);
-    const textures: NodeMaterialTexture[] = [];
-    for (const property of record.properties) {
-        // `{ diffuse }` and `{ AtlasUV: atlas }` are both written by the
-        // corpus, so the value expression is the shorthand's own name or the
-        // assignment's initializer.
-        const value = ts.isShorthandPropertyAssignment(property)
-            ? property.name
-            : ts.isPropertyAssignment(property)
-                ? property.initializer
-                : undefined;
-        if (!value) {
-            context.fail(
-                property,
-                "A node material's 'textures' record takes named " +
-                    "properties only.",
-            );
-        }
-        const name = property.name
-            ? context.propertyName(property.name)
-            : undefined;
-        if (name === undefined) {
-            context.fail(
-                property,
-                "A node material texture binding is named by an identifier " +
-                    "or a string.",
-            );
-        }
-        const texture = context.compileValue(value);
-        context.expectKind(texture, "texture", value);
+    const record = context.compileValue(expression);
+    if (
+        record.recordProperties === undefined ||
+        Object.keys(record.recordMethods ?? {}).length > 0 ||
+        Object.keys(record.recordGetters ?? {}).length > 0
+    ) {
+        context.fail(
+            expression,
+            "A node material's 'textures' value must be a static record of named texture properties.",
+        );
+    }
+    return Object.entries(record.recordProperties).map(([name, texture]) => {
+        context.expectKind(texture, "texture", expression);
         // File-backed images and the pin's 1x1 solid factory both normalize
         // to the FileTexture record the native node-material slots upload.
         // Pixel buffers and render attachments have independent lifetimes
@@ -544,12 +527,11 @@ function compileTextures(
             texture.textureStorage !== "solid"
         ) {
             context.fail(
-                value,
+                expression,
                 "Reached node-material textures come from loadTexture2D " +
                     "or createSolidTexture2D.",
             );
         }
-        textures.push({ name, texture });
-    }
-    return textures;
+        return { name, texture };
+    });
 }

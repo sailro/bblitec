@@ -188,12 +188,17 @@ export function nodeVariantsUseMorphStorage(
 
 /** The caster row for one variant, or the absent one. */
 function casterRow(variant: NodeVariantManifestEntry): string {
-    const caster = variant.composed.esmCaster;
-    if (!caster) return '{false, "", "", 0}';
-    const stems = nodeCasterStageStems(variant.index);
+    const caster = variant.composed.caster;
+    if (!caster) return '{false, false, "", "", 0}';
+    const stems = nodeCasterStageStems(
+        variant.index,
+        caster.kind,
+    );
     return (
-        `{true, ${stringLiteral(stems.vertexStem)}, ` +
-        `${stringLiteral(stems.fragmentStem)}, ${caster.paramsBinding}}`
+        `{true, ${caster.kind === "esm"}, ` +
+        `${stringLiteral(stems.vertexStem)}, ` +
+        `${stringLiteral(stems.fragmentStem)}, ` +
+        `${caster.kind === "esm" ? caster.paramsBinding : 0}}`
     );
 }
 
@@ -205,7 +210,7 @@ export function nodeVariantStageStems(
 }
 
 /**
- * The stems the ESM caster module deploys under.
+ * The stems a node caster module deploys under.
  *
  * A second module for the same graph, so it takes the same `node-` prefix
  * -- which is what puts it through the pin's own group scheme in the
@@ -213,10 +218,11 @@ export function nodeVariantStageStems(
  */
 export function nodeCasterStageStems(
     index: number,
+    kind: "esm" | "pcf" = "esm",
 ): { vertexStem: string; fragmentStem: string } {
     return {
-        vertexStem: `node-${index}-esm.vert`,
-        fragmentStem: `node-${index}-esm.frag`,
+        vertexStem: `node-${index}-${kind}.vert`,
+        fragmentStem: `node-${index}-${kind}.frag`,
     };
 }
 
@@ -289,6 +295,7 @@ export function pinnedNodeVariantsHeader(
             `    {${stringLiteral(variant.vertexStem)}, ` +
                 `${stringLiteral(variant.fragmentStem)}, ` +
                 `${variant.composed.backFaceCulling}, ` +
+                `${variant.composed.alphaBlending}, ` +
                 `${firstAttribute}, ${variant.composed.attributes.length}, ` +
                 `${firstTexture}, ${variant.composed.textures.length}, ` +
                 `${
@@ -437,6 +444,7 @@ ${shadowRows.join("\n") || "    // No reached graph receives a shadow."}
  */
 struct NodeVariantCaster {
     bool present;
+    bool esm;
     std::string_view vertex_stem;
     std::string_view fragment_stem;
     std::size_t params_binding;
@@ -454,6 +462,8 @@ struct NodeVariantEntry {
     std::string_view fragment_stem;
     /** The graph's own \`backFaceCulling\`. */
     bool back_face_culling;
+    /** The pin's alpha mode 2: src-alpha / one-minus-src-alpha. */
+    bool alpha_blending;
     /** Half-open range into the attribute table above. */
     std::size_t first_attribute;
     std::size_t attribute_count;

@@ -1905,6 +1905,9 @@ export function shadowFactorySource(
     // scene that reached one. Not a feature: it is a property of what the
     // compose layer produced, not of what the scene asked for.
     nodeEsmCasters = false,
+    // A node PCF caster is the pin's NODE_NO_COLOR_OUTPUT view: the same
+    // graph recompiled with an empty colour-target list.
+    nodePcfCasters = false,
 ): LoweredSource {
     // A PCF-only scene emits neither the ESM factory nor the caster view it
     // would ask for -- the view's own translation unit is not compiled
@@ -1919,17 +1922,13 @@ export function shadowFactorySource(
     );
     const csmSingleMapShadows = features.includes("shadow:csm-single-map");
     // One family's caster view, under the filter its task carries. The node
-    // family composes only the ESM half -- `buildNodeRenderables` re-compiles
-    // the graph's own bodies under the ESM bit, and there is no depth-only
-    // node module -- so its PCF arm is a refusal rather than a call, and the
-    // compose layer refuses the same pair by name before this can fire.
+    // family has a second compiled module for both modes: ESM adds its
+    // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
+    // caster-only binding.
+    const nodeCasters = nodeEsmCasters || nodePcfCasters;
     const casterView = (family: "standard" | "pbr" | "node"): string => {
         const noColor = family === "node"
-            ? `[]() -> MaterialHandle {
-                    throw std::runtime_error(
-                        "A node material casts into a PCF shadow map, "
-                        "which composes no caster module.");
-                }()`
+            ? `create_node_no_color_material_view(engine, material)`
             : `create_${family}_no_color_material_view(engine, material)`;
         return esmShadows
             ? `(esm
@@ -2075,7 +2074,7 @@ ${esmShadows ? `    const bool esm =
 ` : ""}\
     const MaterialRecord& source = engine.materials[material.value];
     const MaterialHandle view =
-        ${nodeEsmCasters ? `source.node_material
+        ${nodeCasters ? `source.node_material
             ? ${casterView("node")}
             : ` : ""}source.standard_material
             ? ${casterView("standard")}
@@ -2213,6 +2212,7 @@ void register_scene_with_shadow_support(Scene& scene) {
         build_shadow_task(scene, generator);
     }
     register_scene(scene);
+    rebuild_scene_renderables(scene);
 }
 
 } // namespace bbl

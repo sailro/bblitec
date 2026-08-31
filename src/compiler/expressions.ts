@@ -18,6 +18,10 @@ import {
     isSupportedAudioMethodProperty,
 } from "./audio-surface.js";
 import type { ClassLowerer } from "./classes.js";
+import {
+    compileCompressedJsonCall,
+    compileCompressedJsonPromiseThen,
+} from "./compressed-json.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
 import type { NativeFunctionLowerer } from "./native-functions.js";
@@ -148,6 +152,10 @@ export interface ExpressionContext
         instance: Value,
     ): ts.ClassDeclaration | undefined;
     withRecordScopes<T>(owner: Value, work: () => T): T;
+    probeEmission<T>(
+        probe: () => T,
+        answered: (result: T) => boolean,
+    ): T;
     requireEngine(value: Value, node: ts.Node): string;
     compileCondition(expression: ts.Expression): string;
     compileNumber(
@@ -232,12 +240,23 @@ export interface ExpressionContext
     ): Value | undefined;
     reachFeature(feature: Feature, site?: ts.Node): void;
     reachJsData(): void;
+    enterRuntimeControlFlow(): void;
+    leaveRuntimeControlFlow(): void;
 }
 
 export class ExpressionLowerer {
     public constructor(
         private readonly context: ExpressionContext,
     ) {}
+
+    private inRuntimeControlFlow<T>(compile: () => T): T {
+        this.context.enterRuntimeControlFlow();
+        try {
+            return compile();
+        } finally {
+            this.context.leaveRuntimeControlFlow();
+        }
+    }
 
     public compileValue(expression: ts.Expression): Value {
         if (
@@ -918,6 +937,36 @@ export class ExpressionLowerer {
             return this.compileCall(unwrapped);
         }
         if (ts.isConditionalExpression(unwrapped)) {
+            // Optional/vector/struct conditionals normally ask their native
+            // sink to lower both branches. Before doing that, retain the
+            // ordinary value path's stronger answer when a side-effect-free
+            // condition is generation-known. This is especially important
+            // for a static record's optional field: the selected value is a
+            // string, not native optional storage merely because the checker
+            // still exposes the unselected `undefined` branch.
+            const foldedCondition = !containsEvaluatedCall(
+                unwrapped.condition,
+            )
+                ? this.context.probeEmission(
+                      () =>
+                          this.context.compileCondition(
+                              unwrapped.condition,
+                          ),
+                      (condition) =>
+                          condition === "true" ||
+                          condition === "false",
+                  )
+                : undefined;
+            if (
+                foldedCondition === "true" ||
+                foldedCondition === "false"
+            ) {
+                return this.compileValue(
+                    foldedCondition === "true"
+                        ? unwrapped.whenTrue
+                        : unwrapped.whenFalse,
+                );
+            }
             const conditionalType =
                 this.context.dataLowerer.dataTypeAt(
                     unwrapped,
@@ -925,17 +974,21 @@ export class ExpressionLowerer {
             if (conditionalType?.kind === "optional") {
                 const objectIdentity =
                     conditionalType.inner.kind === "struct"
-                        ? this.context.dataLowerer.objectIdentity(
-                              unwrapped,
+                        ? this.inRuntimeControlFlow(() =>
+                              this.context.dataLowerer.objectIdentity(
+                                  unwrapped,
+                              ),
                           )
                         : undefined;
                 return {
                     kind: "data",
                     cpp:
                         objectIdentity ??
-                        this.context.dataLowerer.compileForSink(
-                            unwrapped,
-                            conditionalType,
+                        this.inRuntimeControlFlow(() =>
+                            this.context.dataLowerer.compileForSink(
+                                unwrapped,
+                                conditionalType,
+                            ),
                         ),
                     dataType: conditionalType,
                     ...(objectIdentity
@@ -953,9 +1006,11 @@ export class ExpressionLowerer {
                 )
             ) {
                 return this.context.dataValue(
-                    this.context.dataLowerer.compileForSink(
-                        unwrapped,
-                        conditionalType,
+                    this.inRuntimeControlFlow(() =>
+                        this.context.dataLowerer.compileForSink(
+                            unwrapped,
+                            conditionalType,
+                        ),
                     ),
                     conditionalType,
                 );
@@ -966,9 +1021,11 @@ export class ExpressionLowerer {
                 // such a sink, and unlike a tuple select its two arrays may
                 // legally have different lengths.
                 return this.context.dataValue(
-                    this.context.dataLowerer.compileForSink(
-                        unwrapped,
-                        conditionalType,
+                    this.inRuntimeControlFlow(() =>
+                        this.context.dataLowerer.compileForSink(
+                            unwrapped,
+                            conditionalType,
+                        ),
                     ),
                     conditionalType,
                 );
@@ -983,11 +1040,15 @@ export class ExpressionLowerer {
                         : unwrapped.whenFalse,
                 );
             }
-            const whenTrue = this.compileValue(
-                unwrapped.whenTrue,
+            const whenTrue = this.inRuntimeControlFlow(() =>
+                this.compileValue(
+                    unwrapped.whenTrue,
+                ),
             );
-            const whenFalse = this.compileValue(
-                unwrapped.whenFalse,
+            const whenFalse = this.inRuntimeControlFlow(() =>
+                this.compileValue(
+                    unwrapped.whenFalse,
+                ),
             );
             // A tuple value is a compile-time list of element values with
             // no native expression of its own, so selecting between two
@@ -1107,10 +1168,13 @@ export class ExpressionLowerer {
                     const spread = this.compileValue(
                         property.expression,
                     );
-                    if (spread.kind !== "record") {
+                    if (
+                        spread.kind !== "record" &&
+                        spread.recordProperties === undefined
+                    ) {
                         this.context.fail(
                             property,
-                            "Compile-time object spread requires a plain record value.",
+                            "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot.",
                         );
                     }
                     Object.assign(
@@ -1314,6 +1378,37 @@ export class ExpressionLowerer {
                 cpp: `${leftCpp} + ${rightCpp}`,
                 dataType: { kind: "string" },
             };
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.AmpersandAmpersandToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.BarBarToken) &&
+            !containsEvaluatedCall(unwrapped.left)
+        ) {
+            let leftValue: Value | undefined;
+            const truthiness = this.context.probeEmission(
+                () => {
+                    leftValue = this.compileValue(unwrapped.left);
+                    return this.context.dataLowerer.conditionFromValue(
+                        leftValue!,
+                    );
+                },
+                (condition) =>
+                    condition === "true" || condition === "false",
+            );
+            if (truthiness === "true" || truthiness === "false") {
+                const isAnd =
+                    unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken;
+                const selectsRight = isAnd
+                    ? truthiness === "true"
+                    : truthiness === "false";
+                return selectsRight
+                    ? this.compileValue(unwrapped.right)
+                    : leftValue!;
+            }
         }
         if (this.context.isNumberExpression(unwrapped)) {
             const staticNumber =
@@ -2096,6 +2191,13 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const compressedJsonThen = compileCompressedJsonPromiseThen(
+            this.context,
+            call,
+        );
+        if (compressedJsonThen) {
+            return compressedJsonThen;
+        }
         const pixelsUpload =
             this.context.compilePixelsTextureUpload(call);
         if (pixelsUpload) {
@@ -2764,6 +2866,14 @@ export class ExpressionLowerer {
                 callee,
                 `Babylon Lite intrinsic '${importedName}' is not supported by this prototype. Supported scene APIs are documented in README.md.`,
             );
+        }
+        const compressedJson = compileCompressedJsonCall(
+            this.context,
+            call,
+            callee,
+        );
+        if (compressedJson) {
+            return compressedJson;
         }
         const nativeFunction =
             this.context.nativeFunctions.tryCompileCall(

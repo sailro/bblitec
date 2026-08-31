@@ -1007,6 +1007,7 @@ function capabilityRows(
     const {
         nodeShadowReceivers: nodeShadowReceiverCount,
         nodeEsmCasters: nodeEsmCasterCount,
+        nodePcfCasters: nodePcfCasterCount = 0,
     } = nodeShadowInputs(nodeVariantList);
     const shadows = shadowCapabilities({
         features,
@@ -1014,6 +1015,7 @@ function capabilityRows(
         pbrVariants: variantCount,
         nodeShadowReceivers: nodeShadowReceiverCount,
         nodeEsmCasters: nodeEsmCasterCount,
+        nodePcfCasters: nodePcfCasterCount,
     });
     const nodeVariantCount = nodeVariantList.length;
     const nodeMorphStorage = nodeVariantsUseMorphStorage(nodeVariantList);
@@ -1409,7 +1411,8 @@ function capabilityRows(
                 [
                     has("shadow:esm") &&
                         (nodeShadowReceiverCount > 0 ||
-                            nodeEsmCasterCount > 0),
+                            nodeEsmCasterCount > 0 ||
+                            nodePcfCasterCount > 0),
                     "scene source reached shadow:esm and a composed node " +
                         "graph receives or casts",
                 ],
@@ -1495,7 +1498,8 @@ function capabilityRows(
                 [
                     (has("shadow:pcf") || has("shadow:esm")) &&
                         (nodeShadowReceiverCount > 0 ||
-                            nodeEsmCasterCount > 0),
+                            nodeEsmCasterCount > 0 ||
+                            nodePcfCasterCount > 0),
                     "scene source reached a shadow generator and a composed " +
                         "node graph receives or casts",
                 ],
@@ -1528,7 +1532,8 @@ function capabilityRows(
                 [
                     (has("shadow:pcf") || has("shadow:esm")) &&
                         (nodeShadowReceiverCount > 0 ||
-                            nodeEsmCasterCount > 0),
+                            nodeEsmCasterCount > 0 ||
+                            nodePcfCasterCount > 0),
                     "scene source reached a shadow generator and a composed " +
                         "node graph receives or casts",
                 ],

@@ -166,6 +166,8 @@ export interface StatementLoweringContext {
     requiresStaticIteration(statement: ts.Statement): boolean;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
+    enterRuntimeControlFlow(): void;
+    leaveRuntimeControlFlow(): void;
     emit(line: string): void;
     rebindVariable(
         identifier: ts.Identifier,
@@ -248,6 +250,57 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
     private readonly labels: Array<{ source: string; target: string }> = [];
+    /** Source loops whose current iteration is being emitted statically. */
+    private readonly staticUnrolledIterations: ts.IterationStatement[] = [];
+
+    /** Compile one body whose effects occur only on a native runtime path. */
+    private inRuntimeControlFlow<T>(
+        context: StatementLoweringContext,
+        emitBody: () => T,
+    ): T {
+        context.enterRuntimeControlFlow();
+        try {
+            return emitBody();
+        } finally {
+            context.leaveRuntimeControlFlow();
+        }
+    }
+
+    /** Whether this continue binds one of the loops currently being unrolled. */
+    private continueTargetsStaticIteration(
+        statement: ts.ContinueStatement,
+    ): boolean {
+        for (
+            let parent: ts.Node | undefined = statement.parent;
+            parent;
+            parent = parent.parent
+        ) {
+            if (ts.isFunctionLike(parent)) return false;
+            if (ts.isIterationStatement(parent, false)) {
+                return this.staticUnrolledIterations.includes(parent);
+            }
+        }
+        return false;
+    }
+
+    /** Whether a subtree can continue one of the active static loops. */
+    private containsStaticIterationContinue(statement: ts.Statement): boolean {
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (
+                ts.isContinueStatement(node) &&
+                !node.label &&
+                this.continueTargetsStaticIteration(node)
+            ) {
+                found = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(statement);
+        return found;
+    }
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
         return (
@@ -342,6 +395,9 @@ export class StatementLowerer {
                     statement,
                     "Labeled continue is not supported; use a labeled break or an unlabeled continue.",
                 );
+            }
+            if (this.continueTargetsStaticIteration(statement)) {
+                return;
             }
             context.emit("continue;");
             return;
@@ -459,6 +515,37 @@ export class StatementLowerer {
         return found;
     }
 
+    /** Whether the enclosing-loop control includes a break, not only continue. */
+    private breaksEnclosingLoop(
+        statement: ts.Statement,
+    ): boolean {
+        let found = false;
+        const visit = (
+            node: ts.Node,
+            insideSwitch: boolean,
+        ): void => {
+            if (found) return;
+            if (
+                ts.isForStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isDoStatement(node) ||
+                ts.isFunctionLike(node)
+            ) {
+                return;
+            }
+            if (ts.isBreakStatement(node)) {
+                if (!insideSwitch) found = true;
+                return;
+            }
+            const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
+            ts.forEachChild(node, (child) => visit(child, nestedSwitch));
+        };
+        visit(statement, false);
+        return found;
+    }
+
     private emitSwitch(
         context: StatementLoweringContext,
         statement: ts.SwitchStatement,
@@ -523,9 +610,11 @@ export class StatementLowerer {
                 context.emit(
                     emittedBranch ? "} else {" : "{",
                 );
-                this.emitSwitchBody(
-                    context,
-                    clause,
+                this.inRuntimeControlFlow(context, () =>
+                    this.emitSwitchBody(
+                        context,
+                        clause,
+                    ),
                 );
                 emittedBranch = true;
                 continue;
@@ -565,7 +654,9 @@ export class StatementLowerer {
             context.emit(
                 `${emittedBranch ? "} else if" : "if"} (${condition}) {`,
             );
-            this.emitSwitchBody(context, clause);
+            this.inRuntimeControlFlow(context, () =>
+                this.emitSwitchBody(context, clause),
+            );
             emittedBranch = true;
             pendingLabels = [];
         }
@@ -738,6 +829,11 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.IfStatement,
     ): void {
+        // Static loop unrolling lowers this same source node once per
+        // element. Whether a folded branch terminates is therefore an
+        // iteration-local result: a `continue` taken by one element must
+        // not make a later element skip the statement following the `if`.
+        this.loweredTerminators.delete(statement);
         if (
             context.isBrowserOnlyExpression(statement.expression) &&
             this.statementIsBrowserOnly(
@@ -785,14 +881,28 @@ export class StatementLowerer {
             }
             return;
         }
+        if (
+            this.containsStaticIterationContinue(statement.thenStatement) ||
+            (statement.elseStatement !== undefined &&
+                this.containsStaticIterationContinue(
+                    statement.elseStatement,
+                ))
+        ) {
+            context.fail(
+                statement.expression,
+                "A continue in a statically unrolled loop requires a generation-known condition.",
+            );
+        }
         context.emit(`if (${condition}) {`);
         // Alias invalidation is path-sensitive: a branch that always
         // leaves the iteration cannot invalidate anything for the code
         // that follows the `if`, so its effects are rolled back.
         const beforeThen = context.snapshotAliasState();
-        this.emitScopedBody(
-            context,
-            statement.thenStatement,
+        this.inRuntimeControlFlow(context, () =>
+            this.emitScopedBody(
+                context,
+                statement.thenStatement,
+            ),
         );
         if (terminatesFlow(statement.thenStatement)) {
             context.restoreAliasState(beforeThen);
@@ -800,9 +910,11 @@ export class StatementLowerer {
         if (statement.elseStatement) {
             context.emit("} else {");
             const beforeElse = context.snapshotAliasState();
-            this.emitScopedBody(
-                context,
-                statement.elseStatement,
+            this.inRuntimeControlFlow(context, () =>
+                this.emitScopedBody(
+                    context,
+                    statement.elseStatement!,
+                ),
             );
             if (terminatesFlow(statement.elseStatement)) {
                 context.restoreAliasState(beforeElse);
@@ -986,11 +1098,15 @@ export class StatementLowerer {
         }
         if (statement.catchClause) {
             if (
-                statement.catchClause.variableDeclaration
+                statement.catchClause.variableDeclaration &&
+                !this.catchBindingIsErased(
+                    context,
+                    statement.catchClause,
+                )
             ) {
                 context.fail(
                     statement.catchClause.variableDeclaration,
-                    "Native catch bindings are not supported; use a binding-free catch block.",
+                    "Native catch bindings are supported only when every read erases with browser-only instrumentation.",
                 );
             }
             context.emit("try {");
@@ -1040,6 +1156,60 @@ export class StatementLowerer {
             context.decreaseIndent();
             context.emit("}");
         }
+    }
+
+    /** A caught JavaScript value needs no native representation when unread. */
+    private catchBindingIsErased(
+        context: StatementLoweringContext,
+        clause: ts.CatchClause,
+    ): boolean {
+        const declaration = clause.variableDeclaration;
+        if (!declaration || !ts.isIdentifier(declaration.name)) {
+            return false;
+        }
+        const name = declaration.name.text;
+        let erased = true;
+        const visit = (node: ts.Node): void => {
+            if (!erased) return;
+            if (
+                ts.isIdentifier(node) &&
+                node !== declaration.name &&
+                node.text === name
+            ) {
+                let statement: ts.Node = node;
+                while (
+                    statement.parent &&
+                    statement.parent !== clause.block
+                ) {
+                    statement = statement.parent;
+                }
+                const directBrowserArgument =
+                    ts.isCallExpression(node.parent) &&
+                    node.parent.parent === statement &&
+                    context.isBrowserOnlyExpression(node.parent);
+                if (
+                    !ts.isStatement(statement) ||
+                    !(
+                        directBrowserArgument ||
+                        this.statementIsBrowserOnly(
+                            context,
+                            statement,
+                        ) ||
+                        (ts.isExpressionStatement(statement) &&
+                            ts.isCallExpression(statement.expression) &&
+                            context.isBrowserInstrumentationCall(
+                                statement.expression,
+                            ))
+                    )
+                ) {
+                    erased = false;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(clause.block);
+        return erased;
     }
 
     private captureFinallyGuard(
@@ -1156,21 +1326,26 @@ export class StatementLowerer {
                 }
             }
             const condition = statement.condition
-                ? context.compileCondition(
-                      statement.condition,
+                ? this.inRuntimeControlFlow(context, () =>
+                      context.compileCondition(
+                          statement.condition!,
+                      ),
                   )
                 : "";
             // The incrementor belongs in the for-header so `continue`
             // reaches it, matching JavaScript loop semantics.
             let header = "";
             if (statement.incrementor) {
-                const lines =
-                    context.captureEmittedLines(() => {
-                        this.emitExpression(
-                            context,
-                            statement.incrementor!,
-                        );
-                    });
+                const lines = this.inRuntimeControlFlow(
+                    context,
+                    () =>
+                        context.captureEmittedLines(() => {
+                            this.emitExpression(
+                                context,
+                                statement.incrementor!,
+                            );
+                        }),
+                );
                 if (
                     lines.length !== 1 ||
                     !lines[0]!.endsWith(";")
@@ -1195,9 +1370,11 @@ export class StatementLowerer {
                 )
                     ? statement.statement.statements
                     : [statement.statement];
-                for (const nested of statements) {
-                    this.emit(context, nested);
-                }
+                this.inRuntimeControlFlow(context, () => {
+                    for (const nested of statements) {
+                        this.emit(context, nested);
+                    }
+                });
             } finally {
                 context.popScope();
             }
@@ -1225,10 +1402,12 @@ export class StatementLowerer {
      */
     private emitUnrolledIteration(
         context: StatementLoweringContext,
+        iteration: ts.IterationStatement,
         body: ts.Statement,
         bind: () => void,
     ): void {
         context.pushScope(context.allocateBlockPrefix());
+        this.staticUnrolledIterations.push(iteration);
         try {
             bind();
             const statements = ts.isBlock(body)
@@ -1236,8 +1415,10 @@ export class StatementLowerer {
                 : [body];
             for (const nested of statements) {
                 this.emit(context, nested);
+                if (this.terminatesAfterLowering(nested)) break;
             }
         } finally {
+            this.staticUnrolledIterations.pop();
             context.popScope();
         }
     }
@@ -1365,6 +1546,7 @@ export class StatementLowerer {
         ) {
             this.emitUnrolledIteration(
                 context,
+                statement,
                 statement.statement,
                 () => {
                     context.bindCompileTimeValue(indexBinding, {
@@ -1383,11 +1565,15 @@ export class StatementLowerer {
         statement: ts.WhileStatement,
     ): void {
         context.emit(
-            `while (${context.compileCondition(statement.expression)}) {`,
+            `while (${this.inRuntimeControlFlow(context, () =>
+                context.compileCondition(statement.expression),
+            )}) {`,
         );
-        this.emitScopedBody(
-            context,
-            statement.statement,
+        this.inRuntimeControlFlow(context, () =>
+            this.emitScopedBody(
+                context,
+                statement.statement,
+            ),
         );
         context.emit("}");
     }
@@ -1397,12 +1583,16 @@ export class StatementLowerer {
         statement: ts.DoStatement,
     ): void {
         context.emit("do {");
-        this.emitScopedBody(
-            context,
-            statement.statement,
+        this.inRuntimeControlFlow(context, () =>
+            this.emitScopedBody(
+                context,
+                statement.statement,
+            ),
         );
         context.emit(
-            `} while (${context.compileCondition(statement.expression)});`,
+            `} while (${this.inRuntimeControlFlow(context, () =>
+                context.compileCondition(statement.expression),
+            )});`,
         );
     }
 
@@ -1537,6 +1727,7 @@ export class StatementLowerer {
         for (const element of values.elements) {
             this.emitUnrolledIteration(
                 context,
+                statement,
                 statement.statement,
                 () => {
                     this.bindStaticIterationValue(
@@ -1602,13 +1793,15 @@ export class StatementLowerer {
             target,
             declaration.name,
             (loopContext) => {
-                const branch = bodyStatements(
-                    statement,
-                )[0] as ts.IfStatement;
-                this.emitScopedBody(
-                    loopContext,
-                    branch.elseStatement!,
-                );
+                this.inRuntimeControlFlow(loopContext, () => {
+                    const branch = bodyStatements(
+                        statement,
+                    )[0] as ts.IfStatement;
+                    this.emitScopedBody(
+                        loopContext,
+                        branch.elseStatement!,
+                    );
+                });
             },
         );
         return true;
@@ -1756,14 +1949,17 @@ export class StatementLowerer {
             ) {
                 return false;
             }
-            context.fail(
-                statement,
-                "break/continue in for...of requires a runtime data container.",
-            );
+            if (this.breaksEnclosingLoop(statement.statement)) {
+                context.fail(
+                    statement,
+                    "break in for...of requires a runtime data container.",
+                );
+            }
         }
         for (const element of elements) {
             this.emitUnrolledIteration(
                 context,
+                statement,
                 statement.statement,
                 () => {
                     this.bindStaticIterationValue(
@@ -1869,9 +2065,11 @@ export class StatementLowerer {
             target,
             declaration.name,
             (loopContext) => {
-                for (const nested of bodyStatements(statement)) {
-                    this.emit(loopContext, nested);
-                }
+                this.inRuntimeControlFlow(loopContext, () => {
+                    for (const nested of bodyStatements(statement)) {
+                        this.emit(loopContext, nested);
+                    }
+                });
             },
             extraBinding,
         );
@@ -1933,9 +2131,11 @@ export class StatementLowerer {
             )
                 ? statement.statement.statements
                 : [statement.statement];
-            for (const nested of statements) {
-                this.emit(context, nested);
-            }
+            this.inRuntimeControlFlow(context, () => {
+                for (const nested of statements) {
+                    this.emit(context, nested);
+                }
+            });
         } finally {
             context.popScope();
             context.decreaseIndent();
@@ -1958,6 +2158,7 @@ export class StatementLowerer {
                 : [statement];
             for (const nested of statements) {
                 this.emit(context, nested);
+                if (this.terminatesAfterLowering(nested)) break;
             }
         } finally {
             context.popScope();
@@ -2202,6 +2403,23 @@ export class StatementLowerer {
                     `[frames = 0u]() mutable { ` +
                     `return ++frames >= 2u; });`,
             );
+            return;
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            context.isFrameYield(unwrapped)
+        ) {
+            // A zero-argument helper can carry the same one-frame Promise.
+            // Recognize it before ordinary call inlining reaches the
+            // browser-only constructor in the helper's return expression.
+            if (frameYieldInsideLoop(unwrapped)) {
+                context.fail(
+                    unwrapped,
+                    "A frame yield inside a loop is a multi-frame wait, " +
+                        "which this runtime does not lower; it renders the " +
+                        "frame the scene asks for, not a count of them.",
+                );
+            }
             return;
         }
         if (ts.isCallExpression(unwrapped)) {

@@ -3102,6 +3102,47 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene66",
+        name: "Scene 66 - NME Full Playground",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene66.ts",
+        title: "Babylon Lite Native - NME Full Playground",
+        parity: {
+            referenceSearch: "?freeze=1",
+            // 0.000017 / 0.000133 on SDL_GPU and 0.000013 / 0.000097
+            // on Dawn; every differing channel is within one count.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene72",
+        name: "Scene 72 - NME PBR Full",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene72.ts",
+        title: "Babylon Lite Native - NME PBR Full",
+        parity: {
+            // 0.001272 / 0.010768 on SDL_GPU and 0.001272 / 0.010775
+            // on Dawn; every differing channel is within two counts.
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.012,
+            backgroundColor: [153, 204, 255],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene271",
+        name: "Scene 271 - Shadow Light Rebuild",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene271.ts",
+        title: "Babylon Lite Native - Shadow Light Rebuild",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "tetris",
         name: "Tetris",
         source: "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",

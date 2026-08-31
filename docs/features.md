@@ -130,8 +130,11 @@ analyzable entry file against one engine.
   arrays, insertion-ordered `Map`/`Set`, `ArrayBuffer`/`DataView`,
   `Uint8Array`/`Float32Array`/`Float64Array`/`Uint16Array`/`Uint32Array`, runtime strings,
   string-literal enum tags,
-  `Record<Union, T>` indexed by tag, readonly numeric tables, tuples,
-  destructuring, object spread, and constant arrays materialized on demand.
+  `Record<Union, T>` indexed by tag, and generation-known
+  `Record<string, T>` maps whose computed string writes and source-ordered
+  spreads retain JavaScript's last-write-wins semantics; readonly numeric
+  tables, tuples, destructuring, object spread, and constant arrays
+  materialized on demand.
   Resource handles are storable inside data. Const locals bind container
   elements as aliases; function-valued parameters inline, while function
   fields stored in plain-data records become native closures over their
@@ -198,25 +201,27 @@ different questions:
 | List | Source of truth | Decides |
 | --- | --- | --- |
 | `BBLITE_RUNTIME_FEATURES` in `features.cmake` | the scene's own TypeScript | which generated modules and PAL translation units compile |
-| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump and 2D reflection, image and solid-colour skyboxes, the shadow family's five defines, and the composed PBR/Standard variant counts |
+| `render_capabilities.hpp` | the materialized assets, after specialization | transmission, deformation, morph storage, instancing, material extensions, uv2 occlusion, Standard bump and 2D reflection, image and solid-colour skyboxes, the shadow family's six defines, and the composed PBR/Standard variant counts |
 | `BBLITE_IMAGE_CODECS` in `features.cmake` | the materialized assets' image types | which image decoders link and ship |
 
-**The shadow family's defines are five, and they are not independent.** A
+**The shadow family's defines are six, and they are not independent.** A
 `#if` in either backend has to ask the right one, so the split is stated here
 rather than left to be read off the guards:
 
 | Define | True when | Gates |
 | --- | --- | --- |
-| `BBLITE_SHADOWS` | the scene reaches either generator | nothing under `native/`. It is the reach itself, published for the inventory and for a guard that needs the generator without either family's receiver; a scene reaching a generator that composes no receiver renders no shadow, so no `#if` has yet wanted it |
+| `BBLITE_SHADOWS` | the scene reaches either generator | nothing under `native/`. It is the reach itself, published for the inventory and for a guard that needs the generator without any family's receiver; a scene reaching a generator that composes no receiver renders no shadow, so no `#if` has yet wanted it |
 | `BBLITE_STANDARD_SHADOWS` | above, and Standard variants are composed | the Standard family's receiver bind path only |
 | `BBLITE_PBR_SHADOWS` | above, and PBR variants are composed | the PBR family's receiver bind path only |
-| `BBLITE_SHADOW_RECEIVERS` | the union of the two family defines | the GENERATOR half, which belongs to no family: the maps, the samplers, the receiver blocks, the caster pass, its standard-Z depth state, the per-frame matrix update and the release path |
-| `BBLITE_SHADOWS_ESM` | `shadow:esm`, and Standard variants are composed | the ESM generator's own four textures and separable blur. Still a Standard conjunction because what it gates includes the caster's own material view, and only the Standard family has one |
+| `BBLITE_NODE_SHADOWS` | above, and a composed node graph receives or casts a shadow | the node graph's reflected receiver rows and its PCF/ESM caster view |
+| `BBLITE_SHADOW_RECEIVERS` | the union of the three family defines | the GENERATOR half, which belongs to no family: the maps, the samplers, the receiver blocks, the caster pass, its standard-Z depth state, the per-frame matrix update and the release path |
+| `BBLITE_SHADOWS_ESM` | `shadow:esm`, and any one of the three family defines is true | the ESM generator's own four textures and separable blur, including the reached family's caster view |
 
 The union is emitted as one — `#define BBLITE_SHADOW_RECEIVERS
-(BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS)` — so the containment is
-visible to whoever writes a guard, and a helper's guard checks against its
-callers' by reading. All five come from one `shadowCapabilities` record,
+(BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS || BBLITE_NODE_SHADOWS)` — so
+the containment is visible to whoever writes a guard, and a helper's guard
+checks against its callers' by reading. All six come from one
+`shadowCapabilities` record,
 which the activation inventory then checks against its own derivation from
 the reached features — a check only while the two stay different expressions.
 
@@ -582,7 +587,10 @@ engine frame receives a zero delta. Registration order remains the browser's
 phase boundary: callbacks installed before `startEngine` update before its
 renderer; callbacks installed after awaiting `startEngine` run after the
 renderer and affect the following frame. The application may schedule itself
-again without growing the callback list. Browser `setInterval`/`clearInterval`
+again without growing the callback list. The continuation resumed by that
+await is also a capture drain: bounded animation-frame yields may advance it,
+but a deterministic capture cannot resolve while the continuation remains
+pending. Browser `setInterval`/`clearInterval`
 are the recurring-timer arm of the same conductor: callbacks become due from
 that monotonic clock and run at the frame boundary, with no independent timer
 thread racing application state. `setTimeout` shares that clock for finite
@@ -1063,10 +1071,20 @@ compiler does not lower, so it is executed under Node instead. Why under Node
 rather than headless Chromium, and the fold contracts, are in
 [fidelity](fidelity.md#shader-contract).
 
+A source-owned gzip/base64 graph remains on the data route. Generation
+recognizes the browser's `atob` → gzip `DecompressionStream` →
+`Response.json()` shape, decodes its static payload, and applies the reached
+compatibility walk that restores a missing connection `inputName` from
+`name`. The resulting record is what the pin compiles; no decompressor or
+compressed graph ships in the executable.
+
 **Run time: the draw.** A node draw binds the pin's own group scheme — the
 per-pass scene block and lights in group 0, the graph's mesh block and uniform
 block in group 1 — and both backends execute the compiled stages, entered at
-the pin's own `vs_main`/`fs_main`.
+the pin's own `vs_main`/`fs_main`. A graph whose parser selects Babylon's
+alpha-combine mode 2 uses the shared source-over blend and disables depth
+writes for its colour draw; every other requested node alpha mode refuses at
+generation.
 
 The reached slice covers the scene's lights and its environment, both
 resources the port already holds for the material families — the lights array
@@ -1089,18 +1107,23 @@ Generation joins the two, refusing a binding the record omits or a name the
 graph declares no binding for. Loaded images pass through as file textures;
 the pin's solid-texture factory normalizes to the same record as a 1x1 RGBA
 upload, preserving its clamp and bilinear sampling contract. Pixel buffers
-and render attachments still refuse. The pair's group-1 allocation belongs
+and render attachments still refuse. The texture record itself may be built
+by a statically unrolled graph scan with generation-known computed keys and by
+ordered spreads of fallback and loaded maps; only the completed static key to
+resource snapshot reaches composition. The pair's group-1 allocation belongs
 to the pin's composition ([fidelity](fidelity.md#shader-contract)).
 
-What refuses at generation, naming the block that reached it: morph targets,
-shadows, clip planes and the mesh-attribute test. A graph fetched by snippet
-id refuses too, because the fetch is a network read at page load, and a graph
-handed an arbitrary `blockLoader` refuses because that function is scene code
-deciding which emitter serves each block class. The accepted closed form is a
-local one-parameter switch whose string cases return only the `emitter` export
-of pinned `material/node/blocks/*.js` modules and whose default throws.
+What refuses at generation, naming the block that reached it: clip planes and
+the mesh-attribute test. A graph fetched by snippet id refuses too, because the
+fetch is a network read at page load, and a graph handed an arbitrary
+`blockLoader` refuses because that function is scene code deciding which
+emitter serves each block class. The accepted closed form is a local
+one-parameter switch whose string cases return only the `emitter` export of
+pinned `material/node/blocks/*.js` modules and whose default throws.
 Generation validates that whole switch statically, then composes with exactly
-its declared emitter set rather than executing the loader.
+its declared emitter set rather than executing the loader. Scene 72 gates the
+broad 18-emitter PBR table; Scene 83 gates the same contract on a smaller
+normal/AO graph.
 
 ### Material plugins
 
@@ -1222,7 +1245,9 @@ SDL resolves its sidecar names and Dawn consumes the emitted numeric slots;
 both attach the mesh's existing morph buffers. A graph on a mesh with no
 targets binds the pin's empty delta and header buffers, so the graph's
 zero-target branch is valid without pretending that the mesh carries
-deformation data.
+deformation data. Scene 66 exercises both branches of one graph: the morphed
+sphere supplies its live buffers, while its box and ground use the empty pair;
+the sphere's PCF caster reads the same deformation storage.
 
 A skeleton is also addressable, behind an opt-in. `enableBoneControl()`
 installs the pin's own builder hook, so a glTF loaded *after* it surfaces
@@ -1547,6 +1572,12 @@ plus the scene-owned shadow task, unshifted ahead of the scene's render task.
 The split exists upstream so an ordinary bundle retains no shadow code, and
 this port keeps it as a separate generated call for that reason.
 
+A generator may be created before its light joins the scene. Live light
+removal invalidates the receiver composition and shadow-task topology;
+unregistering and registering the scene again rebuilds both against the
+current light order, then retires the displaced generator resources only
+after their replacements succeed.
+
 **Compile time: which fragment a receiver composes.** `mesh.receiveShadows`
 becomes the pin's `MSH_RECEIVE_SHADOWS`, a composition key rather than a
 uniform lane: the variant carries the shadow fragment's per-light varyings,
@@ -1557,7 +1588,7 @@ through its material's no-colour view — the arm a scene-code
 `createStandardNoColorMaterialView` reaches — with the receive bit dropped,
 as `rebuildSingle` computes `receiveShadows` as `!shadowOutput && ...`.
 
-**Both material families receive.** `createStdShadowFragment` and
+**All three material families receive.** `createStdShadowFragment` and
 `createPbrShadowFragment` wrap one pinned core, differing only in which
 fragment slot the sampling code lands in, so this port composes them through
 one path and reflects one shape of group-2 row. The PBR receiver carries one
@@ -1565,6 +1596,14 @@ further pinned rule: `rebuildSingle` resolves
 `lightCount === 1 && !receiveShadows ? 1 : 2`, so a receiving PBR mesh never
 lands on the single-light arm — its shadow factor applies inside the
 multi-light loop — and generation composes no such pair.
+
+The node family keeps the pin's different binding model:
+`node-shadow.ts` appends each generator's reflected texture, sampler and info
+rows to the graph's own group 1, and `meshU.receivesShadow` selects their
+effect per draw. A node PCF caster uses a no-colour material view of the same
+graph, compiled with the pin's `NODE_NO_COLOR_OUTPUT`; it retains the graph's
+vertex work and storage bindings, writes the shadow task's standard-Z depth,
+and creates no colour target. Scene 66 gates that receiver/caster pair.
 
 **The ESM directional generator.**
 `createEsmDirectionalShadowGenerator(engine, light, cfg)` differs from the
@@ -1629,18 +1668,16 @@ depth), rendered from the light: standard-Z
 exception to this port's reverse-Z convention, and the pin's clip-space bias
 baked into the *caster's* view-projection alone — the receiver samples with
 the unbiased matrix, and biasing both would shift the comparison twice. The
-receiver then binds the map, the comparison sampler and the receiver block as
-the pin's group 2, and `shadowFactors[lightIndex]` scales that light's diffuse
-and specular contribution.
+The Standard/PBR receiver then binds the map, comparison sampler and receiver
+block as the pin's group 2, and `shadowFactors[lightIndex]` scales that light's
+diffuse and specular contribution.
 
 Imported meshes and runtime handle collections may cast or receive. A dynamic
 receiver keeps both composed receiver states and writes the live mesh-record
 lane; a dynamic caster list is evaluated when the shadow task runs.
 
-What refuses at generation, by name: a node
-receiver (`node-shadow.ts` is the third sibling of that one
-core, and needs the node family's group-2 wiring), a `receiveShadows` written
-to anything but a statically known boolean (the variant is selected at
+What refuses at generation, by name: a `receiveShadows` written to anything
+but a statically known boolean (the Standard/PBR variant is selected at
 generation), and generator controls outside the reached factory sets.
 `normalBias` and `forceRefreshEveryFrame` remain refused; CSM controls whose
 only effect belongs to omitted farther cascades are accepted, validated, and
@@ -1928,8 +1965,8 @@ before it trusts a measurement.
 | Textures | which image codecs link and ship | decode, mip generation, factor texels, sampler state |
 | Compressed textures | which container the device's formats select, and a Basis file transcoded into one | the container parsed, its blocks uploaded, its own chain sampled |
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
-| Shadows | which receiver variant carries the pin's shadow fragment, and the per-light slots it names | the caster pass, the map, the light-space matrices, the comparison sampling |
-| Node materials | the graph compiled to a module by the pin's own emitter, its uniform block folded to the graph's defaults | the draw, its mesh block, the textures the scene supplied, and the per-mesh light selection that block carries |
+| Shadows | which Standard/PBR receiver variant or node graph carries the pin's shadow fragment, its per-light slots, and each caster view | the caster pass, the map, the light-space matrices, the comparison sampling |
+| Node materials | the graph compiled to a module by the pin's own emitter, its uniform block and fixed draw state folded from the graph, plus reflected morph/shadow bindings | the draw, its mesh block, supplied textures, per-mesh light/shadow selection, morph buffers and shadow caster view |
 | Material plugins | the plugin folded from its own declaration and spliced by the pin's own bridge; the signature index that keys each family's variant | nothing, for the reached slice — a Standard record carries its index so the derived feature word can select the composed variant |
 | Fullscreen effects | the caller's fragment wrapped in the pin's own vertex stage, and the bind-group layout the descriptor declared | the pass, its uniform bytes, and the textures the scene bound |
 

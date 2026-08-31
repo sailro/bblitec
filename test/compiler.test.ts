@@ -1457,15 +1457,12 @@ test("folds string-literal comparisons in specialized callbacks", () => {
         const flower = classify("flower");
     `);
 
-    assert.doesNotMatch(result.cpp, /"(?:coin|flower)" == "flower"/);
-    assert.match(
+    assert.doesNotMatch(
         result.cpp,
-        /std::string\("coin"\) == std::string\("flower"\)/,
+        /std::string\("(?:coin|flower)"\) == std::string\("flower"\)/,
     );
-    assert.match(
-        result.cpp,
-        /std::string\("flower"\) == std::string\("flower"\)/,
-    );
+    assert.match(result.cpp, /double v_coin = 0\.0;/);
+    assert.match(result.cpp, /double v_flower = 1\.0;/);
 });
 
 test("materializes mutable intersection-typed object locals", () => {
@@ -1934,6 +1931,23 @@ test("inserts runtime keys through a named open Record alias", () => {
     assert.match(result.cpp, /bbl::js::Map<std::string, std::string>/);
     assert.match(result.cpp, /v_fn\d+_entries\.set\(v_fn\d+_key, v_fn\d+_value\);/);
     assert.match(result.cpp, /std::numeric_limits<double>::quiet_NaN\(\)/);
+});
+
+test("stores runtime indexed-string keys and values in an open Record", () => {
+    const result = compileSource(`
+        function pair(text: string): Record<string, string> {
+            const entries: Record<string, string> = {};
+            let index = 0;
+            entries[text[index]] = text[index + 1];
+            return entries;
+        }
+        const entries = pair("ab");
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.set\(bbl::js::string_at\([^\r\n]+, bbl::js::string_at\([^\r\n]+\)\);/,
+    );
 });
 
 test("preserves object identity through a dynamic Record lookup", () => {
@@ -3016,10 +3030,51 @@ test("calls a string method on a parenthesized runtime conditional", () => {
         const value = clean("key=value ; comment");
     `);
 
+    assert.match(result.cpp, /std::string v_value = bbl::js::string_trim\(/);
+    assert.match(result.cpp, /\? bbl::js::string_slice\(/);
+    assert.match(result.cpp, /"key=value ; comment"/);
+});
+
+test("calls a string method on a compile-time record property", () => {
+    const result = compileSource(`
+        function dataUri(record: Record<string, unknown>): string {
+            const texture = record.texture as { name?: string };
+            return texture.name && texture.name.startsWith("data:")
+                ? texture.name
+                : "fallback";
+        }
+        const selected = dataUri({
+            texture: { name: "data:image/png;base64,AA==" },
+        });
+    `);
+
     assert.match(
         result.cpp,
-        /bbl::js::string_trim\([^;]+\? bbl::js::string_slice\([^;]+: v_fn\d+_line\)/,
+        /std::string v_selected = .*"data:image\/png;base64,AA=="/,
     );
+    assert.doesNotMatch(result.cpp, /string_starts_with/);
+});
+
+test("keeps a generation-known optional const at its selected scalar", () => {
+    const result = compileSource(`
+        const texture = {
+            url: "/albedo.png",
+            name: "/albedo.png",
+        } as { url?: string; name?: string };
+        const url = texture.url && texture.url.length > 0
+            ? texture.url
+            : texture.name && texture.name.startsWith("data:")
+              ? texture.name
+              : undefined;
+        if (!url) throw new Error("missing texture");
+
+        const block = { name: "Albedo", id: 7 } as Record<string, unknown>;
+        const key = (block.name as string | undefined) || \`tex\${block.id}\`;
+    `);
+
+    assert.match(result.cpp, /std::string v_url = "\/albedo\.png";/);
+    assert.doesNotMatch(result.cpp, /Nullable<std::string> v_url/);
+    assert.match(result.cpp, /std::string v_key = "Albedo";/);
 });
 
 test("dereferences an optional scalar through an explicit type assertion", () => {
@@ -3247,6 +3302,32 @@ test("carries file-texture address modes into the sampler", () => {
         result.cpp,
         /TextureAddressMode::clamp, bbl::TextureAddressMode::mirror/,
     );
+});
+
+test("uses a boolean fallback for an explicitly undefined record property", () => {
+    const result = compileSource(`
+        import { createEngine, loadTexture2D } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const settings = [
+                { invertY: undefined },
+                { invertY: false },
+            ];
+            for (const setting of settings) {
+                await loadTexture2D(
+                    engine,
+                    "/textures/nme/ebf71b300f43563f.png",
+                    { invertY: setting.invertY ?? true },
+                );
+            }
+        }
+    `);
+
+    const loads = result.cpp.match(/bbl::load_file_texture\([^;]+/g) ?? [];
+    assert.equal(loads.length, 2);
+    assert.match(loads[0]!, /, true, false, false\)/);
+    assert.match(loads[1]!, /, false, false, false\)/);
 });
 
 test("carries a base-color image's own encoding, either way", () => {
@@ -4198,6 +4279,81 @@ test("keeps the for incrementor reachable from continue", () => {
     assert.match(result.cpp, /continue;/);
 });
 
+test("erases a catch binding observed only by browser instrumentation", () => {
+    const result = compileSource(`
+        let recovered = false;
+        try {
+            throw new Error("failed");
+        } catch (error) {
+            console.warn("ignored", error);
+            recovered = true;
+        }
+    `);
+
+    assert.match(result.cpp, /catch \(\.\.\.\) \{/);
+    assert.match(result.cpp, /v_recovered = true;/);
+    assert.doesNotMatch(result.cpp, /ignored/);
+});
+
+test("refuses a catch binding observed by native code", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                try {
+                    throw new Error("failed");
+                } catch (error) {
+                    const message = String(error);
+                }
+            `),
+        /Native catch bindings are supported only when every read erases/,
+    );
+});
+
+test("does not carry a folded continue into the next static iteration", () => {
+    const result = compileSource(`
+        function selectTextures(json: unknown): Record<string, string> {
+            const blocks = (json as {
+                blocks?: Array<Record<string, unknown>>;
+            }).blocks ?? [];
+            const selected: Record<string, string> = {};
+            for (const block of blocks) {
+                if (block.customType !== "TextureBlock") continue;
+                selected[block.name as string] = "loaded";
+            }
+            return selected;
+        }
+
+        const selected = selectTextures({
+            blocks: [
+                { customType: "InputBlock", name: "ignored" },
+                { customType: "TextureBlock", name: "albedo" },
+            ],
+        });
+        const albedo = selected.albedo;
+    `);
+
+    assert.match(result.cpp, /\.set\("albedo", "loaded"\);/);
+    assert.doesNotMatch(result.cpp, /\.set\("ignored",/);
+});
+
+test("keeps a nested runtime continue inside an unrolled outer loop", () => {
+    const result = compileSource(`
+        const board = new Uint8Array(4);
+        let total = 0;
+        for (let y = 0; y < 2; y++) {
+            for (let x = 0; x < 2; x++) {
+                const value = board[y * 2 + x]!;
+                if (value === 0) continue;
+                total += value;
+            }
+        }
+    `);
+
+    assert.equal(result.cpp.match(/for \(; .*_x </g)?.length, 2);
+    assert.equal(result.cpp.match(/continue;/g)?.length, 2);
+    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 2);
+});
+
 test("lowers a labeled break out of nested loops", () => {
     const result = compileSource(`
         let value = 0;
@@ -4502,14 +4658,18 @@ test("a list a loop grows decides its shape at the first push", () => {
     // its kind from until the first push, and the loop unrolls, so the
     // whole thing is complete at generation.
     const result = compileSource(`
+        import { createEngine, createRibbon } from "@babylonjs/lite";
+        const engine = await createEngine({});
         const rows: { x: number; y: number; z: number }[][] = [];
         for (let p = 0; p < 2; p++) {
             const row: { x: number; y: number; z: number }[] = [];
             for (let i = 0; i < 2; i++) {
                 row.push({ x: i, y: p, z: 0 });
             }
+            row.push(row[0]!);
             rows.push(row);
         }
+        createRibbon(engine, { pathArray: rows });
     `);
 
     assert.doesNotMatch(result.cpp, /for \(/);
@@ -4519,6 +4679,79 @@ test("a list a loop grows decides its shape at the first push", () => {
         )?.length,
         4,
     );
+    assert.match(
+        result.cpp,
+        /bbl::create_ribbon\([^]*std::vector<std::vector<bbl::Vec3d>>\{\{/,
+    );
+});
+
+test("does not snapshot a push behind a runtime condition", () => {
+    const result = compileSource(`
+        interface Row { value: number }
+        const rows: Row[] = [];
+        if (Math.random() > 0.5) {
+            rows.push({ value: 1 });
+        }
+        let total = 0;
+        for (const row of rows) {
+            total += row.value;
+        }
+    `);
+
+    assert.match(result.cpp, /if \([^)]*random/);
+    assert.match(result.cpp, /for \(auto&& .* : v_rows\) \{/);
+    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
+});
+
+test("does not snapshot a Record write behind a runtime condition", () => {
+    const result = compileSource(`
+        const values: Record<string, number> = {};
+        if (Math.random() > 0.5) {
+            values["one"] = 1;
+        }
+        const selected = values["one"];
+    `);
+
+    assert.match(result.cpp, /\.set\("one", 1\.0\);/);
+    assert.match(result.cpp, /\.get\("one"\)/);
+});
+
+test("shares a static element snapshot through a const array alias", () => {
+    const result = compileSource(`
+        interface Row { value: number }
+        const rows: Row[] = [];
+        const alias = rows;
+        alias.push({ value: 1 });
+        let total = 0;
+        for (const row of rows) {
+            total += row.value;
+        }
+    `);
+
+    assert.match(result.cpp, /v_alias\.push_back/);
+    assert.doesNotMatch(result.cpp, /for \(auto&& .* : v_rows\) \{/);
+    assert.equal(result.cpp.match(/v_total \+=/g)?.length, 1);
+});
+
+test("writes through native elements of a statically grown record list", () => {
+    const result = compileSource(`
+        interface Item {
+            active: boolean;
+            count: number;
+        }
+        const items: Item[] = [];
+        for (let i = 0; i < 2; i++) {
+            items.push({ active: false, count: 0 });
+        }
+        for (const item of items) {
+            item.active = false;
+            item.count = 0;
+        }
+    `);
+
+    assert.doesNotMatch(result.cpp, /false = false|0\.0 = 0\.0/);
+    assert.equal(result.cpp.match(/->active = false;/g)?.length, 2);
+    assert.equal(result.cpp.match(/->count = 0\.0;/g)?.length, 2);
 });
 
 test("keeps an inferred static handle list available to render composition", () => {
@@ -4562,6 +4795,118 @@ test("keeps an inferred static handle list available to render composition", () 
         3,
     );
     assert.doesNotMatch(result.cpp, /Array<bbl::MeshHandle> v_casters/);
+});
+
+test("binds a shadow generator created before its light to the eventual scene slot", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createHemisphericLight,
+            createPcfSpotlightShadowGenerator,
+            createSceneContext,
+            createSpotLight,
+            setShadowTaskCasterMeshes,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const caster = createBox(engine, 1);
+            const spot = createSpotLight([0, 4, 0], [0, -1, 0], 1, 8);
+            spot.shadowGenerator =
+                createPcfSpotlightShadowGenerator(engine, spot);
+            setShadowTaskCasterMeshes(spot.shadowGenerator, [caster]);
+            addToScene(scene, createHemisphericLight([0, 1, 0], 1));
+            addToScene(scene, spot);
+            addToScene(scene, caster);
+        }
+
+        void main();
+    `);
+
+    assert.deepEqual(result.manifest.sceneLightKinds, [
+        "hemispheric",
+        "spot",
+    ]);
+    assert.equal(result.manifest.shadowGenerators[0]?.lightIndex, 1);
+    assert.match(
+        result.cpp,
+        /create_pcf_spotlight_shadow_generator[\s\S]*add_to_scene\([^;]*v_spot\)/,
+    );
+});
+
+test("removes a scene light through parameter and local aliases", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createHemisphericLight,
+            createPcfSpotlightShadowGenerator,
+            createSceneContext,
+            createSpotLight,
+            removeFromScene,
+            setShadowTaskCasterMeshes,
+        } from "babylon-lite";
+
+        function removeAliased(
+            scene: ReturnType<typeof createSceneContext>,
+            light: ReturnType<typeof createHemisphericLight>,
+        ) {
+            const alias = light;
+            removeFromScene(scene, alias);
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const first = createHemisphericLight([0, 1, 0], 1);
+            const spot = createSpotLight([0, 4, 0], [0, -1, 0], 1, 8);
+            const caster = createBox(engine, 1);
+            addToScene(scene, first);
+            addToScene(scene, spot);
+            spot.shadowGenerator =
+                createPcfSpotlightShadowGenerator(engine, spot);
+            setShadowTaskCasterMeshes(spot.shadowGenerator, [caster]);
+            removeAliased(scene, first);
+            addToScene(scene, caster);
+        }
+
+        void main();
+    `);
+
+    assert.deepEqual(result.manifest.sceneLightKinds, ["spot"]);
+    assert.equal(result.manifest.shadowGenerators[0]?.lightIndex, 0);
+    assert.match(result.cpp, /remove_from_scene\([^;]+\)/);
+});
+
+test("compiles pinned scene 271's live shadow-light replacement unchanged", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene271.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.deepEqual(result.manifest.sceneLightKinds, ["spot"]);
+    assert.equal(result.manifest.dynamicSceneLights, true);
+    assert.deepEqual(
+        result.manifest.shadowGenerators.map(({ lightIndex }) => lightIndex),
+        [0, 0],
+    );
+    assert.match(result.cpp, /remove_from_scene\(v_scene, v_lightA\)/);
+    assert.match(result.cpp, /unregister_scene\(v_scene\)/);
+    assert.equal(
+        result.cpp.match(/register_scene_with_shadow_support\(v_scene\)/g)
+            ?.length,
+        2,
+    );
+    assert.match(result.cpp, /topology_rebuild_pending/);
+    assert.match(result.cpp, /rebuild_scene_renderables\(v_scene\)/);
+    assert.match(result.cpp, /defer_start_continuation\(v_engine/);
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise|nextFrame/);
 });
 
 test("records the camera-fitted single-map adaptation for CSM shadows", () => {
@@ -6026,6 +6371,39 @@ test("stores mesh visibility in the live mesh record", () => {
     assert.ok(result.manifest.features.includes("mesh:visible"));
 });
 
+test("erases a proven write-only optional numeric mesh expando", () => {
+    const result = compileSource(`
+        import { createEngine, createGround, type Mesh } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const ground = createGround(engine, { width: 2, height: 2 });
+            (ground as Mesh & { integrationTag?: number }).integrationTag = 7;
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /static_cast<void>\(7\.0\);/);
+    assert.doesNotMatch(result.cpp, /integrationTag/);
+});
+
+test("refuses to erase an optional numeric mesh expando that is read", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, createGround, type Mesh } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    const ground = createGround(engine, { width: 2, height: 2 });
+                    (ground as Mesh & { integrationTag?: number }).integrationTag = 7;
+                    const observed = (ground as Mesh & { integrationTag?: number }).integrationTag;
+                    console.log(observed);
+                }
+                void main();
+            `),
+        /Optional expando property 'integrationTag' is read, so its assignment cannot be erased/,
+    );
+});
+
 test("lowers setMeshVisible through the pinned subtree visibility helper", () => {
     const result = compileSource(`
         import { createBox, createEngine, setMeshVisible } from "@babylonjs/lite";
@@ -7452,19 +7830,26 @@ test("rejects unsupported dynamic engine and scene options", () => {
             `),
         /supports explicit msaaSamples: 1 or 4 only/,
     );
+    const staticSceneOption = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const enabled = true;
+            createSceneContext(engine, { defaultRenderTask: enabled });
+        }
+    `);
+    assert.match(staticSceneOption.cpp, /bbl::create_scene_context/);
     assert.throws(
         () =>
             compileSource(`
-                import {
-                    createEngine,
-                    createSceneContext,
-                } from "@babylonjs/lite";
+                import { createEngine, createSceneContext } from "@babylonjs/lite";
                 async function main() {
                     const engine = await createEngine({});
-                    const enabled = true;
-                    const scene = createSceneContext(engine, {
-                        defaultRenderTask: enabled,
-                    });
+                    const enabled = performance.now() > 0;
+                    createSceneContext(engine, { defaultRenderTask: enabled });
                 }
             `),
         /defaultRenderTask must be a static boolean/,
@@ -8643,6 +9028,60 @@ test("preserves shader-material identity through a typed class field", () => {
     );
 });
 
+test("preserves reached shader materials pushed inside a runtime loop", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createShaderMaterial,
+            setShaderFloat,
+            type ShaderMaterial,
+        } from "babylon-lite";
+
+        const vertexSource = \`struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+        };
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+            var out: VertexOutput;
+            out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+            return out;
+        }\`;
+        const fragmentSource = \`@fragment fn mainFragment() -> @location(0) vec4<f32> {
+            return vec4<f32>(shaderUniforms.time);
+        }\`;
+
+        async function main() {
+            await createEngine({});
+            const materials: ShaderMaterial[] = [];
+            const seeds = new Map<number, number>();
+            seeds.set(0, 1);
+            for (const [, seed] of seeds) {
+                const material = createShaderMaterial({
+                    name: "runtime-loop-material",
+                    vertexSource,
+                    fragmentSource,
+                    attributes: ["position"],
+                    uniforms: [
+                        "worldViewProjection",
+                        { name: "time", type: "f32", defaultValue: 0 },
+                    ],
+                });
+                materials.push(material);
+            }
+            for (const material of materials) {
+                setShaderFloat(material, "time", 2);
+            }
+        }
+    `);
+
+    assert.deepEqual(result.manifest.shaderVariants, [
+        "runtime-loop-material",
+    ]);
+    assert.match(
+        result.cpp,
+        /bbl::set_scene_shader_uniform_value\([^;]*, 0u, 0u, 2\.0f\);/,
+    );
+});
+
 test("carries pixels textures through typed records and maps", () => {
     const result = compileSource(`
         import {
@@ -9568,6 +10007,20 @@ test("erases a single-frame yield", () => {
     assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
 });
 
+test("erases a zero-argument arrow helper for one bounded frame yield", () => {
+    const result = compileSource(
+        frameYieldScene("    await nextFrame();").replace(
+            "async function main(): Promise<void> {",
+            `const nextFrame = async (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => resolve()));
+async function main(): Promise<void> {`,
+        ),
+        frameYieldFile,
+    );
+
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise|nextFrame/);
+});
+
 test("registers pre-start application animation loops before rendering", () => {
     const result = compileSource(`
         import { createEngine, startEngine } from "babylon-lite";
@@ -9628,11 +10081,11 @@ test("registers post-start application animation loops after rendering", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::defer_callback\([^]*static double v_\w*last = bbl::pal::performance_milliseconds\(\);/,
+        /bbl::defer_start_continuation\([^]*static double v_\w*last = bbl::pal::performance_milliseconds\(\);/,
     );
     assert.match(
         result.cpp,
-        /bbl::defer_callback\([^]*static double v_\w*elapsed = 0\.0;/,
+        /bbl::defer_start_continuation\([^]*static double v_\w*elapsed = 0\.0;/,
     );
     assert.match(result.cpp, /v_\w*phase = 1\.0;/);
     assert.doesNotMatch(result.cpp, /static v_\w*phase = 1\.0;/);

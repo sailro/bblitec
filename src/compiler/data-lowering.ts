@@ -199,6 +199,14 @@ export interface DataLoweringContext {
     resolveRecordMember(
         expression: ts.PropertyAccessExpression,
     ): Value | undefined;
+    enterRuntimeControlFlow(): void;
+    leaveRuntimeControlFlow(): void;
+    /** Whether the current expression belongs to native, path-dependent control flow. */
+    isInRuntimeControlFlow(): boolean;
+    /** Clears an array snapshot from every compiler alias that shares it. */
+    invalidateStaticElements(value: Value): void;
+    /** Clears a map/object snapshot from every compiler alias that shares it. */
+    invalidateRecordProperties(value: Value): void;
     reachJsData(): void;
     reachJsRandom(): void;
     defaultEngine(): string | undefined;
@@ -2764,77 +2772,82 @@ export class DataLowerer {
         this.context.increaseIndent();
         this.context.pushScope(this.context.allocateBlockPrefix());
         try {
-            const elementValue = this.leafValue(
-                `${source}[${index}]`,
-                dataType.element,
-            );
-            const booleanConstructor =
-                ts.isIdentifier(callback) &&
-                callback.text === "Boolean" &&
-                (this.context.checker.getSymbolAtLocation(callback)
-                    ?.declarations ?? [])
-                    .some((declaration) =>
-                        /(?:^|[\\/])lib\.es5\.d\.ts$/i.test(
-                            declaration.getSourceFile().fileName,
-                        ),
-                    );
-            const callbackArguments: Value[] = [
-                elementValue,
-                {
-                    kind: "number",
-                    cpp: `static_cast<double>(${index})`,
-                    dataType: { kind: "number" },
-                },
-                {
-                    ...narrowed,
-                    kind: "data",
-                    cpp: source,
-                    dataType,
-                },
-            ];
-            const predicate = [
-                "find",
-                "findIndex",
-                "filter",
-                "some",
-                "every",
-            ].includes(method) &&
-                !this.callbackReturnsBoolean(callback);
-            const result = booleanConstructor
-                ? dataType.element.kind === "boolean"
-                    ? {
-                          kind: "boolean" as const,
-                          cpp: elementValue.cpp,
-                          dataType: { kind: "boolean" as const },
-                      }
-                    : dataType.element.kind === "number"
-                      ? (this.context.reachJsData(), {
-                            kind: "boolean" as const,
-                            cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
-                            dataType: { kind: "boolean" as const },
-                        })
-                      : dataType.element.kind === "string"
+            this.context.enterRuntimeControlFlow();
+            try {
+                const elementValue = this.leafValue(
+                    `${source}[${index}]`,
+                    dataType.element,
+                );
+                const booleanConstructor =
+                    ts.isIdentifier(callback) &&
+                    callback.text === "Boolean" &&
+                    (this.context.checker.getSymbolAtLocation(callback)
+                        ?.declarations ?? [])
+                        .some((declaration) =>
+                            /(?:^|[\\/])lib\.es5\.d\.ts$/i.test(
+                                declaration.getSourceFile().fileName,
+                            ),
+                        );
+                const callbackArguments: Value[] = [
+                    elementValue,
+                    {
+                        kind: "number",
+                        cpp: `static_cast<double>(${index})`,
+                        dataType: { kind: "number" },
+                    },
+                    {
+                        ...narrowed,
+                        kind: "data",
+                        cpp: source,
+                        dataType,
+                    },
+                ];
+                const predicate = [
+                    "find",
+                    "findIndex",
+                    "filter",
+                    "some",
+                    "every",
+                ].includes(method) &&
+                    !this.callbackReturnsBoolean(callback);
+                const result = booleanConstructor
+                    ? dataType.element.kind === "boolean"
                         ? {
                               kind: "boolean" as const,
-                              cpp: `!(${elementValue.cpp}).empty()`,
+                              cpp: elementValue.cpp,
                               dataType: { kind: "boolean" as const },
                           }
-                        : this.context.fail(
-                              callback,
-                              `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
-                          )
-                : predicate
-                  ? this.context.compilePredicateWithValues(
-                        callback,
-                        callbackArguments,
-                        call,
-                    )
-                  : this.context.compileCallbackWithValues(
-                        callback,
-                        callbackArguments,
-                        call,
-                    );
-            emitBody(result, callback, source, index);
+                        : dataType.element.kind === "number"
+                          ? (this.context.reachJsData(), {
+                                kind: "boolean" as const,
+                                cpp: `bbl::js::number_truthy(${elementValue.cpp})`,
+                                dataType: { kind: "boolean" as const },
+                            })
+                          : dataType.element.kind === "string"
+                            ? {
+                                  kind: "boolean" as const,
+                                  cpp: `!(${elementValue.cpp}).empty()`,
+                                  dataType: { kind: "boolean" as const },
+                              }
+                            : this.context.fail(
+                                  callback,
+                                  `Boolean array callbacks support boolean, number, and string elements, not ${dataType.element.kind}.`,
+                              )
+                    : predicate
+                      ? this.context.compilePredicateWithValues(
+                            callback,
+                            callbackArguments,
+                            call,
+                        )
+                      : this.context.compileCallbackWithValues(
+                            callback,
+                            callbackArguments,
+                            call,
+                        );
+                emitBody(result, callback, source, index);
+            } finally {
+                this.context.leaveRuntimeControlFlow();
+            }
         } finally {
             this.context.popScope();
             this.context.decreaseIndent();
@@ -2862,15 +2875,9 @@ export class DataLowerer {
         );
     }
 
-    /** Clear a static handle snapshot through any inlined parameter alias. */
-    private invalidateStaticHandleElements(value: Value): void {
-        delete value.staticHandleElements;
-        const owner = value.staticHandleElementsOwner;
-        delete value.staticHandleElementsOwner;
-        if (owner && owner !== value) {
-            delete owner.staticHandleElements;
-            delete owner.staticHandleElementsOwner;
-        }
+    /** Clear a complete element snapshot through every compiler alias. */
+    private invalidateStaticElements(value: Value): void {
+        this.context.invalidateStaticElements(value);
     }
 
     /**
@@ -2977,6 +2984,16 @@ export class DataLowerer {
                 : ts.isIdentifier(ownerExpression)
                   ? (this.context.lookupIdentifierValue(ownerExpression) ??
                     this.compileStaticContainer(ownerExpression))
+                  : ts.isPropertyAccessExpression(ownerExpression) &&
+                      ts.isIdentifier(
+                          this.context.unwrap(ownerExpression.expression),
+                      ) &&
+                      this.context.lookupOptional(
+                          this.context.unwrap(
+                              ownerExpression.expression,
+                          ) as ts.Identifier,
+                      )?.kind === "record"
+                    ? this.context.compileValue(ownerExpression)
                   : ts.isStringLiteralLike(ownerExpression) ||
                       ts.isTemplateExpression(ownerExpression)
                     ? this.context.compileValue(ownerExpression)
@@ -3042,7 +3059,7 @@ export class DataLowerer {
                 method,
             )
         ) {
-            this.invalidateStaticHandleElements(narrowed);
+            this.invalidateStaticElements(narrowed);
         }
         const dataType =
             narrowed.dataType ??
@@ -3336,9 +3353,36 @@ export class DataLowerer {
                 if (call.arguments.length < 1 || call.arguments.length > 2) {
                     this.context.fail(call, "String.slice expects one or two arguments.");
                 }
-                const begin = this.context.compileNumber(call.arguments[0]!, "double");
-                const end = call.arguments[1]
-                    ? this.context.compileNumber(call.arguments[1], "double")
+                const staticBegin = this.context.compileValue(
+                    call.arguments[0]!,
+                );
+                const staticEnd = call.arguments[1]
+                    ? this.context.compileValue(call.arguments[1])
+                    : undefined;
+                if (
+                    narrowed.staticString !== undefined &&
+                    staticBegin.kind === "number" &&
+                    staticBegin.staticNumber !== undefined &&
+                    !staticBegin.parameterBinding &&
+                    (staticEnd === undefined ||
+                        (staticEnd.kind === "number" &&
+                            staticEnd.staticNumber !== undefined &&
+                            !staticEnd.parameterBinding))
+                ) {
+                    const value = narrowed.staticString.slice(
+                        staticBegin.staticNumber,
+                        staticEnd?.staticNumber,
+                    );
+                    return {
+                        kind: "string",
+                        cpp: this.context.cppString(value),
+                        staticString: value,
+                        dataType: { kind: "string" },
+                    };
+                }
+                const begin = this.context.castNumber(staticBegin, "double");
+                const end = staticEnd
+                    ? this.context.castNumber(staticEnd, "double")
                     : `static_cast<double>(${narrowed.cpp}.size())`;
                 return {
                     kind: "data",
@@ -3395,10 +3439,47 @@ export class DataLowerer {
                         "Reached String.replace uses a RegExp pattern.",
                     );
                 }
-                const replacement = this.compileForSink(
+                const replacementValue = this.context.compileValue(
                     call.arguments[1]!,
-                    { kind: "string" },
                 );
+                const patternExpression = this.context.unwrap(
+                    call.arguments[0]!,
+                );
+                if (
+                    narrowed.staticString !== undefined &&
+                    replacementValue.staticString !== undefined &&
+                    ts.isRegularExpressionLiteral(patternExpression)
+                ) {
+                    const literal = patternExpression.text;
+                    const delimiter = literal.lastIndexOf("/");
+                    const flags = literal.slice(delimiter + 1);
+                    const source = literal
+                        .slice(1, delimiter)
+                        .replaceAll("\\/", "/");
+                    const value = narrowed.staticString.replace(
+                        new RegExp(source, flags),
+                        replacementValue.staticString,
+                    );
+                    return {
+                        kind: "string",
+                        cpp: this.context.cppString(value),
+                        staticString: value,
+                        dataType: { kind: "string" },
+                    };
+                }
+                if (
+                    replacementValue.kind !== "string" &&
+                    !(
+                        replacementValue.kind === "data" &&
+                        replacementValue.dataType?.kind === "string"
+                    )
+                ) {
+                    this.context.fail(
+                        call.arguments[1]!,
+                        "String.replace expects a string replacement.",
+                    );
+                }
+                const replacement = replacementValue.cpp;
                 return {
                     kind: "data",
                     cpp: `${pattern.cpp}.replace(${narrowed.cpp}, ${replacement})`,
@@ -3409,10 +3490,36 @@ export class DataLowerer {
                 if (call.arguments.length !== 1) {
                     this.context.fail(call, "String.startsWith expects one argument.");
                 }
-                const prefix = this.compileForSink(
+                const prefixValue = this.context.compileValue(
                     call.arguments[0]!,
-                    { kind: "string" },
                 );
+                if (
+                    narrowed.staticString !== undefined &&
+                    prefixValue.staticString !== undefined
+                ) {
+                    const value = narrowed.staticString.startsWith(
+                        prefixValue.staticString,
+                    );
+                    return {
+                        kind: "boolean",
+                        cpp: value ? "true" : "false",
+                        staticBoolean: value,
+                        dataType: { kind: "boolean" },
+                    };
+                }
+                if (
+                    prefixValue.kind !== "string" &&
+                    !(
+                        prefixValue.kind === "data" &&
+                        prefixValue.dataType?.kind === "string"
+                    )
+                ) {
+                    this.context.fail(
+                        call.arguments[0]!,
+                        "String.startsWith expects a string argument.",
+                    );
+                }
+                const prefix = prefixValue.cpp;
                 return {
                     kind: "boolean",
                     cpp: `bbl::js::string_starts_with(${narrowed.cpp}, ${prefix})`,
@@ -4172,30 +4279,59 @@ export class DataLowerer {
             const hasSpread = call.arguments.some((argument) =>
                 ts.isSpreadElement(argument),
             );
+            const staticElements =
+                narrowed.staticElementsOwner?.staticElements ??
+                narrowed.staticElements;
             const pushedValues =
-                pushedHandleKind && !hasSpread
+                (pushedHandleKind || staticElements) && !hasSpread
                     ? call.arguments.map((argument) =>
                           this.context.compileValue(argument),
                       )
                     : undefined;
+            // A handle snapshot is also the generation-time reach set used
+            // to retain identities such as shader variants and scene slots.
+            // One reached handle can stand for every native instance created
+            // by a runtime loop. Plain-data snapshots, in contrast, must be
+            // path-complete before static iteration can consume them.
             if (
-                narrowed.staticHandleElements &&
+                (pushedHandleKind !== undefined ||
+                    !this.context.isInRuntimeControlFlow()) &&
+                staticElements &&
                 pushedValues?.every(
                     (value) =>
-                        value.kind === pushedHandleKind &&
+                        (!pushedHandleKind ||
+                            value.kind === pushedHandleKind) &&
                         !value.runtimeIteration,
                 )
             ) {
-                narrowed.staticHandleElements.push(...pushedValues);
+                const firstIndex = staticElements.length;
+                const snapshotCpp =
+                    (narrowed.staticElementsOwner ?? narrowed).cpp;
+                staticElements.push(
+                    ...pushedValues.map((value, index) => {
+                        if (pushedHandleKind) return value;
+                        // A pushed object literal is a compile-time record,
+                        // but the array stores a native element. Keep the
+                        // record's static facts while rebasing its identity
+                        // and every later writable path to that stored slot.
+                        return {
+                            ...value,
+                            ...this.leafValue(
+                                `${snapshotCpp}[${firstIndex + index}]`,
+                                dataType.element,
+                            ),
+                        };
+                    }),
+                );
             } else {
-                this.invalidateStaticHandleElements(narrowed);
+                this.invalidateStaticElements(narrowed);
                 // `compileDataPath(..., "write")` may return a leaf wrapper
                 // around an identifier binding. Invalidate the binding too;
                 // otherwise a later for-of still sees the initializer's
                 // stale static snapshot (notably `[]`) and erases a spread
                 // append of a loaded asset's meshes.
                 if (dynamicOwner) {
-                    this.invalidateStaticHandleElements(dynamicOwner);
+                    this.invalidateStaticElements(dynamicOwner);
                 }
             }
             const pushes = call.arguments.map((argument, index) => {
@@ -5917,6 +6053,13 @@ export class DataLowerer {
                         value.staticString,
                     );
                 }
+                if (value.kind === "string") {
+                    // Indexed string reads use the dedicated string Value
+                    // kind even though their character is selected at run
+                    // time. They are already native std::string expressions,
+                    // just like a data-model string leaf below.
+                    return value.cpp;
+                }
                 if (
                     value.kind === "data" &&
                     value.dataType?.kind === "string"
@@ -7166,7 +7309,7 @@ export class DataLowerer {
         this.context.emit(
             `${target.cpp} = ${this.compileForSink(expression.right, target.dataType)};`,
         );
-        this.invalidateStaticHandleElements(target);
+        this.invalidateStaticElements(target);
         return true;
     }
 
@@ -7250,7 +7393,7 @@ export class DataLowerer {
             }
             if (ts.isIdentifier(root)) {
                 const value = this.context.lookupIdentifierValue(root);
-                if (value) this.invalidateStaticHandleElements(value);
+                if (value) this.invalidateStaticElements(value);
             }
         };
         clearStaticHandleSnapshot(left);
@@ -7300,14 +7443,46 @@ export class DataLowerer {
                         "Indexed Record entries support plain assignment only.",
                     );
                 }
-                const key = this.compileForSink(
+                const keyValue = this.context.compileValue(
                     left.argumentExpression,
-                    narrowed.dataType.key,
                 );
-                const value = this.compileForSink(
+                const assignedValue = this.context.compileValue(
                     expression.right,
-                    narrowed.dataType.value,
                 );
+                const key = this.compileKnownValueForSink(
+                    keyValue,
+                    narrowed.dataType.key,
+                    left.argumentExpression,
+                );
+                const value = this.compileKnownValueForSink(
+                    assignedValue,
+                    narrowed.dataType.value,
+                    expression.right,
+                );
+                if (this.context.isInRuntimeControlFlow()) {
+                    // This write may execute zero or many times. The source
+                    // value still mutates natively, but its complete
+                    // generation snapshot no longer exists on every path.
+                    this.context.invalidateRecordProperties(narrowed);
+                } else if (
+                    keyValue.staticString !== undefined &&
+                    narrowed.recordProperties !== undefined
+                ) {
+                    narrowed.recordProperties[keyValue.staticString] = {
+                        ...assignedValue,
+                        // Static consumers need the exact value this
+                        // assignment stored, not a second evaluation of its
+                        // source expression. The key snapshot proves the
+                        // entry exists in every reached successful path.
+                        cpp:
+                            `${narrowed.cpp}.at(` +
+                            `${this.context.cppString(keyValue.staticString)})`,
+                    };
+                } else if (keyValue.staticString === undefined) {
+                    // A dynamic key means no finite property snapshot is
+                    // complete enough for a generation-time consumer.
+                    this.context.invalidateRecordProperties(narrowed);
+                }
                 this.context.emit(`${narrowed.cpp}.set(${key}, ${value});`);
                 return true;
             }
@@ -7679,10 +7854,21 @@ export class DataLowerer {
         if (!value) {
             return undefined;
         }
+        return this.conditionFromValue(value);
+    }
+
+    /** JavaScript truthiness for a value the caller already compiled. */
+    public conditionFromValue(value: Value): string | undefined {
         if (value.kind === "boolean") {
             return value.cpp;
         }
         if (value.kind === "number") {
+            if (value.staticNumber !== undefined) {
+                return value.staticNumber === 0 ||
+                        Number.isNaN(value.staticNumber)
+                    ? "false"
+                    : "true";
+            }
             this.context.reachJsData();
             return `bbl::js::number_truthy(${value.cpp})`;
         }
@@ -7719,6 +7905,9 @@ export class DataLowerer {
             (value.kind === "data" &&
                 value.dataType?.kind === "string")
         ) {
+            if (value.staticString !== undefined) {
+                return value.staticString.length === 0 ? "false" : "true";
+            }
             return value.kind === "string"
                 ? `!std::string(${value.cpp}).empty()`
                 : `!${value.cpp}.empty()`;
@@ -7743,6 +7932,9 @@ export class DataLowerer {
             // An optional object stored in a Map/array uses the reference's
             // null state directly rather than wrapping it in std::optional.
             return `static_cast<bool>(${value.cpp})`;
+        }
+        if (value.kind === "json-null") {
+            return "false";
         }
         return undefined;
     }
@@ -7939,11 +8131,23 @@ export class DataLowerer {
         }
         const leftValue = this.comparableOperand(left);
         if (leftValue) {
-            const rightCpp = this.compileForSink(
-                right,
-                leftValue.dataType,
-            );
+            const rightValue = this.comparableOperand(right);
+            const rightCpp = rightValue &&
+                dataTypesEqual(rightValue.dataType, leftValue.dataType)
+                ? rightValue.cpp
+                : this.compileForSink(
+                      right,
+                      leftValue.dataType,
+                  );
             if (leftValue.dataType.kind === "string") {
+                if (
+                    leftValue.staticString !== undefined &&
+                    rightValue?.staticString !== undefined
+                ) {
+                    const equal =
+                        leftValue.staticString === rightValue.staticString;
+                    return equal !== negated ? "true" : "false";
+                }
                 return (
                     `std::string(${leftValue.cpp}) ` +
                     `${negated ? "!=" : "=="} std::string(${rightCpp})`
@@ -7982,7 +8186,7 @@ export class DataLowerer {
     private comparableOperand(
         expression: ts.Expression,
     ):
-        | { cpp: string; dataType: DataType }
+        | { cpp: string; dataType: DataType; staticString?: string }
         | undefined {
         const value =
             this.compileDataPath(expression, "read") ??
@@ -7991,6 +8195,9 @@ export class DataLowerer {
             return {
                 cpp: value.cpp,
                 dataType: { kind: "string" },
+                ...(value.staticString === undefined
+                    ? {}
+                    : { staticString: value.staticString }),
             };
         }
         if (value?.kind === "boolean") {
@@ -8008,6 +8215,9 @@ export class DataLowerer {
             return {
                 cpp: value.cpp,
                 dataType: value.dataType,
+                ...(value.staticString === undefined
+                    ? {}
+                    : { staticString: value.staticString }),
             };
         }
         return undefined;

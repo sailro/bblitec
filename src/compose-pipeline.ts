@@ -1,4 +1,7 @@
-import type { ScenePbrMaterialManifest } from "./compiler/types.js";
+import type {
+    ScenePbrMaterialManifest,
+    ShadowGeneratorManifest,
+} from "./compiler/types.js";
 import {
     pbrEsmShadowView,
     pbrNoColorView,
@@ -59,7 +62,10 @@ import {
     composeSceneStandardVariants,
     type StandardSceneComposition,
 } from "./pinned-standard-variants.js";
-import { pinnedShadowFilter } from "./pinned-shadow-slots.js";
+import {
+    pinnedShadowFilter,
+    type ShadowLightSlot,
+} from "./pinned-shadow-slots.js";
 import {
     babylonLights,
     reachedDiffuseUv2,
@@ -74,6 +80,39 @@ export interface ComposePipelineContext {
     specializationFeatures: AssetSpecializationFeatures;
     emittedArms: PinnedMaterialArms;
     tree: GeneratedTree;
+}
+
+/**
+ * Collapse successive generators that occupy the same receiver slot.
+ *
+ * Runtime topology replacement keeps historical generator records alive for
+ * their task resources and caster-view handle order, but the material
+ * receiver has one binding row per current `scene.lights` slot. Reusing that
+ * slot is valid only while its statically composed filter contract agrees.
+ */
+export function receiverShadowLightSlots(
+    generators: readonly Pick<
+        ShadowGeneratorManifest,
+        "kind" | "lightIndex"
+    >[],
+): ShadowLightSlot[] {
+    const byIndex = new Map<number, ShadowLightSlot["shadowType"]>();
+    for (const generator of generators) {
+        const shadowType = pinnedShadowFilter(generator.kind);
+        const previous = byIndex.get(generator.lightIndex);
+        if (previous !== undefined && previous !== shadowType) {
+            throw new Error(
+                "A live shadow-light replacement changes receiver filter " +
+                    `at scene light slot ${generator.lightIndex} from ` +
+                    `${previous} to ${shadowType}; dynamic shadow-filter ` +
+                    "variants are not lowered.",
+            );
+        }
+        byIndex.set(generator.lightIndex, shadowType);
+    }
+    return [...byIndex].map(
+        ([lightIndex, shadowType]) => ({ lightIndex, shadowType }),
+    );
 }
 
 /** The values `main`'s remainder (emit options, activation inventory)
@@ -389,25 +428,14 @@ export async function composeScenePipeline({
             renderableMeshFeatures.push(...features);
         }
     }
-    // The generators in `scene.lights` order, which is the ordinal every
-    // shadow contract names: the composed receiver's group-2 rows, the
-    // shadow task's own scheduling, and the caster views it appends. One
-    // list, so the composition and the runtime cannot disagree about which
-    // generator is light `n`.
+    // Every reached generator stays in creation order for its resources and
+    // caster material views. A live topology replacement can create two
+    // successive generators for the same scene-light slot, though, and the
+    // receiver still owns only one binding row for that slot.
     const generatorsByLight = [...result.manifest.shadowGenerators].sort(
         (left, right) => left.lightIndex - right.lightIndex,
     );
-    const shadowLights = generatorsByLight.map(
-        (generator) => ({
-            lightIndex: generator.lightIndex,
-            // The filter comes off the pinned factory the manifest's kind
-            // names, which is the same `_shadowType` field `pbr-renderable.ts`
-            // reads to build its own slots -- so a generator family added
-            // here without a receiver arm refuses rather than composing a
-            // neighbour's fragment.
-            shadowType: pinnedShadowFilter(generator.kind),
-        }),
-    );
+    const shadowLights = receiverShadowLightSlots(generatorsByLight);
     // `rebuildSingle` computes `receiveShadows` as `mesh.receiveShadows &&
     // hasSomeShadows`, so a scene with no generator composes no receiver
     // even where a mesh asked for one.
@@ -974,30 +1002,6 @@ export async function composeScenePipeline({
                 result.manifest.shadowGenerators[light.generatorIndex]!.kind,
             ),
         }));
-        // A node graph composes only the ESM caster: `buildNodeRenderables`
-        // re-compiles its own bodies under the ESM bit, and there is no
-        // depth-only node module for a PCF task to draw it through.
-        for (const generator of result.manifest.shadowGenerators) {
-            if (
-                pinnedShadowFilter(generator.kind) === "esm" ||
-                !generator.casters.some(
-                    (caster) => caster.nodeMaterial === index,
-                )
-            ) {
-                continue;
-            }
-            throw new Error(
-                "A node material casts into a " +
-                    `${pinnedShadowFilter(generator.kind)} shadow map, ` +
-                    "which composes no caster module: the pin re-compiles " +
-                    "the graph's own bodies under the ESM bit and has no " +
-                    "depth-only node view." +
-                    refusalReachedFrom(
-                        result.manifest.featureSites,
-                        "material:node",
-                    ),
-            );
-        }
         const castsEsmShadow = result.manifest.shadowGenerators.some(
             (generator) =>
                 pinnedShadowFilter(generator.kind) === "esm" &&
@@ -1005,12 +1009,22 @@ export async function composeScenePipeline({
                     (caster) => caster.nodeMaterial === index,
                 ),
         );
+        const castsPcfShadow = result.manifest.shadowGenerators.some(
+            (generator) =>
+                pinnedShadowFilter(generator.kind) === "pcf" &&
+                generator.casters.some(
+                    (caster) => caster.nodeMaterial === index,
+                ),
+        );
         const composed = await composeNodeMaterial(
             graph,
             label,
-            graphShadowLights,
-            castsEsmShadow,
-            material.blockEmitters,
+            {
+                shadowLights: graphShadowLights,
+                castsEsmShadow,
+                blockEmitters: material.blockEmitters,
+                castsPcfShadow,
+            },
         );
         // The graph decides which bindings exist and the scene decides which
         // it supplies; only here are both known. Upstream raises the mismatch

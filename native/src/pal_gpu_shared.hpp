@@ -4032,6 +4032,10 @@ inline RenderPipelineKindTraits pipeline_kind_traits(
             return {Family::node, false, Cull::back, false};
         case Kind::node_opaque_none:
             return {Family::node, false, Cull::none, false};
+        case Kind::node_transparent_back:
+            return {Family::node, true, Cull::back, false};
+        case Kind::node_transparent_none:
+            return {Family::node, true, Cull::none, false};
     }
     throw std::runtime_error(
         "render pipeline kind " +
@@ -4674,6 +4678,11 @@ public:
      */
     [[nodiscard]] bool drains_resolved() const {
         if (engine_ == nullptr) return true;
+        // `startEngine` resolves after its first render. The compiler queues
+        // source following that await at the matching native frame boundary;
+        // capturing while it is still pending would freeze the initial scene
+        // instead of the state whose browser-ready marker follows it.
+        if (engine_->pending_start_continuations != 0) return false;
         for (const std::function<bool()>& ready :
              engine_->capture_ready) {
             if (!ready || !ready()) return false;

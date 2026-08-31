@@ -298,14 +298,6 @@ function compileShadowGeneratorFactory(
                 `${light.lightKind ?? "unknown"} light.`,
         );
     }
-    if (light.sceneLightIndex === undefined) {
-        context.fail(
-            call.arguments[1]!,
-            "A shadow generator's light must be added to the scene " +
-                "first: the composed receiver fragment names its " +
-                "varyings and bindings by the light's scene index.",
-        );
-    }
     // Each option's pinned default, in the order the emitted options struct
     // takes them. An option the scene omits keeps the folded constant, which
     // is the factory's own `??` value read out of the pin.
@@ -363,7 +355,10 @@ function compileShadowGeneratorFactory(
     }
     const index = context.recordShadowGenerator({
         kind: spec.kind,
-        lightIndex: light.sceneLightIndex,
+        // The generator may precede addToScene, but an unresolved slot must
+        // never alias the valid first light. addSceneLight patches this
+        // sentinel before composition or manifest finalization.
+        lightIndex: light.lightIdentity?.sceneLightIndex ?? -1,
         ...(spec.kind === "esm-directional" ? { esm: sizes } : {}),
     });
     for (const feature of spec.features) {

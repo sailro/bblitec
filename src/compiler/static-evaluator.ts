@@ -375,11 +375,17 @@ export class StaticEvaluator {
                     `Expected boolean, received ${value.kind}.`,
                 );
             }
+            if (value.staticBoolean !== undefined) {
+                return value.staticBoolean ? "true" : "false";
+            }
             return value.cpp;
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
             if (value?.kind === "boolean") {
+                if (value.staticBoolean !== undefined) {
+                    return value.staticBoolean ? "true" : "false";
+                }
                 return value.cpp;
             }
         }
@@ -1089,12 +1095,26 @@ export class StaticEvaluator {
                 return undefined;
             }
             const owner = this.resolveValue(left.expression);
+            const name = left.name.text;
+            const property = owner.recordProperties?.[name];
+            if (property) {
+                if (property.kind === "json-null") {
+                    return expression.right;
+                }
+                if (
+                    property.optionalFoundCpp !== undefined ||
+                    (property.kind === "data" &&
+                        property.dataType?.kind === "optional")
+                ) {
+                    return undefined;
+                }
+                return expression.left;
+            }
+            if (owner.recordGetters?.[name]) {
+                return expression.left;
+            }
             if (owner.kind === "record") {
-                const name = left.name.text;
-                return owner.recordProperties?.[name] ||
-                    owner.recordGetters?.[name]
-                    ? expression.left
-                    : expression.right;
+                return expression.right;
             }
         }
         return undefined;
