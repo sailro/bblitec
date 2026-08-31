@@ -367,6 +367,7 @@ export function staticNumberValue(
         // one of these as text; a Math CALL is folded by the arm above.
         if (node.name.text === "PI") return Math.PI;
         if (node.name.text === "E") return Math.E;
+        if (node.name.text === "SQRT2") return Math.SQRT2;
         if (node.name.text === "SQRT1_2") return Math.SQRT1_2;
         return undefined;
     }

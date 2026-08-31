@@ -1,0 +1,10 @@
+Gerardus Mercator — World Map (Nova et Aucta Orbis Terrae Descriptio), 1569.
+
+Public domain. Published 1569; author Gerardus Mercator died 1594, so the work
+is in the public domain in its country of origin and in the United States.
+
+Source: https://commons.wikimedia.org/wiki/File:Mercator_1569.png
+File:   https://upload.wikimedia.org/wikipedia/commons/b/b2/Mercator_1569.png
+
+Fetched at build time as a decorative backdrop for the Freeciv demo; not
+committed to this repository.

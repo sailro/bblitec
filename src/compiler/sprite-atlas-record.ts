@@ -4,7 +4,7 @@ import type {
     DataType,
     DataTypeRegistry,
 } from "./data-types.js";
-import type { Value } from "./types.js";
+import type { Feature, Value } from "./types.js";
 
 export interface SpriteAtlasRecordContext {
     readonly dataTypes: DataTypeRegistry;
@@ -12,6 +12,7 @@ export interface SpriteAtlasRecordContext {
     requireDefaultEngine(node: ts.Node): string;
     allocateTemporaryCppName(label: string): string;
     reachJsData(): void;
+    reachFeature(feature: Feature, site?: ts.Node): void;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -171,24 +172,53 @@ export function compileSpriteAtlasRecord(
             .join("");
     }
     context.reachJsData();
-    const texturePixels = texture.textureStorage === "file"
-        ? `const auto ${decoded} = bbl::pal::decode_image(bbl::js::ArrayBuffer(${texture.cpp}.data.bytes)); ` +
-          `${atlas}.rgba = ${decoded}.rgba; ` +
-          `if (${texture.cpp}.data.premultiply_alpha) { ` +
-          `bbl::pal::DecodedImage premultiplied{${decoded}.width, ${decoded}.height, ${atlas}.rgba}; ` +
-          `bbl::pal::premultiply_image_alpha(premultiplied); ` +
-          `${atlas}.rgba = std::move(premultiplied.rgba); } `
-        : `${atlas}.rgba = ${texture.cpp}.rgba; `;
-    const sampler = texture.textureStorage === "file"
-        ? `${texture.cpp}.data.sampler`
-        : `${texture.cpp}.sampler`;
+    const fileTextureSetup = (cpp: string): string =>
+        `const auto ${decoded} = bbl::pal::decode_image(bbl::js::ArrayBuffer(${cpp}.data.bytes)); ` +
+        `${atlas}.rgba = ${decoded}.rgba; ` +
+        `if (${cpp}.data.premultiply_alpha) { ` +
+        `bbl::pal::DecodedImage premultiplied{${decoded}.width, ${decoded}.height, ${atlas}.rgba}; ` +
+        `bbl::pal::premultiply_image_alpha(premultiplied); ` +
+        `${atlas}.rgba = std::move(premultiplied.rgba); } ` +
+        `${atlas}.sampler = ${cpp}.data.sampler; `;
+    let textureSetup: string;
+    if (texture.textureStorage === "file") {
+        textureSetup = fileTextureSetup(texture.cpp);
+    } else if (texture.textureStorage === "pixels") {
+        textureSetup =
+            `${atlas}.rgba = ${texture.cpp}.rgba; ` +
+            `${atlas}.sampler = ${texture.cpp}.sampler; `;
+    } else if (
+        texture.dataType?.kind === "handle" &&
+        texture.dataType.handle === "texture"
+    ) {
+        // A Texture2D stored behind a plain-data field is a variant whose
+        // concrete producer is no longer visible here. Keep both source arms
+        // valid; the visitor selects only the one actually stored at runtime.
+        context.reachFeature("texture:file", node);
+        const stored = context.allocateTemporaryCppName(
+            "stored_texture",
+        );
+        textureSetup =
+            `std::visit([&](const auto& ${stored}) { ` +
+            `using Stored = std::decay_t<decltype(${stored})>; ` +
+            `if constexpr (std::is_same_v<Stored, bbl::FileTexture>) { ` +
+            fileTextureSetup(stored) +
+            `} else { ${atlas}.rgba = ${stored}.rgba; ` +
+            `${atlas}.sampler = ${stored}.sampler; } ` +
+            `}, ${texture.cpp}); `;
+    } else {
+        context.fail(
+            node,
+            "A data SpriteAtlas texture lost its concrete storage type.",
+        );
+    }
     return (
         `([&]() { bbl::SpriteAtlasRecord ${atlas}; ` +
-        texturePixels +
+        textureSetup +
         `${atlas}.width = bbl::js::to_uint32(${tupleLane(size, 0)}); ` +
         `${atlas}.height = bbl::js::to_uint32(${tupleLane(size, 1)}); ` +
         `${atlas}.premultiplied_alpha = ${premultiplied.cpp}; ` +
-        `${atlas}.mip_maps = false; ${atlas}.sampler = ${sampler}; ` +
+        `${atlas}.mip_maps = false; ` +
         frameStatements +
         `${engine}.sprite_atlases.push_back(std::move(${atlas})); ` +
         `return bbl::SpriteAtlasHandle{static_cast<std::uint32_t>(${engine}.sprite_atlases.size() - 1)}; }())`

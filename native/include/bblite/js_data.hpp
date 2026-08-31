@@ -302,6 +302,9 @@ class Array {
     iterator insert(iterator position, Iterator first, Iterator last) {
         return values_->insert(position, first, last);
     }
+    iterator insert(iterator position, std::initializer_list<T> values) {
+        return values_->insert(position, values);
+    }
 
     [[nodiscard]] bool operator==(const Array& other) const {
         return values_ == other.values_;
@@ -449,6 +452,52 @@ class RegExp {
         std::sregex_token_iterator part(input.begin(), input.end(), expression_, -1);
         const std::sregex_token_iterator end;
         for (; part != end; ++part) result.push_back(part->str());
+        return result;
+    }
+
+    [[nodiscard]] Nullable<Array<std::string>> match(
+        const std::string& input) const {
+        Array<std::string> result;
+        if (global_) {
+            const std::sregex_iterator end;
+            for (std::sregex_iterator found(input.begin(), input.end(), expression_);
+                 found != end;
+                 ++found) {
+                result.push_back(found->str());
+            }
+        } else {
+            std::smatch found;
+            if (std::regex_search(input, found, expression_)) {
+                result.reserve(found.size());
+                for (const auto& group : found) {
+                    result.push_back(
+                        group.matched ? group.str() : std::string{});
+                }
+            }
+        }
+        return result.empty()
+            ? Nullable<Array<std::string>>(std::nullopt)
+            : Nullable<Array<std::string>>(std::move(result));
+    }
+
+    [[nodiscard]] Array<Array<std::string>> match_all(
+        const std::string& input) const {
+        if (!global_) {
+            throw std::runtime_error("String.matchAll requires a global RegExp.");
+        }
+        Array<Array<std::string>> result;
+        const std::sregex_iterator end;
+        for (std::sregex_iterator found(input.begin(), input.end(), expression_);
+             found != end;
+             ++found) {
+            Array<std::string> groups;
+            groups.reserve(found->size());
+            for (const auto& group : *found) {
+                groups.push_back(
+                    group.matched ? group.str() : std::string{});
+            }
+            result.push_back(std::move(groups));
+        }
         return result;
     }
 
@@ -1205,6 +1254,33 @@ template <typename T>
     return Array<T>(values.begin() + begin, values.begin() + end);
 }
 
+/** JavaScript Array.join for the reached string-array form. */
+template <typename Range, typename Projection>
+[[nodiscard]] inline std::string array_join(
+    const Range& values,
+    const std::string& separator,
+    Projection projection) {
+    std::string result;
+    bool first = true;
+    for (const auto& value : values) {
+        if (!first) {
+            result += separator;
+        }
+        result += projection(value);
+        first = false;
+    }
+    return result;
+}
+
+template <typename Range>
+[[nodiscard]] inline std::string array_join(
+    const Range& values,
+    const std::string& separator) {
+    return array_join(values, separator, [](const auto& value) -> const auto& {
+        return value;
+    });
+}
+
 /** `%TypedArray%.prototype.slice` for the vector-backed numeric views. */
 template <typename T>
 [[nodiscard]] inline std::vector<T> typed_array_slice(
@@ -1275,6 +1351,15 @@ inline T array_pop(Array<T>& values) {
     return last;
 }
 
+// `array.shift()!` — the compiled subset asserts the array is non-empty.
+template <typename T>
+inline T array_shift(Array<T>& values) {
+    assert(!values.empty());
+    T first = values.front();
+    values.erase(values.begin());
+    return first;
+}
+
 // `array.unshift(...items)` inserts the arguments at the front in source
 // order and returns the new JavaScript length.
 template <typename T>
@@ -1283,6 +1368,13 @@ inline double array_unshift(
     std::initializer_list<T> inserted) {
     values.insert(values.begin(), inserted.begin(), inserted.end());
     return static_cast<double>(values.size());
+}
+
+// `array.reverse()` mutates and returns the same JavaScript array object.
+template <typename T>
+inline Array<T>& array_reverse(Array<T>& values) {
+    std::reverse(values.begin(), values.end());
+    return values;
 }
 
 // `array.fill(value)` on an existing array.
@@ -1383,6 +1475,7 @@ template <typename T, std::size_t Extent>
 }
 
 // JavaScript typed arrays reached by the compiled subset.
+using F64Array = std::vector<double>;
 using F32Array = std::vector<float>;
 using U16Array = std::vector<std::uint16_t>;
 using I16Array = std::vector<std::int16_t>;
@@ -1530,6 +1623,10 @@ inline void array_fill(U8Array& values, std::uint8_t value) {
     return F32Array(static_cast<std::size_t>(count), 0.0f);
 }
 
+[[nodiscard]] inline F64Array f64_array_sized(double count) {
+    return F64Array(static_cast<std::size_t>(count), 0.0);
+}
+
 [[nodiscard]] inline U16Array u16_array_sized(double count) {
     return U16Array(static_cast<std::size_t>(count), 0u);
 }
@@ -1572,6 +1669,13 @@ template <typename Values>
 [[nodiscard]] inline F32Array f32_array_from(const Values& values) {
     return typed_array_from_values<F32Array>(values, [](double value) {
         return static_cast<float>(value);
+    });
+}
+
+template <typename Values>
+[[nodiscard]] inline F64Array f64_array_from(const Values& values) {
+    return typed_array_from_values<F64Array>(values, [](double value) {
+        return value;
     });
 }
 

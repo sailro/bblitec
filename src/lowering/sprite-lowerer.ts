@@ -1471,6 +1471,21 @@ ${pushAtlasHandleCpp()}
 
 SpriteAtlasHandle create_grid_sprite_atlas(
     Engine& engine,
+    const PixelsTexture& texture,
+    GridSpriteAtlasOptions options) {
+    SpriteAtlasRecord atlas;
+    atlas.rgba.assign(texture.rgba.begin(), texture.rgba.end());
+    atlas.width = texture.width;
+    atlas.height = texture.height;
+    atlas.premultiplied_alpha = options.premultiplied_alpha;
+    atlas.mip_maps = texture.sampler.max_lod > 0.0f;
+    atlas.sampler = texture.sampler;
+    populate_grid_sprite_atlas_frames(atlas, options);
+${pushAtlasHandleCpp()}
+}
+
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
     SpriteRenderTextureHandle texture,
     GridSpriteAtlasOptions options) {
     const SpriteRenderTextureRecord& source =

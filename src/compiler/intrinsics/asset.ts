@@ -9,6 +9,7 @@ import type { IntrinsicCallContext } from "./context.js";
 import { compressedTextureUrl } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
 import { addressModeByPin } from "../../pinned-address-modes.js";
+import { compileDynamicPackagedAsset } from "../static-fetch.js";
 import {
     validateObjectProperties,
     type ObjectValidationContext,
@@ -72,6 +73,9 @@ export interface AssetIntrinsicContext
         name: string,
     ): ts.Expression | undefined;
     compileBoolean(expression: ts.Expression): string;
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
+    staticAssetUrlCandidates(): readonly string[];
+    reachJsData(): void;
     requireEngine(value: Value, node: ts.Node): string;
     fail(node: ts.Node, message: string): never;
     /** Follows an identifier back to the `const` initializer that bound it. */
@@ -435,13 +439,20 @@ export function compileAssetIntrinsic(
                 "engine",
                 call.arguments[0]!,
             );
-            const url = context.compileStringLiteral(
+            const dynamic = compileDynamicPackagedAsset(
+                context,
                 call.arguments[1]!,
-            );
-            const asset = context.registerAsset(
-                url,
                 "texture",
+                (source) => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source),
             );
+            const url = dynamic
+                ? undefined
+                : context.compileStringLiteral(call.arguments[1]!);
+            const asset = url === undefined
+                ? undefined
+                : context.registerAsset(url, "texture");
+            const texturePathCpp = dynamic?.dynamicAssetPathCpp ??
+                `bbl::asset_path(${context.cppString(asset!.output)})`;
             // Pinned defaults from src/texture/texture-2d.ts: linear
             // filters, repeat addressing, mipMaps true, invertY true,
             // srgb false. Mip sampling clamps to the base level when
@@ -619,16 +630,20 @@ export function compileAssetIntrinsic(
                 textureStorage: "file",
                 cpp:
                     `bbl::load_file_texture(${engine.cpp}, ` +
-                    `bbl::asset_path(${context.cppString(asset.output)}), ` +
+                    `${texturePathCpp}, ` +
                     `${sampler}, ${invertY ? "true" : "false"}, ` +
                     `${srgb ? "true" : "false"}, ` +
                     `${premultiplyAlpha ? "true" : "false"})`,
                 textureFile: {
                     srgb,
-                    source: url.startsWith("data:")
-                        ? url
-                        : asset.source,
-                    entryFileName: context.options.fileName,
+                    ...(url === undefined
+                        ? {}
+                        : {
+                              source: url.startsWith("data:")
+                                  ? url
+                                  : asset!.source,
+                              entryFileName: context.options.fileName,
+                          }),
                 },
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,

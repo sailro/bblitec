@@ -1,0 +1,25 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "Stored data callbacks initially added aliases around the existing native-function-body lifecycle even though both paths require the same scope, return and capture handling; the aliases were removed and stored callbacks reuse beginNativeFunctionBody/endNativeFunctionBody directly.",
+      "applied": true
+    },
+    {
+      "summary": "Dynamic asset packaging compiled the same runtime expression while probing both a direct candidate and a directory; directory discovery now runs first while network-scheme prefixes continue through the static URL path.",
+      "applied": true
+    },
+    {
+      "summary": "Dynamic pixel texture updates copied a complete RGBA vector again while synchronizing SpriteRenderer bindings; the update now moves pixels into shared backing once and assigns that backing to every bound layer.",
+      "applied": true
+    },
+    {
+      "summary": "Function-valued class fields were excluded from stored-data lowering in both the caller and signature mapper; one origin-aware ancestor traversal now covers inline and aliased callback signatures without duplicating the policy.",
+      "applied": true
+    },
+    {
+      "summary": "The standalone effect renderer already links the shared SDL image dependency, so its file-texture decoder now reuses the same pal_sdl implementation gate as PBR and sprite renderers instead of requiring renderer-specific decoding code.",
+      "applied": true
+    }
+  ]
+}

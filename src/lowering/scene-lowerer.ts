@@ -1038,7 +1038,7 @@ void on_mouse_wheel(
 
 void on_mouse_cancel(
     Engine& engine,
-    std::function<void()> callback) {
+    std::function<void(const PlatformMouseEvent&)> callback) {
     engine.mouse_cancel_callbacks.push_back(std::move(callback));
 }
 

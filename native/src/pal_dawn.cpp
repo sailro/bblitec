@@ -9480,19 +9480,12 @@ bool run_dawn_engine(Engine& engine) {
                 sprite_pass,
                 state.sprite_render_textures,
                 state.sprite_render_texture_views);
-            const SpriteRendererRecord& sprite_renderer =
-                engine.sprite_renderers[sprite_pass.renderer.value];
-            const SpriteRenderTextureRecord* sprite_target =
-                sprite_renderer.has_target
-                    ? &engine.sprite_render_textures[
-                          sprite_renderer.target.value]
-                    : nullptr;
             upload_dawn_sprite_pass(
                 state.queue,
                 engine,
                 sprite_pass,
-                sprite_target ? sprite_target->width : width,
-                sprite_target ? sprite_target->height : height,
+                width,
+                height,
                 delta_ms);
         }
 #endif

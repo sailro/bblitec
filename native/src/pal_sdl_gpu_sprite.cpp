@@ -230,16 +230,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     engine.sprite_renderers[
                         passes[first_index].renderer.value];
                 SDL_GPUTexture* target = color;
-                std::uint32_t target_width = width;
-                std::uint32_t target_height = height;
                 if (first_renderer.has_target) {
-                    const SpriteRenderTextureRecord& target_record =
-                        engine.sprite_render_textures[
-                            first_renderer.target.value];
                     target = render_textures[
                         first_renderer.target.value];
-                    target_width = target_record.width;
-                    target_height = target_record.height;
                 }
                 std::size_t end_index = first_index + 1;
                 while (end_index < passes.size()) {
@@ -282,8 +275,8 @@ bool run_sprite_gpu_engine(Engine& engine) {
                         render_pass,
                         engine,
                         passes[index],
-                        target_width,
-                        target_height);
+                        width,
+                        height);
                 }
                 SDL_EndGPURenderPass(render_pass);
                 first_index = end_index;

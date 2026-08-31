@@ -452,8 +452,12 @@ inline void handle_platform_event(
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         tracked_mouse_buttons() = 0;
+        const PlatformMouseEvent mouse_event{
+            .button = -1.0,
+            .buttons = 0.0,
+        };
         for (const auto& callback : engine.mouse_cancel_callbacks) {
-            callback();
+            callback(mouse_event);
         }
         engine.pointer_lock_requested = false;
         sync_pointer_lock(

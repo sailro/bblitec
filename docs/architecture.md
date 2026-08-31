@@ -210,8 +210,11 @@ three times. A return over the function's own locals needs no such snapshot,
 because the inline frame gives each call its own storage for them.
 
 The plain-data model keeps JavaScript container identity where it is observable:
-arrays, maps, sets, recursive records, and borrowed typed-array views retain
-shared or referenced native storage; composite function parameters use the same
+arrays, maps, sets, recursive records, explicitly typed mutable objects, and
+borrowed typed-array views retain shared or referenced native storage. Stored
+plain-data function fields close over values, and retain the live engine by
+reference only when their emitted body reaches it; composite function
+parameters use the same
 read-only/mutable reference policy at every lowering path. Locals that cannot
 safely retain an alias reject writes, sparse `new Array` slots zero-initialize,
 and `Math.random`
@@ -303,10 +306,10 @@ Engine-owned data uses contiguous vectors and typed handles. The native
 TypeScript subset provides typed arrays, `DataView`, `TextDecoder`, typed JSON,
 and immediate AOT `Promise<T>`.
 
-The supported subset does not need tracing GC: locals use C++ lifetimes and
-engine records live in arenas. A collector remains optional future work for
-escaping closures, cyclic objects, or other genuinely dynamic JavaScript
-graphs.
+The supported subset does not need tracing GC: locals use C++ lifetimes,
+stored function fields use native closure ownership, and engine records live
+in arenas. A collector remains optional future work for cyclic objects or
+other genuinely dynamic JavaScript graphs.
 
 ## Animation and deformation
 

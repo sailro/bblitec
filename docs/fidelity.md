@@ -1470,6 +1470,13 @@ created after the initial engine render. On the following turn the GPU mirrors
 are synchronized before upload; building only the startup list would
 permanently omit the chain.
 
+The projection remains the canvas's drawing-buffer extent even when the
+attachment is larger. That is upstream's `SpriteRenderer` contract rather
+than a target-sized viewport convention: Freeciv renders to a 2x texture and
+passes a half-scale view to compensate. Both scene-owned and scene-less loops
+therefore upload canvas width and height to every sprite pass; using the
+target extent shrinks the complete map to half size.
+
 **One writer, two arms — because only the writer can see the previous
 sprite.** `writeInstance` is shared upstream by `addSprite2DIndex` and
 `updateSprite2DIndex`, and the argument that differs is `prev`: null on an

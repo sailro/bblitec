@@ -606,6 +606,19 @@ inline void upload_dawn_sprite_pass(
         Sprite2DLayerRecord& layer =
             engine.sprite_layers[renderer.layers[index].value];
         DawnSpriteLayer& gpu = pass.layers[index];
+        for (
+            std::size_t extra_index = 0;
+            extra_index < layer.custom_textures.size();
+            ++extra_index) {
+            const PixelsTexture& extra =
+                layer.custom_textures[extra_index];
+            DawnSampledTexture& uploaded =
+                gpu.extras[extra_index];
+            if (uploaded.uploaded_version != extra.version) {
+                update_dawn_extra_texture(
+                    queue, uploaded, extra);
+            }
+        }
         if (!gpu.uploaded || gpu.uploaded_version != layer.version) {
             if (layer.count > 0) {
                 wgpuQueueWriteBuffer(

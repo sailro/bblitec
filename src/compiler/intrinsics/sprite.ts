@@ -24,8 +24,11 @@ export interface SpriteIntrinsicContext
     extends IntrinsicCallContext,
         PositiveIntegerContext {
     readonly dataTypes: DataTypeRegistry;
+    readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     requireDefaultEngine(node: ts.Node): string;
+    requireEngine(value: Value, node: ts.Node): string;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -508,6 +511,92 @@ export function compileSpriteIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "pickSprite2D": {
+            context.expectArgumentCount(call, 3, 3);
+            const layers = context.compileValue(call.arguments[0]!);
+            const tupleLayers =
+                layers.kind === "tuple"
+                    ? layers.tupleElements
+                    : undefined;
+            const dataLayers =
+                layers.kind === "data" &&
+                layers.dataType?.kind === "vector" &&
+                layers.dataType.element.kind === "handle" &&
+                layers.dataType.element.handle === "sprite-layer";
+            if (!tupleLayers && !dataLayers) {
+                context.fail(
+                    call.arguments[0]!,
+                    "pickSprite2D requires an array of sprite layers.",
+                );
+            }
+            for (const layer of tupleLayers ?? []) {
+                context.expectKind(
+                    layer,
+                    "sprite-layer",
+                    call.arguments[0]!,
+                );
+            }
+            const firstLayer = tupleLayers?.[0];
+            for (const layer of tupleLayers?.slice(1) ?? []) {
+                context.expectSameEngine(firstLayer!, layer, call);
+            }
+            const engineCpp = firstLayer
+                ? context.requireEngine(firstLayer, call)
+                : layers.engineCpp ?? context.requireDefaultEngine(call);
+            const resultType = context.dataTypes.fromTsType(
+                context.checker.getTypeAtLocation(call),
+                call,
+            );
+            if (
+                resultType?.kind !== "optional" ||
+                resultType.inner.kind !== "struct"
+            ) {
+                context.fail(
+                    call,
+                    "pickSprite2D must return its pinned nullable hit record.",
+                );
+            }
+            const fields = context.dataTypes.structFields(
+                resultType.inner.name,
+                call,
+            );
+            const fieldValues: Record<string, string> = {
+                layer: "hit->layer",
+                spriteIndex: "static_cast<double>(hit->sprite_index)",
+                u: "hit->u",
+                v: "hit->v",
+            };
+            for (const field of fields) {
+                if (fieldValues[field.name] === undefined) {
+                    context.fail(
+                        call,
+                        `pickSprite2D hit record has unsupported field '${field.name}'.`,
+                    );
+                }
+            }
+            const cppType = context.dataTypes.cppType(resultType);
+            const hitType = context.dataTypes.cppType(resultType.inner);
+            const layerList = dataLayers
+                ? `bbl::js::array_to_vector(${layers.cpp})`
+                : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
+                      .map((layer) => layer.cpp)
+                      .join(", ")}}`;
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "data",
+                cpp:
+                    `([&]() -> ${cppType} { ` +
+                    `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ${layerList}, ` +
+                    `${context.compileNumber(call.arguments[1]!, "double")}, ` +
+                    `${context.compileNumber(call.arguments[2]!, "double")}); ` +
+                    `if (!hit) return ${cppType}{std::nullopt}; ` +
+                    `return ${cppType}{${hitType}{${fields
+                        .map((field) => fieldValues[field.name])
+                        .join(", ")}}}; }())`,
+                dataType: resultType,
+            };
+        }
+
         case "createRenderTexture2D": {
             context.expectArgumentCount(call, 3, 4);
             const engine = context.compileValue(call.arguments[0]!);
@@ -650,11 +739,12 @@ export function compileSpriteIntrinsic(
             context.expectKind(texture, "texture", call.arguments[0]!);
             if (
                 texture.textureStorage !== "file" &&
+                texture.textureStorage !== "pixels" &&
                 texture.textureStorage !== "render"
             ) {
                 context.fail(
                     call.arguments[0]!,
-                    "createGridSpriteAtlas currently requires a loadTexture2D or render texture.",
+                    "createGridSpriteAtlas currently requires a file, pixels, or render texture.",
                 );
             }
             const options = optionsRecord(

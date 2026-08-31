@@ -424,6 +424,19 @@ export class StaticEvaluator {
                 ? `static_cast<float>(${compiled})`
                 : compiled;
         };
+        if (
+            ts.isAsExpression(expression) ||
+            ts.isTypeAssertionExpression(expression)
+        ) {
+            const asserted = this.resolveValue(expression);
+            if (
+                asserted.kind === "number" ||
+                (asserted.kind === "data" &&
+                    asserted.dataType?.kind === "number")
+            ) {
+                return this.castNumber(asserted, precision);
+            }
+        }
         const unwrapped =
             this.resolveStaticExpression(expression);
         const browserValue = this.isBrowserOnlyExpression(
@@ -657,6 +670,16 @@ export class StaticEvaluator {
             return precision === "float"
                 ? "bbl::pi"
                 : this.doubleLiteral(Math.PI);
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "Math" &&
+            unwrapped.name.text === "SQRT2"
+        ) {
+            return precision === "float"
+                ? "std::sqrt(2.0f)"
+                : this.doubleLiteral(Math.SQRT2);
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&

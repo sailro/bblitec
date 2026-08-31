@@ -6,7 +6,8 @@
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
-#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER || \
+    BBLITE_HAS_EFFECT_RENDERER
 #include <bblite/pal_image.hpp>
 #endif
 
@@ -19,13 +20,15 @@
 #include <string>
 
 #include <SDL3/SDL.h>
-#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER || \
+    BBLITE_HAS_EFFECT_RENDERER
 #include <SDL3_image/SDL_image.h>
 #endif
 
 namespace bbl {
 
-#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER || \
+    BBLITE_HAS_EFFECT_RENDERER
 namespace {
 
 /** Whether these bytes are a PNG carrying a palette (`PLTE`) of its own. */

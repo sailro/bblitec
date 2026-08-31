@@ -44,16 +44,12 @@ export function compileStaticFetch(
             "Generation-time fetch requires exactly one static URL argument.",
         );
     }
-    const dynamic = compileDynamicDirectoryFetch(
+    const dynamic = compileDynamicPackagedAsset(
         context,
         call.arguments[0]!,
+        "binary",
     );
     if (dynamic) return dynamic;
-    const selected = compileDynamicCandidateFetch(
-        context,
-        call.arguments[0]!,
-    );
-    if (selected) return selected;
     if (ts.isIdentifier(call.arguments[0]!)) {
         const bound = context.lookupOptional(call.arguments[0]!);
         if (bound && bound.staticString === undefined) {
@@ -76,6 +72,23 @@ export function compileStaticFetch(
 }
 
 /**
+ * Packages the finite local files a runtime string may select and returns a
+ * closed native path lookup. Consumers choose the manifest kind and may limit
+ * the reached directory to the file formats they can actually decode.
+ */
+export function compileDynamicPackagedAsset(
+    context: StaticFetchContext,
+    expression: ts.Expression,
+    kind: CompileAsset["kind"],
+    accepts: (source: string) => boolean = () => true,
+): Value | undefined {
+    return (
+        compileDynamicDirectoryFetch(context, expression, kind, accepts) ??
+        compileDynamicCandidateFetch(context, expression, kind, accepts)
+    );
+}
+
+/**
  * Packages a finite set of module-relative asset URLs for a runtime selection.
  * Demos commonly put immutable asset URLs in descriptor tables, collect a
  * reached subset in a Set, and fetch the selected string later. The native
@@ -85,6 +98,8 @@ export function compileStaticFetch(
 function compileDynamicCandidateFetch(
     context: StaticFetchContext,
     expression: ts.Expression,
+    kind: CompileAsset["kind"],
+    accepts: (source: string) => boolean,
 ): Value | undefined {
     const selected = context.compileValue(expression);
     if (
@@ -128,7 +143,7 @@ function compileDynamicCandidateFetch(
                 }
             }
         },
-    );
+    ).filter(({ source }) => accepts(source));
     const candidates = new Map<
         string,
         { logicalSource: string; source: string }
@@ -140,7 +155,7 @@ function compileDynamicCandidateFetch(
     }
     if (candidates.size === 0) return undefined;
     const entries = [...candidates.values()].map(({ logicalSource, source }) => {
-        const asset = context.registerAsset(source, "binary");
+        const asset = context.registerAsset(source, kind);
         return `{${context.cppString(logicalSource)}, ${context.cppString(asset.output)}}`;
     });
     context.reachJsData();
@@ -254,6 +269,8 @@ export function compileStaticFetchMethod(
 function compileDynamicDirectoryFetch(
     context: StaticFetchContext,
     expression: ts.Expression,
+    kind: CompileAsset["kind"],
+    accepts: (source: string) => boolean,
 ): Value | undefined {
     const unwrapped = context.unwrap(expression);
     let logicalPrefix: string | undefined;
@@ -301,6 +318,12 @@ function compileDynamicDirectoryFetch(
     const logicalBase = logicalPrefix.endsWith("/")
         ? logicalPrefix
         : `${logicalPrefix}/`;
+    // Network prefixes cannot name a repository directory. A fully static
+    // URL falls through to the ordinary fetch path, while a genuinely
+    // dynamic network fetch retains that path's static-URL diagnostic.
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(logicalBase)) {
+        return undefined;
+    }
     const resolvedBase = resolveBundledAsset(
         logicalBase,
         context.options.fileName,
@@ -311,7 +334,7 @@ function compileDynamicDirectoryFetch(
     );
     let files: string[];
     try {
-        files = listFiles(directory).sort();
+        files = listFiles(directory).filter(accepts).sort();
     } catch (error: unknown) {
         context.fail(
             prefixNode,
@@ -330,7 +353,7 @@ function compileDynamicDirectoryFetch(
         const key = relative(directory, file).split(sep).join("/");
         const asset = context.registerAsset(
             `${logicalBase}${key}`,
-            "binary",
+            kind,
         );
         return `{${context.cppString(key)}, ${context.cppString(asset.output)}}`;
     });

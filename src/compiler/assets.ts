@@ -202,6 +202,7 @@ export function executedModuleReference(
 ): { module: string; exportName: string } | undefined {
     const unwrapped = context.unwrap(identifier);
     if (!ts.isIdentifier(unwrapped)) return undefined;
+    if (!context.symbols.isModuleExport(unwrapped)) return undefined;
     const modulePath = context.symbols.declarationSourcePath(unwrapped);
     if (!modulePath) return undefined;
     const root = findRepositoryRoot(

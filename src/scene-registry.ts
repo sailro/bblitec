@@ -3076,6 +3076,29 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+    {
+        id: "freeciv",
+        name: "Freeciv",
+        source: "corpus/babylon-lite/lab/lite/src/demos/freeciv.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Freeciv",
+        parity: {
+            referenceFrame: 180,
+            // Tint/DXC and browser/Dawn intentionally disagree on the
+            // demo's transcendental hash noise. Keep SDL_GPU's measured
+            // regression ceiling while the browser-compiler path carries
+            // the strict fidelity gate.
+            maxFullMad: 30,
+            maxForegroundMad: 30,
+            dawnThresholds: {
+                maxFullMad: 0.5,
+                maxForegroundMad: 0.5,
+            },
+            backgroundColor: [38, 74, 115],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
 ];
 
 /**

@@ -10361,11 +10361,6 @@ bool run_gpu_engine(Engine& engine) {
                     }
                     const SpriteRendererRecord& renderer =
                         engine.sprite_renderers[handle.value];
-                    const SpriteRenderTextureRecord* target_record =
-                        renderer.has_target
-                            ? &engine.sprite_render_textures[
-                                  renderer.target.value]
-                            : nullptr;
                     SDL_GPUColorTargetInfo sprite_target{};
                     sprite_target.texture = renderer.has_target
                         ? sprite_render_textures[renderer.target.value]
@@ -10390,8 +10385,8 @@ bool run_gpu_engine(Engine& engine) {
                         sprite_pass,
                         engine,
                         sprite_passes[handle.value],
-                        target_record ? target_record->width : width,
-                        target_record ? target_record->height : height);
+                        width,
+                        height);
                     SDL_EndGPURenderPass(sprite_pass);
                 }
             }

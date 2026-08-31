@@ -368,6 +368,23 @@ void set_shader_pixels_texture(
     set_shader_texture(engine, material, slot, std::move(normalized));
 }
 
+void set_shader_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    const StoredTexture& texture) {
+    std::visit(
+        [&](const auto& stored) {
+            using T = std::decay_t<decltype(stored)>;
+            if constexpr (std::is_same_v<T, FileTexture>) {
+                set_shader_texture(engine, material, slot, stored);
+            } else {
+                set_shader_pixels_texture(engine, material, slot, stored);
+            }
+        },
+        texture);
+}
+
 void set_alpha_to_coverage(
     Engine& engine,
     MaterialHandle material,
@@ -477,6 +494,7 @@ namespace bbl {
 namespace {
 
 PixelsTexture create_texture_2d_from_bytes(
+    Engine& engine,
     std::vector<std::uint8_t> bytes,
     double width,
     double height,
@@ -489,6 +507,7 @@ PixelsTexture create_texture_2d_from_bytes(
     texture.rgba = std::move(bytes);
     texture.width = static_cast<std::uint32_t>(width);
     texture.height = static_cast<std::uint32_t>(height);
+    texture.identity = engine.next_pixels_texture_identity++;
     const std::size_t expected =
         static_cast<std::size_t>(texture.width) *
         static_cast<std::size_t>(texture.height) * 4u;
@@ -515,23 +534,45 @@ PixelsTexture create_texture_2d_from_bytes(
 } // namespace
 
 PixelsTexture create_texture_2d_from_pixels(
-    Engine&,
+    Engine& engine,
     const std::string& path,
     double width,
     double height,
     PixelsTextureOptions options) {
     return create_texture_2d_from_bytes(
-        pal::read_binary_file(path), width, height, options);
+        engine, pal::read_binary_file(path), width, height, options);
 }
 
 PixelsTexture create_texture_2d_from_pixels(
-    Engine&,
+    Engine& engine,
     const js::U8Array& pixels,
     double width,
     double height,
     PixelsTextureOptions options) {
     return create_texture_2d_from_bytes(
-        pixels.to_vector(), width, height, options);
+        engine, pixels.to_vector(), width, height, options);
+}
+
+void update_pixels_texture(
+    Engine& engine,
+    PixelsTexture& texture,
+    const js::U8Array& pixels) {
+    const std::size_t expected =
+        static_cast<std::size_t>(texture.width) *
+        static_cast<std::size_t>(texture.height) * 4u;
+    if (pixels.size() < expected) {
+        throw std::runtime_error(
+            "update pixels texture: data too short");
+    }
+    texture.rgba = pixels.to_vector();
+    ++texture.version;
+    for (Sprite2DLayerRecord& layer : engine.sprite_layers) {
+        for (PixelsTexture& bound : layer.custom_textures) {
+            if (bound.identity != texture.identity) continue;
+            bound.rgba = texture.rgba;
+            bound.version = texture.version;
+        }
+    }
 }
 
 } // namespace bbl
@@ -646,6 +687,7 @@ PixelsTexture create_texture_2d_from_pixels(
             )}
 #include <bblite/runtime.hpp>
 #include <bblite/pal.hpp>
+#include <bblite/pal_image.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -669,6 +711,10 @@ FileTexture load_file_texture(
     texture.data.invert_y = invert_y;
     texture.data.premultiply_alpha = premultiply_alpha;
     texture.srgb = srgb;
+    const pal::DecodedImage decoded = pal::decode_image(
+        js::ArrayBuffer(texture.data.bytes));
+    texture.width = static_cast<std::uint32_t>(decoded.width);
+    texture.height = static_cast<std::uint32_t>(decoded.height);
     return texture;
 }
 

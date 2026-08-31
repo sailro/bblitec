@@ -173,6 +173,18 @@ export class BrowserErasure {
         if (this.context.canvasSizeProperty(unwrapped)) {
             return false;
         }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            (unwrapped.name.text === "left" ||
+                unwrapped.name.text === "top") &&
+            this.evaluateBrowserValue(unwrapped.expression)?.kind ===
+                "dom-rect"
+        ) {
+            // Native has no CSS offset around its render surface. The
+            // property lowerer maps these two DOMRect coordinates to zero,
+            // so arithmetic using them remains native pointer math.
+            return false;
+        }
         if (ts.isIdentifier(unwrapped)) {
             if (
                 [

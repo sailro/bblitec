@@ -652,6 +652,34 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
     assert.match(dawn, /resize_dawn_surface\(state, engine\.options\)/);
 });
 
+test("projects offscreen sprite passes against the canvas extent", () => {
+    const sdlScene = source("native/src/pal_sdl_gpu.cpp");
+    const sdlSprite = source("native/src/pal_sdl_gpu_sprite.cpp");
+    const dawnScene = source("native/src/pal_dawn.cpp");
+    const dawnSprite = source("native/src/pal_dawn_sprite.cpp");
+
+    for (const backend of [sdlScene, sdlSprite]) {
+        assert.match(
+            backend,
+            /record_sprite_pass\([\s\S]{0,180}\bwidth,\s*height\);/,
+        );
+        assert.doesNotMatch(
+            backend,
+            /target_record\s*\?\s*target_record->(?:width|height)/,
+        );
+    }
+    for (const backend of [dawnScene, dawnSprite]) {
+        assert.match(
+            backend,
+            /upload_dawn_sprite_pass\([\s\S]{0,180}\bwidth,\s*height,\s*delta_ms\);/,
+        );
+        assert.doesNotMatch(
+            backend,
+            /target_record\s*\?\s*target_record->(?:width|height)/,
+        );
+    }
+});
+
 test("forwards DOM-compatible application input through every native loop", () => {
     const events = source("native/src/pal_platform_events.hpp");
     assert.match(events, /case SDL_SCANCODE_SPACE: return "Space";/);
@@ -700,6 +728,15 @@ test("forwards DOM-compatible application input through every native loop", () =
         assert.match(loop, /handle_platform_event\(event, engine\);/);
         assert.match(loop, /keyboard_replay\.dispatch\(frame, engine\);/);
     }
+});
+
+test("keeps image decoding available to standalone effect renderers", () => {
+    const platform = source("native/src/pal_sdl.cpp");
+    const decoderGuard =
+        /#if BBLITE_HAS_PBR_RENDERER \|\| BBLITE_HAS_SPRITE_RENDERER \|\| \\\s+BBLITE_HAS_EFFECT_RENDERER/;
+
+    assert.equal(platform.match(new RegExp(decoderGuard, "g"))?.length, 3);
+    assert.match(platform, /pal::DecodedImage pal::decode_image/);
 });
 
 test("shares large texture payloads and preserves tuple reference identity", () => {
