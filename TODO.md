@@ -40,9 +40,9 @@ act on it — not what was tried.
 ### Closures and async
 
 - [ ] Classify escaping and non-escaping closures. A callback that escapes
-  its call site fails explicitly today; every reached instance (scene 52's
-  `onSceneDispose`, scene 300's `renderer._beforeUpdate.push`, the
-  `EffectRenderer` per-frame `update`) is tracked by its own entry.
+  its call site fails explicitly unless a reached API owns a specialized
+  retained form; scene 300's `renderer._beforeUpdate.push` and the
+  `EffectRenderer` per-frame `update` are tracked by their own entries.
 - [ ] Lower general render/update callbacks.
 - [ ] Define ownership for escaping captures.
 - [ ] Generalize immediate AOT promises and dynamic-import dispatch.
@@ -391,17 +391,12 @@ integrated.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
-  - `spriteBlendPremultiplied` still needs scene 51's premultiplied atlas:
-    `premultiplyOnLoad` decodes the image with premultiplied alpha and
-    `premultipliedAlpha` marks the record, which together drive the pin's
-    `_premultipliedOpacity` fade. The descriptor itself is lowered.
-  - depth-hosted layers: `addDepthHostedSpriteLayer` with `depth: "test"` /
-    `"test-write"` (53), which adds the 14th instance float, the depth
-    attachment and the scene bind group, and composes with a `SceneContext`.
-  - a `SpriteRenderer` overlaid on a scene (52) — that composition without the
-    depth slot: the sprite pass appends to the scene's frame.
   - `setSprite2DCoverageGamma`, a shader permutation the pin installs
     through a lazily-registered hook, as the custom shaders do.
+  - a `depth: "test"` Sprite2D layer mixed with another transparent
+    renderable family. Scene 53 reaches only the fixed-order-100 `_direct`
+    `test-write` arm; the generic transparent arm must join the shared
+    camera-depth/order bucket rather than the current family hard slot.
   - `createTexture2DFromPixels`'s `srgb` format, which picks
     `rgba8unorm-srgb` and so changes how a texel decodes rather than how it
     is sampled. The four sampler overrides shipped with scenes 283/284/301;
@@ -425,13 +420,7 @@ integrated.
     custom shader that scenes 54-57, 59, 94 and 98 measure. Scene 118
     needs `marker.name`; scene 206 is a cutout system behind large-world
     rendering.
-- [ ] The sprite cluster past Scene 50, each its measured first blocker:
-  - Scene 51: accept the reached explicit `msaaSamples: 1`; its browser-derived
-    `1 | 4` selection now folds to `1` for the bare reference query, with the
-    premultiplied atlas and blend behind it.
-  - Scene 52: `onSceneDispose`, then the HUD-over-scene composition the native
-    renderers refuse.
-  - Scene 53: depth-hosted layers, then `spriteBlendOpaque`.
+- [ ] The remaining sprite cluster, each at its measured first blocker:
   - Scenes 205, 206 reach the billboard path but stop at engine options.
   - Scene 117: an unsupported constructor expression, then sprite picking.
 - [ ] Extend node materials past the slice scenes 60-63, 67-71, 77-82, 84, 85,

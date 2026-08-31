@@ -219,10 +219,25 @@ compile the scene renderer's translation unit at all and draws from
 `pal_sdl_gpu_sprite.cpp` or `pal_dawn_sprite.cpp` instead.
 That split is upstream's own — a `SpriteRenderer` is its own `RenderingContext`
 on the engine rather than part of a scene.
+It can still coexist with one: the shared conductor walks rendering contexts
+in registration order, so a renderer registered after a `SceneContext` opens
+its single-sample load pass over the scene result and draws a pure-2D HUD
+without joining the scene depth attachment. Both backends preserve the load
+operation and ordering; the layer remains owned by the standalone sprite
+pass.
 Its projection is still derived from the canvas extent when its colour
 attachment is an offscreen render texture. Both scene-owned and scene-less
 backend loops pass the canvas width and height into sprite upload; the target
 controls the attachment and viewport, not the coordinate system.
+
+Depth-hosted Sprite2D layers are the deliberate other arm of that split.
+They are attached to a `SceneContext`, so each backend builds their sprite
+pipeline against the scene target's colour format, depth format, and sample
+count, uploads them with the other contexts, and records depth-writing layers
+inside the opaque stage. The separate `SceneSpritePass` /
+`DawnSceneSpritePass` helpers keep that attachment-specific state out of the
+standalone SpriteRenderer pass while reusing the same per-layer buffers,
+textures, uniforms, and draw encoding.
 
 The fullscreen-effect path takes the same shape and for the same reason: an
 `EffectRenderer` is a rendering context on the engine, so its two halves live

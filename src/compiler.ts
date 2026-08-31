@@ -86,7 +86,10 @@ import {
     compileRegisteredIntrinsic,
     type IntrinsicContext,
 } from "./compiler/intrinsics/registry.js";
-import { validateObjectProperties } from "./compiler/option-helpers.js";
+import {
+    selectedStaticNumberValue,
+    validateObjectProperties,
+} from "./compiler/option-helpers.js";
 import {
     compilePropertyAnimationClip,
     compilePropertyAnimationGroupOptions,
@@ -454,9 +457,13 @@ class Compiler
     private readonly scenePbrMaterialMeshes = new Map<number, Set<number>>();
     private readonly scenePbrMaterialsWithUnknownMesh = new Set<number>();
     private reachedPlainSpriteLayer = false;
+    /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
+    private reachedPureSpriteVertex = false;
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
+    /** Explicit static surface sample count; absence means the pinned default. */
+    private engineMsaaSamples: 1 | 4 | undefined;
     /** Bound only while lowering a platform visibility callback body. */
     private platformDocumentHiddenCpp: string | undefined;
     private indentLevel = 2;
@@ -569,6 +576,9 @@ class Compiler
             manifest: {
                 source: this.options.fileName,
                 features,
+                ...(this.engineMsaaSamples !== undefined
+                    ? { engineMsaaSamples: this.engineMsaaSamples }
+                    : {}),
                 featureSites,
                 runtimeSources,
                 generatedSources,
@@ -646,6 +656,7 @@ class Compiler
                 splatFragments: this.sceneSplatFragments ?? [],
                 spriteCustomShaders: this.sceneSpriteCustomShaders,
                 effects: this.reachedEffects_,
+                pureSpriteVertex: this.reachedPureSpriteVertex,
                 plainSpriteLayer: this.reachedPlainSpriteLayer,
                 plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
@@ -4685,6 +4696,11 @@ class Compiler
         return `[&](${lambdaParameter}) {\n${callbackBody.map((line) => `            ${line}`).join("\n")}\n        }`;
     }
 
+    /** A retained zero-argument callback with the same capture checks as timers. */
+    public compileVoidCallback(expression: ts.Expression): string {
+        return this.compileFrameCallback(expression, "void");
+    }
+
     private compileNamedFrameCallback(
         identifier: ts.Identifier,
         signature: Exclude<FrameCallbackSignature, "void">,
@@ -5246,18 +5262,16 @@ class Compiler
                 "msaaSamples",
             );
             if (samples) {
-                const value =
-                    this.resolveStaticExpression(samples);
-                if (
-                    !ts.isNumericLiteral(value) ||
-                    Number(value.text) !== 4
-                ) {
+                const staticSamples =
+                    selectedStaticNumberValue(this, samples);
+                if (staticSamples !== 1 && staticSamples !== 4) {
                     this.fail(
                         samples,
-                        "Native engine lowering currently supports explicit msaaSamples: 4 only.",
+                        "Native engine lowering supports explicit msaaSamples: 1 or 4 only.",
                     );
                 }
-                msaaSamples = 4;
+                msaaSamples = staticSamples;
+                this.engineMsaaSamples = staticSamples;
             }
             const limits = this.objectProperty(
                 options,
@@ -6259,11 +6273,13 @@ class Compiler
         const right = this.unwrap(expression.right);
         if (right.kind === ts.SyntaxKind.NullKeyword) {
             this.emit(`${storage}.reset();`);
+            delete target.spriteDepthMode;
             return true;
         }
         const value = this.compileValue(right);
         if (value.kind === "json-null") {
             this.emit(`${storage}.reset();`);
+            delete target.spriteDepthMode;
             return true;
         }
         if (
@@ -6273,6 +6289,7 @@ class Compiler
             value.dataType.inner.handle === target.kind
         ) {
             this.emit(`${storage} = ${value.cpp};`);
+            delete target.spriteDepthMode;
             return true;
         }
         if (value.kind !== target.kind) {
@@ -6304,6 +6321,11 @@ class Compiler
         }
         if (value.engineCpp !== undefined) {
             target.engineCpp = value.engineCpp;
+        }
+        if (value.spriteDepthMode === undefined) {
+            delete target.spriteDepthMode;
+        } else {
+            target.spriteDepthMode = value.spriteDepthMode;
         }
         if (value.textureStorage !== undefined) {
             target.textureStorage = value.textureStorage;
@@ -8565,6 +8587,10 @@ class Compiler
     public recordPlainSpriteProgram(family: "sprite" | "billboard"): void {
         if (family === "sprite") this.reachedPlainSpriteLayer = true;
         else this.reachedPlainBillboardSystem = true;
+    }
+
+    public recordPureSpriteVertex(): void {
+        this.reachedPureSpriteVertex = true;
     }
 
     public spriteCustomShaders(): readonly SpriteCustomShaderManifest[] {

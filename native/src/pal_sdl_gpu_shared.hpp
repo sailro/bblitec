@@ -741,7 +741,18 @@ public:
         SDL_GPUBuffer* buffer,
         const void* data,
         std::size_t size) {
-        stage(buffer, data, size, true);
+        stage(buffer, 0u, data, size, true);
+    }
+
+    void update(
+        SDL_GPUBuffer* buffer,
+        std::size_t destination_offset,
+        const void* data,
+        std::size_t size) {
+        // A region rewrite must preserve bytes outside the destination. A
+        // cycled backing store has no such contents, so only the legacy
+        // whole-buffer arm above may request cycling.
+        stage(buffer, destination_offset, data, size, false);
     }
 
     void submit() {
@@ -774,7 +785,7 @@ public:
             };
             const SDL_GPUBufferRegion destination{
                 upload.buffer,
-                0,
+                static_cast<Uint32>(upload.destination_offset),
                 static_cast<Uint32>(upload.size),
             };
             SDL_UploadToGPUBuffer(
@@ -799,6 +810,15 @@ private:
         const void* data,
         std::size_t size,
         bool cycle) {
+        stage(buffer, 0u, data, size, cycle);
+    }
+
+    void stage(
+        SDL_GPUBuffer* buffer,
+        std::size_t destination_offset,
+        const void* data,
+        std::size_t size,
+        bool cycle) {
         constexpr std::size_t alignment = 4;
         const std::size_t offset =
             (bytes_.size() + alignment - 1) & ~(alignment - 1);
@@ -807,6 +827,7 @@ private:
         uploads_.push_back(StagedUpload{
             .buffer = buffer,
             .offset = offset,
+            .destination_offset = destination_offset,
             .size = size,
             .cycle = cycle,
         });
@@ -815,6 +836,7 @@ private:
     struct StagedUpload {
         SDL_GPUBuffer* buffer = nullptr;
         std::size_t offset = 0;
+        std::size_t destination_offset = 0;
         std::size_t size = 0;
         bool cycle = false;
     };

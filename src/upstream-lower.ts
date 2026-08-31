@@ -252,6 +252,8 @@ import type {
  */
 export interface UpstreamEmitOptions {
     idDiagnostics: boolean;
+    /** Static `_buildSurface` sample count selected by scene engine options. */
+    msaaSamples?: 1 | 4;
     /**
      * feature -> "file:line" of the first scene-source call site that
      * reached it, from the manifest's `featureSites` record. Threaded here
@@ -350,6 +352,11 @@ export interface UpstreamEmitOptions {
      * program. The node-particle bridges answer for their own layers, which
      * this emitter derives from the pin's pass table.
      */
+    /**
+     * Whether scene code built a standalone SpriteRenderer. Optional only for
+     * older programmatic emitter callers; the compiler/CLI always supplies it.
+     */
+    pureSpriteVertex?: boolean;
     plainSpriteLayer: boolean;
     plainBillboardSystem: boolean;
 
@@ -507,6 +514,57 @@ export function refusalReachedFrom(
     const site = featureSites?.[feature];
     return site === undefined ? "" : ` (reached from ${site})`;
 }
+
+export interface SpriteVertexPermutation {
+    output: string;
+    uvScroll: boolean;
+    depthHosted: boolean;
+}
+
+/** The independently reached pure-2D/depth and base/UV-scroll vertex rows. */
+export function spriteVertexPermutations(options: {
+    pure: boolean;
+    depthHosted: boolean;
+    uvScroll: boolean;
+}): SpriteVertexPermutation[] {
+    const permutations: SpriteVertexPermutation[] = [];
+    const add = (
+        output: string,
+        uvScroll: boolean,
+        depthHosted: boolean,
+    ): void => {
+        permutations.push({ output, uvScroll, depthHosted });
+    };
+    if (options.pure) {
+        add("sprite.vert.native.wgsl", false, false);
+    }
+    if (options.depthHosted) {
+        add("sprite_depth.vert.native.wgsl", false, true);
+    }
+    if (options.uvScroll && options.pure) {
+        add("sprite_uvscroll.vert.native.wgsl", true, false);
+    }
+    if (options.uvScroll && options.depthHosted) {
+        add("sprite_depth_uvscroll.vert.native.wgsl", true, true);
+    }
+    return permutations;
+}
+
+/** Extra pinned origins implemented by the consolidated sprite_2d.cpp. */
+export const spriteCoreAdditionalProvenance = [
+    {
+        modulePath: "src/sprite/sprite-scene.ts",
+        symbolName: "addDepthHostedSpriteLayer",
+    },
+    {
+        modulePath: "src/sprite/sprite-renderable.ts",
+        symbolName: "buildSpriteRenderable",
+    },
+    {
+        modulePath: "src/render/alpha-to-coverage.ts",
+        symbolName: "setAlphaToCoverage",
+    },
+] as const;
 
 /** The two optional metallic-reflectance pairs are independent slots. */
 export function metallicReflectanceCapabilityDefines(
@@ -712,7 +770,10 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         // scene compiles no render plan at all.
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_surface.hpp",
-            pinnedSurfaceHeader(new LoweringContext(this.store)),
+            pinnedSurfaceHeader(
+                new LoweringContext(this.store),
+                options.msaaSamples ?? 4,
+            ),
         );
         // The pin's own inverse image processing, translated whole from its
         // declaration and cross-checked against the forward curve, so the
@@ -1231,17 +1292,48 @@ ${wgsl}`,
                 generated,
                 "upstream/include/bblite/upstream/sprite_layer.hpp",
             );
+            generated.push(...spriteCoreAdditionalProvenance);
             if (features.includes("renderer:sprite")) {
-                const shader = sprites.shaderSource();
+                const composeSpriteShader = (options: {
+                    uvScroll?: boolean;
+                    fragment?: string;
+                    extraTextures?: readonly string[];
+                    depthHosted?: boolean;
+                } = {}) => sprites.shaderSource(
+                    options.uvScroll ?? false,
+                    options.fragment,
+                    options.extraTextures ?? [],
+                    options.depthHosted ?? false,
+                );
+                const shader = composeSpriteShader();
                 const provenance = context.provenance(
                     "src/sprite/sprite-pipeline.ts",
                     "makeSpriteWgsl",
                 );
-                composedShaders.push({
-                    output:
-                        "upstream/shaders/sprite.vert.native.wgsl",
-                    data: spriteVertexWgsl(provenance, shader),
-                });
+                const needsPureVertex =
+                    options.pureSpriteVertex !== false ||
+                    particlePrograms.plainSprite ||
+                    particlePrograms.sprite2dMultiply;
+                for (const permutation of spriteVertexPermutations({
+                    pure: needsPureVertex,
+                    depthHosted: features.includes(
+                        "sprite:2d-depth-host",
+                    ),
+                    uvScroll: features.includes("sprite:uv-scroll"),
+                })) {
+                    const permutationShader = composeSpriteShader({
+                        uvScroll: permutation.uvScroll,
+                        depthHosted: permutation.depthHosted,
+                    });
+                    composedShaders.push({
+                        output:
+                            `upstream/shaders/${permutation.output}`,
+                        data: spriteVertexWgsl(
+                            provenance,
+                            permutationShader,
+                        ),
+                    });
+                }
                 // The stock fragment, only where a plain layer draws with
                 // it: a custom layer keeps this vertex stage but brings its
                 // own fragment, so a scene whose every layer opts in would
@@ -1265,11 +1357,10 @@ ${wgsl}`,
                 // — a renderer can hold both, and a plain layer draws the
                 // stock shader as it does when the fx hook is null.
                 for (const [customIndex, custom] of customs.entries()) {
-                    const customShader = sprites.shaderSource(
-                        false,
-                        custom.fragment,
-                        custom.extraTextures,
-                    );
+                    const customShader = composeSpriteShader({
+                        fragment: custom.fragment,
+                        extraTextures: custom.extraTextures,
+                    });
                     const customProvenance = context.provenance(
                         "src/sprite/sprite-custom-shader.ts",
                         "makeCustomSpriteWgsl",
@@ -1294,19 +1385,6 @@ ${wgsl}`,
                         modulePath:
                             "src/sprite/sprite-custom-shader.ts",
                         symbolName: "makeCustomSpriteWgsl",
-                    });
-                }
-                if (features.includes("sprite:uv-scroll")) {
-                    // The scroll variant adds one attribute and one term to
-                    // the sampled UV; the pin gates both on the same flag.
-                    // Only the vertex stage differs: the pin adds the
-                    // offset to the sampled UV there and leaves the fragment
-                    // alone, so the widened layer shares sprite.frag.
-                    const scroll = sprites.shaderSource(true);
-                    composedShaders.push({
-                        output:
-                            "upstream/shaders/sprite_uvscroll.vert.native.wgsl",
-                        data: spriteVertexWgsl(provenance, scroll),
                     });
                 }
                 generated.push({
@@ -2655,6 +2733,7 @@ export function emitUpstreamGenerated(
         shaderPrograms: [],
         spriteCustomShaders: [],
         effects: [],
+        pureSpriteVertex: true,
         plainSpriteLayer: true,
         plainBillboardSystem: true,
         geometryOutputTasks: [],

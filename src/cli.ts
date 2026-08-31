@@ -889,6 +889,9 @@ async function main(): Promise<void> {
     }
     const emitOptions: UpstreamEmitOptions = {
         idDiagnostics: options.idDiagnostics,
+        ...(result.manifest.engineMsaaSamples !== undefined
+            ? { msaaSamples: result.manifest.engineMsaaSamples }
+            : {}),
         // The compiler's first-reach record, threaded so late refusals in
         // the composition/lowering layer can name the scene call site that
         // pulled the owning feature in.
@@ -932,6 +935,7 @@ async function main(): Promise<void> {
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
         ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
+        pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,
         standardLights: reachedStandardLights(reachedBabylonLights),

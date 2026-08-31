@@ -204,6 +204,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                     render_textures,
                     render_texture_views);
                 upload_dawn_sprite_pass(
+                    state.device,
                     state.queue,
                     engine,
                     pass,

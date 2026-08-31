@@ -148,6 +148,57 @@ inline void apply_light_floating_origin(
 }
 #endif
 
+inline bool sprite_blend_equal(
+    const SpriteBlendDescriptor& left,
+    const SpriteBlendDescriptor& right) {
+    return left.enabled == right.enabled &&
+        left.color.src == right.color.src &&
+        left.color.dst == right.color.dst &&
+        left.alpha.src == right.alpha.src &&
+        left.alpha.dst == right.alpha.dst;
+}
+
+/** Backend-neutral fixed/layout choices for one Sprite2D pipeline. */
+struct SpriteLayerPipelinePlan {
+    bool scroll = false;
+    bool has_depth = false;
+    bool depth_write = false;
+    bool alpha_to_coverage = false;
+    std::uint32_t instance_stride_bytes = 0;
+};
+
+inline SpriteLayerPipelinePlan sprite_layer_pipeline_plan(
+    const Sprite2DLayerRecord& layer) {
+    const bool has_depth =
+        layer.depth_mode != Sprite2DDepthMode::none;
+    return SpriteLayerPipelinePlan{
+        layer.uv_scroll,
+        has_depth,
+        layer.depth_mode == Sprite2DDepthMode::test_write,
+        layer.alpha_to_coverage,
+        layer.instance_floats_per_sprite *
+            static_cast<std::uint32_t>(sizeof(float))};
+}
+
+/** Fixed pipeline identity for layers targeting the same scene pass. */
+inline bool sprite_scene_pipeline_compatible(
+    const Sprite2DLayerRecord& left,
+    const Sprite2DLayerRecord& right) {
+    const SpriteLayerPipelinePlan left_plan =
+        sprite_layer_pipeline_plan(left);
+    const SpriteLayerPipelinePlan right_plan =
+        sprite_layer_pipeline_plan(right);
+    return sprite_blend_equal(left.blend, right.blend) &&
+        left_plan.scroll == right_plan.scroll &&
+        left_plan.has_depth == right_plan.has_depth &&
+        left_plan.depth_write == right_plan.depth_write &&
+        left_plan.alpha_to_coverage == right_plan.alpha_to_coverage &&
+        left.custom_shader == right.custom_shader &&
+        left.custom_textures.size() == right.custom_textures.size() &&
+        left_plan.instance_stride_bytes ==
+            right_plan.instance_stride_bytes;
+}
+
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 /**

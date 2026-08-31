@@ -502,6 +502,8 @@ struct DawnState : DawnDevice {
     std::vector<DawnSpritePass> sprite_passes;
     std::vector<WGPUTexture> sprite_render_textures;
     std::vector<WGPUTextureView> sprite_render_texture_views;
+    DawnSceneSpritePass scene_sprite_pass;
+    bool has_scene_sprite_pass = false;
 #endif
 #if BBLITE_HAS_SPLATS
     std::vector<DawnSplatPass> splat_passes;
@@ -1204,6 +1206,10 @@ WGPUBuffer esm_caster_params_buffer(
 #endif
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        if (has_scene_sprite_pass) {
+            release_dawn_scene_sprite_pass(scene_sprite_pass);
+            has_scene_sprite_pass = false;
+        }
         for (DawnSpritePass& pass : sprite_passes) {
             release_dawn_sprite_pass(pass);
         }
@@ -7648,6 +7654,21 @@ bool run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateTexture(state.device, &depth_descriptor);
         state.depth_view = wgpuTextureCreateView(state.depth, nullptr);
     }
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+    if (!scene.depth_hosted_sprite_layers.empty()) {
+        state.scene_sprite_pass = create_dawn_scene_sprite_pass(
+            state.device,
+            state.queue,
+            engine,
+            scene.depth_hosted_sprite_layers,
+            state.sprite_render_textures,
+            state.sprite_render_texture_views,
+            state.frame_color_format,
+            WGPUTextureFormat_Depth24PlusStencil8,
+            state.sample_count);
+        state.has_scene_sprite_pass = true;
+    }
+#endif
 
     state.vertex_module = load_wgsl_module(state, "pbr.vert");
 
@@ -9498,9 +9519,20 @@ bool run_dawn_engine(Engine& engine) {
                 state.sprite_render_textures,
                 state.sprite_render_texture_views);
             upload_dawn_sprite_pass(
+                state.device,
                 state.queue,
                 engine,
                 sprite_pass,
+                width,
+                height,
+                delta_ms);
+        }
+        if (state.has_scene_sprite_pass) {
+            upload_dawn_scene_sprite_pass(
+                state.device,
+                state.queue,
+                engine,
+                state.scene_sprite_pass,
                 width,
                 height,
                 delta_ms);
@@ -11127,6 +11159,15 @@ bool run_dawn_engine(Engine& engine) {
                     break;
                 case upstream::RenderStage::opaque:
                     draw_render_list(render_plan.draw_lists.opaque);
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+                    if (state.has_scene_sprite_pass) {
+                        record_dawn_scene_sprite_pass(
+                            pass,
+                            engine,
+                            state.scene_sprite_pass,
+                            Sprite2DDepthMode::test_write);
+                    }
+#endif
 #if BBLITE_HAS_BILLBOARDS
                     draw_billboards(BillboardDepthMode::cutout);
 #endif
@@ -11134,6 +11175,15 @@ bool run_dawn_engine(Engine& engine) {
                 case upstream::RenderStage::transparent:
                     draw_render_list(
                         render_plan.draw_lists.transparent);
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+                    if (state.has_scene_sprite_pass) {
+                        record_dawn_scene_sprite_pass(
+                            pass,
+                            engine,
+                            state.scene_sprite_pass,
+                            Sprite2DDepthMode::test);
+                    }
+#endif
 #if BBLITE_HAS_SPLATS
                     // `isTransparent: true` on the pinned renderable, so a
                     // cloud belongs to this bucket rather than after it.

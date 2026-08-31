@@ -26,6 +26,7 @@ export class SceneLowerer {
     const createName = "createSceneContext";
     const addName = "addToScene";
     const beforeName = "onBeforeRender";
+    const disposeName = "onSceneDispose";
     const registerName = "registerScene";
     const fogModulePath = "src/scene/scene-ubo-extras.ts";
     const fogName = "setFog";
@@ -165,6 +166,29 @@ export class SceneLowerer {
       this.context.contractError(
         onBeforeRender,
         "Expected before-render callbacks to be prepended.",
+      );
+    }
+    const { declaration: onSceneDispose } = this.context.functionDeclaration(
+      modulePath,
+      disposeName,
+    );
+    if (
+      !this.context.hasNode(
+        onSceneDispose,
+        (node) =>
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "push" &&
+          ts.isPropertyAccessExpression(node.expression.expression) &&
+          node.expression.expression.name.text === "_disposables" &&
+          node.arguments.length === 1 &&
+          ts.isIdentifier(node.arguments[0]!) &&
+          node.arguments[0].text === "cb",
+      )
+    ) {
+      this.context.contractError(
+        onSceneDispose,
+        "Expected scene-disposal callbacks to be appended.",
       );
     }
     const { declaration: registerScene } = this.context.functionDeclaration(
@@ -740,9 +764,9 @@ void set_scene_fog(
       : "";
     return {
       modulePath,
-      symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
+      symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
       header: "",
-      source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
+      source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
 ${options.geometryAccess || options.parenting ? "#include <bblite/js_data.hpp>" : ""}
 ${
@@ -1075,6 +1099,12 @@ void on_before_render(
     scene.before_render.insert(
         scene.before_render.begin(),
         std::move(callback));
+}
+
+void on_scene_dispose(
+    Scene& scene,
+    std::function<void()> callback) {
+    scene.disposables.push_back(std::move(callback));
 }
 
 void on_key_down(

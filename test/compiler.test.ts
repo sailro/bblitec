@@ -7415,12 +7415,20 @@ test("rejects unsupported dynamic engine and scene options", () => {
                     createEngine,
                 } from "@babylonjs/lite";
                 async function main() {
-                    const engine = await createEngine({}, {
-                        msaaSamples: 1,
-                    });
+                    await createEngine({}, { msaaSamples: 2 });
                 }
             `),
-        /supports explicit msaaSamples: 4 only/,
+        /supports explicit msaaSamples: 1 or 4 only/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(msaaSamples: 1 | 4) {
+                    await createEngine({}, { msaaSamples });
+                }
+            `),
+        /supports explicit msaaSamples: 1 or 4 only/,
     );
     assert.throws(
         () =>
@@ -7439,6 +7447,23 @@ test("rejects unsupported dynamic engine and scene options", () => {
             `),
         /defaultRenderTask must be a static boolean/,
     );
+});
+
+test("folds and propagates the pinned engine MSAA selections", () => {
+    const source = `
+        import { createEngine } from "@babylonjs/lite";
+        async function main() {
+            const selected: 1 | 4 =
+                new URLSearchParams(window.location.search).get("msaa") === "4"
+                    ? 4
+                    : 1;
+            await createEngine({}, { msaaSamples: selected });
+        }
+    `;
+    const single = compileSource(source);
+    assert.equal(single.manifest.engineMsaaSamples, 1);
+    const multisampled = compileSource(source, { search: "?msaa=4" });
+    assert.equal(multisampled.manifest.engineMsaaSamples, 4);
 });
 
 test("rejects compound assignments for nonnumeric properties", () => {
@@ -7772,6 +7797,219 @@ test("compiles Babylon Lite scene 176 transmission, IOR, and volume", () => {
         result.manifest.assets.some(({ output }) =>
             /\.glb$/.test(output),
         ),
+    );
+});
+
+test("compiles Babylon Lite scene 52 scene-owned HUD disposal", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene52.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.match(
+        result.cpp,
+        /bbl::on_scene_dispose\(v_scene, \[&\]\(\) \{[\s\S]*bbl::dispose_sprite_renderer\(v_engine, v_hudRenderer\);[\s\S]*\}\)/,
+    );
+    assert.doesNotMatch(result.cpp, /onSceneDispose/);
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/scene_core.cpp",
+        ),
+    );
+    assert.ok(
+        result.manifest.generatedSources.includes(
+            "upstream/src/sprite_2d.cpp",
+        ),
+    );
+});
+
+test("compiles Babylon Lite scene 53 depth-hosted per-instance-z sprites", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene53.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "camera:arc-rotate",
+        "light:hemispheric",
+        "material:standard",
+        "mesh:box",
+        "sprite:2d",
+        "sprite:2d-depth-host",
+        "renderer:sprite",
+        "renderer:pbr",
+    ]);
+    assert.match(
+        result.cpp,
+        /Sprite2DLayerOptions\{[^;]*sprite_blend_opaque\(\)[^;]*Sprite2DDepthMode::test_write/,
+    );
+    assert.equal(
+        result.cpp.match(/static_cast<float>\((?:0\.6|0\.87|0\.95)\), true\}/g)
+            ?.length,
+        3,
+    );
+    assert.match(
+        result.cpp,
+        /set_sprite_2d_alpha_to_coverage\([^;]+true\)/,
+    );
+    assert.match(result.cpp, /add_depth_hosted_sprite_layer\(/);
+    assert.equal(result.manifest.pureSpriteVertex, false);
+});
+
+test("refuses depth-hosted layers in standalone SpriteRenderers", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene53.ts";
+    const source = readFileSync(resolve(sourcePath), "utf8");
+    const withRendererImports = source.replace(
+        "    addDepthHostedSpriteLayer,",
+        "    addSpriteRendererLayer,\n    createSpriteRenderer,",
+    );
+
+    assert.throws(
+        () => compileSource(
+            withRendererImports.replace(
+                "    addDepthHostedSpriteLayer(scene, sprites);",
+                "    createSpriteRenderer(engine, { layers: [sprites] });",
+            ),
+            { fileName: sourcePath },
+        ),
+        /SpriteRenderer layers require depth: "none"/,
+    );
+    assert.throws(
+        () => compileSource(
+            withRendererImports.replace(
+                "    addDepthHostedSpriteLayer(scene, sprites);",
+                "    const renderer = createSpriteRenderer(engine, { layers: [] });\n" +
+                    "    addSpriteRendererLayer(renderer, sprites);",
+            ),
+            { fileName: sourcePath },
+        ),
+        /SpriteRenderer layers require depth: "none"/,
+    );
+});
+
+test("keeps sprite layers as handles when returned through data records and arrays", () => {
+    const result = compileSource(`
+        import {
+            addSpriteRendererLayer,
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            loadSpriteAtlas,
+            type Sprite2DLayer,
+        } from "babylon-lite";
+
+        interface LayerBundle {
+            layer: Sprite2DLayer;
+            layers: Sprite2DLayer[];
+        }
+
+        function bundleLayer(layer: Sprite2DLayer): LayerBundle {
+            return { layer, layers: [layer] };
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const first = bundleLayer(createSprite2DLayer(atlas, {
+                capacity: 1,
+                depth: "none",
+            }));
+            const second = bundleLayer(first.layer);
+            const bundles = [first, second];
+            const mapped = bundles.map((entry) => entry.layer);
+            const mixed = [first.layer, second.layer];
+            const renderer = createSpriteRenderer(engine, {
+                layers: mapped,
+            });
+            addSpriteRendererLayer(renderer, mixed[0]);
+        }
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_fn\d+_layer = bbl::create_sprite_2d_layer\(/,
+    );
+    assert.match(
+        result.cpp,
+        /SpriteRendererOptions\{bbl::js::array_to_vector\(v_mapped\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /std::string v_[^;]*(?:layer|layers)/,
+    );
+});
+
+test("does not leak sprite depth metadata across conditional handles", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            loadSpriteAtlas,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const depthLayer = createSprite2DLayer(atlas, {
+                capacity: 1,
+                depth: "test",
+            });
+            const flatLayer = createSprite2DLayer(atlas, {
+                capacity: 1,
+                depth: "none",
+            });
+            let useDepth = false;
+            const selected = useDepth ? depthLayer : flatLayer;
+            createSpriteRenderer(engine, { layers: [selected] });
+        }
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /\(v_useDepth \? v_depthLayer : v_flatLayer\)/,
+    );
+});
+
+test("compiles Babylon Lite scene 51 premultiplied soft-sprite grid", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene51.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.equal(result.manifest.engineMsaaSamples, 1);
+    assert.deepEqual(result.manifest.features, [
+        "core",
+        "backend:sdl",
+        "sprite:2d",
+        "renderer:sprite",
+    ]);
+    assert.equal(result.manifest.assets.length, 1);
+    assert.equal(result.manifest.assets[0]!.kind, "sprite-atlas");
+    assert.match(
+        result.cpp,
+        /LoadSpriteAtlasOptions\{[^}]*true, true,/,
+    );
+    assert.match(result.cpp, /sprite_blend_premultiplied\(\)/);
+    assert.equal(result.manifest.pureSpriteVertex, true);
+    assert.match(
+        result.cpp,
+        /SpriteRendererOptions\{\{v_layer\}, true, bbl::Color4\{static_cast<float>\(0\.07\), static_cast<float>\(0\.08\), static_cast<float>\(0\.12\), static_cast<float>\(1\.0\)\}\}/,
     );
 });
 

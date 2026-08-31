@@ -22,6 +22,7 @@ export interface SceneIntrinsicContext
         node: ts.Node,
     ): void;
     compileFrameCallback(expression: ts.Expression): string;
+    compileVoidCallback(expression: ts.Expression): string;
     /**
      * Records where the render loop starts, so the statements after it --
      * the browser's own continuation -- are hoisted into the conductor's
@@ -142,6 +143,23 @@ export function compileSceneIntrinsic(
                 cpp:
                     `bbl::on_before_render(${scene.cpp}, ` +
                     `${context.compileFrameCallback(call.arguments[1]!)})`,
+            };
+        }
+
+        case "onSceneDispose": {
+            context.expectArgumentCount(call, 2, 2);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::on_scene_dispose(${scene.cpp}, ` +
+                    `${context.compileVoidCallback(call.arguments[1]!)})`,
             };
         }
 

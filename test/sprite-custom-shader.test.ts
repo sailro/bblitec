@@ -124,6 +124,17 @@ test("composes the custom sprite program from the pin's own builder", () => {
     assert.equal(plain.fxStructFields, undefined);
 });
 
+test("composes the pinned depth-hosted sprite vertex permutation", () => {
+    const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
+        false,
+        undefined,
+        [],
+        true,
+    );
+    assert.match(shader.instanceStructFields, /@location\(6\) z: f32/);
+    assert.match(shader.vertexBody, /out\.p = vec4f\(n, 1 - in\.z, 1\)/);
+});
+
 test("declares both fragment uniform blocks for a custom sprite layer", () => {
     const wgsl = spriteFragmentWgsl(
         "test",

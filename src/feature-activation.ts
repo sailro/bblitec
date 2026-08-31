@@ -590,7 +590,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
     },
     "sprite:2d": {
-        provenance: "src/sprite/sprite-2d.ts",
+        provenance:
+            "src/sprite/sprite-2d.ts + " +
+            "src/render/alpha-to-coverage.ts#setAlphaToCoverage",
+        consumers: CMAKE,
+    },
+    "sprite:2d-depth-host": {
+        provenance:
+            "src/sprite/sprite-scene.ts#addDepthHostedSpriteLayer + " +
+            "src/sprite/sprite-renderable.ts#buildSpriteRenderable",
         consumers: CMAKE,
     },
     "sprite:uv-scroll": {

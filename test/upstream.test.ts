@@ -28,7 +28,11 @@ import {
     predeclaredShaderProgram,
     shaderMaterialPrograms,
 } from "../src/shader-material-programs.js";
-import { dawnUtilityShaders } from "../src/upstream-lower.js";
+import {
+    dawnUtilityShaders,
+    spriteCoreAdditionalProvenance,
+    spriteVertexPermutations,
+} from "../src/upstream-lower.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
 
@@ -95,6 +99,10 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     assert.match(lowered.source, /scene\.mesh_membership_version/);
     assert.match(lowered.source, /scene\.material_family_mask/);
     assert.match(lowered.source, /void on_before_render/);
+    assert.match(
+        lowered.source,
+        /void on_scene_dispose\([\s\S]*scene\.disposables\.push_back\(std::move\(callback\)\);/,
+    );
     assert.match(lowered.source, /registered_scenes\.end\(\)/);
     // Runtime removal drops the mesh and marks the topology; the
     // material-family mask stays monotonic so built pipelines survive.
@@ -1033,12 +1041,22 @@ test("lowers the reachable upstream light matrix implementation", () => {
 });
 
 test("emits the pinned surface sample count for every scene shape", () => {
-    const header = pinnedSurfaceHeader(new LoweringContext());
+    const header = pinnedSurfaceHeader(new LoweringContext(), 4);
     assert.match(
         header,
         /inline std::uint32_t preferred_sample_count\(\) \{\s*return 4u;/,
     );
     assert.match(header, pinnedProvenance());
+
+    const singleSampleHeader = pinnedSurfaceHeader(
+        new LoweringContext(),
+        1,
+    );
+    assert.match(
+        singleSampleHeader,
+        /inline std::uint32_t preferred_sample_count\(\) \{\s*return 1u;/,
+    );
+    assert.match(singleSampleHeader, pinnedProvenance());
 });
 
 test("emits the pinned depth convention and anchors both projection writers", () => {
@@ -1600,4 +1618,62 @@ test("generates the sprite instance layout table from the pinned pipeline", () =
         header,
         /sprite_instance_stride_bytes =\n\s*52u;/,
     );
+    assert.match(
+        header,
+        /sprite_depth_attribute\{\n\s*6u, 52u, 1u\};/,
+    );
+    assert.match(
+        header,
+        /sprite_depth_instance_stride_bytes =\n\s*56u;/,
+    );
+});
+
+test("gates pure and depth-hosted sprite vertex permutations independently", () => {
+    assert.deepEqual(
+        spriteVertexPermutations({
+            pure: false,
+            depthHosted: true,
+            uvScroll: true,
+        }),
+        [
+            {
+                output: "sprite_depth.vert.native.wgsl",
+                uvScroll: false,
+                depthHosted: true,
+            },
+            {
+                output: "sprite_depth_uvscroll.vert.native.wgsl",
+                uvScroll: true,
+                depthHosted: true,
+            },
+        ],
+    );
+    assert.deepEqual(
+        spriteVertexPermutations({
+            pure: true,
+            depthHosted: false,
+            uvScroll: true,
+        }).map(({ output }) => output),
+        [
+            "sprite.vert.native.wgsl",
+            "sprite_uvscroll.vert.native.wgsl",
+        ],
+    );
+});
+
+test("records every pinned origin consolidated into sprite_2d.cpp", () => {
+    assert.deepEqual(spriteCoreAdditionalProvenance, [
+        {
+            modulePath: "src/sprite/sprite-scene.ts",
+            symbolName: "addDepthHostedSpriteLayer",
+        },
+        {
+            modulePath: "src/sprite/sprite-renderable.ts",
+            symbolName: "buildSpriteRenderable",
+        },
+        {
+            modulePath: "src/render/alpha-to-coverage.ts",
+            symbolName: "setAlphaToCoverage",
+        },
+    ]);
 });

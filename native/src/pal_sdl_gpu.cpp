@@ -5139,7 +5139,13 @@ bool run_gpu_engine(Engine& engine) {
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
     std::vector<SpritePass> sprite_passes;
     std::vector<SDL_GPUTexture*> sprite_render_textures;
+    SceneSpritePass scene_sprite_pass;
+    bool has_scene_sprite_pass = false;
     const auto release_sprite_passes = [&]() {
+        if (has_scene_sprite_pass) {
+            release_scene_sprite_pass(state.device, scene_sprite_pass);
+            has_scene_sprite_pass = false;
+        }
         for (SpritePass& pass : sprite_passes) {
             release_sprite_pass(state.device, pass);
         }
@@ -5574,6 +5580,17 @@ bool run_gpu_engine(Engine& engine) {
             }
         };
         sync_sprite_gpu_contexts();
+        if (!scene.depth_hosted_sprite_layers.empty()) {
+            scene_sprite_pass = create_scene_sprite_pass(
+                state.device,
+                engine,
+                scene.depth_hosted_sprite_layers,
+                sprite_render_textures,
+                color_target.format,
+                state.depth_format,
+                state.sample_count);
+            has_scene_sprite_pass = true;
+        }
 #endif
 #if BBLITE_PINNED_MATERIALS
         // The pinned pipelines are built lazily on first use, long after this
@@ -7186,6 +7203,14 @@ bool run_gpu_engine(Engine& engine) {
                     state.device,
                     engine,
                     sprite_pass,
+                    delta_ms,
+                    &frame_buffer_uploads);
+            }
+            if (has_scene_sprite_pass) {
+                upload_scene_sprite_pass(
+                    state.device,
+                    engine,
+                    scene_sprite_pass,
                     delta_ms,
                     &frame_buffer_uploads);
             }
@@ -10270,12 +10295,36 @@ bool run_gpu_engine(Engine& engine) {
                         break;
                     case upstream::RenderStage::opaque:
                         draw_render_list(render_plan.draw_lists.opaque);
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+                        if (has_scene_sprite_pass) {
+                            record_scene_sprite_pass(
+                                command,
+                                pass,
+                                engine,
+                                scene_sprite_pass,
+                                Sprite2DDepthMode::test_write,
+                                width,
+                                height);
+                        }
+#endif
 #if BBLITE_HAS_BILLBOARDS
                         draw_billboards(BillboardDepthMode::cutout);
 #endif
                         break;
                     case upstream::RenderStage::transparent:
                         draw_render_list(render_plan.draw_lists.transparent);
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+                        if (has_scene_sprite_pass) {
+                            record_scene_sprite_pass(
+                                command,
+                                pass,
+                                engine,
+                                scene_sprite_pass,
+                                Sprite2DDepthMode::test,
+                                width,
+                                height);
+                        }
+#endif
 #if BBLITE_HAS_SPLATS
                         // `isTransparent: true` on the pinned renderable, so
                         // a cloud belongs to this bucket. The Dawn sibling
