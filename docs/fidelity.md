@@ -134,7 +134,9 @@ early is not a rounding-sized error.
 - **Node TRS and world matrices** compose in double through the pinned
   `mat4ComposeInto` and matrix multiply, rounding once per component at the
   store, which makes native glTF instance matrices bit-identical to the
-  browser's uploaded thin-instance buffers.
+  browser's uploaded thin-instance buffers. Scene-code `mat4Identity` and
+  `mat4Translation` are the neutral and translation-only specializations of
+  that same compose path, rather than separate matrix arithmetic.
 
 Two conversions are the pin's rule rather than C's: `Math.round` rounds halves
 toward +Infinity (`bbl::js::round_js`), and `Math.hypot` is
@@ -412,7 +414,18 @@ its props under the field name its extension's `detect` reads, so the composed
 arm set follows from the pinned setter rather than a field name restated here.
 That is what an extension arm depends on — the emissive layer composes on the
 presence of `_emissiveColor` alone, carrying no texture and no capability
-define.
+define. Computed channels therefore use a finite witness only while the pin
+derives the arm; the generated runtime setter stores the real values.
+
+**`setParent` preserves world TRS rather than reinterpreting it as local.**
+The child world is captured before graph membership changes; attachment uses
+the pin's `mat4Invert`, `mat4Multiply` and full `mat4Decompose` in that order,
+while detachment decomposes the captured world directly. The decomposition's
+negative determinant remains a negative Y scale, and a singular parent keeps
+the new link but copies only world position, exactly as the pinned fallback
+documents. Public `children` and private dirty registries change only when the
+link changes, and a later parent-only TRS write recursively invalidates every
+world-baked descendant.
 
 **`KHR_materials_variants` folds to the one selection a scene makes.**
 `selectVariant` restores every original material then applies the chosen
@@ -694,12 +707,13 @@ with the mode on the recorded parent alone is handed to
 the eye in double before the single float store. Composing the TRS in both
 would apply it twice.
 
-**A coloured thin-instance pool composes the Standard family's own colour
+**A coloured thin-instance pool composes the material family's own colour
 slot.** `_computeMeshFeatures` sets `MSH_HAS_INSTANCE_COLOR` from
 `mesh.thinInstances.colors`, so the bit rides the pool bit and arrives with
 the same call; `createThinInstanceFragment(hasInstanceColor)` then declares
 the `instanceColor` attribute and the `vInstanceColor` varying. What
-`rebuildSingle` does next is the Standard family's alone: it spreads that
+PBR reads next is the shared fragment's base-colour slot. What Standard's
+`rebuildSingle` does instead is that family's alone: it spreads that
 fragment into a copy whose only slot is a `BC` one — "Standard applies
 instance color to final color (BC), not to baseColor (AT) like PBR", as its
 own comment says — so the base-colour slot the shared fragment carries never
@@ -707,9 +721,10 @@ reaches a Standard variant. That rewrite lives inline in the renderable
 rather than in a named export, so the slot text is lifted from the pinned
 declaration: a pin that moves it, drops it or renames it fails generation
 instead of composing a fragment whose instance colour silently stops
-applying. The colour lane is its own instance-stepped buffer, which both backends
-already bound for the transcribed `useThinInstanceColors` path and now bind
-for the composed variants too.
+applying. PBR's runtime product contains plain, thin-instance, and the nested
+thin-instance-plus-colour masks, never the impossible colour-only word. The
+colour lane is its own instance-stepped buffer, which both backends bind from
+the same predicate used to select either family's composed variant.
 
 **Where that lane sits is the pin's, and it is taken rather than
 restated** -- for the Standard and PBR families, whose fragment declares it.

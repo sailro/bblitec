@@ -471,10 +471,12 @@ export interface ScenePbrMaterialManifest {
   /** Stamped by the pin's `setPbrMetallicReflectance` setter. */
   metallicReflectance?: ScenePbrMetallicReflectanceManifest;
   /**
-   * The linear RGB `setPbrEmissive` passes. Its presence is what the
-   * emissive extension's `detect` reads, so a material that never
-   * reached the setter composes no emissive arm at all.
+   * Whether `setPbrEmissive` stamped the pin's `_emissiveColor` field. Its
+   * presence is the composition input; the channel values remain runtime
+   * data and need not be statically known.
    */
+  hasEmissiveColor?: true;
+  /** The exact linear RGB channels when generation can also settle them. */
   emissiveColor?: readonly number[];
   /**
    * How many glTF assets the program had loaded when this material was

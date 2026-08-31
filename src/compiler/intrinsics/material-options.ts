@@ -218,13 +218,10 @@ export function staticColor3Value(
 }
 
 /**
- * A setter's linear-RGB argument as both halves its callers need: the
- * channels generation composes the fragment from, and the emitted colour.
- *
- * `setPbrEmissive` and `setPbrUnlit` each write a colour into the material
- * UBO their own pinned extension reads, so both refuse the same way — a
- * channel generation cannot settle would compose one fragment and upload
- * another.
+ * A setter's linear-RGB argument as both halves its caller needs: the
+ * channels generation folds into static material state, and the emitted
+ * colour. This remains the stricter path for setters whose reached slice
+ * needs the channel values themselves at generation.
  */
 export function requiredStaticColor3(
     context: Parameters<typeof staticColor3Value>[0] & {

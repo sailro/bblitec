@@ -87,6 +87,65 @@ test("composes the pin's colourless thin-instance vertex arm", async () => {
     );
 });
 
+test("composes Scene 17's coloured PBR thin-instance arm exactly", async () => {
+    // Modules 6 and 7 are the browser's PBR cube stages. Their feature word
+    // is the pin's thin-instance bit plus its nested instance-colour bit; the
+    // exact match proves both vertex transport and fragment modulation come
+    // from `_createThinInstanceFragment(true)` rather than a local formula.
+    const capturedVertexPath = resolve(
+        "artifacts",
+        "capture",
+        "scene17",
+        "shaders",
+        "06-module-6.wgsl",
+    );
+    const capturedFragmentPath = resolve(
+        "artifacts",
+        "capture",
+        "scene17",
+        "shaders",
+        "07-module-7.wgsl",
+    );
+    let capturedVertex: string;
+    let capturedFragment: string;
+    try {
+        capturedVertex = readFileSync(capturedVertexPath, "utf8");
+        capturedFragment = readFileSync(capturedFragmentPath, "utf8");
+    } catch {
+        // Captures are disposable artifacts; skip rather than fail a clean tree.
+        return;
+    }
+
+    const meshBits = await importPinnedModule<{
+        MSH_HAS_THIN_INSTANCES: number;
+        MSH_HAS_INSTANCE_COLOR: number;
+    }>("material/mesh-features.js");
+    const { PBR_HAS_ENV } = await importPinnedModule<{
+        PBR_HAS_ENV: number;
+    }>("material/pbr/pbr-flag-bits.js");
+    const hemispheric = await importPinnedModule<{
+        SINGLE_LIGHT_STRUCTS: string;
+        getSingleLightBlock: () => string;
+    }>("material/pbr/fragments/singlelight-hemispheric-wgsl.js");
+
+    const variant = await composePinnedPbrVariant(
+        { occlusionStrength: 0 },
+        {
+            sceneFeatures: PBR_HAS_ENV,
+            meshFeatures:
+                meshBits.MSH_HAS_THIN_INSTANCES |
+                meshBits.MSH_HAS_INSTANCE_COLOR,
+            lightMode: 1,
+            singleLightType: "hemispheric",
+            singleLightWgsl: hemispheric.SINGLE_LIGHT_STRUCTS,
+            singleLightBlock: hemispheric.getSingleLightBlock(),
+        },
+    );
+
+    assert.equal(variant.vertexWgsl, capturedVertex);
+    assert.equal(variant.fragmentWgsl, capturedFragment);
+});
+
 test("composes Scene 19's fragment exactly as the browser compiled it", async () => {
     // The instrumented capture is the browser's own composed module for
     // Scene 19's sphere, checked byte-for-byte against the committed golden

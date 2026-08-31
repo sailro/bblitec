@@ -129,6 +129,49 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
 });
 
+test("preserves full pinned TRS when setParent relinks a mesh", () => {
+    const lowered = new SceneLowerer(
+        new LoweringContext(),
+    ).lowerCore({ parenting: true });
+
+    assert.match(
+        lowered.source,
+        /#include <bblite\/upstream\/renderer_plan\.hpp>/,
+    );
+    assert.match(
+        lowered.source,
+        /const std::array<float, 16> child_world =\s*upstream::mesh_world_matrix\(engine, child_record\);[\s\S]{0,1800}child_record\.parent = parent;/,
+    );
+    assert.match(
+        lowered.source,
+        /const bool link_changed =[\s\S]{0,180}if \(link_changed\) \{[\s\S]{0,2100}child_record\.parent = parent;/,
+    );
+    assert.match(
+        lowered.source,
+        /old_parent\.children\.erase\([\s\S]{0,300}old_parent\.parented_meshes\.erase\(/,
+    );
+    assert.match(
+        lowered.source,
+        /mat4_invert\(parent_world\)[\s\S]{0,650}mat4_multiply_into\(local, 0, \*inverse_parent, 0, child_world, 0\);[\s\S]{0,180}pinned_parent_mat4_decompose\(local\)/,
+    );
+    assert.match(
+        lowered.source,
+        /pinned_parent_mat4_determinant3\(m\) < 0\.0\) \? \(-syAbs\) : syAbs/,
+    );
+    assert.match(
+        lowered.source,
+        /record\.rotation_quaternion = Vec4\{[\s\S]{0,320}record\.has_rotation_quaternion = true;[\s\S]{0,220}local\.scale\.y/,
+    );
+    assert.match(
+        lowered.source,
+        /if \(!inverse_parent\) \{[\s\S]{0,420}child_record\.position = Vec3d\{\s*child_world\[12\], child_world\[13\], child_world\[14\]\};[\s\S]{0,120}mark_mesh_dirty\(engine, child\);\s*return;/,
+    );
+    assert.match(
+        lowered.source,
+        /for \(const MeshHandle child : record\.parented_meshes\) \{\s*mark_mesh_dirty\(engine, child\);/,
+    );
+});
+
 test("compares transform-node parent handles by their stored ids", () => {
     const lowered = new SceneLowerer(
         new LoweringContext(),
@@ -177,6 +220,10 @@ test("generates property animation evaluation and seeking", () => {
     assert.match(
         lowered.source,
         /mesh\.has_rotation_quaternion = true/,
+    );
+    assert.match(
+        lowered.source,
+        /mark_mesh_runtime_transform\(engine, MeshHandle\{target\.index\}\);/,
     );
 });
 

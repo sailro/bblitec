@@ -1692,27 +1692,38 @@ inline std::array<float, 16> pinned_mesh_world() {
     };
 }
 
-/**
- * The pin's mesh world for a thin-instanced draw: the instanced node's own
- * world in Babylon's convention.
- *
- * The pin composes `finalWorld = mesh.world * instanceWorld`, and its
- * `mesh.world` is the root mirror times the node matrix -- Scene 247's
- * instanced node carries a y-scale of 1.3 that way. The record stores the
- * node world through `native_matrix` (the mirror conjugation), so the
- * mirror-times-node product is the stored matrix times the mirror: with
- * column vectors that is the parent matrix with its first column negated.
- * An identity node collapses this to `pinned_mesh_world()`.
- */
-inline std::array<float, 16> pinned_instanced_world(
-    const MeshRecord& record) {
-    std::array<float, 16> world = record.instance_parent_matrix;
+/** Applies the PBR root X mirror after one native-convention world. */
+inline std::array<float, 16> pinned_x_mirrored_world(
+    std::array<float, 16> world) {
     world[0] = -world[0];
     world[1] = -world[1];
     world[2] = -world[2];
     world[3] = -world[3];
     return world;
 }
+
+#if BBLITE_GPU_INSTANCING
+/**
+ * The pin's mesh world for a thin-instanced draw: the instanced node's own
+ * world in Babylon's convention.
+ *
+ * The pin composes `finalWorld = mesh.world * instanceWorld`; the instance
+ * stream is local to the mesh, so `mesh.world` must include the record's TRS
+ * as well as its recorded parent. `instance_parent_draw_world` is already the
+ * shared Standard/transcribed answer for that product, including clone outer
+ * transforms and the one floating-origin subtraction. Apply the PBR root
+ * mirror after it: with column vectors this negates the completed world's
+ * first column and leaves its translation intact. An identity node collapses
+ * this to `pinned_mesh_world()`.
+ */
+inline std::array<float, 16> pinned_instanced_world(
+    const MeshRecord& record,
+    const Scene& scene,
+    const Engine& engine) {
+    return pinned_x_mirrored_world(
+        instance_parent_draw_world(record, scene, engine));
+}
+#endif
 
 /**
  * The pin's mesh-block world for one draw, whichever convention arm it rides.
@@ -1747,9 +1758,14 @@ inline std::array<float, 16> pinned_draw_world(
                 pinned_mesh_world()),
             record);
     }
-    if (uses_local_position || pinned_record_instanced(record)) {
+#if BBLITE_GPU_INSTANCING
+    if (pinned_record_instanced(record)) {
+        return pinned_instanced_world(record, scene, engine);
+    }
+#endif
+    if (uses_local_position) {
         return draw_world(
-            pinned_instanced_world(record),
+            pinned_x_mirrored_world(record.instance_parent_matrix),
             record,
             scene,
             engine);
@@ -2466,6 +2482,14 @@ inline PinnedVariantKey pinned_variant_key(
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::pinned_msh_has_thin_instances;
+            // `_computeMeshFeatures` nests this under the pool and reads the
+            // mesh's colour stream. Use the binding predicate too, so the
+            // selected PBR stage and the stream each backend binds cannot
+            // disagree about `instanceColor`.
+            if (pinned_record_instance_colored(record)) {
+                key.mesh_features |=
+                    upstream::pinned_msh_has_instance_color;
+            }
         }
         const std::size_t receive_shadows =
             static_cast<std::size_t>(

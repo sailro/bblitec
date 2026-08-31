@@ -3106,11 +3106,19 @@ void set_thin_instance_colors(
 void prepare_imported_mesh_quaternion_write(
     Engine& engine,
     MeshHandle mesh);
+/**
+ * Mark a mesh's baked transform dirty, including every mesh whose world
+ * matrix depends on it through setParent.
+ */
+void mark_mesh_dirty(Engine& engine, MeshHandle mesh);
+/** Keep a runtime-moving mesh subtree local and publish its draw world. */
+void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh);
 /** Install a mesh quaternion in the coordinate basis its vertices use. */
 void set_mesh_rotation_quaternion(
     Engine& engine,
     MeshHandle mesh,
-    Vec4 quaternion);
+    Vec4 quaternion,
+    bool runtime_transform);
 void flatten_line_attributes(
     const std::vector<std::vector<Vec3>>& lines,
     const std::vector<std::vector<Vec4>>& colors,
@@ -3329,6 +3337,10 @@ FileTexture load_compressed_texture(
     const std::string& path,
     bool invert_y);
 void set_material_base_color_file(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture);
+void set_material_orm_file(
     Engine& engine,
     MaterialHandle material,
     FileTexture texture);

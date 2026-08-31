@@ -7952,14 +7952,17 @@ bool run_dawn_engine(Engine& engine) {
                 64);
 #if BBLITE_GPU_INSTANCE_COLORS
             {
-                // One tightly-packed RGBA row per instance, as the pin's
-                // own colour buffer. A mesh with none still needs the
-                // binding, so it takes one opaque-white row.
+                // One tightly-packed RGBA row per matrix-pool slot. A
+                // colour setter may first run after registration, so the
+                // fallback must reserve the established capacity, not one
+                // row, before the versioned upload fills it.
                 std::vector<float> instance_colors =
                     mesh_record.instance_colors;
-                if (instance_colors.empty()) {
-                    instance_colors.assign(4, 1.0f);
-                }
+                instance_colors.resize(
+                    std::max(
+                        instance_colors.size(),
+                        instance_matrices.size() * 4),
+                    1.0f);
                 mesh.instance_colors = create_buffer(
                     state,
                     WGPUBufferUsage_Vertex,

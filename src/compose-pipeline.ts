@@ -37,6 +37,7 @@ import {
 } from "./pinned-material-arms.js";
 import {
     expandRuntimeMeshFeatureSets,
+    pinnedInstanceColorBit,
     pinnedMeshFeaturesFromPrimitive,
     pinnedReceiveShadowsBit,
     pinnedThinInstancesBit,
@@ -145,6 +146,30 @@ export function dynamicCasterFeatureSets(
         [...new Set([...assetFeatures, ...sceneFeatures])],
         runtimeBits,
     ).sort((left, right) => left - right);
+}
+
+/**
+ * Runtime PBR keys one scene mesh can select.
+ *
+ * A matrix pool recorded as `always` removes the plain mesh arm, but a
+ * reached colour setter is only evidence that the colour stream MAY exist:
+ * it can sit behind a runtime branch. Keep the uncoloured thin-instance arm
+ * beside the coloured one so either live record key has a composed stage.
+ */
+export function scenePbrMeshFeatureSets(
+    base: number,
+    thinInstances: "always" | "possible" | undefined,
+    hasInstanceColors: boolean,
+    thinInstancesBit: number,
+    instanceColorBit: number,
+): number[] {
+    if (thinInstances === undefined) return [base];
+    const thin = base | thinInstancesBit;
+    const result = thinInstances === "possible" ? [base, thin] : [thin];
+    if (hasInstanceColors && instanceColorBit !== 0) {
+        result.push(thin | instanceColorBit);
+    }
+    return result;
 }
 
 // Every glTF material the scene loads, composed through Babylon Lite's own
@@ -402,10 +427,25 @@ export async function composeScenePipeline({
     const hasRuntimeThinInstances =
         result.manifest.features.includes("mesh:thin-instances") ||
         result.manifest.features.includes("mesh:thin-instances-dynamic");
-    const runtimePbrMeshBits = hasRuntimeThinInstances
-        ? [await pinnedThinInstancesBit()]
-        : [];
-    const thinInstancesBit = runtimePbrMeshBits[0] ?? 0;
+    const hasRuntimeThinInstanceColors =
+        hasRuntimeThinInstances &&
+        result.manifest.features.includes("mesh:thin-instance-colors");
+    const thinInstancesBit = hasRuntimeThinInstances
+        ? await pinnedThinInstancesBit()
+        : 0;
+    const instanceColorBit = hasRuntimeThinInstanceColors
+        ? await pinnedInstanceColorBit()
+        : 0;
+    // `_computeMeshFeatures` nests the colour test under `mesh.thinInstances`:
+    // 32 never exists by itself. Treat the coloured pool as a composite
+    // runtime mask so the generic product below emits {plain, TI, TI+colour}
+    // without inventing an impossible colour-only PBR variant.
+    const runtimePbrMeshBits = [
+        ...(thinInstancesBit !== 0 ? [thinInstancesBit] : []),
+        ...(instanceColorBit !== 0
+            ? [thinInstancesBit | instanceColorBit]
+            : []),
+    ];
     const runtimePbrCompositionBits = [
         ...runtimePbrMeshBits,
         ...dynamicReceiverBits,
@@ -662,13 +702,14 @@ export async function composeScenePipeline({
                 const base = renderableMeshFeatures[
                     sceneMeshRows[meshIndex]!
                 ] ?? 0;
-                if (row?.thinInstances === "always") {
-                    featureSets.add(base | thinInstancesBit);
-                } else {
-                    featureSets.add(base);
-                    if (row?.thinInstances === "possible") {
-                        featureSets.add(base | thinInstancesBit);
-                    }
+                for (const features of scenePbrMeshFeatureSets(
+                    base,
+                    row?.thinInstances,
+                    row?.thinInstanceColors === true,
+                    thinInstancesBit,
+                    instanceColorBit,
+                )) {
+                    featureSets.add(features);
                 }
             }
             return {
@@ -800,16 +841,8 @@ export async function composeScenePipeline({
                 ),
                 standardMaterialPlugins:
                     result.manifest.standardMaterialPlugins,
-                thinInstances:
-                    result.manifest.features.includes(
-                        "mesh:thin-instances",
-                    ) ||
-                    result.manifest.features.includes(
-                        "mesh:thin-instances-dynamic",
-                    ),
-                thinInstanceColors: result.manifest.features.includes(
-                    "mesh:thin-instance-colors",
-                ),
+                thinInstances: hasRuntimeThinInstances,
+                thinInstanceColors: hasRuntimeThinInstanceColors,
                 morphTargets: result.manifest.features.includes(
                     "mesh:morph-targets",
                 ),

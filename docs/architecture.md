@@ -393,7 +393,9 @@ in-process ([features](features.md#stage-2-compiling-wgsl-for-the-device)).
 
 Important contracts:
 
-- base-color/emissive textures are sRGB; normal/ORM textures are linear
+- base-color/emissive textures are sRGB; normal/ORM textures are linear,
+  including a scene-code `loadTexture2D` attached to PBR's ORM slot with its
+  sampler and upload flip preserved
 - `.env` RGBD cubemap faces upload Y-flipped — pinned behavior, not an SDL
   adaptation ([backends](backends.md#ported-pinned-contracts))
 - compiled HDR cubemaps are linear RGBA16F with mip-major, face-major layout

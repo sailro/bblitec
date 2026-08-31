@@ -344,7 +344,11 @@ class Compiler
     private readonly staticNativeDeclarations: string[] =
         [];
     private readonly returnFrames: Array<
-        | { kind: "native"; type: DataType | "void" }
+        | {
+              kind: "native";
+              type: DataType | "void";
+              contextualVoid?: boolean;
+          }
         | { kind: "inline"; wrapped: boolean }
     > = [];
     public jsDataReached = false;
@@ -4530,6 +4534,14 @@ class Compiler
     /** Nonzero while a frame callback's statements are being lowered. */
     private frameCallbackDepth = 0;
 
+    public meshTransformDirtyEntry():
+        | "mark_mesh_dirty"
+        | "mark_mesh_runtime_transform" {
+        return this.frameCallbackDepth > 0
+            ? "mark_mesh_runtime_transform"
+            : "mark_mesh_dirty";
+    }
+
     /**
      * An inline callback, as the lambda the caller's entry point takes.
      *
@@ -4612,6 +4624,11 @@ class Compiler
         this.pushScope(
             this.cppNamePrefixes.at(-1) ?? "",
         );
+        // This body is emitted into a real native callback lambda. A source
+        // `return` therefore leaves that lambda directly, including when it
+        // guards statements later in the callback; it is not an inlined
+        // function return that needs the breakable wrapper path.
+        this.beginNativeFunctionBody(undefined, true);
         try {
             if (
                 parameter &&
@@ -4639,6 +4656,7 @@ class Compiler
                 );
             }
         } finally {
+            this.endNativeFunctionBody();
             this.frameCallbackDepth -= 1;
             this.popScope();
             this.deferredCaptureFloor = previousDeferredFloor;
@@ -6114,10 +6132,12 @@ class Compiler
 
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
+        contextualVoid = false,
     ): void {
         this.returnFrames.push({
             kind: "native",
             type: returnType ?? "void",
+            ...(contextualVoid ? { contextualVoid: true } : {}),
         });
     }
 
@@ -6166,6 +6186,7 @@ class Compiler
     public emitNativeReturn(
         statement: ts.ReturnStatement,
     ): void {
+        const frame = this.returnFrames.at(-1);
         const returnType = this.activeNativeReturnType();
         if (returnType === undefined) {
             this.fail(
@@ -6175,10 +6196,17 @@ class Compiler
         }
         if (returnType === "void") {
             if (statement.expression) {
-                this.fail(
-                    statement.expression,
-                    "Void functions cannot return a value.",
-                );
+                if (frame?.kind !== "native" || !frame.contextualVoid) {
+                    this.fail(
+                        statement.expression,
+                        "Void functions cannot return a value.",
+                    );
+                }
+                // TypeScript's contextual-void callback rule discards the
+                // expression's value but not its side effects. Preserve the
+                // same boundary for `return stopEngine(engine)` and for
+                // value-returning expressions accepted by a void callback.
+                this.emitExpressionAsStatement(statement.expression);
             }
             this.emit("return;");
             return;
@@ -8487,7 +8515,7 @@ class Compiler
     }
 
     public recordScenePbrEmissive(
-        color: readonly number[],
+        color: readonly [number, number, number] | undefined,
         index: number | undefined,
     ): void {
         this.sceneMaterials.recordScenePbrEmissive(color, index);

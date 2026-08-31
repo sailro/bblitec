@@ -178,7 +178,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-73 corpus scenes remain unregistered; measured scenes
+71 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -208,7 +208,6 @@ leading candidates at this pin:
 | Scenes | Contracts | What they are |
 | --- | ---: | --- |
 | 167 | 4 | the same truthiness; `uAng` on a `loadTexture2D` texture; `enablePbrLightmap`/`setPbrLightmap`; folding a runtime `scene.meshes` walk into a compile-time material selection |
-| 129 | — | `splat.name`, then `createGpuPicker`/`pickAsync` |
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 6,
@@ -251,7 +250,7 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (41 scenes):** 17, 20,
+**Integrate first (39 scenes):**
 51-53, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
 140, 149, 156, 211, 214, 215, 218, 219,
 223, 226, 231, 241, 261, 269, 271, 275, 300.
@@ -389,9 +388,6 @@ integrated.
   wants more besides: 18 the shadow family, 90 CSG and a canvas2D data URL
   built in the entry file, 272 `cloneTransformNode` and
   `createSolidTexture2D`.
-- [ ] Scene 20: accept a `setPbrEmissive` colour the scene computes. Its
-  arrow-returning PRNG lowers, so what refuses now is the emissive setter's
-  static-colour requirement.
 - [ ] Extend the sprite path past the slice Scene 50 measures. Each item is a
   separate arm upstream keeps behind its own module or hook, and each fails
   explicitly today:
@@ -648,7 +644,7 @@ integrated.
   `index:sRGB`, so an image feeding both a base-colour and a linear slot
   transcodes twice. Its six materials share one packed `OcclusionRoughMetal`
   image, so the loader's `OffscreenCanvas` ORM composite is not reached.
-- [ ] Scenes 113, 129: support mesh names.
+- [ ] Scene 113: support mesh names.
 - [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
 - [ ] Scene 149: support the reached constructor expression.
 - [ ] Scene 140: the ESM directional generator above, then a node material.
@@ -704,7 +700,6 @@ integrated.
   its own camera and aspect, and `build_scene_projection` answers for the
   orthographic arm — so what the four still want is a source per matrix,
   not a mechanism.
-- [ ] Scene 17: extend reached PBR material options.
 - [ ] Extend the material-plugin slice past what scene 217 measures
   ([fidelity](docs/fidelity.md#shader-contract) carries the shipped shape).
   Every member past `name` and `getCustomCode` refuses at the declaration, and the

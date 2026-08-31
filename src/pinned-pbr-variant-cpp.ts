@@ -1150,6 +1150,11 @@ export function pinnedSharedVariantDecls(
         "src/material/mesh-features.ts",
         "MSH_HAS_THIN_INSTANCES",
     );
+    const instanceColorBit = pinnedNumericConstant(
+        context,
+        "src/material/mesh-features.ts",
+        "MSH_HAS_INSTANCE_COLOR",
+    );
     return `// ${provenance}
 #pragma once
 
@@ -1174,6 +1179,12 @@ inline constexpr std::uint32_t pinned_msh_receive_shadows =
 // generation composes both rows of that feature lattice.
 inline constexpr std::uint32_t pinned_msh_has_thin_instances =
     ${thinInstancesBit}u;
+
+// _computeMeshFeatures reads this only inside its thin-instance branch and
+// only when mesh.thinInstances.colors exists. The PAL therefore ORs it from
+// the same MeshRecord predicate that decides whether to bind the colour lane.
+inline constexpr std::uint32_t pinned_msh_has_instance_color =
+    ${instanceColorBit}u;
 
 enum class PinnedBindingKind {
     texture2d,

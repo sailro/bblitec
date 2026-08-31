@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     dynamicCasterFeatureSets,
+    scenePbrMeshFeatureSets,
     staticSceneLightArms,
 } from "../src/compose-pipeline.js";
 
@@ -9,6 +10,21 @@ test("dynamic caster views retain imported and scene mesh feature arms", () => {
     assert.deepEqual(
         dynamicCasterFeatureSets([1], [0], [16]),
         [0, 1, 16, 17],
+    );
+});
+
+test("an always-present pool retains its conditional colour arm", () => {
+    assert.deepEqual(
+        scenePbrMeshFeatureSets(4, "always", true, 16, 32),
+        [20, 52],
+    );
+    assert.deepEqual(
+        scenePbrMeshFeatureSets(4, "possible", true, 16, 32),
+        [4, 20, 52],
+    );
+    assert.deepEqual(
+        scenePbrMeshFeatureSets(4, "always", false, 16, 32),
+        [20],
     );
 });
 

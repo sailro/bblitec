@@ -938,7 +938,69 @@ test("reuploads dynamic thin-instance colors on both GPU backends", () => {
             backend,
             /instance_version !=[\s\S]{0,2200}instance_colors\.data\(\)/,
         );
+        assert.match(
+            backend,
+            /instance_colors\.resize\([\s\S]{0,180}instance_matrices\.size\(\) \* 4[\s\S]{0,80}1\.0f\);/,
+        );
     }
+});
+
+test("keys PBR instance colour from the stream binding predicate", () => {
+    const generated = source("src/pinned-pbr-variant-cpp.ts");
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(
+        generated,
+        /const instanceColorBit = pinnedNumericConstant\([\s\S]{0,180}"MSH_HAS_INSTANCE_COLOR"/,
+    );
+    assert.match(
+        generated,
+        /pinned_msh_has_instance_color =\s*\$\{instanceColorBit\}u/,
+    );
+    assert.match(
+        shared,
+        /pinned_record_instanced\(record\)[\s\S]{0,500}pinned_record_instance_colored\(record\)[\s\S]{0,180}pinned_msh_has_instance_color/,
+    );
+    const pbrDrawStart = sdl.indexOf("void draw_pinned_variant(");
+    const pbrDraw = sdl.slice(
+        pbrDrawStart,
+        sdl.indexOf("#if BBLITE_NODE_VARIANTS", pbrDrawStart),
+    );
+    assert.match(
+        pbrDraw,
+        /pinned_record_instance_colored\(pinned_record\)[\s\S]{0,180}pinned_colors = mesh\.instance_colors[\s\S]{0,260}bind_composed_mesh_vertex_buffers\(/,
+    );
+    assert.match(
+        sdl,
+        /void bind_composed_mesh_vertex_buffers[\s\S]{0,700}bindings\[2\] = SDL_GPUBufferBinding\{colors, 0\};[\s\S]{0,160}SDL_BindGPUVertexBuffers\(pass, 0, bindings\.data\(\), count\);/,
+    );
+    assert.match(
+        dawn,
+        /pinned_record_instance_colored\(record\)[\s\S]{0,180}streams\.colors = mesh\.instance_colors/,
+    );
+    assert.match(
+        dawn,
+        /if \(instances\.colors\)[\s\S]{0,220}VertexInputStream::instance_color[\s\S]{0,120}instances\.colors/,
+    );
+});
+
+test("composes PBR thin-instance parent TRS before the root mirror", () => {
+    const shared = source("native/src/pal_gpu_shared.hpp");
+
+    assert.match(
+        shared,
+        /pinned_instanced_world\([\s\S]{0,240}pinned_x_mirrored_world\(\s*instance_parent_draw_world\(record, scene, engine\)\)/,
+    );
+    assert.match(
+        shared,
+        /if \(pinned_record_instanced\(record\)\) \{\s*return pinned_instanced_world\(record, scene, engine\);/,
+    );
+    assert.doesNotMatch(
+        shared,
+        /draw_world\(\s*pinned_instanced_world/,
+    );
 });
 
 test("keeps looping buffer sources and playback rate on the audio PAL", () => {
@@ -1091,9 +1153,10 @@ test("shares composed material textures and keeps physics geometry local", () =>
 
     assert.match(runtime, /bool gpu_world_transform = false;/);
     assert.match(
-        physics,
-        /void mark_physics_gpu_world[\s\S]*?record\.gpu_world_transform = true;[\s\S]*?mark_physics_gpu_world\(engine, child\);/,
+        source("src/lowering/scene-lowerer.ts"),
+        /void mark_mesh_runtime_transform[\s\S]*?record\.gpu_world_transform = true;[\s\S]*?mark_mesh_runtime_transform\(engine, child\);/,
     );
+    assert.match(physics, /mark_mesh_runtime_transform\(engine, mesh\);/);
     assert.match(
         shared,
         /mesh\.thin_instanced \|\| mesh\.gpu_world_transform[\s\S]{0,100}\? identity_transform/,

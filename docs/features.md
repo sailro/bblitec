@@ -898,6 +898,22 @@ material a scene may have read back off a mesh. A setter
 stamps the material the call names, so a scene carrying several scene-code
 materials reaches each independently.
 
+The stamp is the composition input even when a setter's value remains runtime
+data: `setPbrEmissive` may take computed linear RGB channels, while the emitted
+setter writes those channels into the already-composed emissive arm. A
+scene-code PBR material may also attach a file-loaded ORM texture. That slot is
+linear by contract, retains the texture's sampler and `invertY`, and rejects an
+explicit sRGB load rather than silently decoding it as colour.
+
+`setParent` preserves the child's current world transform while it rewires the
+public traversal list and the world-matrix invalidation registry. It snapshots
+the child world before the link changes, derives the new local as
+`inverse(parentWorld) * childWorld`, and applies the pin's full decomposition,
+including a negative determinant as signed Y scale and the documented
+position-only fallback for a singular parent. Ordinary mesh TRS writes dirty
+the whole dependent subtree, so moving only a parent updates baked child
+geometry as well as hierarchies whose frame callback touches every node.
+
 `setPbrUnlit` also takes the linear-RGB tint its fragment multiplies the base
 colour by. A **loaded** material is stampable too, over the flattened mesh
 list a container walk yields: the pin's own `getContainerMeshes` flattens the
@@ -1205,12 +1221,13 @@ pipeline wide enough to bind it. The per-instance `setThinInstanceColor`
 twin is unreached and unlowered, which is why the record takes a copy of the
 array where the matrix pool keeps the caller's own.
 
-A **Standard** material reads that stream through the pin's own composed
-fragment instead: the colours turn into a second mesh feature bit, and the
-renderable splices a final-colour slot of its own where the shared fragment
-carries a base-colour one ([fidelity](fidelity.md#shader-contract)). So a
-coloured pool and an uncoloured one compose two variants, keyed as every
-other mesh-phase bit is.
+A PBR material reads the stream through the pin's shared thin-instance
+fragment and applies it to base colour. The colour bit is nested under the
+thin-instance bit, so generation composes the only three possible runtime
+states: plain, instanced, and instanced-with-colour. A **Standard** material
+then rewrites the same fragment into its family-specific final-colour slot
+([fidelity](fidelity.md#shader-contract)). Both families bind the colour lane
+from the same predicate that selects the coloured variant.
 
 ### Sprites
 
