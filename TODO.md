@@ -167,6 +167,24 @@ act on it — not what was tried.
     `extra_textures`, `uniform_binding` and `uniform_size`). Sharing them
     needs a find-or-create template in `pal_gpu_shared.hpp`, which today
     carries only vertex packing, decode and the variant-key resolvers.
+  - **Node-only morph graphs currently compile the generic renderer's morph
+    storage superset too.** `BBLITE_GPU_MORPH_STORAGE` has to keep the shared
+    zero-target buffers alive for reflected node bindings, but generic mesh,
+    background and skybox layouts need a second capability derived only from
+    source/asset morphs. Splitting it touches both PALs' group layouts, bind
+    groups and draw paths; the missing guard is a backend-layout test proving
+    a node-only graph keeps its reflected pair while generic group 0 stays
+    empty, followed by corpus parity on generic morph and background scenes.
+  - **SDL's reflected storage binder allocates a vector per non-empty stage per
+    draw.** The new node morph pair makes that visible on every Scene 64 draw,
+    while shadow stages can carry a different resource count. An inline pair
+    or caller-owned scratch buffer needs slot-count coverage for both shapes
+    and a draw-loop allocation measurement before replacing the shared helper.
+  - **Pinned node binding reflection scans each composed WGSL variant once per
+    row family.** Morph, shadow and environment collectors should consume one
+    reflected binding map, but their current APIs own separate validation and
+    error attribution. Consolidation needs one shared reflected-row contract
+    plus doctored-variant tests that retain the existing diagnostics.
 
 ## P1 — Developer experience
 
@@ -250,9 +268,9 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (39 scenes):**
-51-53, 64, 66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
-140, 149, 156, 211, 214, 215, 218, 219,
+**Integrate first (33 scenes):**
+66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
+140, 149, 214, 215, 218, 219,
 223, 226, 231, 241, 261, 269, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 117, 118), and display-only
@@ -436,11 +454,10 @@ integrated.
     the switch statically, refuse any arm whose import is not a pinned
     `material/node/blocks/*.js` emitter, and compose with exactly those.
     73 additionally wants camera viewports and a loader-returned collection.
-  - `MorphTargetsBlock` (64, 66), two vertex storage bindings.
   - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86).
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
-  - a graph reached through `getSceneNNNme()` behind a gzip payload (64, 66,
+  - a graph reached through `getSceneNNNme()` behind a gzip payload (66,
     72, 73), which is a module function rather than an exported object.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
   - the `inputs` handles, which no reached scene writes: a scene setting one
@@ -639,25 +656,6 @@ integrated.
 - [ ] Scene 140: the ESM directional generator above, then a node material.
   Its browser-derived booleans fold for the bare reference query and its
   `ground.receiveShadows` assignment now lowers.
-- [ ] Scene 156: the deterministic cross-fade. Property-animation blending
-  shipped with scene 155; 156 adds `crossFadeAnimationGroups` and the
-  manager's `_preUpdate` weight-fade jobs
-  (`src/animation/animation-weight-fade.ts`), reached through a
-  `setTimeout` the browser fires by wall clock. Its own frozen branch is the
-  deterministic one — it steps the manager by explicit millisecond amounts —
-  and the reference harness cannot reach that branch, so integrating 156
-  means giving the harness the scene's own `seekTime` query parameter and
-  lowering the branch behind it, rather than lowering `setTimeout`. That
-  same parameter would retire `referenceAnimationGroups`: scenes 152, 155
-  and 157 each carry a frozen branch doing exactly what the harness now
-  injects, so serving the query parameter would reach the scene's own
-  code instead of splicing group expressions from the registry. That is
-  upstream's own parity mechanism —
-  `docs/lite/architecture/39-animation-parity-testing.md` gates the freeze
-  behind a query param, pauses at an exact frame count and signals with
-  `canvas.dataset.animationFrozen`, which is the shape this harness
-  already injects — so the work is making the native side fold the same
-  parameter to the measured pose rather than erasing the branch.
 - [ ] Extend the line slice past what scenes 278 and 279 measure. The
   polylines themselves are the scene's own static literals, materialized as
   the nested data the generated flatten reads, so a system whose points are
@@ -828,11 +826,6 @@ integrated.
 - [ ] Scene 261: support the reached `box.material` assignment; temporal
   anti-aliasing sits behind it.
 - [ ] Scene 275: support `loadFont`.
-
-### Integration-first generation and asset packaging gaps
-
-- [ ] Scene 211: support non-string glTF buffer URIs or reject the source
-  contract earlier.
 
 ### Integration-first native runtime and loader gaps
 

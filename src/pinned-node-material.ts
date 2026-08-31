@@ -48,6 +48,20 @@ export interface ComposedNodeEnvBindings {
 }
 
 /**
+ * The two group-1 read-only storage bindings a graph reaching
+ * `MorphTargetsBlock` declares.
+ *
+ * The deltas and the count/vertex-count/weights payload are already owned by
+ * each native mesh. Only their binding numbers come from composition: the
+ * pin allocates them after the node UBO and texture pairs, so neither PAL may
+ * infer fixed slots for them.
+ */
+export interface ComposedNodeMorphBindings {
+    deltas: number;
+    weights: number;
+}
+
+/**
  * One texture the graph samples, at the pair the pin's pipeline builder gave
  * it.
  *
@@ -89,6 +103,8 @@ export interface ComposedNodeMaterial {
     backFaceCulling: boolean;
     /** The environment bindings, or null when the graph reaches none. */
     envBindings: ComposedNodeEnvBindings | null;
+    /** The morph storage pair, or null when the graph reaches no morph block. */
+    morphBindings: ComposedNodeMorphBindings | null;
     /**
      * The three group-1 bindings the composed fragment declares per shadow
      * light, in the pin's own allocation order.
@@ -153,6 +169,10 @@ interface PinnedNodeCompiledBindings {
         _brdfLUT: number;
         _brdfSampler: number;
     } | null;
+    _morphBindings: {
+        _deltasBinding: number;
+        _uboBinding: number;
+    } | null;
 }
 
 /** The pin's build state, by the field names `node-types.ts` gives them. */
@@ -162,21 +182,9 @@ interface PinnedNodeBuildState {
 }
 
 interface PinnedNodeMaterial {
-    _compile: {
+    _compile: PinnedNodeCompiledBindings & {
         _wgsl: string;
         _nodeUboSize: number;
-        _nodeUboBinding: number | null;
-        _textureBindings: readonly {
-            _name: string;
-            _texBinding: number;
-            _sampBinding: number;
-        }[];
-        _envBindings: {
-            _iblTexture: number;
-            _iblSampler: number;
-            _brdfLUT: number;
-            _brdfSampler: number;
-        } | null;
         /** One per shadow light, allocated in the graph's own binding run. */
         _shadowBindings: readonly {
             _lightIndex: number;
@@ -269,7 +277,6 @@ function compositionEngine(): unknown {
  * module with an arm no PAL binds.
  */
 const refusedFlags: Readonly<Record<string, string>> = {
-    usesMorphTargets: "MorphTargetsBlock",
     usesClipPlanes: "ClipPlanesBlock",
     usesMeshAttributeExists: "MeshAttributeExistsBlock",
 };
@@ -288,6 +295,9 @@ const servedFlags = new Set([
     "hasInstances",
     "usesLightsUbo",
     "usesEnv",
+    // The two storage bindings are reflected from `_morphBindings`; both
+    // PALs bind the direct mesh morph buffers or their zero-target fallback.
+    "usesMorphTargets",
     // The screen size rides the block's two spare lanes, which
     // `_packSceneUniforms` fills for every scene.
     "usesScreenSize",
@@ -401,6 +411,7 @@ export async function composeNodeMaterial(
         });
     }
     const env = material._compile._envBindings;
+    const morph = material._compile._morphBindings;
     const esmCaster = castsEsmShadow
         ? await composeNodeEsmCaster(material, engine)
         : null;
@@ -422,6 +433,12 @@ export async function composeNodeMaterial(
                 iblSampler: env._iblSampler,
                 brdfLut: env._brdfLUT,
                 brdfSampler: env._brdfSampler,
+            }
+            : null,
+        morphBindings: morph
+            ? {
+                deltas: morph._deltasBinding,
+                weights: morph._uboBinding,
             }
             : null,
         shadowBindings: material._compile._shadowBindings.map((binding) => ({
@@ -522,6 +539,12 @@ async function composeNodeEsmCaster(
                 ["env.iblSampler", compile._envBindings._iblSampler],
                 ["env.brdf", compile._envBindings._brdfLUT],
                 ["env.brdfSampler", compile._envBindings._brdfSampler],
+            ] as const)
+            : []),
+        ...(compile._morphBindings
+            ? ([
+                ["morph.deltas", compile._morphBindings._deltasBinding],
+                ["morph.weights", compile._morphBindings._uboBinding],
             ] as const)
             : []),
     ];

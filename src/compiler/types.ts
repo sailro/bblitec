@@ -1629,6 +1629,7 @@ export type Feature =
   | "animation:gltf-groups"
   | "animation:property"
   | "animation:property-blending"
+  | "animation:weight-fades"
   | "animation:managed-groups"
   | "animation:gltf-blending"
   | "animation:gltf-additive"

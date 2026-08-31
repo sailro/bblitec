@@ -384,7 +384,11 @@ decode helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
   plus the parent-world uniform at the next group-1 binding. Storage morphing
   binds the flat 6-float delta buffer and 16-byte-header weights buffer at
   group 0 bindings 0/1 with 4- and 16-byte zero fallbacks; weights rewrite in
-  place when `morph_weights_version` changes.
+  place when `morph_weights_version` changes. Generation validates pinned node
+  variants' reflected morph names at their allocated slots; SDL resolves its
+  sidecar names while Dawn consumes the emitted numeric slots. Both therefore
+  attach those same per-mesh buffers (or zero fallbacks) even when compacted
+  node bindings do not occupy the PBR path's numeric slots.
 - **Pinned material variants**: both backends execute Babylon's composed stages
   for every PBR and Standard draw (`variant-*.native.wgsl`,
   `variant-std-*.native.wgsl`, entered at `main`, text unchanged). Selection is

@@ -5,10 +5,14 @@ import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
     GLB_MAGIC,
+    asIndex,
+    asObject,
+    asStrings,
+    type JsonRecord,
 } from "./gltf-document.js";
 import { dirname, extname, resolve } from "node:path";
 
-type JsonRecord = Record<string, unknown>;
+const MESHOPT_EXTENSION = "EXT_meshopt_compression";
 
 function asRecord(value: unknown): JsonRecord {
     if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -28,6 +32,24 @@ function stringValue(value: unknown, label: string): string {
 
 function numberValue(value: unknown, fallback = 0): number {
     return typeof value === "number" ? value : fallback;
+}
+
+function nonNegativeInteger(value: unknown, label: string, fallback?: number): number {
+    const resolved = asIndex(value === undefined ? fallback : value);
+    if (resolved === undefined) {
+        throw new Error(`glTF ${label} must be a non-negative integer.`);
+    }
+    return resolved;
+}
+
+function meshoptExtension(record: JsonRecord): JsonRecord | undefined {
+    return asObject(
+        asObject(record.extensions)?.[MESHOPT_EXTENSION],
+    );
+}
+
+function isMeshoptFallbackBuffer(buffer: JsonRecord): boolean {
+    return meshoptExtension(buffer)?.fallback === true;
 }
 
 /**
@@ -146,29 +168,188 @@ export async function packageGltf(
     };
 
     const buffers = asRecords(document.buffers);
-    const offsets: number[] = [];
+    const bufferViews = asRecords(document.bufferViews);
+    const requiredExtensions = asStrings(document.extensionsRequired);
+    const usedExtensions = asStrings(document.extensionsUsed);
+    type BufferPlacement =
+        | { kind: "binary"; offset: number; length: number }
+        | { kind: "meshopt-fallback"; buffer: number };
+    const placements: BufferPlacement[] = [];
+    const fallbackBuffers: JsonRecord[] = [];
+    type ParentView = {
+        view: JsonRecord;
+        viewIndex: number;
+        compressed: JsonRecord | undefined;
+    };
+    const parentViewsByBuffer = new Map<number, ParentView[]>();
+    const compressedSourceViewsByBuffer = new Map<number, number[]>();
+    for (const [viewIndex, view] of bufferViews.entries()) {
+        const compressed = meshoptExtension(view);
+        const parentBuffer = numberValue(view.buffer, -1);
+        if (parentBuffer >= 0) {
+            const parentViews = parentViewsByBuffer.get(parentBuffer) ?? [];
+            parentViews.push({ view, viewIndex, compressed });
+            parentViewsByBuffer.set(parentBuffer, parentViews);
+        }
+        const compressedBuffer = numberValue(compressed?.buffer, -1);
+        if (compressedBuffer >= 0) {
+            const sourceViews =
+                compressedSourceViewsByBuffer.get(compressedBuffer) ?? [];
+            sourceViews.push(viewIndex);
+            compressedSourceViewsByBuffer.set(compressedBuffer, sourceViews);
+        }
+    }
     for (const [index, buffer] of buffers.entries()) {
+        const parentViews = parentViewsByBuffer.get(index) ?? [];
+        const taggedFallback = isMeshoptFallbackBuffer(buffer);
+        const implicitFallback =
+            typeof buffer.uri !== "string" &&
+            !(parsedGlb && index === 0) &&
+            parentViews.length > 0 &&
+            parentViews.every(({ compressed }) => compressed !== undefined);
+        const fallback = taggedFallback || implicitFallback;
+
+        // `fallback: true` is optional, but the fallback reference rules apply
+        // whenever the marker is present or an URI-less placeholder is implied.
+        if (fallback) {
+            const byteLength = nonNegativeInteger(
+                buffer.byteLength,
+                `meshopt fallback buffer ${index} byteLength`,
+            );
+            for (const { view, viewIndex, compressed } of parentViews) {
+                if (!compressed) {
+                    throw new Error(
+                        `glTF meshopt fallback buffer ${index} is referenced by ` +
+                            `bufferView ${viewIndex} without ${MESHOPT_EXTENSION}.`,
+                    );
+                }
+                const byteOffset = nonNegativeInteger(
+                    view.byteOffset,
+                    `bufferView ${viewIndex} byteOffset`,
+                    0,
+                );
+                const viewByteLength = nonNegativeInteger(
+                    view.byteLength,
+                    `bufferView ${viewIndex} byteLength`,
+                );
+                if (byteOffset + viewByteLength > byteLength) {
+                    throw new Error(
+                        `glTF bufferView ${viewIndex} exceeds meshopt fallback ` +
+                            `buffer ${index}.`,
+                    );
+                }
+            }
+            const compressedSourceView =
+                compressedSourceViewsByBuffer.get(index)?.[0];
+            if (compressedSourceView !== undefined) {
+                throw new Error(
+                    `glTF meshopt fallback buffer ${index} is used as the ` +
+                        `compressed source of bufferView ${compressedSourceView}.`,
+                );
+            }
+        }
+
         if (typeof buffer.uri !== "string") {
             if (parsedGlb && index === 0) {
-                offsets.push(0);
+                placements.push({
+                    kind: "binary",
+                    offset: 0,
+                    length: parsedGlb.binary.length,
+                });
                 continue;
             }
-            throw new Error(`glTF buffer ${index} is missing its URI.`);
+            if (!fallback) {
+                throw new Error(`glTF buffer ${index} is missing its URI.`);
+            }
+            if (!requiredExtensions.includes(MESHOPT_EXTENSION)) {
+                throw new Error(
+                    `glTF meshopt fallback buffer ${index} has no URI, so ` +
+                        `${MESHOPT_EXTENSION} must be required.`,
+                );
+            }
+            if (!usedExtensions.includes(MESHOPT_EXTENSION)) {
+                throw new Error(
+                    `glTF meshopt fallback buffer ${index} has no URI, so ` +
+                        `${MESHOPT_EXTENSION} must be listed in extensionsUsed.`,
+                );
+            }
+            const fallbackIndex = 1 + fallbackBuffers.length;
+            fallbackBuffers.push(buffer);
+            placements.push({
+                kind: "meshopt-fallback",
+                buffer: fallbackIndex,
+            });
+            continue;
         }
         const uri = stringValue(buffer.uri, "buffer URI");
         const resource = await readResource(uri, source, resourceDirectory);
-        offsets.push(append(resource.bytes));
+        placements.push({
+            kind: "binary",
+            offset: append(resource.bytes),
+            length: resource.bytes.byteLength,
+        });
     }
 
-    const bufferViews = asRecords(document.bufferViews);
-    for (const view of bufferViews) {
+    for (const [viewIndex, view] of bufferViews.entries()) {
         const bufferIndex = numberValue(view.buffer);
-        const baseOffset = offsets[bufferIndex];
-        if (baseOffset === undefined) {
+        const placement = placements[bufferIndex];
+        if (!placement) {
             throw new Error(`glTF bufferView references missing buffer ${bufferIndex}.`);
         }
-        view.buffer = 0;
-        view.byteOffset = baseOffset + numberValue(view.byteOffset);
+        if (placement.kind === "binary") {
+            view.buffer = 0;
+            view.byteOffset =
+                placement.offset + numberValue(view.byteOffset);
+        } else {
+            view.buffer = placement.buffer;
+        }
+
+        // The extension's source is a second buffer range, independent of
+        // the parent bufferView's fallback range. Rebase it through the same
+        // embedding map so the pinned decoder sees every compressed source in
+        // the GLB binary chunk at buffer 0.
+        const compressed = meshoptExtension(view);
+        if (compressed) {
+            const compressedBuffer = nonNegativeInteger(
+                compressed.buffer,
+                `${MESHOPT_EXTENSION} buffer on bufferView ${viewIndex}`,
+            );
+            const compressedPlacement = placements[compressedBuffer];
+            if (!compressedPlacement) {
+                throw new Error(
+                    `glTF ${MESHOPT_EXTENSION} on bufferView ${viewIndex} ` +
+                        `references missing buffer ${compressedBuffer}.`,
+                );
+            }
+            if (compressedPlacement.kind !== "binary") {
+                throw new Error(
+                    `glTF ${MESHOPT_EXTENSION} on bufferView ${viewIndex} ` +
+                        "uses a fallback buffer as its compressed source.",
+                );
+            }
+            const compressedOffset = nonNegativeInteger(
+                compressed.byteOffset,
+                `${MESHOPT_EXTENSION} byteOffset on bufferView ${viewIndex}`,
+                0,
+            );
+            const compressedLength = nonNegativeInteger(
+                compressed.byteLength,
+                `${MESHOPT_EXTENSION} byteLength on bufferView ${viewIndex}`,
+            );
+            if (
+                compressedOffset + compressedLength >
+                compressedPlacement.length
+            ) {
+                throw new Error(
+                    `glTF ${MESHOPT_EXTENSION} source range on bufferView ` +
+                        `${viewIndex} exceeds buffer ${compressedBuffer}.`,
+                );
+            }
+            compressed.buffer = 0;
+            compressed.byteOffset =
+                compressedPlacement.offset +
+                compressedOffset;
+        }
     }
 
     for (const image of asRecords(document.images)) {
@@ -191,7 +372,10 @@ export async function packageGltf(
         chunks.push(Buffer.alloc(finalPadding));
         binaryLength += finalPadding;
     }
-    document.buffers = [{ byteLength: binaryLength }];
+    document.buffers = [
+        { byteLength: binaryLength },
+        ...fallbackBuffers,
+    ];
     document.bufferViews = bufferViews;
 
     const json = Buffer.from(JSON.stringify(document), "utf8");

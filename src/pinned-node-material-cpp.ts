@@ -104,6 +104,7 @@ function collectEnvResources(
  * fails here instead of binding a neighbour's resource.
  */
 function nodeShadowRows(composed: ComposedNodeMaterial): string[] {
+    if (composed.shadowBindings.length === 0) return [];
     const reflected = new Map(
         variantBindings(composed.wgsl, composed.wgsl).map(
             (binding) => [binding.binding, binding] as const,
@@ -136,6 +137,36 @@ function nodeShadowRows(composed: ComposedNodeMaterial): string[] {
     return rows;
 }
 
+/**
+ * The native row for a graph's morph storage pair.
+ *
+ * `_morphBindings` owns the numbers, while the module owns the declarations.
+ * Check that join once at generation so neither backend can silently bind a
+ * neighbouring graph resource if the pin changes its names or resource kind.
+ */
+function nodeMorphRow(composed: ComposedNodeMaterial): string {
+    const morph = composed.morphBindings;
+    if (!morph) return "{false, 0, 0}";
+    const reflected = new Map(
+        variantBindings(composed.wgsl, "").map(
+            (binding) => [binding.binding, binding] as const,
+        ),
+    );
+    for (const [binding, name] of [
+        [morph.deltas, "morphDeltas"],
+        [morph.weights, "morph"],
+    ] as const) {
+        const entry = reflected.get(binding);
+        if (!entry || entry.name !== name || entry.kind !== "storageBuffer") {
+            throw new Error(
+                `A node graph's ${name} binding ${binding} is not the ` +
+                    "read-only storage buffer the pin allocated.",
+            );
+        }
+    }
+    return `{true, ${morph.deltas}, ${morph.weights}}`;
+}
+
 /** One composed graph, plus the stem its two stages deploy under. */
 export interface NodeVariantManifestEntry {
     /** The graph's index in the scene's reach order. */
@@ -144,6 +175,15 @@ export interface NodeVariantManifestEntry {
     vertexStem: string;
     fragmentStem: string;
     composed: ComposedNodeMaterial;
+}
+
+/** Whether any compiled node graph needs the native morph-buffer lifetime. */
+export function nodeVariantsUseMorphStorage(
+    variants: readonly NodeVariantManifestEntry[],
+): boolean {
+    return variants.some(
+        (variant) => variant.composed.morphBindings !== null,
+    );
 }
 
 /** The caster row for one variant, or the absent one. */
@@ -244,6 +284,7 @@ export function pinnedNodeVariantsHeader(
             ? `{true, ${env.iblTexture}, ${env.iblSampler}, ` +
                 `${env.brdfLut}, ${env.brdfSampler}}`
             : "{false, 0, 0, 0, 0}";
+        const morphRow = nodeMorphRow(variant.composed);
         entries.push(
             `    {${stringLiteral(variant.vertexStem)}, ` +
                 `${stringLiteral(variant.fragmentStem)}, ` +
@@ -257,6 +298,7 @@ export function pinnedNodeVariantsHeader(
                 }, ` +
                 `${variant.composed.uboBytes}, ${firstFloat}, ` +
                 `${envRow}, ` +
+                `${morphRow}, ` +
                 `${firstShadow}, ` +
                 `${variantShadowRows.length}, ` +
                 `${casterRow(variant)}},`,
@@ -341,6 +383,16 @@ struct NodeVariantEnvBindings {
 };
 
 /**
+ * The storage buffers declared by \`MorphTargetsBlock\`, at the exact group-1
+ * bindings allocated by the pin's node pipeline.
+ */
+struct NodeVariantMorphBindings {
+    bool present;
+    std::uint32_t deltas_binding;
+    std::uint32_t weights_binding;
+};
+
+/**
  * Which of our resources one env name denotes, by the slot table's source.
  *
  * The graph's names are the pin's own, so they do not match the PBR binding
@@ -414,6 +466,7 @@ struct NodeVariantEntry {
     /** Where this graph's block starts in the float table below. */
     std::size_t first_uniform_float;
     NodeVariantEnvBindings env;
+    NodeVariantMorphBindings morph;
     /** Half-open range into the shadow-binding table above. */
     std::size_t first_shadow_binding;
     std::size_t shadow_binding_count;

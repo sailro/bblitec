@@ -40,6 +40,7 @@ export interface AnimationIntrinsicContext
     ): Value | undefined;
     requireDefaultScene(node: ts.Node): Value;
     requireEngine(value: Value, node: ts.Node): string;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     fail(node: ts.Node, message: string): never;
     expectObjectLiteral(
         expression: ts.Expression,
@@ -123,6 +124,25 @@ export function requireGroupSource(
     );
 }
 
+/** Bind a manager to its first reached engine and reject later crossings. */
+function associateManagerEngine(
+    context: { fail(node: ts.Node, message: string): never },
+    manager: Value,
+    engineCpp: string,
+    node: ts.Node,
+): void {
+    if (
+        manager.engineCpp !== undefined &&
+        manager.engineCpp !== engineCpp
+    ) {
+        context.fail(
+            node,
+            "Animation manager and group/scene belong to different engines.",
+        );
+    }
+    manager.engineCpp ??= engineCpp;
+}
+
 export function compileAnimationIntrinsic(
     context: AnimationIntrinsicContext,
     importedName: string,
@@ -192,6 +212,12 @@ export function compileAnimationIntrinsic(
             );
             const groups = context.compileAnimationGroupList(
                 call.arguments[1]!,
+            );
+            associateManagerEngine(
+                context,
+                manager,
+                groups.engineCpp,
+                call,
             );
             context.reachFeature(
                 "animation:managed-groups",
@@ -287,18 +313,105 @@ export function compileAnimationIntrinsic(
                     call.arguments[3],
                     clip,
                 );
+            // A manager created without options acquires its engine from
+            // the first property target bound into it. The pin stores that
+            // association on each manager-owned task; carrying it on the
+            // lowered manager lets an explicit update use the same engine.
+            context.expectSameEngine(manager, target, call);
+            const engine = context.requireEngine(target, call);
+            associateManagerEngine(context, manager, engine, call);
             context.reachFeature("animation:property", call);
             return {
                 kind: "animation-group",
                 animationGroupSource: "property",
                 cpp:
                     `bbl::create_property_animation_group(` +
-                    `${manager.cpp}, ` +
+                    `${manager.cpp}, ${engine}, ` +
                     `bbl::PropertyAnimationTarget{` +
                     `bbl::PropertyAnimationTargetKind::` +
                     `${targetKind}, ${target.cpp}.value}, ` +
                     `${clip.cpp}, ${options})`,
-                engineCpp: context.requireEngine(target, call),
+                engineCpp: engine,
+            };
+        }
+
+        case "crossFadeAnimationGroups": {
+            // src/animation/animation-weight-fade.ts: scheduling is
+            // mixer-neutral and does not enable blending. Scene 156 opts
+            // into the property mixer separately, then advances this job
+            // through updateAnimationManager in its measured seek arm.
+            context.expectArgumentCount(call, 4, 4);
+            const manager = context.compileValue(call.arguments[0]!);
+            const fromGroup = context.compileValue(call.arguments[1]!);
+            const toGroup = context.compileValue(call.arguments[2]!);
+            context.expectKind(
+                manager,
+                "animation-manager",
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                fromGroup,
+                "animation-group",
+                call.arguments[1]!,
+            );
+            context.expectKind(
+                toGroup,
+                "animation-group",
+                call.arguments[2]!,
+            );
+            context.expectSameEngine(fromGroup, toGroup, call);
+            context.expectSameEngine(manager, fromGroup, call);
+            const engine = context.requireEngine(
+                fromGroup,
+                call.arguments[1]!,
+            );
+            associateManagerEngine(context, manager, engine, call);
+            const options = context.expectObjectLiteral(
+                call.arguments[3]!,
+            );
+            validateObjectProperties(
+                context,
+                options,
+                ["durationMs", "toWeight"],
+                "Cross-fade options support durationMs and toWeight.",
+            );
+            const duration = context.objectProperty(
+                options,
+                "durationMs",
+            );
+            if (!duration) {
+                context.fail(
+                    options,
+                    "crossFadeAnimationGroups requires durationMs.",
+                );
+            }
+            const toWeight = context.objectProperty(
+                options,
+                "toWeight",
+            );
+            context.reachFeature("animation:property", call);
+            context.reachFeature("animation:weight-fades", call);
+            if (
+                fromGroup.animationGroupSource !== "property" ||
+                toGroup.animationGroupSource !== "property"
+            ) {
+                context.reachFeature("animation:gltf-groups", call);
+            }
+            const fadeTarget = (group: Value): string =>
+                group.animationGroupSource === "property"
+                    ? `bbl::AnimationWeightFadeTarget::from_property(${group.cpp})`
+                    : `bbl::AnimationWeightFadeTarget::from_gltf(${group.cpp})`;
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::cross_fade_animation_groups(` +
+                    `${manager.cpp}, ${engine}, ` +
+                    `${fadeTarget(fromGroup)}, ` +
+                    `${fadeTarget(toGroup)}, ` +
+                    `${context.compileNumber(duration)}, ` +
+                    `${toWeight
+                        ? context.compileNumber(toWeight)
+                        : "1.0f"})`,
             };
         }
 
@@ -579,6 +692,8 @@ export function compileAnimationIntrinsic(
             );
             const scene =
                 context.requireDefaultScene(call);
+            const engine = context.requireEngine(scene, call);
+            associateManagerEngine(context, manager, engine, call);
             context.reachFeature("animation:property", call);
             return {
                 kind: "void",
@@ -592,8 +707,6 @@ export function compileAnimationIntrinsic(
         case "pauseAnimation":
         case "stopAnimation": {
             // src/animation/animation-group.ts: three writes over one group.
-            // Only a glTF group is reachable — a property-animation group is
-            // driven by its manager — so the kind check names which.
             context.expectArgumentCount(call, 1, 1);
             const group =
                 context.compileValue(call.arguments[0]!);
@@ -602,6 +715,19 @@ export function compileAnimationIntrinsic(
                 "animation-group",
                 call.arguments[0]!,
             );
+            // A paused property group remains manager-owned and sampled by
+            // the weighted mixer; only its time advancement stops. That is
+            // the final step in Scene 156's deterministic seek arm.
+            if (
+                importedName === "pauseAnimation" &&
+                group.animationGroupSource === "property"
+            ) {
+                context.reachFeature("animation:property", call);
+                return {
+                    kind: "void",
+                    cpp: `bbl::pause_animation(${group.cpp})`,
+                };
+            }
             requireGroupSource(
                 context,
                 group,

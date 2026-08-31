@@ -1799,6 +1799,47 @@ struct PropertyAnimationGroupRecord {
 using PropertyAnimationGroup =
     std::shared_ptr<PropertyAnimationGroupRecord>;
 
+/** A property or glTF group whose public weight a fade job updates. */
+enum class AnimationWeightFadeTargetKind {
+    property,
+    gltf,
+};
+
+struct AnimationWeightFadeTarget {
+    AnimationWeightFadeTargetKind kind =
+        AnimationWeightFadeTargetKind::property;
+    PropertyAnimationGroup property_group;
+    AnimationGroupHandle gltf_group{};
+
+    static AnimationWeightFadeTarget from_property(
+        PropertyAnimationGroup group) {
+        AnimationWeightFadeTarget target;
+        target.property_group = std::move(group);
+        return target;
+    }
+
+    static AnimationWeightFadeTarget from_gltf(
+        AnimationGroupHandle group) {
+        AnimationWeightFadeTarget target;
+        target.kind = AnimationWeightFadeTargetKind::gltf;
+        target.gltf_group = group;
+        return target;
+    }
+};
+
+/**
+ * One manager-owned weight tween. The fade scheduler is a pre-update
+ * phase, separate from the category mixer which consumes the resulting
+ * weights; enabling a property or glTF mixer therefore remains explicit.
+ */
+struct PropertyAnimationWeightFade {
+    AnimationWeightFadeTarget target;
+    float from = 0.0f;
+    float to = 0.0f;
+    float duration_ms = 0.0f;
+    float elapsed_ms = 0.0f;
+};
+
 /**
  * One blended property, the pin's own weighted-mixer bucket. Upstream
  * keys it by the (object, property name) pair each runtime track
@@ -1847,8 +1888,22 @@ enum class AnimationCategoryHandler {
     gltf_mixer,
 };
 
+struct Engine;
+struct PropertyAnimationManagerRecord;
+using AnimationManagerPreUpdate = std::function<void(
+    Engine&,
+    PropertyAnimationManagerRecord&,
+    float)>;
+
 struct PropertyAnimationManagerRecord {
+    /** The engine inferred from the first attached group or scene. */
+    Engine* engine = nullptr;
     std::vector<PropertyAnimationGroup> groups;
+    /** Scheduled by crossFadeAnimationGroups, advanced before the mixer. */
+    std::vector<PropertyAnimationWeightFade> weight_fades;
+    /** The pin's one stable pre-update slot and the hook it preserves. */
+    AnimationManagerPreUpdate pre_update;
+    AnimationManagerPreUpdate prior_weight_fade_pre_update;
     /**
      * The glTF groups `addAnimationGroups` attached, in attach order.
      * Upstream keeps them in the manager's own `_animationGroups` list and
@@ -3694,6 +3749,7 @@ PropertyAnimationClip create_property_animation_clip(
     float frame_rate);
 PropertyAnimationGroup create_property_animation_group(
     PropertyAnimationManager manager,
+    Engine& engine,
     PropertyAnimationTarget target,
     PropertyAnimationClip clip,
     PropertyAnimationGroupOptions options);
@@ -3708,6 +3764,13 @@ void enable_animation_blending(
     PropertyAnimationManager manager);
 void enable_property_animation_blending(
     PropertyAnimationManager manager);
+void cross_fade_animation_groups(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    AnimationWeightFadeTarget from_group,
+    AnimationWeightFadeTarget to_group,
+    float duration_ms,
+    float to_weight);
 void start_animation_manager(
     PropertyAnimationManager manager,
     Scene& scene);
@@ -3735,6 +3798,7 @@ void go_to_frame(
     float frame,
     bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
+void pause_animation(PropertyAnimationGroup group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
 void set_animation_loop(

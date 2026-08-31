@@ -518,6 +518,16 @@ of clip order. A node whose weights sum below one slerps from its rest rotation
 toward the accumulated one by that sum; at or above one it is renormalized. The
 pose that follows is the same pass a single-clip tick runs.
 
+**A cross-fade changes weights before mixing and does not choose a mixer.**
+The manager's pre-update first preserves any hook it already owned, then
+advances each fade by the non-negative delta, writes the two interpolated
+weights, and erases completed jobs. Starting another fade removes every older
+job touching either group before appending the replacement. Property and glTF
+groups use the same job shape, and no call turns either weighted mixer on; the
+scene must make that choice explicitly. Scene 156 measures the 250 ms point of
+a one-second fade as weights 0.75 and 0.25 through its own `?seekTime=1.25`
+branch.
+
 **A group's `speedRatio` scales the future, not the past.** Upstream
 accumulates `time += (deltaMs / 1000) * speedRatio`, so a write moves what
 follows and leaves the pose already reached alone. The scene's master-clock
@@ -683,6 +693,12 @@ any morph target at all: a flat 6-float delta buffer and a weights
 buffer with the 16-byte `{count, vertexCount}` header, accumulated in
 ascending target order before skinning, with source-marker assertions
 pinning the loop, indexing, and header ABI. Scene 243 gates it.
+A node material's `MorphTargetsBlock` validates the same two reflected names
+and their pin-allocated binding numbers rather than guessing slots from WGSL.
+SDL resolves the sidecar names and Dawn consumes the emitted numbers, both to
+the same per-mesh buffers. A node graph on a mesh without morph data receives
+the pin's zero-count fallback buffers; Scene 64 gates the live storage pair at
+a frozen weight of one.
 Primitives without source normals remain deindexed, and their face normals
 are recomputed after deformation while their positions stay GPU-skinned. See
 [Architecture](architecture.md#animation-and-deformation) for layout,

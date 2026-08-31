@@ -282,6 +282,12 @@ alongside `synchronous-aot-await`.
 generation; what ships is ordinary uncompressed geometry, and an asset using
 neither is passed through byte-for-byte.
 
+Meshopt's valid fallback form may describe an URI-less placeholder buffer:
+the compressed source remains in another buffer until the extension's hook
+materializes that placeholder. Packaging preserves that relationship while it
+embeds the compressed source, then the pin's own hook writes the fallback,
+removes the extension, and leaves one ordinary binary buffer for native load.
+
 **Why compile time:** both decoders are WebAssembly modules the browser
 fetches at run time. Decoding during generation keeps the native runtime free
 of a decompression dependency, and because the pinned artifacts are part of
@@ -1159,6 +1165,13 @@ blends glTF clips into one skeleton pose, both under `setAnimationWeight`.
 Without a mixer the groups write in turn and the last one wins, which is
 also the pin's behaviour.
 
+`crossFadeAnimationGroups` is mixer-neutral: it queues two weight ramps on the
+manager, advances them in the manager's pre-update phase before whichever
+mixer is already enabled, and never enables one itself. A new fade replaces
+any older job touching either group. Property and glTF groups share that job
+model; a prior pre-update hook still runs first, and repeated installation
+does not build a wrapper chain.
+
 `KHR_animation_pointer` reaches node visibility; punctual light color,
 intensity, range and outer cone angle; and fifteen material targets — base
 color factor, emissive factor, emissive strength, texture transforms, normal
@@ -1193,6 +1206,14 @@ computed per frame on the CPU is the face normal of a primitive that carries
 none, whose positions stay GPU-skinned.
 [Architecture](architecture.md#animation-and-deformation) carries both
 mechanisms.
+
+A node material reaching `MorphTargetsBlock` is checked against the pin's
+reflected `morphDeltas` and `morph` names at the pin-allocated storage slots.
+SDL resolves its sidecar names and Dawn consumes the emitted numeric slots;
+both attach the mesh's existing morph buffers. A graph on a mesh with no
+targets binds the pin's empty delta and header buffers, so the graph's
+zero-target branch is valid without pretending that the mesh carries
+deformation data.
 
 A skeleton is also addressable, behind an opt-in. `enableBoneControl()`
 installs the pin's own builder hook, so a glTF loaded *after* it surfaces

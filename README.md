@@ -17,7 +17,7 @@ Unsupported syntax and APIs fail at compile time with source locations.
 | [<img src="docs/images/scenes/tetris.png" alt="Tetris demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/doom.png" alt="Doom demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/racer.png" alt="Racer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/littlest-tokyo.png" alt="Littlest Tokyo demo" width="170">](docs/status.md#upstream-application-gates) |
 | [<img src="docs/images/scenes/platformer.png" alt="Platformer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/quake.png" alt="LibreQuake demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/bath-day.png" alt="Bath Day demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/freeciv.png" alt="Freeciv demo" width="170">](docs/status.md#upstream-application-gates) |
 
-*A few of the 180 curated parity scenes and 10 demos, compiled to native C++
+*A few of the 183 curated parity scenes and 10 demos, compiled to native C++
 and rendered on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points
