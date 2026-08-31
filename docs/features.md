@@ -1231,11 +1231,36 @@ from the same predicate that selects the coloured variant.
 
 ### Sprites
 
-Pure-2D `depth: "none"` layers drawn by their own sprite renderer with no
-scene at all: the frame grid derived at load from the decoded atlas,
-per-sprite instance writes, and the straight-alpha blend, on both GPU
-backends from one generated WGSL pair. The pinned renderer split and
-instance layout are in [fidelity](fidelity.md#shader-contract).
+Pure-2D `depth: "none"` layers draw through their own sprite renderer. That
+renderer can be the engine's only rendering context, or register after a
+scene to overlay a HUD in engine render-list order. The reached path covers
+the frame grid derived at load from the decoded atlas, per-sprite instance
+writes, and both straight and premultiplied-alpha storage/blending on both
+GPU backends from one generated WGSL pair. `premultiplyOnLoad` transforms
+decoded RGB into premultiplied storage, `premultipliedAlpha` records that
+storage convention, and the premultiplied descriptor selects source-one
+blending. The pinned renderer split and instance layout are in
+[fidelity](fidelity.md#shader-contract).
+
+A `depth: "test"` or `"test-write"` layer instead becomes a scene renderable
+through `addDepthHostedSpriteLayer`. Its instance layout appends z at float
+slot 13 / shader location 6, defaulting to the layer z only when the sprite
+does not name one. The scene-owned pipeline shares the scene colour, depth,
+and multisample attachments: `test-write` draws in the opaque stage, while
+`test` draws in the transparent stage. Alpha-to-coverage is enabled only for
+a multisampled depth-writing layer that explicitly requests it, matching the
+pinned pipeline gate; opaque replacement blending remains disabled blending.
+Scene 53 reaches only `test-write`: upstream marks that renderable `_direct`
+at fixed order 100, explicitly after cached opaque meshes and before the
+transparent bucket, which is the native hard slot used here. A future scene
+that mixes `depth: "test"` sprites with other transparent renderable families
+would need their common order/depth-sort bucket rather than a family hard
+slot; no curated scene currently reaches that mixed case.
+Compatible layers attached to the same scene pass share one backend pipeline
+(and Dawn bind-group layouts) by the same depth/blend/program/layout identity;
+the first layer owns those objects and later insertion-ordered layers borrow
+them. Cross-scene cache lifetime is not reached by the curated native driver,
+which owns one scene pass per execution.
 
 A **frame animation** drives either family. `createSpriteAnimationManager`
 holds a set of ranges and `updateSpriteAnimationManager` advances all of

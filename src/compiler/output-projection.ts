@@ -103,6 +103,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:csm-single-map": [],
     "shadow:task": [],
     "sprite:2d": [],
+    "sprite:2d-depth-host": [],
     "sprite:uv-scroll": [],
     "sprite:custom-shader": [],
     "texture:file": [],

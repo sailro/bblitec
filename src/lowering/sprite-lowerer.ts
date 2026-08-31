@@ -24,12 +24,14 @@ const layerModule = "src/sprite/sprite-2d.ts";
 const blendModule = "src/sprite/sprite-blend.ts";
 const pipelineModule = "src/sprite/sprite-pipeline.ts";
 const rendererModule = "src/sprite/sprite-renderer.ts";
+const sceneModule = "src/sprite/sprite-scene.ts";
+const renderableModule = "src/sprite/sprite-renderable.ts";
 const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
 const customShaderModule = "src/sprite/sprite-custom-shader.ts";
 // Shared by both families: the fx block and its byte count.
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
 
-/** The pinned WGSL, reconstructed for the pure-2D permutation. */
+/** The pinned WGSL, reconstructed for a reached 2D/depth/scroll permutation. */
 export interface SpriteShaderSource {
     /** `Lr` struct body, one field per line, as the pin declares it. */
     layerStructFields: string;
@@ -57,14 +59,13 @@ export interface SpriteShaderSource {
 }
 
 /**
- * Lowers Babylon Lite's pure-2D sprite path.
+ * Lowers Babylon Lite's Sprite2D path.
  *
- * The reached slice is one `SpriteRenderer` over `depth: "none"` layers on the
- * straight-alpha blend: `loadSpriteAtlas` -> `createGridSpriteAtlas` ->
- * `createSprite2DLayer` -> `addSprite2DIndex` -> `createSpriteRenderer`.
- * Everything upstream keeps behind a hook (custom shaders, uv scroll, coverage
- * gamma, alpha-to-coverage) or behind a depth mode is not emitted at all,
- * which is where upstream keeps it too.
+ * A `depth: "none"` layer belongs to a `SpriteRenderer`; a depth-enabled layer
+ * becomes a scene renderable through `addDepthHostedSpriteLayer`, widening its
+ * instance row from 13 to 14 floats for per-instance z. Custom fragments,
+ * UV scroll and alpha-to-coverage remain explicit opt-ins, as they are in the
+ * pin. Coverage gamma is still unreached and therefore not emitted.
  */
 export class SpriteLowerer {
     private readonly shaderText: PinnedShaderText;
@@ -89,17 +90,25 @@ export class SpriteLowerer {
         );
     }
 
-    /** `PURE_2D_INSTANCE_FLOATS_PER_SPRITE`, `SAVED_SIZE_FLOATS_PER_SPRITE`. */
+    /** The two pinned instance widths and the CPU saved-size width. */
     private layout(): {
-        instanceFloats: number;
+        pureInstanceFloats: number;
+        depthInstanceFloats: number;
         savedSizeFloats: number;
         defaultCapacity: number;
     } {
         const file = this.context.sourceFile(layerModule);
-        const instanceFloats = this.context.numericValue(
+        const pureInstanceFloats = this.context.numericValue(
             this.context.variableInitializer(
                 file,
                 "PURE_2D_INSTANCE_FLOATS_PER_SPRITE",
+            ),
+            file,
+        );
+        const depthInstanceFloats = this.context.numericValue(
+            this.context.variableInitializer(
+                file,
+                "DEPTH_INSTANCE_FLOATS_PER_SPRITE",
             ),
             file,
         );
@@ -118,17 +127,19 @@ export class SpriteLowerer {
             file,
         );
         if (
-            instanceFloats !== 13 ||
+            pureInstanceFloats !== 13 ||
+            depthInstanceFloats !== 14 ||
             savedSizeFloats !== 2 ||
             defaultCapacity !== 16
         ) {
             this.context.contractError(
                 file,
-                `Pinned sprite instance layout changed: ${instanceFloats} instance floats, ${savedSizeFloats} saved-size floats, capacity ${defaultCapacity}.`,
+                `Pinned sprite instance layout changed: ${pureInstanceFloats} pure floats, ${depthInstanceFloats} depth floats, ${savedSizeFloats} saved-size floats, capacity ${defaultCapacity}.`,
             );
         }
         return {
-            instanceFloats,
+            pureInstanceFloats,
+            depthInstanceFloats,
             savedSizeFloats,
             defaultCapacity,
         };
@@ -316,8 +327,171 @@ export class SpriteLowerer {
         return rows;
     }
 
+    /** The optional depth row appended by `buildSpritePipeline`. */
+    private depthAttribute(): {
+        location: number;
+        offsetBytes: number;
+        floatCount: number;
+    } {
+        const file = this.context.sourceFile(pipelineModule);
+        const push = this.context.findNodes(
+            file,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                ts.isIdentifier(node.expression.expression) &&
+                node.expression.expression.text === "instanceAttributes" &&
+                node.expression.name.text === "push",
+        )[0];
+        if (!push || push.arguments.length !== 1) {
+            return this.context.contractError(
+                file,
+                "Pinned sprite pipeline no longer appends one depth attribute.",
+            );
+        }
+        const literal = this.context.unwrapExpression(push.arguments[0]!);
+        if (!ts.isObjectLiteralExpression(literal)) {
+            return this.context.contractError(
+                literal,
+                "Expected the pinned sprite depth attribute literal.",
+            );
+        }
+        const location = this.context.numericValue(
+            this.context.propertyInitializer(literal, "shaderLocation"),
+            file,
+        );
+        const offset = this.context.unwrapExpression(
+            this.context.propertyInitializer(literal, "offset"),
+        );
+        if (!ts.isIdentifier(offset)) {
+            return this.context.contractError(
+                offset,
+                "Expected the named sprite depth offset constant.",
+            );
+        }
+        const offsetBytes = this.context.numericValue(
+            this.context.variableInitializer(file, offset.text),
+            file,
+        );
+        const format = this.context.stringValue(
+            this.context.propertyInitializer(literal, "format"),
+            file,
+        );
+        if (format !== "float32") {
+            return this.context.contractError(
+                literal,
+                `Pinned sprite depth attribute uses '${format}', expected float32.`,
+            );
+        }
+        return { location, offsetBytes, floatCount: 1 };
+    }
+
+    /** Scene-hosted bucket, growth, and hidden-update contracts. */
+    private assertDepthHostedRenderable(): void {
+        const { declaration: build } = this.context.functionDeclaration(
+            renderableModule,
+            "buildSpriteRenderable",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(build, "isTransparent"),
+            'layer.depth === "test"',
+            "depth-hosted sprite transparent bucket",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(build, "isDirect"),
+            'layer.depth === "test-write"',
+            "depth-hosted sprite direct bucket",
+        );
+        const renderable = this.context.unwrapExpression(
+            this.context.variableInitializer(build, "renderable"),
+        );
+        if (!ts.isObjectLiteralExpression(renderable)) {
+            this.context.contractError(
+                renderable,
+                "Pinned buildSpriteRenderable no longer builds a renderable literal.",
+            );
+        }
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(renderable, "order"),
+            "isTransparent ? 200 : 100",
+            "depth-hosted sprite fixed order",
+        );
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(renderable, "_direct"),
+            "isDirect",
+            "depth-hosted sprite direct flag",
+        );
+
+        const { declaration: upload } = this.context.functionDeclaration(
+            renderableModule,
+            "uploadLayer",
+        );
+        const statements = upload.body?.statements ?? [];
+        const visibleGuard = statements[1];
+        if (!visibleGuard || !ts.isIfStatement(visibleGuard)) {
+            this.context.contractError(
+                upload,
+                "Pinned uploadLayer no longer guards visibility before its update work.",
+            );
+        }
+        this.context.assertExpressionShape(
+            visibleGuard.expression,
+            "!r._layer.visible || r._layer.count === 0",
+            "depth-hosted sprite hidden update guard",
+        );
+        for (const name of [
+            "ensureSpriteInstanceBuffer",
+            "uploadSpriteInstances",
+            "buildSpriteLayerUbo",
+        ]) {
+            const call = this.context.findNodes(
+                upload,
+                (node): node is ts.CallExpression =>
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === name,
+            )[0];
+            if (!call || call.getStart() <= visibleGuard.getStart()) {
+                this.context.contractError(
+                    upload,
+                    `Pinned uploadLayer no longer keeps ${name} after the hidden guard.`,
+                );
+            }
+        }
+
+        const { declaration: ensure } = this.context.functionDeclaration(
+            pipelineModule,
+            "ensureSpriteInstanceBuffer",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(ensure, "neededBytes"),
+            "layer._capacity * layer._instanceStrideBytes",
+            "sprite instance buffer required bytes",
+        );
+        const growthGuard = this.context.findNodes(
+            ensure,
+            (node): node is ts.IfStatement => ts.isIfStatement(node),
+        )[0];
+        if (!growthGuard) {
+            this.context.contractError(
+                ensure,
+                "Pinned ensureSpriteInstanceBuffer no longer guards growth.",
+            );
+        }
+        this.context.assertExpressionShape(
+            growthGuard.expression,
+            "currentBuffer.size >= neededBytes",
+            "sprite instance buffer growth guard",
+        );
+        this.context.expectShapeCount(
+            ensure,
+            "currentBuffer.destroy()",
+            "sprite instance buffer replacement destroys prior buffer",
+        );
+    }
+
     /**
-     * `writeInstance` writes thirteen numbered slots. The lowered writer
+     * `writeInstance` writes thirteen base slots plus the depth slot. The lowered writer
      * below reproduces them, so the slot expressions are pinned here
      * rather than trusted: a moved slot has to fail generation.
      */
@@ -380,6 +554,26 @@ export class SpriteLowerer {
                 );
             }
         }
+        const depthWrite = writes.find(
+            (node) =>
+                this.elementIndexText(node.left) === "base + 13",
+        );
+        if (!depthWrite) {
+            this.context.contractError(
+                declaration,
+                "Pinned writeInstance no longer writes depth slot 13.",
+            );
+        }
+        this.context.assertExpressionShape(
+            depthWrite.right,
+            "z",
+            "writeInstance depth slot 13",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "z"),
+            "hasDepthSlot ? props.z ?? (prev ? prev[13] : layer.layerZ) : 0",
+            "writeInstance depth fallback",
+        );
         // The flip resolution is what makes flipX absolute rather than a
         // toggle, and the swap is what a preserved orientation means.
         this.context.assertExpressionShape(
@@ -967,7 +1161,7 @@ export class SpriteLowerer {
 
     /**
      * Reconstructs the shader the pin builds for the reached permutation
-     * (`hasDepth: false`, sprite group 0, no uv scroll) by evaluating its
+     * selected depth/uv permutation by evaluating its
      * own template rather than by transcribing the result. Anything the
      * evaluator cannot fold is a contract failure, so a changed shader
      * stops generation instead of silently keeping this copy.
@@ -976,10 +1170,11 @@ export class SpriteLowerer {
         uvScroll = false,
         customFragment?: string,
         extraTextures: readonly string[] = [],
+        hasDepth = false,
     ): SpriteShaderSource {
         const permutation = new Map<string, ShaderTextBinding>([
-            ["hasDepth", false],
-            ["spriteGroupIndex", "0"],
+            ["hasDepth", hasDepth],
+            ["spriteGroupIndex", hasDepth ? "1" : "0"],
             ["uvScroll", uvScroll],
         ]);
         // A custom-shader layer keeps the engine's vertex stage and
@@ -1095,10 +1290,11 @@ export class SpriteLowerer {
             );
         }
         const attributeRows = this.instanceAttributeRows(
-            layout.instanceFloats,
+            layout.pureInstanceFloats,
         );
+        const depthRow = this.depthAttribute();
         const uvScrollRow = this.uvScrollAttribute(
-            layout.instanceFloats,
+            layout.pureInstanceFloats,
         );
         this.assertGridAtlas();
         assertFrameAtlasRule(this.context);
@@ -1106,6 +1302,7 @@ export class SpriteLowerer {
         this.assertAtlasLoader();
         this.assertInstanceBase();
         this.assertInstanceSlots();
+        this.assertDepthHostedRenderable();
         this.assertUpdateArm();
         this.assertClearLayer();
         this.assertRendererMembership();
@@ -1116,7 +1313,7 @@ export class SpriteLowerer {
         const provenance = this.context.provenance(
             layerModule,
             "createSprite2DLayer, addSprite2DIndex, updateSprite2DIndex, clearSprite2DLayer",
-            `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha, ${rendererModule}#createSpriteRenderer`,
+            `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha/spriteBlendOpaque, ${rendererModule}#createSpriteRenderer, ${sceneModule}#addDepthHostedSpriteLayer, ${renderableModule}#buildSpriteRenderable`,
         );
         return {
             modulePath: layerModule,
@@ -1197,16 +1394,24 @@ ${attributeRows
     .join("\n")}
     }};
 
+// sprite-pipeline.ts: appended when \`hasDepth\` selects the scene-hosted
+// layout. Slot 13 is one float at shader location 6.
+inline constexpr SpriteInstanceAttribute sprite_depth_attribute{
+    ${depthRow.location}u, ${depthRow.offsetBytes}u, ${depthRow.floatCount}u};
+
 // sprite-2d-uvscroll.ts ensureWide: the uvOffset attribute the widened
 // layout adds, at the byte offset the narrow stride ends on.
 inline constexpr SpriteInstanceAttribute sprite_uvscroll_attribute{
     ${uvScrollRow.location}u, ${uvScrollRow.offsetBytes}u, ${uvScrollRow.floatCount}u};
 
 inline constexpr std::uint32_t sprite_uvscroll_stride_bytes =
-    ${(layout.instanceFloats + this.uvScrollExtraFloats()) * 4}u;
+    ${(layout.pureInstanceFloats + this.uvScrollExtraFloats()) * 4}u;
 
 inline constexpr std::uint32_t sprite_instance_stride_bytes =
-    ${layout.instanceFloats * 4}u;
+    ${layout.pureInstanceFloats * 4}u;
+
+inline constexpr std::uint32_t sprite_depth_instance_stride_bytes =
+    ${layout.depthInstanceFloats * 4}u;
 
 /**
  * The sixteen floats of the per-layer UBO, in the pinned order:
@@ -1274,10 +1479,26 @@ namespace {
 
 // sprite-2d.ts: the pure-2D instance layout and the CPU-side shadow that
 // keeps a hidden sprite's true size.
-constexpr std::uint32_t sprite_instance_floats = ${layout.instanceFloats}u;
+constexpr std::uint32_t sprite_instance_floats = ${layout.pureInstanceFloats}u;
+constexpr std::uint32_t sprite_depth_instance_floats = ${layout.depthInstanceFloats}u;
 constexpr std::uint32_t sprite_saved_size_floats = ${layout.savedSizeFloats}u;
 // sprite-2d-uvscroll.ts UVSCROLL_EXTRA_FLOATS_PER_SPRITE.
 constexpr std::uint32_t sprite_uvscroll_extra_floats = ${this.uvScrollExtraFloats()}u;
+
+void touch_sprite_instances(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t begin,
+    std::uint32_t end) {
+    if (begin < end) {
+        layer.dirty_sprite_begin = std::min(
+            layer.dirty_sprite_begin,
+            begin);
+        layer.dirty_sprite_end = std::max(
+            layer.dirty_sprite_end,
+            end);
+    }
+    layer.version += 1u;
+}
 
 void grow_sprite_capacity(
     Sprite2DLayerRecord& layer,
@@ -1293,6 +1514,11 @@ void grow_sprite_capacity(
         static_cast<std::size_t>(capacity) *
         sprite_saved_size_floats);
     layer.capacity = capacity;
+    // The PAL replaces its capacity-sized buffer after this growth. Keep
+    // the whole active prefix dirty so that fresh allocation is initialized
+    // even though the add itself only writes the new tail slot.
+    layer.dirty_sprite_begin = layer.count == 0u ? invalid_handle : 0u;
+    layer.dirty_sprite_end = layer.count;
 }
 
 void populate_grid_sprite_atlas_frames(
@@ -1355,7 +1581,8 @@ void ensure_sprite_uv_scroll(Sprite2DLayerRecord& layer) {
     layer.instance_data = std::move(next);
     layer.instance_floats_per_sprite = new_stride;
     layer.uv_scroll = true;
-    layer.version += 1u;
+    touch_sprite_instances(layer, 0u, layer.count);
+    layer.pipeline_version += 1u;
 }
 
 // setSprite2DShaderParams: the fx UBO the pipeline binds reads these four
@@ -1389,9 +1616,15 @@ void set_sprite_2d_uv_offset(
     const std::size_t base =
         static_cast<std::size_t>(index) *
         layer.instance_floats_per_sprite;
-    const std::size_t slot = base + sprite_instance_floats;
+    const std::size_t slot =
+        base + layer.instance_floats_per_sprite -
+        sprite_uvscroll_extra_floats;
     layer.instance_data[slot] = uv_offset.x;
     layer.instance_data[slot + 1u] = uv_offset.y;
+    touch_sprite_instances(
+        layer,
+        static_cast<std::uint32_t>(index),
+        static_cast<std::uint32_t>(index) + 1u);
 }
 
 SpriteAtlasHandle load_sprite_atlas(
@@ -1676,8 +1909,13 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     layer.opacity = options.opacity;
     layer.visible = options.visible;
     layer.order = options.order;
+    layer.depth_mode = options.depth_mode;
+    layer.layer_z = options.layer_z;
     layer.pivot = options.pivot;
-    layer.instance_floats_per_sprite = sprite_instance_floats;
+    layer.instance_floats_per_sprite =
+        options.depth_mode == Sprite2DDepthMode::none
+            ? sprite_instance_floats
+            : sprite_depth_instance_floats;
     layer.capacity = static_cast<std::uint32_t>(
         std::max(1.0, static_cast<double>(options.capacity)));
     layer.instance_data.assign(
@@ -1692,6 +1930,33 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     return Sprite2DLayerHandle{
         static_cast<std::uint32_t>(
             engine.sprite_layers.size() - 1u)};
+}
+
+// sprite-scene.ts#addDepthHostedSpriteLayer: a depth-enabled layer is a
+// scene renderable, not a separately registered SpriteRenderer context.
+void add_depth_hosted_sprite_layer(
+    Scene& scene,
+    Sprite2DLayerHandle layer_handle) {
+    const Sprite2DLayerRecord& layer =
+        scene.engine->sprite_layers[layer_handle.value];
+    if (layer.depth_mode == Sprite2DDepthMode::none) {
+        throw std::runtime_error(
+            "Depth-hosted sprites require depth != none.");
+    }
+    scene.depth_hosted_sprite_layers.push_back(layer_handle);
+}
+
+// render/alpha-to-coverage.ts: immutable pipeline state, read when the
+// scene-hosted pipeline is created.
+void set_sprite_2d_alpha_to_coverage(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    bool enabled) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    if (layer.alpha_to_coverage == enabled) return;
+    layer.alpha_to_coverage = enabled;
+    layer.pipeline_version += 1u;
 }
 
 namespace {
@@ -1829,6 +2094,14 @@ void write_sprite_instance(
         layer.instance_data[base + 11u] = 1.0f;
         layer.instance_data[base + 12u] = 1.0f;
     }
+    if (layer.depth_mode != Sprite2DDepthMode::none) {
+        layer.instance_data[base + 13u] =
+            props.has_z
+                ? props.z
+                : (is_add
+                      ? layer.layer_z
+                      : layer.instance_data[base + 13u]);
+    }
 }
 
 } // namespace
@@ -1851,7 +2124,7 @@ double add_sprite_2d_index(
     }
     write_sprite_instance(layer, atlas, index, props, true);
     layer.count = index + 1u;
-    layer.version += 1u;
+    touch_sprite_instances(layer, index, index + 1u);
     return static_cast<double>(index);
 }
 
@@ -1872,13 +2145,15 @@ void update_sprite_2d_index(
     }
     const SpriteAtlasRecord& atlas =
         engine.sprite_atlases[layer.atlas.value];
+    const std::uint32_t index =
+        static_cast<std::uint32_t>(index_value);
     write_sprite_instance(
         layer,
         atlas,
-        static_cast<std::uint32_t>(index_value),
+        index,
         props,
         false);
-    layer.version += 1u;
+    touch_sprite_instances(layer, index, index + 1u);
 }
 
 
@@ -1961,7 +2236,7 @@ void set_sprite_2d_frame_id(
         flip_x ? atlas_frame.uv_min.x : atlas_frame.uv_max.x;
     layer.instance_data[base + 7] =
         flip_y ? atlas_frame.uv_min.y : atlas_frame.uv_max.y;
-    layer.version += 1u;
+    touch_sprite_instances(layer, index, index + 1u);
 }
 
 // sprite-2d.ts#removeSprite2DIndex: a swap-remove. The last sprite moves
@@ -2013,7 +2288,13 @@ void remove_sprite_2d_id(
     layer.saved_size[last * 2u] = 0.0f;
     layer.saved_size[last * 2u + 1u] = 0.0f;
     layer.count = last;
-    layer.version += 1u;
+    // Only a swap writes a row that remains active. Removing the tail still
+    // bumps the version because a second GPU consumer must observe the new
+    // draw count, but it needs no byte upload.
+    touch_sprite_instances(
+        layer,
+        index,
+        index == last ? index : index + 1u);
 }
 
 // sprite-2d.ts#clearSprite2DLayer: drop the count and the size shadow, and
@@ -2041,6 +2322,8 @@ void clear_sprite_2d_layer(
             sprite_saved_size_floats,
         0.0f);
     layer.count = 0u;
+    layer.dirty_sprite_begin = invalid_handle;
+    layer.dirty_sprite_end = 0u;
     layer.version += 1u;
 }
 
@@ -2055,6 +2338,11 @@ SpriteRendererHandle create_sprite_renderer(
         if (layer.value >= engine.sprite_layers.size()) {
             throw std::runtime_error(
                 "SpriteRenderer received an unknown layer.");
+        }
+        if (engine.sprite_layers[layer.value].depth_mode !=
+            Sprite2DDepthMode::none) {
+            throw std::runtime_error(
+                "SpriteRenderer requires layers with depth == none.");
         }
     }
     engine.sprite_renderers.push_back(std::move(renderer));
@@ -2078,6 +2366,11 @@ void add_sprite_renderer_layer(
     if (layer.value >= engine.sprite_layers.size()) {
         throw std::runtime_error(
             "SpriteRenderer received an unknown layer.");
+    }
+    if (engine.sprite_layers[layer.value].depth_mode !=
+        Sprite2DDepthMode::none) {
+        throw std::runtime_error(
+            "SpriteRenderer requires layers with depth == none.");
     }
     std::vector<Sprite2DLayerHandle>& layers = record.layers;
     const auto present = std::any_of(

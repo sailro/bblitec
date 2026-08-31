@@ -2086,6 +2086,12 @@ export class ExpressionLowerer {
         ) {
             delete conditional.staticString;
         }
+        if (
+            whenTrue.spriteDepthMode !==
+            whenFalse.spriteDepthMode
+        ) {
+            delete conditional.spriteDepthMode;
+        }
         return conditional;
     }
 

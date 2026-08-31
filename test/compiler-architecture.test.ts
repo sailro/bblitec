@@ -45,6 +45,18 @@ test("accepts value and identity-backed records in native vector paths", () => {
     );
 });
 
+test("stores reached scene-disposal callbacks in the native scene contract", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    assert.match(
+        runtime,
+        /struct Scene \{[\s\S]{0,5000}std::vector<std::function<void\(\)>> disposables;/,
+    );
+    assert.match(
+        runtime,
+        /void on_scene_dispose\(\s*Scene& scene,\s*std::function<void\(\)> callback\);/,
+    );
+});
+
 test("uses TypeScript semantic symbols instead of import-name text matching", () => {
     const compiler = source("src/compiler.ts");
     assert.match(compiler, /createCompilerProgram/);
@@ -576,7 +588,7 @@ test("keeps the split lowerer families in their modules", () => {
     // wave-2 precision pass; the seam is the pinned-surface emitter now.
     assert.match(
         source("src/lowering/pinned-surface.ts"),
-        /function pinnedSampleCount\(/,
+        /function pinnedSampleCounts\(/,
     );
 });
 
@@ -625,6 +637,163 @@ test("composes registered sprite renderers over scene output", () => {
         dawn,
         /for \(const SpriteRendererHandle handle :\s*engine\.registered_sprite_renderers\)[\s\S]{0,2600}record_dawn_sprite_pass\(/,
     );
+});
+
+test("keeps depth-hosted sprite buffers growable, paused while hidden, and insertion ordered", () => {
+    const sdl = source("native/src/pal_sdl_gpu_sprite.hpp");
+    const dawn = source("native/src/pal_dawn_sprite.hpp");
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const lowerer = source("src/lowering/sprite-lowerer.ts");
+    const section = (text: string, start: string, end: string): string => {
+        const from = text.indexOf(start);
+        const to = text.indexOf(end, from + start.length);
+        assert.notEqual(from, -1, `Missing ${start}`);
+        assert.notEqual(to, -1, `Missing ${end}`);
+        return text.slice(from, to);
+    };
+
+    const sdlUpload = section(
+        sdl,
+        "inline void upload_sprite_layer_gpu(",
+        "inline void upload_sprite_pass(",
+    );
+    const dawnUpload = section(
+        dawn,
+        "inline void upload_dawn_sprite_layer(",
+        "inline void upload_dawn_sprite_pass(",
+    );
+    for (const upload of [sdlUpload, dawnUpload]) {
+        assert.match(
+            upload,
+            /if \(!layer\.visible \|\| layer\.count == 0\) return;[\s\S]*needed_bytes/,
+        );
+        assert.match(upload, /instance_buffer_bytes < needed_bytes/);
+        assert.match(upload, /instance_buffer_bytes = needed_bytes/);
+        assert.match(upload, /gpu\.uploaded = false/);
+        assert.ok(
+            upload.indexOf("if (!layer.visible || layer.count == 0) return;") <
+                upload.indexOf("gpu.elapsed_ms += delta_ms"),
+        );
+    }
+    assert.match(sdlUpload, /SDL_ReleaseGPUBuffer\(device, gpu\.instances\)/);
+    assert.match(dawnUpload, /wgpuBufferRelease\(gpu\.instances\)/);
+    assert.match(
+        runtime,
+        /dirty_sprite_begin = invalid_handle;[\s\S]{0,160}dirty_sprite_end = 0;[\s\S]{0,800}pipeline_version = 0;/,
+    );
+    assert.match(
+        lowerer,
+        /touch_sprite_instances\([\s\S]{0,320}layer\.dirty_sprite_begin = std::min/,
+    );
+    assert.equal(
+        lowerer.match(
+            /SpriteRenderer requires layers with depth == none\./g,
+        )?.length,
+        2,
+    );
+    assert.match(
+        sdlUpload,
+        /dirty_begin[\s\S]{0,900}buffer_uploads->update\(\s*gpu\.instances,\s*offset,\s*data,\s*bytes\)/,
+    );
+    assert.match(
+        dawnUpload,
+        /dirty_begin[\s\S]{0,700}wgpuQueueWriteBuffer\([\s\S]{0,180}static_cast<std::uint64_t>\(dirty_begin\) \* stride_bytes/,
+    );
+
+    // Fixed/layout mutations rebuild before the next upload, and atlas GPU
+    // resources are owned once by the pass rather than once per layer.
+    assert.match(
+        sdl,
+        /gpu\.pipeline_version == layer\.pipeline_version[\s\S]{0,320}rebuild_sprite_layer_pipeline\(/,
+    );
+    assert.match(
+        dawn,
+        /sync_dawn_scene_sprite_pass_pipelines\([\s\S]{0,900}dawn_sprite_pipeline_state_matches\([\s\S]{0,1200}release_dawn_sprite_layer\([\s\S]{0,1400}build_dawn_sprite_layer\(/,
+    );
+    assert.match(sdl, /struct SpriteAtlasGpu/);
+    assert.match(sdl, /std::vector<SpriteAtlasGpu> atlases;/);
+    assert.match(
+        sdl,
+        /renderer\.layers\.begin\(\)[\s\S]{0,420}release_sprite_atlas_gpu\(device, \*atlas\);[\s\S]{0,120}pass\.atlases\.erase\(atlas\)/,
+    );
+    assert.match(dawn, /struct DawnSpriteAtlasBinding/);
+    assert.match(dawn, /std::vector<DawnSpriteAtlasBinding> atlases;/);
+
+    const sdlRecord = section(
+        sdl,
+        "inline void record_scene_sprite_pass(",
+        "inline void release_scene_sprite_pass(",
+    );
+    const dawnRecord = section(
+        dawn,
+        "inline void record_dawn_scene_sprite_pass(",
+        "inline void release_dawn_scene_sprite_pass(",
+    );
+    for (const record of [sdlRecord, dawnRecord]) {
+        assert.match(
+            record,
+            /for \(std::size_t index = 0; index < pass\.handles\.size\(\); \+\+index\)/,
+        );
+        assert.doesNotMatch(
+            record,
+            /stable_sort|engine\.sprite_layers\[[^\]]+\]\.order/,
+        );
+    }
+});
+
+test("shares compatible depth-hosted sprite pipelines within a scene pass", () => {
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const sdl = source("native/src/pal_sdl_gpu_sprite.hpp");
+    const dawn = source("native/src/pal_dawn_sprite.hpp");
+
+    assert.match(shared, /sprite_scene_pipeline_compatible\(/);
+    assert.match(
+        shared,
+        /left_plan\.has_depth == right_plan\.has_depth[\s\S]{0,260}left_plan\.depth_write == right_plan\.depth_write[\s\S]{0,260}left_plan\.alpha_to_coverage == right_plan\.alpha_to_coverage[\s\S]{0,260}custom_shader == right\.custom_shader/,
+    );
+    assert.match(
+        shared,
+        /left_plan\.instance_stride_bytes ==\s*right_plan\.instance_stride_bytes/,
+    );
+    assert.match(sdl, /shared_pipeline = pass\.layers\[previous\]\.pipeline/);
+    assert.match(sdl, /gpu\.owns_pipeline = shared_pipeline == nullptr/);
+    assert.match(
+        dawn,
+        /shared_pipeline_layer = &pass\.layers\[previous\]/,
+    );
+    assert.match(dawn, /gpu\.owns_pipeline = shared_pipeline_layer == nullptr/);
+    assert.match(dawn, /gpu\.owns_group_layouts = shared_pipeline_layer == nullptr/);
+    assert.match(
+        dawn,
+        /pass\.layers\.rbegin\(\)[\s\S]{0,180}release_dawn_sprite_layer\(\*layer\)/,
+    );
+});
+
+test("wires reached sprite permutations and provenance into upstream emission", () => {
+    const upstream = source("src/upstream-lower.ts");
+    assert.match(
+        upstream,
+        /generated\.push\(\.\.\.spriteCoreAdditionalProvenance\)/,
+    );
+    assert.match(
+        upstream,
+        /for \(const permutation of spriteVertexPermutations\(\{[\s\S]{0,260}pure: needsPureVertex,[\s\S]{0,260}depthHosted: features\.includes\([\s\S]{0,500}composedShaders\.push\(\{[\s\S]{0,180}permutation\.output/,
+    );
+});
+
+test("keeps Scene53's reached direct sprite bucket after opaque meshes", () => {
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+    for (const backend of [sdl, dawn]) {
+        assert.match(
+            backend,
+            /RenderStage::opaque:[\s\S]{0,120}draw_render_list\(render_plan\.draw_lists\.opaque\);[\s\S]{0,520}Sprite2DDepthMode::test_write/,
+        );
+        assert.match(
+            backend,
+            /RenderStage::transparent:[\s\S]{0,180}draw_render_list\([\s\S]{0,80}render_plan\.draw_lists\.transparent\);[\s\S]{0,520}Sprite2DDepthMode::test/,
+        );
+    }
 });
 
 test("keeps scene-less sprite render targets and renderer registration live", () => {

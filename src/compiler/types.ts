@@ -31,6 +31,8 @@ export interface CompileOptions {
 export interface CompileManifest {
   source: string;
   features: string[];
+  /** The explicit surface sample count, absent when the pin's default applies. */
+  engineMsaaSamples?: 1 | 4;
   /**
    * feature -> "file:line" of the first scene-source call site that
    * reached it, keyed and ordered like `features` but kept as a
@@ -61,6 +63,8 @@ export interface CompileManifest {
   spriteCustomShaders: SpriteCustomShaderManifest[];
   /** Every `createEffectWrapper` the scene built, in reach order. */
   effects: EffectManifest[];
+  /** Whether a standalone SpriteRenderer needs the pure-2D vertex stage. */
+  pureSpriteVertex: boolean;
   /**
    * Whether any layer or system draws with the stock program. A scene whose
    * every one opts into a custom shader never loads it, so it is not
@@ -1506,6 +1510,13 @@ export interface Value {
   spriteCustomTextureNames?: string[];
   /** One-based program index; zero is the stock sprite/billboard shader. */
   spriteCustomShaderIndex?: number;
+  /**
+   * Generation-known depth mode for a 2D sprite-layer handle. This is handle
+   * metadata, not a materialized string value: `staticString` is reserved for
+   * actual compile-time strings and would otherwise change the native type of
+   * a sprite handle stored inside a data record or array.
+   */
+  spriteDepthMode?: "none" | "test" | "test-write";
   shaderVariant?: string;
   /**
    * The same name, but only for a program `createShaderMaterial` built
@@ -1721,6 +1732,7 @@ export type Feature =
   | "shadow:csm-single-map"
   | "shadow:task"
   | "sprite:2d"
+  | "sprite:2d-depth-host"
   | "sprite:uv-scroll"
   | "sprite:custom-shader"
   | "material:standard-diffuse-render-texture"

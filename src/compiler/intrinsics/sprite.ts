@@ -52,6 +52,8 @@ export interface SpriteIntrinsicContext
     compileSpriteAtlas(expression: ts.Expression): Value;
     /** One layer or system built without a custom shader, so with the stock program. */
     recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
+    /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
+    recordPureSpriteVertex(): void;
     /** The custom-shader descriptors built so far, in scene order. */
     spriteCustomShaders(): readonly SpriteCustomShaderManifest[];
     /**
@@ -358,7 +360,6 @@ function sprite2DPropsCpp(
     props: Value | undefined,
     call: ts.CallExpression,
     importedName: string,
-    optionsArgument: ts.Node,
 ): string {
     const positionPx = tupleOption(
         context,
@@ -370,12 +371,7 @@ function sprite2DPropsCpp(
     if (!positionPx && importedName === "addSprite2DIndex") {
         context.fail(call, "addSprite2DIndex: positionPx required.");
     }
-    if (property(props, "z")) {
-        context.fail(
-            optionsArgument,
-            "Per-sprite z is only stored by depth-hosted layers, which are not lowered.",
-        );
-    }
+    const z = property(props, "z");
     const sizePx = tupleOption(context, props, "sizePx", call, 2);
     const color = tupleOption(context, props, "color", call, 4);
     const frame = property(props, "frame");
@@ -402,7 +398,9 @@ function sprite2DPropsCpp(
         }}, ${color ? "true" : "false"}, ` +
         `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
         `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
-        `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}}`
+        `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}, ` +
+        `${z ? `static_cast<float>(${z.cpp})` : "0.0f"}, ` +
+        `${z ? "true" : "false"}}`
     );
 }
 
@@ -967,14 +965,16 @@ export function compileSpriteIntrinsic(
             const depth = property(options, "depth");
             if (
                 depth &&
-                depth.staticString !== "none"
+                !["none", "test", "test-write"].includes(
+                    depth.staticString ?? "",
+                )
             ) {
                 context.fail(
                     call.arguments[1]!,
-                    'Only depth: "none" sprite layers are lowered; depth-hosted layers need the scene sprite path.',
+                    'createSprite2DLayer depth must be "none", "test", or "test-write".',
                 );
             }
-            for (const unreached of ["layerZ", "view"]) {
+            for (const unreached of ["view"]) {
                 if (property(options, unreached)) {
                     context.fail(
                         call.arguments[1]!,
@@ -1008,6 +1008,9 @@ export function compileSpriteIntrinsic(
             const engineCpp =
                 atlas.engineCpp ??
                 context.requireDefaultEngine(call);
+            const depthMode = (depth?.staticString ?? "none") as NonNullable<
+                Value["spriteDepthMode"]
+            >;
             context.reachFeature("sprite:2d", call);
             return {
                 kind: "sprite-layer",
@@ -1019,6 +1022,12 @@ export function compileSpriteIntrinsic(
                     `${numberOption(options, "opacity", "1.0f")}, ` +
                     `${property(options, "visible")?.cpp ?? "true"}, ` +
                     `${numberOption(options, "order", "0.0f")}, ` +
+                    `bbl::Sprite2DDepthMode::${
+                        depthMode === "test-write"
+                            ? "test_write"
+                            : depthMode
+                    }, ` +
+                    `${numberOption(options, "layerZ", "0.5f")}, ` +
                     `bbl::Vec2{${
                         pivot
                             ? `${pivot[0]!}, ${pivot[1]!}`
@@ -1027,6 +1036,7 @@ export function compileSpriteIntrinsic(
                     `${custom.program}, ${custom.textures}, ` +
                     `${custom.textureNames}})`,
                 engineCpp,
+                spriteDepthMode: depthMode,
             };
         }
 
@@ -1058,7 +1068,6 @@ export function compileSpriteIntrinsic(
                         props,
                         call,
                         "addSprite2DIndex",
-                        call.arguments[1] ?? call,
                     )})`,
                 engineCpp,
             };
@@ -1094,7 +1103,6 @@ export function compileSpriteIntrinsic(
                         props,
                         call,
                         "addSprite2D",
-                        call.arguments[1] ?? call,
                     ) +
                     ")",
                 engineCpp,
@@ -1141,7 +1149,6 @@ export function compileSpriteIntrinsic(
                         props,
                         call,
                         "updateSprite2DIndex",
-                        expression,
                     )})`
                 );
             };
@@ -1820,23 +1827,56 @@ export function compileSpriteIntrinsic(
         case "setAlphaToCoverage": {
             context.expectArgumentCount(call, 2, 2);
             const target = context.compileValue(call.arguments[0]!);
-            // The pin accepts several pipeline owners; only a billboard
-            // system is reached, so any other target refuses by name here
-            // rather than compiling into a call that cannot exist.
-            context.expectKind(
-                target,
-                "billboard-system",
-                call.arguments[0]!,
-            );
+            if (
+                target.kind !== "billboard-system" &&
+                target.kind !== "sprite-layer"
+            ) {
+                context.fail(
+                    call.arguments[0]!,
+                    "setAlphaToCoverage supports billboard systems and Sprite2D layers.",
+                );
+            }
             const enabled = context.compileBoolean(
                 call.arguments[1]!,
             );
             const engineCpp =
                 target.engineCpp ??
                 context.requireDefaultEngine(call);
-            context.reachFeature("sprite:billboard", call);
+            context.reachFeature(
+                target.kind === "sprite-layer"
+                    ? "sprite:2d"
+                    : "sprite:billboard",
+                call,
+            );
             context.emit(
-                `bbl::set_billboard_alpha_to_coverage(${engineCpp}, ${target.cpp}, ${enabled});`,
+                `bbl::${
+                    target.kind === "sprite-layer"
+                        ? "set_sprite_2d_alpha_to_coverage"
+                        : "set_billboard_alpha_to_coverage"
+                }(${engineCpp}, ${target.cpp}, ${enabled});`,
+            );
+            return { kind: "void", cpp: "" };
+        }
+
+        case "addDepthHostedSpriteLayer": {
+            context.expectArgumentCount(call, 2, 2);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            const layer = context.compileValue(call.arguments[1]!);
+            context.expectKind(layer, "sprite-layer", call.arguments[1]!);
+            if (layer.spriteDepthMode === "none") {
+                context.fail(
+                    call.arguments[1]!,
+                    'Depth-hosted sprites require depth != "none".',
+                );
+            }
+            context.expectSameEngine(scene, layer, call);
+            context.reachFeature("sprite:2d", call);
+            context.reachFeature("sprite:2d-depth-host", call);
+            context.reachFeature("renderer:sprite", call);
+            context.reachFeature("renderer:pbr", call);
+            context.emit(
+                `bbl::add_depth_hosted_sprite_layer(${scene.cpp}, ${layer.cpp});`,
             );
             return { kind: "void", cpp: "" };
         }
@@ -1932,6 +1972,11 @@ export function compileSpriteIntrinsic(
                     "sprite-layer",
                     call.arguments[1]!,
                 );
+                rejectDepthHostedStandaloneLayer(
+                    context,
+                    layer,
+                    call.arguments[1]!,
+                );
             }
             const clearValue = tupleClearValue(
                 context,
@@ -1940,6 +1985,7 @@ export function compileSpriteIntrinsic(
             );
             context.reachFeature("sprite:2d", call);
             context.reachFeature("renderer:sprite", call);
+            context.recordPureSpriteVertex();
             return {
                 kind: "sprite-renderer",
                 cpp:
@@ -2045,6 +2091,13 @@ export function compileSpriteIntrinsic(
             context.reachFeature("renderer:sprite", call);
             const removes =
                 importedName === "removeSpriteRendererLayer";
+            if (!removes) {
+                rejectDepthHostedStandaloneLayer(
+                    context,
+                    layer,
+                    call.arguments[1]!,
+                );
+            }
             const cpp =
                 `bbl::${
                     removes
@@ -2080,6 +2133,26 @@ export function compileSpriteIntrinsic(
 
         default:
             return undefined;
+    }
+}
+
+/**
+ * A depth-enabled layer draws inside a scene pass, never in the standalone
+ * SpriteRenderer pass that has no scene depth attachment.
+ */
+function rejectDepthHostedStandaloneLayer(
+    context: SpriteIntrinsicContext,
+    layer: Value,
+    node: ts.Node,
+): void {
+    if (
+        layer.spriteDepthMode &&
+        layer.spriteDepthMode !== "none"
+    ) {
+        context.fail(
+            node,
+            'SpriteRenderer layers require depth: "none"; attach depth-enabled layers to a scene.',
+        );
     }
 }
 

@@ -1458,20 +1458,34 @@ before the callback, while SDL_GPU's acquired texture and Dawn's reconfigured
 sprite surface use that same extent. This is application behavior reached by
 the demo, not a Platformer-specific resize rule.
 
-**A sprite layer is drawn by its own renderer, not by the scene.** Upstream's
-`SpriteRenderer` implements `RenderingContext` directly and registers on the
-engine rather than on a `SceneContext`, opens its own single-sample swapchain
-pass, and draws one instanced quad per layer. Native mirrors that: a scene
-registering a sprite renderer and no scene compiles no scene renderer at all,
-and the sprite pass is a separate translation unit. The instance layout is the
-pinned pure-2D one — thirteen floats, 52 bytes, position/size/uvMin/uvMax/
-rotation/colour — and the layer UBO is the pinned sixteen floats. Reached
-`depth: "none"` layers cover the exported blend descriptors, the widened UV
-scroll layout, and custom fragment shaders with `fx.time`, `fx.params`, and
-extra textures; depth-hosted layers and coverage gamma remain unreached. Both
-GPU backends draw the same generated stock or pin-composed custom WGSL; their
-platformer captures differ by only 0.004 MAD, with 99.91% of pixels within one
-channel level.
+**A pure-2D sprite layer is drawn by its own renderer, not by the scene.**
+Upstream's `SpriteRenderer` implements `RenderingContext` directly and
+registers on the engine rather than on a `SceneContext`, opens its own
+single-sample swapchain pass, and draws one instanced quad per layer. Native
+mirrors that: a scene registering a sprite renderer and no scene compiles no
+scene renderer at all, and the sprite pass is a separate translation unit.
+The same independent context can register after a scene and load its colour,
+which is how Scene 52 overlays its HUD without sharing the scene depth pass.
+The instance layout is the pinned pure-2D one — thirteen floats, 52 bytes,
+position/size/uvMin/uvMax/rotation/colour — and the layer UBO is the pinned
+sixteen floats.
+
+Reached `depth: "none"` layers cover the exported blend descriptors, the
+widened UV scroll layout, and custom fragment shaders with `fx.time`,
+`fx.params`, and extra textures. Scene 51 closes the premultiplied path end to
+end: its atlas decode premultiplies RGB by alpha before upload, the atlas
+record carries that convention into the layer UBO's opacity rule, and the
+descriptor uses source-one blending. Its explicit surface choice is folded
+from the bare reference query to the `1` arm of the pin's `1 | 4` selection;
+the SpriteRenderer pass itself remains directly single-sampled either way.
+
+A depth-enabled layer is the other ownership arm. It attaches to a
+`SceneContext`, appends per-instance z as float 13, and builds against the
+scene's colour, depth, and multisample attachments. Scene 53 reaches the
+depth-writing opaque path and its alpha-to-coverage gate. Coverage gamma
+remains unreached. Both GPU backends draw the same generated stock or
+pin-composed custom WGSL; their platformer captures differ by only 0.004 MAD,
+with 99.91% of pixels within one channel level.
 
 **A sprite target is another rendering context boundary, not a post-draw
 copy.** `createSpriteRenderTexture` produces a single-sample colour attachment

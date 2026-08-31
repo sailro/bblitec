@@ -109,6 +109,39 @@ export interface StaticBooleanContext {
     fail(node: ts.Node, message: string): never;
 }
 
+export interface StaticNumberSelectionContext
+    extends PositiveIntegerContext {
+    compileCondition(expression: ts.Expression): string;
+}
+
+/**
+ * A static number after following any statically settled conditional arms.
+ *
+ * Query-derived options commonly bind a `1 | 4` value through a conditional.
+ * `resolveStaticExpression` gets us to that conditional, while this helper
+ * performs the shared control-flow fold before `staticNumberValue` evaluates
+ * the selected arithmetic expression. A live condition remains a miss so the
+ * caller can issue its domain-specific generation-time refusal.
+ */
+export function selectedStaticNumberValue(
+    context: StaticNumberSelectionContext,
+    expression: ts.Expression,
+): number | undefined {
+    let selected = context.resolveStaticExpression(expression);
+    while (ts.isConditionalExpression(selected)) {
+        const condition = context.compileCondition(selected.condition);
+        if (condition !== "true" && condition !== "false") {
+            return undefined;
+        }
+        selected = context.resolveStaticExpression(
+            condition === "true"
+                ? selected.whenTrue
+                : selected.whenFalse,
+        );
+    }
+    return staticNumberValue(context, selected);
+}
+
 /**
  * A boolean option as the value it settles to, or the fallback when unset.
  *

@@ -1886,6 +1886,42 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene51",
+        name: "Scene 51 - Soft-Edged Sprite Grid",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene51.ts",
+        title: "Babylon Lite Native - Soft-Edged Sprite Grid",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [18, 20, 31],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene52",
+        name: "Scene 52 - HUD on 3D",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene52.ts",
+        title: "Babylon Lite Native - HUD on 3D",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene53",
+        name: "Scene 53 - Depth-Hosted Sprites",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene53.ts",
+        title: "Babylon Lite Native - Depth-Hosted Sprites",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene56",
         name: "Scene 56 - Axis-Locked Billboards",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene56.ts",

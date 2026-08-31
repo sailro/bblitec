@@ -1402,10 +1402,10 @@ struct MeshRecord {
 
 // ---------------------------------------------------------------------------
 // Sprites (src/sprite/*). A sprite layer is pure data upstream and stays pure
-// data here: the Index API writes floats into one interleaved instance buffer
-// and the renderer draws it. None of it touches the scene renderer -- a
-// `SpriteRenderer` is its own rendering context on the engine, exactly as the
-// pinned one is.
+// data here: the Index API writes floats into one interleaved instance buffer.
+// A depth:none layer is owned by its SpriteRenderer rendering context; a
+// depth-enabled layer attaches as a scene renderable and shares that scene's
+// colour/depth pass, exactly as the pin separates the two arms.
 // ---------------------------------------------------------------------------
 
 /** shared/sprite-atlas.ts `SpriteFrame`: UVs in [0,1], size in pixels. */
@@ -1511,6 +1511,13 @@ struct Sprite2DView {
     float rotation = 0.0f;
 };
 
+/** sprite-2d.ts `depth`: which render path owns this layer. */
+enum class Sprite2DDepthMode {
+    none,
+    test,
+    test_write,
+};
+
 /**
  * A Gaussian-splat cloud, as `loadSplat` leaves it.
  *
@@ -1573,11 +1580,13 @@ struct Sprite2DLayerRecord {
     float opacity = 1.0f;
     bool visible = true;
     float order = 0.0f;
+    Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
+    float layer_z = 0.5f;
     Sprite2DView view{};
     Vec2 pivot{0.5f, 0.5f};
     std::uint32_t count = 0;
     std::uint32_t capacity = 0;
-    // 13 for the pure-2D layout; the depth-hosted 14th slot is unreached.
+    // 13 for pure 2D, 14 when the layer carries the depth slot.
     std::uint32_t instance_floats_per_sprite = 13;
     std::vector<float> instance_data;
     // The CPU-only shadow holding each sprite's true size regardless of
@@ -1608,7 +1617,23 @@ struct Sprite2DLayerRecord {
     std::vector<std::string> custom_texture_names;
     // The `fx.params` vec4, zero until setSprite2DShaderParams writes it.
     Vec4 shader_params{};
+    // render/alpha-to-coverage.ts: enabled only on a multisampled,
+    // depth-writing scene-hosted pipeline.
+    bool alpha_to_coverage = false;
+    // Instance mutations accumulate one half-open dirty sprite range. The
+    // active backend clears it after the matching version reaches the GPU;
+    // a buffer replacement widens it back to the full active range.
+    std::uint32_t dirty_sprite_begin = invalid_handle;
+    std::uint32_t dirty_sprite_end = 0;
     std::uint64_t version = 0;
+    // Version of the range most recently consumed by a PAL pass. A second
+    // pass whose upload stamp predates it must refresh the active prefix;
+    // a later count-only version bump needs no instance transfer.
+    std::uint64_t dirty_sprite_reset_version = 0;
+    // Fixed pipeline state moves independently from instance bytes. Runtime
+    // UV-scroll widening and alpha-to-coverage changes bump this stamp so an
+    // already-created PAL pass can rebuild/reselect the compatible pipeline.
+    std::uint64_t pipeline_version = 0;
 };
 
 /**
@@ -2765,6 +2790,9 @@ struct Scene {
     std::vector<TaskHandle> tasks;
     std::vector<AnimationGroupHandle> animation_groups;
     std::vector<BillboardSystemHandle> billboard_systems;
+    // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
+    // therefore share this scene's colour, multisample and depth targets.
+    std::vector<Sprite2DLayerHandle> depth_hosted_sprite_layers;
     // `loadSplat` registers the renderable on the scene it is handed, the
     // way `attachGaussianSplattingMesh` pushes into `_renderables`.
     std::vector<SplatMeshHandle> splat_meshes;
@@ -2778,6 +2806,7 @@ struct Scene {
      */
     ClusteredLightContainerHandle clustered_lights{};
     std::vector<std::function<void(float)>> before_render;
+    std::vector<std::function<void()>> disposables;
     std::vector<std::function<void(float)>> animation_seekers;
     /**
      * Whether this scene already contributed the seeker that reaches the
@@ -3620,6 +3649,9 @@ void remove_from_scene(Scene& scene, MeshHandle mesh);
 void on_before_render(
     Scene& scene,
     std::function<void(float)> callback);
+void on_scene_dispose(
+    Scene& scene,
+    std::function<void()> callback);
 void on_key_down(
     Engine& engine,
     std::function<void(const PlatformKeyboardEvent&)> callback);
@@ -3791,6 +3823,8 @@ struct Sprite2DLayerOptions {
     float opacity = 1.0f;
     bool visible = true;
     float order = 0.0f;
+    Sprite2DDepthMode depth_mode = Sprite2DDepthMode::none;
+    float layer_z = 0.5f;
     Vec2 pivot{0.5f, 0.5f};
     std::uint32_t custom_shader = 0;
     std::vector<PixelsTexture> custom_textures;
@@ -3871,6 +3905,8 @@ struct Sprite2DProps {
     bool has_flip_y = false;
     bool visible = true;
     bool has_visible = false;
+    float z = 0.0f;
+    bool has_z = false;
 };
 
 struct SpriteRendererOptions {
@@ -3966,6 +4002,15 @@ void add_billboard_system(
 void set_billboard_alpha_to_coverage(
     Engine& engine,
     BillboardSystemHandle system,
+    bool enabled);
+
+void add_depth_hosted_sprite_layer(
+    Scene& scene,
+    Sprite2DLayerHandle layer);
+
+void set_sprite_2d_alpha_to_coverage(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
     bool enabled);
 
 void set_sprite_2d_uv_offset(
