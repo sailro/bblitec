@@ -5527,12 +5527,23 @@ bool run_gpu_engine(Engine& engine) {
         // by a before-render callback. Mirror all newly appended CPU records
         // in handle order both here and immediately after each callback run.
         const auto sync_sprite_gpu_contexts = [&]() {
-            while (
-                sprite_render_textures.size() <
-                engine.sprite_render_textures.size()) {
+            sprite_render_textures.resize(
+                engine.sprite_render_textures.size(), nullptr);
+            for (std::size_t index = 0;
+                 index < engine.sprite_render_textures.size();
+                 ++index) {
                 const SpriteRenderTextureRecord& texture =
-                    engine.sprite_render_textures[
-                        sprite_render_textures.size()];
+                    engine.sprite_render_textures[index];
+                SDL_GPUTexture*& gpu_texture =
+                    sprite_render_textures[index];
+                if (texture.disposed) {
+                    if (gpu_texture) {
+                        SDL_ReleaseGPUTexture(state.device, gpu_texture);
+                    }
+                    gpu_texture = nullptr;
+                    continue;
+                }
+                if (gpu_texture) continue;
                 SDL_GPUTextureCreateInfo info{};
                 info.type = SDL_GPU_TEXTURETYPE_2D;
                 info.format = swapchain_format;
@@ -5543,10 +5554,8 @@ bool run_gpu_engine(Engine& engine) {
                 info.layer_count_or_depth = 1;
                 info.num_levels = 1;
                 info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                SDL_GPUTexture* gpu_texture =
-                    SDL_CreateGPUTexture(state.device, &info);
+                gpu_texture = SDL_CreateGPUTexture(state.device, &info);
                 if (!gpu_texture) gpu_error("sprite render texture");
-                sprite_render_textures.push_back(gpu_texture);
             }
             while (sprite_passes.size() < engine.sprite_renderers.size()) {
                 sprite_passes.push_back(create_sprite_pass(
@@ -7083,7 +7092,7 @@ bool run_gpu_engine(Engine& engine) {
                 : fallback_camera;
         CameraPointerState pointer_state;
         CameraTraceState camera_trace_state;
-        KeyboardReplay keyboard_replay;
+        PlatformInputReplay input_replay;
         const std::string screenshot_path = frame_options.screenshot_path;
         const long screenshot_frame = frame_options.screenshot_frame;
         const bool benchmark = frame_options.benchmarking();
@@ -7106,7 +7115,7 @@ bool run_gpu_engine(Engine& engine) {
                         pointer_state);
                 }
             }
-            keyboard_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, engine);
             // The swapchain is acquired before the scene advances, because
             // SDL only reports an unavailable texture *from*
             // `SDL_WaitAndAcquireGPUSwapchainTexture` -- it cannot be tested

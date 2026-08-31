@@ -1437,6 +1437,7 @@ struct SpriteAtlasRecord {
 struct SpriteRenderTextureRecord {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    bool disposed = false;
 };
 
 /**
@@ -1602,6 +1603,9 @@ struct Sprite2DLayerRecord {
     // custom-shader-core.ts: the descriptor's extra textures, in the order
     // they bind after the atlas. Empty unless a custom shader named any.
     std::vector<PixelsTexture> custom_textures;
+    // Shader identifiers for custom_textures, in the same order. SDL's
+    // compacted shader sidecar uses these to bind only the resources kept.
+    std::vector<std::string> custom_texture_names;
     // The `fx.params` vec4, zero until setSprite2DShaderParams writes it.
     Vec4 shader_params{};
     std::uint64_t version = 0;
@@ -1652,6 +1656,7 @@ struct BillboardSystemRecord {
     // custom-shader-core.ts: the descriptor's extra textures, in the order
     // they bind after the atlas. Empty unless a custom shader named any.
     std::vector<PixelsTexture> custom_textures;
+    std::vector<std::string> custom_texture_names;
     // The `fx.params` vec4, zero until setBillboardShaderParams writes it.
     Vec4 shader_params{};
 };
@@ -2548,6 +2553,8 @@ struct Engine {
         mouse_wheel_callbacks;
     std::vector<std::function<void(const PlatformMouseEvent&)>>
         mouse_cancel_callbacks;
+    /** Browser `window.resize` callbacks, dispatched after canvas size sync. */
+    std::vector<std::function<void()>> window_resize_callbacks;
     std::vector<std::function<void()>> pointer_lock_change_callbacks;
     /** Desired and applied equivalents of the browser pointer-lock state. */
     bool pointer_lock_requested = false;
@@ -3625,6 +3632,9 @@ void on_mouse_wheel(
 void on_mouse_cancel(
     Engine& engine,
     std::function<void(const PlatformMouseEvent&)> callback);
+void on_window_resize(
+    Engine& engine,
+    std::function<void()> callback);
 void on_pointer_lock_change(
     Engine& engine,
     std::function<void()> callback);
@@ -3772,6 +3782,7 @@ struct Sprite2DLayerOptions {
     Vec2 pivot{0.5f, 0.5f};
     std::uint32_t custom_shader = 0;
     std::vector<PixelsTexture> custom_textures;
+    std::vector<std::string> custom_texture_names;
 };
 
 /**
@@ -3796,6 +3807,7 @@ struct BillboardSystemOptions {
     bool has_alpha_cutoff;
     std::uint32_t custom_shader;
     std::vector<PixelsTexture> custom_textures;
+    std::vector<std::string> custom_texture_names;
     // particle-billboard-renderable.ts: the mode-4 wrapper's SECOND pass.
     // The pin builds it as `{...system, blendMode: createParticleBlend(2),
     // _customShader: undefined}` when the renderable is built; here the
@@ -3882,6 +3894,9 @@ SpriteRenderTextureHandle create_sprite_render_texture(
     Engine& engine,
     double width,
     double height);
+void dispose_sprite_render_texture(
+    Engine& engine,
+    SpriteRenderTextureHandle texture);
 void set_sprite_renderer_target(
     Engine& engine,
     SpriteRendererHandle renderer,

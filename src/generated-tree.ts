@@ -91,7 +91,7 @@ export class GeneratedTree {
      */
     private isLiveShaderArtifact(key: string): boolean {
         const match =
-            /^(.*\/shaders\/)([^/]+?)\.(?:dxil|hlsl|msl|spv|tint-reflection\.txt)$/.exec(
+            /^(.*\/shaders\/)([^/]+?)\.(?:dxil|hlsl|msl|spv|slots|tint-reflection\.txt)$/.exec(
                 key,
             );
         if (match) {

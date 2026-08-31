@@ -105,14 +105,14 @@ bool run_effect_gpu_engine(Engine& engine) {
         bool running = true;
         long frame = 0;
         FrameClock frame_clock;
-        KeyboardReplay keyboard_replay;
+        PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
             }
-            keyboard_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, engine);
             // A scene-less driver still serves a queued timeout, so a
             // `stopEngine` from one is not a silent no-op here.
             (void)advance_frame(

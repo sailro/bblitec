@@ -73,12 +73,25 @@ bool run_sprite_dawn_engine(Engine& engine) {
         create_dawn_device(engine.options, device_options, state);
 
         const auto sync_render_textures = [&]() {
-            while (
-                render_textures.size() <
-                engine.sprite_render_textures.size()
-            ) {
+            render_textures.resize(
+                engine.sprite_render_textures.size(), nullptr);
+            render_texture_views.resize(
+                engine.sprite_render_textures.size(), nullptr);
+            for (std::size_t index = 0;
+                 index < engine.sprite_render_textures.size();
+                 ++index) {
                 const SpriteRenderTextureRecord& record =
-                    engine.sprite_render_textures[render_textures.size()];
+                    engine.sprite_render_textures[index];
+                WGPUTexture& texture = render_textures[index];
+                WGPUTextureView& view = render_texture_views[index];
+                if (record.disposed) {
+                    if (view) wgpuTextureViewRelease(view);
+                    if (texture) wgpuTextureRelease(texture);
+                    view = nullptr;
+                    texture = nullptr;
+                    continue;
+                }
+                if (texture) continue;
                 WGPUTextureDescriptor descriptor =
                     WGPU_TEXTURE_DESCRIPTOR_INIT;
                 descriptor.dimension = WGPUTextureDimension_2D;
@@ -87,19 +100,16 @@ bool run_sprite_dawn_engine(Engine& engine) {
                     WGPUTextureUsage_RenderAttachment |
                     WGPUTextureUsage_TextureBinding;
                 descriptor.size = {record.width, record.height, 1};
-                WGPUTexture texture =
-                    wgpuDeviceCreateTexture(state.device, &descriptor);
+                texture = wgpuDeviceCreateTexture(
+                    state.device, &descriptor);
                 if (!texture) {
                     dawn_error("sprite render texture creation failed.");
                 }
-                WGPUTextureView view =
-                    wgpuTextureCreateView(texture, nullptr);
+                view = wgpuTextureCreateView(texture, nullptr);
                 if (!view) {
                     wgpuTextureRelease(texture);
                     dawn_error("sprite render texture view creation failed.");
                 }
-                render_textures.push_back(texture);
-                render_texture_views.push_back(view);
             }
         };
         const auto sync_renderer_passes = [&]() {
@@ -151,7 +161,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         bool running = true;
         long frame = 0;
         FrameClock frame_clock;
-        KeyboardReplay keyboard_replay;
+        PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
@@ -162,7 +172,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 width = state.surface_width;
                 height = state.surface_height;
             }
-            keyboard_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,

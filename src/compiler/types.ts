@@ -1500,22 +1500,24 @@ export interface Value {
    * descriptor because that is what the layer or system is handed.
    */
   spriteCustomTextures?: string[];
-    /** One-based program index; zero is the stock sprite/billboard shader. */
-    spriteCustomShaderIndex?: number;
-    shaderVariant?: string;
-    /**
-     * The same name, but only for a program `createShaderMaterial` built
-     * from the entry's own WGSL.
-     *
-     * The line and linear-depth families also carry `shaderVariant`, and
-     * both settle their own instanced form from their options -- the line
-     * family even names the permutation. Only a scene-local program leaves
-     * that to the mesh, so only it is marked here.
-     */
-    sceneShaderVariant?: string;
-    /** Stable creation slot for a scene-owned material that escapes a scope. */
-    sceneMaterialSlot?: number;
-    animationFrameRate?: string;
+  /** The corresponding shader identifiers, in the same binding order. */
+  spriteCustomTextureNames?: string[];
+  /** One-based program index; zero is the stock sprite/billboard shader. */
+  spriteCustomShaderIndex?: number;
+  shaderVariant?: string;
+  /**
+   * The same name, but only for a program `createShaderMaterial` built
+   * from the entry's own WGSL.
+   *
+   * The line and linear-depth families also carry `shaderVariant`, and
+   * both settle their own instanced form from their options -- the line
+   * family even names the permutation. Only a scene-local program leaves
+   * that to the mesh, so only it is marked here.
+   */
+  sceneShaderVariant?: string;
+  /** Stable creation slot for a scene-owned material that escapes a scope. */
+  sceneMaterialSlot?: number;
+  animationFrameRate?: string;
   animationDuration?: string;
   /**
    * Which object kind an `animation-clip` value's paths bind to. A

@@ -1520,6 +1520,12 @@ SpriteRenderTextureHandle create_sprite_render_texture(
             engine.sprite_render_textures.size() - 1u)};
 }
 
+void dispose_sprite_render_texture(
+    Engine& engine,
+    SpriteRenderTextureHandle texture) {
+    engine.sprite_render_textures[texture.value].disposed = true;
+}
+
 void set_sprite_renderer_target(
     Engine& engine,
     SpriteRendererHandle renderer,
@@ -1666,6 +1672,7 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     // its params start zeroed.
     layer.custom_shader = options.custom_shader;
     layer.custom_textures = std::move(options.custom_textures);
+    layer.custom_texture_names = std::move(options.custom_texture_names);
     layer.opacity = options.opacity;
     layer.visible = options.visible;
     layer.order = options.order;

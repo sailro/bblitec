@@ -331,6 +331,10 @@ class Compiler
         ts.SourceFile,
         boolean
     >();
+    private readonly sharedClosureSymbols = new WeakMap<
+        ts.Node,
+        ReadonlySet<ts.Symbol>
+    >();
     private staticAssetUrlCandidateCache: readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
     private readonly nativeFunctionPrototypes: string[] =
@@ -1154,6 +1158,77 @@ class Compiler
         this.statements.emitExpression(this, expression);
     }
 
+    /**
+     * JavaScript record methods capture mutable bindings, not snapshots of
+     * their current values. A `let` read by a function-valued object member
+     * therefore needs a shared native cell: separately inlined methods and
+     * stored callbacks all dereference the same storage.
+     */
+    private needsSharedClosureStorage(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.parent ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        ) {
+            return false;
+        }
+        const symbol = this.symbols.valueSymbol(declaration.name);
+        if (!symbol) return false;
+        let owner: ts.Node = declaration;
+        while (owner.parent && !ts.isFunctionLike(owner.parent)) {
+            owner = owner.parent;
+        }
+        if (owner.parent) owner = owner.parent;
+        let captured = this.sharedClosureSymbols.get(owner);
+        if (!captured) {
+            captured = this.collectSharedClosureSymbols(owner);
+            this.sharedClosureSymbols.set(owner, captured);
+        }
+        return captured.has(symbol);
+    }
+
+    private collectSharedClosureSymbols(
+        owner: ts.Node,
+    ): ReadonlySet<ts.Symbol> {
+        const captured = new Set<ts.Symbol>();
+        const visit = (
+            node: ts.Node,
+            insideStoredRecordCallback: boolean,
+        ): void => {
+            const storedRecordCallback =
+                (ts.isMethodDeclaration(node) &&
+                    ts.isObjectLiteralExpression(node.parent)) ||
+                ((ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node)) &&
+                    ts.isPropertyAssignment(node.parent) &&
+                    ts.isObjectLiteralExpression(node.parent.parent));
+            const inside =
+                insideStoredRecordCallback || storedRecordCallback;
+            if (
+                inside &&
+                ts.isIdentifier(node)
+            ) {
+                const symbol = this.symbols.valueSymbol(node);
+                if (symbol) captured.add(symbol);
+            }
+            ts.forEachChild(node, (child) =>
+                visit(child, inside));
+        };
+        visit(owner, false);
+        return captured;
+    }
+
+    private isSharedClosureScalar(kind: string): boolean {
+        return (
+            kind === "number" ||
+            kind === "boolean" ||
+            kind === "string"
+        );
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (ts.isObjectBindingPattern(declaration.name)) {
             this.emitObjectBindingDeclaration(declaration);
@@ -1179,6 +1254,8 @@ class Compiler
         }
         const sourceName = declaration.name.text;
         const cppName = this.cppIdentifier(sourceName);
+        const sharedClosureStorage =
+            this.needsSharedClosureStorage(declaration);
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||
@@ -1207,8 +1284,12 @@ class Compiler
             ) {
                 this.reachJsData();
             }
+            const cppType = this.dataTypes.cppType(dataType);
             this.emit(
-                `${this.dataTypes.cppType(dataType)} ${cppName};`,
+                sharedClosureStorage &&
+                    this.isSharedClosureScalar(dataType.kind)
+                    ? `auto ${cppName} = std::make_shared<${cppType}>();`
+                    : `${cppType} ${cppName};`,
             );
             if (
                 dataType.kind !== "number" &&
@@ -1222,7 +1303,10 @@ class Compiler
             this.defineVariable(
                 declaration.name,
                 this.dataLowerer.leafValue(
-                    cppName,
+                    sharedClosureStorage &&
+                        this.isSharedClosureScalar(dataType.kind)
+                        ? `(*${cppName})`
+                        : cppName,
                     dataType,
                 ),
             );
@@ -1293,14 +1377,20 @@ class Compiler
                 ts.SyntaxKind.NullKeyword &&
             nullableResource
         ) {
-            this.emit(
-                `std::optional<${nullableResource.cppType}> ${cppName};`,
-            );
+            this.emit(sharedClosureStorage
+                ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>();`
+                : `std::optional<${nullableResource.cppType}> ${cppName};`);
             this.defineVariable(declaration.name, {
                 kind: nullableResource.kind,
-                cpp: `(*${cppName})`,
-                optionalFoundCpp: `${cppName}.has_value()`,
-                optionalStorageCpp: cppName,
+                cpp: sharedClosureStorage
+                    ? `(**${cppName})`
+                    : `(*${cppName})`,
+                optionalFoundCpp: sharedClosureStorage
+                    ? `${cppName}->has_value()`
+                    : `${cppName}.has_value()`,
+                optionalStorageCpp: sharedClosureStorage
+                    ? `(*${cppName})`
+                    : cppName,
             });
             return;
         }
@@ -1358,14 +1448,20 @@ class Compiler
             // copied source guard could run.
             const initializerCpp =
                 value.optionalStorageCpp ?? value.cpp;
-            this.emit(
-                `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`,
-            );
+            this.emit(sharedClosureStorage
+                ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp});`
+                : `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`);
             this.defineVariable(declaration.name, {
                 ...value,
-                cpp: `(*${cppName})`,
-                optionalFoundCpp: `${cppName}.has_value()`,
-                optionalStorageCpp: cppName,
+                cpp: sharedClosureStorage
+                    ? `(**${cppName})`
+                    : `(*${cppName})`,
+                optionalFoundCpp: sharedClosureStorage
+                    ? `${cppName}->has_value()`
+                    : `${cppName}.has_value()`,
+                optionalStorageCpp: sharedClosureStorage
+                    ? `(*${cppName})`
+                    : cppName,
             });
             return;
         }
@@ -1558,10 +1654,16 @@ class Compiler
         const initializerCpp = value.cpp;
         const maybeUnused =
             value.kind === "boolean" ? "[[maybe_unused]] " : "";
-        this.emit(
-            `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
-        );
-        const stored = { ...value, cpp: cppName };
+        const sharedPrimitive =
+            sharedClosureStorage &&
+            this.isSharedClosureScalar(value.kind);
+        this.emit(sharedPrimitive
+            ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
+            : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`);
+        const stored = {
+            ...value,
+            cpp: sharedPrimitive ? `(*${cppName})` : cppName,
+        };
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
             stored.animationDuration = `${cppName}.duration`;
@@ -6647,11 +6749,19 @@ class Compiler
                 receiver.expression,
             );
             if (texture.kind === "texture") {
-                // The native engine owns render-target allocation for the
-                // lifetime of its renderer. Rebuilding the CRT chain stops
-                // referencing this handle; physical GPU reclamation remains
-                // engine-owned rather than exposing WebGPUTexture.destroy().
-                return { kind: "void", cpp: "" };
+                if (texture.textureStorage !== "render") {
+                    // File and pixel textures are immutable engine assets;
+                    // only createRenderTexture2D exposes a live GPU target
+                    // whose WebGPU destroy call has observable lifetime.
+                    return { kind: "void", cpp: "" };
+                }
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::dispose_sprite_render_texture(` +
+                        `${texture.engineCpp ?? this.requireDefaultEngine(call)}, ` +
+                        `${texture.cpp})`,
+                };
             }
         }
         if (
@@ -6802,6 +6912,12 @@ class Compiler
             }
         }
         const engine = this.requireDefaultEngine(call);
+        if (target === "window" && event === "resize") {
+            this.emit(
+                `bbl::on_window_resize(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
+            );
+            return true;
+        }
         if (
             (target === "window" || target === "canvas") &&
             (event === "keydown" || event === "keyup")

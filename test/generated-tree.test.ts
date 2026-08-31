@@ -104,6 +104,7 @@ test("keeps shader artifacts whose WGSL is still emitted", (t) => {
         "pbr.frag.hlsl",
         "pbr.frag.msl",
         "pbr.frag.spv",
+        "pbr.frag.slots",
         "pbr.frag.tint-reflection.txt",
         "standard.frag.dxil",
         "shader-compiler.json",
@@ -119,6 +120,7 @@ test("keeps shader artifacts whose WGSL is still emitted", (t) => {
         "pbr.frag.hlsl",
         "pbr.frag.msl",
         "pbr.frag.spv",
+        "pbr.frag.slots",
         "pbr.frag.tint-reflection.txt",
         "shader-compiler.json",
     ]) {

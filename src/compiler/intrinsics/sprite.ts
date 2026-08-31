@@ -19,6 +19,7 @@ import {
     type PositiveIntegerContext,
 } from "../option-helpers.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
+import { stringLiteral } from "../../cpp-literals.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext,
@@ -165,14 +166,14 @@ function extraTextureOption(
 }
 
 /**
- * The two fields a `customShader` option settles on the record: whether
- * there is a descriptor, and the extra textures it binds.
+ * The values a `customShader` option settles on the record: whether there is
+ * a descriptor, the extra textures it binds, and their shader identifiers.
  *
  * The pin's own hook copies the descriptor onto the layer or system and
  * every later read goes through it, so the program itself is composed once
- * per family and what the record carries is only this pair. The family is
- * checked because a 2D descriptor names a fragment written against a varying
- * struct carrying `uv` and `tint` alone, which a billboard stage would
+ * per family and what the record carries is only this binding metadata. The
+ * family is checked because a 2D descriptor names a fragment written against
+ * a varying struct carrying `uv` and `tint` alone, which a billboard stage would
  * compile against a different contract behind the same names.
  */
 function customShaderOption(
@@ -180,11 +181,11 @@ function customShaderOption(
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
-): { program: string; textures: string } {
+): { program: string; textures: string; textureNames: string } {
     const named = property(options, "customShader");
     if (!named) {
         context.recordPlainSpriteProgram(family);
-        return { program: "0u", textures: "{}" };
+        return { program: "0u", textures: "{}", textureNames: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
         context.fail(
@@ -207,6 +208,12 @@ function customShaderOption(
             "A custom-shader descriptor reached a layer without its texture list.",
         );
     }
+    if (!named.spriteCustomTextureNames) {
+        context.fail(
+            node,
+            "A custom-shader descriptor reached a layer without its texture names.",
+        );
+    }
     if (named.spriteCustomShaderIndex === undefined) {
         context.fail(
             node,
@@ -216,6 +223,9 @@ function customShaderOption(
     return {
         program: `${named.spriteCustomShaderIndex}u`,
         textures: `{${named.spriteCustomTextures.join(", ")}}`,
+        textureNames: `{${named.spriteCustomTextureNames
+            .map(stringLiteral)
+            .join(", ")}}`,
     };
 }
 
@@ -1014,7 +1024,8 @@ export function compileSpriteIntrinsic(
                             ? `${pivot[0]!}, ${pivot[1]!}`
                             : "0.5f, 0.5f"
                     }}, ` +
-                    `${custom.program}, ${custom.textures}})`,
+                    `${custom.program}, ${custom.textures}, ` +
+                    `${custom.textureNames}})`,
                 engineCpp,
             };
         }
@@ -1444,6 +1455,7 @@ export function compileSpriteIntrinsic(
                     `.has_alpha_cutoff = ${property(options, "alphaCutoff") ? "true" : "false"}, ` +
                     `.custom_shader = ${custom.program}, ` +
                     `.custom_textures = ${custom.textures}, ` +
+                    `.custom_texture_names = ${custom.textureNames}, ` +
                     `.add_pass_blend = bbl::SpriteBlendDescriptor{}})`,
                 engineCpp,
             };
@@ -1776,6 +1788,7 @@ export function compileSpriteIntrinsic(
                 spriteCustomTextures: extras.map(
                     ({ cpp }) => cpp,
                 ),
+                spriteCustomTextureNames: extraNames,
             };
         }
 

@@ -935,6 +935,47 @@ inline std::vector<SDL_GPUTextureSamplerBinding> sprite_fragment_textures(
     return textures;
 }
 
+/**
+ * Select the dense texture list a compacted sprite-family fragment kept.
+ *
+ * The owning list is always atlas followed by descriptor extras. DXIL may
+ * remove any unused resource and renumber the survivors, so the sidecar's
+ * names, rather than that original order, decide what SDL binds.
+ */
+inline std::vector<SDL_GPUTextureSamplerBinding>
+select_sprite_fragment_textures(
+    const PinnedStageSlots& slots,
+    const std::vector<SDL_GPUTextureSamplerBinding>& textures,
+    const std::vector<std::string>& extra_names,
+    const char* what) {
+    if (textures.size() != extra_names.size() + 1u) {
+        throw std::runtime_error(
+            std::string(what) + " texture metadata is inconsistent.");
+    }
+    std::vector<SDL_GPUTextureSamplerBinding> selected;
+    selected.reserve(slots.textures.size());
+    for (const std::string& resource : slots.textures) {
+        std::size_t texture_index = 0u;
+        if (resource != "atlasTex") {
+            const auto found = std::find_if(
+                extra_names.begin(),
+                extra_names.end(),
+                [&](const std::string& name) {
+                    return resource == name + "Tex";
+                });
+            if (found == extra_names.end()) {
+                throw std::runtime_error(
+                    std::string(what) +
+                    " declares an unresolved texture '" + resource + "'.");
+            }
+            texture_index =
+                1u + static_cast<std::size_t>(found - extra_names.begin());
+        }
+        selected.push_back(textures[texture_index]);
+    }
+    return selected;
+}
+
 /** Releases what {@link sprite_fragment_textures} built, atlas included. */
 inline void release_sprite_fragment_textures(
     SDL_GPUDevice* device,

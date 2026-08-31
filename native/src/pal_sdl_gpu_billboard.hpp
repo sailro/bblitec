@@ -49,9 +49,10 @@ struct BillboardPass {
     int add_system_block_slot = -1;
     SDL_GPUBuffer* index_buffer = nullptr;
     SDL_GPUBuffer* instances = nullptr;
-    // The atlas and any extra textures, in the order the composed program
-    // declares them, built when the pass is.
+    // Owners stay atlas-then-extras; the bound list follows the compacted
+    // fragment sidecar and can omit resources the shader did not keep.
     std::vector<SDL_GPUTextureSamplerBinding> textures;
+    std::vector<SDL_GPUTextureSamplerBinding> bound_textures;
     BillboardSystemHandle system{};
     // The reordered upload, kept so an unchanged view re-uploads nothing.
     std::vector<float> sorted;
@@ -289,6 +290,11 @@ inline BillboardPass create_billboard_pass(
         create_texture_sampler(device, atlas.sampler),
         system.custom_textures,
         "billboard custom texture");
+    pass.bound_textures = select_sprite_fragment_textures(
+        slots,
+        pass.textures,
+        system.custom_texture_names,
+        "billboard fragment shader");
     return pass;
 }
 
@@ -410,11 +416,13 @@ inline void record_billboard_pass(
         &index_binding,
         SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    SDL_BindGPUFragmentSamplers(
-        render_pass,
-        0,
-        pass.textures.data(),
-        static_cast<Uint32>(pass.textures.size()));
+    if (!pass.bound_textures.empty()) {
+        SDL_BindGPUFragmentSamplers(
+            render_pass,
+            0,
+            pass.bound_textures.data(),
+            static_cast<Uint32>(pass.bound_textures.size()));
+    }
 
     SDL_DrawGPUIndexedPrimitives(
         render_pass,
@@ -431,6 +439,8 @@ inline void record_billboard_pass(
         // instances again. It restores the primary pipeline afterwards, so a
         // caller caching the bound pipeline stays correct.
         SDL_BindGPUGraphicsPipeline(render_pass, pass.add_pipeline);
+        SDL_BindGPUFragmentSamplers(
+            render_pass, 0, pass.textures.data(), 1);
         // The stock fragment keeps the block at the same slot the Multiply
         // one did for every pairing that can occur, so the push is normally
         // redundant -- but the slot is read from each stage's own sidecar

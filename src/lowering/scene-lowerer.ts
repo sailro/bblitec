@@ -1042,6 +1042,12 @@ void on_mouse_cancel(
     engine.mouse_cancel_callbacks.push_back(std::move(callback));
 }
 
+void on_window_resize(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.window_resize_callbacks.push_back(std::move(callback));
+}
+
 void on_pointer_lock_change(
     Engine& engine,
     std::function<void()> callback) {

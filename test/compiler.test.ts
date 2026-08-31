@@ -2725,6 +2725,54 @@ test("captures the live engine by reference in stored callbacks", () => {
     assert.match(result.cpp, /bbl::create_box\(v_engine,/);
 });
 
+test("shares mutable primitive and render-target bindings across stored callbacks", () => {
+    const result = compileSource(
+        `
+            import {
+                createEngine,
+                createRenderTexture2D,
+                type Texture2D,
+            } from "babylon-lite";
+            interface Controller {
+                resize: () => void;
+                width: () => number;
+            }
+            async function main(): Promise<void> {
+                const engine = await createEngine({} as HTMLCanvasElement);
+                let width = 64;
+                let target: Texture2D | null =
+                    createRenderTexture2D(engine, width, width);
+                const controller: Controller = {
+                    resize: () => {
+                        target!.texture.destroy();
+                        target = createRenderTexture2D(engine, 128, 128);
+                        width = 128;
+                    },
+                    width: () => width,
+                };
+                controller.resize();
+                controller.width();
+            }
+            void main();
+        `,
+        {
+            fileName:
+                "corpus/babylon-lite/lab/lite/src/demos/closure-storage-test.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /std::make_shared<double>\(64\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /std::make_shared<std::optional<bbl::SpriteRenderTextureHandle>>/,
+    );
+    assert.match(result.cpp, /bbl::dispose_sprite_render_texture/);
+    assert.match(result.cpp, /\(\*v(?:_fn\d+)?_width\) = 128\.0/);
+});
+
 test("seeds Math.random deterministically and records the adaptation", () => {
     const result = compileSource(`
         function roll(sides: number): number {
@@ -6568,6 +6616,9 @@ test("lowers platform listeners through generic engine callbacks", () => {
             window.addEventListener("pointerdown", () => {
                 state = 1;
             });
+            window.addEventListener("resize", () => {
+                state += 2;
+            });
             document.addEventListener("visibilitychange", () => {
                 if (document.hidden) state = 0;
             });
@@ -6577,6 +6628,7 @@ test("lowers platform listeners through generic engine callbacks", () => {
     assert.match(result.cpp, /bbl::on_key_down/);
     assert.match(result.cpp, /bbl::on_key_up/);
     assert.match(result.cpp, /bbl::on_pointer_down/);
+    assert.match(result.cpp, /bbl::on_window_resize/);
     assert.match(result.cpp, /bbl::on_visibility_change/);
     assert.match(result.cpp, /const bbl::PlatformKeyboardEvent&/);
     assert.match(result.cpp, /std::string_view/);
@@ -6692,7 +6744,9 @@ test("keeps callback-local declarations inside platform listeners", () => {
     `);
 
     const listener = result.cpp.indexOf("bbl::on_key_down");
-    const toggleAssignment = result.cpp.indexOf("v_on = !(v_on)");
+    const toggleAssignment = result.cpp.search(
+        /\(\*v_(?:fn\d+_)?on\) = !\(\(\*v_(?:fn\d+_)?on\)\)/,
+    );
     assert.ok(listener >= 0);
     assert.ok(toggleAssignment > listener);
 });
