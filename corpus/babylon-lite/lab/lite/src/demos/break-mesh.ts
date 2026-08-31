@@ -16,18 +16,25 @@
 import type { EngineContext, Material, Mesh } from "babylon-lite";
 import { createMeshFromData, setParent } from "babylon-lite";
 
-/**
- * Position + normal + UV vertex used through the clipping pipeline.
- *
- * Keep this as a value tuple: fracture creates and discards many temporary
- * vertices, and the native lowering of an object-shaped interface has shared
- * identity. A tuple preserves the JS values while avoiding one heap allocation
- * and reference count per clipped vertex in native builds.
- */
-type FVertex = [number, number, number, number, number, number, number, number];
+/** Position + normal + UV vertex used through the clipping pipeline. */
+interface FVertex {
+    x: number;
+    y: number;
+    z: number;
+    nx: number;
+    ny: number;
+    nz: number;
+    u: number;
+    v: number;
+}
 
-/** Half-space plane `[nx, ny, nz, w]`; `dot(n, p) - w >= 0` is retained. */
-type Plane = [number, number, number, number];
+/** Half-space plane `dot(n, p) - w >= 0` keeps points on the +normal side. */
+interface Plane {
+    nx: number;
+    ny: number;
+    nz: number;
+    w: number;
+}
 
 interface RawGeom {
     verts: FVertex[];
@@ -47,37 +54,30 @@ export interface BreakMeshOptions {
 }
 
 function planeDist(p: Plane, x: number, y: number, z: number): number {
-    return p[0] * x + p[1] * y + p[2] * z - p[3];
+    return p.nx * x + p.ny * y + p.nz * z - p.w;
 }
 
 /** Interpolate a vertex along edge a→b at parameter t (position, normal, UV). */
 function lerpVert(a: FVertex, b: FVertex, t: number): FVertex {
-    let nx = a[3] + (b[3] - a[3]) * t;
-    let ny = a[4] + (b[4] - a[4]) * t;
-    let nz = a[5] + (b[5] - a[5]) * t;
+    let nx = a.nx + (b.nx - a.nx) * t;
+    let ny = a.ny + (b.ny - a.ny) * t;
+    let nz = a.nz + (b.nz - a.nz) * t;
     const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
     if (len > 1e-6) {
         nx /= len;
         ny /= len;
         nz /= len;
     }
-    return [
-        a[0] + (b[0] - a[0]) * t,
-        a[1] + (b[1] - a[1]) * t,
-        a[2] + (b[2] - a[2]) * t,
+    return {
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+        z: a.z + (b.z - a.z) * t,
         nx,
         ny,
         nz,
-        a[6] + (b[6] - a[6]) * t,
-        a[7] + (b[7] - a[7]) * t,
-    ];
-}
-
-/** Copy a value vertex without changing the tuple identity visible to JS. */
-function copyVert(target: FVertex, source: FVertex): void {
-    for (let i = 0; i < 8; i++) {
-        target[i] = source[i]!;
-    }
+        u: a.u + (b.u - a.u) * t,
+        v: a.v + (b.v - a.v) * t,
+    };
 }
 
 /** Sutherland–Hodgman: clip a convex polygon to the +side of a plane. */
@@ -90,8 +90,8 @@ function clipPolygonByPlane(input: FVertex[], plane: Plane): FVertex[] {
     for (let i = 0; i < n; i++) {
         const s = input[i]!;
         const e = input[(i + 1) % n]!;
-        const ds = planeDist(plane, s[0], s[1], s[2]);
-        const de = planeDist(plane, e[0], e[1], e[2]);
+        const ds = planeDist(plane, s.x, s.y, s.z);
+        const de = planeDist(plane, e.x, e.y, e.z);
         if (de >= 0) {
             if (ds < 0) {
                 out.push(lerpVert(s, e, ds / (ds - de)));
@@ -126,7 +126,7 @@ function voronoiPlanes(sites: number[][], i: number): Plane[] {
         const mx = (pi[0]! + pj[0]!) * 0.5;
         const my = (pi[1]! + pj[1]!) * 0.5;
         const mz = (pi[2]! + pj[2]!) * 0.5;
-        planes.push([dx, dy, dz, dx * mx + dy * my + dz * mz]);
+        planes.push({ nx: dx, ny: dy, nz: dz, w: dx * mx + dy * my + dz * mz });
     }
     return planes;
 }
@@ -254,24 +254,20 @@ function clipCell(tris: FVertex[], planes: Plane[], capUvScale: number): { shell
         // these seed the cap polygons for the cut surfaces.
         for (let p = 0; p < planeCount; p++) {
             const plane = planes[p]!;
-            let entry: FVertex = [0, 0, 0, 0, 0, 0, 0, 0];
-            let exit: FVertex = [0, 0, 0, 0, 0, 0, 0, 0];
-            let hasEntry = false;
-            let hasExit = false;
+            let entry: FVertex | null = null;
+            let exit: FVertex | null = null;
             for (let i = 0; i < 3; i++) {
                 const s = orig[i]!;
                 const e = orig[(i + 1) % 3]!;
-                const ds = planeDist(plane, s[0], s[1], s[2]);
-                const de = planeDist(plane, e[0], e[1], e[2]);
+                const ds = planeDist(plane, s.x, s.y, s.z);
+                const de = planeDist(plane, e.x, e.y, e.z);
                 if (ds < 0 && de >= 0) {
-                    copyVert(entry, lerpVert(s, e, ds / (ds - de)));
-                    hasEntry = true;
+                    entry = lerpVert(s, e, ds / (ds - de));
                 } else if (ds >= 0 && de < 0) {
-                    copyVert(exit, lerpVert(s, e, ds / (ds - de)));
-                    hasExit = true;
+                    exit = lerpVert(s, e, ds / (ds - de));
                 }
             }
-            if (hasEntry && hasExit) {
+            if (entry && exit) {
                 capEdges[p]!.push([entry, exit]);
             }
         }
@@ -302,9 +298,9 @@ function clipCell(tris: FVertex[], planes: Plane[], capUvScale: number): { shell
             continue;
         }
         const plane = planes[p]!;
-        const cnx = -plane[0];
-        const cny = -plane[1];
-        const cnz = -plane[2];
+        const cnx = -plane.nx;
+        const cny = -plane.ny;
+        const cnz = -plane.nz;
         const [tx, ty, tz, bx, by, bz] = planeBasis(cnx, cny, cnz);
         const used = new Array<boolean>(edges.length).fill(false);
 
@@ -324,16 +320,16 @@ function clipCell(tris: FVertex[], planes: Plane[], capUvScale: number): { shell
                         continue;
                     }
                     const ea = edges[i]![0];
-                    const dx = ea[0] - last[0];
-                    const dy = ea[1] - last[1];
-                    const dz = ea[2] - last[2];
+                    const dx = ea.x - last.x;
+                    const dy = ea.y - last.y;
+                    const dz = ea.z - last.z;
                     if (dx * dx + dy * dy + dz * dz < 1e-8) {
                         used[i] = true;
                         const eb = edges[i]![1];
                         const start = capPoly[0]!;
-                        const dx2 = eb[0] - start[0];
-                        const dy2 = eb[1] - start[1];
-                        const dz2 = eb[2] - start[2];
+                        const dx2 = eb.x - start.x;
+                        const dy2 = eb.y - start.y;
+                        const dz2 = eb.z - start.z;
                         if (dx2 * dx2 + dy2 * dy2 + dz2 * dz2 >= 1e-8) {
                             capPoly.push(eb);
                         }
@@ -363,9 +359,9 @@ function clipCell(tris: FVertex[], planes: Plane[], capUvScale: number): { shell
                 // Planar-projected UVs on the cut plane so the cap material tiles
                 // consistently across the exposed interior. The unscaled (u, v) is
                 // reused as the ear-clipping projection.
-                const pu = v[0] * tx + v[1] * ty + v[2] * tz;
-                const pv = v[0] * bx + v[1] * by + v[2] * bz;
-                cap.verts.push([v[0], v[1], v[2], cnx, cny, cnz, pu * capUvScale, pv * capUvScale]);
+                const pu = v.x * tx + v.y * ty + v.z * tz;
+                const pv = v.x * bx + v.y * by + v.z * bz;
+                cap.verts.push({ x: v.x, y: v.y, z: v.z, nx: cnx, ny: cny, nz: cnz, u: pu * capUvScale, v: pv * capUvScale });
                 poly2d[i] = [pu, pv];
             }
             for (const [a, b, c] of triangulatePolygon2D(poly2d)) {
@@ -384,14 +380,14 @@ function buildMesh(engine: EngineContext, name: string, geom: RawGeom, material:
     const uvs = new Float32Array(n * 2);
     for (let i = 0; i < n; i++) {
         const v = geom.verts[i]!;
-        positions[i * 3] = v[0];
-        positions[i * 3 + 1] = v[1];
-        positions[i * 3 + 2] = v[2];
-        normals[i * 3] = v[3];
-        normals[i * 3 + 1] = v[4];
-        normals[i * 3 + 2] = v[5];
-        uvs[i * 2] = v[6];
-        uvs[i * 2 + 1] = v[7];
+        positions[i * 3] = v.x;
+        positions[i * 3 + 1] = v.y;
+        positions[i * 3 + 2] = v.z;
+        normals[i * 3] = v.nx;
+        normals[i * 3 + 1] = v.ny;
+        normals[i * 3 + 2] = v.nz;
+        uvs[i * 2] = v.u;
+        uvs[i * 2 + 1] = v.v;
     }
     // Orient each triangle so its winding is consistent with the baked vertex
     // normals (which point outward), so faces cull correctly regardless of the
@@ -497,7 +493,7 @@ export function breakMesh(engine: EngineContext, sourceMesh: Mesh, points: numbe
         nx /= nl;
         ny /= nl;
         nz /= nl;
-        tris[i] = [x, y, z, nx, ny, nz, uv ? uv[t]! : 0, uv ? uv[t + 1]! : 0];
+        tris[i] = { x, y, z, nx, ny, nz, u: uv ? uv[t]! : 0, v: uv ? uv[t + 1]! : 0 };
         minX = Math.min(minX, x);
         minY = Math.min(minY, y);
         minZ = Math.min(minZ, z);

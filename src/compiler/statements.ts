@@ -78,9 +78,16 @@ export interface StatementLoweringContext {
         statement: ts.ReturnStatement,
     ): void;
     captureEmittedLines(emitBody: () => void): string[];
+    /**
+     * Runs a shape probe, keeping what it emitted only when it answers.
+     * A probe that resolves a call compiles it, so one that declines has
+     * to take its emission with it.
+     */
+    probeEmission<T>(
+        probe: () => T,
+        answered: (result: T) => boolean,
+    ): T;
     allocateTemporaryCppName(label: string): string;
-    /** How many lines have been emitted, for a caller that may undo. */
-    /** Drop every line emitted after `count`. */
     emitVariableDeclaration(
         declaration: ts.VariableDeclaration,
     ): void;
@@ -1703,19 +1710,33 @@ export class StatementLowerer {
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
     ): boolean {
-        if (
-            ts.isArrayBindingPattern(declaration.name) &&
-            context.dataIterationTarget(statement.expression)
-        ) {
-            // A homogeneous static table already has an exact native row
-            // representation. Keep its established range-for lowering;
-            // tuple unrolling is needed only for heterogeneous/optional rows.
-            return false;
-        }
-        const elements =
-            context.handleCollections.tupleElements(
-                statement.expression,
-            );
+        // Both questions below answer by RESOLVING the loop's subject, and
+        // resolving a call compiles it. A probe that then declines must take
+        // its emission with it, or the call's inlined body stays in the
+        // stream unreachable and the shape that does answer compiles the
+        // same call again.
+        const elements = context.probeEmission(
+            () => {
+                if (
+                    ts.isArrayBindingPattern(
+                        declaration.name,
+                    ) &&
+                    context.dataIterationTarget(
+                        statement.expression,
+                    )
+                ) {
+                    // A homogeneous static table already has an exact native
+                    // row representation. Keep its established range-for
+                    // lowering; tuple unrolling is needed only for
+                    // heterogeneous/optional rows.
+                    return undefined;
+                }
+                return context.handleCollections.tupleElements(
+                    statement.expression,
+                );
+            },
+            (result) => result !== undefined,
+        );
         if (!elements) {
             return false;
         }

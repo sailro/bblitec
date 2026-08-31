@@ -2336,7 +2336,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/break-mesh.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/break-mesh.ts",
-          "sha256": "4ddf502f91525bfd05ef773c4381fae0ab564caa8fea32eb17b21323603b744d"
+          "sha256": "2d738a679f74d6fbf4c198c36cbc711232adbb16381417a357ee367648be9b79"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",

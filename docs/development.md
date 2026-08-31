@@ -156,7 +156,7 @@ other, so a missing one fails the corpus tests rather than degrading quietly.
 | File | What it carries |
 | --- | --- |
 | `src/scene-registry.ts` | the entry: id, source, title, thresholds, background, native environment |
-| `upstream/babylon-lite-corpus.json` | the SHA-256 of every adopted scene, support module, and application file, proving it matches the pin |
+| `upstream/babylon-lite-corpus.json` | the SHA-256 of every adopted scene, support module, and application file, holding the corpus immutable once recorded |
 | `reference/<id>/babylon-lite-golden.png` | the browser golden |
 | `reference/exact-corpus-manifest.json` | `sourceSha256`, `referenceSha256`, `moduleSha256` over the browser module the capture harness builds, and `referenceSearch` for a scene the pin serves at a query |
 | `test/scene-registry.test.ts` | the registry id list in file order, and the curated scene/application counts the README publishes |
