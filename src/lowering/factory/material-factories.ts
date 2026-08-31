@@ -79,6 +79,38 @@ export class FactoryLowerer extends MeshBuilderLowerer {
 
 namespace bbl {
 
+NodeMaterialTexture node_material_texture(
+    std::string name,
+    FileTexture texture) {
+    return NodeMaterialTexture{
+        std::move(name),
+        std::move(texture)};
+}
+
+NodeMaterialTexture node_material_texture(
+    std::string name,
+    const SolidTexture& texture) {
+    FileTexture normalized;
+    normalized.data.bytes.assign(
+        texture.texel.begin(),
+        texture.texel.end());
+    normalized.data.rgba_width = 1;
+    normalized.data.rgba_height = 1;
+    // createSolidTexture2D uses getBilinearSampler: linear min/mag, no
+    // mipmap filter, and WebGPU's clamp-to-edge address defaults.
+    normalized.data.sampler.min_filter = TextureFilter::linear;
+    normalized.data.sampler.mag_filter = TextureFilter::linear;
+    normalized.data.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    normalized.data.sampler.address_u = TextureAddressMode::clamp;
+    normalized.data.sampler.address_v = TextureAddressMode::clamp;
+    normalized.data.sampler.max_lod = 0.0f;
+    normalized.width = 1;
+    normalized.height = 1;
+    return node_material_texture(
+        std::move(name),
+        std::move(normalized));
+}
+
 // The graph was compiled at generation by the pin's own emitter and
 // pipeline builder; what remains at run time is which composed program a
 // draw uses, and the fixed-function state that program was built with.

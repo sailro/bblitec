@@ -60,6 +60,11 @@ export interface AssetIntrinsicContext
         kind: CompileAsset["kind"],
         faceSize?: number,
     ): CompileAsset;
+    /** Records one run-time glTF container in source order. */
+    recordGltfContainerLoad(
+        asset: CompileAsset,
+        node: ts.Node,
+    ): void;
     selectGltfVariant(
         asset: CompileAsset,
         variantName: string,
@@ -260,11 +265,7 @@ export function compileAssetIntrinsic(
                 source,
                 "gltf",
             );
-            // One record can back several containers, because assets are
-            // keyed by source. A fact generation stamps on the record
-            // reaches all of them, so the count is what lets such a fact
-            // refuse instead of widening silently.
-            asset.containerCount = (asset.containerCount ?? 0) + 1;
+            context.recordGltfContainerLoad(asset, call);
             context.reachFeature("loader:gltf", call);
             context.reachFeature("renderer:pbr", call);
             return {
@@ -276,6 +277,7 @@ export function compileAssetIntrinsic(
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
                 asset,
+                assetRootState: { reparented: false },
             };
         }
 

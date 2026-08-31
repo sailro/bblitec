@@ -637,6 +637,14 @@ export interface NodeShadowLight {
   generatorIndex: number;
 }
 
+/** One arm of a statically validated custom node-material block loader. */
+export interface NodeMaterialBlockEmitter {
+  /** The serialized graph class name the loader switch matches. */
+  className: string;
+  /** Pinned-package `lib`-relative module exporting `emitter`. */
+  module: string;
+}
+
 export type CompiledNodeMaterial = {
   /**
    * The binding names the scene supplied textures for.
@@ -658,6 +666,11 @@ export type CompiledNodeMaterial = {
    * shadow, which composes exactly what it always did.
    */
   shadowLights: readonly NodeShadowLight[];
+  /**
+   * The exact closed class-to-emitter map a scene-supplied blockLoader
+   * declares. Absent means the pin's own default registry.
+   */
+  blockEmitters?: readonly NodeMaterialBlockEmitter[];
 } & (
   | { kind: "literal"; graph: Record<string, unknown> }
   | {
@@ -1238,6 +1251,8 @@ export interface Value {
   dataType?: DataType;
   /** The expression returns existing mutable storage, not a JS value copy. */
   borrowedData?: true;
+  /** The data expression is already a native std::vector, not a JS Array. */
+  nativeVectorData?: true;
   /** The expression creates an owning data container at this read. */
   freshData?: true;
   dataStore?: TypedArrayKind;
@@ -1371,6 +1386,15 @@ export interface Value {
    * `container.materialVariants`: through the object, not by name.
    */
   asset?: CompileAsset;
+  /**
+   * Compile-time state of one loaded glTF container's synthetic root.
+   *
+   * `CompileAsset` is keyed by source and can therefore back several native
+   * containers. Root mutation state must instead follow the handle value: an
+   * alias keeps this state, while another `loadGltf` call (even for the same
+   * source) receives a different one.
+   */
+  assetRootState?: { reparented: boolean };
   /**
    * Set on the hierarchy `cloneTransformNode` returned for a glTF root.
    * Both values use the asset handle as their native identity, but only

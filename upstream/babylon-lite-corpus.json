@@ -251,6 +251,12 @@
       "sha256": "0e965e0f886310904886b7ba51c07fbed4768774977101887c4aabb6dcff6828"
     },
     {
+      "id": "scene117",
+      "upstreamPath": "lab/lite/src/lite/scene117.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene117.ts",
+      "sha256": "233f668500ff4ccb21b5befa87c21f61558838c8096018d71763d7dd9079579b"
+    },
+    {
       "id": "scene145",
       "upstreamPath": "lab/lite/src/lite/scene145.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene145.ts",
@@ -539,6 +545,12 @@
       "sha256": "0c369b62275fda4d2476059311cb83d0f1479bd5db6d3fd0c540b3d523a65c75"
     },
     {
+      "id": "scene269",
+      "upstreamPath": "lab/lite/src/lite/scene269.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene269.ts",
+      "sha256": "433312a7bcec3b634f8b70edbe4a4c2c20709aeb3c5c765e955047f2d4b7d59b"
+    },
+    {
       "id": "scene270",
       "upstreamPath": "lab/lite/src/lite/scene270.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene270.ts",
@@ -795,6 +807,12 @@
       "upstreamPath": "lab/lite/src/lite/scene82.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene82.ts",
       "sha256": "fa54cb73f9b2d593d586593d791e8ffbe34535f41244a32c58e179576940bfb4"
+    },
+    {
+      "id": "scene83",
+      "upstreamPath": "lab/lite/src/lite/scene83.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene83.ts",
+      "sha256": "7c4b077b8fa6ba700b16cbc89ec5d505849e460ca615db690c98b1ce910d4cc2"
     },
     {
       "id": "scene85",
@@ -1193,6 +1211,11 @@
       "upstreamPath": "lab/lite/src/shared/scene82-nme.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene82-nme.ts",
       "sha256": "2f8dad1598397345a9f2b32a6e6e2a2b18d7bddae0ced33069fe64f3d81e2889"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene83-nme.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene83-nme.ts",
+      "sha256": "f3cf91a0ec19347542d349937f7cd24d810abb4f7d048ae5519da3e4fffff0ab"
     },
     {
       "upstreamPath": "lab/lite/src/shared/scene85-nme.ts",

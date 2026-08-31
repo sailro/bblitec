@@ -981,11 +981,17 @@ enum class RenderCullMode {
 
 enum class RenderPipelineKind {
     pbr_opaque_back,
+    pbr_opaque_back_clockwise,
     pbr_opaque_none,
     pbr_opaque_none_clockwise,
     pbr_transparent_back,
+    pbr_transparent_back_clockwise,
     pbr_transparent_none,
     pbr_transparent_none_clockwise,
+    // The glTF loader's authored winding baseline keeps imported primitives
+    // from flipping twice. The back-clockwise arms serve the other reached
+    // path: a procedural single-sided PBR mesh crossing the determinant sign
+    // boundary after its renderable was built.
     // The pin's own primitive state for a non-triangle mode: cull none for
     // every one of them (points and lines have no faces to cull), and the
     // winding a triangle kind carries is meaningless here, so the blend
@@ -1006,12 +1012,6 @@ enum class RenderPipelineKind {
     // because the Standard pipeline has none of its own. A back-culled
     // mirrored mesh needs one as much as a double-sided one -- it is the
     // culled case that renders inside-out.
-    //
-    // The PBR family gets no back-culled twin: its mirrored meshes come
-    // from the glTF loader, which rewinds a single-sided mirrored
-    // primitive's INDICES at load and stamps its clockwise front face only
-    // for the double-sided pair above. A cw pipeline there would flip a
-    // geometry that is already flipped.
     standard_opaque_back_clockwise,
     standard_opaque_none_clockwise,
     standard_transparent_back_clockwise,
@@ -1332,6 +1332,10 @@ std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
 std::array<float, 16> mesh_world_matrix(
     const Engine& engine,
     const MeshRecord& mesh);
+// The corresponding world matrix for the parent kind setParent accepts.
+std::array<float, 16> transform_node_world(
+    const Engine& engine,
+    TransformNodeHandle node);
 
 ${options.mirroredMeshes
     ? `// The mirrored-mesh watcher, run once per frame on an opted-in scene.
@@ -1602,14 +1606,18 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
             }
             if (transparent) {
                 if (!double_sided) {
-                    return RenderPipelineKind::pbr_transparent_back;
+                    return item.clockwise_front_face
+                        ? RenderPipelineKind::pbr_transparent_back_clockwise
+                        : RenderPipelineKind::pbr_transparent_back;
                 }
                 return item.clockwise_front_face
                     ? RenderPipelineKind::pbr_transparent_none_clockwise
                     : RenderPipelineKind::pbr_transparent_none;
             }
             if (!double_sided) {
-                return RenderPipelineKind::pbr_opaque_back;
+                return item.clockwise_front_face
+                    ? RenderPipelineKind::pbr_opaque_back_clockwise
+                    : RenderPipelineKind::pbr_opaque_back;
             }
             return item.clockwise_front_face
                 ? RenderPipelineKind::pbr_opaque_none_clockwise
@@ -2147,17 +2155,18 @@ bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         MeshRecord& mesh = engine.meshes[handle.value];
-        // The pin's own predicate: a mesh is mirrored when its live world
-        // determinant disagrees with the sign its geometry was authored
-        // for, and every mesh this opt-in reaches is procedural, authored
-        // at +1. A glTF mesh sits under the loader's RH->LH root and is
-        // authored at -1 -- but the loader has already rewound a
-        // single-sided mirrored primitive's INDICES by then, so a scene
-        // reaching both would flip twice. No registered scene does; the
-        // one that would is 269, and TODO.md names the measurement.
-        const bool mirrored =
+        // The pin compares the live determinant to its authored sign. Native
+        // loading has already baked the glTF node world into the geometry
+        // and reconciled its indices/front-face state, so that stored state
+        // is the equivalent baseline. XORing the live parent transform with
+        // it preserves imported winding and still flips procedural geometry.
+        const bool transform_mirrored =
             pinned_mat4_determinant3(mesh_world_matrix(engine, mesh)) < 0.0;
-        if (mesh.mirrored_seen && mesh.clockwise_front_face == mirrored) {
+        const bool clockwise_front_face =
+            mesh.authored_clockwise_front_face != transform_mirrored;
+        if (
+            mesh.mirrored_seen &&
+            mesh.clockwise_front_face == clockwise_front_face) {
             continue;
         }
         // The winding itself is not the watcher's: the pin's mesh-feature
@@ -2166,7 +2175,7 @@ bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
         // carries it from the first frame. What the watcher adds is the
         // rebuild, and only a mesh it has already seen can have flipped.
         const bool seen = mesh.mirrored_seen;
-        mesh.clockwise_front_face = mirrored;
+        mesh.clockwise_front_face = clockwise_front_face;
         mesh.mirrored_seen = true;
         if (seen) flipped = true;
     }
@@ -3958,10 +3967,11 @@ ${lifted.fragmentBody}
      * list: no reached renderable sets it (sprites and thin-instance culling
      * draw through their own native subsystems), and the fork asserted here
      * is what makes that fold visible the moment the pin grows a reached
-     * direct renderable. The clockwise arms exist only under cull-none
-     * because the generated glTF loader stamps `clockwise_front_face` only
-     * for double-sided mirrored materials and rewinds single-sided mirrored
-     * indices instead, mirroring the pin's frontFace="cw" through data.
+     * direct renderable. The generated glTF loader's authored winding
+     * baseline still prevents its single-sided mirrored primitives from
+     * flipping twice. Separate back-clockwise PBR arms are nevertheless
+     * required when the runtime mirrored-mesh watcher observes a procedural
+     * single-sided PBR mesh cross the determinant sign boundary.
      *
      * `order_draw_lists` adopts the pinned buildBindings rule: opaque and
      * direct draws sort by `renderable.order` alone, and because every

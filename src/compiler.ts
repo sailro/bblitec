@@ -373,6 +373,8 @@ class Compiler
     private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
     public readonly assetPayloads = new Map<string, string>();
+    /** The source-keyed record for the most recent `loadGltf` call. */
+    private lastGltfContainerAsset: CompileAsset | undefined;
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
     public readonly reachedNodeParticles: CompiledNodeParticles = {
@@ -1611,8 +1613,11 @@ class Compiler
                     `[[maybe_unused]] const bool ${optionalFoundCpp} = ${narrowed.optionalFoundCpp};`,
                 );
             }
+            const localType = narrowed.nativeVectorData
+                ? "auto"
+                : this.dataTypes.cppType(narrowed.dataType);
             this.emit(
-                `${this.dataTypes.cppType(narrowed.dataType)}${aliases || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
+                `${localType}${aliases || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
             );
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
@@ -1648,6 +1653,9 @@ class Compiler
                       }
                     : {}),
                 ...(narrowed.borrowedData ? { borrowedData: true as const } : {}),
+                ...(narrowed.nativeVectorData
+                    ? { nativeVectorData: true as const }
+                    : {}),
                 ...(optionalFoundCpp
                     ? { optionalFoundCpp }
                     : {}),
@@ -3092,6 +3100,7 @@ class Compiler
                     },
                 },
                 borrowedData: true,
+                nativeVectorData: true,
                 engineCpp: engine,
             };
         }
@@ -6458,6 +6467,70 @@ class Compiler
         return registerAsset(this, source, kind, faceSize);
     }
 
+    /**
+     * Records that `setParent` transferred this imported root's hierarchy.
+     * The token follows aliases of this handle, rather than the source-keyed
+     * asset record shared by repeated loads.
+     */
+    public markAssetRootReparented(root: Value, node: ts.Node): void {
+        if (!root.assetRootState) {
+            this.fail(
+                node,
+                "An imported root is missing its compile-time handle identity.",
+            );
+        }
+        root.assetRootState.reparented = true;
+    }
+
+    /**
+     * The current root setters address the asset's outer transform. After
+     * `setParent`, the hierarchy follows the new TransformNode instead, so a
+     * later write through the old root handle would mutate stale state.
+     */
+    public assertAssetRootWritable(root: Value, node: ts.Node): void {
+        if (root.assetRootState?.reparented) {
+            this.fail(
+                node,
+                "Writing an imported root after setParent is not lowered; " +
+                    "the hierarchy now follows its new TransformNode parent.",
+            );
+        }
+    }
+
+    /**
+     * Records one run-time glTF container while preserving the order that
+     * generation can represent.
+     *
+     * The asset manifest is keyed by source, and composition expands each
+     * record by `containerCount`. Contiguous repeats therefore preserve
+     * A,A,B,B exactly, while an interleaved repeat such as A,B,A would be
+     * emitted as A,A,B. Refuse the latter at its returning load instead of
+     * assigning composed material/mesh handles to the wrong container.
+     */
+    public recordGltfContainerLoad(
+        asset: CompileAsset,
+        node: ts.Node,
+    ): void {
+        if (
+            (asset.containerCount ?? 0) > 0 &&
+            this.lastGltfContainerAsset !== asset
+        ) {
+            this.fail(
+                node,
+                `glTF asset '${asset.source}' is loaded again after a ` +
+                    "different glTF source; repeated loads must be " +
+                    "contiguous because generation groups containers by " +
+                    "their source-keyed asset record.",
+            );
+        }
+        // One record can back several containers, because assets are keyed
+        // by source. A fact generation stamps on the record reaches all of
+        // them, so the count is also what lets such a fact refuse instead of
+        // widening silently.
+        asset.containerCount = (asset.containerCount ?? 0) + 1;
+        this.lastGltfContainerAsset = asset;
+    }
+
     public probePixelsAsset(
         expression: ts.Expression,
     ): { cpp: string; source: string } | undefined {
@@ -6642,6 +6715,116 @@ class Compiler
         return this.browserErasure.isBrowserOnlyExpression(
             expression,
         );
+    }
+
+    /**
+     * Recognize either the pinned two-RAF Promise directly or the exact
+     * zero-argument local helper that returns it. The call itself must be
+     * awaited and discarded as an expression statement; a returned timestamp
+     * used as data is a different contract and must continue through ordinary
+     * Promise lowering (which currently refuses it).
+     */
+    public isBoundedNestedFrameYield(
+        expression: ts.Expression,
+    ): boolean {
+        const awaited = expression.parent;
+        if (
+            !ts.isAwaitExpression(awaited) ||
+            awaited.expression !== expression ||
+            !ts.isExpressionStatement(awaited.parent)
+        ) {
+            return false;
+        }
+        if (
+            this.browserErasure.isBoundedNestedFrameYield(
+                expression,
+            )
+        ) {
+            return this.requireClosedBoundedFrameYield(
+                expression,
+            );
+        }
+        if (
+            !ts.isCallExpression(expression) ||
+            expression.arguments.length !== 0 ||
+            !ts.isIdentifier(expression.expression)
+        ) {
+            return false;
+        }
+        const declaration = resolveFunctionDeclaration(
+            this.checker,
+            expression.expression,
+            (node, message) => this.fail(node, message),
+        );
+        if (
+            !declaration ||
+            declaration.parameters.length !== 0 ||
+            !declaration.body ||
+            !ts.isBlock(declaration.body) ||
+            declaration.body.statements.length !== 1
+        ) {
+            return false;
+        }
+        const returned = declaration.body.statements[0];
+        if (
+            returned === undefined ||
+            !ts.isReturnStatement(returned) ||
+            returned.expression === undefined ||
+            !this.browserErasure.isBoundedNestedFrameYield(
+                returned.expression,
+            )
+        ) {
+            return false;
+        }
+        return this.requireClosedBoundedFrameYield(
+            returned.expression,
+        );
+    }
+
+    /**
+     * Erasing a wait is sound only while its two callbacks are the complete
+     * user RAF set. Another callback can mutate state between the current
+     * turn and the continuation even when the wait's timestamp is discarded.
+     * Scan every non-declaration module in this program and refuse that
+     * interleaving instead of silently moving the continuation earlier.
+     */
+    private requireClosedBoundedFrameYield(
+        allowed: ts.Expression,
+    ): true {
+        const belongsToAllowed = (node: ts.Node): boolean => {
+            let current: ts.Node | undefined = node;
+            while (current) {
+                if (current === allowed) return true;
+                current = current.parent;
+            }
+            return false;
+        };
+        let other: ts.CallExpression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (other) return;
+            if (
+                ts.isCallExpression(node) &&
+                this.browserErasure.isDefaultRequestAnimationFrameCall(
+                    node,
+                ) &&
+                !belongsToAllowed(node)
+            ) {
+                other = node;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const source of this.program.getSourceFiles()) {
+            if (!source.isDeclarationFile) visit(source);
+        }
+        if (other) {
+            this.fail(
+                other,
+                "A bounded nested frame yield cannot be erased while " +
+                    "another requestAnimationFrame callback can interleave.",
+            );
+        }
+        return true;
     }
 
     public isBrowserDomValue(expression: ts.Expression): boolean {
@@ -8488,10 +8671,14 @@ class Compiler
         return this.sceneMaterials.recordSceneMaterialSlot();
     }
 
-    private currentGltfAssetCount(): number {
-        return [...this.assets.values()].filter(
-            (asset) => asset.kind === "gltf",
-        ).length;
+    public currentGltfAssetCount(): number {
+        return [...this.assets.values()]
+            .filter((asset) => asset.kind === "gltf")
+            .reduce(
+                (count, asset) =>
+                    count + (asset.containerCount ?? 0),
+                0,
+            );
     }
 
     public recordScenePbrUnlit(index: number | undefined): void {
@@ -8834,9 +9021,7 @@ class Compiler
     ): number {
         this.sceneMeshes.push({
             kind,
-            gltfAssetsBefore: [...this.assets.values()].filter(
-                (asset) => asset.kind === "gltf",
-            ).length,
+            gltfAssetsBefore: this.currentGltfAssetCount(),
             ...(streams ?? {}),
         });
         return this.sceneMeshes.length - 1;

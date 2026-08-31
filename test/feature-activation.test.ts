@@ -856,6 +856,10 @@ test("emit-option rows cover the sprite, effect and particle options", () => {
 test("composition rows cover the six backfilled shader families", () => {
     const rows = featureActivationRows(familyInputs());
 
+    const nodeFeature = named(rows, "material:node");
+    assert.equal(nodeFeature.active, true);
+    assert.match(nodeFeature.upstreamProvenance, /node-material\.ts/);
+
     assert.match(
         named(rows, "standard-variants:stages").activatedBy,
         /^1 Standard variant\(s\)/,

@@ -14,7 +14,10 @@
 // compiler does not lower; that one is executed at generation, the way a drawn
 // atlas and a computed pixel buffer are, and only the module and export travel
 // from here.
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import ts from "typescript";
+import { pinnedLibraryRoot } from "../pinned-shader-composer.js";
 import {
     staticGraphDocument,
     type ExecutedModuleReferenceContext,
@@ -25,8 +28,14 @@ import {
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
+import { babylonPackages } from "./symbols.js";
+import {
+    resolveFunctionDeclaration,
+    unwrapExpression as unwrapLoaderExpression,
+} from "./user-functions.js";
 import type {
     CompiledNodeMaterial,
+    NodeMaterialBlockEmitter,
     NodeShadowLight,
     Value,
 } from "./types.js";
@@ -35,6 +44,7 @@ export interface NodeMaterialContext
     extends ObjectValidationContext,
         PositiveIntegerContext,
         ExecutedModuleReferenceContext {
+    readonly checker: ts.TypeChecker;
     readonly reachedNodeMaterials: CompiledNodeMaterial[];
     expectObjectLiteral(
         expression: ts.Expression,
@@ -81,9 +91,200 @@ export interface CompiledNodeMaterialCall {
 
 /** How a recorded graph is compared, so two reaches of one share an index. */
 function nodeMaterialKey(material: CompiledNodeMaterial): string {
-    return material.kind === "literal"
+    const document = material.kind === "literal"
         ? `literal:${JSON.stringify(material.graph)}`
         : `module:${material.module}#${material.exportName}`;
+    return `${document}|emitters:${JSON.stringify(material.blockEmitters ?? [])}`;
+}
+
+const nodeBlockModulePrefixes = babylonPackages.map(
+    (packageName) => `${packageName}/`,
+);
+const nodeBlockModuleDirectory = "material/node/blocks";
+let pinnedNodeBlockModules: ReadonlySet<string> | undefined;
+
+/** The actual block modules shipped by the installed pinned package. */
+function pinnedNodeBlockModuleInventory(): ReadonlySet<string> {
+    pinnedNodeBlockModules ??= new Set(
+        readdirSync(
+            join(pinnedLibraryRoot(), nodeBlockModuleDirectory),
+            { withFileTypes: true },
+        )
+            .filter((entry) => entry.isFile() && entry.name.endsWith(".js"))
+            .map((entry) => `${nodeBlockModuleDirectory}/${entry.name}`),
+    );
+    return pinnedNodeBlockModules;
+}
+
+/**
+ * Resolve the one custom-loader shape generation can replay exactly.
+ *
+ * A caller may close its bundle over a switch of block class names, with
+ * each case returning only one pinned `material/node/blocks/*` module's
+ * `emitter` export and the default throwing. The map, rather than executable
+ * scene code, then travels to composition. Anything wider would let an
+ * arbitrary callback choose graph semantics at generation and therefore
+ * remains refused.
+ */
+function compileBlockLoader(
+    context: NodeMaterialContext,
+    expression: ts.Expression | undefined,
+): readonly NodeMaterialBlockEmitter[] | undefined {
+    if (!expression) return undefined;
+    const loader = unwrapLoaderExpression(expression);
+    const declaration = ts.isIdentifier(loader)
+        ? resolveFunctionDeclaration(
+              context.checker,
+              loader,
+              (node, message) => context.fail(node, message),
+          )
+        : undefined;
+    if (!declaration) {
+        context.fail(
+            expression,
+            "A node material blockLoader must name a local closed switch " +
+                "over pinned block emitter modules.",
+        );
+    }
+    if (
+        declaration.parameters.length !== 1 ||
+        !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        !declaration.body ||
+        !ts.isBlock(declaration.body) ||
+        declaration.body.statements.length !== 1 ||
+        !ts.isSwitchStatement(declaration.body.statements[0]!)
+    ) {
+        context.fail(
+            declaration,
+            "A node material blockLoader is one parameter and one closed " +
+                "switch statement.",
+        );
+    }
+    const parameter = declaration.parameters[0]!.name;
+    const statement = declaration.body.statements[0]!;
+    const discriminant = unwrapLoaderExpression(statement.expression);
+    if (
+        !ts.isIdentifier(discriminant) ||
+        context.checker.getSymbolAtLocation(discriminant) !==
+            context.checker.getSymbolAtLocation(parameter)
+    ) {
+        context.fail(
+            statement.expression,
+            "A node material blockLoader switch must dispatch on its class " +
+                "name parameter.",
+        );
+    }
+
+    const emitters: NodeMaterialBlockEmitter[] = [];
+    const classNames = new Set<string>();
+    let hasRefusingDefault = false;
+    for (const clause of statement.caseBlock.clauses) {
+        if (ts.isDefaultClause(clause)) {
+            if (
+                hasRefusingDefault ||
+                clause.statements.length !== 1 ||
+                !ts.isThrowStatement(clause.statements[0]!)
+            ) {
+                context.fail(
+                    clause,
+                    "A node material blockLoader default arm must contain " +
+                        "one throw statement.",
+                );
+            }
+            hasRefusingDefault = true;
+            continue;
+        }
+        if (
+            !ts.isStringLiteralLike(clause.expression) ||
+            clause.statements.length !== 1 ||
+            !ts.isReturnStatement(clause.statements[0]!) ||
+            !clause.statements[0]!.expression
+        ) {
+            context.fail(
+                clause,
+                "Each node material blockLoader case must return one pinned " +
+                    "block emitter.",
+            );
+        }
+        const className = clause.expression.text;
+        if (classNames.has(className)) {
+            context.fail(
+                clause.expression,
+                `A node material blockLoader repeats '${className}'.`,
+            );
+        }
+        classNames.add(className);
+
+        const returned = unwrapLoaderExpression(
+            clause.statements[0]!.expression,
+        );
+        if (
+            !ts.isPropertyAccessExpression(returned) ||
+            returned.name.text !== "emitter"
+        ) {
+            context.fail(
+                returned,
+                "A node material blockLoader case returns only a pinned " +
+                    "material/node/blocks module's emitter export.",
+            );
+        }
+        const awaited = unwrapLoaderExpression(returned.expression);
+        if (!ts.isAwaitExpression(awaited)) {
+            context.fail(
+                awaited,
+                "A node material blockLoader case must await its pinned " +
+                    "block module import.",
+            );
+        }
+        const imported = unwrapLoaderExpression(awaited.expression);
+        if (
+            !ts.isCallExpression(imported) ||
+            imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+            imported.arguments.length !== 1 ||
+            !ts.isStringLiteralLike(imported.arguments[0]!)
+        ) {
+            context.fail(
+                imported,
+                "A node material blockLoader case must dynamically import " +
+                    "one pinned block module.",
+            );
+        }
+        const specifier = imported.arguments[0]!.text;
+        const prefix = nodeBlockModulePrefixes.find((candidate) =>
+            specifier.startsWith(candidate),
+        );
+        const module = prefix ? specifier.slice(prefix.length) : "";
+        if (!/^material\/node\/blocks\/[a-z0-9][a-z0-9-]*\.js$/.test(module)) {
+            context.fail(
+                imported.arguments[0]!,
+                "A node material blockLoader may import only the pinned " +
+                    "material/node/blocks emitter modules.",
+            );
+        }
+        if (!pinnedNodeBlockModuleInventory().has(module)) {
+            context.fail(
+                imported.arguments[0]!,
+                `A node material blockLoader module '${specifier}' does ` +
+                    "not exist in the pinned material/node/blocks inventory.",
+            );
+        }
+        emitters.push({ className, module });
+    }
+    if (!hasRefusingDefault) {
+        context.fail(
+            statement.caseBlock,
+            "A node material blockLoader switch requires a refusing default " +
+                "arm.",
+        );
+    }
+    if (emitters.length === 0) {
+        context.fail(
+            statement.caseBlock,
+            "A node material blockLoader switch must map at least one class " +
+                "to a pinned block emitter.",
+        );
+    }
+    return emitters;
 }
 
 /**
@@ -114,10 +315,16 @@ export function compileNodeMaterialOptions(
     validateObjectProperties(
         context,
         object,
-        ["json", "textures", "shadowGenerators", "shadowLightIndices"],
+        [
+            "json",
+            "textures",
+            "shadowGenerators",
+            "shadowLightIndices",
+            "blockLoader",
+        ],
         "Reached node materials take an inline 'json' graph, its " +
-            "'textures' and its 'shadowGenerators' only; skinning, " +
-            "instancing and a block loader are not lowered.",
+            "'textures', its 'shadowGenerators', and a closed pinned " +
+            "blockLoader only; skinning and instancing are not lowered.",
     );
     const jsonExpression = context.objectProperty(object, "json");
     if (!jsonExpression) {
@@ -136,6 +343,10 @@ export function compileNodeMaterialOptions(
         context.objectProperty(object, "shadowGenerators"),
         context.objectProperty(object, "shadowLightIndices"),
     );
+    const blockEmitters = compileBlockLoader(
+        context,
+        context.objectProperty(object, "blockLoader"),
+    );
     const document = staticGraphDocument(
         context,
         jsonExpression,
@@ -151,6 +362,7 @@ export function compileNodeMaterialOptions(
                   graph: document.graph,
                   textureNames,
                   shadowLights,
+                  ...(blockEmitters ? { blockEmitters } : {}),
               }
             : {
                   kind: "module",
@@ -158,6 +370,7 @@ export function compileNodeMaterialOptions(
                   exportName: document.exportName,
                   textureNames,
                   shadowLights,
+                  ...(blockEmitters ? { blockEmitters } : {}),
               };
     // Two calls naming the same document compose one module and one variant,
     // so a repeat reach returns the first index. Linear over the reached
@@ -322,15 +535,18 @@ function compileTextures(
         }
         const texture = context.compileValue(value);
         context.expectKind(texture, "texture", value);
-        // The reached slice binds a loaded image, exactly as a shader
-        // material's samplers do: `createSolidTexture2D` and
-        // `createTexture2DFromPixels` are the same value kind and a
-        // different native type, so without this they reach the generated
-        // tree as a C++ overload error rather than a refusal naming the call.
-        if (!texture.textureFile) {
+        // File-backed images and the pin's 1x1 solid factory both normalize
+        // to the FileTexture record the native node-material slots upload.
+        // Pixel buffers and render attachments have independent lifetimes
+        // and still refuse rather than falling into a neighbouring overload.
+        if (
+            texture.textureStorage !== "file" &&
+            texture.textureStorage !== "solid"
+        ) {
             context.fail(
                 value,
-                "Reached node-material textures come from loadTexture2D.",
+                "Reached node-material textures come from loadTexture2D " +
+                    "or createSolidTexture2D.",
             );
         }
         textures.push({ name, texture });

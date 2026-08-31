@@ -9,7 +9,6 @@
 // in material.ts calls these through its context.
 import ts from "typescript";
 import type {
-    CompileAsset,
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
     ScenePbrIridescenceManifest,
@@ -55,7 +54,7 @@ function pinnedScalarDefault(
 export interface MaterialOptionContext
     extends ObjectValidationContext, PositiveIntegerContext {
     readonly scenePbrMaterials: ScenePbrMaterialManifest[];
-    readonly assets: ReadonlyMap<string, CompileAsset>;
+    currentGltfAssetCount(): number;
     recordSceneMaterialSlot(): number;
     compileValue(expression: ts.Expression): Value;
     expectKind(
@@ -641,9 +640,7 @@ export function compilePbrMaterialOptions(
     // text back is exact.
     const sceneMaterialIndex = context.scenePbrMaterials.push({
         materialsBefore: context.recordSceneMaterialSlot(),
-        gltfAssetsBefore: [...context.assets.values()].filter(
-            (asset) => asset.kind === "gltf",
-        ).length,
+        gltfAssetsBefore: context.currentGltfAssetCount(),
         hasBaseColorTexture: true,
         hasOrmTexture: true,
         ...(baseColorFactor ? { baseColorFactor: baseColorFactor.value } : {}),

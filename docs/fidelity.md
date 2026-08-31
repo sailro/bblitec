@@ -849,10 +849,12 @@ composes the Standard clockwise pipeline arms under the same opt-in and
 runs the watcher in the frame position the pin gives it — after the
 frame's callbacks, before the swap queue drains, which here means the
 render plan, since a front face is chosen when a pipeline is. The PBR
-family takes no back-culled twin: its mirrored meshes come from the glTF
-loader, which rewinds a single-sided mirrored primitive's indices at load
-and stamps a clockwise face only for the double-sided pair. Gated by
-scene 270.
+loader rewinds a single-sided imported primitive's indices and stamps the
+result as the watcher's authored baseline, so the live determinant does not
+reverse imported winding a second time. A procedural PBR mesh has no loader
+pass; if it crosses the determinant sign boundary at run time, the same
+watcher rebuild selects a back-culled pipeline with the opposite front face.
+Scene 269 gates that PBR transition, while scene 270 gates the Standard arms.
 
 **A bare `visible` write takes effect when the draw list is rebuilt, not on
 the next frame -- and that is the pin's rule, not a shortfall.**
@@ -895,6 +897,15 @@ statement. A drain that re-arms until a counter passes is a different
 claim: the condition is the scene's own, and upstream it gates
 `canvas.dataset.ready`, which is the flag the harness screenshots on. So
 the condition is kept and every frame loop consults it before capturing.
+
+Scene 117 carries one other closed shape: a zero-argument helper returns a
+Promise whose executor nests exactly two `requestAnimationFrame` calls, and
+both calls to that helper are awaited only as discarded statements. The
+compiler proves that complete AST before erasing it; it does not infer a
+general async runtime or recursively count arbitrary frame callbacks. A
+retained timestamp, a callback body with other work, a third nesting level,
+or the loop-shaped drain above remains outside the rule and refuses or keeps
+its own capture condition.
 
 ### Lights
 
@@ -1326,6 +1337,18 @@ module exporting the document as a literal is read as data, which is the fold
 and cannot drift. A module that builds its graph at load — id counters,
 spread-composed inputs, arrays it pushes into — is code this compiler does not
 lower, so it is executed instead, under Node.
+
+An optional scene `blockLoader` is not executed. Its accepted form is closed
+and validated in the scene AST: one local function, one class-name switch,
+string cases that each return the `emitter` export from one pinned
+`material/node/blocks/*.js` dynamic import, and one throwing default. The
+validated class-to-module table is what composition receives; a missing class
+still throws there, while a callback, fallthrough, alternate export or
+non-pinned module refuses at generation. Scene 83 gates both the closed table
+and the pin's resulting normal/AO graph. Its solid AO texture also gates the
+only texture normalization beside an ordinary file: the factory's RGBA texel
+becomes a 1x1 file-texture record with the pin's clamp, bilinear and no-mipmap
+sampler, while other texture storage kinds refuse.
 
 That last word is the whole difference from the two executed asset kinds
 beside it. A drawn atlas and a computed pixel buffer produce *pixels*, so they

@@ -1250,6 +1250,12 @@ struct MeshRecord {
      * scene assigned. Scene code finds meshes by it.
      */
     std::string name;
+    /**
+     * The glTF node wrapper's SceneNode name. A flattened mesh record stands
+     * in for both that wrapper and its renderable child, so recursive scene
+     * lookup checks this lane before the mesh's independently authored name.
+     */
+    std::string scene_node_name;
     PrimitiveKind primitive = PrimitiveKind::box;
     // The pin holds a node's translation as three JavaScript numbers, and
     // at large-world coordinates the float32 ULP is half a unit -- enough
@@ -1327,6 +1333,13 @@ struct MeshRecord {
      * the draw takes its deformation from the pinned stage instead.
      */
     bool pinned_bone_palette = false;
+    /**
+     * The front-face state of the geometry as stored by its factory/loader.
+     * Runtime parent transforms XOR their live determinant against this
+     * baseline; keeping the baseline separate prevents imported geometry
+     * whose indices were already reconciled at load from being flipped twice.
+     */
+    bool authored_clockwise_front_face = false;
     bool clockwise_front_face = false;
     /**
      * Whether the mirrored-mesh watcher has seen this mesh, which is what
@@ -3266,6 +3279,13 @@ struct NodeMaterialTexture {
     FileTexture texture;
 };
 
+NodeMaterialTexture node_material_texture(
+    std::string name,
+    FileTexture texture);
+NodeMaterialTexture node_material_texture(
+    std::string name,
+    const SolidTexture& texture);
+
 MaterialHandle create_node_material(
     Engine& engine,
     std::uint32_t variant,
@@ -4245,11 +4265,19 @@ double set_interval(
 /** Browser `clearInterval`. */
 void clear_interval(Engine& engine, double id);
 
-/** src/scene/set-parent.ts setParent for the reached mesh hierarchy. */
+/** src/scene/set-parent.ts setParent for the reached scene hierarchy. */
 void set_mesh_parent(
     Engine& engine,
     MeshHandle child,
     MeshHandle parent);
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle child,
+    TransformNodeHandle parent);
+void set_asset_root_parent(
+    Engine& engine,
+    AssetHandle child,
+    TransformNodeHandle parent);
 /** src/scene/visibility.ts setMeshVisible cascade. */
 void set_mesh_visible(
     Engine& engine,

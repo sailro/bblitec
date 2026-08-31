@@ -22,6 +22,7 @@
  * adds one refuses rather than composing a module this port cannot serve.
  */
 import type { JsonObject } from "./gltf-document.js";
+import type { NodeMaterialBlockEmitter } from "./compiler/types.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
@@ -218,6 +219,7 @@ interface PinnedNodeMaterialModule {
             json?: unknown;
             shadowGenerators?: readonly { _shadowType: string }[];
             shadowLightIndices?: readonly number[];
+            blockLoader?: (className: string) => Promise<unknown>;
         },
     ) => Promise<PinnedNodeMaterial>;
 }
@@ -363,16 +365,47 @@ export async function composeNodeMaterial(
         shadowType: "esm" | "pcf" | "csm";
     }[] = [],
     castsEsmShadow = false,
+    blockEmitters: readonly NodeMaterialBlockEmitter[] = [],
 ): Promise<ComposedNodeMaterial> {
     const module = await importPinnedModule<PinnedNodeMaterialModule>(
         "material/node/node-material.js",
     );
     const engine = compositionEngine();
+    const emitterModules = new Map(
+        blockEmitters.map(({ className, module }) => [className, module]),
+    );
+    const blockLoader = blockEmitters.length > 0
+        ? async (className: string): Promise<unknown> => {
+              const emitterModule = emitterModules.get(className);
+              if (!emitterModule) {
+                  throw new Error(
+                      `NodeMaterial: custom block loader has no emitter ` +
+                          `for block "${className}"`,
+                  );
+              }
+              const imported = await importPinnedModule<unknown>(
+                  emitterModule,
+              );
+              if (
+                  typeof imported !== "object" ||
+                  imported === null ||
+                  !("emitter" in imported) ||
+                  imported.emitter === undefined
+              ) {
+                  throw new Error(
+                      `NodeMaterial: pinned block module '${emitterModule}' ` +
+                          "does not export 'emitter'.",
+                  );
+              }
+              return imported.emitter;
+          }
+        : undefined;
     const material = await module.parseNodeMaterialFromSnippet(
         engine,
         "",
         {
             json,
+            ...(blockLoader ? { blockLoader } : {}),
             ...(shadowLights.length > 0
                 ? {
                       shadowGenerators: shadowLights.map(({ shadowType }) => ({

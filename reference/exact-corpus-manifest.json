@@ -231,6 +231,13 @@
             "moduleSha256": "c7128eabaeaf5206f75382a6440b19814d58e560eb67dc0584a38b90ed5516cc"
         },
         {
+            "id": "scene117",
+            "sourceSha256": "233f668500ff4ccb21b5befa87c21f61558838c8096018d71763d7dd9079579b",
+            "reference": "reference/scene117/babylon-lite-golden.png",
+            "referenceSha256": "b6ca96b14aba24191b3a341ed7679791c0e51aa2a265c508495323e99a679d42",
+            "moduleSha256": "a0a3d26c9d1357b00eb2afd00979622b6a6d6550600b1545e4615823ccdeb4a3"
+        },
+        {
             "id": "scene145",
             "sourceSha256": "69a746fe8fb83f086564075b1ccd3ccb8f8ad745db2a57e1f4354ec74c4f3fae",
             "reference": "reference/scene145/babylon-lite-golden.png",
@@ -597,6 +604,13 @@
             "moduleSha256": "aa35fea0606c75adefca3c38411de2d73443210b83c82f1c4aea70814ea270c7"
         },
         {
+            "id": "scene269",
+            "sourceSha256": "433312a7bcec3b634f8b70edbe4a4c2c20709aeb3c5c765e955047f2d4b7d59b",
+            "reference": "reference/scene269/babylon-lite-golden.png",
+            "referenceSha256": "ecd88dd6377e8f00de8a21a464a879a5491b5ade4894e1a7b38845ba7abeb0f9",
+            "moduleSha256": "bd784e750a3aec961c3ef7f99c7cb7f7edef984d68a956c2c2350eb51ac49cf1"
+        },
+        {
             "id": "scene270",
             "sourceSha256": "32329651b4769ead3e1f2950cbcdd726e07471907321ea63ba0b81557bd9e8c6",
             "reference": "reference/scene270/babylon-lite-golden.png",
@@ -935,6 +949,13 @@
             "reference": "reference/scene82/babylon-lite-golden.png",
             "referenceSha256": "f57ea8a05e03efa2bc8a607d505193dd63ed7d6ede3ce61a2f3d376864b3819a",
             "moduleSha256": "c16a80eb679a503646db513ddbf1a27e1d9020edbdf7226e63c2a861255c8342"
+        },
+        {
+            "id": "scene83",
+            "sourceSha256": "7c4b077b8fa6ba700b16cbc89ec5d505849e460ca615db690c98b1ce910d4cc2",
+            "reference": "reference/scene83/babylon-lite-golden.png",
+            "referenceSha256": "1612fce5d28b210e6d616df9e700876deb721f0f53b588f6f24faa835298f8c1",
+            "moduleSha256": "8e8771121e58f575587b4907aba1adcf69da71b8988a062186a5005c63523a8a"
         },
         {
             "id": "scene85",

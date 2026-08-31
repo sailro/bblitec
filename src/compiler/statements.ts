@@ -135,6 +135,7 @@ export interface StatementLoweringContext {
         node: ts.Node,
     ): void;
     requireEngine(value: Value, node: ts.Node): string;
+    assertAssetRootWritable(root: Value, node: ts.Node): void;
     expectArgumentCount(
         call: ts.CallExpression,
         minimum: number,
@@ -149,6 +150,9 @@ export interface StatementLoweringContext {
     ): ts.Expression | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
     isFrameYield(expression: ts.Expression): boolean;
+    isBoundedNestedFrameYield(
+        expression: ts.Expression,
+    ): boolean;
     frameDrainCondition(
         expression: ts.Expression,
     ): ts.Expression | undefined;
@@ -2186,6 +2190,20 @@ export class StatementLowerer {
             );
             return;
         }
+        if (context.isBoundedNestedFrameYield(unwrapped)) {
+            // The exact two-RAF Promise carries no value and no callback may
+            // interleave, so its continuation can stay in the native tail.
+            // Its settling time still gates capture: the frame conductor
+            // must draw the CPU mutation that follows before taking the
+            // screenshot which `dataset.ready` guarded upstream.
+            context.emit(
+                `bbl::defer_capture_until(` +
+                    `${context.requireDefaultEngine(unwrapped)}, ` +
+                    `[frames = 0u]() mutable { ` +
+                    `return ++frames >= 2u; });`,
+            );
+            return;
+        }
         if (ts.isCallExpression(unwrapped)) {
             const value = context.compileValue(unwrapped);
             if (
@@ -2319,6 +2337,7 @@ export class StatementLowerer {
             (owner.name.text === "position" ||
                 owner.name.text === "rotation")
         ) {
+            context.assertAssetRootWritable(target, call);
             const components = this.setCallComponents(
                 context,
                 call,

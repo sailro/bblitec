@@ -513,6 +513,13 @@ function billboardPropsCpp(
     );
 }
 
+/** Preserve a renderer's native layer vector; materialize only JS arrays. */
+function spriteLayerVectorCpp(layers: Value): string {
+    return layers.nativeVectorData === true
+        ? layers.cpp
+        : `bbl::js::array_to_vector(${layers.cpp})`;
+}
+
 export function compileSpriteIntrinsic(
     context: SpriteIntrinsicContext,
     importedName: string,
@@ -555,17 +562,24 @@ export function compileSpriteIntrinsic(
                 context.checker.getTypeAtLocation(call),
                 call,
             );
-            if (
-                resultType?.kind !== "optional" ||
-                resultType.inner.kind !== "struct"
-            ) {
+            const resultStruct =
+                resultType?.kind === "optional" &&
+                resultType.inner.kind === "struct"
+                    ? resultType.inner
+                    : resultType?.kind === "struct" &&
+                        context.dataTypes.isReferenceStruct(
+                            resultType.name,
+                        )
+                      ? resultType
+                      : undefined;
+            if (!resultType || !resultStruct) {
                 context.fail(
                     call,
                     "pickSprite2D must return its pinned nullable hit record.",
                 );
             }
             const fields = context.dataTypes.structFields(
-                resultType.inner.name,
+                resultStruct.name,
                 call,
             );
             const fieldValues: Record<string, string> = {
@@ -574,6 +588,12 @@ export function compileSpriteIntrinsic(
                 u: "hit->u",
                 v: "hit->v",
             };
+            if (fields.length !== Object.keys(fieldValues).length) {
+                context.fail(
+                    call,
+                    "pickSprite2D hit record must retain layer, spriteIndex, u, and v.",
+                );
+            }
             for (const field of fields) {
                 if (fieldValues[field.name] === undefined) {
                     context.fail(
@@ -581,11 +601,32 @@ export function compileSpriteIntrinsic(
                         `pickSprite2D hit record has unsupported field '${field.name}'.`,
                     );
                 }
+                const validType =
+                    field.name === "layer"
+                        ? field.type.kind === "handle" &&
+                          field.type.handle === "sprite-layer"
+                        : field.type.kind === "number";
+                if (!validType) {
+                    context.fail(
+                        call,
+                        `pickSprite2D hit record field '${field.name}' has an unsupported type.`,
+                    );
+                }
             }
             const cppType = context.dataTypes.cppType(resultType);
-            const hitType = context.dataTypes.cppType(resultType.inner);
+            const hitType = context.dataTypes.cppType(resultStruct);
+            const referenceBacked = resultType.kind === "struct";
+            const fieldInitializers = fields
+                .map((field) => fieldValues[field.name])
+                .join(", ");
+            const missValue = referenceBacked
+                ? `${cppType}{}`
+                : `${cppType}{std::nullopt}`;
+            const hitValue = referenceBacked
+                ? `std::make_shared<${hitType}Data>(${hitType}Data{${fieldInitializers}})`
+                : `${cppType}{${hitType}{${fieldInitializers}}}`;
             const layerList = dataLayers
-                ? `bbl::js::array_to_vector(${layers.cpp})`
+                ? spriteLayerVectorCpp(layers)
                 : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
                       .map((layer) => layer.cpp)
                       .join(", ")}}`;
@@ -597,10 +638,8 @@ export function compileSpriteIntrinsic(
                     `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ${layerList}, ` +
                     `${context.compileNumber(call.arguments[1]!, "double")}, ` +
                     `${context.compileNumber(call.arguments[2]!, "double")}); ` +
-                    `if (!hit) return ${cppType}{std::nullopt}; ` +
-                    `return ${cppType}{${hitType}{${fields
-                        .map((field) => fieldValues[field.name])
-                        .join(", ")}}}; }())`,
+                    `if (!hit) return ${missValue}; ` +
+                    `return ${hitValue}; }())`,
                 dataType: resultType,
             };
         }
@@ -1990,7 +2029,7 @@ export function compileSpriteIntrinsic(
                 kind: "sprite-renderer",
                 cpp:
                     `bbl::create_sprite_renderer(${surface.cpp}, ` +
-                    `bbl::SpriteRendererOptions{${dataLayers ? `bbl::js::array_to_vector(${layers.cpp})` : `{${(tupleLayers ?? []).map((layer) => layer.cpp).join(", ")}}`}, ` +
+                    `bbl::SpriteRendererOptions{${dataLayers ? spriteLayerVectorCpp(layers!) : `{${(tupleLayers ?? []).map((layer) => layer.cpp).join(", ")}}`}, ` +
                     `${property(options, "clear")?.cpp ?? "true"}, ` +
                     `${clearValue}})`,
                 engineCpp:

@@ -148,7 +148,7 @@ test("preserves full pinned TRS when setParent relinks a mesh", () => {
     );
     assert.match(
         lowered.source,
-        /const std::array<float, 16> child_world =\s*upstream::mesh_world_matrix\(engine, child_record\);[\s\S]{0,1800}child_record\.parent = parent;/,
+        /const std::array<float, 16> child_world =\s*parenting_world_matrix\(engine, child_record\);[\s\S]{0,500}child_record\.parent = parent;/,
     );
     assert.match(
         lowered.source,
@@ -156,11 +156,11 @@ test("preserves full pinned TRS when setParent relinks a mesh", () => {
     );
     assert.match(
         lowered.source,
-        /old_parent\.children\.erase\([\s\S]{0,300}old_parent\.parented_meshes\.erase\(/,
+        /void unlink_child_links\([\s\S]{0,500}children\.erase\([\s\S]{0,220}registered\.erase\(/,
     );
     assert.match(
         lowered.source,
-        /mat4_invert\(parent_world\)[\s\S]{0,650}mat4_multiply_into\(local, 0, \*inverse_parent, 0, child_world, 0\);[\s\S]{0,180}pinned_parent_mat4_decompose\(local\)/,
+        /mat4_invert\(\*parent_world\)[\s\S]{0,950}mat4_multiply_into\(local, 0, \*inverse_parent, 0, child_world, 0\);[\s\S]{0,180}pinned_parent_mat4_decompose\(local\)/,
     );
     assert.match(
         lowered.source,
@@ -1795,6 +1795,29 @@ test("gates pure and depth-hosted sprite vertex permutations independently", () 
             "sprite.vert.native.wgsl",
             "sprite_uvscroll.vert.native.wgsl",
         ],
+    );
+});
+
+test("pins the complete synchronous Sprite2D pick-result contract", () => {
+    const source = new UpstreamSourceStore().getSource(
+        "src/sprite/picking/pick-sprite-2d.ts",
+    );
+
+    assert.match(
+        source,
+        /export interface SpritePickInfo\s*\{[\s\S]*?layer: Sprite2DLayer;[\s\S]*?spriteIndex: number;[\s\S]*?u: number;[\s\S]*?v: number;[\s\S]*?\}/,
+    );
+    assert.match(
+        source,
+        /export function pickSprite2D\([\s\S]*?\): SpritePickInfo \| null \{/,
+    );
+    assert.match(
+        source,
+        /for \(let li = layers\.length - 1; li >= 0; li--\)/,
+    );
+    assert.match(
+        source,
+        /return \{ layer, spriteIndex: i, u, v \};[\s\S]*?return null;/,
     );
 });
 

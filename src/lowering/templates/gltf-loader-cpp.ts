@@ -3179,6 +3179,11 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             }
 ` : ""}            engine.geometries.push_back(std::move(geometry));
             MeshRecord record;
+            record.scene_node_name = string_or(node, "name");
+            if (record.scene_node_name.empty()) {
+                record.scene_node_name = "gltf_node_" +
+                    std::to_string(node_index);
+            }
             record.name = authored_name.empty()
                 ? "${lowered.gltfMeshNamePrefix}" +
                     std::to_string(gltf_mesh_counter)
@@ -3201,6 +3206,8 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                     matrix[10] * matrix[10]),
             });
             if (material_index < materials.size()) record.material = materials[material_index];
+            record.authored_clockwise_front_face =
+                clockwise_front_face;
             record.clockwise_front_face =
                 clockwise_front_face;
             // The node matrix's handedness. Our vertices are stored in the
