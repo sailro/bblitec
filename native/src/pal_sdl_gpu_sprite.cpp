@@ -162,8 +162,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
 
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         const bool capture_ui =
             environment_variable("BBLITE_CAPTURE_UI") == "1";
+#endif
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples;
@@ -184,7 +186,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     handle_platform_event(event, engine);
                 }
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, window, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,

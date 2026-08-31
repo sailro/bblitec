@@ -1,22 +1,31 @@
 #include <bblite/pal_ui.hpp>
+#include <bblite/js_data.hpp>
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/EventListener.h>
+#include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
+#include <RmlUi/Core/FontEngineInterface.h>
+#include <RmlUi/Core/Geometry.h>
 #include <RmlUi/Core/RenderInterface.h>
+#include <RmlUi/Core/TextShapingContext.h>
 #include <SDL3/SDL.h>
 #include <SDL3_image/SDL_image.h>
 
 #include "RmlUi_Platform_SDL.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -67,6 +76,12 @@ UiElementHandle ui_get_element_by_id(
     throw std::runtime_error(
         "Audited native host UI element id was not materialized: " +
         std::string(id));
+}
+
+UiClientRect ui_get_client_rect(
+    Engine& engine,
+    UiElementHandle element) {
+    return ui_element(engine, element).client_rect;
 }
 
 void ui_set_text(
@@ -131,6 +146,41 @@ void ui_set_style_property(
     mark_ui_changed(engine);
 }
 
+std::string ui_get_style_property(
+    Engine& engine,
+    UiElementHandle element,
+    std::string_view name) {
+    const UiElementRecord& record = ui_element(engine, element);
+    const auto dynamic = record.style_properties.find(std::string(name));
+    if (dynamic != record.style_properties.end()) return dynamic->second;
+    const auto attribute = record.attributes.find("style");
+    if (attribute == record.attributes.end()) return {};
+    const auto trim = [](std::string_view value) {
+        const std::size_t first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string_view::npos) return std::string_view{};
+        const std::size_t last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    };
+    const std::string_view source = attribute->second;
+    for (std::size_t start = 0; start <= source.size();) {
+        const std::size_t end = source.find(';', start);
+        const std::string_view declaration = source.substr(
+            start,
+            end == std::string_view::npos
+                ? std::string_view::npos
+                : end - start);
+        const std::size_t colon = declaration.find(':');
+        if (
+            colon != std::string_view::npos &&
+            trim(declaration.substr(0, colon)) == name) {
+            return std::string(trim(declaration.substr(colon + 1)));
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return {};
+}
+
 void ui_toggle_class(
     Engine& engine,
     UiElementHandle element,
@@ -140,18 +190,30 @@ void ui_toggle_class(
         throw std::runtime_error("Native UI class name cannot be empty.");
     }
     UiElementRecord& record = ui_element(engine, element);
+    const auto attribute = record.attributes.find("class");
+    const std::string current = attribute == record.attributes.end()
+        ? std::string{}
+        : attribute->second;
     std::vector<std::string> classes;
-    std::istringstream input(record.attributes["class"]);
+    std::istringstream input(current);
+    bool present = false;
     for (std::string token; input >> token;) {
-        if (token != name) classes.push_back(std::move(token));
+        present = present || token == name;
+        classes.push_back(std::move(token));
     }
-    if (enabled) classes.push_back(std::move(name));
+    if (present == enabled) return;
+    if (enabled) {
+        classes.push_back(std::move(name));
+    } else {
+        classes.erase(
+            std::remove(classes.begin(), classes.end(), name),
+            classes.end());
+    }
     std::string joined;
     for (const std::string& token : classes) {
         if (!joined.empty()) joined += ' ';
         joined += token;
     }
-    if (record.attributes["class"] == joined) return;
     record.attributes.insert_or_assign("class", std::move(joined));
     mark_ui_changed(engine);
 }
@@ -165,6 +227,18 @@ void ui_add_class_style(
     }
     engine.ui_class_style_rules.push_back(
         {std::move(class_name), std::move(style)});
+    mark_ui_changed(engine);
+}
+
+void ui_add_id_style(
+    Engine& engine,
+    std::string id,
+    std::string style) {
+    if (id.empty()) {
+        throw std::runtime_error("Native UI id style name cannot be empty.");
+    }
+    engine.ui_id_style_rules.push_back(
+        {std::move(id), std::move(style)});
     mark_ui_changed(engine);
 }
 
@@ -232,6 +306,9 @@ void ui_replace_children(Engine& engine, UiElementHandle parent) {
 
 void ui_remove(Engine& engine, UiElementHandle element) {
     UiElementRecord& record = ui_element(engine, element);
+    const bool changed =
+        record.parent.value != invalid_handle || record.attached_to_root;
+    if (!changed) return;
     if (record.parent.value != invalid_handle) {
         UiElementRecord& parent = ui_element(engine, record.parent);
         parent.children.erase(
@@ -264,7 +341,7 @@ void ui_on_event(
     Engine& engine,
     UiElementHandle element,
     std::string event,
-    std::function<void()> callback) {
+    std::function<void(const PlatformMouseEvent&)> callback) {
     if (event.empty() || !callback) {
         throw std::runtime_error("Native UI event registration is invalid.");
     }
@@ -302,9 +379,11 @@ void reset_canvas(
     UiElementRecord::CanvasState& canvas,
     double width,
     double height) {
+    const std::uint64_t next_pixel_revision = canvas.pixel_revision + 1;
     canvas = {};
     canvas.width = std::max(0.0, std::floor(width));
     canvas.height = std::max(0.0, std::floor(height));
+    canvas.pixel_revision = next_pixel_revision;
 }
 
 } // namespace
@@ -517,28 +596,167 @@ void ui_canvas_arc(
 void ui_canvas_fill(Engine& engine, UiElementHandle element) {
     auto& canvas = ui_canvas(engine, element);
     if (canvas.path.size() < 3) return;
-    canvas.draws.push_back({
-        UiElementRecord::CanvasDrawCommand::Kind::Fill,
-        canvas.path,
-        canvas.fill_style,
-        0.0,
-        true,
-        false,
-        false});
+    UiElementRecord::CanvasDrawCommand draw;
+    draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Fill;
+    draw.points = canvas.path;
+    draw.color = canvas.fill_style;
+    draw.line_width = 0.0;
+    draw.closed = true;
+    canvas.draws.push_back(std::move(draw));
 }
 
 void ui_canvas_stroke(Engine& engine, UiElementHandle element) {
     auto& canvas = ui_canvas(engine, element);
     if (canvas.path.size() < 2) return;
-    canvas.draws.push_back({
-        UiElementRecord::CanvasDrawCommand::Kind::Stroke,
-        canvas.path,
-        canvas.stroke_style,
-        canvas.line_width *
-            (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5,
-        canvas.path_closed,
-        canvas.line_join == "round",
-        canvas.line_cap == "round"});
+    UiElementRecord::CanvasDrawCommand draw;
+    draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Stroke;
+    draw.points = canvas.path;
+    draw.color = canvas.stroke_style;
+    draw.line_width = canvas.line_width *
+        (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
+    draw.closed = canvas.path_closed;
+    draw.round_join = canvas.line_join == "round";
+    draw.round_cap = canvas.line_cap == "round";
+    canvas.draws.push_back(std::move(draw));
+}
+
+void ui_canvas_set_image_smoothing(
+    Engine& engine,
+    UiElementHandle element,
+    bool enabled) {
+    ui_canvas(engine, element).image_smoothing_enabled = enabled;
+}
+
+void ui_canvas_put_image_data(
+    Engine& engine,
+    UiElementHandle element,
+    const js::U8Array& source,
+    double source_width,
+    double source_height,
+    double destination_x,
+    double destination_y) {
+    auto& canvas = ui_canvas(engine, element);
+    const int width = std::max(0, static_cast<int>(std::floor(source_width)));
+    const int height = std::max(0, static_cast<int>(std::floor(source_height)));
+    const int target_width =
+        std::max(0, static_cast<int>(std::floor(canvas.width)));
+    const int target_height =
+        std::max(0, static_cast<int>(std::floor(canvas.height)));
+    const std::size_t required =
+        static_cast<std::size_t>(width) * height * 4;
+    if (source.size() < required) {
+        throw std::runtime_error(
+            "Canvas ImageData RGBA storage is smaller than its dimensions.");
+    }
+    const std::size_t target_size =
+        static_cast<std::size_t>(target_width) * target_height * 4;
+    if (canvas.pixels.size() != target_size) {
+        canvas.pixels.assign(target_size, 0);
+    }
+    const int dx = static_cast<int>(std::floor(destination_x));
+    const int dy = static_cast<int>(std::floor(destination_y));
+    for (int y = 0; y < height; ++y) {
+        const int target_y = dy + y;
+        if (target_y < 0 || target_y >= target_height) continue;
+        for (int x = 0; x < width; ++x) {
+            const int target_x = dx + x;
+            if (target_x < 0 || target_x >= target_width) continue;
+            const std::size_t source_offset =
+                (static_cast<std::size_t>(y) * width + x) * 4;
+            const std::size_t target_offset =
+                (static_cast<std::size_t>(target_y) * target_width + target_x) * 4;
+            const std::uint8_t alpha = source[source_offset + 3];
+            canvas.pixels[target_offset] = static_cast<std::uint8_t>(
+                static_cast<unsigned>(source[source_offset]) * alpha / 255);
+            canvas.pixels[target_offset + 1] = static_cast<std::uint8_t>(
+                static_cast<unsigned>(source[source_offset + 1]) * alpha / 255);
+            canvas.pixels[target_offset + 2] = static_cast<std::uint8_t>(
+                static_cast<unsigned>(source[source_offset + 2]) * alpha / 255);
+            canvas.pixels[target_offset + 3] = alpha;
+        }
+    }
+    ++canvas.pixel_revision;
+}
+
+void ui_canvas_draw_image(
+    Engine& engine,
+    UiElementHandle destination,
+    UiElementHandle source,
+    double x,
+    double y,
+    double width,
+    double height) {
+    // Validate both handles now so a stale/off-type source cannot escape into
+    // the backend-neutral frame recorder.
+    static_cast<void>(ui_canvas(engine, source));
+    auto& canvas = ui_canvas(engine, destination);
+    UiElementRecord::CanvasDrawCommand draw;
+    draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Blit;
+    draw.source = source;
+    const auto point = canvas_point(canvas, x, y);
+    draw.destination_x = point.x;
+    draw.destination_y = point.y;
+    draw.destination_width = width * canvas.scale_x;
+    draw.destination_height = height * canvas.scale_y;
+    draw.nearest_sampling = !canvas.image_smoothing_enabled;
+    canvas.draws.push_back(std::move(draw));
+}
+
+void ui_canvas_set_font(
+    Engine& engine,
+    UiElementHandle element,
+    std::string value) {
+    ui_canvas(engine, element).font = std::move(value);
+}
+
+void ui_canvas_set_text_baseline(
+    Engine& engine,
+    UiElementHandle element,
+    std::string value) {
+    ui_canvas(engine, element).text_baseline = std::move(value);
+}
+
+void ui_canvas_set_shadow_color(
+    Engine& engine,
+    UiElementHandle element,
+    std::string value) {
+    ui_canvas(engine, element).shadow_color = std::move(value);
+}
+
+void ui_canvas_set_shadow_blur(
+    Engine& engine,
+    UiElementHandle element,
+    double value) {
+    ui_canvas(engine, element).shadow_blur = std::max(0.0, value);
+}
+
+void ui_canvas_fill_text(
+    Engine& engine,
+    UiElementHandle element,
+    std::string text,
+    double x,
+    double y) {
+    auto& canvas = ui_canvas(engine, element);
+    char* end = nullptr;
+    const double parsed = std::strtod(canvas.font.c_str(), &end);
+    const double font_size = end != canvas.font.c_str() && parsed > 0.0
+        ? parsed
+        : 10.0;
+    UiElementRecord::CanvasDrawCommand draw;
+    draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Text;
+    draw.color = canvas.fill_style;
+    const auto point = canvas_point(canvas, x, y);
+    draw.destination_x = point.x;
+    draw.destination_y = point.y;
+    draw.font_size = font_size *
+        (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
+    draw.font_family = canvas.font;
+    draw.text_baseline = canvas.text_baseline;
+    draw.text = std::move(text);
+    draw.shadow_color = canvas.shadow_color;
+    draw.shadow_blur = canvas.shadow_blur *
+        (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
+    canvas.draws.push_back(std::move(draw));
 }
 
 namespace pal {
@@ -555,10 +773,40 @@ public:
     void ProcessEvent(Rml::Event& event) override {
         // Copy the callback list so a callback may safely mutate UI state.
         const UiElementRecord& record = ui_element(engine, element);
-        const auto callbacks = event_type == "click"
-            ? record.click_callbacks
-            : record.event_callbacks.at(event_type);
-        for (const auto& callback : callbacks) callback();
+        if (event_type == "click") {
+            const auto callbacks = record.click_callbacks;
+            for (const auto& callback : callbacks) callback();
+        } else {
+            float fallback_x = 0.0f;
+            float fallback_y = 0.0f;
+            const SDL_MouseButtonFlags pressed =
+                SDL_GetMouseState(&fallback_x, &fallback_y);
+            const int source_button =
+                event.GetParameter<int>("button", -1);
+            const PlatformMouseEvent pointer{
+                .button = source_button == 1
+                    ? 2.0
+                    : source_button == 2
+                      ? 1.0
+                      : static_cast<double>(source_button),
+                .buttons =
+                    ((pressed & SDL_BUTTON_LMASK) != 0 ? 1.0 : 0.0) +
+                    ((pressed & SDL_BUTTON_RMASK) != 0 ? 2.0 : 0.0) +
+                    ((pressed & SDL_BUTTON_MMASK) != 0 ? 4.0 : 0.0) +
+                    ((pressed & SDL_BUTTON_X1MASK) != 0 ? 8.0 : 0.0) +
+                    ((pressed & SDL_BUTTON_X2MASK) != 0 ? 16.0 : 0.0),
+                .client_x = static_cast<double>(
+                    event.GetParameter<int>(
+                        "mouse_x",
+                        static_cast<int>(fallback_x))),
+                .client_y = static_cast<double>(
+                    event.GetParameter<int>(
+                        "mouse_y",
+                        static_cast<int>(fallback_y))),
+            };
+            const auto callbacks = record.event_callbacks.at(event_type);
+            for (const auto& callback : callbacks) callback(pointer);
+        }
         event.StopPropagation();
     }
 
@@ -616,6 +864,47 @@ FontChoice system_ui_font() {
         "RmlUi could not find a supported system sans-serif font.");
 }
 
+FontChoice system_monospace_font() {
+#if defined(_WIN32)
+    const FontChoice candidates[] = {
+        {
+            "C:/Windows/Fonts/consola.ttf",
+            "C:/Windows/Fonts/consolab.ttf",
+            "Consolas"},
+        {
+            "C:/Windows/Fonts/cour.ttf",
+            "C:/Windows/Fonts/courbd.ttf",
+            "'Courier New'"},
+    };
+#elif defined(__APPLE__)
+    const FontChoice candidates[] = {
+        {
+            "/System/Library/Fonts/Menlo.ttc",
+            "/System/Library/Fonts/Menlo.ttc",
+            "Menlo"},
+        {
+            "/System/Library/Fonts/Supplemental/Courier New.ttf",
+            "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
+            "'Courier New'"},
+    };
+#else
+    const FontChoice candidates[] = {
+        {
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+            "'DejaVu Sans Mono'"},
+        {
+            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+            "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+            "'DejaVu Sans Mono'"},
+    };
+#endif
+    for (const FontChoice& candidate : candidates) {
+        if (std::filesystem::exists(candidate.path)) return candidate;
+    }
+    return {};
+}
+
 std::vector<std::filesystem::path> system_ui_fallback_fonts() {
 #if defined(_WIN32)
     return {"C:/Windows/Fonts/seguisym.ttf"};
@@ -639,6 +928,54 @@ void replace_all(
         text.replace(position, needle.size(), replacement);
         position += replacement.size();
     }
+}
+
+bool css_identifier_character(char character) {
+    return std::isalnum(static_cast<unsigned char>(character)) ||
+        character == '-' || character == '_';
+}
+
+void replace_css_identifier(
+    std::string& text,
+    std::string_view identifier,
+    std::string_view replacement) {
+    std::size_t position = 0;
+    while ((position = text.find(identifier, position)) != std::string::npos) {
+        const bool starts_identifier =
+            position > 0 && css_identifier_character(text[position - 1]);
+        const std::size_t end = position + identifier.size();
+        const bool continues_identifier =
+            end < text.size() && css_identifier_character(text[end]);
+        if (starts_identifier || continues_identifier) {
+            position = end;
+            continue;
+        }
+        text.replace(position, identifier.size(), replacement);
+        position += replacement.size();
+    }
+}
+
+std::string rml_css_animation_easing(std::string value) {
+    // RmlUi exposes the same animation shorthand, but names its tween curves
+    // differently and does not implement CSS steps(). Translate the browser
+    // timing vocabulary reached by the demos. A linear interpolation across
+    // the platformer's adjacent 49%/50% opacity keys remains an effectively
+    // instantaneous blink while preserving the declared period.
+    std::size_t position = 0;
+    while ((position = value.find("steps(", position)) != std::string::npos) {
+        const std::size_t end = value.find(')', position + 6);
+        if (end == std::string::npos) break;
+        value.replace(position, end - position + 1, "linear-in-out");
+        position += 13;
+    }
+    replace_css_identifier(value, "step-start", "linear-in-out");
+    replace_css_identifier(value, "step-end", "linear-in-out");
+    replace_css_identifier(value, "ease-in-out", "sine-in-out");
+    replace_css_identifier(value, "ease-in", "sine-in");
+    replace_css_identifier(value, "ease-out", "sine-out");
+    replace_css_identifier(value, "ease", "sine-in-out");
+    replace_css_identifier(value, "linear", "linear-in-out");
+    return value;
 }
 
 std::string rml_css_color_alpha(std::string value) {
@@ -680,6 +1017,205 @@ std::string rml_css_color_alpha(std::string value) {
         }
     }
     return value;
+}
+
+std::string rml_css_density_units(std::string value) {
+    // The Rml context and recorded vertices use drawable pixels. Browser CSS
+    // px, however, are density-independent CSS pixels. Rml's dp unit is the
+    // exact equivalent once the context is given SDL's display scale.
+    for (std::size_t index = 1; index + 1 < value.size(); ++index) {
+        if (
+            value[index] == 'p' &&
+            value[index + 1] == 'x' &&
+            (std::isdigit(static_cast<unsigned char>(value[index - 1])) ||
+             value[index - 1] == '.')) {
+            value[index] = 'd';
+            value[index + 1] = 'p';
+        }
+    }
+    return value;
+}
+
+std::string take_css_declaration(
+    std::string& style,
+    std::string_view requested_name) {
+    const auto trim = [](std::string_view value) {
+        const std::size_t first = value.find_first_not_of(" \t\r\n");
+        if (first == std::string_view::npos) return std::string_view{};
+        const std::size_t last = value.find_last_not_of(" \t\r\n");
+        return value.substr(first, last - first + 1);
+    };
+    std::string retained;
+    std::string result;
+    const std::string_view source = style;
+    for (std::size_t start = 0; start <= source.size();) {
+        const std::size_t end = source.find(';', start);
+        const std::string_view declaration = source.substr(
+            start,
+            end == std::string_view::npos
+                ? std::string_view::npos
+                : end - start);
+        const std::size_t colon = declaration.find(':');
+        if (
+            colon != std::string_view::npos &&
+            trim(declaration.substr(0, colon)) == requested_name) {
+            result = std::string(trim(declaration.substr(colon + 1)));
+        } else if (!trim(declaration).empty()) {
+            if (!retained.empty()) retained += ';';
+            retained += declaration;
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    style = std::move(retained);
+    return result;
+}
+
+std::string take_grid_children_style(std::string& style) {
+    const std::string width = take_css_declaration(
+        style, "--bbl-grid-width");
+    const std::string gap = take_css_declaration(
+        style, "--bbl-grid-gap");
+    if (width.empty()) return {};
+    return
+        "display:flex;flex-wrap:wrap;width:" + width +
+        ";gap:" + (gap.empty() ? "0dp" : gap) +
+        ";margin-left:auto;margin-right:auto;";
+}
+
+struct TextShadow {
+    std::string offset_x;
+    std::string offset_y;
+    std::string color;
+};
+
+struct GradientTextColor {
+    double red = 0.0;
+    double green = 0.0;
+    double blue = 0.0;
+};
+
+struct GradientTextStyle {
+    std::string palette;
+    std::string duration;
+    std::string stroke_width;
+    std::string stroke_color;
+
+    bool operator==(const GradientTextStyle&) const = default;
+};
+
+GradientTextStyle take_gradient_text_style(std::string& style) {
+    return {
+        take_css_declaration(style, "--bbl-text-gradient"),
+        take_css_declaration(style, "--bbl-text-gradient-duration"),
+        take_css_declaration(style, "--bbl-text-stroke-width"),
+        take_css_declaration(style, "--bbl-text-stroke-color")};
+}
+
+std::vector<GradientTextColor> gradient_text_colors(
+    std::string_view palette) {
+    std::vector<GradientTextColor> result;
+    std::size_t start = 0;
+    while (start <= palette.size()) {
+        const std::size_t end = palette.find('|', start);
+        const std::string color(palette.substr(
+            start,
+            end == std::string_view::npos
+                ? palette.size() - start
+                : end - start));
+        unsigned red = 0;
+        unsigned green = 0;
+        unsigned blue = 0;
+        if (
+            color.size() == 7 &&
+            std::sscanf(
+                color.c_str(),
+                "#%02x%02x%02x",
+                &red,
+                &green,
+                &blue) == 3) {
+            result.push_back({
+                static_cast<double>(red),
+                static_cast<double>(green),
+                static_cast<double>(blue)});
+        }
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return result;
+}
+
+std::optional<TextShadow> first_text_shadow(std::string_view style) {
+    const std::size_t property = style.find("text-shadow:");
+    if (property == std::string_view::npos) return std::nullopt;
+    const std::size_t value_begin = property + 12;
+    const std::size_t value_end = style.find(';', value_begin);
+    std::istringstream tokens{std::string(
+        style.substr(value_begin, value_end - value_begin))};
+    std::string offset_x;
+    std::string offset_y;
+    std::string third;
+    std::string fourth;
+    tokens >> offset_x >> offset_y >> third >> fourth;
+    if (offset_x.empty() || offset_y.empty() || third.empty()) {
+        return std::nullopt;
+    }
+    std::string color =
+        third.starts_with('#') || third.starts_with("rgb")
+        ? third
+        : fourth;
+    if (color.empty()) return std::nullopt;
+    if (color.starts_with("rgb")) {
+        const std::size_t close = color.find(')');
+        if (close != std::string::npos) color.resize(close + 1);
+    } else if (const std::size_t comma = color.find(',');
+               comma != std::string::npos) {
+        color.resize(comma);
+    }
+    return TextShadow{
+        std::move(offset_x),
+        std::move(offset_y),
+        std::move(color)};
+}
+
+std::string scaled_css_alpha(std::string_view color, double scale) {
+    int red = 0;
+    int green = 0;
+    int blue = 0;
+    int alpha = 0;
+    const std::string source(color);
+    if (
+        std::sscanf(
+            source.c_str(),
+            "rgba(%d,%d,%d,%d)",
+            &red,
+            &green,
+            &blue,
+            &alpha) != 4) {
+        return source;
+    }
+    char result[64]{};
+    std::snprintf(
+        result,
+        sizeof(result),
+        "rgba(%d,%d,%d,%d)",
+        red,
+        green,
+        blue,
+        static_cast<int>(std::clamp(
+            std::lround(alpha * scale),
+            0l,
+            255l)));
+    return result;
+}
+
+bool project_rml_style_property(std::string_view name) {
+    // RmlUi implements box-shadow through render layers, clip masks, and a
+    // blur filter. The backend-neutral recorder intentionally exposes only
+    // ordinary geometry and textures today, so forwarding this property
+    // produces the unfiltered white mask instead of a shadow. Static CSS is
+    // lowered with the same omission; keep dynamic style writes consistent.
+    return name != "box-shadow";
 }
 
 Rml::ColourbPremultiplied canvas_color(std::string_view source) {
@@ -746,12 +1282,14 @@ int append_canvas_vertex(
     CanvasMesh& mesh,
     double x,
     double y,
-    Rml::ColourbPremultiplied color) {
+    Rml::ColourbPremultiplied color,
+    float texture_x = 0.0f,
+    float texture_y = 0.0f) {
     const int index = static_cast<int>(mesh.vertices.size());
     mesh.vertices.push_back({
         {static_cast<float>(x), static_cast<float>(y)},
         color,
-        {0.0f, 0.0f}});
+        {texture_x, texture_y}});
     return index;
 }
 
@@ -791,6 +1329,11 @@ CanvasMesh canvas_mesh(
     double scale_x,
     double scale_y) {
     CanvasMesh mesh;
+    if (
+        draw.kind == UiElementRecord::CanvasDrawCommand::Kind::Blit ||
+        draw.kind == UiElementRecord::CanvasDrawCommand::Kind::Text) {
+        return mesh;
+    }
     if (draw.points.empty()) return mesh;
     std::vector<UiElementRecord::CanvasPoint> points;
     points.reserve(draw.points.size());
@@ -857,15 +1400,118 @@ CanvasMesh canvas_mesh(
     return mesh;
 }
 
+CanvasMesh canvas_blit_mesh(
+    const UiElementRecord::CanvasDrawCommand& draw,
+    double scale_x,
+    double scale_y) {
+    CanvasMesh mesh;
+    const double left = draw.destination_x * scale_x;
+    const double top = draw.destination_y * scale_y;
+    const double right = left + draw.destination_width * scale_x;
+    const double bottom = top + draw.destination_height * scale_y;
+    if (right <= left || bottom <= top) return mesh;
+    const Rml::ColourbPremultiplied white{255, 255, 255, 255};
+    append_canvas_vertex(mesh, left, top, white, 0.0f, 0.0f);
+    append_canvas_vertex(mesh, right, top, white, 1.0f, 0.0f);
+    append_canvas_vertex(mesh, right, bottom, white, 1.0f, 1.0f);
+    append_canvas_vertex(mesh, left, bottom, white, 0.0f, 1.0f);
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    return mesh;
+}
+
+std::array<std::uint8_t, 7> canvas_glyph(char character) {
+    switch (character) {
+        case '0': return {14, 17, 19, 21, 25, 17, 14};
+        case '1': return {4, 12, 4, 4, 4, 4, 14};
+        case '2': return {14, 17, 1, 2, 4, 8, 31};
+        case '3': return {30, 1, 1, 14, 1, 1, 30};
+        case '4': return {2, 6, 10, 18, 31, 2, 2};
+        case '5': return {31, 16, 16, 30, 1, 1, 30};
+        case '6': return {14, 16, 16, 30, 17, 17, 14};
+        case '7': return {31, 1, 2, 4, 8, 8, 8};
+        case '8': return {14, 17, 17, 14, 17, 17, 14};
+        case '9': return {14, 17, 17, 15, 1, 1, 14};
+        case 'I': return {31, 4, 4, 4, 4, 4, 31};
+        case 'K': return {17, 18, 20, 24, 20, 18, 17};
+        case 'L': return {16, 16, 16, 16, 16, 16, 31};
+        case 'S': return {15, 16, 16, 14, 1, 1, 30};
+        case '/': return {1, 1, 2, 4, 8, 16, 16};
+        case ' ': return {};
+        default: return {14, 17, 1, 2, 4, 0, 4};
+    }
+}
+
+void append_canvas_rectangle(
+    CanvasMesh& mesh,
+    double left,
+    double top,
+    double right,
+    double bottom,
+    Rml::ColourbPremultiplied color) {
+    const int base = static_cast<int>(mesh.vertices.size());
+    append_canvas_vertex(mesh, left, top, color);
+    append_canvas_vertex(mesh, right, top, color);
+    append_canvas_vertex(mesh, right, bottom, color);
+    append_canvas_vertex(mesh, left, bottom, color);
+    mesh.indices.insert(
+        mesh.indices.end(),
+        {base, base + 1, base + 2, base, base + 2, base + 3});
+}
+
+CanvasMesh canvas_text_mesh(
+    const UiElementRecord::CanvasDrawCommand& draw,
+    double scale_x,
+    double scale_y) {
+    CanvasMesh mesh;
+    const double cell = std::max(0.5, draw.font_size / 7.0);
+    const auto append_text = [&draw, &mesh, cell, scale_x, scale_y](
+                                 Rml::ColourbPremultiplied color,
+                                 double padding) {
+        double cursor = draw.destination_x;
+        for (const char character : draw.text) {
+            const auto rows = canvas_glyph(
+                character >= 'a' && character <= 'z'
+                    ? static_cast<char>(character - 'a' + 'A')
+                    : character);
+            for (std::size_t row = 0; row < rows.size(); ++row) {
+                for (int column = 0; column < 5; ++column) {
+                    if ((rows[row] & (1u << (4 - column))) == 0) continue;
+                    const double left = cursor + column * cell;
+                    const double top = draw.destination_y + row * cell;
+                    append_canvas_rectangle(
+                        mesh,
+                        (left - padding) * scale_x,
+                        (top - padding) * scale_y,
+                        (left + cell + padding) * scale_x,
+                        (top + cell + padding) * scale_y,
+                        color);
+                }
+            }
+            cursor += cell * 6.0;
+        }
+    };
+    const auto shadow = canvas_color(draw.shadow_color);
+    if (shadow.alpha > 0 && draw.shadow_blur > 0.0) {
+        append_text(shadow, std::min(cell * 0.45, draw.shadow_blur * 0.2));
+    }
+    append_text(canvas_color(draw.color), 0.0);
+    return mesh;
+}
+
 } // namespace
 
 struct ProjectedUiElement {
     Rml::Element* element = nullptr;
+    Rml::Element* children_container = nullptr;
+    std::vector<Rml::Element*> gradient_text_elements;
+    std::vector<GradientTextColor> gradient_text_colors;
+    GradientTextStyle gradient_text_style;
     std::string text;
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
     std::string resolved_style;
+    std::string grid_children_style;
     bool text_wrapped = false;
     bool click_listener_attached = false;
     std::unordered_map<std::string, bool> event_listeners_attached;
@@ -879,10 +1525,20 @@ struct ProjectedUiElement {
  */
 class UiRenderRecorder final : public Rml::RenderInterface {
 public:
+    ~UiRenderRecorder() override {
+        for (const auto& [key, cached] : retained_canvas_textures) {
+            static_cast<void>(key);
+            ReleaseTexture(cached.handle);
+        }
+    }
+
     void begin_frame(std::uint32_t width, std::uint32_t height) {
-        frame = {};
         frame.width = width;
         frame.height = height;
+        frame.vertices.clear();
+        frame.indices.clear();
+        frame.textures.clear();
+        frame.draws.clear();
         scissor_enabled = false;
         scissor = Rml::Rectanglei::FromSize(Rml::Vector2i{
             static_cast<int>(width), static_cast<int>(height)});
@@ -972,7 +1628,62 @@ public:
             active_scissor.Left(),
             active_scissor.Top(),
             static_cast<std::uint32_t>(std::max(0, active_scissor.Width())),
-            static_cast<std::uint32_t>(std::max(0, active_scissor.Height()))});
+            static_cast<std::uint32_t>(std::max(0, active_scissor.Height())),
+            nearest_sampling});
+    }
+
+    void RenderGeometryWithSampling(
+        Rml::CompiledGeometryHandle handle,
+        Rml::Vector2f translation,
+        Rml::TextureHandle texture_handle,
+        bool nearest) {
+        const bool previous = nearest_sampling;
+        nearest_sampling = nearest;
+        RenderGeometry(handle, translation, texture_handle);
+        nearest_sampling = previous;
+    }
+
+    Rml::TextureHandle retained_canvas_texture(
+        UiElementHandle handle,
+        const UiElementRecord::CanvasState& canvas) {
+        const std::uint32_t width = static_cast<std::uint32_t>(
+            std::max(0.0, std::floor(canvas.width)));
+        const std::uint32_t height = static_cast<std::uint32_t>(
+            std::max(0.0, std::floor(canvas.height)));
+        if (
+            width == 0 ||
+            height == 0 ||
+            canvas.pixels.size() !=
+                static_cast<std::size_t>(width) * height * 4) {
+            return {};
+        }
+        auto found = retained_canvas_textures.find(handle.value);
+        if (
+            found != retained_canvas_textures.end() &&
+            found->second.revision == canvas.pixel_revision &&
+            found->second.width == width &&
+            found->second.height == height) {
+            return found->second.handle;
+        }
+        if (found != retained_canvas_textures.end()) {
+            ReleaseTexture(found->second.handle);
+            retained_canvas_textures.erase(found);
+        }
+        const Rml::TextureHandle texture = GenerateTexture(
+            canvas.pixels,
+            Rml::Vector2i{
+                static_cast<int>(width),
+                static_cast<int>(height)});
+        if (texture) {
+            retained_canvas_textures.emplace(
+                handle.value,
+                RetainedCanvasTexture{
+                    texture,
+                    canvas.pixel_revision,
+                    width,
+                    height});
+        }
+        return texture;
     }
 
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override {
@@ -1083,10 +1794,20 @@ private:
         std::shared_ptr<const std::vector<std::uint8_t>> rgba;
     };
 
+    struct RetainedCanvasTexture {
+        Rml::TextureHandle handle{};
+        std::uint64_t revision = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
+
     Rml::Rectanglei scissor{};
     Rml::Matrix4f transform = Rml::Matrix4f::Identity();
     std::uint64_t next_texture_id = 1;
     bool scissor_enabled = false;
+    bool nearest_sampling = false;
+    std::unordered_map<std::uint32_t, RetainedCanvasTexture>
+        retained_canvas_textures;
 };
 
 struct UiRmlRuntime {
@@ -1130,6 +1851,42 @@ struct UiRmlRuntime {
                 }
             }
             css_font_family = font.css_family;
+            const FontChoice monospace_font = system_monospace_font();
+            if (!monospace_font.path.empty()) {
+                if (!Rml::LoadFontFace(monospace_font.path.string())) {
+                    throw std::runtime_error(
+                        "RmlUi failed to load monospace UI font: " +
+                        monospace_font.path.string());
+                }
+                if (
+                    !monospace_font.bold_path.empty() &&
+                    std::filesystem::exists(monospace_font.bold_path) &&
+                    !Rml::LoadFontFace(
+                        monospace_font.bold_path.string())) {
+                    throw std::runtime_error(
+                        "RmlUi failed to load bold monospace UI font: " +
+                        monospace_font.bold_path.string());
+                }
+                css_monospace_family = monospace_font.css_family;
+            } else {
+                css_monospace_family = css_font_family;
+            }
+#if defined(_WIN32)
+            // Doom names Courier New explicitly rather than relying on the
+            // generic monospace face. Load that browser-visible family even
+            // when the generic system choice above is Consolas.
+            for (const std::filesystem::path& courier : {
+                     std::filesystem::path("C:/Windows/Fonts/cour.ttf"),
+                     std::filesystem::path("C:/Windows/Fonts/courbd.ttf")}) {
+                if (
+                    std::filesystem::exists(courier) &&
+                    !Rml::LoadFontFace(courier.string())) {
+                    throw std::runtime_error(
+                        "RmlUi failed to load Courier New UI font: " +
+                        courier.string());
+                }
+            }
+#endif
             context = Rml::CreateContext(
                 "bblite-ui",
                 Rml::Vector2i{
@@ -1138,6 +1895,7 @@ struct UiRmlRuntime {
             if (!context) {
                 throw std::runtime_error("RmlUi context creation failed.");
             }
+            update_density_ratio();
             document = context->CreateDocument();
             if (!document) {
                 throw std::runtime_error("RmlUi document creation failed.");
@@ -1145,12 +1903,14 @@ struct UiRmlRuntime {
             document->SetAttribute(
                 "style",
                 "width:100%;height:100%;font-family:" + css_font_family +
-                    ";font-size:16px;");
+                    ";font-size:16dp;line-height:1.32;pointer-events:none;");
+            sync_style_sheet();
             document->Show(
                 Rml::ModalFlag::None,
                 Rml::FocusFlag::None,
                 Rml::ScrollFlag::None);
             sync_tree();
+            update_gradient_text();
             context->Update();
         } catch (...) {
             if (initialized) {
@@ -1173,15 +1933,73 @@ struct UiRmlRuntime {
         }
     }
 
+    void update_density_ratio() {
+        const float display_scale = SDL_GetWindowDisplayScale(window);
+        context->SetDensityIndependentPixelRatio(
+            display_scale > 0.0f ? display_scale : 1.0f);
+    }
+
+    std::string project_css(std::string value) const {
+        replace_all(value, "system-ui", css_font_family);
+        replace_all(value, "sans-serif", css_font_family);
+        replace_all(value, "ui-monospace", css_monospace_family);
+        replace_all(value, "monospace", css_monospace_family);
+        value = rml_css_animation_easing(std::move(value));
+        value = rml_css_density_units(std::move(value));
+        return rml_css_color_alpha(std::move(value));
+    }
+
     std::string projected_attribute_value(
         std::string_view name,
         const std::string& source_value) const {
         std::string value = source_value;
         if (name == "style") {
-            replace_all(value, "sans-serif", css_font_family);
-            value = rml_css_color_alpha(std::move(value));
+            value = project_css(std::move(value));
         }
         return value;
+    }
+
+    static std::string keyframes_from(std::string_view source) {
+        std::string keyframes;
+        std::size_t search = 0;
+        while ((search = source.find("@keyframes", search)) !=
+               std::string_view::npos) {
+            const std::size_t opening = source.find('{', search + 10);
+            if (opening == std::string_view::npos) break;
+            int depth = 0;
+            std::size_t cursor = opening;
+            for (; cursor < source.size(); ++cursor) {
+                if (source[cursor] == '{') {
+                    ++depth;
+                } else if (source[cursor] == '}' && --depth == 0) {
+                    ++cursor;
+                    break;
+                }
+            }
+            if (depth != 0) break;
+            keyframes.append(source.substr(search, cursor - search));
+            keyframes.push_back('\n');
+            search = cursor;
+        }
+        return keyframes;
+    }
+
+    void sync_style_sheet() {
+        std::string source;
+        for (const UiElementRecord& record : engine.ui_elements) {
+            if (record.tag == "style") {
+                source += keyframes_from(record.text);
+            }
+        }
+        source = project_css(std::move(source));
+        if (source == projected_style_sheet_source) return;
+        projected_style_sheet_source = source;
+        if (source.empty()) {
+            document->SetStyleSheetContainer(nullptr);
+        } else {
+            document->SetStyleSheetContainer(
+                Rml::Factory::InstanceStyleSheetString(source));
+        }
     }
 
     static bool has_class(
@@ -1212,15 +2030,44 @@ struct UiRmlRuntime {
             append("display:block;");
         } else if (record.tag == "button") {
             // Browser user-agent styles size button percentages against the
-            // border box. RmlUi's generic unknown-tag default is content-box.
-            append("display:inline-block;box-sizing:border-box;");
+            // border box and center their labels. RmlUi's generic unknown-tag
+            // default is content-box with ordinary left-aligned text.
+            append(
+                "display:inline-block;box-sizing:border-box;"
+                "text-align:center;");
         }
         for (const UiClassStyleRule& rule : engine.ui_class_style_rules) {
             if (has_class(record, rule.class_name)) append(rule.style);
         }
+        const auto id = record.attributes.find("id");
+        if (id != record.attributes.end()) {
+            for (const UiIdStyleRule& rule : engine.ui_id_style_rules) {
+                if (id->second == rule.id) append(rule.style);
+            }
+        }
         const auto inline_style = record.attributes.find("style");
         if (inline_style != record.attributes.end()) {
             append(inline_style->second);
+        }
+        // The retained document covers the viewport, but browser overlays do
+        // not replace the scene canvas as an input target. Keep ordinary UI
+        // transparent to hit-testing and opt reached listeners back in. An
+        // explicit source pointer-events declaration still wins.
+        const bool has_pointer_events =
+            record.style_properties.contains("pointer-events") ||
+            style.find("pointer-events:") != std::string::npos;
+        if (
+            !has_pointer_events &&
+            (!record.click_callbacks.empty() ||
+             !record.event_callbacks.empty())) {
+            append("pointer-events:auto;");
+        }
+        if (
+            !record.text.empty() &&
+            (first_text_shadow(style) ||
+             style.find("--bbl-text-gradient:") != std::string::npos) &&
+            style.find("position:") == std::string::npos) {
+            append("position:relative;");
         }
         return projected_attribute_value("style", style);
     }
@@ -1230,23 +2077,101 @@ struct UiRmlRuntime {
         const std::string& resolved_style) const {
         const auto dynamic_display = record.style_properties.find("display");
         if (dynamic_display != record.style_properties.end()) {
-            return dynamic_display->second == "flex";
+            return dynamic_display->second == "flex" ||
+                dynamic_display->second == "inline-flex";
         }
         const std::size_t position = resolved_style.rfind("display:");
         return position != std::string::npos &&
-            resolved_style.compare(position + 8, 4, "flex") == 0;
+            (resolved_style.compare(position + 8, 4, "flex") == 0 ||
+             resolved_style.compare(position + 8, 11, "inline-flex") == 0);
     }
 
     void append_text_content(
+        ProjectedUiElement& projected,
         Rml::Element& parent,
         const std::string& text,
-        bool wrapped) {
-        if (!wrapped) {
+        bool wrapped,
+        const std::string& resolved_style) {
+        const std::optional<TextShadow> shadow =
+            first_text_shadow(resolved_style);
+        projected.gradient_text_elements.clear();
+        projected.gradient_text_colors = ::bbl::pal::gradient_text_colors(
+            projected.gradient_text_style.palette);
+        const bool gradient_text =
+            projected.gradient_text_colors.size() > 1;
+        if (!wrapped && !shadow && !gradient_text) {
             parent.AppendChild(document->CreateTextNode(text));
             return;
         }
+
+        const auto append_duplicate = [this, &parent, &text](
+                                          const std::string& left,
+                                          const std::string& top,
+                                          const std::string& color) {
+            Rml::ElementPtr duplicate = document->CreateElement("span");
+            duplicate->SetAttribute(
+                "style",
+                "position:absolute;left:" + left + ";top:" + top +
+                    ";color:" + color +
+                    ";white-space:nowrap;pointer-events:none;");
+            duplicate->AppendChild(document->CreateTextNode(text));
+            parent.AppendChild(std::move(duplicate));
+        };
+        if (shadow) {
+            append_duplicate(
+                shadow->offset_x,
+                shadow->offset_y,
+                shadow->color);
+        }
+        if (
+            gradient_text &&
+            !projected.gradient_text_style.stroke_width.empty() &&
+            !projected.gradient_text_style.stroke_color.empty()) {
+            const std::string& width =
+                projected.gradient_text_style.stroke_width;
+            const std::string negative_width = width.starts_with('-')
+                ? width.substr(1)
+                : "-" + width;
+            // Eight displaced copies approximate the browser's continuous
+            // outline. Attenuate each copy so their overlapping alpha does
+            // not turn a 50%-black stroke into an opaque, overly punchy one.
+            const std::string color = scaled_css_alpha(
+                projected.gradient_text_style.stroke_color,
+                0.35);
+            append_duplicate(negative_width, "0", color);
+            append_duplicate(width, "0", color);
+            append_duplicate("0", negative_width, color);
+            append_duplicate("0", width, color);
+            append_duplicate(negative_width, negative_width, color);
+            append_duplicate(width, negative_width, color);
+            append_duplicate(negative_width, width, color);
+            append_duplicate(width, width, color);
+        }
         Rml::ElementPtr wrapper = document->CreateElement("span");
-        wrapper->AppendChild(document->CreateTextNode(text));
+        if (shadow || gradient_text) {
+            wrapper->SetAttribute(
+                "style",
+                "position:relative;white-space:nowrap;");
+        }
+        if (gradient_text) {
+            for (const char character : text) {
+                Rml::ElementPtr glyph = document->CreateElement("span");
+                Rml::Element* raw_glyph = glyph.get();
+                raw_glyph->SetProperty(
+                    "color",
+                    projected.gradient_text_style.palette.substr(
+                        0,
+                        projected.gradient_text_style.palette.find('|')));
+                const std::string glyph_text = character == ' '
+                    ? std::string{"\xC2\xA0"}
+                    : std::string(1, character);
+                raw_glyph->AppendChild(document->CreateTextNode(glyph_text));
+                wrapper->AppendChild(std::move(glyph));
+                projected.gradient_text_elements.push_back(raw_glyph);
+            }
+        } else {
+            wrapper->AppendChild(document->CreateTextNode(text));
+        }
         parent.AppendChild(std::move(wrapper));
     }
 
@@ -1300,11 +2225,16 @@ struct UiRmlRuntime {
                 projected_attribute_value(name, source_value));
         }
         projected.resolved_style = resolved_style_attribute(record);
+        projected.grid_children_style =
+            take_grid_children_style(projected.resolved_style);
+        projected.gradient_text_style =
+            take_gradient_text_style(projected.resolved_style);
         if (!projected.resolved_style.empty()) {
             raw->SetAttribute("style", projected.resolved_style);
         }
         for (const auto& [name, value] : record.style_properties) {
-            raw->SetProperty(name, rml_css_color_alpha(value));
+            if (!project_rml_style_property(name)) continue;
+            raw->SetProperty(name, project_css(value));
         }
         if (!record.inner_rml.empty()) {
             raw->SetInnerRML(record.inner_rml);
@@ -1312,15 +2242,30 @@ struct UiRmlRuntime {
             projected.text_wrapped = text_needs_flex_wrapper(
                 record, projected.resolved_style);
             append_text_content(
-                *raw, record.text, projected.text_wrapped);
+                projected,
+                *raw,
+                record.text,
+                projected.text_wrapped,
+                projected.resolved_style);
         }
         projected.text = record.text;
         projected.inner_rml = record.inner_rml;
         projected.attributes = record.attributes;
         projected.style_properties = record.style_properties;
         attach_listeners(projected, handle);
+        Rml::Element* children_parent = raw;
+        if (!projected.grid_children_style.empty()) {
+            Rml::ElementPtr children_container =
+                document->CreateElement("div");
+            projected.children_container = children_container.get();
+            projected.children_container->SetAttribute(
+                "style", projected.grid_children_style);
+            raw->AppendChild(std::move(children_container));
+            children_parent = projected.children_container;
+        }
         for (const UiElementHandle child : record.children) {
-            append_element(*raw, child);
+            if (ui_element(engine, child).tag == "style") continue;
+            append_element(*children_parent, child);
         }
         parent.AppendChild(std::move(element));
     }
@@ -1371,8 +2316,13 @@ struct UiRmlRuntime {
                     projected_attribute_value(name, value));
             }
         }
-        const std::string resolved_style =
-            resolved_style_attribute(record);
+        std::string resolved_style = resolved_style_attribute(record);
+        const std::string grid_children_style =
+            take_grid_children_style(resolved_style);
+        const GradientTextStyle gradient_text_style =
+            take_gradient_text_style(resolved_style);
+        const bool gradient_text_style_changed =
+            projected.gradient_text_style != gradient_text_style;
         const bool resolved_style_changed =
             projected.resolved_style != resolved_style;
         if (resolved_style_changed) {
@@ -1383,6 +2333,13 @@ struct UiRmlRuntime {
             }
             projected.resolved_style = resolved_style;
         }
+        if (
+            projected.grid_children_style != grid_children_style &&
+            projected.children_container) {
+            projected.children_container->SetAttribute(
+                "style", grid_children_style);
+        }
+        projected.grid_children_style = grid_children_style;
         projected.attributes = record.attributes;
 
         for (const auto& [name, old_value] : projected.style_properties) {
@@ -1392,47 +2349,68 @@ struct UiRmlRuntime {
             }
         }
         for (const auto& [name, value] : record.style_properties) {
+            if (!project_rml_style_property(name)) continue;
             const auto existing = projected.style_properties.find(name);
             if (
                 resolved_style_changed ||
                 existing == projected.style_properties.end() ||
                 existing->second != value) {
-                raw.SetProperty(name, rml_css_color_alpha(value));
+                raw.SetProperty(name, project_css(value));
             }
         }
         projected.style_properties = record.style_properties;
 
-        const bool text_wrapped = text_needs_flex_wrapper(
-            record, projected.resolved_style);
+        const bool text_wrapped =
+            !record.text.empty() &&
+            text_needs_flex_wrapper(record, projected.resolved_style);
         if (
             projected.text != record.text ||
             projected.inner_rml != record.inner_rml ||
-            projected.text_wrapped != text_wrapped) {
+            projected.text_wrapped != text_wrapped ||
+            gradient_text_style_changed) {
             // The lowered surface currently models either text or element
             // children, matching every reached scene. Keep the owning element
             // stable while replacing only its text node so hover, active, and
             // pointer-capture state survive per-frame HUD updates.
-            if (!record.children.empty()) {
+            if (
+                !record.children.empty() &&
+                (!record.text.empty() || !record.inner_rml.empty())) {
                 throw std::runtime_error(
-                    "Mixed text and element children are not implemented in native UI.");
+                    "Mixed text and element children are not implemented in native UI: <" +
+                    record.tag + "> text='" + record.text + "' inner_rml='" +
+                    record.inner_rml + "' children=" +
+                    std::to_string(record.children.size()) + ".");
             }
             while (raw.GetNumChildren() > 0) {
                 Rml::ElementPtr removed = raw.RemoveChild(raw.GetChild(0));
             }
+            projected.gradient_text_elements.clear();
+            projected.gradient_text_colors.clear();
+            projected.gradient_text_style = gradient_text_style;
             if (!record.inner_rml.empty()) {
                 raw.SetInnerRML(record.inner_rml);
             } else if (!record.text.empty()) {
-                append_text_content(raw, record.text, text_wrapped);
+                append_text_content(
+                    projected,
+                    raw,
+                    record.text,
+                    text_wrapped,
+                    projected.resolved_style);
             }
             projected.text = record.text;
             projected.inner_rml = record.inner_rml;
             projected.text_wrapped = text_wrapped;
         }
+        projected.gradient_text_style = gradient_text_style;
 
         attach_listeners(projected, handle);
+        Rml::Element& children_parent = projected.children_container
+            ? *projected.children_container
+            : raw;
         for (const UiElementHandle child : record.children) {
+            if (ui_element(engine, child).tag == "style") continue;
             if (!projected_elements[child.value].element) {
-                append_element(raw, child);
+                append_element(children_parent, child);
             } else {
                 update_element(child);
             }
@@ -1481,6 +2459,7 @@ struct UiRmlRuntime {
             index < engine.ui_elements.size();
             ++index) {
             if (!engine.ui_elements[index].attached_to_root) continue;
+            if (engine.ui_elements[index].tag == "style") continue;
             const UiElementHandle handle{index};
             if (!projected_elements[index].element) {
                 append_element(*document, handle);
@@ -1518,19 +2497,229 @@ struct UiRmlRuntime {
             const double scale_x = layout_width / record.canvas->width;
             const double scale_y = layout_height / record.canvas->height;
             for (const auto& draw : record.canvas->draws) {
-                CanvasMesh mesh = canvas_mesh(draw, scale_x, scale_y);
+                CanvasMesh mesh;
+                Rml::TextureHandle texture{};
+                if (
+                    draw.kind ==
+                    UiElementRecord::CanvasDrawCommand::Kind::Blit) {
+                    if (draw.source.value >= engine.ui_elements.size()) {
+                        continue;
+                    }
+                    const UiElementRecord& source =
+                        engine.ui_elements[draw.source.value];
+                    if (!source.canvas) continue;
+                    mesh = canvas_blit_mesh(draw, scale_x, scale_y);
+                    texture = render_interface.retained_canvas_texture(
+                        draw.source,
+                        *source.canvas);
+                    if (!texture) continue;
+                } else if (
+                    draw.kind ==
+                    UiElementRecord::CanvasDrawCommand::Kind::Text) {
+                    if (render_canvas_text(draw, offset, scale_x, scale_y)) {
+                        continue;
+                    }
+                    mesh = canvas_text_mesh(draw, scale_x, scale_y);
+                } else {
+                    mesh = canvas_mesh(draw, scale_x, scale_y);
+                }
                 if (mesh.vertices.empty() || mesh.indices.empty()) continue;
                 const Rml::CompiledGeometryHandle geometry =
                     render_interface.CompileGeometry(
                         mesh.vertices,
                         mesh.indices);
                 if (!geometry) continue;
-                render_interface.RenderGeometry(
+                render_interface.RenderGeometryWithSampling(
                     geometry,
                     offset,
-                    Rml::TextureHandle{});
+                    texture,
+                    draw.nearest_sampling);
                 render_interface.ReleaseGeometry(geometry);
             }
+        }
+    }
+
+    bool render_canvas_text(
+        const UiElementRecord::CanvasDrawCommand& draw,
+        Rml::Vector2f canvas_offset,
+        double scale_x,
+        double scale_y) {
+        Rml::FontEngineInterface* fonts = Rml::GetFontEngineInterface();
+        if (!fonts || !context || draw.text.empty()) return false;
+
+        const double layout_scale =
+            (std::abs(scale_x) + std::abs(scale_y)) * 0.5;
+        const int font_size = std::max(
+            1,
+            static_cast<int>(std::lround(draw.font_size * layout_scale)));
+        const bool monospace =
+            draw.font_family.find("monospace") != std::string::npos;
+        const std::string& family = monospace
+            ? css_monospace_family
+            : css_font_family;
+        const Rml::FontFaceHandle face = fonts->GetFontFaceHandle(
+            family,
+            Rml::Style::FontStyle::Normal,
+            Rml::Style::FontWeight::Normal,
+            font_size);
+        if (!face) return false;
+
+        const Rml::FontMetrics& metrics = fonts->GetFontMetrics(face);
+        float baseline = canvas_offset.y +
+            static_cast<float>(draw.destination_y * scale_y);
+        if (draw.text_baseline == "top") {
+            baseline += metrics.ascent;
+        } else if (draw.text_baseline == "middle") {
+            baseline += (metrics.ascent - metrics.descent) * 0.5f;
+        } else if (
+            draw.text_baseline == "bottom" ||
+            draw.text_baseline == "ideographic") {
+            baseline -= metrics.descent;
+        }
+        const float left = canvas_offset.x +
+            static_cast<float>(draw.destination_x * scale_x);
+        const Rml::String language;
+        const Rml::TextShapingContext shaping{language};
+        Rml::RenderManager& render_manager = context->GetRenderManager();
+
+        const auto render_text = [&](Rml::Vector2f position,
+                                     Rml::ColourbPremultiplied color) {
+            Rml::TexturedMeshList meshes;
+            fonts->GenerateString(
+                render_manager,
+                face,
+                {},
+                draw.text,
+                position,
+                color,
+                1.0f,
+                shaping,
+                meshes);
+            for (Rml::TexturedMesh& textured_mesh : meshes) {
+                Rml::Geometry geometry = render_manager.MakeGeometry(
+                    std::move(textured_mesh.mesh));
+                geometry.Render({}, textured_mesh.texture);
+            }
+        };
+
+        const Rml::Vector2f position{left, baseline};
+        const Rml::ColourbPremultiplied shadow =
+            canvas_color(draw.shadow_color);
+        if (shadow.alpha > 0 && draw.shadow_blur > 0.0) {
+            const float radius = std::max(
+                1.0f,
+                static_cast<float>(
+                    std::min(draw.shadow_blur * layout_scale * 0.35, 2.0)));
+            render_text(position + Rml::Vector2f{-radius, 0.0f}, shadow);
+            render_text(position + Rml::Vector2f{radius, 0.0f}, shadow);
+            render_text(position + Rml::Vector2f{0.0f, -radius}, shadow);
+            render_text(position + Rml::Vector2f{0.0f, radius}, shadow);
+        }
+        render_text(position, canvas_color(draw.color));
+        return true;
+    }
+
+    void update_gradient_text() {
+        const double now = system_interface.GetElapsedTime();
+        for (ProjectedUiElement& projected : projected_elements) {
+            const std::size_t glyph_count =
+                projected.gradient_text_elements.size();
+            const std::size_t color_count =
+                projected.gradient_text_colors.size();
+            if (glyph_count == 0 || color_count < 2) continue;
+
+            char* duration_end = nullptr;
+            const double duration = std::strtod(
+                projected.gradient_text_style.duration.c_str(),
+                &duration_end);
+            const double phase =
+                duration_end != projected.gradient_text_style.duration.c_str() &&
+                    duration > 0.0
+                ? std::fmod((now / duration) * 2.0, 1.0)
+                : 0.0;
+            const auto sample_palette = [color_count, &projected](
+                                            double position) {
+                position = std::fmod(position, 1.0);
+                if (position < 0.0) position += 1.0;
+                const double palette_position =
+                    position * static_cast<double>(color_count - 1);
+                const std::size_t left = std::min(
+                    static_cast<std::size_t>(palette_position),
+                    color_count - 2);
+                const double amount = palette_position - left;
+                const GradientTextColor& a =
+                    projected.gradient_text_colors[left];
+                const GradientTextColor& b =
+                    projected.gradient_text_colors[left + 1];
+                return GradientTextColor{
+                    a.red + (b.red - a.red) * amount,
+                    a.green + (b.green - a.green) * amount,
+                    a.blue + (b.blue - a.blue) * amount};
+            };
+            for (std::size_t index = 0; index < glyph_count; ++index) {
+                const double glyph_position = glyph_count > 1
+                    ? static_cast<double>(index) /
+                        static_cast<double>(glyph_count - 1)
+                    : 0.0;
+                // One Rml glyph cannot carry a clipped gradient. Average a
+                // few samples across its visual interval rather than taking
+                // a single high-saturation point from the palette.
+                GradientTextColor average{};
+                constexpr int sample_count = 5;
+                const double half_extent = glyph_count > 1
+                    ? 0.45 / static_cast<double>(glyph_count - 1)
+                    : 0.0;
+                for (int sample = 0; sample < sample_count; ++sample) {
+                    const double across =
+                        static_cast<double>(sample) /
+                            static_cast<double>(sample_count - 1) *
+                            2.0 -
+                        1.0;
+                    const GradientTextColor color = sample_palette(
+                        glyph_position + phase + across * half_extent);
+                    average.red += color.red / sample_count;
+                    average.green += color.green / sample_count;
+                    average.blue += color.blue / sample_count;
+                }
+                const auto channel = [](double value) {
+                    return static_cast<unsigned>(std::clamp(
+                        std::lround(value),
+                        0l,
+                        255l));
+                };
+                char color[8]{};
+                std::snprintf(
+                    color,
+                    sizeof(color),
+                    "#%02x%02x%02x",
+                    channel(average.red),
+                    channel(average.green),
+                    channel(average.blue));
+                projected.gradient_text_elements[index]->SetProperty(
+                    "color",
+                    color);
+            }
+        }
+    }
+
+    void sync_client_rects() {
+        for (
+            std::uint32_t index = 0;
+            index < projected_elements.size() &&
+            index < engine.ui_elements.size();
+            ++index) {
+            Rml::Element* element = projected_elements[index].element;
+            if (!element) {
+                engine.ui_elements[index].client_rect = {};
+                continue;
+            }
+            const Rml::Vector2f offset = element->GetAbsoluteOffset(
+                Rml::BoxArea::Border);
+            engine.ui_elements[index].client_rect = {
+                static_cast<double>(offset.x),
+                static_cast<double>(offset.y),
+                static_cast<double>(element->GetClientWidth()),
+                static_cast<double>(element->GetClientHeight())};
         }
     }
 
@@ -1544,6 +2733,8 @@ struct UiRmlRuntime {
     std::vector<ProjectedUiElement> projected_elements;
     std::uint64_t projected_revision = invalid_handle;
     std::string css_font_family;
+    std::string css_monospace_family;
+    std::string projected_style_sheet_source;
     bool initialized = false;
 };
 
@@ -1560,6 +2751,18 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept {
 }
 
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
+    // Pointer lock belongs exclusively to the scene canvas. Letting RmlUi
+    // inspect relative-mode packets can both consume the application's look
+    // events and ask SDL to show a UI cursor while the browser contract says
+    // it must remain hidden.
+    if (
+        runtime.engine.pointer_locked &&
+        (event.type == SDL_EVENT_MOUSE_MOTION ||
+         event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+         event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+         event.type == SDL_EVENT_MOUSE_WHEEL)) {
+        return true;
+    }
     return RmlSDL::InputEventHandler(runtime.context, runtime.window, event);
 }
 
@@ -1570,10 +2773,14 @@ void update_ui_rml_runtime(
     runtime.context->SetDimensions(Rml::Vector2i{
         static_cast<int>(width),
         static_cast<int>(height)});
+    runtime.update_density_ratio();
     if (runtime.projected_revision != runtime.engine.ui_revision) {
+        runtime.sync_style_sheet();
         runtime.sync_tree();
     }
+    runtime.update_gradient_text();
     runtime.context->Update();
+    runtime.sync_client_rects();
 }
 
 const UiRenderFrame& record_ui_rml_frame(

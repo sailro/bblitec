@@ -1265,6 +1265,8 @@ export interface LightIdentity {
 export interface Value {
   kind: ValueKind;
   cpp: string;
+  /** Generation-known tag for scene-created retained DOM elements. */
+  uiTag?: string;
   /** Browser document.body carried through an inlined UI helper parameter. */
   uiRoot?: true;
   /** A retained UI element whose pixels come from the bounded Canvas2D IR. */

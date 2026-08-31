@@ -108,6 +108,14 @@ struct PlatformMouseEvent {
 struct UiElementHandle {
     std::uint32_t value = invalid_handle;
 };
+
+/** Last computed retained-layout box exposed as DOMRect's reached surface. */
+struct UiClientRect {
+    double left = 0.0;
+    double top = 0.0;
+    double width = 0.0;
+    double height = 0.0;
+};
 #endif
 
 struct MeshHandle {
@@ -2598,13 +2606,25 @@ struct UiElementRecord {
         double y = 0.0;
     };
     struct CanvasDrawCommand {
-        enum class Kind { Fill, Stroke } kind = Kind::Fill;
+        enum class Kind { Fill, Stroke, Blit, Text } kind = Kind::Fill;
         std::vector<CanvasPoint> points;
         std::string color;
         double line_width = 1.0;
         bool closed = false;
         bool round_join = false;
         bool round_cap = false;
+        UiElementHandle source{};
+        double destination_x = 0.0;
+        double destination_y = 0.0;
+        double destination_width = 0.0;
+        double destination_height = 0.0;
+        bool nearest_sampling = false;
+        std::string text;
+        double font_size = 10.0;
+        std::string font_family = "sans-serif";
+        std::string text_baseline = "alphabetic";
+        std::string shadow_color = "rgba(0,0,0,0)";
+        double shadow_blur = 0.0;
     };
     struct CanvasState {
         double width = 300.0;
@@ -2619,6 +2639,14 @@ struct UiElementRecord {
         std::vector<CanvasPoint> path;
         bool path_closed = false;
         std::vector<CanvasDrawCommand> draws;
+        /** Premultiplied RGBA backing pixels populated by putImageData. */
+        std::vector<std::uint8_t> pixels;
+        std::uint64_t pixel_revision = 0;
+        bool image_smoothing_enabled = true;
+        std::string font = "10px sans-serif";
+        std::string text_baseline = "alphabetic";
+        std::string shadow_color = "rgba(0,0,0,0)";
+        double shadow_blur = 0.0;
     };
     std::string tag;
     std::string text;
@@ -2629,8 +2657,11 @@ struct UiElementRecord {
     UiElementHandle parent{};
     std::vector<UiElementHandle> children;
     std::vector<std::function<void()>> click_callbacks;
-    std::unordered_map<std::string, std::vector<std::function<void()>>>
+    std::unordered_map<
+        std::string,
+        std::vector<std::function<void(const PlatformMouseEvent&)>>>
         event_callbacks;
+    UiClientRect client_rect{};
     std::optional<CanvasState> canvas;
     bool attached_to_root = false;
 };
@@ -2640,10 +2671,17 @@ struct UiClassStyleRule {
     std::string class_name;
     std::string style;
 };
+struct UiIdStyleRule {
+    std::string id;
+    std::string style;
+};
 #endif
 
 struct Engine {
     EngineOptions options{};
+    /** Logical CSS-pixel extent exposed by renderCanvas.clientWidth/Height. */
+    double canvas_client_width = 1280.0;
+    double canvas_client_height = 720.0;
     /**
      * `stopEngine`: the pin cancels its animation frame and clears
      * `_renderFn`, so no further frame submits. There is no
@@ -2722,12 +2760,16 @@ struct Engine {
     /** Desired and applied equivalents of the browser pointer-lock state. */
     bool pointer_lock_requested = false;
     bool pointer_locked = false;
+    /** CSS cursor requested on the engine's browser canvas. */
+    std::string canvas_cursor;
     std::vector<std::function<void(bool)>> visibility_change_callbacks;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
     /** Static host-page class rules applied below inline element styles. */
     std::vector<UiClassStyleRule> ui_class_style_rules;
+    /** Static source stylesheet id rules applied below inline styles. */
+    std::vector<UiIdStyleRule> ui_id_style_rules;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
 #endif
@@ -2737,6 +2779,13 @@ struct Engine {
      * precede the engine-owned render callback.
      */
     std::vector<std::function<void(double)>> animation_frame_callbacks;
+    /**
+     * One-shot browser RAF callbacks. The conductor moves this queue before
+     * invoking it, so a callback which schedules another RAF naturally runs
+     * that continuation on the following frame.
+     */
+    std::vector<std::function<void(double)>>
+        animation_frame_once_callbacks;
     /**
      * Application-owned RAF callbacks registered after `startEngine` has
      * resolved. The engine callback was registered first, so these run after
@@ -3850,6 +3899,7 @@ void on_window_resize(
 void on_pointer_lock_change(
     Engine& engine,
     std::function<void()> callback);
+void set_canvas_cursor(Engine& engine, std::string cursor);
 void request_pointer_lock(Engine& engine);
 void exit_pointer_lock(Engine& engine);
 void on_visibility_change(

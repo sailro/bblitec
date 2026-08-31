@@ -1004,6 +1004,29 @@ template <std::size_t N>
     return std::string(buffer, converted.ptr);
 }
 
+// Runtime Number.prototype.toFixed for retained UI values. JavaScript falls
+// back to its ordinary number spelling at 1e21, preserves the exceptional
+// spellings, and prints positive or negative zero without a minus sign.
+[[nodiscard]] inline std::string number_to_fixed(double value, int digits) {
+    assert(digits >= 0 && digits <= 100);
+    if (std::isnan(value)) return "NaN";
+    if (value == std::numeric_limits<double>::infinity()) return "Infinity";
+    if (value == -std::numeric_limits<double>::infinity()) return "-Infinity";
+    if (std::abs(value) >= 1e21) return number_to_string(value);
+    if (value == 0.0) {
+        return digits == 0
+            ? std::string("0")
+            : std::string("0.") + std::string(
+                  static_cast<std::size_t>(digits), '0');
+    }
+    std::array<char, 160> buffer{};
+    const auto converted = std::to_chars(
+        buffer.data(), buffer.data() + buffer.size(), value,
+        std::chars_format::fixed, digits);
+    assert(converted.ec == std::errc{});
+    return std::string(buffer.data(), converted.ptr);
+}
+
 [[nodiscard]] inline double math_sign(double value) {
     if (std::isnan(value) || value == 0.0) return value;
     return value > 0.0 ? 1.0 : -1.0;

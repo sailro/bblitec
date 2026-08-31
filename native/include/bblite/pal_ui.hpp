@@ -2,6 +2,7 @@
 
 #include <bblite/runtime.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -19,6 +20,9 @@ UiElementHandle ui_create_element(Engine& engine, std::string_view tag);
 UiElementHandle ui_get_element_by_id(
     Engine& engine,
     std::string_view id);
+UiClientRect ui_get_client_rect(
+    Engine& engine,
+    UiElementHandle element);
 void ui_set_text(
     Engine& engine,
     UiElementHandle element,
@@ -37,6 +41,10 @@ void ui_set_style_property(
     UiElementHandle element,
     std::string name,
     std::string value);
+std::string ui_get_style_property(
+    Engine& engine,
+    UiElementHandle element,
+    std::string_view name);
 void ui_toggle_class(
     Engine& engine,
     UiElementHandle element,
@@ -45,6 +53,10 @@ void ui_toggle_class(
 void ui_add_class_style(
     Engine& engine,
     std::string class_name,
+    std::string style);
+void ui_add_id_style(
+    Engine& engine,
+    std::string id,
     std::string style);
 UiElementHandle ui_append_child(
     Engine& engine,
@@ -63,7 +75,7 @@ void ui_on_event(
     Engine& engine,
     UiElementHandle element,
     std::string event,
-    std::function<void()> callback);
+    std::function<void(const PlatformMouseEvent&)> callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
 void ui_canvas_set_width(Engine&, UiElementHandle, double);
@@ -85,6 +97,33 @@ void ui_canvas_arc_to(Engine&, UiElementHandle, double, double, double, double, 
 void ui_canvas_arc(Engine&, UiElementHandle, double, double, double, double, double, bool);
 void ui_canvas_fill(Engine&, UiElementHandle);
 void ui_canvas_stroke(Engine&, UiElementHandle);
+void ui_canvas_set_image_smoothing(Engine&, UiElementHandle, bool);
+void ui_canvas_put_image_data(
+    Engine&,
+    UiElementHandle,
+    const js::U8Array&,
+    double,
+    double,
+    double,
+    double);
+void ui_canvas_draw_image(
+    Engine&,
+    UiElementHandle,
+    UiElementHandle,
+    double,
+    double,
+    double,
+    double);
+void ui_canvas_set_font(Engine&, UiElementHandle, std::string);
+void ui_canvas_set_text_baseline(Engine&, UiElementHandle, std::string);
+void ui_canvas_set_shadow_color(Engine&, UiElementHandle, std::string);
+void ui_canvas_set_shadow_blur(Engine&, UiElementHandle, double);
+void ui_canvas_fill_text(
+    Engine&,
+    UiElementHandle,
+    std::string,
+    double,
+    double);
 
 namespace pal {
 
@@ -115,6 +154,7 @@ struct UiRenderDraw {
     std::int32_t scissor_y = 0;
     std::uint32_t scissor_width = 0;
     std::uint32_t scissor_height = 0;
+    bool nearest_sampling = false;
 };
 
 /**
@@ -129,6 +169,17 @@ struct UiRenderFrame {
     std::vector<UiRenderTexture> textures;
     std::vector<UiRenderDraw> draws;
 };
+
+inline bool ui_frame_uses_texture(
+    const UiRenderFrame& frame,
+    std::uint64_t id) {
+    return std::any_of(
+        frame.textures.begin(),
+        frame.textures.end(),
+        [id](const UiRenderTexture& texture) {
+            return texture.id == id;
+        });
+}
 
 /** Opaque RmlUi projection of an engine's retained UI tree. */
 struct UiRmlRuntime;

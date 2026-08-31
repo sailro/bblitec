@@ -44,6 +44,7 @@ export interface BrowserErasureContext {
     isBrowserOnlyNullableClassFactoryCall(
         call: ts.CallExpression,
     ): boolean;
+    isNativeUiValueExpression(expression: ts.Expression): boolean;
     /** Runtime visibility callback parameter, while compiling its body. */
     platformDocumentHidden(): string | undefined;
     /** The query string the reference pose is captured at. */
@@ -209,14 +210,27 @@ export class BrowserErasure {
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            this.context.lookupOptional(unwrapped.expression)
+                ?.recordProperties?.[unwrapped.name.text]
+        ) {
+            // A native record may retain a DOM-declared structural type at
+            // the TypeScript site. Its lowered fields win over that source
+            // declaration, including the UiClientRect projected by RmlUi.
+            return false;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
             (unwrapped.name.text === "left" ||
-                unwrapped.name.text === "top") &&
+                unwrapped.name.text === "top" ||
+                unwrapped.name.text === "width" ||
+                unwrapped.name.text === "height") &&
             this.evaluateBrowserValue(unwrapped.expression)?.kind ===
                 "dom-rect"
         ) {
-            // Native has no CSS offset around its render surface. The
-            // property lowerer maps these two DOMRect coordinates to zero,
-            // so arithmetic using them remains native pointer math.
+            // Native has no CSS offset around its render surface; its size is
+            // the live engine surface. All four reached DOMRect coordinates
+            // therefore have platform-backed numeric representations.
             return false;
         }
         if (ts.isIdentifier(unwrapped)) {
@@ -410,6 +424,12 @@ export class BrowserErasure {
     ): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
+            if (
+                ts.isElementAccessExpression(unwrapped) &&
+                this.context.isNativeUiValueExpression(unwrapped)
+            ) {
+                return { kind: "ui-element", cpp: "" };
+            }
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.lookupOptional(unwrapped);
             }

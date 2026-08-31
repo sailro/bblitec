@@ -21,6 +21,15 @@ struct SpriteUiDawnTexture {
     WGPUTexture texture = nullptr;
     WGPUTextureView view = nullptr;
     WGPUBindGroup group = nullptr;
+    WGPUBindGroup nearest_group = nullptr;
+
+    void release() {
+        if (nearest_group) wgpuBindGroupRelease(nearest_group);
+        if (group) wgpuBindGroupRelease(group);
+        if (view) wgpuTextureViewRelease(view);
+        if (texture) wgpuTextureRelease(texture);
+        *this = {};
+    }
 };
 
 struct SpriteUiDawnResources {
@@ -30,6 +39,7 @@ struct SpriteUiDawnResources {
     WGPURenderPipeline color_pipeline = nullptr;
     WGPURenderPipeline texture_pipeline = nullptr;
     WGPUSampler sampler = nullptr;
+    WGPUSampler nearest_sampler = nullptr;
     WGPUBuffer screen = nullptr;
     WGPUBindGroup screen_group = nullptr;
     WGPUBuffer vertices = nullptr;
@@ -169,14 +179,15 @@ inline WGPUBuffer create_sprite_ui_dawn_buffer(
 inline WGPUBindGroup create_sprite_ui_dawn_texture_group(
     DawnDevice& state,
     SpriteUiDawnResources& ui,
-    WGPUTextureView view) {
+    WGPUTextureView view,
+    WGPUSampler sampler) {
     std::array<WGPUBindGroupEntry, 2> entries{};
     entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[0].binding = 0;
     entries[0].textureView = view;
     entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[1].binding = 1;
-    entries[1].sampler = ui.sampler;
+    entries[1].sampler = sampler;
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     descriptor.layout = ui.texture_layout;
     descriptor.entryCount = entries.size();
@@ -268,6 +279,12 @@ inline void create_sprite_ui_dawn_resources(
     sampler.addressModeW = WGPUAddressMode_ClampToEdge;
     ui.sampler = wgpuDeviceCreateSampler(state.device, &sampler);
     if (!ui.sampler) dawn_error("wgpuDeviceCreateSampler sprite UI");
+    sampler.minFilter = WGPUFilterMode_Nearest;
+    sampler.magFilter = WGPUFilterMode_Nearest;
+    ui.nearest_sampler = wgpuDeviceCreateSampler(state.device, &sampler);
+    if (!ui.nearest_sampler) {
+        dawn_error("wgpuDeviceCreateSampler sprite UI nearest");
+    }
 
     ui.screen = create_sprite_ui_dawn_buffer(
         state.device, WGPUBufferUsage_Uniform, 16);
@@ -341,6 +358,14 @@ inline void render_sprite_ui_dawn_frame(
     wgpuQueueWriteBuffer(
         state.queue, ui.screen, 0, screen.data(), sizeof(screen));
 
+    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
+        if (ui_frame_uses_texture(frame, texture->first)) {
+            ++texture;
+            continue;
+        }
+        texture->second.release();
+        texture = ui.textures.erase(texture);
+    }
     for (const UiRenderTexture& source : frame.textures) {
         if (ui.textures.contains(source.id) || !source.rgba) continue;
         SpriteUiDawnTexture texture;
@@ -354,7 +379,9 @@ inline void render_sprite_ui_dawn_frame(
         texture.view = wgpuTextureCreateView(texture.texture, nullptr);
         if (!texture.view) dawn_error("wgpuTextureCreateView sprite UI");
         texture.group = create_sprite_ui_dawn_texture_group(
-            state, ui, texture.view);
+            state, ui, texture.view, ui.sampler);
+        texture.nearest_group = create_sprite_ui_dawn_texture_group(
+            state, ui, texture.view, ui.nearest_sampler);
         ui.textures.emplace(source.id, texture);
     }
 
@@ -404,7 +431,13 @@ inline void render_sprite_ui_dawn_frame(
             if (texture == ui.textures.end()) continue;
             wgpuRenderPassEncoderSetPipeline(pass, ui.texture_pipeline);
             wgpuRenderPassEncoderSetBindGroup(
-                pass, 1, texture->second.group, 0, nullptr);
+                pass,
+                1,
+                draw.nearest_sampling
+                    ? texture->second.nearest_group
+                    : texture->second.group,
+                0,
+                nullptr);
         } else {
             wgpuRenderPassEncoderSetPipeline(pass, ui.color_pipeline);
         }
@@ -417,17 +450,16 @@ inline void render_sprite_ui_dawn_frame(
 
 inline void release_sprite_ui_dawn_resources(
     SpriteUiDawnResources& ui) {
-    for (const auto& [id, source] : ui.textures) {
+    for (auto& [id, source] : ui.textures) {
         static_cast<void>(id);
-        if (source.group) wgpuBindGroupRelease(source.group);
-        if (source.view) wgpuTextureViewRelease(source.view);
-        if (source.texture) wgpuTextureRelease(source.texture);
+        source.release();
     }
     if (ui.indices) wgpuBufferRelease(ui.indices);
     if (ui.vertices) wgpuBufferRelease(ui.vertices);
     if (ui.screen_group) wgpuBindGroupRelease(ui.screen_group);
     if (ui.screen) wgpuBufferRelease(ui.screen);
     if (ui.sampler) wgpuSamplerRelease(ui.sampler);
+    if (ui.nearest_sampler) wgpuSamplerRelease(ui.nearest_sampler);
     if (ui.texture_pipeline) wgpuRenderPipelineRelease(ui.texture_pipeline);
     if (ui.color_pipeline) wgpuRenderPipelineRelease(ui.color_pipeline);
     if (ui.texture_pipeline_layout) {

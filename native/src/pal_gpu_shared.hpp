@@ -4509,7 +4509,13 @@ inline std::vector<float> shader_stage_block_floats(
 /** Give every pre-render application RAF callback this turn's one timestamp. */
 inline void run_animation_frame_callbacks(Engine& engine) {
     engine.animation_frame_timestamp_ms = performance_milliseconds();
+    auto once_callbacks =
+        std::move(engine.animation_frame_once_callbacks);
+    engine.animation_frame_once_callbacks.clear();
     for (const auto& callback : engine.animation_frame_callbacks) {
+        callback(engine.animation_frame_timestamp_ms);
+    }
+    for (const auto& callback : once_callbacks) {
         callback(engine.animation_frame_timestamp_ms);
     }
 }

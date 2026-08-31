@@ -69,10 +69,13 @@ inline void dispatch_platform_wheel_event(
  * BBLITE_INPUT_REPLAY is a comma-separated sequence of DOM KeyboardEvent.code
  * values. A plain entry is dispatched as a down/up pair in one frame, `+Code`
  * dispatches key-down only, `-Code` dispatches key-up only, and `-` is an idle
- * frame. `WheelUp` and `WheelDown` dispatch one browser-sized wheel notch at
- * the canvas centre. All forms reach the application's ordinary callbacks and
- * do not mutate generated source or camera state directly.
+ * frame. `MouseLeft`, `MouseMiddle`, and `MouseRight` follow the same prefix
+ * convention. `WheelUp` and `WheelDown` dispatch one browser-sized wheel notch
+ * at the canvas centre. All forms reach the application's ordinary callbacks
+ * and do not mutate generated source or camera state directly.
  */
+inline void sync_pointer_lock(SDL_Window* window, Engine& engine);
+
 class PlatformInputReplay {
 public:
     PlatformInputReplay() {
@@ -92,7 +95,7 @@ public:
         if (source.empty()) codes_.clear();
     }
 
-    void dispatch(long frame, Engine& engine) const {
+    void dispatch(long frame, SDL_Window* window, Engine& engine) const {
         if (
             frame < 0 ||
             static_cast<std::size_t>(frame) >= codes_.size()) {
@@ -115,6 +118,36 @@ public:
             down_only || up_only
                 ? std::string_view(code).substr(1)
                 : std::string_view(code);
+        double mouse_button = -1.0;
+        double mouse_mask = 0.0;
+        if (event_code == "MouseLeft") {
+            mouse_button = 0.0;
+            mouse_mask = 1.0;
+        } else if (event_code == "MouseMiddle") {
+            mouse_button = 1.0;
+            mouse_mask = 4.0;
+        } else if (event_code == "MouseRight") {
+            mouse_button = 2.0;
+            mouse_mask = 2.0;
+        }
+        if (mouse_button >= 0.0) {
+            const auto dispatch_mouse = [&](bool down) {
+                const PlatformMouseEvent event{
+                    .button = mouse_button,
+                    .buttons = down ? mouse_mask : 0.0,
+                    .client_x = static_cast<double>(engine.options.width) / 2.0,
+                    .client_y = static_cast<double>(engine.options.height) / 2.0,
+                };
+                const auto& callbacks = down
+                    ? engine.mouse_down_callbacks
+                    : engine.mouse_up_callbacks;
+                for (const auto& callback : callbacks) callback(event);
+                sync_pointer_lock(window, engine);
+            };
+            if (!up_only) dispatch_mouse(true);
+            if (!down_only) dispatch_mouse(false);
+            return;
+        }
         if (!up_only) {
             dispatch_platform_keyboard_event(
                 engine, event_code, true, false);
@@ -202,18 +235,27 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
 inline bool sync_engine_canvas_size(
     SDL_Window* window,
     Engine& engine) {
+    int client_width = 0;
+    int client_height = 0;
     int width = 0;
     int height = 0;
     if (
         window &&
+        SDL_GetWindowSize(window, &client_width, &client_height) &&
         SDL_GetWindowSizeInPixels(window, &width, &height) &&
+        client_width > 0 &&
+        client_height > 0 &&
         width > 0 &&
         height > 0) {
         const bool changed =
             engine.options.width != width ||
-            engine.options.height != height;
+            engine.options.height != height ||
+            engine.canvas_client_width != client_width ||
+            engine.canvas_client_height != client_height;
         engine.options.width = width;
         engine.options.height = height;
+        engine.canvas_client_width = client_width;
+        engine.canvas_client_height = client_height;
         return changed;
     }
     return false;
@@ -282,6 +324,24 @@ inline void apply_pointer_lock_cursor(bool locked) {
         return;
     }
     SDL_ShowCursor();
+}
+
+/** Apply the small reached CSS cursor surface of the engine canvas. */
+inline void apply_canvas_cursor(const Engine& engine) {
+    if (engine.pointer_locked) return;
+    if (engine.canvas_cursor == "none") {
+        SDL_HideCursor();
+        return;
+    }
+    SDL_ShowCursor();
+    if (engine.canvas_cursor == "crosshair") {
+        // One process-lifetime system cursor avoids allocating on each move.
+        static SDL_Cursor* crosshair =
+            SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+        if (crosshair) SDL_SetCursor(crosshair);
+        return;
+    }
+    SDL_SetCursor(SDL_GetDefaultCursor());
 }
 
 inline const char* pointer_lock_hint(const char* name) {

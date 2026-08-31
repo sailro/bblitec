@@ -87,6 +87,8 @@ bool run_sprite_dawn_engine(Engine& engine) {
         device_options.immediate_present =
             frame_options.benchmark_requested;
         create_dawn_device(engine.options, device_options, state);
+        sync_engine_canvas_size(state.window, engine);
+        resize_dawn_surface(state, engine.options);
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         ui_runtime = create_ui_rml_runtime(
             engine,
@@ -198,8 +200,10 @@ bool run_sprite_dawn_engine(Engine& engine) {
 #endif
                 if (propagate_to_scene) {
                     handle_platform_event(event, engine);
+                    apply_canvas_cursor(engine);
                 }
             }
+            sync_engine_canvas_size(state.window, engine);
             if (resize_dawn_surface(state, engine.options)) {
                 width = state.surface_width;
                 height = state.surface_height;
@@ -207,7 +211,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             update_ui_rml_runtime(*ui_runtime, width, height);
 #endif
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, state.window, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,

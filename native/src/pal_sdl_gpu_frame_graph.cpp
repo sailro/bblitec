@@ -534,7 +534,7 @@ bool run_frame_graph_gpu_engine(Engine& engine) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, state.gpu.window, engine);
             (void)advance_frame(
                 engine,
                 context,

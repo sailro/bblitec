@@ -112,7 +112,7 @@ bool run_effect_gpu_engine(Engine& engine) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, window, engine);
             // A scene-less driver still serves a queued timeout, so a
             // `stopEngine` from one is not a silent no-op here.
             (void)advance_frame(

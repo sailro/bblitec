@@ -63,6 +63,14 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
         "native/src/pal_dawn_sprite.cpp",
         "utf8",
     );
+    const spriteSdlUi = readFileSync(
+        "native/src/pal_sprite_ui_sdl.hpp",
+        "utf8",
+    );
+    const spriteDawnUi = readFileSync(
+        "native/src/pal_sprite_ui_dawn.hpp",
+        "utf8",
+    );
 
     assert.doesNotMatch(cmake, /RmlUi_Renderer_SDL_GPU\.cpp/);
     assert.doesNotMatch(projection, /RenderInterface_SDL_GPU|SDL_GPUDevice/);
@@ -76,6 +84,10 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
     assert.match(spriteSdl, /handle_ui_rml_event/);
     assert.match(spriteDawn, /handle_ui_rml_event/);
+    for (const renderer of [sdl, dawn, spriteSdlUi, spriteDawnUi]) {
+        assert.match(renderer, /ui_frame_uses_texture/);
+        assert.match(renderer, /draw\.nearest_sampling/);
+    }
 });
 
 test("canonicalizes the build-time backend flag", () => {

@@ -481,6 +481,15 @@ struct DawnUiTexture {
     WGPUTexture texture = nullptr;
     WGPUTextureView view = nullptr;
     WGPUBindGroup group = nullptr;
+    WGPUBindGroup nearest_group = nullptr;
+
+    void release() {
+        if (nearest_group) wgpuBindGroupRelease(nearest_group);
+        if (group) wgpuBindGroupRelease(group);
+        if (view) wgpuTextureViewRelease(view);
+        if (texture) wgpuTextureRelease(texture);
+        *this = {};
+    }
 };
 
 /** Dawn-owned realization of the backend-neutral RmlUi frame. */
@@ -492,6 +501,7 @@ struct DawnUiResources {
     WGPURenderPipeline texture_pipeline = nullptr;
     WGPURenderPipeline composite_pipeline = nullptr;
     WGPUSampler sampler = nullptr;
+    WGPUSampler nearest_sampler = nullptr;
     WGPUBuffer screen = nullptr;
     WGPUBindGroup screen_group = nullptr;
     WGPUTexture layer = nullptr;
@@ -508,11 +518,9 @@ struct DawnUiResources {
     std::uint64_t index_capacity = 0;
 
     void release() {
-        for (const auto& [id, source] : textures) {
+        for (auto& [id, source] : textures) {
             static_cast<void>(id);
-            if (source.group) wgpuBindGroupRelease(source.group);
-            if (source.view) wgpuTextureViewRelease(source.view);
-            if (source.texture) wgpuTextureRelease(source.texture);
+            source.release();
         }
         textures.clear();
         if (indices) wgpuBufferRelease(indices);
@@ -527,6 +535,7 @@ struct DawnUiResources {
         if (screen_group) wgpuBindGroupRelease(screen_group);
         if (screen) wgpuBufferRelease(screen);
         if (sampler) wgpuSamplerRelease(sampler);
+        if (nearest_sampler) wgpuSamplerRelease(nearest_sampler);
         if (composite_pipeline) {
             wgpuRenderPipelineRelease(composite_pipeline);
         }
@@ -1778,14 +1787,15 @@ WGPURenderPipeline create_ui_dawn_pipeline(
 
 WGPUBindGroup create_ui_dawn_texture_group(
     DawnState& state,
-    WGPUTextureView view) {
+    WGPUTextureView view,
+    WGPUSampler sampler) {
     std::array<WGPUBindGroupEntry, 2> entries{};
     entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[0].binding = 0;
     entries[0].textureView = view;
     entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[1].binding = 1;
-    entries[1].sampler = state.ui.sampler;
+    entries[1].sampler = sampler;
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     descriptor.layout = state.ui.texture_layout;
     descriptor.entryCount = entries.size();
@@ -1884,6 +1894,12 @@ void create_ui_dawn_resources(DawnState& state) {
     sampler.addressModeW = WGPUAddressMode_ClampToEdge;
     ui.sampler = wgpuDeviceCreateSampler(state.device, &sampler);
     if (!ui.sampler) dawn_error("wgpuDeviceCreateSampler UI");
+    sampler.minFilter = WGPUFilterMode_Nearest;
+    sampler.magFilter = WGPUFilterMode_Nearest;
+    ui.nearest_sampler = wgpuDeviceCreateSampler(state.device, &sampler);
+    if (!ui.nearest_sampler) {
+        dawn_error("wgpuDeviceCreateSampler UI nearest");
+    }
 
     ui.screen = create_buffer(state, WGPUBufferUsage_Uniform, nullptr, 16);
     WGPUBindGroupEntry screen_binding = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -1943,7 +1959,10 @@ void ensure_ui_dawn_layers(
             dawn_error("wgpuTextureCreateView UI multisample layer");
         }
     }
-    ui.layer_group = create_ui_dawn_texture_group(state, ui.layer_view);
+    ui.layer_group = create_ui_dawn_texture_group(
+        state,
+        ui.layer_view,
+        ui.sampler);
     ui.width = width;
     ui.height = height;
 }
@@ -2028,6 +2047,14 @@ void render_ui_dawn_frame(
     wgpuQueueWriteBuffer(
         state.queue, ui.screen, 0, screen.data(), sizeof(screen));
 
+    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
+        if (ui_frame_uses_texture(frame, texture->first)) {
+            ++texture;
+            continue;
+        }
+        texture->second.release();
+        texture = ui.textures.erase(texture);
+    }
     for (const UiRenderTexture& source : frame.textures) {
         if (ui.textures.contains(source.id) || !source.rgba) continue;
         DawnUiTexture texture;
@@ -2040,7 +2067,14 @@ void render_ui_dawn_frame(
             source.height);
         texture.view = wgpuTextureCreateView(texture.texture, nullptr);
         if (!texture.view) dawn_error("wgpuTextureCreateView UI source");
-        texture.group = create_ui_dawn_texture_group(state, texture.view);
+        texture.group = create_ui_dawn_texture_group(
+            state,
+            texture.view,
+            ui.sampler);
+        texture.nearest_group = create_ui_dawn_texture_group(
+            state,
+            texture.view,
+            ui.nearest_sampler);
         ui.textures.emplace(source.id, texture);
     }
 
@@ -2097,7 +2131,13 @@ void render_ui_dawn_frame(
             wgpuRenderPassEncoderSetPipeline(
                 layer_pass, ui.texture_pipeline);
             wgpuRenderPassEncoderSetBindGroup(
-                layer_pass, 1, texture->second.group, 0, nullptr);
+                layer_pass,
+                1,
+                draw.nearest_sampling
+                    ? texture->second.nearest_group
+                    : texture->second.group,
+                0,
+                nullptr);
         } else {
             wgpuRenderPassEncoderSetPipeline(layer_pass, ui.color_pipeline);
         }
@@ -6766,6 +6806,8 @@ void encode_image_processing(
             WGPUBufferUsage_Uniform,
             nullptr,
             16);
+    }
+    if (!state.image_processing_group) {
         WGPUBindGroupLayout layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.image_processing_pipeline,
@@ -8140,11 +8182,11 @@ bool run_dawn_engine(Engine& engine) {
         }
     }
     create_dawn_device(engine.options, device_options, state);
+    sync_engine_canvas_size(state.window, engine);
+    resize_dawn_surface(state, engine.options);
 
-    const std::uint32_t width =
-        static_cast<std::uint32_t>(engine.options.width);
-    const std::uint32_t height =
-        static_cast<std::uint32_t>(engine.options.height);
+    std::uint32_t width = state.surface_width;
+    std::uint32_t height = state.surface_height;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)>
         ui_runtime(
@@ -8219,7 +8261,22 @@ bool run_dawn_engine(Engine& engine) {
     state.frame_color_format = scene.transmission_enabled
         ? WGPUTextureFormat_RGBA16Float
         : state.surface_format;
-    {
+    const auto recreate_frame_targets = [&]() {
+        if (state.image_processing_group) {
+            wgpuBindGroupRelease(state.image_processing_group);
+            state.image_processing_group = nullptr;
+        }
+        if (state.depth_view) wgpuTextureViewRelease(state.depth_view);
+        if (state.depth) wgpuTextureRelease(state.depth);
+        if (state.msaa_color_view) {
+            wgpuTextureViewRelease(state.msaa_color_view);
+        }
+        if (state.msaa_color) wgpuTextureRelease(state.msaa_color);
+        state.depth_view = nullptr;
+        state.depth = nullptr;
+        state.msaa_color_view = nullptr;
+        state.msaa_color = nullptr;
+
         WGPUTextureDescriptor color_descriptor =
             WGPU_TEXTURE_DESCRIPTOR_INIT;
         color_descriptor.usage = scene.transmission_enabled
@@ -8233,35 +8290,6 @@ bool run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateTexture(state.device, &color_descriptor);
         state.msaa_color_view =
             wgpuTextureCreateView(state.msaa_color, nullptr);
-        if (scene.transmission_enabled) {
-            // The pinned refraction target: the shared fixed-extent,
-            // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
-            state.transmission_mip_count = transmission_grab_mip_count();
-            WGPUTextureDescriptor transmission_descriptor =
-                WGPU_TEXTURE_DESCRIPTOR_INIT;
-            transmission_descriptor.usage =
-                WGPUTextureUsage_RenderAttachment |
-                WGPUTextureUsage_TextureBinding;
-            transmission_descriptor.size = {
-                transmission_grab_size,
-                transmission_grab_size,
-                1,
-            };
-            transmission_descriptor.format =
-                WGPUTextureFormat_RGBA16Float;
-            transmission_descriptor.mipLevelCount =
-                state.transmission_mip_count;
-            state.transmission_color = wgpuDeviceCreateTexture(
-                state.device,
-                &transmission_descriptor);
-            if (!state.transmission_color) {
-                dawn_error(
-                    "wgpuDeviceCreateTexture transmission color");
-            }
-            state.transmission_color_view = wgpuTextureCreateView(
-                state.transmission_color,
-                nullptr);
-        }
         WGPUTextureDescriptor depth_descriptor =
             WGPU_TEXTURE_DESCRIPTOR_INIT;
         depth_descriptor.usage = WGPUTextureUsage_RenderAttachment;
@@ -8272,6 +8300,43 @@ bool run_dawn_engine(Engine& engine) {
         state.depth =
             wgpuDeviceCreateTexture(state.device, &depth_descriptor);
         state.depth_view = wgpuTextureCreateView(state.depth, nullptr);
+        if (
+            !state.msaa_color ||
+            !state.msaa_color_view ||
+            !state.depth ||
+            !state.depth_view) {
+            dawn_error("resizable frame target creation failed.");
+        }
+    };
+    recreate_frame_targets();
+    if (scene.transmission_enabled) {
+        // The pinned refraction target: the shared fixed-extent,
+        // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
+        state.transmission_mip_count = transmission_grab_mip_count();
+        WGPUTextureDescriptor transmission_descriptor =
+            WGPU_TEXTURE_DESCRIPTOR_INIT;
+        transmission_descriptor.usage =
+            WGPUTextureUsage_RenderAttachment |
+            WGPUTextureUsage_TextureBinding;
+        transmission_descriptor.size = {
+            transmission_grab_size,
+            transmission_grab_size,
+            1,
+        };
+        transmission_descriptor.format =
+            WGPUTextureFormat_RGBA16Float;
+        transmission_descriptor.mipLevelCount =
+            state.transmission_mip_count;
+        state.transmission_color = wgpuDeviceCreateTexture(
+            state.device,
+            &transmission_descriptor);
+        if (!state.transmission_color) {
+            dawn_error(
+                "wgpuDeviceCreateTexture transmission color");
+        }
+        state.transmission_color_view = wgpuTextureCreateView(
+            state.transmission_color,
+            nullptr);
     }
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
     if (!scene.depth_hosted_sprite_layers.empty()) {
@@ -10118,6 +10183,7 @@ bool run_dawn_engine(Engine& engine) {
 #endif
             if (propagate_to_scene) {
                 handle_platform_event(event, engine);
+                apply_canvas_cursor(engine);
             }
             if (!hidden_test_pass && propagate_to_scene) {
                 handle_camera_pointer_event(
@@ -10126,7 +10192,13 @@ bool run_dawn_engine(Engine& engine) {
                     pointer_state);
             }
         }
-        input_replay.dispatch(frame, engine);
+        input_replay.dispatch(frame, state.window, engine);
+        sync_engine_canvas_size(state.window, engine);
+        if (resize_dawn_surface(state, engine.options)) {
+            width = state.surface_width;
+            height = state.surface_height;
+            recreate_frame_targets();
+        }
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         update_ui_rml_runtime(*ui_runtime, width, height);
 #endif

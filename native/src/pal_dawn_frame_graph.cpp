@@ -519,6 +519,8 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
         device_options.hidden_test_pass = options.test_pass;
         device_options.immediate_present = options.benchmark_requested;
         create_dawn_device(engine.options, device_options, state);
+        sync_engine_canvas_size(state.window, engine);
+        resize_dawn_surface(state, engine.options);
 #if BBLITE_HAS_POST_PROCESS
         WGPUSamplerDescriptor sampler = WGPU_SAMPLER_DESCRIPTOR_INIT;
         sampler.addressModeU = WGPUAddressMode_ClampToEdge;
@@ -534,10 +536,8 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
             dawn_error("frame-graph sampler creation failed.");
         }
 #endif
-        const std::uint32_t width =
-            static_cast<std::uint32_t>(engine.options.width);
-        const std::uint32_t height =
-            static_cast<std::uint32_t>(engine.options.height);
+        std::uint32_t width = state.surface_width;
+        std::uint32_t height = state.surface_height;
         if (width == 0 || height == 0) {
             dawn_error("frame-graph surface has a zero extent.");
         }
@@ -555,7 +555,13 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, state.window, engine);
+            sync_engine_canvas_size(state.window, engine);
+            if (resize_dawn_surface(state, engine.options)) {
+                width = state.surface_width;
+                height = state.surface_height;
+                build_graph(state, engine, width, height);
+            }
             (void)advance_frame(
                 engine,
                 context,

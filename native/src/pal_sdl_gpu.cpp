@@ -715,6 +715,7 @@ struct UiSdlGpuResources {
     SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* composite_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+    SDL_GPUSampler* nearest_sampler = nullptr;
     SDL_GPUTexture* layer = nullptr;
     SDL_GPUTexture* multisample_layer = nullptr;
     SDL_GPUBuffer* vertices = nullptr;
@@ -1162,6 +1163,12 @@ void create_ui_sdl_resources(
     sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     ui.sampler = SDL_CreateGPUSampler(state.device, &sampler);
     if (!ui.sampler) gpu_error("SDL_CreateGPUSampler UI");
+    sampler.min_filter = SDL_GPU_FILTER_NEAREST;
+    sampler.mag_filter = SDL_GPU_FILTER_NEAREST;
+    ui.nearest_sampler = SDL_CreateGPUSampler(state.device, &sampler);
+    if (!ui.nearest_sampler) {
+        gpu_error("SDL_CreateGPUSampler UI nearest");
+    }
 }
 
 void ensure_ui_sdl_layers(
@@ -1250,6 +1257,9 @@ void release_ui_sdl_resources(GpuState& state) {
         SDL_ReleaseGPUTexture(state.device, ui.multisample_layer);
     }
     if (ui.sampler) SDL_ReleaseGPUSampler(state.device, ui.sampler);
+    if (ui.nearest_sampler) {
+        SDL_ReleaseGPUSampler(state.device, ui.nearest_sampler);
+    }
     if (ui.color_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(state.device, ui.color_pipeline);
     }
@@ -1315,6 +1325,14 @@ void render_ui_sdl_frame(
         index_bytes,
         SDL_GPU_BUFFERUSAGE_INDEX);
 
+    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
+        if (ui_frame_uses_texture(frame, texture->first)) {
+            ++texture;
+            continue;
+        }
+        SDL_ReleaseGPUTexture(state.device, texture->second);
+        texture = ui.textures.erase(texture);
+    }
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
     if (!copy) gpu_error("SDL_BeginGPUCopyPass UI");
     std::vector<SDL_GPUTransferBuffer*> transfers;
@@ -1437,7 +1455,7 @@ void render_ui_sdl_frame(
             SDL_BindGPUGraphicsPipeline(layer_pass, ui.texture_pipeline);
             const SDL_GPUTextureSamplerBinding texture_binding{
                 texture->second,
-                ui.sampler};
+                draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
             SDL_BindGPUFragmentSamplers(
                 layer_pass, 0, &texture_binding, 1);
         } else {
@@ -5749,6 +5767,7 @@ bool run_gpu_engine(Engine& engine) {
                     SDL_WINDOW_NOT_FOCUSABLE
                 : SDL_WINDOW_RESIZABLE);
         if (!state.window) gpu_error("SDL_CreateWindow");
+        sync_engine_canvas_size(state.window, engine);
         const bool gpu_debug =
             frame_options.gpu_debug;
         state.device = SDL_CreateGPUDevice(
@@ -7738,6 +7757,7 @@ bool run_gpu_engine(Engine& engine) {
 #endif
                 if (propagate_to_scene) {
                     handle_platform_event(event, engine);
+                    apply_canvas_cursor(engine);
                 }
                 if (!hidden_test_pass && propagate_to_scene) {
                     handle_camera_pointer_event(
@@ -7746,7 +7766,7 @@ bool run_gpu_engine(Engine& engine) {
                         pointer_state);
                 }
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, state.window, engine);
             // The swapchain is acquired before the scene advances, because
             // SDL only reports an unavailable texture *from*
             // `SDL_WaitAndAcquireGPUSwapchainTexture` -- it cannot be tested

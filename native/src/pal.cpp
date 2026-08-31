@@ -175,6 +175,8 @@ Engine create_engine(EngineOptions options) {
     report_build_stamp();
     Engine engine;
     engine.options = std::move(options);
+    engine.canvas_client_width = engine.options.width;
+    engine.canvas_client_height = engine.options.height;
     return engine;
 }
 

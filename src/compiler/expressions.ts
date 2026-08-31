@@ -2378,6 +2378,24 @@ export class ExpressionLowerer {
                       )
                     : undefined;
                 if (
+                    callee.name.text === "toFixed" &&
+                    owner.kind === "number" &&
+                    number === undefined &&
+                    (call.arguments.length === 0 ||
+                        (digits !== undefined && Number.isInteger(digits)))
+                ) {
+                    const precision = digits ?? 0;
+                    if (precision < 0 || precision > 100) {
+                        this.context.fail(call, "Number.toFixed precision must be between 0 and 100.");
+                    }
+                    this.context.reachJsData();
+                    return {
+                        kind: "data",
+                        cpp: `bbl::js::number_to_fixed(${owner.cpp}, ${precision})`,
+                        dataType: { kind: "string" },
+                    };
+                }
+                if (
                     owner.kind !== "number" ||
                     number === undefined ||
                     (call.arguments.length > 0 &&

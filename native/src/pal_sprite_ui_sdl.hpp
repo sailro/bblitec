@@ -28,6 +28,7 @@ struct SpriteUiSdlResources {
     SDL_GPUGraphicsPipeline* color_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+    SDL_GPUSampler* nearest_sampler = nullptr;
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     std::unordered_map<std::uint64_t, SDL_GPUTexture*> textures;
@@ -206,6 +207,12 @@ inline void create_sprite_ui_sdl_resources(
     sampler.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     ui.sampler = SDL_CreateGPUSampler(device, &sampler);
     if (!ui.sampler) gpu_error("SDL_CreateGPUSampler sprite UI");
+    sampler.min_filter = SDL_GPU_FILTER_NEAREST;
+    sampler.mag_filter = SDL_GPU_FILTER_NEAREST;
+    ui.nearest_sampler = SDL_CreateGPUSampler(device, &sampler);
+    if (!ui.nearest_sampler) {
+        gpu_error("SDL_CreateGPUSampler sprite UI nearest");
+    }
 }
 
 inline void ensure_sprite_ui_sdl_buffer(
@@ -272,6 +279,14 @@ inline void render_sprite_ui_sdl_frame(
         index_bytes,
         SDL_GPU_BUFFERUSAGE_INDEX);
 
+    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
+        if (ui_frame_uses_texture(frame, texture->first)) {
+            ++texture;
+            continue;
+        }
+        SDL_ReleaseGPUTexture(device, texture->second);
+        texture = ui.textures.erase(texture);
+    }
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
     if (!copy) gpu_error("SDL_BeginGPUCopyPass sprite UI");
     std::vector<SDL_GPUTransferBuffer*> transfers;
@@ -385,7 +400,7 @@ inline void render_sprite_ui_sdl_frame(
             SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
             const SDL_GPUTextureSamplerBinding texture_binding{
                 texture->second,
-                ui.sampler};
+                draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
             SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
         } else {
             SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
@@ -406,6 +421,9 @@ inline void release_sprite_ui_sdl_resources(
     if (ui.vertices) SDL_ReleaseGPUBuffer(device, ui.vertices);
     if (ui.indices) SDL_ReleaseGPUBuffer(device, ui.indices);
     if (ui.sampler) SDL_ReleaseGPUSampler(device, ui.sampler);
+    if (ui.nearest_sampler) {
+        SDL_ReleaseGPUSampler(device, ui.nearest_sampler);
+    }
     if (ui.color_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(device, ui.color_pipeline);
     }

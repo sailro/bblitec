@@ -1768,6 +1768,35 @@ export class UserFunctionLowerer {
                 "Reached user functions require a body.",
             );
         }
+
+        // A retained Canvas2D helper may expose an async nullable factory so
+        // the browser can fall back when an optional fetched asset is absent.
+        // Native packaging is closed over every reached fetch: the response is
+        // present by construction, and a missing file is already a hard package
+        // error. Inline the success arm of this deliberately narrow factory
+        // shape, preserving the constructed class value instead of forcing it
+        // through the plain-data early-return lambda model.
+        const retainedCanvasFactory =
+            this.retainedCanvasFactorySuccessPath(declaration);
+        if (retainedCanvasFactory) {
+            const ir: UserFunctionIr = {
+                declaration,
+                name:
+                    (ts.isMethodDeclaration(declaration) &&
+                    ts.isIdentifier(declaration.name)
+                        ? declaration.name.text
+                        : undefined) ?? nameHint,
+                parameters,
+                statements: retainedCanvasFactory.statements,
+                needsWrapper: false,
+                needsValueLambda: false,
+                needsLocalNative: false,
+                returnNeedsSnapshot: false,
+                returnExpression: retainedCanvasFactory.returnExpression,
+            };
+            this.cache.set(declaration, ir);
+            return ir;
+        }
         // A concise arrow body is exactly `{ return <expression>; }`, so
         // it lowers as the final value return with no statements before
         // it. `frameForIndex: (index) => 8 + (index % 16)` is that shape.
@@ -1846,6 +1875,165 @@ export class UserFunctionLowerer {
         };
         this.cache.set(declaration, ir);
         return ir;
+    }
+
+    private retainedCanvasFactorySuccessPath(
+        declaration: SupportedFunction,
+    ):
+        | {
+              statements: readonly ts.Statement[];
+              returnExpression: ts.Expression;
+          }
+        | undefined {
+        if (
+            !ts.isMethodDeclaration(declaration) ||
+            (ts.getCombinedModifierFlags(declaration) &
+                ts.ModifierFlags.Static) ===
+                0 ||
+            !ts.isClassDeclaration(declaration.parent) ||
+            !declaration.body ||
+            declaration.body.statements.length !== 1
+        ) {
+            return undefined;
+        }
+        const owner = declaration.parent;
+        const ownsRetainedCanvas = owner.members.some((member) => {
+            if (!ts.isPropertyDeclaration(member)) return false;
+            const type = this.checker.getTypeAtLocation(member);
+            const members =
+                (type.flags & ts.TypeFlags.Union) !== 0
+                    ? (type as ts.UnionType).types
+                    : [type];
+            return members.some((candidate) => {
+                const name = candidate.getSymbol()?.getName();
+                return (
+                    name === "HTMLCanvasElement" ||
+                    name === "OffscreenCanvas" ||
+                    name === "CanvasRenderingContext2D"
+                );
+            });
+        });
+        if (!ownsRetainedCanvas) return undefined;
+
+        const statement = declaration.body.statements[0];
+        if (
+            !statement ||
+            !ts.isTryStatement(statement) ||
+            statement.finallyBlock ||
+            !statement.catchClause
+        ) {
+            return undefined;
+        }
+        const catchStatements = statement.catchClause.block.statements;
+        const catchReturn = catchStatements[0];
+        if (
+            catchStatements.length !== 1 ||
+            !catchReturn ||
+            !ts.isReturnStatement(catchReturn) ||
+            catchReturn.expression?.kind !==
+                ts.SyntaxKind.NullKeyword
+        ) {
+            return undefined;
+        }
+        const successStatements = statement.tryBlock.statements;
+        const final = successStatements.at(-1);
+        if (
+            !final ||
+            !ts.isReturnStatement(final) ||
+            !final.expression ||
+            !ts.isNewExpression(final.expression)
+        ) {
+            return undefined;
+        }
+        const constructed = final.expression;
+        const constructedSymbol = this.checker.getSymbolAtLocation(
+            constructed.expression,
+        );
+        const ownerSymbol = owner.name
+            ? this.checker.getSymbolAtLocation(owner.name)
+            : undefined;
+        if (!constructedSymbol || constructedSymbol !== ownerSymbol) {
+            return undefined;
+        }
+
+        const statements: ts.Statement[] = [];
+        const packagedFetchResponses = new Set<ts.Symbol>();
+        for (const current of successStatements.slice(0, -1)) {
+            if (ts.isVariableStatement(current)) {
+                for (const declaration of current.declarationList.declarations) {
+                    if (
+                        !ts.isIdentifier(declaration.name) ||
+                        !declaration.initializer
+                    ) {
+                        continue;
+                    }
+                    let initializer: ts.Expression = declaration.initializer;
+                    while (ts.isAwaitExpression(initializer)) {
+                        initializer = initializer.expression;
+                    }
+                    const call = unwrapExpression(initializer);
+                    if (
+                        ts.isCallExpression(call) &&
+                        ts.isIdentifier(call.expression) &&
+                        call.expression.text === "fetch"
+                    ) {
+                        const symbol = this.checker.getSymbolAtLocation(
+                            declaration.name,
+                        );
+                        if (symbol) packagedFetchResponses.add(symbol);
+                    }
+                }
+            }
+            const condition = ts.isIfStatement(current)
+                ? unwrapExpression(current.expression)
+                : undefined;
+            let packagedFetchMiss = false;
+            if (
+                condition &&
+                ts.isPrefixUnaryExpression(condition) &&
+                condition.operator === ts.SyntaxKind.ExclamationToken
+            ) {
+                const tested = unwrapExpression(condition.operand);
+                if (
+                    ts.isPropertyAccessExpression(tested) &&
+                    tested.name.text === "ok"
+                ) {
+                    const response = unwrapExpression(tested.expression);
+                    const symbol = ts.isIdentifier(response)
+                        ? this.checker.getSymbolAtLocation(response)
+                        : undefined;
+                    packagedFetchMiss =
+                        symbol !== undefined &&
+                        packagedFetchResponses.has(symbol);
+                }
+            }
+            if (
+                packagedFetchMiss &&
+                ts.isIfStatement(current) &&
+                !current.elseStatement &&
+                ts.isReturnStatement(current.thenStatement) &&
+                current.thenStatement.expression?.kind ===
+                    ts.SyntaxKind.NullKeyword
+            ) {
+                continue;
+            }
+            let hasReturn = false;
+            const visit = (node: ts.Node): void => {
+                if (ts.isFunctionLike(node)) return;
+                if (ts.isReturnStatement(node)) {
+                    hasReturn = true;
+                    return;
+                }
+                ts.forEachChild(node, visit);
+            };
+            visit(current);
+            if (hasReturn) return undefined;
+            statements.push(current);
+        }
+        return {
+            statements,
+            returnExpression: constructed,
+        };
     }
 
     private containsValueReturn(

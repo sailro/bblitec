@@ -18,6 +18,15 @@ properties, removal, a returned callback whose initializer closes back over
 that callback, timer-driven text, and mouse/touch-shaped pointer handlers. The
 compiler handles its pinned upstream source without a racer-specific rewrite.
 
+The ten-demo pass then exercised this bridge from the simplest retained label
+through game HUDs and canvas overlays. Tetris, platformer, Freeciv, Doom, and
+LibreQuake now retain their reached scene-owned UI; racer, Littlest Tokyo, and
+Bath Day also use audited companions for chrome that lives in the browser host
+page rather than in the immutable application module. LibreQuake is the widest
+Canvas2D case: its unchanged `SbarHud` decodes QPIC lumps from packaged
+`gfx.wad` into offscreen canvases and composes the authentic status bar onto a
+full-screen canvas.
+
 The reached racer surface is:
 
 | Component | Browser surface | Experimental native result |
@@ -35,6 +44,7 @@ The compiler currently accepts:
 
 - `document.createElement(<static tag>)`, including retained overlay canvases
 - `element.textContent`, `innerText`, `className`, `id`, and `type`
+- static or runtime-substituted `innerHTML` over the bounded markup subset
 - `element.style.cssText` and runtime `element.style.<property>` writes
 - `element.setAttribute(<static name>, <runtime string>)`
 - `appendChild`, variadic `append`, root attachment, and `remove`
@@ -43,9 +53,12 @@ The compiler currently accepts:
   `lostpointercapture` listeners
 - the single native pointer id and pointer-capture-shaped calls needed by
   racer; RmlUi owns the actual pressed-element dispatch
-- the racer Canvas2D slice: backing `width`/`height`, `getContext("2d")`,
+- the reached Canvas2D slice: backing `width`/`height`, `getContext("2d")`,
   scale, full-surface clear, paths (`moveTo`, `lineTo`, `closePath`, `arcTo`,
   `arc`), fill/stroke, and their reached colour/width/join/cap state
+- `putImageData(new ImageData(...))`, canvas-to-canvas `drawImage` with a
+  destination rectangle, `imageSmoothingEnabled`, and the small `fillText`
+  surface reached by the LibreQuake kill counter
 
 These calls reach the `ui:rml` feature. Only then does generated output include
 `pal_ui_rml.cpp`, fetch the pinned RmlUi revision, enable FreeType, and link the
@@ -60,10 +73,13 @@ IR and keeps the pinned application TypeScript byte-identical.
 
 The browser-neutral half is an engine-owned array of element records: tag,
 text, attributes, dynamic style properties, parent/children, root attachment,
-native event closures, and bounded canvas draw commands. Mutations increment a
-revision. The RmlUi projection patches existing elements and text nodes in
-place, preserving hover, pressed-element, and pointer-capture identity across
-per-frame timer updates. Added and removed subtrees are projected separately.
+native event closures, and bounded canvas draw commands. Offscreen canvases
+add a premultiplied RGBA backing store and a content revision; canvas blits name
+the source by retained handle, so no SDL or Dawn object leaks into the IR.
+Mutations increment a revision. The RmlUi projection patches existing elements
+and text nodes in place, preserving hover, pressed-element, and pointer-capture
+identity across per-frame timer updates. Added and removed subtrees are
+projected separately.
 
 The PAL owns RmlUi, SDL event translation, system-font selection, and a
 CPU-side draw recorder. RmlUi receives input before the scene and consumed
@@ -77,7 +93,9 @@ the scene's selected sample count (normally 4x), resolve that layer, and
 premultiplied-alpha composite it over the final single-sample scene. This keeps
 the scene resolve untouched while applying coverage antialiasing to rounded
 CSS silhouettes and Canvas path edges. Font glyphs additionally retain their
-filtered atlas smoothing.
+filtered atlas smoothing. Texture draws carry their sampling intent in the
+backend-neutral frame: ordinary RmlUi images remain linear, while a canvas
+whose 2D context disables smoothing binds a nearest sampler in both renderers.
 
 Inline style text is passed through with explicit compatibility lowerings:
 
@@ -120,6 +138,11 @@ delayed mouse test holds a selector button down across hundreds of timer
 mutations before releasing it; the click still selects the motorcycle because
 the pressed element is no longer rebuilt between events.
 
+LibreQuake's completed frame has also been built and captured through both
+SDL_GPU and Dawn. The two 1280x720 scene-plus-UI PNGs are byte-identical. They
+show the packaged WAD status bar rather than the former text fallback, with
+nearest-neighbour QPIC scaling and the kill label above it.
+
 ## Deliberate limits
 
 This is an experiment, not a newly supported browser platform:
@@ -138,9 +161,10 @@ This is an experiment, not a newly supported browser platform:
   in `ui/racer-host.json`; this is a manual audited companion, not automatic
   host-page discovery.
 - Canvas2D is a narrow retained command IR, not an HTML canvas. Partial
-  `clearRect`, images, text, gradients, clipping, arbitrary transforms, and
-  non-convex fill tessellation are not implemented. The reached racer paths
-  use the supported subset.
+  `clearRect`, source-rectangle `drawImage`, general font shaping, gradients,
+  clipping, arbitrary transforms, and non-convex fill tessellation are not
+  implemented. The text command is a compact 5x7 bitmap surface for the
+  reached LibreQuake uppercase/digit label, not a general Canvas text API.
 - Canvas geometry is rebuilt for drawing each frame; caching and a general
   z-order integration remain production work.
 - Platform fonts are used, so text metrics are not browser-pixel-identical.
