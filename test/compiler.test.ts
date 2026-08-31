@@ -3285,6 +3285,80 @@ test("carries a base-color image's own encoding, either way", () => {
     }
 });
 
+test("compiles scene17's file ORM and matrix-constructor chain", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene17.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.ok(result.manifest.features.includes("texture:file"));
+    assert.ok(result.manifest.features.includes("material:pbr"));
+    assert.ok(result.manifest.features.includes("mesh:thin-instances"));
+    assert.ok(
+        result.manifest.features.includes("mesh:thin-instance-colors"),
+    );
+    assert.deepEqual(
+        result.manifest.sceneMeshes.map((mesh) => [
+            mesh.thinInstances,
+            mesh.thinInstanceColors,
+        ]),
+        [
+            ["always", true],
+            ["always", true],
+            [undefined, undefined],
+        ],
+    );
+    assert.match(
+        result.cpp,
+        /\.orm = bbl::SolidTexture\{bbl::Color4\{1\.0f, 1\.0f, 1\.0f, 1\.0f\}\}/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_material_orm_file\(v_engine, v_bblite_material_\d+, v_ormTex\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::mat4_compose\(\(-2\.0\), 2\.0, 0\.0, 0\.0, 0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 1\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::mat4_compose\(0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 1\.0, 1\.0, 1\.0, 1\.0\)/,
+    );
+    assert.match(result.cpp, /bbl::set_thin_instance_colors\(/);
+});
+
+test("refuses an sRGB file texture in PBR's linear ORM slot", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                    loadTexture2D,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const orm = await loadTexture2D(
+                        engine,
+                        "/textures/nme/ebf71b300f43563f.png",
+                        { srgb: true },
+                    );
+                    createPbrMaterial({
+                        baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                        ormTexture: orm,
+                    });
+                }
+            `),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /PBR ORM maps must be linear textures\./.test(error.message),
+    );
+});
+
 test("separates transmission-capable PBR from linear image processing", () => {
     const compile = (activation: string) =>
         compileSource(`
@@ -3520,6 +3594,106 @@ test("derives mapped PBR emissive colours from static source expressions", () =>
         result.cpp,
         /static_cast<float>\(\(0\.95 \* 0\.35\)\)/,
     );
+});
+
+test("keeps runtime PBR emissive colours on compile-time material lists", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            setPbrEmissive,
+        } from "@babylonjs/lite";
+
+        function seededRandom(seed: number): () => number {
+            let state = seed;
+            return () => {
+                state = (state * 1664525 + 1013904223) & 0xffffffff;
+                return (state >>> 0) / 0x100000000;
+            };
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const base = createSolidTexture2D(engine, 1, 1, 1);
+            const orm = createSolidTexture2D(engine, 1, 0, 0);
+            const random = seededRandom(42);
+            const materials = [];
+            for (let index = 0; index < 2; index++) {
+                const red = random();
+                const green = random();
+                const blue = random();
+                const material = createPbrMaterial({
+                    baseColorTexture: base,
+                    ormTexture: orm,
+                });
+                setPbrEmissive(material, [red, green, blue]);
+                materials.push(material);
+            }
+        }
+    `);
+
+    assert.equal(result.manifest.scenePbrMaterials.length, 2);
+    assert.deepEqual(
+        result.manifest.scenePbrMaterials.map(
+            ({ hasEmissiveColor, emissiveColor }) => ({
+                hasEmissiveColor,
+                emissiveColor,
+            }),
+        ),
+        [
+            { hasEmissiveColor: true, emissiveColor: undefined },
+            { hasEmissiveColor: true, emissiveColor: undefined },
+        ],
+    );
+    assert.equal(
+        result.cpp.match(/bbl::set_pbr_emissive\(/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::Color3\{static_cast<float>\(v_\w*red\), static_cast<float>\(v_\w*green\), static_cast<float>\(v_\w*blue\)\}/,
+    );
+});
+
+test("lowers early bare returns from native frame callbacks", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            onBeforeRender,
+            stopEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            let frozen = false;
+            let frames = 0;
+            onBeforeRender(scene, () => {
+                if (frozen) {
+                    return;
+                }
+                frames++;
+                if (frames >= 2) {
+                    frozen = true;
+                    return;
+                }
+                if (frames === 99) {
+                    return stopEngine(engine);
+                }
+                frames += 10;
+            });
+        }
+    `);
+
+    assert.equal(result.cpp.match(/return;/g)?.length, 3);
+    assert.match(result.cpp, /if \(v_frozen\) \{/);
+    assert.match(
+        result.cpp,
+        /if \(v_frames == 99\.0\) \{\s*bbl::stop_engine\(v_engine\);\s*return;/,
+    );
+    assert.match(result.cpp, /v_frames \+= 10\.0;/);
 });
 
 test("lowers Scene 26's static translucency and thickness map", () => {
@@ -4771,12 +4945,11 @@ test("compiles the flat-entry compiler state regression scene", () => {
         /\.position\.x = v_offset/,
     );
     assert.match(result.cpp, /\.rotation\.y \+= 0\.3f/);
-    // Transform writes mark the mesh dirty so the backends re-upload
-    // its baked vertices, exactly like the property-animation
-    // evaluator's bump.
+    // Transform writes mark the mesh (and any setParent descendants) dirty
+    // so the backends re-upload their baked vertices.
     assert.match(
         result.cpp,
-        /\+\+v_engine\.meshes\[[^\]]+\]\.transform_version;/,
+        /bbl::mark_mesh_dirty\(v_engine, [^)]+\);/,
     );
     assert.ok(
         !result.manifest.adaptations.some(
@@ -5744,6 +5917,37 @@ test("lowers setParent for mesh attachment and detachment", () => {
 
     assert.match(result.cpp, /bbl::set_mesh_parent\([^;]+v_parent\);/);
     assert.match(result.cpp, /bbl::set_mesh_parent\([^;]+bbl::MeshHandle\{\}\);/);
+});
+
+test("keeps setParent descendants local after parent-only runtime motion", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createBox,
+            createSceneContext,
+            onBeforeRender,
+            setParent,
+        } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const parent = createBox(engine, 1);
+            const child = createBox(engine, 0.5);
+            setParent(child, parent);
+            onBeforeRender(scene, () => {
+                parent.position.x += 1;
+            });
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.meshes\[v_parent\.value\]\.position\.x \+= 1\.0;\s*bbl::mark_mesh_runtime_transform\([^,]+, v_parent\);/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /\+\+[^;]*\.meshes\[v_parent\.value\]\.transform_version/,
+    );
 });
 
 test("reads mesh.parent as the nullable handle setParent owns", () => {

@@ -190,6 +190,7 @@ const handleKinds: readonly ValueKind[] = [
     "animation-group",
     "camera",
     "light",
+    "material",
     "mesh",
 ];
 

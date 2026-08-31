@@ -864,6 +864,17 @@ void set_material_base_color_file(
     record.base_color_texture = std::move(texture.data);
 }
 
+// createPbrMaterial preserves its Texture2D props, and the pinned PBR
+// collector binds ormTexture itself. Keep the loaded image's TextureData
+// whole so its sampler and upload flip reach the linear ORM slot unchanged.
+void set_material_orm_file(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture) {
+    engine.materials[material.value].metallic_roughness_texture =
+        std::move(texture.data);
+}
+
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
 // features are opt-in setters that flag an existing material and
 // register their fragment extension.

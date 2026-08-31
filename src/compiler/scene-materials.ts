@@ -199,13 +199,15 @@ export class SceneMaterialRecorder {
     }
 
     public recordScenePbrEmissive(
-        color: readonly number[],
+        color: readonly [number, number, number] | undefined,
         index: number | undefined,
     ): void {
-        this.sceneMaterialForSetter(
+        const material = this.sceneMaterialForSetter(
             "setPbrEmissive",
             index,
-        ).emissiveColor = color;
+        );
+        material.hasEmissiveColor = true;
+        if (color) material.emissiveColor = color;
     }
 
     public recordScenePbrIridescence(

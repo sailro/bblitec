@@ -23,6 +23,7 @@ interface MeshFeatureBits {
     MSH_HAS_UV2: number;
     MSH_FLAT_NORMAL: number;
     MSH_HAS_THIN_INSTANCES: number;
+    MSH_HAS_INSTANCE_COLOR: number;
 }
 
 let bits: Promise<MeshFeatureBits> | undefined;
@@ -86,6 +87,17 @@ export async function pinnedReceiveShadowsBit(): Promise<number> {
  */
 export async function pinnedThinInstancesBit(): Promise<number> {
     return (await meshFeatureBits()).MSH_HAS_THIN_INSTANCES;
+}
+
+/**
+ * The pin's own per-instance-colour bit.
+ *
+ * `_computeMeshFeatures` sets it only inside the `mesh.thinInstances` branch
+ * when that pool owns `colors`. It therefore always rides the thin-instance
+ * bit, and the composed/runtime keys must add the pair together.
+ */
+export async function pinnedInstanceColorBit(): Promise<number> {
+    return (await meshFeatureBits()).MSH_HAS_INSTANCE_COLOR;
 }
 
 /**

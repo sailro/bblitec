@@ -1,0 +1,37 @@
+{
+  "angles": ["reuse", "quality", "efficiency"],
+  "findings": [
+    {
+      "summary": "Physics carried private recursive dirty and GPU-world helpers beside the now-public scene-core invalidation path, while frame callbacks and property animations rebuilt CPU-baked vertex streams on every transform write. One public mark_mesh_runtime_transform now owns recursive GPU-world activation and versioning; physics, live callbacks, and property animation all reuse it while startup writes retain the baked mark_mesh_dirty path.",
+      "applied": true
+    },
+    {
+      "summary": "The full setParent matrix decomposition repeated both the pinned determinant lowering and the quaternion-basis fold already used by the rotation-only projection. lowerMat4Determinant3 now accepts its caller-owned C++ name, and one shared quaternion-basis projector emits either result record without duplicating pinned math contracts.",
+      "applied": true
+    },
+    {
+      "summary": "Thin-instance reachability was independently restated for PBR and Standard composition. Named runtime thin-instance and colour predicates now feed both families, leaving one answer to the manifest feature question.",
+      "applied": true
+    },
+    {
+      "summary": "SDL's PBR draw bound vertex, matrix, and colour streams through separate calls while Standard built the same contiguous prefix. Both composed families now reuse a maybe-unused shared-scope bind_composed_mesh_vertex_buffers, preserving their buffer conventions, compiling cleanly for mixed, Standard-only, and shader-only feature sets, and issuing one SDL binding call.",
+      "applied": true
+    },
+    {
+      "summary": "A mesh registered before setThinInstanceColors allocated only one fallback RGBA row, so a later multi-instance colour upload could exceed the SDL or Dawn buffer. Both backends now allocate white fallback storage to the established matrix-pool capacity, with an architecture regression anchor.",
+      "applied": true
+    },
+    {
+      "summary": "An always-present thin-instance pool with a runtime-conditional colour setter composed only the coloured key even though the live record could select the uncoloured key. scenePbrMeshFeatureSets now retains both thin arms when colour presence is not statically guaranteed, with direct possible/always regression cases.",
+      "applied": true
+    },
+    {
+      "summary": "Inline frame callbacks accepted early bare returns but rejected TypeScript's contextually-void return-expression form, dropping valid shapes such as return stopEngine(engine). Callback return frames now preserve the expression's side effects before emitting return, while ordinary native void functions keep their stricter contract.",
+      "applied": true
+    },
+    {
+      "summary": "Scene 20's 150 structurally identical PBR material inputs each ran the complete pinned composer before output-stage deduplication. composeScenePbrVariants now memoizes plain input/options pairs while retaining one selector row per material; plugin-bearing inputs remain uncached because they carry live callbacks.",
+      "applied": true
+    }
+  ]
+}

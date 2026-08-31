@@ -1230,30 +1230,6 @@ void append_convex_hull_vertices(
     }
 }
 
-void mark_physics_mesh_dirty(Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) return;
-    MeshRecord& record = engine.meshes[mesh.value];
-    ++record.transform_version;
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_physics_mesh_dirty(engine, child);
-    }
-}
-
-// A physics body owns a runtime-moving mesh hierarchy. Keep that hierarchy's
-// geometry local on the GPU from its first upload; _syncBodyToNode then only
-// changes the per-draw world matrix instead of rebuilding every vertex buffer.
-void mark_physics_gpu_world(Engine& engine, MeshHandle mesh) {
-    if (mesh.value >= engine.meshes.size()) return;
-    MeshRecord& record = engine.meshes[mesh.value];
-    if (!record.gpu_world_transform) {
-        record.gpu_world_transform = true;
-        ++record.transform_version;
-    }
-    for (const MeshHandle child : record.parented_meshes) {
-        mark_physics_gpu_world(engine, child);
-    }
-}
-
 // ${this.context.provenance(
       havokModule,
       buildShapeParams,
@@ -1278,7 +1254,7 @@ void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
         static_cast<float>(transform.rotation[3]),
     };
     mesh.has_rotation_quaternion = true;
-    mark_physics_mesh_dirty(engine, body.node);
+    mark_mesh_runtime_transform(engine, body.node);
 }
 
 /** \`_syncNodeToBody\` / \`_syncNodeToBodyTarget\`. */
@@ -1576,7 +1552,7 @@ PhysicsAggregate create_physics_aggregate(
     const PhysicsAggregateOptions& options) {
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
-    mark_physics_gpu_world(engine, mesh);
+    mark_mesh_runtime_transform(engine, mesh);
     const MeshRecord& record = engine.meshes[mesh.value];
     const MeshBounds bounds = mesh_bounds(engine, record);
 

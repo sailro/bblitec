@@ -473,6 +473,10 @@ export interface AssignmentContext extends DeterministicRandomContext {
   isBrowserOnlyExpression(expression: ts.Expression): boolean;
   isBrowserDomValue(expression: ts.Expression): boolean;
   emit(line: string): void;
+  /** The dirty entry appropriate to startup code or a live callback. */
+  meshTransformDirtyEntry():
+    | "mark_mesh_dirty"
+    | "mark_mesh_runtime_transform";
   /**
    * Records the feature and its first reaching scene-source call
    * site (here the assignment expression), so the activation
@@ -1919,12 +1923,13 @@ export function emitPropertyAssignment(
         wide ? "double" : "float",
       )};`,
     );
-    // The transform version is what the backends gate their baked
-    // vertex re-upload on (the pinned property-animation evaluator
-    // bumps it the same way), so a transform written outside the
-    // animation path has to mark itself dirty too.
+    // Ordinary geometry bakes the full parent chain into its uploaded
+    // vertices. A parent-only write therefore has to dirty descendants as
+    // well as the mesh itself; mark_mesh_dirty owns that recursive contract.
     if (record.bumpsTransformVersion) {
-      context.emit(`++${engine}.meshes[${mesh.cpp}.value].transform_version;`);
+      context.emit(
+        `bbl::${context.meshTransformDirtyEntry()}(${engine}, ${mesh.cpp});`,
+      );
     }
     return;
   }

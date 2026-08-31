@@ -253,6 +253,41 @@ export function compileMeshIntrinsic(
                 freshData: true,
             };
         }
+        case "mat4Identity": {
+            context.expectArgumentCount(call, 0, 0);
+            context.reachJsData();
+            // The pin allocates an identity Float32Array. Neutral translation,
+            // rotation, and scale are the exact specialization of the pinned
+            // mat4Compose stores, including the fresh array identity.
+            return {
+                kind: "data",
+                cpp:
+                    `bbl::js::mat4_compose(` +
+                    `0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)`,
+                dataType: { kind: "f32array" },
+                freshData: true,
+            };
+        }
+        case "mat4Translation": {
+            context.expectArgumentCount(call, 3, 3);
+            context.reachJsData();
+            // Pinned mat4Translation starts from mat4Identity and writes only
+            // indices 12..14. This is the corresponding neutral-rotation,
+            // unit-scale specialization of the already pinned compose path.
+            return {
+                kind: "data",
+                cpp:
+                    `bbl::js::mat4_compose(` +
+                    call.arguments
+                        .map((argument) =>
+                            context.compileNumber(argument, "double"),
+                        )
+                        .join(", ") +
+                    `, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)`,
+                dataType: { kind: "f32array" },
+                freshData: true,
+            };
+        }
         case "setParent": {
             context.expectArgumentCount(call, 2, 2);
             const child = context.compileValue(call.arguments[0]!);

@@ -2,7 +2,10 @@ import ts from "typescript";
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
-import { requiredStaticColor3 } from "./material-options.js";
+import {
+    requiredStaticColor3,
+    staticColor3Value,
+} from "./material-options.js";
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
@@ -61,7 +64,7 @@ export interface MaterialIntrinsicContext
         index: number | undefined,
     ): void;
     recordScenePbrEmissive(
-        color: readonly number[],
+        color: readonly [number, number, number] | undefined,
         index: number | undefined,
     ): void;
     recordScenePbrMetallicReflectance(
@@ -302,10 +305,10 @@ export function compileMaterialIntrinsic(
                     call,
                 );
             }
-            if (orm.textureFile) {
+            if (orm.textureFile?.srgb) {
                 context.fail(
                     call,
-                    "Reached file textures support the base color slot only.",
+                    "PBR ORM maps must be linear textures.",
                 );
             }
             // A loaded base-color image pairs with the neutral white
@@ -316,6 +319,14 @@ export function compileMaterialIntrinsic(
             const baseColorCpp = baseColor.textureFile
                 ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
                 : baseColor.cpp;
+            // The pinned PBR fragment always samples its ORM texture. A
+            // loaded image therefore uses the same neutral white creation
+            // fallback as a missing image, then replaces that slot after the
+            // material record exists. loadTexture2D's sampler and invertY
+            // remain on the FileTexture that the attachment moves whole.
+            const ormCpp = orm.textureFile
+                ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
+                : orm.cpp;
             // Designated rather than positional: the option list is long
             // enough that a member emitted at the wrong index would compile
             // and shade wrong, which is the hazard `CompiledPbrMaterialOptions`
@@ -327,7 +338,7 @@ export function compileMaterialIntrinsic(
                 `bbl::PbrMaterialOptions{` +
                 `.base_color = ${baseColorCpp}, ` +
                 `.base_color_factor = ${baseColorFactor}, ` +
-                `.orm = ${orm.cpp}, ` +
+                `.orm = ${ormCpp}, ` +
                 `.metallic_factor = ${metallicFactor}, ` +
                 `.roughness_factor = ${roughnessFactor}, ` +
                 `.direct_intensity = ${directIntensity}, ` +
@@ -350,7 +361,7 @@ export function compileMaterialIntrinsic(
                 `.metallic_f0_factor = ${metallicF0Factor}, ` +
                 `.use_physical_light_falloff = ` +
                 `${usePhysicalLightFalloff}})`;
-            if (baseColor.textureFile) {
+            if (baseColor.textureFile || orm.textureFile) {
                 const temporary =
                     context.allocateTemporaryCppName(
                         "material",
@@ -358,9 +369,16 @@ export function compileMaterialIntrinsic(
                 context.emit(
                     `auto ${temporary} = ${creation};`,
                 );
-                context.emit(
-                    `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
-                );
+                if (baseColor.textureFile) {
+                    context.emit(
+                        `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColor.cpp});`,
+                    );
+                }
+                if (orm.textureFile) {
+                    context.emit(
+                        `bbl::set_material_orm_file(${engine}, ${temporary}, ${orm.cpp});`,
+                    );
+                }
                 return {
                     kind: "material",
                     cpp: temporary,
@@ -752,14 +770,11 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
-            const emissive = requiredStaticColor3(
-                context,
-                call.arguments[1]!,
-                "setPbrEmissive requires a static linear RGB colour.",
-            );
-            const color = emissive.cpp;
+            const colorExpression = call.arguments[1]!;
+            const channels = staticColor3Value(context, colorExpression);
+            const color = context.compileColor3(colorExpression);
             context.recordScenePbrEmissive(
-                emissive.channels,
+                channels,
                 material.scenePbrMaterialIndex,
             );
             context.reachFeature("material:emissive", call);

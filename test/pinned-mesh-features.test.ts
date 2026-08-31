@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     expandRuntimeMeshFeatureSets,
+    pinnedInstanceColorBit,
     pinnedThinInstancesBit,
 } from "../src/pinned-mesh-features.js";
 
@@ -24,5 +25,15 @@ test("runtime mesh-feature expansion preserves the full generic lattice", async 
             thin | anotherRuntimeBit,
             64 | thin | anotherRuntimeBit,
         ],
+    );
+});
+
+test("expands instance colour only as a thin-instance composite", async () => {
+    const thin = await pinnedThinInstancesBit();
+    const color = await pinnedInstanceColorBit();
+
+    assert.deepEqual(
+        expandRuntimeMeshFeatureSets([0], [thin, thin | color]),
+        [0, thin, thin | color],
     );
 });

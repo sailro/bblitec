@@ -247,6 +247,26 @@ struct GpuMesh {
     bool gpu_world_transform = false;
 };
 
+/** Bind the contiguous vertex/matrix/colour stream prefix one composed arm uses. */
+[[maybe_unused]] void bind_composed_mesh_vertex_buffers(
+    SDL_GPURenderPass* pass,
+    SDL_GPUBuffer* vertices,
+    SDL_GPUBuffer* instances,
+    SDL_GPUBuffer* colors) {
+    std::array<SDL_GPUBufferBinding, vertex_streams.size()> bindings{};
+    bindings[0] = SDL_GPUBufferBinding{vertices, 0};
+    Uint32 count = 1;
+    if (instances) {
+        bindings[1] = SDL_GPUBufferBinding{instances, 0};
+        count = 2;
+        if (colors) {
+            bindings[2] = SDL_GPUBufferBinding{colors, 0};
+            count = 3;
+        }
+    }
+    SDL_BindGPUVertexBuffers(pass, 0, bindings.data(), count);
+}
+
 /** One exact local-space shader geometry shared by every matching draw. */
 struct SharedShaderGeometry {
     std::vector<GpuVertex> vertices;
@@ -1813,36 +1833,33 @@ void draw_pinned_variant(
                 resource.sampler,
             };
         });
-    const SDL_GPUBufferBinding pinned_vertex_binding{
+    SDL_GPUBuffer* const pinned_vertices =
         // Skinned and palette-world draws read the
         // mirrored buffer; the palette carries the mirror
         // on both sides, so unmirrored vertices would
         // apply it three times.
         conventions.mirrored_vertices
             ? mesh.vertices
-            : mesh.pinned_vertices,
-        0,
-    };
-    SDL_BindGPUVertexBuffers(
-        pass,
-        0,
-        &pinned_vertex_binding,
-        1);
+            : mesh.pinned_vertices;
     // The thin-instance arm's second stream and the instance count; a
     // non-instanced variant binds neither and draws once.
     const bool instanced_draw =
         pinned_record_instanced(engine.meshes[item.mesh.value]);
-    if (instanced_draw && mesh.pinned_instances) {
-        const SDL_GPUBufferBinding pinned_instance_binding{
-            mesh.pinned_instances,
-            0,
-        };
-        SDL_BindGPUVertexBuffers(
-            pass,
-            1,
-            &pinned_instance_binding,
-            1);
+    SDL_GPUBuffer* pinned_colors = nullptr;
+#if BBLITE_GPU_INSTANCE_COLORS
+    // The selected coloured PBR arm declares the pin's `ti-color` stream at
+    // slot 2. Match the key and the Standard/Dawn bindings through the same
+    // record predicate, so a declared instanceColor never reads an unbound
+    // lane.
+    if (pinned_record_instance_colored(pinned_record)) {
+        pinned_colors = mesh.instance_colors;
     }
+#endif
+    bind_composed_mesh_vertex_buffers(
+        pass,
+        pinned_vertices,
+        instanced_draw ? mesh.pinned_instances : nullptr,
+        pinned_colors);
     const SDL_GPUBufferBinding pinned_index_binding{
         mesh.indices,
         0,
@@ -2953,32 +2970,21 @@ void draw_standard_variant(
     // The Standard families carry no glTF X-mirror: the pin's world is the
     // identity (or the record's parent TRS for a pool), so the baked vertex
     // buffer is the pin's own convention already.
-    // One contiguous binding from slot 0, the shape `bind_mesh_vertex_buffers`
-    // already uses: SDL takes the whole run in a single record, where a call
-    // per slot pays a validate round trip each.
-    std::array<SDL_GPUBufferBinding, vertex_streams.size()> vertex_bindings{};
-    vertex_bindings[0] = SDL_GPUBufferBinding{mesh.vertices, 0};
-    Uint32 bound_streams = 1;
     const bool instanced_draw = pinned_record_instanced(record);
-    if (instanced_draw && mesh.instances) {
-        vertex_bindings[1] = SDL_GPUBufferBinding{mesh.instances, 0};
-        bound_streams = 2;
+    SDL_GPUBuffer* instance_colors = nullptr;
 #if BBLITE_GPU_INSTANCE_COLORS
-        // The colour lane rides the pool: the composed variant declares it
-        // only for a record whose pool carries colours, so the same record
-        // test answers both streams.
-        if (pinned_record_instance_colored(record) && mesh.instance_colors) {
-            vertex_bindings[2] =
-                SDL_GPUBufferBinding{mesh.instance_colors, 0};
-            bound_streams = 3;
-        }
-#endif
+    // The colour lane rides the pool: the composed variant declares it only
+    // for a record whose pool carries colours, so the same record test
+    // answers both streams.
+    if (pinned_record_instance_colored(record)) {
+        instance_colors = mesh.instance_colors;
     }
-    SDL_BindGPUVertexBuffers(
+#endif
+    bind_composed_mesh_vertex_buffers(
         pass,
-        0,
-        vertex_bindings.data(),
-        bound_streams);
+        mesh.vertices,
+        instanced_draw ? mesh.instances : nullptr,
+        instance_colors);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
     SDL_BindGPUIndexBuffer(
         pass,
@@ -6831,13 +6837,17 @@ bool run_gpu_engine(Engine& engine) {
                     mesh_record.instance_version;
 #if BBLITE_GPU_INSTANCE_COLORS
                 {
-                    // One tightly-packed RGBA row per instance. A mesh with
-                    // none still binds the slot, so it takes one white row.
+                    // One tightly-packed RGBA row per matrix-pool slot. A
+                    // colour setter may first run after registration, so
+                    // the fallback must reserve the established capacity,
+                    // not one row, before the versioned upload fills it.
                     std::vector<float> instance_colors =
                         mesh_record.instance_colors;
-                    if (instance_colors.empty()) {
-                        instance_colors.assign(4, 1.0f);
-                    }
+                    instance_colors.resize(
+                        std::max(
+                            instance_colors.size(),
+                            instance_matrices.size() * 4),
+                        1.0f);
                     gpu_mesh.instance_colors = upload_mesh_buffer(
                         SDL_GPU_BUFFERUSAGE_VERTEX,
                         instance_colors.data(),

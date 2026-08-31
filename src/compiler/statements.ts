@@ -77,6 +77,10 @@ export interface StatementLoweringContext {
     emitNativeReturn(
         statement: ts.ReturnStatement,
     ): void;
+    /** The dirty entry appropriate to startup code or a live callback. */
+    meshTransformDirtyEntry():
+        | "mark_mesh_dirty"
+        | "mark_mesh_runtime_transform";
     captureEmittedLines(emitBody: () => void): string[];
     /**
      * Runs a shape probe, keeping what it emitted only when it answers.
@@ -2391,7 +2395,9 @@ export class StatementLowerer {
             );
             const engine = context.requireEngine(target, call);
             context.emit(
-                `bbl::set_mesh_rotation_quaternion(${engine}, ${target.cpp}, bbl::Vec4{${components.join(", ")}});`,
+                `bbl::set_mesh_rotation_quaternion(${engine}, ${target.cpp}, ` +
+                    `bbl::Vec4{${components.join(", ")}}, ` +
+                    `${context.meshTransformDirtyEntry() === "mark_mesh_runtime_transform"});`,
             );
             return true;
         }
@@ -2426,11 +2432,11 @@ export class StatementLowerer {
         context.emit(
             `${engine}.meshes[${target.cpp}.value].${owner.name.text} = ${vector};`,
         );
-        // Mark the baked vertex data dirty the way the pinned
-        // property-animation evaluator does; the backends re-upload a
-        // mesh's transformed vertices only when this version moves.
+        // Baked ordinary geometry includes its parent world matrix. Mark
+        // the complete dependent subtree so parent-only motion re-uploads
+        // children as well as the mesh directly written here.
         context.emit(
-            `++${engine}.meshes[${target.cpp}.value].transform_version;`,
+            `bbl::${context.meshTransformDirtyEntry()}(${engine}, ${target.cpp});`,
         );
         return true;
     }

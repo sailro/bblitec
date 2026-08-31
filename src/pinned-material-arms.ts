@@ -37,6 +37,7 @@ import {
     composePinnedPbrVariant,
     type PinnedComposeOptions,
     type PinnedMaterialInput,
+    type PinnedPbrVariant,
 } from "./pinned-pbr-variants.js";
 import type { PinnedClusteredMarker } from "./pinned-clustered-lights.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
@@ -947,6 +948,11 @@ export async function composeScenePbrVariants(
         ? await pinnedReceiveShadowsBit()
         : 0;
     const variants: PinnedRenderableVariant[] = [];
+    // Scene 20 creates many material records with one composition shape.
+    // The selector still needs one row per material, but the pinned composer
+    // only needs to build an identical stage once. Plugin inputs carry live
+    // callbacks and deliberately stay off this plain-structural cache.
+    const compositionCache = new Map<string, PinnedPbrVariant>();
     for (const material of materials) {
         // `createPbrMaterial` is `{...props}`. Carry the resolved scene option
         // back under its own name so `_computePbrMaterialFeatures` applies the
@@ -1116,8 +1122,15 @@ export async function composeScenePbrVariants(
                 direction: material.anisotropy.direction,
             });
         }
-        if (material.emissiveColor) {
-            setters.setPbrEmissive(input, material.emissiveColor);
+        if (material.hasEmissiveColor) {
+            // `setPbrEmissive`'s stamp, not its channel values, is what the
+            // pinned extension's detect() reads. Runtime-computed channels
+            // therefore use an inert finite witness while composition runs;
+            // the generated setter writes their real values to the record.
+            setters.setPbrEmissive(
+                input,
+                material.emissiveColor ?? [0, 0, 0],
+            );
         }
         // One boolean and a registration, so the setter is the whole port:
         // its ext's `detect` turns the stamp into PBR_HAS_GAMMA_ALBEDO and
@@ -1165,14 +1178,27 @@ export async function composeScenePbrVariants(
             ) {
                 continue;
             }
-            const variant = await composePinnedPbrVariant(input, {
+            const composeOptions: PinnedComposeOptions = {
                 ...arm.options,
                 ...noColor,
                 meshFeatures,
                 ...(scene.shadowLights
                     ? { shadowLights: scene.shadowLights }
                     : {}),
-            });
+            };
+            const cacheKey = material.plugins
+                ? undefined
+                : JSON.stringify([input, composeOptions]);
+            let variant = cacheKey
+                ? compositionCache.get(cacheKey)
+                : undefined;
+            if (!variant) {
+                variant = await composePinnedPbrVariant(
+                    input,
+                    composeOptions,
+                );
+                if (cacheKey) compositionCache.set(cacheKey, variant);
+            }
             variants.push({
                 materialIndex:
                     materialIndexBase +

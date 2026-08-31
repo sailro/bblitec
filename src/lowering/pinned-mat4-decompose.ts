@@ -57,6 +57,7 @@ export const PINNED_DECOMPOSE_ROTATION = "pinned_mat4_decompose_rotation";
 export function lowerMat4Determinant3(
     context: LoweringContext,
     calls?: ReadonlyMap<string, (args: readonly string[]) => string>,
+    cppName = "pinned_mat4_determinant3",
 ): string {
     return lowerPinnedFunction(
         context,
@@ -64,7 +65,7 @@ export function lowerMat4Determinant3(
         "mat4Determinant3",
         [{ pinned: "m", kind: "numberArray", cpp: "m" }],
         {
-            cppName: "pinned_mat4_determinant3",
+            cppName,
             returns: "double",
             ...(calls ? { calls } : {}),
         },
@@ -79,37 +80,11 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
 
     const determinant = lowerMat4Determinant3(context, calls);
 
-    const basis = lowerPinnedFunction(
+    const basis = lowerQuatFromRotationBasis(
         context,
-        QUAT_BASIS_MODULE,
-        "_quatFromRotationBasis",
-        [
-            "m11",
-            "m12",
-            "m13",
-            "m21",
-            "m22",
-            "m23",
-            "m31",
-            "m32",
-            "m33",
-        ].map((pinned) => ({ pinned, kind: "number" as const, cpp: pinned })),
-        {
-            cppName: "pinned_quat_from_rotation_basis",
-            returns: {
-                type: "PinnedQuat",
-                value: (lowerer, expression) =>
-                    `PinnedQuat{${quatComponents(
-                        context,
-                        lowerer,
-                        expression,
-                    ).join(", ")}}`,
-            },
-            calls,
-            // The trace method picks its branch with `&&` over numeric
-            // comparisons.
-            booleanAnd: true,
-        },
+        calls,
+        "pinned_quat_from_rotation_basis",
+        "PinnedQuat",
     );
 
     const decompose = lowerPinnedFunction(
@@ -165,6 +140,162 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
         // mat4Decompose, specialized to the rotation its one caller reads.
         decompose,
     ].join("\n\n");
+}
+
+/**
+ * `mat4Decompose`, folded whole for `setParent`'s apply-local path.
+ *
+ * Keep this separate from {@link lowerMat4DecomposeRotation}: the splat bake
+ * proves that it reads only the quaternion and deliberately retains the
+ * smaller specialization. Parenting consumes all three returned records, so
+ * it owns a full result type and uniquely named helpers that cannot collide
+ * with the rotation-only fold in another generated translation unit.
+ */
+export function lowerMat4DecomposeFull(context: LoweringContext): string {
+    const calls = new Map<string, (args: readonly string[]) => string>([
+        ...pinnedNumericMathCalls(),
+        ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
+    ]);
+
+    const determinant = lowerMat4Determinant3(
+        context,
+        calls,
+        "pinned_parent_mat4_determinant3",
+    );
+
+    const basis = lowerQuatFromRotationBasis(
+        context,
+        calls,
+        "pinned_parent_quat_from_rotation_basis",
+        "PinnedParentQuat",
+    );
+
+    const decompose = lowerPinnedFunction(
+        context,
+        DECOMPOSE_MODULE,
+        "mat4Decompose",
+        [{ pinned: "m", kind: "mat4Const", cpp: "m" }],
+        {
+            cppName: "pinned_parent_mat4_decompose",
+            returns: {
+                type: "PinnedParentDecomposed",
+                value: (lowerer, expression) => {
+                    const literal = expression
+                        ? context.unwrapExpression(expression)
+                        : undefined;
+                    if (!literal || !ts.isObjectLiteralExpression(literal)) {
+                        return context.contractError(
+                            expression ?? literal!,
+                            "Expected mat4Decompose to return a full TRS object literal.",
+                        );
+                    }
+                    const translation = lowerObjectComponents(
+                        context,
+                        lowerer,
+                        context.propertyInitializer(literal, "translation"),
+                        ["x", "y", "z"],
+                    );
+                    const rotation = lowerObjectComponents(
+                        context,
+                        lowerer,
+                        context.propertyInitializer(literal, "rotation"),
+                        ["x", "y", "z", "w"],
+                    );
+                    const scale = lowerObjectComponents(
+                        context,
+                        lowerer,
+                        context.propertyInitializer(literal, "scale"),
+                        ["x", "y", "z"],
+                    );
+                    return (
+                        "PinnedParentDecomposed{" +
+                        `PinnedParentVec3{${translation.join(", ")}}, ` +
+                        `PinnedParentQuat{${rotation.join(", ")}}, ` +
+                        `PinnedParentVec3{${scale.join(", ")}}}`
+                    );
+                },
+            },
+            calls: new Map([
+                ...calls,
+                [
+                    "mat4Determinant3",
+                    (a: readonly string[]) =>
+                        `pinned_parent_mat4_determinant3(${a[0]})`,
+                ],
+                [
+                    "_quatFromRotationBasis",
+                    (a: readonly string[]) =>
+                        `pinned_parent_quat_from_rotation_basis(${a.join(", ")})`,
+                ],
+            ]),
+            recordCalls: new Map([
+                ["_quatFromRotationBasis", ["x", "y", "z", "w"]],
+            ]),
+        },
+    );
+
+    return [
+        `struct PinnedParentVec3 {
+    double x;
+    double y;
+    double z;
+};`,
+        `struct PinnedParentQuat {
+    double x;
+    double y;
+    double z;
+    double w;
+};`,
+        `struct PinnedParentDecomposed {
+    PinnedParentVec3 translation;
+    PinnedParentQuat rotation;
+    PinnedParentVec3 scale;
+};`,
+        determinant,
+        basis,
+        decompose,
+    ].join("\n\n");
+}
+
+/** The pin's quaternion-basis fold, projected onto a caller-owned record. */
+function lowerQuatFromRotationBasis(
+    context: LoweringContext,
+    calls: ReadonlyMap<string, (args: readonly string[]) => string>,
+    cppName: string,
+    resultType: string,
+): string {
+    return lowerPinnedFunction(
+        context,
+        QUAT_BASIS_MODULE,
+        "_quatFromRotationBasis",
+        [
+            "m11",
+            "m12",
+            "m13",
+            "m21",
+            "m22",
+            "m23",
+            "m31",
+            "m32",
+            "m33",
+        ].map((pinned) => ({ pinned, kind: "number" as const, cpp: pinned })),
+        {
+            cppName,
+            returns: {
+                type: resultType,
+                value: (lowerer, expression) =>
+                    `${resultType}{${quatComponents(
+                        context,
+                        lowerer,
+                        expression,
+                    ).join(", ")}}`,
+            },
+            calls,
+            // The trace method picks its branch with `&&` over numeric
+            // comparisons.
+            booleanAnd: true,
+        },
+    );
 }
 
 /** A pinned `{x, y, z, w}` literal's four components, in that order. */

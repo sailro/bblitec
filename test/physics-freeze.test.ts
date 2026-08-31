@@ -120,18 +120,18 @@ test("a deferred callback cannot capture the frame that queued it", () => {
     );
 });
 
-test("an early return refuses instead of dropping its own guard", () => {
-    // A bare `return` used to be dropped silently. Harmless until a
-    // narrowed optional made the statements it guarded reachable: the
-    // guard vanished and left an unguarded dereference of an empty
-    // optional behind it.
-    refuses(
+test("an early return preserves its guard before a narrowed optional use", () => {
+    const main = sceneWith(
         `onBeforeRender(scene, () => {
             if (captureAfterFrames === null) { return; }
             sphere.position.set(0, captureAfterFrames, 0);
         });`,
-        "An early `return` is not lowered",
     );
+    assert.match(
+        main,
+        /if \(!v_captureAfterFrames\.has_value\(\)\) \{\s*return;\s*\}/,
+    );
+    assert.match(main, /\*v_captureAfterFrames/);
 });
 
 test("an unguarded nullable still refuses rather than dereferencing", () => {

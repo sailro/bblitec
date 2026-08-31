@@ -2942,6 +2942,39 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene17",
+        name: "Scene 17 - PBR and Standard Thin Instances",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene17.ts",
+        title: "Babylon Lite Native - PBR and Standard Thin Instances",
+        parity: {
+            // 0.000053 / 0.000366 on SDL_GPU and 0.000052 / 0.000357
+            // on Dawn. Every differing channel is one count; keep the gate
+            // just above that measured envelope.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene20",
+        name: "Scene 20 - PBR Emissive Sphere Grid",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene20.ts",
+        title: "Babylon Lite Native - PBR Emissive Sphere Grid",
+        parity: {
+            // The scene owns its deterministic parity pose: this query makes
+            // its first before-render callback freeze before rotating any of
+            // the 2,500 parented spheres. The compiler folds the same search.
+            referenceSearch: "?seekTime=0",
+            // 0.001978 / 0.006782 on SDL_GPU and 0.001976 / 0.006774
+            // on Dawn, with every differing channel within one count.
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.008,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "tetris",
         name: "Tetris",
         source: "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",
