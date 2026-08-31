@@ -75,6 +75,21 @@ act on it — not what was tried.
 
 ## P1 — Runtime and validation
 
+- [ ] Gate the corpus against the upstream tree, not only against its own
+  manifest. `test/corpus-scenes.test.ts` and `test/corpus-goldens.test.ts`
+  hash every corpus file against `upstream/babylon-lite-corpus.json`, whose
+  digests are written FROM those same files, so an edit to a corpus source
+  and to its digest together passes both gates. That is measured, not
+  hypothetical: `lab/lite/src/demos/break-mesh.ts` carried a hand rewrite of
+  `FVertex` and `Plane` from interfaces to tuples with both gates green, and
+  the rewrite changed nothing — the restored upstream source measures
+  0.000/0.000 on both backends and its browser capture is byte-identical to
+  the committed golden. What unblocks it is where the upstream bytes come
+  from: a second recorded digest is no evidence while one writer produces
+  both, so either the pin-migration step derives every digest from
+  `BabylonJS/Babylon-Lite` at `sourceVersion` by construction, or the check
+  fetches that tree and is therefore not a unit test.
+
 - [ ] Fold the hand-typed matrix-times-vector and determinant copies onto
   one emitted pair. `transform_position`/`transform_direction`
   (`native/src/pal_gpu_shared.hpp`) are term-identical to
