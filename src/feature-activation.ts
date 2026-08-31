@@ -32,6 +32,7 @@ import {
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
+import { nodeVariantsUseMorphStorage } from "./pinned-node-material-cpp.js";
 import type { UpstreamEmitOptions } from "./upstream-lower.js";
 
 /** Where the inventory is written, beside the other upstream artifacts. */
@@ -174,6 +175,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(enablePropertyAnimationBlending installs the manager's " +
             "animation-group category handler) + " +
             "src/animation/animation-weight.ts (setAnimationWeight)",
+        consumers: CMAKE,
+    },
+    "animation:weight-fades": {
+        provenance:
+            "src/animation/animation-weight-fade.ts " +
+            "(crossFadeAnimationGroups schedules mixer-neutral weight " +
+            "jobs in the manager's composable pre-update hook)",
         consumers: CMAKE,
     },
     "animation:managed-groups": {
@@ -1008,6 +1016,7 @@ function capabilityRows(
         nodeEsmCasters: nodeEsmCasterCount,
     });
     const nodeVariantCount = nodeVariantList.length;
+    const nodeMorphStorage = nodeVariantsUseMorphStorage(nodeVariantList);
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
     const standardReflection = (emit.pinnedStandardVariants ?? [])
@@ -1084,7 +1093,7 @@ function capabilityRows(
         checkedRow(
             "BBLITE_GPU_MORPH_STORAGE",
             "capability",
-            emit.morphStorage,
+            emit.morphStorage || nodeMorphStorage,
             [
                 [
                     spec.morphStorage,
@@ -1096,10 +1105,18 @@ function capabilityRows(
                     "scene source reached mesh:morph-targets (the pinned " +
                         "standard morph fragment reads storage buffers)",
                 ],
+                [
+                    nodeMorphStorage,
+                    "a compiled node graph reaches MorphTargetsBlock and " +
+                        "binds the pin's zero-target fallback when its mesh " +
+                        "carries no targets",
+                ],
             ],
-            "no morph targets from either the assets or the scene source",
+            "no morph targets from the assets, scene source, or node graphs",
             "src/loader-gltf/gltf-feature-registry.ts morph row: " +
                 "anyPrimitive(targets.length > 0) -> gltf-feature-morph.js; " +
+                "src/material/node/node-renderable.ts binds each compiled " +
+                "MorphTargetsBlock to mesh morph buffers or getEmptyMorph; " +
                 "the pin has one uncapped storage-buffer morph mechanism",
             ["render_capabilities.hpp"],
         ),

@@ -392,6 +392,7 @@ function familyInputs(): FeatureActivationInputs {
             textures: [],
             backFaceCulling: true,
             envBindings: null,
+            morphBindings: null,
         },
     };
     return {
@@ -441,6 +442,27 @@ function familyInputs(): FeatureActivationInputs {
             mutableToneMappingEnabled: false,
             linearImageProcessing: false,
         },
+    };
+}
+
+/** A node graph declares morph storage, but no asset or mesh has targets. */
+function graphOnlyMorphInputs(): FeatureActivationInputs {
+    const base = familyInputs();
+    const node = base.emit.nodeVariants![0]!;
+    return {
+        ...base,
+        features: ["core", "material:node", "mesh:box"],
+        specialization: specialization(),
+        emit: emitOptions({
+            nodeVariants: [{
+                ...node,
+                composed: {
+                    ...node.composed,
+                    morphBindings: { deltas: 1, weights: 2 },
+                },
+            }],
+        }),
+        imageCodecs: [],
     };
 }
 
@@ -521,6 +543,17 @@ test("capability rows carry the specializer's activation", () => {
     assert.equal(transmission.active, true);
     assert.match(transmission.activatedBy, /transmissionFactor > 0/);
     assert.doesNotMatch(transmission.activatedBy, /scene source/);
+});
+
+test("a graph-only MorphTargetsBlock activates native empty morph storage", () => {
+    const rows = featureActivationRows(graphOnlyMorphInputs());
+    const morph = named(rows, "BBLITE_GPU_MORPH_STORAGE");
+    assert.equal(morph.active, true);
+    assert.match(morph.activatedBy, /compiled node graph/);
+    assert.match(morph.activatedBy, /zero-target fallback/);
+    // The graph needs buffer lifetime/bindings, not the transcribed PBR
+    // deformation vertex layout.
+    assert.equal(named(rows, "BBLITE_GPU_DEFORMATION").active, false);
 });
 
 test("metallic-reflectance map capabilities stay independent", () => {

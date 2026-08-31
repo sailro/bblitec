@@ -5545,6 +5545,28 @@ test("materializes direct browser primitive call arms", () => {
     assert.equal(result.manifest.assets[0]?.source, "chosen.glb");
 });
 
+test("compiles Scene 211's pinned meshopt asset request", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene211.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.deepEqual(
+        result.manifest.assets.map(({ source, kind }) => ({ source, kind })),
+        [
+            {
+                source:
+                    "https://cdn.jsdelivr.net/gh/KhronosGroup/" +
+                    "glTF-Sample-Assets@main/Models/BrainStem/" +
+                    "glTF-Meshopt-EXT/BrainStem.gltf",
+                kind: "gltf",
+            },
+        ],
+    );
+});
+
 const containerFlattenWalk = `
         function collectMeshes(container: AssetContainer): Mesh[] {
             const out: Mesh[] = [];
@@ -9823,9 +9845,53 @@ function compileWithAnimationFixture(
     }
 }
 
+test("compiles scene 156's measured cross-fade branch directly", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene156.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        {
+            fileName: sourcePath,
+            search: "?seekTime=1.25",
+        },
+    );
+
+    assert.ok(
+        result.manifest.features.includes(
+            "animation:property-blending",
+        ),
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "animation:weight-fades",
+        ),
+    );
+    assert.match(
+        result.cpp,
+        /bbl::update_animation_manager\(v_manager, v_engine, 1000\.0f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_property\(v_positiveGroup\), bbl::AnimationWeightFadeTarget::from_property\(v_negativeGroup\), 1000\.0f, 1\.0f\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::update_animation_manager\(v_manager, v_engine, static_cast<float>\(\(1250\.0 - 1000\.0\)\)\)/,
+    );
+    assert.equal(
+        result.cpp.match(/bbl::pause_animation\(v_(?:positive|negative)Group\)/g)
+            ?.length,
+        2,
+    );
+    // The search query folds the scene's measured branch, so its live
+    // wall-clock arm never reaches native output.
+    assert.doesNotMatch(result.cpp, /setTimeout|start_animation_manager/);
+});
+
 const HANDLE_COLLECTION_SCENE = (body: string): string => `
     import {
         addAnimationGroups,
+        crossFadeAnimationGroups,
         createAnimationManager,
         createEngine,
         enableAnimationBlending,
@@ -9929,6 +9995,50 @@ test("binds a loader group collection, resolves finds statically, and erases the
     assert.ok(
         result.manifest.features.includes(
             "animation:gltf-group-time",
+        ),
+    );
+});
+
+test("cross-fades glTF groups without enabling or replacing their mixer", () => {
+    const result = compileWithAnimationFixture(
+        HANDLE_COLLECTION_SCENE(`
+        const idle = requireGroup(groups, "idle");
+        const sadPose = requireGroup(groups, "sad_pose");
+        addAnimationGroups(manager, [idle, sadPose]);
+        enableAnimationBlending(manager);
+        setAnimationWeight(idle, 1);
+        setAnimationWeight(sadPose, 0);
+        crossFadeAnimationGroups(
+            manager,
+            idle,
+            sadPose,
+            { durationMs: 1000 }
+        );
+        `),
+        ["idle", "sad_pose"],
+    );
+
+    assert.match(
+        result.cpp,
+        /bbl::enable_animation_blending\(v_manager\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_gltf\(v_idle\), bbl::AnimationWeightFadeTarget::from_gltf\(v_sadPose\), 1000\.0f, 1\.0f\)/,
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "animation:gltf-blending",
+        ),
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "animation:weight-fades",
+        ),
+    );
+    assert.ok(
+        !result.manifest.features.includes(
+            "animation:property-blending",
         ),
     );
 });

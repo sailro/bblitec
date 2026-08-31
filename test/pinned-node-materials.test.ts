@@ -11,16 +11,24 @@
  * image rather than as an error.
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
     composeNodeMaterial,
     type ComposedNodeMaterial,
 } from "../src/pinned-node-material.js";
 import {
+    nodeVariantsUseMorphStorage,
     nodeVariantStageStems,
     pinnedNodeVariantsHeader,
 } from "../src/pinned-node-material-cpp.js";
 import { executeModuleGraph } from "../src/executed-module-graph.js";
+import {
+    emitUpstreamGenerated,
+    type UpstreamEmitOptions,
+} from "../src/upstream-lower.js";
 
 /**
  * One corpus graph. Read by running its module, which is what generation does
@@ -71,6 +79,143 @@ test("carries the vertex inputs the graph declares, in the pin's order", async (
     for (const [index, attribute] of composed.attributes.entries()) {
         assert.equal(attribute.location, index);
     }
+});
+
+test("transcribes MorphTargetsBlock storage bindings structurally", async () => {
+    const composed = await composeNodeMaterial(
+        await corpusGraph(64),
+        "scene64",
+    );
+    // The colour block takes binding 1; the pin then allocates the two
+    // read-only storage buffers. These numbers are compiler output, not PAL
+    // constants, and the vertex index is the pin's own indexed-draw input.
+    assert.deepEqual(composed.morphBindings, { deltas: 2, weights: 3 });
+    assert.match(
+        composed.wgsl,
+        /@group\(1\) @binding\(2\) var<storage, read> morphDeltas/,
+    );
+    assert.match(
+        composed.wgsl,
+        /@group\(1\) @binding\(3\) var<storage, read> morph/,
+    );
+    assert.match(
+        composed.wgsl,
+        /@builtin\(vertex_index\) vertexIndex: u32/,
+    );
+
+    const variant = {
+        index: 0,
+        ...nodeVariantStageStems(0),
+        composed,
+    };
+    const header = pinnedNodeVariantsHeader("test", [variant]);
+    assert.equal(
+        nodeVariantsUseMorphStorage([variant]),
+        true,
+    );
+    assert.match(header, /struct NodeVariantMorphBindings \{/);
+    assert.match(header, /NodeVariantMorphBindings morph;/);
+    assert.match(header, /std::uint32_t deltas_binding;/);
+    assert.match(header, /std::uint32_t weights_binding;/);
+    assert.match(header, /\{true, 2, 3\}/);
+
+    // No asset/source morph flag: the graph metadata alone must activate
+    // the native buffers that supply the pin's empty fallback.
+    const output = mkdtempSync(join(tmpdir(), "bblite-node-morph-"));
+    const options: UpstreamEmitOptions = {
+        idDiagnostics: false,
+        shaderPrograms: [],
+        geometryOutputTasks: [],
+        postProcessTasks: [],
+        postProcessShaders: [],
+        postProcessComposites: [],
+        gpuDeformation: false,
+        animatedWorldBounds: false,
+        morphStorage: false,
+        nonTrianglePrimitives: false,
+        nodeVisibility: false,
+        gltfNodeVisibility: false,
+        spriteCustomShaders: [],
+        effects: [],
+        pureSpriteVertex: true,
+        plainSpriteLayer: false,
+        plainBillboardSystem: false,
+        animationPointer: false,
+        animationPointerMaterials: false,
+        assetTransmission: false,
+        materialSpecular: false,
+        selectedMaterialVariant: "",
+        standardLights: 0,
+        standardLightLists: false,
+        standardDiffuseUv2: false,
+        standardBump: false,
+        textureTransform: false,
+        imageBasedLighting: false,
+        gpuInstancing: false,
+        gpuInstanceColors: false,
+        punctualLights: false,
+        clearcoat: false,
+        sheen: false,
+        nodeVariants: [variant],
+        iridescence: false,
+        specularGlossiness: false,
+        dispersion: false,
+        occlusionUv2: false,
+    };
+    try {
+        emitUpstreamGenerated(
+            output,
+            ["core", "backend:sdl", "material:node", "renderer:pbr"],
+            options,
+        );
+        const capabilities = readFileSync(
+            join(
+                output,
+                "upstream/include/bblite/upstream/render_capabilities.hpp",
+            ),
+            "utf8",
+        );
+        assert.match(
+            capabilities,
+            /#define BBLITE_GPU_MORPH_STORAGE 1/,
+        );
+    } finally {
+        rmSync(output, { recursive: true, force: true });
+    }
+});
+
+test("both native node paths bind per-mesh morph storage and its fallback", () => {
+    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const drawStart = sdl.indexOf("void draw_node_variant(");
+    const drawEnd = sdl.indexOf(
+        "\n}\n#endif\n\n#if BBLITE_SHADOW_RECEIVERS",
+        drawStart,
+    );
+    assert.ok(drawStart >= 0 && drawEnd > drawStart);
+    const drawNode = sdl.slice(drawStart, drawEnd);
+    const resolverStart = drawNode.indexOf("const auto resolve_storage");
+    const resolverEnd = drawNode.indexOf(
+        "bind_stage_storage(",
+        resolverStart,
+    );
+    assert.ok(resolverStart >= 0 && resolverEnd > resolverStart);
+    const resolver = drawNode.slice(resolverStart, resolverEnd);
+    assert.match(
+        resolver,
+        /morph_storage_buffer_for\(mesh, name\)/,
+    );
+    assert.match(sdl, /if \(name == "morphDeltas"\) return mesh\.morph_deltas;/);
+    assert.match(sdl, /if \(name == "morph"\) return mesh\.morph_weights;/);
+    assert.match(sdl, /gpu_mesh\.morph_deltas = state\.empty_morph_deltas;/);
+    assert.match(sdl, /gpu_mesh\.morph_weights = state\.empty_morph_weights;/);
+
+    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    assert.match(dawn, /storage\(entry\.morph\.deltas_binding\);/);
+    assert.match(dawn, /storage\(entry\.morph\.weights_binding\);/);
+    assert.match(dawn, /deltas\.buffer = mesh\.morph_deltas;/);
+    assert.match(dawn, /weights\.buffer = mesh\.morph_weights;/);
+    assert.match(dawn, /mesh\.morph_deltas = state\.empty_morph_deltas;/);
+    assert.match(dawn, /mesh\.morph_weights = state\.empty_morph_weights;/);
 });
 
 test("runs a module that builds its graph rather than exporting one", async () => {

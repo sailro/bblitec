@@ -1325,20 +1325,12 @@ bool update_weighted_property_animations(
             "Animation manager fixed step",
         );
         return `
-PropertyAnimationManager create_animation_manager(
-    Engine& engine) {
-    auto manager =
-        std::make_shared<PropertyAnimationManagerRecord>();
-    engine.animation_managers.push_back(manager);
-    return manager;
-}
-
 void add_animation_groups(
     PropertyAnimationManager manager,
     Engine& engine,
     const std::vector<AnimationGroupHandle>& groups) {
     PropertyAnimationManagerRecord& owner =
-        require_manager(manager);
+        bind_manager_engine(manager, engine);
     for (const AnimationGroupHandle group : groups) {
         if (group.value >= engine.animation_groups.size()) {
             throw std::runtime_error(
@@ -1361,7 +1353,7 @@ void update_animation_manager(
     Engine& engine,
     float delta_ms) {
     PropertyAnimationManagerRecord& owner =
-        require_manager(manager);
+        bind_manager_engine(manager, engine);
     if (!std::isfinite(delta_ms) || delta_ms < 0.0f) return;
     tick_manager(engine, owner, delta_ms);
 }
@@ -1372,7 +1364,7 @@ void seek_animation_manager(
     float time) {
     seek_manager_groups(
         engine,
-        require_manager(manager),
+        bind_manager_engine(manager, engine),
         time);
 }
 
@@ -1402,17 +1394,21 @@ void enable_animation_blending(
         options: {
             /** The scene reached `enablePropertyAnimationBlending`. */
             blending?: boolean;
+            /** The scene reached the mixer-neutral weight-fade scheduler. */
+            weightFades?: boolean;
             /** The scene drives a loaded file's clips from a manager. */
             managedGroups?: boolean;
         } = {},
     ): LoweredSource {
         const {
             blending = false,
+            weightFades = false,
             managedGroups = false,
         } = options;
         const propertyModule = "src/animation/property-animation.ts";
         const managerModule = "src/animation/animation-manager.ts";
         const groupModule = "src/animation/animation-group.ts";
+        const fadeModule = "src/animation/animation-weight-fade.ts";
         const evaluateModule = "src/animation/evaluate.ts";
         this.context.functionDeclaration(
             propertyModule,
@@ -1430,6 +1426,132 @@ void enable_animation_blending(
             managerModule,
             "startAnimationManager",
         );
+        if (weightFades) {
+            const { declaration: crossFade } =
+                this.context.functionDeclaration(
+                    fadeModule,
+                    "crossFadeAnimationGroups",
+                );
+            this.context.expectShapeCount(
+                crossFade,
+                "validateWeight(options.toWeight ?? 1)",
+                "cross-fade destination-weight validation",
+            );
+            this.context.expectShapeCount(
+                crossFade,
+                "fadeAnimationWeight(manager, fromGroup, { to: 0, durationMs: options.durationMs })",
+                "cross-fade source job",
+            );
+            this.context.expectShapeCount(
+                crossFade,
+                "fadeAnimationWeight(manager, toGroup, { to: toWeight, durationMs: options.durationMs })",
+                "cross-fade destination job",
+            );
+
+            const { declaration: scheduleFade } =
+                this.context.functionDeclaration(
+                    fadeModule,
+                    "fadeAnimationWeight",
+                );
+            this.expectOneShape(
+                scheduleFade,
+                "!(options.durationMs > 0) || !Number.isFinite(options.durationMs)",
+                "weight-fade duration guard",
+            );
+            this.context.expectShapeCount(
+                scheduleFade,
+                "fades[i].group === group",
+                "same-group fade replacement",
+            );
+            if (
+                !this.context.hasCall(
+                    scheduleFade,
+                    "installWeightFadeHook",
+                )
+            ) {
+                this.context.contractError(
+                    scheduleFade,
+                    "Expected a scheduled fade to install the stable pre-update hook.",
+                );
+            }
+
+            const { declaration: installFadeHook } =
+                this.context.functionDeclaration(
+                    fadeModule,
+                    "installWeightFadeHook",
+                );
+            this.expectOneShape(
+                installFadeHook,
+                "manager._preUpdate === runManagerWeightFades",
+                "idempotent weight-fade hook guard",
+            );
+            this.context.expectShapeCount(
+                installFadeHook,
+                "(priorPreUpdateByManager ??= new WeakMap()).set(manager, manager._preUpdate)",
+                "prior pre-update hook preservation",
+            );
+            this.expectOneShape(
+                installFadeHook,
+                "manager._preUpdate = runManagerWeightFades",
+                "stable weight-fade hook installation",
+            );
+
+            const { declaration: runFades } =
+                this.context.functionDeclaration(
+                    fadeModule,
+                    "runManagerWeightFades",
+                );
+            const priorHookRuns = this.context.findNodes(
+                runFades,
+                (node): node is ts.Expression =>
+                    ts.isExpression(node) &&
+                    this.context.expressionMatchesShape(
+                        node,
+                        "priorPreUpdateByManager?.get(manager)?.(manager, deltaMs)",
+                    ),
+            );
+            const fadeUpdates = this.context.findNodes(
+                runFades,
+                (node): node is ts.Expression =>
+                    ts.isExpression(node) &&
+                    this.context.expressionMatchesShape(
+                        node,
+                        "updateFades(fades, deltaMs)",
+                    ),
+            );
+            if (
+                priorHookRuns.length !== 1 ||
+                fadeUpdates.length !== 1 ||
+                priorHookRuns[0]!.getStart() >=
+                    fadeUpdates[0]!.getStart()
+            ) {
+                this.context.contractError(
+                    runFades,
+                    "Expected the preserved pre-update hook to run once before weight fades.",
+                );
+            }
+
+            const { declaration: updateFades } =
+                this.context.functionDeclaration(
+                    fadeModule,
+                    "updateFades",
+                );
+            this.expectOneShape(
+                updateFades,
+                "fade.elapsedMs = Math.min(fade.durationMs, fade.elapsedMs + Math.max(0, deltaMs))",
+                "clamped weight-fade advance",
+            );
+            this.expectOneShape(
+                updateFades,
+                "fade.group.weight = fade.from + (fade.to - fade.from) * t",
+                "weight-fade interpolation",
+            );
+            this.expectOneShape(
+                updateFades,
+                "fade.elapsedMs >= fade.durationMs",
+                "completed weight-fade guard",
+            );
+        }
         const { declaration: evaluateSampler } =
             this.context.functionDeclaration(
                 evaluateModule,
@@ -1714,6 +1836,16 @@ void enable_animation_blending(
                 groupModule,
                 "goToFrame",
             );
+        const { declaration: pauseAnimation } =
+            this.context.functionDeclaration(
+                groupModule,
+                "pauseAnimation",
+            );
+        this.expectOneShape(
+            pauseAnimation,
+            "group.isPlaying = false",
+            "property animation pause write",
+        );
         const seekAssignments = this.context
             .findNodes(
                 goToFrame,
@@ -1790,6 +1922,152 @@ void enable_property_animation_blending(
 }
 `
             : "";
+        // The fade updater occupies the pin's one stable pre-update slot.
+        // Installation compares the stored function target, preserves a
+        // prior callback separately, and never wraps an already-installed
+        // updater, so repeated scheduling cannot grow a wrapper chain.
+        const weightFadeSource = weightFades
+            ? `
+bool same_animation_weight_fade_target(
+    const AnimationWeightFadeTarget& left,
+    const AnimationWeightFadeTarget& right) {
+    if (left.kind != right.kind) return false;
+    if (left.kind == AnimationWeightFadeTargetKind::property) {
+        return left.property_group == right.property_group;
+    }
+    return left.gltf_group.value == right.gltf_group.value;
+}
+
+float& animation_weight_fade_target_weight(
+    Engine& engine,
+    const AnimationWeightFadeTarget& target) {
+    if (target.kind == AnimationWeightFadeTargetKind::property) {
+        if (!target.property_group) {
+            throw std::runtime_error(
+                "Property animation group is null.");
+        }
+        return target.property_group->weight;
+    }
+    if (target.gltf_group.value >= engine.animation_groups.size()) {
+        throw std::runtime_error(
+            "Invalid animation group handle.");
+    }
+    return engine.animation_groups[target.gltf_group.value].weight;
+}
+
+void update_animation_weight_fades(
+    Engine& engine,
+    PropertyAnimationManagerRecord& manager,
+    float delta_ms) {
+    for (
+        std::size_t index = manager.weight_fades.size();
+        index > 0;
+        --index) {
+        const std::size_t fade_index = index - 1;
+        PropertyAnimationWeightFade& fade =
+            manager.weight_fades[fade_index];
+        fade.elapsed_ms = std::min(
+            fade.duration_ms,
+            fade.elapsed_ms + std::max(0.0f, delta_ms));
+        const float amount =
+            fade.elapsed_ms / fade.duration_ms;
+        animation_weight_fade_target_weight(engine, fade.target) =
+            fade.from + (fade.to - fade.from) * amount;
+        if (fade.elapsed_ms >= fade.duration_ms) {
+            manager.weight_fades.erase(
+                manager.weight_fades.begin() +
+                static_cast<std::ptrdiff_t>(fade_index));
+        }
+    }
+}
+
+void run_manager_weight_fades(
+    Engine& engine,
+    PropertyAnimationManagerRecord& manager,
+    float delta_ms) {
+    if (manager.prior_weight_fade_pre_update) {
+        manager.prior_weight_fade_pre_update(
+            engine, manager, delta_ms);
+    }
+    update_animation_weight_fades(engine, manager, delta_ms);
+}
+
+void install_weight_fade_hook(
+    PropertyAnimationManagerRecord& manager) {
+    using PreUpdateFunction = void (*)(
+        Engine&, PropertyAnimationManagerRecord&, float);
+    const PreUpdateFunction* installed =
+        manager.pre_update.target<PreUpdateFunction>();
+    if (installed && *installed == &run_manager_weight_fades) {
+        return;
+    }
+    if (manager.pre_update) {
+        manager.prior_weight_fade_pre_update =
+            std::move(manager.pre_update);
+    }
+    manager.pre_update = &run_manager_weight_fades;
+}
+
+void schedule_animation_weight_fade(
+    Engine& engine,
+    PropertyAnimationManager manager,
+    AnimationWeightFadeTarget target,
+    float to,
+    float duration_ms) {
+    const float checked_to = checked_animation_weight(to);
+    const float from = checked_animation_weight(
+        animation_weight_fade_target_weight(engine, target));
+    if (!std::isfinite(duration_ms) || !(duration_ms > 0.0f)) {
+        throw std::runtime_error(
+            "Animation weight fade duration must be a finite "
+            "positive number, got " +
+            std::to_string(duration_ms));
+    }
+    PropertyAnimationManagerRecord& owner =
+        bind_manager_engine(manager, engine);
+    for (
+        std::size_t index = owner.weight_fades.size();
+        index > 0;
+        --index) {
+        const std::size_t fade_index = index - 1;
+        if (same_animation_weight_fade_target(
+                owner.weight_fades[fade_index].target,
+                target)) {
+            owner.weight_fades.erase(
+                owner.weight_fades.begin() +
+                static_cast<std::ptrdiff_t>(fade_index));
+        }
+    }
+    owner.weight_fades.push_back(
+        PropertyAnimationWeightFade{
+            std::move(target),
+            from,
+            checked_to,
+            duration_ms,
+            0.0f});
+    install_weight_fade_hook(owner);
+}
+`
+            : "";
+        const weightFadeEntryPoints = weightFades
+            ? `
+void cross_fade_animation_groups(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    AnimationWeightFadeTarget from_group,
+    AnimationWeightFadeTarget to_group,
+    float duration_ms,
+    float to_weight) {
+    // Validate the destination before either source weight is touched,
+    // matching crossFadeAnimationGroups' ordering in the pin.
+    const float checked_to = checked_animation_weight(to_weight);
+    schedule_animation_weight_fade(
+        engine, manager, std::move(from_group), 0.0f, duration_ms);
+    schedule_animation_weight_fade(
+        engine, manager, std::move(to_group), checked_to, duration_ms);
+}
+`
+            : "";
         // The pin's category handler returns whether it drove the
         // animation-group tasks this tick; when it did, the manager skips
         // exactly those tasks, which here is every group it owns.
@@ -1803,14 +2081,23 @@ void enable_property_animation_blending(
         return;
     }`
             : "";
+        // `_preUpdate` runs before the category handler in the pin. The
+        // queue is mixer-neutral: this phase is emitted independently of
+        // either blend opt-in and only changes group weights.
+        const weightFadeTick = weightFades
+            ? `
+    if (manager.pre_update) {
+        manager.pre_update(engine, manager, delta_ms);
+    }`
+            : "";
         const managerEntryPoints = managedGroups
             ? this.lowerManagedGroups()
             : "";
-        // The two guards every entry point below shares: the pinned weight
-        // range (src/animation/animation-weight.ts) and the manager
-        // null check.
-        const weightHelpers =
-            blending || managedGroups
+        // The pinned weight range is reached by either mixer/fade path.
+        // Manager validation and engine binding are unconditional because
+        // even a plain property group associates its manager with a target.
+        const weightValidationHelper =
+            blending || weightFades || managedGroups
                 ? `float checked_animation_weight(float weight) {
     if (
         !std::isfinite(weight) ||
@@ -1824,6 +2111,10 @@ void enable_property_animation_blending(
     return weight;
 }
 
+`
+                : "";
+        const weightHelpers = `${weightValidationHelper}
+
 PropertyAnimationManagerRecord& require_manager(
     const PropertyAnimationManager& manager) {
     if (!manager) {
@@ -1833,8 +2124,23 @@ PropertyAnimationManagerRecord& require_manager(
     return *manager;
 }
 
-`
-                : "";
+PropertyAnimationManagerRecord& bind_manager_engine(
+    const PropertyAnimationManager& manager,
+    Engine& engine) {
+    PropertyAnimationManagerRecord& owner =
+        require_manager(manager);
+    if (owner.engine && owner.engine != &engine) {
+        throw std::runtime_error(
+            "Animation manager and group/scene belong to different engines.");
+    }
+    if (!owner.engine) {
+        owner.engine = &engine;
+        engine.animation_managers.push_back(manager);
+    }
+    return owner;
+}
+
+`;
         // A glTF group's clip advances inside its asset's own runtime, so
         // the manager ticks each distinct asset it holds groups from,
         // once per frame.
@@ -1893,7 +2199,10 @@ PropertyAnimationManagerRecord& require_manager(
         return {
             modulePath: propertyModule,
             symbolName:
-                "createAnimationManager,createPropertyAnimationClip,createPropertyAnimationGroup,startAnimationManager,goToFrame",
+                "createAnimationManager,createPropertyAnimationClip,createPropertyAnimationGroup,startAnimationManager,goToFrame" +
+                (weightFades
+                    ? ",crossFadeAnimationGroups"
+                    : ""),
             header: "",
             source: `// ${this.context.provenance(
                 propertyModule,
@@ -2104,7 +2413,7 @@ void tick_group(
     }
     apply_group(engine, group);
 }
-${mixerSource}
+${mixerSource}${weightFadeSource}
 /**
  * One manager tick: upstream's updateAnimationManager, whose category
  * handler drives the animation-group tasks when it is installed and
@@ -2113,7 +2422,7 @@ ${mixerSource}
 void tick_manager(
     Engine& engine,
     PropertyAnimationManagerRecord& manager,
-    float delta_ms) {${blendingTick}
+    float delta_ms) {${weightFadeTick}${blendingTick}
     for (const PropertyAnimationGroup& group : manager.groups) {
         tick_group(engine, group, delta_ms);
     }${managedGroupTick}
@@ -2146,7 +2455,15 @@ void seek_manager_groups(
 PropertyAnimationManager create_animation_manager() {
     return std::make_shared<PropertyAnimationManagerRecord>();
 }
-${managerEntryPoints}${weightEntryPoints}
+
+PropertyAnimationManager create_animation_manager(
+    Engine& engine) {
+    auto manager =
+        std::make_shared<PropertyAnimationManagerRecord>();
+    bind_manager_engine(manager, engine);
+    return manager;
+}
+${managerEntryPoints}${weightEntryPoints}${weightFadeEntryPoints}
 
 PropertyAnimationClip create_property_animation_clip(
     std::string name,
@@ -2178,13 +2495,12 @@ PropertyAnimationClip create_property_animation_clip(
 
 PropertyAnimationGroup create_property_animation_group(
     PropertyAnimationManager manager,
+    Engine& engine,
     PropertyAnimationTarget target,
     PropertyAnimationClip clip,
     PropertyAnimationGroupOptions options) {
-    if (!manager) {
-        throw std::runtime_error(
-            "Property animation manager is null.");
-    }
+    PropertyAnimationManagerRecord& owner =
+        bind_manager_engine(manager, engine);
     if (!(options.to_time > options.from_time)) {
         throw std::runtime_error(
             "Animation play range must have toTime greater than fromTime.");
@@ -2198,20 +2514,22 @@ PropertyAnimationGroup create_property_animation_group(
     group->current_time = options.from_time;
     group->speed_ratio = options.speed_ratio;
     group->loop = options.loop;
-    manager->groups.push_back(group);
+    owner.groups.push_back(group);
     return group;
 }
 
 void start_animation_manager(
     PropertyAnimationManager manager,
     Scene& scene) {
-    if (!manager || !scene.engine) {
+    if (!scene.engine) {
         throw std::runtime_error(
             "Animation manager requires a scene engine.");
     }
-    if (manager->started) return;
-    manager->started = true;
     Engine* engine = scene.engine;
+    PropertyAnimationManagerRecord& owner =
+        bind_manager_engine(manager, *engine);
+    if (owner.started) return;
+    owner.started = true;
     scene.before_render.push_back(
         [manager, engine](float delta_ms) {
             tick_manager(*engine, *manager, delta_ms);
@@ -2220,6 +2538,14 @@ void start_animation_manager(
         [manager, engine](float time) {
             seek_manager_groups(*engine, *manager, time);
         });
+}
+
+void pause_animation(PropertyAnimationGroup group) {
+    if (!group) {
+        throw std::runtime_error(
+            "Property animation group is null.");
+    }
+    group->playing = false;
 }
 
 void go_to_frame(

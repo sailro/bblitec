@@ -290,6 +290,143 @@ test("emits the weighted property mixer only when blending is reached", () => {
     );
 });
 
+test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
+    const plain = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation();
+    assert.doesNotMatch(plain.source, /update_animation_weight_fades/);
+    assert.doesNotMatch(plain.source, /cross_fade_animation_groups/);
+
+    const faded = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation({ weightFades: true });
+    assert.match(faded.source, /update_animation_weight_fades/);
+    assert.match(faded.source, /cross_fade_animation_groups/);
+    assert.match(
+        faded.source,
+        /same_animation_weight_fade_target\(\s*owner\.weight_fades\[fade_index\]\.target,\s*target\)/,
+    );
+    assert.match(
+        faded.source,
+        /target\.gltf_group\.value/,
+    );
+    assert.match(
+        faded.source,
+        /float& animation_weight_fade_target_weight/,
+    );
+    // Scheduling alone must not pull in or enable either category mixer.
+    assert.doesNotMatch(
+        faded.source,
+        /update_weighted_property_animations/,
+    );
+    assert.doesNotMatch(
+        faded.source,
+        /AnimationCategoryHandler::property_mixer;/,
+    );
+    assert.doesNotMatch(
+        faded.source,
+        /AnimationCategoryHandler::gltf_mixer;/,
+    );
+
+    // The emitted interpolation is the pin's elapsed/duration lerp. At
+    // 250ms of a 1000ms cross-fade it yields 0.75/0.25 and a +1 mixed
+    // pose for the pin's constant +2/-2 property-animation fixture.
+    assert.match(
+        faded.source,
+        /fade\.elapsed_ms = std::min\(\s*fade\.duration_ms,\s*fade\.elapsed_ms \+ std::max\(0\.0f, delta_ms\)\);/,
+    );
+    assert.match(
+        faded.source,
+        /fade\.from \+ \(fade\.to - fade\.from\) \* amount/,
+    );
+    // Elapsed time is clamped to the duration, so the interpolation writes
+    // the exact destination before the completed job is removed. Replacement
+    // removes every prior job for the same target before the new one is pushed.
+    assert.match(
+        faded.source,
+        /if \(fade\.elapsed_ms >= fade\.duration_ms\) \{[\s\S]*?manager\.weight_fades\.erase/,
+    );
+    const replacement = faded.source.indexOf(
+        "same_animation_weight_fade_target(",
+        faded.source.indexOf("schedule_animation_weight_fade("),
+    );
+    const replacementErase = faded.source.indexOf(
+        "owner.weight_fades.erase(",
+        replacement,
+    );
+    const replacementPush = faded.source.indexOf(
+        "owner.weight_fades.push_back(",
+        replacement,
+    );
+    assert.ok(replacement >= 0);
+    assert.ok(replacementErase > replacement);
+    assert.ok(replacementPush > replacementErase);
+
+    assert.match(
+        faded.source,
+        /!std::isfinite\(duration_ms\) \|\| !\(duration_ms > 0\.0f\)/,
+    );
+    assert.match(
+        faded.source,
+        /!std::isfinite\(weight\)[\s\S]*?weight < 0\.0f[\s\S]*?weight > 1\.0f/,
+    );
+
+    // Installation is stable (function-target comparison, no wrapper),
+    // while the preserved hook executes before the fade updater.
+    assert.match(
+        faded.source,
+        /manager\.pre_update\.target<PreUpdateFunction>\(\)/,
+    );
+    const priorHook = faded.source.indexOf(
+        "manager.prior_weight_fade_pre_update(",
+    );
+    const fadeUpdate = faded.source.indexOf(
+        "update_animation_weight_fades(engine, manager, delta_ms);",
+        priorHook,
+    );
+    assert.ok(priorHook >= 0);
+    assert.ok(fadeUpdate > priorHook);
+
+    const blended = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation({
+        blending: true,
+        weightFades: true,
+    });
+    const fadeTick = blended.source.indexOf(
+        "manager.pre_update(engine, manager, delta_ms);",
+    );
+    const mixerTick = blended.source.indexOf(
+        "manager.category_handler ==",
+        fadeTick,
+    );
+    assert.ok(fadeTick >= 0);
+    assert.ok(mixerTick > fadeTick);
+
+    const managed = new AnimationLowerer(
+        new LoweringContext(),
+    ).lowerPropertyAnimation({
+        managedGroups: true,
+        weightFades: true,
+    });
+    assert.match(
+        managed.source,
+        /create_property_animation_group\([\s\S]*?bind_manager_engine\(manager, engine\)/,
+    );
+    assert.match(
+        managed.source,
+        /void add_animation_groups\([\s\S]*?bind_manager_engine\(manager, engine\)/,
+    );
+    assert.match(
+        managed.source,
+        /void update_animation_manager\([\s\S]*?bind_manager_engine\(manager, engine\)/,
+    );
+    assert.match(
+        managed.source,
+        /void start_animation_manager\([\s\S]*?bind_manager_engine\(manager, \*engine\)/,
+    );
+});
+
 test("flows the pinned animation constants into the emission", () => {
     const lowered = new AnimationLowerer(
         new LoweringContext(),

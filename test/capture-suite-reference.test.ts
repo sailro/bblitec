@@ -14,6 +14,39 @@ import {
     fixedAnimationFrameScript,
     pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
+import { gotoScenePage } from "../src/browser-harness.js";
+
+test("preserves the reference query when navigating to the suite scene", async () => {
+    const navigations: Array<{
+        url: string;
+        options: { waitUntil: string; timeout: number };
+    }> = [];
+    const page = {
+        goto: async (
+            url: string,
+            options: { waitUntil: string; timeout: number },
+        ) => {
+            navigations.push({ url, options });
+            return null;
+        },
+    } as unknown as Parameters<typeof gotoScenePage>[0];
+
+    await gotoScenePage(
+        page,
+        "http://127.0.0.1:4173",
+        "?seekTime=1.25",
+    );
+
+    assert.deepEqual(navigations, [
+        {
+            url: "http://127.0.0.1:4173/scene.html?seekTime=1.25",
+            options: {
+                waitUntil: "domcontentloaded",
+                timeout: 120_000,
+            },
+        },
+    ]);
+});
 
 test("maps an unbundled nested demo asset URL to its bundle-relative file", () => {
     assert.equal(

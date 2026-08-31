@@ -247,6 +247,19 @@ struct GpuMesh {
     bool gpu_world_transform = false;
 };
 
+[[maybe_unused]] inline SDL_GPUBuffer* morph_storage_buffer_for(
+    const GpuMesh& mesh,
+    const std::string& name) {
+#if BBLITE_GPU_MORPH_STORAGE
+    if (name == "morphDeltas") return mesh.morph_deltas;
+    if (name == "morph") return mesh.morph_weights;
+#else
+    (void)mesh;
+    (void)name;
+#endif
+    return nullptr;
+}
+
 /** Bind the contiguous vertex/matrix/colour stream prefix one composed arm uses. */
 [[maybe_unused]] void bind_composed_mesh_vertex_buffers(
     SDL_GPURenderPass* pass,
@@ -1804,10 +1817,10 @@ void draw_pinned_variant(
             // question, and a compound negative would have to be re-derived
             // every time one is added.
             (void)name;
-#if BBLITE_GPU_MORPH_STORAGE
-            if (name == "morphDeltas") return mesh.morph_deltas;
-            if (name == "morph") return mesh.morph_weights;
-#endif
+            if (SDL_GPUBuffer* morph =
+                    morph_storage_buffer_for(mesh, name)) {
+                return morph;
+            }
 #if BBLITE_PBR_SHADOWS
             // A receiver whose vertex stage also overflows the four uniform
             // slots has its own receiver blocks demoted there too.
@@ -2196,12 +2209,21 @@ void draw_node_variant(
         true,
         "node variant fragment",
         resolve_texture);
-#if BBLITE_NODE_SHADOWS
-    // The blocks the shader compile demoted out of SDL_GPU's four uniform
-    // slots: a receiving node fragment spends them on scene, nmeLights,
-    // meshU and nodeU before its own `shadowInfo_N` arrives.
+    // Storage resources survive register compaction by name. MorphTargetsBlock
+    // contributes the vertex pair below; shadow receiver blocks can join the
+    // same sidecar when the fragment has exhausted SDL_GPU's uniform slots.
     const auto resolve_storage = [&](const std::string& name)
         -> SDL_GPUBuffer* {
+        // A non-morph, non-shadow node build keeps the common resolver but
+        // compiles every named arm below out.
+        (void)name;
+        // Every uploaded mesh owns the exact pin-shaped pair or aliases the
+        // shared zero-target fallback, matching node-renderable.ts.
+        if (SDL_GPUBuffer* morph =
+                morph_storage_buffer_for(mesh, name)) {
+            return morph;
+        }
+#if BBLITE_NODE_SHADOWS
 #if BBLITE_SHADOWS_ESM
         if (name == "nmeShadowParams") {
             if (const GpuState::EsmBlur* blur =
@@ -2214,6 +2236,9 @@ void draw_node_variant(
             state,
             pal::node_shadow_rows(entry),
             name);
+#else
+        return nullptr;
+#endif
     };
     bind_stage_storage(
         pass,
@@ -2227,7 +2252,6 @@ void draw_node_variant(
         true,
         "node variant fragment",
         resolve_storage);
-#endif
     const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
@@ -2951,10 +2975,10 @@ void draw_standard_variant(
         "standard variant vertex",
         [&](const std::string& name) -> SDL_GPUBuffer* {
             (void)name;
-#if BBLITE_GPU_MORPH_STORAGE
-            if (name == "morphDeltas") return mesh.morph_deltas;
-            if (name == "morph") return mesh.morph_weights;
-#endif
+            if (SDL_GPUBuffer* morph =
+                    morph_storage_buffer_for(mesh, name)) {
+                return morph;
+            }
 #if BBLITE_STANDARD_SHADOWS
             // A receiver whose vertex stage also overflows SDL_GPU's four
             // uniform slots has its own receiver blocks demoted there too.

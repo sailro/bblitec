@@ -13,6 +13,7 @@ export const featureSources: Record<Feature, string[]> = {
     "animation:gltf-groups": [],
     "animation:property": [],
     "animation:property-blending": [],
+    "animation:weight-fades": [],
     "animation:managed-groups": [],
     "animation:gltf-blending": [],
     "animation:gltf-additive": [],

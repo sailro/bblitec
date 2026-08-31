@@ -5559,6 +5559,18 @@ WGPUBindGroupLayout node_draw_layout_for(
         sampler.sampler.type = WGPUSamplerBindingType_Filtering;
         entries.push_back(sampler);
     }
+    if (entry.morph.present) {
+        const auto storage = [&](std::uint32_t binding) {
+            WGPUBindGroupLayoutEntry item =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            item.binding = binding;
+            item.visibility = WGPUShaderStage_Vertex;
+            item.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+            entries.push_back(item);
+        };
+        storage(entry.morph.deltas_binding);
+        storage(entry.morph.weights_binding);
+    }
     if (entry.env.present) {
         // The pin's own four, in the order `emitEnv` allocates them: the
         // specular cube and its sampler, then the BRDF LUT and its own.
@@ -5861,6 +5873,24 @@ WGPUBindGroup build_node_draw_group(
         sampler.binding = binding.sampler;
         sampler.sampler = supplied.sampler;
         entries.push_back(sampler);
+    }
+    if (entry.morph.present) {
+#if BBLITE_GPU_MORPH_STORAGE
+        WGPUBindGroupEntry deltas = WGPU_BIND_GROUP_ENTRY_INIT;
+        deltas.binding = entry.morph.deltas_binding;
+        deltas.buffer = mesh.morph_deltas;
+        deltas.size = WGPU_WHOLE_SIZE;
+        entries.push_back(deltas);
+        WGPUBindGroupEntry weights = WGPU_BIND_GROUP_ENTRY_INIT;
+        weights.binding = entry.morph.weights_binding;
+        weights.buffer = mesh.morph_weights;
+        weights.size = WGPU_WHOLE_SIZE;
+        entries.push_back(weights);
+#else
+        dawn_error(
+            "a node graph declares morph storage in a build without "
+            "mesh morph buffers.");
+#endif
     }
     if (entry.env.present) {
         // `pushEnvBindGroupEntries` binds the scene's own EnvironmentTextures,

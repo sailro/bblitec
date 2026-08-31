@@ -991,6 +991,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene156",
+        name: "Scene 156 - Manual Cross-Fade Animation",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene156.ts",
+        title: "Babylon Lite Native - Manual Cross-Fade Animation",
+        parity: {
+            // The scene's own query branch advances the manager through the
+            // fade and pauses both groups at the requested deterministic pose.
+            referenceSearch: "?seekTime=1.25",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene240",
         name: "Scene 240 - Animated Triangle",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene240.ts",
@@ -2219,6 +2234,19 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene64",
+        name: "Scene 64 - NME Morph Targets",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene64.ts",
+        title: "Babylon Lite Native - NME Morph Targets",
+        parity: {
+            referenceSearch: "?freeze=1",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene61",
         name: "Scene 61 - NME Normal Colour",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene61.ts",
@@ -2672,6 +2700,27 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.002,
             maxForegroundMad: 0.003,
             backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene211",
+        name: "Scene 211 - BrainStem Meshopt",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene211.ts",
+        title: "Babylon Lite Native - BrainStem Meshopt",
+        parity: {
+            referenceSearch: "?seekTime=0.5",
+            // The scene applies its deterministic pose on its tenth
+            // before-render callback, so native capture must reach it too.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "10",
+            },
+            // Measured 0.000064 / 0.001888 on both backends, whose
+            // captures are byte-identical. The residual is confined to
+            // the skinned silhouette's antialiased edge.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.003,
+            backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
     },

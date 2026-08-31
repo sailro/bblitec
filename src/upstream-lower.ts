@@ -99,6 +99,7 @@ import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js"
 import {
     pinnedNodeVariantsHeader,
     nodeCasterStageStems,
+    nodeVariantsUseMorphStorage,
     type NodeVariantManifestEntry,
 } from "./pinned-node-material-cpp.js";
 import {
@@ -651,6 +652,13 @@ class GeneratedSourceWriter {
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
         const nodeVariantList = options.nodeVariants ?? [];
+        // A graph can contain MorphTargetsBlock even when no currently
+        // attached mesh carries targets. The pin still binds its lazily
+        // created zero-target pair, so the PAL buffer lifetime must compile
+        // from the graph metadata independently of asset/source morphs.
+        const gpuMorphStorage =
+            options.morphStorage ||
+            nodeVariantsUseMorphStorage(nodeVariantList);
         const shadowInputs = {
             features,
             standardVariants: (options.pinnedStandardVariants ?? []).length,
@@ -678,7 +686,7 @@ class GeneratedSourceWriter {
 }
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
-#define BBLITE_GPU_MORPH_STORAGE ${options.morphStorage ? 1 : 0}
+#define BBLITE_GPU_MORPH_STORAGE ${gpuMorphStorage ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 #define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
@@ -1019,6 +1027,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 new AnimationLowerer(context).lowerPropertyAnimation({
                     blending: features.includes(
                         "animation:property-blending",
+                    ),
+                    weightFades: features.includes(
+                        "animation:weight-fades",
                     ),
                     managedGroups: features.includes(
                         "animation:managed-groups",

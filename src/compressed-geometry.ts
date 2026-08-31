@@ -211,6 +211,132 @@ interface DracoModule {
 
 let dracoModule: Promise<DracoModule> | undefined;
 
+interface MeshoptDecoderModule {
+    ready: Promise<void>;
+    decodeGltfBuffer(
+        target: Uint8Array,
+        count: number,
+        size: number,
+        source: Uint8Array,
+        mode: string,
+        filter?: string,
+    ): void;
+}
+
+let meshoptDecoder: Promise<MeshoptDecoderModule> | undefined;
+let meshoptFeatureDecoder: Promise<void> | undefined;
+
+/**
+ * Instantiates the pin's meshoptimizer artifact without asking its browser
+ * wrapper to inject a script.
+ *
+ * The pinned glTF feature remains the owner of the bufferView walk and every
+ * decode call; this only supplies the exact global its lazy decoder module
+ * would obtain from `/meshopt_decoder.js` in the reference page.
+ */
+async function loadPinnedMeshoptDecoder(): Promise<MeshoptDecoderModule> {
+    if (!meshoptDecoder) {
+        const loading = (async () => {
+            const glue = await pinnedArtifact("meshopt_decoder.js");
+            const sandbox: Record<string, unknown> = {
+                console,
+                WebAssembly,
+                Blob,
+                URL,
+            };
+            sandbox.self = sandbox;
+            sandbox.globalThis = sandbox;
+            createContext(sandbox);
+            runInContext(glue.toString("utf8"), sandbox, {
+                filename: "meshopt_decoder.js",
+            });
+            const decoder = sandbox.MeshoptDecoder as
+                | MeshoptDecoderModule
+                | undefined;
+            if (!decoder || typeof decoder.decodeGltfBuffer !== "function") {
+                throw new Error(
+                    "The pinned meshopt_decoder.js did not define MeshoptDecoder.",
+                );
+            }
+            await decoder.ready;
+            return decoder;
+        })();
+        meshoptDecoder = loading;
+        void loading.catch(() => {
+            // Every concurrent caller shares `loading`. Only that rejected
+            // generation may evict itself: a retry could already have
+            // installed a newer promise by the time this reaction runs.
+            if (meshoptDecoder === loading) {
+                meshoptDecoder = undefined;
+            }
+        });
+    }
+    return meshoptDecoder;
+}
+
+/**
+ * Primes the pin's lazy browser wrapper with the exact pinned decoder.
+ *
+ * `meshopt-decode.ts` captures the global only on its first call and caches the
+ * resulting module. Keep the global override inside that one call, restore its
+ * full descriptor even on failure, and share the whole critical section across
+ * concurrent assets. Later feature calls use the wrapper's cached module and
+ * never observe or mutate process-global state.
+ */
+async function preparePinnedMeshoptDecoder(): Promise<void> {
+    if (!meshoptFeatureDecoder) {
+        const loading = (async () => {
+            const decoder = await loadPinnedMeshoptDecoder();
+            const key = "MeshoptDecoder";
+            const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+            if (previous && !previous.configurable) {
+                throw new Error(
+                    "Cannot install the pinned MeshoptDecoder over a " +
+                        "non-configurable global.",
+                );
+            }
+            Object.defineProperty(globalThis, key, {
+                configurable: true,
+                enumerable: previous?.enumerable ?? false,
+                value: decoder,
+                writable: true,
+            });
+            try {
+                const module = await importPinnedModule<{
+                    getMeshoptDecoder(): Promise<MeshoptDecoderModule>;
+                }>("loader-gltf/meshopt-decode.js");
+                const captured = await module.getMeshoptDecoder();
+                if (captured !== decoder) {
+                    throw new Error(
+                        "The pinned meshopt loader had already captured a " +
+                            "different decoder.",
+                    );
+                }
+            } finally {
+                if (previous) {
+                    Object.defineProperty(globalThis, key, previous);
+                } else {
+                    delete (
+                        globalThis as typeof globalThis & {
+                            MeshoptDecoder?: MeshoptDecoderModule;
+                        }
+                    ).MeshoptDecoder;
+                }
+            }
+        })();
+        meshoptFeatureDecoder = loading;
+        void loading.catch(() => {
+            // As above, keep successful work shared but let a failed prime be
+            // retried. The identity guard prevents an old rejection from
+            // clearing a newer in-flight retry.
+            if (meshoptFeatureDecoder === loading) {
+                meshoptFeatureDecoder = undefined;
+            }
+        });
+    }
+    await meshoptFeatureDecoder;
+}
+
 /**
  * The pinned Draco decoder, instantiated without a DOM.
  *
@@ -400,26 +526,14 @@ export function encodeUnsignedShortJoints(
     return encoded;
 }
 
-/**
- * Replaces every Draco-compressed primitive with ordinary accessors.
- *
- * Returns the asset unchanged when it carries no compressed geometry.
- */
-export async function decompressGeometry(
-    bytes: Uint8Array,
+/** Replaces every Draco-compressed primitive in a parsed GLB in place. */
+async function decodeDracoGlb(
+    glb: GlbChunks,
     label: string,
-): Promise<Uint8Array> {
-    const glb = readGlb(bytes);
-    if (!glb) return bytes;
+): Promise<boolean> {
     const used = declaredExtensions(glb.json);
-    if (used.includes(MESHOPT_EXTENSION)) {
-        throw new Error(
-            `${label} uses ${MESHOPT_EXTENSION}, which generation-time ` +
-                "decoding does not implement yet.",
-        );
-    }
     if (!used.includes(DRACO_EXTENSION)) {
-        return bytes;
+        return false;
     }
 
     const json = glb.json;
@@ -559,18 +673,36 @@ export async function decompressGeometry(
     json.bufferViews = bufferViews;
     dropExtension(json, DRACO_EXTENSION);
     const built = binary.build();
+    glb.binary = built;
     json.buffers = [{ byteLength: built.length }];
     console.log(
         `Decoded ${decodedPrimitives} Draco primitive(s) in ${label}.`,
     );
-    return writeGlb(json, built);
+    return true;
+}
+
+/**
+ * Replaces meshopt- and Draco-compressed geometry with ordinary accessors.
+ *
+ * This narrower API resolves only compression. The complete asset pipeline
+ * below additionally runs sparse and quantization passes in registry order.
+ */
+export async function decompressGeometry(
+    bytes: Uint8Array,
+    label: string,
+): Promise<Uint8Array> {
+    const glb = readGlb(bytes);
+    if (!glb) return bytes;
+    let rewrote = await runPinnedPreParse(meshoptPreParsePass, glb, label);
+    rewrote = (await decodeDracoGlb(glb, label)) || rewrote;
+    return rewrote ? writeGlb(glb.json, glb.binary) : bytes;
 }
 
 
 /**
  * A pinned `preParse` hook, run over one packaged asset.
  *
- * Two of the three geometry passes are exactly this shape: a document-level
+ * Three geometry passes are exactly this shape: a document-level
  * hook that rewrites accessors into freshly appended tightly-packed
  * bufferViews and hands back the new binary chunk. Each is a pure function of
  * the asset's own bytes with no browser API in it, which is what makes
@@ -601,6 +733,8 @@ interface PinnedPreParsePass {
     shape: string;
     /** Applied to the document after the hook, before it is written. */
     after?: (json: JsonRecord) => void;
+    /** Installs a browser-owned dependency before the pin's hook runs. */
+    prepare?: () => Promise<void>;
 }
 
 const preParseFeatures = new Map<
@@ -643,6 +777,7 @@ async function runPinnedPreParse(
     label: string,
 ): Promise<boolean> {
     if (!pass.trigger(glb.json)) return false;
+    await pass.prepare?.();
     const feature = await loadPreParseFeature(pass);
     const binChunk = new DataView(
         glb.binary.buffer,
@@ -668,6 +803,22 @@ async function runPinnedPreParse(
     return true;
 }
 
+/**
+ * Meshopt is the first feature in the pin's registry. Its hook materializes
+ * every compressed bufferView and returns one ordinary binary chunk, after
+ * which neither the document nor the native loader needs the extension.
+ */
+const meshoptPreParsePass: PinnedPreParsePass = {
+    module: "loader-gltf/gltf-feature-meshopt.js",
+    id: MESHOPT_EXTENSION,
+    trigger: (json) =>
+        declaredExtensions(json).includes(MESHOPT_EXTENSION),
+    verb: "Decompressed",
+    shape: `declares ${MESHOPT_EXTENSION}`,
+    prepare: preparePinnedMeshoptDecoder,
+    after: (json) => dropExtension(json, MESHOPT_EXTENSION),
+};
+
 /** The registry's own trigger for the sparse feature. */
 function hasSparseAccessor(json: JsonRecord): boolean {
     return asRecords(json.accessors).some(
@@ -676,7 +827,7 @@ function hasSparseAccessor(json: JsonRecord): boolean {
 }
 
 /**
- * The two document-level passes, in the pinned registry's own order.
+ * The document-level passes, in the pinned registry's own order.
  *
  * Sparse accessors are core glTF rather than an extension, so the registry
  * triggers their module on a predicate over the accessors; quantization
@@ -685,6 +836,7 @@ function hasSparseAccessor(json: JsonRecord): boolean {
  * loader that ships sees an ordinary document either way.
  */
 const pinnedPreParsePasses: readonly PinnedPreParsePass[] = [
+    meshoptPreParsePass,
     {
         module: "loader-gltf/gltf-feature-sparse.js",
         id: SPARSE_FEATURE_ID,
@@ -716,20 +868,20 @@ const pinnedPreParsePasses: readonly PinnedPreParsePass[] = [
  * what keeps a caller from getting it backwards -- which would produce a
  * plausible wrong mesh rather than an error.
  *
- * The two document-level hooks share one parse: an asset is read and written
- * once however many of them it triggers, and one that triggers neither is
- * returned byte-for-byte.
+ * The three document-level hooks share one parse, then Draco runs at the pin's
+ * pre-mesh boundary: an asset is read and written once however many features
+ * it triggers, and one that triggers none is returned byte-for-byte.
  */
 export async function resolveGeometryExtensions(
     bytes: Uint8Array,
     label: string,
 ): Promise<Uint8Array> {
-    const decompressed = await decompressGeometry(bytes, label);
-    const glb = readGlb(decompressed);
-    if (!glb) return decompressed;
+    const glb = readGlb(bytes);
+    if (!glb) return bytes;
     let rewrote = false;
     for (const pass of pinnedPreParsePasses) {
         rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;
     }
-    return rewrote ? writeGlb(glb.json, glb.binary) : decompressed;
+    rewrote = (await decodeDracoGlb(glb, label)) || rewrote;
+    return rewrote ? writeGlb(glb.json, glb.binary) : bytes;
 }
